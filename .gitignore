@@ -1,0 +1,41 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.env
+.venv/
+
+# === Django ===
+db.sqlite3
+media/
+staticfiles/
+static/
+
+# migrations (опционально, обычно НЕ игнорят, но иногда в пет-проектах можно)
+# */migrations/*.py
+# !*/migrations/__init__.py
+
+# === Environment ===
+.env
+.env.*
+!.env.example
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# === OS ===
+.DS_Store
+
+# === logs ===
+*.log
+
+# === testing ===
+.coverage
+.pytest_cache/

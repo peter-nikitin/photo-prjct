@@ -12,8 +12,7 @@ env/
 # === Django ===
 db.sqlite3
 media/
-staticfiles/
-static/
+src/backend/staticfiles/
 
 # migrations (опционально, обычно НЕ игнорят, но иногда в пет-проектах можно)
 # */migrations/*.py

@@ -1,0 +1,146 @@
+{% load static %}
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PicFlow Upload</title>
+    <link rel="stylesheet" href="{% static 'styles.css' %}" />
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/exifr/dist/lite.umd.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" defer></script>
+    <script src="{% static 'data.js' %}" defer></script>
+    <script src="{% static 'upload.js' %}" defer></script>
+  </head>
+  <body>
+    <div class="app-shell admin-shell">
+      <header class="topbar">
+        <a class="brand" href="{% url 'index' %}" aria-label="PicFlow">
+          <span class="brand-mark">PF</span>
+          <span>
+            <strong>PicFlow</strong>
+            <small>uploader</small>
+          </span>
+        </a>
+
+        <nav class="admin-nav" aria-label="Разделы">
+          <a class="event-tab" href="{% url 'index' %}">Витрина</a>
+          <a class="event-tab" href="{% url 'dashboard' %}">Админ панель</a>
+          <a class="event-tab" href="{% url 'events' %}">События</a>
+          <a class="event-tab active" href="{% url 'upload' %}">Загрузчик</a>
+          <a class="event-tab" href="{% url 'orders' %}">Заказы</a>
+          <a class="event-tab" href="{% url 'promos' %}">Промокоды</a>
+          <a class="event-tab" href="{% url 'purchased' %}">Купленные</a>
+        </nav>
+
+        <div class="top-actions" aria-label="Действия">
+          <a class="icon-button" href="{% url 'index' %}" title="Открыть витрину">
+            <i data-lucide="external-link"></i>
+          </a>
+        </div>
+      </header>
+
+      <main class="upload-workspace">
+        <section class="upload-panel" aria-label="Загрузка фото">
+          <div class="admin-toolbar">
+            <div>
+              <h1>Загрузчик фото</h1>
+              <p id="uploadSummary">Фото будут добавлены в фотобанк</p>
+            </div>
+          </div>
+
+          <div class="upload-settings">
+            <label class="field">
+              <span>Событие</span>
+              <select id="uploadEvent"></select>
+            </label>
+            <label class="field">
+              <span>Зона</span>
+              <select id="uploadZone" required></select>
+            </label>
+            <label class="field">
+              <span>Фотограф</span>
+              <select id="uploadPhotographer" required></select>
+            </label>
+          </div>
+
+          <label class="dropzone" for="uploadFiles" id="dropzone">
+            <i data-lucide="cloud-upload"></i>
+            <strong>Выберите несколько фото или перетащите сюда</strong>
+            <span>Можно загрузить пачку файлов сразу, QR будет прочитан до ватермарки</span>
+          </label>
+          <input id="uploadFiles" type="file" accept="image/*" multiple hidden />
+
+          <fieldset class="duplicate-mode">
+            <legend>Если загружаемое фото уже существует</legend>
+            <label class="check-row">
+              <input id="existSkip" name="existingPhotos" type="radio" value="skip" checked />
+              <span>Пропустить</span>
+            </label>
+            <label class="check-row">
+              <input id="existOverwrite" name="existingPhotos" type="radio" value="overwrite" />
+              <span>Перезаписать</span>
+            </label>
+          </fieldset>
+
+          <div class="upload-actions">
+            <button class="primary-button compact-action" id="processUploadButton" type="button" disabled>
+              <i data-lucide="cloud-upload"></i>
+              Загрузить
+            </button>
+            <button class="secondary-button compact-action" id="clearUploadButton" type="button">
+              <i data-lucide="x"></i>
+              Очистить
+            </button>
+          </div>
+
+          <div class="upload-list" id="uploadList" aria-live="polite"></div>
+
+          <label class="field">
+            <span>Журнал</span>
+            <textarea id="uploadLog" class="upload-log" readonly></textarea>
+          </label>
+        </section>
+
+        <aside class="upload-help" aria-label="Распознавание">
+          <div class="panel-heading">
+            <span>Распознавание</span>
+            <span class="pill">QR</span>
+          </div>
+          <div class="recognition-stack">
+            <div class="recognition-item">
+              <i data-lucide="scan-line"></i>
+              <span>
+                <strong>QR</strong>
+                <small id="qrCapability">Проверка доступности</small>
+              </span>
+            </div>
+            <div class="recognition-item">
+              <i data-lucide="hash"></i>
+              <span>
+                <strong>Номер участника</strong>
+                <small>Берётся из QR или имени файла</small>
+              </span>
+            </div>
+            <div class="recognition-item">
+              <i data-lucide="shield-check"></i>
+              <span>
+                <strong>Ватермарк</strong>
+                <small>Повторяющийся паттерн и нижняя плашка</small>
+              </span>
+            </div>
+            <div class="recognition-item">
+              <i data-lucide="camera"></i>
+              <span>
+                <strong>EXIF</strong>
+                <small>Дата может браться из файла</small>
+              </span>
+            </div>
+          </div>
+        </aside>
+      </main>
+
+      <div class="toast" id="uploadToast" role="status" aria-live="polite" hidden></div>
+    </div>
+  </body>
+</html>

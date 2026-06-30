@@ -91,6 +91,7 @@ jobs:
             docker compose -f /opt/photo-prjct/docker-compose.prod.yml up -d
 
             docker compose -f /opt/photo-prjct/docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
+            docker compose -f /opt/photo-prjct/docker-compose.prod.yml restart web
 
             for attempt in 1 2 3 4 5; do
               if docker compose -f /opt/photo-prjct/docker-compose.prod.yml exec -T web python manage.py migrate; then

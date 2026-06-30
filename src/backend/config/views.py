@@ -1,8 +1,39 @@
+import json
+from pathlib import Path
+
 from django.shortcuts import render
 
+from picflow.models import Event, Photo
 
-def render_page(request, template_name):
-    return render(request, template_name)
+
+def build_bootstrap_context():
+    events = [
+        {
+            "name": event.name,
+            "dateFrom": event.date_from.isoformat(),
+            "dateTo": event.date_to.isoformat(),
+            "location": event.location,
+            "description": event.description,
+            "active": event.active,
+        }
+        for event in Event.objects.order_by("date_from", "name")
+    ]
+    demo_images = {
+        photo.id: f"/static/assets/{Path(photo.src.name).name}"
+        for photo in Photo.objects.select_related("event").order_by("id")
+        if photo.src
+    }
+    return {
+        "picflow_default_events_json": json.dumps(events, ensure_ascii=False),
+        "picflow_demo_images_json": json.dumps(demo_images, ensure_ascii=False),
+    }
+
+
+def render_page(request, template_name, extra_context=None):
+    context = build_bootstrap_context()
+    if extra_context:
+        context.update(extra_context)
+    return render(request, template_name, context)
 
 
 def index(request):

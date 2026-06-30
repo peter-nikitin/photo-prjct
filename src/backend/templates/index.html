@@ -7,6 +7,10 @@
     <title>PicFlow Event Photobank</title>
     <link rel="stylesheet" href="{% static 'styles.css' %}" />
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script>
+      window.PicFlowDefaultEvents = {{ picflow_default_events_json|safe }};
+      window.PicFlowDemoImages = {{ picflow_demo_images_json|safe }};
+    </script>
     <script src="{% static 'data.js' %}" defer></script>
     <script src="{% static 'app.js' %}" defer></script>
   </head>

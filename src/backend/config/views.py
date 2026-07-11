@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 from django.shortcuts import render
-
 from picflow.models import Event, Photo
 
 

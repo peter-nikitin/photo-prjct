@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manage Yandex Cloud"
+  short_description: "Safely operate FindMe Photo cloud resources"
+  default_prompt: "Use $manage-yandex-cloud to inspect or operate this project's Yandex Cloud resources safely."

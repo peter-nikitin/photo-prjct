@@ -39,8 +39,9 @@ The repository currently contains an early Django prototype:
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
-- A manually triggered GitHub Actions workflow builds the image in GHCR and deploys it with Docker
-  Compose to a Yandex Cloud VM.
+- A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
+  staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
+  after GitHub Environment approval; production infrastructure is not provisioned yet.
 - Prototype-only frontend sources also remain under `src/proto`; Django templates and static files
   under `src/backend` are the active application copy.
 
@@ -59,6 +60,8 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Start as a Django modular monolith; extract services only after measured operational need.
 - Use PostgreSQL as the transactional system of record.
 - Deploy the initial product as containers through Docker Compose on a Yandex Cloud VM.
+- Use the current preemptible VM for staging and a separate non-preemptible VM for production.
+- Promote the same staging-verified image to production only after manual approval.
 - Load environment-specific configuration from environment variables and never commit secrets.
 - Keep architecture, decisions, and delivery plans in this repository.
 - Prefer simple, repeatable operations over premature distributed infrastructure.

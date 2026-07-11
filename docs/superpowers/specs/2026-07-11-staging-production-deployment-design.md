@@ -11,7 +11,7 @@
 Evolve the existing single-VM deployment into two isolated environments while preserving the
 accepted GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose architecture:
 
-- every merge to `master` automatically deploys the immutable commit image to staging;
+- every merge to `main` automatically deploys the immutable commit image to staging;
 - production deploys only after an explicit manual approval and promotes the exact image already
   verified on staging;
 - the existing preemptible VM becomes staging;
@@ -71,7 +71,7 @@ environment. Keep environment configuration in GitHub Environment secrets, pin t
 image by SHA/digest, add Compose and HTTP health checks, serialize deployment, capture useful logs
 on failure, and document recovery after a preemption.
 
-At this phase, merge to `master` becomes the automatic staging trigger. Manual dispatch remains
+At this phase, merge to `main` becomes the automatic staging trigger. Manual dispatch remains
 available for recovery and controlled redeployment.
 
 ### Phase 2: Collect production-sizing evidence

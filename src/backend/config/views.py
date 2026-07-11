@@ -1,8 +1,13 @@
 import json
 from pathlib import Path
 
+from django.http import JsonResponse
 from django.shortcuts import render
 from picflow.models import Event, Photo
+
+
+def health(request):
+    return JsonResponse({"status": "ok"})
 
 
 def build_bootstrap_context():

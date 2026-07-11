@@ -11,6 +11,12 @@ from django.urls import reverse
 )
 @modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
 class PageSmokeTests(TestCase):
+    def test_health_check_does_not_require_database_content(self) -> None:
+        response = self.client.get(reverse("health"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
     def test_public_pages_render_successfully(self) -> None:
         route_names = (
             "index",

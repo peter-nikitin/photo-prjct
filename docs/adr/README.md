@@ -24,3 +24,4 @@ place, and add the new record to this index.
 | 0002 | [Use PostgreSQL as the system of record](0002-postgresql-system-of-record.md) | Accepted |
 | 0003 | [Deploy with Docker Compose to Yandex Cloud](0003-docker-compose-yandex-cloud.md) | Accepted |
 | 0004 | [Keep engineering knowledge in the repository](0004-repository-engineering-knowledge.md) | Accepted |
+| 0005 | [Promote immutable images through staging](0005-promote-images-through-staging.md) | Accepted |

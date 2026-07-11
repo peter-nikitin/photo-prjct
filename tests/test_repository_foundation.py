@@ -19,15 +19,15 @@ def test_documentation_foundation_exists() -> None:
         assert (ROOT / relative_path).is_file(), f"Missing {relative_path}"
 
 
-def test_initial_adr_index_lists_all_accepted_decisions() -> None:
+def test_adr_index_lists_all_accepted_decisions() -> None:
     index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
 
-    for number in range(1, 5):
+    for number in range(1, 6):
         assert re.search(rf"\| 000{number} \|.*\| Accepted \|", index)
 
 
 def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:
-    for skill_name in ("write-adr", "write-plan"):
+    for skill_name in ("manage-yandex-cloud", "write-adr", "write-plan"):
         skill_dir = ROOT / ".agents" / "skills" / skill_name
         skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         match = re.match(r"^---\n(.*?)\n---\n", skill_text, re.DOTALL)
@@ -57,3 +57,38 @@ def test_skills_reference_repository_templates() -> None:
     for skill_name, template in references.items():
         skill = (ROOT / ".agents" / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
         assert template in skill
+
+
+def test_yandex_cloud_skill_requires_pricing_confirmation() -> None:
+    skill_dir = ROOT / ".agents" / "skills" / "manage-yandex-cloud"
+    skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    inventory = (skill_dir / "references" / "inventory.md").read_text(encoding="utf-8")
+
+    assert "explicit manual confirmation" in skill
+    assert "Approval of a plan is not approval to execute" in skill
+    assert "yc config list" in skill
+    assert "must not" in skill.partition("yc config list")[2][:120]
+    assert "b1gmcsmr51o5kvp86l55" in inventory
+    assert "b1g2qttgfhb4gdunvlge" in inventory
+    assert "token" not in inventory.lower()
+
+
+def test_deployment_workflows_separate_staging_and_production() -> None:
+    staging = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8"))
+    production = yaml.safe_load(
+        (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+    )
+
+    assert staging[True]["push"]["branches"] == ["main"]
+    assert staging["jobs"]["deploy"]["environment"] == "staging"
+    assert staging["jobs"]["deploy"]["concurrency"]["group"] == "deploy-staging"
+    assert set(production[True]) == {"workflow_dispatch"}
+    assert production["jobs"]["promote"]["environment"] == "production"
+    assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
+
+
+def test_production_compose_uses_an_immutable_application_image() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
+
+    assert compose["services"]["web"]["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
+    assert "healthcheck" in compose["services"]["web"]

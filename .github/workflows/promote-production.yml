@@ -1,58 +1,47 @@
-name: Deploy staging
+name: Promote production
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      image_sha:
+        description: Commit SHA successfully deployed to staging
+        required: true
+        type: string
 
 jobs:
-  build:
-    name: Build immutable image
+  verify-staging:
+    name: Verify staging image
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    outputs:
-      app_image: ${{ steps.image.outputs.app_image }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Select image reference
-        id: image
-        run: echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.image.outputs.app_image }}
-
-  deploy:
-    name: Deploy staging
-    runs-on: ubuntu-latest
-    needs: build
     environment: staging
+    steps:
+      - name: Confirm image was deployed successfully to staging
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          APP_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha }}
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: APP_IMAGE
+          script_stop: true
+          script: test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"
+
+  promote:
+    name: Promote verified image
+    runs-on: ubuntu-latest
+    needs: verify-staging
+    environment: production
     concurrency:
-      group: deploy-staging
+      group: deploy-production
       cancel-in-progress: false
 
     steps:
-      - name: Checkout repository
+      - name: Checkout selected revision
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.image_sha }}
 
-      - name: Copy compose file to staging
+      - name: Copy compose file to production
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VM_HOST }}
@@ -61,10 +50,10 @@ jobs:
           source: docker-compose.prod.yml
           target: /opt/photo-prjct/
 
-      - name: Apply staging deployment
+      - name: Apply production deployment
         uses: appleboy/ssh-action@v1.0.3
         env:
-          APP_IMAGE: ${{ needs.build.outputs.app_image }}
+          APP_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           DEBUG: "False"
           ALLOWED_HOSTS: ${{ secrets.ALLOWED_HOSTS }}
@@ -83,6 +72,10 @@ jobs:
             set -eu
             install -d -m 0755 /opt/photo-prjct
 
+            if [ -f /opt/photo-prjct/deployed-image ]; then
+              cp /opt/photo-prjct/deployed-image /opt/photo-prjct/previous-image
+            fi
+
             umask 077
             cat > /opt/photo-prjct/.env <<EOF
             APP_IMAGE=$APP_IMAGE
@@ -100,15 +93,15 @@ jobs:
               echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
             fi
 
-            docker compose --project-name photo-prjct-staging \
+            docker compose --project-name photo-prjct-production \
               --env-file /opt/photo-prjct/.env \
               -f /opt/photo-prjct/docker-compose.prod.yml pull
-            docker compose --project-name photo-prjct-staging \
+            docker compose --project-name photo-prjct-production \
               --env-file /opt/photo-prjct/.env \
               -f /opt/photo-prjct/docker-compose.prod.yml up -d --wait
             printf '%s\n' "$APP_IMAGE" > /opt/photo-prjct/deployed-image
 
-      - name: Capture staging diagnostics on failure
+      - name: Capture production diagnostics on failure
         if: failure()
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -116,9 +109,9 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            docker compose --project-name photo-prjct-staging \
+            docker compose --project-name photo-prjct-production \
               --env-file /opt/photo-prjct/.env \
               -f /opt/photo-prjct/docker-compose.prod.yml ps || true
-            docker compose --project-name photo-prjct-staging \
+            docker compose --project-name photo-prjct-production \
               --env-file /opt/photo-prjct/.env \
               -f /opt/photo-prjct/docker-compose.prod.yml logs --tail=200 web || true

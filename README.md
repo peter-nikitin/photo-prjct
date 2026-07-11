@@ -10,7 +10,8 @@ unresolved decisions are documented rather than assumed to be implemented.
   open decisions.
 - [Architecture decisions](docs/adr/README.md) — durable decisions and the ADR template.
 - [Implementation plans](docs/plans/README.md) — delivery-plan conventions and template.
-- [Project skills](.agents/skills) — repository-scoped workflows for writing ADRs and plans.
+- [Project skills](.agents/skills) — repository-scoped workflows for writing ADRs and plans and for
+  safely operating Yandex Cloud resources.
 
 ## Local development
 
@@ -53,12 +54,20 @@ checks, migration drift detection, and repository skill-structure tests.
 
 ## Deployment
 
-Production deployment behavior is unchanged:
+The existing preemptible Yandex Cloud VM is the staging environment. A push to `main` runs `Deploy
+staging`, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, deploys it to staging, waits for
+Compose health checks, and records the successful image reference.
 
-1. Configure GitHub Actions secrets and the VM.
-2. Trigger the `Deploy` workflow.
-3. CI builds and pushes the Docker image to GHCR.
-4. The workflow deploys `docker-compose.prod.yml` to `/opt/photo-prjct/` on the Yandex Cloud VM.
+Create GitHub Environments named `staging` and `production`. Each environment owns separate values
+for `VM_HOST`, `VM_USER`, `VM_SSH_KEY`, `SECRET_KEY`, `ALLOWED_HOSTS`, `DB_NAME`, `DB_USER`,
+`DB_PASSWORD`, `GHCR_USERNAME`, and `GHCR_READ_TOKEN`. Configure required reviewers on `production`.
 
-The web container runs migrations and `collectstatic` before starting Gunicorn. Production secrets
-must never be committed; `.env.example` documents only the configuration shape.
+`Promote production` is manually dispatched with the successfully staged commit SHA. It verifies
+that SHA against the marker on staging, pauses for the production Environment approval, checks out
+the selected revision, and deploys the same GHCR image without rebuilding it. Production remains
+unavailable until a separate non-preemptible VM is approved and provisioned.
+
+The web container runs migrations and `collectstatic` before starting Gunicorn. Host `.env` files,
+GitHub secrets, and cloud credentials must never be committed. Use the project
+`manage-yandex-cloud` skill for inventory or infrastructure operations; it requires fresh manual
+confirmation for every change that may affect Yandex Cloud charges.

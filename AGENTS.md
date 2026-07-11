@@ -80,6 +80,9 @@ No Kubernetes, service mesh, or microservices at this stage.
 - Local development currently uses Python virtual environments.
 - Production uses Docker containers.
 - PostgreSQL should be available through Docker.
+- All repository changes must be made in a git worktree, not directly in the main checkout.
+- Commits must be created only on a dedicated non-main branch.
+- After finishing work, open a pull request for review instead of merging directly.
 - Repository should ignore:
   - virtual environments
   - IDE files

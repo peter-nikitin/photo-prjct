@@ -1,0 +1,189 @@
+# FindMe Photo Architecture
+
+## Document purpose
+
+This document is the architectural source of truth for FindMe Photo. It distinguishes the
+software that exists today from accepted constraints, proposed MVP components, and deferred
+ideas. Accepted decisions live in [Architecture Decision Records](adr/README.md); delivery work
+is decomposed in [implementation plans](plans/README.md).
+
+## Product goal
+
+FindMe Photo is an event photo marketplace for running, cycling, obstacle, corporate, and similar
+mass-participation events. A customer selects an event, finds likely photos by bib number, face,
+time, or location, purchases selected photos, and receives protected downloads. Operators and
+photographers upload batches, review processing failures, correct machine-generated metadata, and
+manage publication and sales.
+
+The defining relationship is:
+
+`event -> location -> photographer -> photo -> recognition -> review -> search -> purchase -> download`
+
+Search is event-scoped by default. Automated recognition produces candidates with confidence;
+manual corrections take precedence and the product must not claim certain identity.
+
+## Architectural status vocabulary
+
+- **Implemented**: present in the repository and executable.
+- **Accepted**: governed by an accepted ADR, even if delivery is incomplete.
+- **Proposed**: target MVP direction that still needs an ADR, experiment, or implementation plan.
+- **Deferred**: deliberately outside the MVP.
+
+## Current architecture — implemented
+
+The repository currently contains an early Django prototype:
+
+- Django 6 serves server-rendered templates and static JavaScript/CSS.
+- The `picflow` application contains preliminary `Event` and `Photo` models. They demonstrate
+  persistence and page bootstrapping; they are not the final domain model.
+- PostgreSQL is configured entirely through environment variables.
+- Local development uses Docker Compose for Django and PostgreSQL.
+- A production Docker image runs migrations, collects static files, and starts Gunicorn.
+- A manually triggered GitHub Actions workflow builds the image in GHCR and deploys it with Docker
+  Compose to a Yandex Cloud VM.
+- Prototype-only frontend sources also remain under `src/proto`; Django templates and static files
+  under `src/backend` are the active application copy.
+
+```text
+Browser -> Django/Gunicorn -> PostgreSQL
+                  |
+                  +-> packaged templates and static assets
+
+GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
+                                             |- Django
+                                             `- PostgreSQL
+```
+
+## Accepted constraints
+
+- Start as a Django modular monolith; extract services only after measured operational need.
+- Use PostgreSQL as the transactional system of record.
+- Deploy the initial product as containers through Docker Compose on a Yandex Cloud VM.
+- Load environment-specific configuration from environment variables and never commit secrets.
+- Keep architecture, decisions, and delivery plans in this repository.
+- Prefer simple, repeatable operations over premature distributed infrastructure.
+
+## Target MVP architecture — proposed
+
+The MVP remains one product with modules that have explicit responsibilities:
+
+| Module | Responsibility | Status |
+| --- | --- | --- |
+| Catalog | Events, locations, publication state, photographers | Proposed |
+| Ingestion | Batch upload, file metadata, processing state, retries | Proposed |
+| Media | Originals, thumbnails, previews, watermarks, purchased exports | Proposed |
+| Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed |
+| Search | Event-scoped face/bib/time/location queries | Proposed |
+| Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
+| Commerce | Cart, promotions, orders, payment state, download entitlement | Proposed |
+| Operations | Processing visibility, structured logs, health and backups | Proposed |
+
+Logical module boundaries do not imply separately deployed services. Django owns product rules and
+transactional state. Background processing and specialized ML runtimes may use separate containers
+after their interfaces and operational costs are validated.
+
+### Proposed deployment topology
+
+```text
+Customer/operator
+      |
+  HTTPS edge
+      |
+ Django application ------ PostgreSQL
+      |                         |
+      |                         `- transactional and audit data
+      +---- object storage (private originals and derivatives)
+      +---- task queue ---- workers ---- ML runtimes
+      `---- vector search capability
+```
+
+The diagram shows required capabilities, not selected products. Object storage provider, queue and
+broker, vector engine, and ML implementations require separate ADRs.
+
+## Core data flows — proposed
+
+### Photo ingestion and indexing
+
+1. An operator creates an event and uploads a batch associated with an event, photographer, and
+   optional location.
+2. The application stores the original privately and records an immutable storage key.
+3. Background work extracts EXIF metadata and generates thumbnail, preview, and watermarked assets.
+4. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
+   embeddings. Each result records model version, confidence, geometry, and processing status.
+5. Search indexes are updated only within the photo's event scope.
+6. Operators can correct or suppress candidates. Manual decisions outrank automated results.
+7. Failures remain visible and retryable without re-uploading the original.
+
+### Search
+
+1. The customer selects an event before searching.
+2. A bib query matches confirmed numbers first and automated candidates second. A face query creates
+   a temporary query embedding and returns probable matches.
+3. Every query filters by `event_id`; time and location further narrow results.
+4. Results are ordered primarily by capture time. Results from other events, if offered, appear in a
+   separate explicitly labelled section.
+
+### Purchase and download
+
+1. The cart contains event photos, prices, and any validated promotion.
+2. A payment transition creates or updates an order idempotently.
+3. Successful payment grants entitlement to generated exports; it never makes originals public.
+4. Downloads use short-lived signed access or an authenticated application response and are audited.
+
+## Security, privacy, and legal boundaries
+
+- Originals are private. Public pages receive only derived, watermarked media.
+- Secrets and credentials are environment-provided; `.env` files remain untracked.
+- Face images and embeddings may be biometric personal data. Collection basis, consent, retention,
+  deletion, access control, and incident handling must be approved before face search is released.
+- Face results are probable matches, not identity assertions. Users and operators need removal and
+  suppression workflows.
+- Payment callbacks must be authenticated and idempotent; download authorization is derived from
+  persisted order state.
+- Administrative corrections and sensitive access require an audit trail.
+- Open-source code, model weights, datasets, and hosted APIs require a commercial-use license review.
+  AGPL components are not adopted without an explicit legal and architectural decision.
+- Backups must cover transactional data and private media metadata; restore procedures must be tested.
+
+## Evolution stages
+
+1. **Foundation (current):** stable development checks, documentation, PostgreSQL, containers, CI/CD,
+   and operational baseline.
+2. **Technical validation:** measure face and bib recognition on 500–2,000 representative photos;
+   record accuracy, throughput, cost, and failure modes.
+3. **Photo-bank core:** event/location/photographer domain, private media storage, batch ingestion,
+   previews, watermarking, publication, and operator workflow.
+4. **Bib search:** detected regions, OCR candidates, corrections, and event-scoped search.
+5. **Face search:** approved biometric policy, embeddings, event filtering, removal, and candidate UX.
+6. **Commerce:** pricing, promotions, payment integration, orders, entitlements, and protected export.
+7. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
+
+## Deferred beyond MVP
+
+- Full online photo editing and AI enhancement.
+- Native mobile applications.
+- Natural-language semantic search and recommendation systems.
+- Automatic best-shot selection and advanced sequence grouping.
+- Public partner APIs and event-registration integrations.
+- Kubernetes, service mesh, and independently deployed microservices without demonstrated need.
+
+## Open decisions
+
+Each item needs evidence and an ADR before implementation commits the architecture:
+
+- S3-compatible storage provider and media lifecycle policy.
+- Background task framework, broker, retry semantics, and processing SLA.
+- `pgvector` versus a dedicated vector database and migration thresholds.
+- Face detection/embedding implementation and biometric governance.
+- Bib-region detection/OCR implementation and model licensing.
+- Payment provider, callback contract, refunds, and download entitlement policy.
+- Authentication model and photographer/operator permissions.
+- Observability stack, backup targets, retention, and recovery objectives.
+- Production HTTPS edge and static/media delivery topology.
+
+## Change rules
+
+- Update this document when system boundaries, deployed topology, or architectural status changes.
+- Create an ADR for durable choices with meaningful alternatives or cross-cutting consequences.
+- Do not rewrite accepted decisions here; summarize them and link to their ADR.
+- Create an implementation plan before substantial delivery work and link it to relevant ADRs.

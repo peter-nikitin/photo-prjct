@@ -4,7 +4,18 @@
 
 Personal photo project.
 
-Current stage: infrastructure bootstrap and deployment pipeline setup. Domain modeling and business logic are intentionally postponed until the platform foundation is stable.
+Current stage: development-foundation hardening on top of an early Django prototype. The existing
+`Event` and `Photo` models are preliminary and must not be treated as the final domain model.
+
+## Sources of Truth
+
+- `docs/architecture.md` describes implemented, accepted, proposed, and deferred architecture.
+- `docs/adr/` records durable decisions. Accepted ADRs are immutable; supersede them with a new ADR.
+- `docs/plans/` stores decision-complete implementation plans for multi-step work.
+- `.agents/skills/write-adr` and `.agents/skills/write-plan` define project authoring workflows.
+
+Keep these sources synchronized with relevant code changes. Do not turn an open architectural
+question into an implementation choice without an ADR.
 
 ## Technology Stack
 
@@ -77,6 +88,23 @@ No Kubernetes, service mesh, or microservices at this stage.
   - build artifacts
   - local database files
 
+### Required Checks
+
+Install production and development dependencies with `pip install -r requirements-dev.txt`. Before
+considering a change complete, run:
+
+```bash
+ruff format --check .
+ruff check .
+mypy
+pytest --cov --cov-report=term-missing
+python src/backend/manage.py check
+python src/backend/manage.py makemigrations --check --dry-run
+```
+
+Use environment variables matching `.env.example`. Tests and CI use PostgreSQL; do not add SQLite-only
+shortcuts that hide production database behavior.
+
 ## Django Baseline
 
 The project already went through initial Django configuration issues:
@@ -120,3 +148,5 @@ After infrastructure is stable:
 - Yandex Cloud VM is the primary hosting platform.
 - CI/CD is considered a required foundation, not an optional improvement.
 - Simplicity is preferred over premature scalability.
+- Detailed decisions and their consequences are maintained in `docs/adr/`; this summary does not
+  replace them.

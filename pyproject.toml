@@ -1,0 +1,36 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["src/backend/picflow/migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "DJ"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/backend"]
+exclude = ["src/backend/picflow/migrations"]
+check_untyped_defs = true
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+pythonpath = ["src/backend"]
+testpaths = ["src/backend", "tests"]
+addopts = "--strict-config --strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["src/backend/config", "src/backend/picflow"]
+omit = ["*/migrations/*", "*/tests/*", "*/asgi.py", "*/wsgi.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80

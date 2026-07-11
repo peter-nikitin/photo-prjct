@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Plan"
+  short_description: "Create architecture-aligned delivery plans"
+  default_prompt: "Use $write-plan to prepare an implementation-ready project plan."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write ADR"
+  short_description: "Create consistent project architecture decisions"
+  default_prompt: "Use $write-adr to record an architecture decision for this project."

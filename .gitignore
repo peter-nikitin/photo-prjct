@@ -32,6 +32,9 @@ src/backend/staticfiles/
 # === OS ===
 .DS_Store
 
+# === Git worktrees ===
+.worktrees/
+
 # === logs ===
 *.log
 

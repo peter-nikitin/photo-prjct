@@ -25,8 +25,17 @@ will execute the repository virtual environment's `django-ai-boost` command with
 `config.settings`. Its process environment will expose `src/backend` as `PYTHONPATH`, matching the
 existing pytest and Django layout.
 
+The committed MCP configuration will provide only the non-secret local defaults already represented
+by `.env.example`: an explicitly non-production `SECRET_KEY`, `DEBUG=False`, localhost hosts, and
+the default `app` database identity. `DB_HOST` will be `localhost` because the MCP process runs on
+the host while PostgreSQL publishes port 5432 from Compose. Real or customized credentials must be
+provided through a developer's untracked environment and must never be committed. Local PostgreSQL
+must be running before tools that initialize or query the database can succeed.
+
 The package belongs in `requirements-dev.txt`, not `src/backend/requirements.txt`, because it is an
-AI-assisted development tool and must not enlarge or expose the production runtime.
+AI-assisted development tool and must not enlarge or expose the production runtime. Pin it to the
+verified `django-ai-boost==0.8.0` release because its pre-1.0 MCP surface may change incompatibly.
+The reference and repository tests will describe and validate the tools supplied by that version.
 
 The default stdio transport is local and does not open a network port. No token is required or
 stored for this mode.
@@ -45,15 +54,22 @@ The skill will prefer MCP for current Django runtime facts such as settings, mod
 migrations, database schema, system checks, and configured file logs. It will not use MCP output as
 a substitute for source review when code behavior or an implementation change is being analyzed.
 
-Database access remains read-only through the MCP server. The skill must not imply that introspection
-results authorize schema or data mutations.
+The MCP tool surface performs read-only operations, but this is not a database security boundary:
+the process receives ambient Django credentials that may permit writes outside the exposed tools.
+The skill must not imply that introspection results authorize schema or data mutations.
+
+The skill will enforce confidentiality rules: use only local/test data; never request secret-bearing
+settings such as `SECRET_KEY`, passwords, tokens, or complete `DATABASES` values; avoid querying
+models containing personal or sensitive fields unless the task explicitly requires safe local test
+data; and do not reproduce logs before checking that they are safe to expose. Tool output containing
+unexpected secrets or sensitive data must be redacted and reported without repeating the value.
 
 ## Failure Handling
 
 - If the MCP server is unavailable, verify the virtual environment, dependency installation,
   `PYTHONPATH`, settings module, and required environment variables.
-- If Django cannot initialize because PostgreSQL or environment configuration is unavailable, report
-  the missing prerequisite and fall back to source inspection where useful.
+- If Django cannot initialize because local PostgreSQL is stopped or customized environment values
+  are unavailable, report the missing prerequisite and fall back to source inspection where useful.
 - If a tool returns too much data, narrow calls by application label or other supported filters.
 - If an MCP capability does not cover the task, use the repository's established Django commands and
   required checks.
@@ -61,14 +77,29 @@ results authorize schema or data mutations.
 ## Verification
 
 1. Validate the skill frontmatter and metadata with the skill-creator validator.
-2. Confirm the installed CLI exposes its help and can initialize against `config.settings` with the
-   repository's test environment.
-3. Confirm Codex recognizes the project MCP configuration.
-4. Run the repository's required formatting, linting, typing, tests, Django checks, and migration
+2. Extend `tests/test_repository_foundation.py` to assert the third skill's structure, the pinned
+   dependency, the project MCP server name, executable, settings argument, and safe local environment
+   contract.
+3. With local PostgreSQL running, execute a bounded MCP protocol smoke test that starts the stdio
+   process, performs MCP initialization and tool listing, asserts a successful response containing
+   the documented 0.8.0 tools, and terminates it under a timeout. A plain `--help` check is not
+   sufficient.
+4. Start a fresh trusted-repository Codex session and assert `/mcp` lists `django-ai-boost` and its
+   tools. Because MCP servers are discovered at session startup, this is a manual acceptance step if
+   the active session cannot reload project configuration.
+5. Exercise representative requests: project overview selects `application_info`; migration status
+   selects `list_migrations`; a `SECRET_KEY` request is refused without calling `get_setting`; and an
+   unavailable database produces a prerequisite report plus source-inspection fallback.
+6. Run the repository's required formatting, linting, typing, tests, Django checks, and migration
    drift check.
 
 Skill behavior will be tested with representative Django-introspection prompts before and after the
 skill is introduced, following the repository skill-authoring workflow.
+
+Update README's project-skill and local-development guidance to cover installation, PostgreSQL, Codex
+trust/restart, MCP discovery, and troubleshooting. Review `docs/architecture.md`; because this MCP is
+development tooling rather than runtime architecture, record no architecture change unless the
+implementation reveals a runtime or durable architectural consequence.
 
 ## Future Agent Adaptation
 

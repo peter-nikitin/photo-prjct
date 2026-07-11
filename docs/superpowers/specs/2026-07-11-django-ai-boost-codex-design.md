@@ -21,16 +21,19 @@ agents are out of scope.
 ## Integration Design
 
 Codex will load the MCP server from `.codex/config.toml` when the repository is trusted. The server
-will execute the repository virtual environment's `django-ai-boost` command with
-`config.settings`. Its process environment will expose `src/backend` as `PYTHONPATH`, matching the
-existing pytest and Django layout.
+will execute a tracked launcher that invokes the repository virtual environment's
+`django-ai-boost` command with `config.settings`. The launcher will expose `src/backend` as
+`PYTHONPATH`, matching the existing pytest and Django layout.
 
-The committed MCP configuration will provide only the non-secret local defaults already represented
+The launcher will supply only missing variables with non-secret local defaults already represented
 by `.env.example`: an explicitly non-production `SECRET_KEY`, `DEBUG=False`, localhost hosts, and
-the default `app` database identity. `DB_HOST` will be `localhost` because the MCP process runs on
-the host while PostgreSQL publishes port 5432 from Compose. Real or customized credentials must be
-provided through a developer's untracked environment and must never be committed. Local PostgreSQL
-must be running before tools that initialize or query the database can succeed.
+the default `app` database identity. `DB_HOST` will default to `localhost` because the MCP process
+runs on the host while PostgreSQL publishes port 5432 from Compose. Every default must use
+`VAR=${VAR:-default}` semantics so values inherited from the shell take precedence. The committed
+`.codex/config.toml` must not hard-code the overridable database variables. Real or customized
+credentials must be exported through a developer's untracked environment and must never be
+committed. Local PostgreSQL must be running before tools that initialize or query the database can
+succeed.
 
 The package belongs in `requirements-dev.txt`, not `src/backend/requirements.txt`, because it is an
 AI-assisted development tool and must not enlarge or expose the production runtime. Pin it to the
@@ -84,13 +87,16 @@ unexpected secrets or sensitive data must be redacted and reported without repea
    process, performs MCP initialization and tool listing, asserts a successful response containing
    the documented 0.8.0 tools, and terminates it under a timeout. A plain `--help` check is not
    sufficient.
-4. Start a fresh trusted-repository Codex session and assert `/mcp` lists `django-ai-boost` and its
+4. Test the launcher once with defaults and once with sentinel exported database values, using a
+   non-connecting diagnostic mode or controlled stub where necessary, and assert inherited values
+   reach the child process unchanged while missing values receive defaults.
+5. Start a fresh trusted-repository Codex session and assert `/mcp` lists `django-ai-boost` and its
    tools. Because MCP servers are discovered at session startup, this is a manual acceptance step if
    the active session cannot reload project configuration.
-5. Exercise representative requests: project overview selects `application_info`; migration status
+6. Exercise representative requests: project overview selects `application_info`; migration status
    selects `list_migrations`; a `SECRET_KEY` request is refused without calling `get_setting`; and an
    unavailable database produces a prerequisite report plus source-inspection fallback.
-6. Run the repository's required formatting, linting, typing, tests, Django checks, and migration
+7. Run the repository's required formatting, linting, typing, tests, Django checks, and migration
    drift check.
 
 Skill behavior will be tested with representative Django-introspection prompts before and after the

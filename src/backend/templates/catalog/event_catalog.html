@@ -1,0 +1,27 @@
+{% extends "catalog/base.html" %}
+{% block title %}События — FindMe Photo{% endblock %}
+{% block content %}
+  <section class="hero">
+    <p class="eyebrow">Фотобанк мероприятий</p>
+    <h1>Найдите своё событие</h1>
+    <p>Выберите мероприятие, чтобы перейти к его странице.</p>
+  </section>
+  {% if events %}
+    <section class="event-grid" aria-label="Опубликованные события">
+      {% for event in events %}
+        <article class="event-card">
+          <a href="{% url 'event_detail' event.slug %}">
+            {% if event.cover %}<img src="{{ event.cover.url }}" alt="Обложка события {{ event.name }}">{% else %}<div class="cover-placeholder" aria-hidden="true"></div>{% endif %}
+            <div class="event-card-body">
+              <span class="event-type">{{ event.get_access_type_display }}</span>
+              <h2>{{ event.name }}</h2>
+              <p>{{ event.city }} · {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</p>
+            </div>
+          </a>
+        </article>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty-state"><h2>Событий пока нет</h2><p>Опубликованные мероприятия появятся здесь.</p></section>
+  {% endif %}
+{% endblock %}

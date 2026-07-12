@@ -22,7 +22,7 @@ def test_documentation_foundation_exists() -> None:
 def test_adr_index_lists_all_accepted_decisions() -> None:
     index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
 
-    for number in range(1, 6):
+    for number in range(1, 7):
         assert re.search(rf"\| 000{number} \|.*\| Accepted \|", index)
 
 

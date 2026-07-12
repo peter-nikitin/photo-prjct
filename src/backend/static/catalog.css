@@ -1,0 +1,21 @@
+:root { color-scheme: light; font-family: Inter, system-ui, sans-serif; color: #17212b; background: #f4f1ea; }
+body { margin: 0; }
+a { color: inherit; }
+.site-header { display: flex; justify-content: space-between; padding: 1.25rem max(1.5rem, calc((100% - 72rem) / 2)); background: #fff; }
+.brand { font-weight: 800; text-decoration: none; }
+main { max-width: 72rem; margin: auto; padding: 3rem 1.5rem; }
+.hero { max-width: 44rem; margin-bottom: 2.5rem; }
+.hero h1, .event-detail h1 { font-size: clamp(2.25rem, 6vw, 4.5rem); line-height: 1; margin: .5rem 0 1rem; }
+.eyebrow, .event-type { color: #b34b2d; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+.event-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1.25rem; }
+.event-card { overflow: hidden; border-radius: 1rem; background: white; box-shadow: 0 12px 36px #16202a14; }
+.event-card a { text-decoration: none; }
+.event-card img, .cover-placeholder { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; background: linear-gradient(135deg, #d5e2df, #e2a17f); }
+.event-card-body { padding: 1.25rem; }
+.event-card h2 { margin: .5rem 0; }
+.empty-state { padding: 4rem; border-radius: 1rem; text-align: center; background: #fff; }
+.event-detail { max-width: 52rem; }
+.detail-cover { width: 100%; margin: 2rem 0; border-radius: 1.25rem; aspect-ratio: 16/8; object-fit: cover; }
+.back-link { display: inline-block; margin-bottom: .5rem; }
+.event-meta { font-size: 1.15rem; }
+.description { font-size: 1.1rem; line-height: 1.7; }

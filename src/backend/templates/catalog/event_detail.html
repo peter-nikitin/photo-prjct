@@ -1,0 +1,12 @@
+{% extends "catalog/base.html" %}
+{% block title %}{{ event.name }} — FindMe Photo{% endblock %}
+{% block content %}
+  <article class="event-detail">
+    <a class="back-link" href="{% url 'event_catalog' %}">← Все события</a>
+    {% if event.cover %}<img class="detail-cover" src="{{ event.cover.url }}" alt="Обложка события {{ event.name }}">{% else %}<div class="detail-cover cover-placeholder" aria-hidden="true"></div>{% endif %}
+    <span class="event-type">{{ event.get_access_type_display }}</span>
+    <h1>{{ event.name }}</h1>
+    <p class="event-meta">{{ event.city }} · {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</p>
+    {% if event.description %}<div class="description">{{ event.description|linebreaks }}</div>{% endif %}
+  </article>
+{% endblock %}

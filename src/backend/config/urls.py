@@ -5,13 +5,9 @@ from config import views
 
 urlpatterns = [
     path("health/", views.health, name="health"),
-    path("", views.index, name="index"),
-    path("events/", views.events, name="events"),
-    path("dashboard/", views.dashboard, name="dashboard"),
-    path("upload/", views.upload, name="upload"),
-    path("orders/", views.orders, name="orders"),
-    path("promos/", views.promos, name="promos"),
-    path("purchased/", views.purchased, name="purchased"),
+    path("", views.event_catalog, name="event_catalog"),
+    path("events/", views.legacy_events_redirect, name="legacy_events"),
+    path("events/<str:slug>/", views.event_detail, name="event_detail"),
     path("legal/", views.legal, name="legal"),
     path("admin/", admin.site.urls),
 ]

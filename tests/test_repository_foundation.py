@@ -87,9 +87,9 @@ def test_deployment_workflows_separate_staging_and_production() -> None:
     assert production["jobs"]["promote"]["environment"] == "production"
     assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
 
-    assert "/opt/photo-prjct/.staging-reset-v1" in staging_text
-    assert "--project-name photo-prjct down --volumes --remove-orphans" in staging_text
-    assert "--project-name photo-prjct-staging down --volumes --remove-orphans" in staging_text
+    assert ".staging-reset-v1" not in staging_text
+    assert "--project-name photo-prjct down" not in staging_text
+    assert "down --volumes" not in staging_text
 
 
 def test_production_compose_uses_an_immutable_application_image() -> None:

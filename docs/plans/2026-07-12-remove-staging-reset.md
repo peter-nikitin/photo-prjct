@@ -1,7 +1,7 @@
 # Remove One-Time Staging Reset Implementation Plan
 
 - Date: 2026-07-12
-- Status: Draft
+- Status: In progress
 - Owner: project maintainer
 - Related architecture: [Current architecture](../architecture.md#current-architecture--implemented)
 - Related ADRs: [ADR 0003](../adr/0003-docker-compose-yandex-cloud.md), [ADR 0005](../adr/0005-promote-images-through-staging.md)
@@ -50,11 +50,11 @@ the staging PostgreSQL volume and contains only steady-state release steps.
 
 **Files:** `tests/test_repository_foundation.py`.
 
-- [ ] Change `test_deployment_workflows_separate_staging_and_production` to assert that
+- [x] Change `test_deployment_workflows_separate_staging_and_production` to assert that
   `.staging-reset-v1`, `--project-name photo-prjct down`, and `down --volumes` are absent.
-- [ ] Keep the positive assertions for the `main` trigger, staging environment, concurrency group,
+- [x] Keep the positive assertions for the `main` trigger, staging environment, concurrency group,
   production approval environment, and production concurrency group.
-- [ ] Run
+- [x] Run
   `.venv/bin/pytest tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production -q`
   and confirm it fails because the reset block is still present.
 
@@ -62,30 +62,30 @@ the staging PostgreSQL volume and contains only steady-state release steps.
 
 **Files:** `.github/workflows/deploy.yml`, `README.md`.
 
-- [ ] Delete only the conditional block beginning with
+- [x] Delete only the conditional block beginning with
   `if [ ! -f /opt/photo-prjct/.staging-reset-v1 ]; then` and ending with its matching `fi`.
-- [ ] Preserve `.env` creation, optional GHCR login, immutable image pull, `up -d --wait`, deployed
+- [x] Preserve `.env` creation, optional GHCR login, immutable image pull, `up -d --wait`, deployed
   image recording, and failure diagnostics unchanged.
-- [ ] Replace the README reset-marker paragraph with a statement that normal deployments reuse the
+- [x] Replace the README reset-marker paragraph with a statement that normal deployments reuse the
   `photo-prjct-staging` Compose project and preserve `photo-prjct-staging_pgdata`.
-- [ ] Run the targeted repository test and confirm it passes.
+- [x] Run the targeted repository test and confirm it passes.
 
 ### Task 3: Verify code and configuration
 
 **Files:** all files changed by Tasks 1 and 2.
 
-- [ ] Run `.venv/bin/ruff format --check .` and expect all files formatted.
-- [ ] Run `.venv/bin/ruff check .` and expect no lint errors.
-- [ ] Run `.venv/bin/mypy` and expect no type errors.
-- [ ] Run `.venv/bin/pytest --cov --cov-report=term-missing` against PostgreSQL and expect all tests
+- [x] Run `.venv/bin/ruff format --check .` and expect all files formatted.
+- [x] Run `.venv/bin/ruff check .` and expect no lint errors.
+- [x] Run `.venv/bin/mypy` and expect no type errors.
+- [x] Run `.venv/bin/pytest --cov --cov-report=term-missing` against PostgreSQL and expect all tests
   to pass with coverage at or above 80%.
-- [ ] Run `.venv/bin/python src/backend/manage.py check` and expect no issues.
-- [ ] Run `.venv/bin/python src/backend/manage.py makemigrations --check --dry-run` and expect
+- [x] Run `.venv/bin/python src/backend/manage.py check` and expect no issues.
+- [x] Run `.venv/bin/python src/backend/manage.py makemigrations --check --dry-run` and expect
   `No changes detected`.
-- [ ] Run
+- [x] Run
   `APP_IMAGE=ghcr.io/peter-nikitin/photo-prjct:test docker compose -f docker-compose.prod.yml config -q`
   and expect exit code zero.
-- [ ] Run `git diff --check` and expect no output.
+- [x] Run `git diff --check` and expect no output.
 
 ### Task 4: Roll out and verify steady state
 

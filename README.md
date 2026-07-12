@@ -58,10 +58,8 @@ The existing preemptible Yandex Cloud VM is the staging environment. A push to `
 staging`, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, deploys it to staging, waits for
 Compose health checks, and records the successful image reference.
 
-The first deployment after the staging migration removes the legacy `photo-prjct` and failed
-`photo-prjct-staging` Compose projects together with their database volumes, then writes
-`/opt/photo-prjct/.staging-reset-v1`. Later deployments preserve the staging database volume. Remove
-that marker manually only when another explicitly approved destructive staging reset is intended.
+Normal deployments reuse the `photo-prjct-staging` Compose project and preserve its
+`photo-prjct-staging_pgdata` database volume. Database reset is not part of the deployment workflow.
 
 Create GitHub Environments named `staging` and `production`. Each environment owns separate values
 for `VM_HOST`, `VM_USER`, `VM_SSH_KEY`, `SECRET_KEY`, `ALLOWED_HOSTS`, `DB_NAME`, `DB_USER`,

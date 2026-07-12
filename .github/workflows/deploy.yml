@@ -100,6 +100,15 @@ jobs:
               echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
             fi
 
+            if [ ! -f /opt/photo-prjct/.staging-reset-v1 ]; then
+              (
+                cd /opt/photo-prjct
+                docker compose --project-name photo-prjct down --volumes --remove-orphans
+                docker compose --project-name photo-prjct-staging down --volumes --remove-orphans
+              )
+              touch /opt/photo-prjct/.staging-reset-v1
+            fi
+
             docker compose --project-name photo-prjct-staging \
               --env-file /opt/photo-prjct/.env \
               -f /opt/photo-prjct/docker-compose.prod.yml pull

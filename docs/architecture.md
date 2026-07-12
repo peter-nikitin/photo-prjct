@@ -130,12 +130,16 @@ broker, vector engine, and ML implementations require separate ADRs.
 
 1. The cart contains event photos, prices, and any validated promotion.
 2. A payment transition creates or updates an order idempotently.
-3. Successful payment grants entitlement to generated exports; it never makes originals public.
+3. For paid events, successful payment grants entitlement to generated exports; it never makes
+   originals public. Free events use a separate controlled anonymous original-download policy.
 4. Downloads use short-lived signed access or an authenticated application response and are audited.
 
 ## Security, privacy, and legal boundaries
 
-- Originals are private. Public pages receive only derived, watermarked media.
+- Originals remain private storage objects. Public pages receive derived media: watermarked previews
+  for paid events and unwatermarked reduced copies for free events. A free-event original may be
+  delivered anonymously only through a controlled application response or short-lived access that
+  does not expose its permanent storage key.
 - Secrets and credentials are environment-provided; `.env` files remain untracked.
 - Face images and embeddings may be biometric personal data. Collection basis, consent, retention,
   deletion, access control, and incident handling must be approved before face search is released.
@@ -152,14 +156,20 @@ broker, vector engine, and ML implementations require separate ADRs.
 
 1. **Foundation (current):** stable development checks, documentation, PostgreSQL, containers, CI/CD,
    and operational baseline.
-2. **Technical validation:** measure face and bib recognition on 500–2,000 representative photos;
-   record accuracy, throughput, cost, and failure modes.
-3. **Photo-bank core:** event/location/photographer domain, private media storage, batch ingestion,
-   previews, watermarking, publication, and operator workflow.
-4. **Bib search:** detected regions, OCR candidates, corrections, and event-scoped search.
-5. **Face search:** approved biometric policy, embeddings, event filtering, removal, and candidate UX.
-6. **Commerce:** pricing, promotions, payment integration, orders, entitlements, and protected export.
-7. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
+2. **Event catalog:** minimal free/paid event domain, Django Admin management, publication, and a
+   public catalog.
+3. **Photo-bank core:** photographer access, private originals, batch ingestion, derivatives,
+   explicit photo publication, and event galleries. Free events permit controlled anonymous original
+   downloads; paid events expose only watermarked previews until commerce grants entitlement.
+4. **Repeatable processing:** versioned jobs and immutable analysis runs executed by a worker or ML
+   container while Django and PostgreSQL retain product and transactional ownership.
+5. **Bib validation and search:** benchmark detected regions and OCR on representative uploaded
+   photos before delivering corrections and event-scoped search.
+6. **Face governance, validation, and search:** approve biometric policy and independently benchmark
+   face models before delivering embeddings, event filtering, removal, and candidate UX.
+7. **Commerce:** pricing, promotions, payment integration, orders, entitlements, and protected export
+   for paid events.
+8. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
 
 ## Deferred beyond MVP
 
@@ -181,6 +191,7 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Bib-region detection/OCR implementation and model licensing.
 - Payment provider, callback contract, refunds, and download entitlement policy.
 - Authentication model and photographer/operator permissions.
+- Free/paid event media access and anonymous original-download policy.
 - Observability stack, backup targets, retention, and recovery objectives.
 - Production HTTPS edge and static/media delivery topology.
 

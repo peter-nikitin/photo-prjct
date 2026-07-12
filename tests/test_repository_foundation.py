@@ -74,7 +74,8 @@ def test_yandex_cloud_skill_requires_pricing_confirmation() -> None:
 
 
 def test_deployment_workflows_separate_staging_and_production() -> None:
-    staging = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8"))
+    staging_text = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    staging = yaml.safe_load(staging_text)
     production = yaml.safe_load(
         (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
     )
@@ -85,6 +86,10 @@ def test_deployment_workflows_separate_staging_and_production() -> None:
     assert set(production[True]) == {"workflow_dispatch"}
     assert production["jobs"]["promote"]["environment"] == "production"
     assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
+
+    assert "/opt/photo-prjct/.staging-reset-v1" in staging_text
+    assert "--project-name photo-prjct down --volumes --remove-orphans" in staging_text
+    assert "--project-name photo-prjct-staging down --volumes --remove-orphans" in staging_text
 
 
 def test_production_compose_uses_an_immutable_application_image() -> None:

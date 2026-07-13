@@ -55,8 +55,9 @@ checks, migration drift detection, and repository skill-structure tests.
 ## Deployment
 
 The existing preemptible Yandex Cloud VM is the staging environment. A push to `main` runs `Deploy
-staging`, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, deploys it to staging, waits for
-Compose health checks, and records the successful image reference.
+staging`, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, deploys it to the HTTP staging
+edge, verifies that the running web container uses that exact image and that Nginx serves `/health/`,
+then records the successful image reference.
 
 Normal deployments reuse the `photo-prjct-staging` Compose project and preserve its
 `photo-prjct-staging_pgdata` database volume. Database reset is not part of the deployment workflow.
@@ -65,11 +66,16 @@ Create GitHub Environments named `staging` and `production`. Each environment ow
 for `VM_HOST`, `VM_USER`, `VM_SSH_KEY`, `SECRET_KEY`, `ALLOWED_HOSTS`, `DB_NAME`, `DB_USER`,
 `DB_PASSWORD`, `GHCR_USERNAME`, and `GHCR_READ_TOKEN`. Configure required reviewers on `production`.
 
-For the HTTPS edge, add `PUBLIC_DOMAIN` as an Environment variable and `LETSENCRYPT_EMAIL` as an
-Environment secret. The domain's A record must point to the target VM and ports 80/443 must be
-reachable. The deployment issues a missing Let's Encrypt certificate, then Nginx redirects HTTP to
-HTTPS and proxies to the private Django container. Certificate/account state is kept in persistent
-Docker volumes; Certbot attempts renewal every 12 hours. Verify a deployed edge with:
+For staging, add `PUBLIC_DOMAIN` as an Environment variable. It is used only for a VM-local HTTP
+health probe through Nginx while the domain's public DNS record is unroutable. The staging workflow
+does not read `ENABLE_HTTPS` or `LETSENCRYPT_EMAIL`, and it does not start Certbot.
+
+For a future production HTTPS edge, add `PUBLIC_DOMAIN` as an Environment variable and
+`LETSENCRYPT_EMAIL` as an Environment secret. The domain's A record must point to the target VM and
+ports 80/443 must be reachable. The production overlay issues a missing Let's Encrypt certificate,
+then Nginx redirects HTTP to HTTPS and proxies to the private Django container. Certificate/account
+state is kept in persistent Docker volumes; Certbot attempts renewal every 12 hours. Verify a
+deployed production edge with:
 
 ```bash
 curl -I http://<public-domain>/
@@ -80,14 +86,12 @@ The first command must return a redirect and the second must return `{"status": 
 renewal without changing a certificate, run `docker compose --project-name photo-prjct-staging
 --env-file .env -f docker-compose.prod.yml exec certbot certbot renew --dry-run` on the VM.
 
-### Temporary staging DNS fallback
+### Staging DNS limitation
 
-Until the staging domain resolves publicly to the VM, leave the staging Environment variable
-`ENABLE_HTTPS` unset or set it to `false`. Nginx remains the only edge and deploy verifies its HTTP
-health locally; Certbot issuance is skipped. This does not make an unroutable domain publicly
-available. To return to the standard production-like flow, set the domain A record to the VM public
-IP, wait for public DNS propagation, set `ENABLE_HTTPS=true`, rerun deployment, and validate the
-HTTP redirect, HTTPS health, certificate subject, and Certbot dry-run renewal. See [ADR 0008](docs/adr/0008-temporary-staging-http-fallback.md).
+The staging probe proves that the VM edge works, not that the domain is publicly reachable. Repair
+the A record before provisioning production HTTPS; then validate the production redirect, HTTPS
+health, certificate subject, and Certbot dry-run renewal. See
+[ADR 0009](docs/adr/0009-separate-staging-http-edge.md).
 
 `Promote production` is manually dispatched with the successfully staged commit SHA. It verifies
 that SHA against the marker on staging, pauses for the production Environment approval, checks out

@@ -39,11 +39,11 @@ The repository currently contains an early Django prototype:
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
-- Nginx is the public HTTPS edge in deployed environments. It terminates TLS, serves ACME
-  HTTP-01 challenges, and proxies to the internal Django service; Certbot manages Let's Encrypt
-  certificates in persistent volumes.
-- Staging temporarily selects Nginx HTTP-only mode while its public DNS record is unroutable; this
-  narrow exception is governed by [ADR 0008](adr/0008-temporary-staging-http-fallback.md).
+- Staging runs a minimal HTTP Nginx edge that proxies to the internal Django service. Its public DNS
+  record is currently unroutable, so the workflow verifies the VM-local edge only.
+- A future production deployment uses an explicit HTTPS overlay where Nginx terminates TLS, serves
+  ACME HTTP-01 challenges, and Certbot manages Let's Encrypt certificates in persistent volumes.
+  This environment split is governed by [ADR 0009](adr/0009-separate-staging-http-edge.md).
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
@@ -70,7 +70,8 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Load environment-specific configuration from environment variables and never commit secrets.
 - Keep architecture, decisions, and delivery plans in this repository.
 - Prefer simple, repeatable operations over premature distributed infrastructure.
-- Use Nginx and Certbot for the HTTPS edge as defined by [ADR 0007](adr/0007-nginx-certbot-https-edge.md).
+- Use the Nginx and Certbot HTTPS edge in production as defined by
+  [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and [ADR 0009](adr/0009-separate-staging-http-edge.md).
 
 ## Target MVP architecture — proposed
 

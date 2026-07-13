@@ -12,25 +12,20 @@ jobs:
     permissions:
       contents: read
       packages: write
-
     outputs:
       app_image: ${{ steps.image.outputs.app_image }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Select image reference
         id: image
         run: echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -47,20 +42,17 @@ jobs:
     concurrency:
       group: deploy-staging
       cancel-in-progress: false
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Copy compose file to staging
+      - name: Copy staging deployment files
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          source: docker-compose.prod.yml,deploy
+          source: docker-compose.prod.yml,docker-compose.staging.yml,deploy
           target: /opt/photo-prjct/
-
       - name: Apply staging deployment
         uses: appleboy/ssh-action@v1.0.3
         env:
@@ -72,8 +64,6 @@ jobs:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}
-          ENABLE_HTTPS: ${{ vars.ENABLE_HTTPS || 'false' }}
-          LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
           MEDIA_STORAGE_BACKEND: ${{ vars.MEDIA_STORAGE_BACKEND || 'filesystem' }}
           MEDIA_S3_ENDPOINT_URL: ${{ vars.MEDIA_S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
           MEDIA_S3_REGION: ${{ vars.MEDIA_S3_REGION || 'ru-central1' }}
@@ -87,100 +77,5 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script_stop: true
-          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,ENABLE_HTTPS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,GHCR_USERNAME,GHCR_READ_TOKEN
-          script: |
-            set -eu
-            install -d -m 0755 /opt/photo-prjct
-            : "${PUBLIC_DOMAIN:?Set staging variable PUBLIC_DOMAIN}"
-            ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"
-            if [ "$ENABLE_HTTPS" != "true" ] && [ "$ENABLE_HTTPS" != "false" ]; then
-              echo "ENABLE_HTTPS must be true or false" >&2
-              exit 1
-            fi
-            if [ "$ENABLE_HTTPS" = "true" ]; then
-              : "${LETSENCRYPT_EMAIL:?Set staging secret LETSENCRYPT_EMAIL}"
-            fi
-
-            umask 077
-            cat > /opt/photo-prjct/.env <<EOF
-            APP_IMAGE=$APP_IMAGE
-            SECRET_KEY=$SECRET_KEY
-            DEBUG=$DEBUG
-            ALLOWED_HOSTS=$ALLOWED_HOSTS
-            DB_NAME=$DB_NAME
-            DB_USER=$DB_USER
-            DB_PASSWORD=$DB_PASSWORD
-            DB_HOST=db
-            DB_PORT=5432
-            PUBLIC_DOMAIN=$PUBLIC_DOMAIN
-            ENABLE_HTTPS=$ENABLE_HTTPS
-            MEDIA_STORAGE_BACKEND=$MEDIA_STORAGE_BACKEND
-            MEDIA_S3_ENDPOINT_URL=$MEDIA_S3_ENDPOINT_URL
-            MEDIA_S3_REGION=$MEDIA_S3_REGION
-            MEDIA_S3_PUBLIC_BUCKET=$MEDIA_S3_PUBLIC_BUCKET
-            MEDIA_S3_ACCESS_KEY_ID=$MEDIA_S3_ACCESS_KEY_ID
-            MEDIA_S3_SECRET_ACCESS_KEY=$MEDIA_S3_SECRET_ACCESS_KEY
-            EOF
-
-            if [ -n "$GHCR_READ_TOKEN" ]; then
-              echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-            fi
-
-            docker compose --project-name photo-prjct-staging \
-              --env-file /opt/photo-prjct/.env \
-              -f /opt/photo-prjct/docker-compose.prod.yml pull
-            if [ "$ENABLE_HTTPS" = "true" ]; then
-              docker volume create photo-prjct-staging_letsencrypt >/dev/null
-              if ! docker run --rm \
-                -v photo-prjct-staging_letsencrypt:/etc/letsencrypt \
-                alpine:3.21 test -f "/etc/letsencrypt/live/photo-prjct/fullchain.pem"; then
-                docker run --rm --network host \
-                  -v photo-prjct-staging_letsencrypt:/etc/letsencrypt \
-                  certbot/certbot:v2.11.0 certonly --standalone --non-interactive --agree-tos \
-                  --email "$LETSENCRYPT_EMAIL" --cert-name photo-prjct -d "$PUBLIC_DOMAIN"
-              fi
-            fi
-            docker compose --project-name photo-prjct-staging \
-              --env-file /opt/photo-prjct/.env \
-              -f /opt/photo-prjct/docker-compose.prod.yml up -d
-            if [ "$ENABLE_HTTPS" = "true" ]; then
-              health_port=443
-              health_url="https://$PUBLIC_DOMAIN/health/"
-            else
-              health_port=80
-              health_url="http://$PUBLIC_DOMAIN/health/"
-            fi
-            attempt=1
-            max_attempts=12
-            until curl --fail-with-body --silent --show-error \
-              --resolve "$PUBLIC_DOMAIN:$health_port:127.0.0.1" "$health_url"; do
-              if [ "$attempt" -ge "$max_attempts" ]; then
-                echo "Deployment health check failed after $max_attempts attempts" >&2
-                docker compose --project-name photo-prjct-staging \
-                  --env-file /opt/photo-prjct/.env \
-                  -f /opt/photo-prjct/docker-compose.prod.yml ps || true
-                docker compose --project-name photo-prjct-staging \
-                  --env-file /opt/photo-prjct/.env \
-                  -f /opt/photo-prjct/docker-compose.prod.yml logs --tail=200 || true
-                exit 1
-              fi
-              echo "Deployment health check attempt $attempt failed; retrying" >&2
-              attempt=$((attempt + 1))
-              sleep 5
-            done
-            printf '%s\n' "$APP_IMAGE" > /opt/photo-prjct/deployed-image
-
-      - name: Capture staging diagnostics on failure
-        if: failure()
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          script: |
-            docker compose --project-name photo-prjct-staging \
-              --env-file /opt/photo-prjct/.env \
-              -f /opt/photo-prjct/docker-compose.prod.yml ps || true
-            docker compose --project-name photo-prjct-staging \
-              --env-file /opt/photo-prjct/.env \
-              -f /opt/photo-prjct/docker-compose.prod.yml logs --tail=200 || true
+          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,GHCR_USERNAME,GHCR_READ_TOKEN
+          script: DEPLOYMENT_TARGET=staging DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging sh /opt/photo-prjct/deploy/apply-deployment.sh

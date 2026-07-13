@@ -37,41 +37,5 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  nginx:
-    image: nginx:1.27-alpine
-    command: ["/bin/sh", "/opt/nginx/reload-nginx.sh"]
-    env_file:
-      - .env
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/nginx:/opt/nginx:ro
-      - letsencrypt:/etc/letsencrypt:ro
-      - certbot-webroot:/var/www/certbot:ro
-    depends_on:
-      web:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health/"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-    restart: unless-stopped
-
-  certbot:
-    image: certbot/certbot:v2.11.0
-    entrypoint: ["/bin/sh", "/opt/certbot/renew-certificates.sh"]
-    volumes:
-      - ./deploy/certbot/renew-certificates.sh:/opt/certbot/renew-certificates.sh:ro
-      - letsencrypt:/etc/letsencrypt
-      - certbot-webroot:/var/www/certbot
-    depends_on:
-      nginx:
-        condition: service_started
-    restart: unless-stopped
-
 volumes:
   pgdata:
-  letsencrypt:
-  certbot-webroot:

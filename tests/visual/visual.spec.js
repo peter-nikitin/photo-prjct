@@ -44,12 +44,7 @@ function collectBrowserFailures(page) {
   });
   page.on('response', (response) => {
     const resourceType = response.request().resourceType();
-    const pathname = new URL(response.url()).pathname;
-    if (
-      resourceType === 'stylesheet' ||
-      pathname.endsWith('.svg') ||
-      pathname.startsWith('/static/images/')
-    ) {
+    if (resourceType !== 'document') {
       resources.push({
         resourceType,
         status: response.status(),
@@ -89,6 +84,7 @@ async function capturePage(page, { path, snapshot, viewport }) {
   );
   expect(failures, `Browser failures on ${path}`).toEqual([]);
   expect(resources.some(({ resourceType }) => resourceType === 'stylesheet')).toBe(true);
+  expect(resources.some(({ url }) => url.endsWith('.woff2'))).toBe(true);
   if (!path.includes('/reference/')) {
     expect(resources.some(({ url }) => url.endsWith('/ui/icons.svg'))).toBe(true);
   }
@@ -127,19 +123,18 @@ test.describe('mobile visual regression', () => {
   }
 });
 
-test('public global navigation targets resolve', async ({ page, request }) => {
-  await page.goto('/__visual__/legal/');
-  const navigation = page.getByRole('navigation', { name: 'Основная навигация' });
-  const links = [
-    navigation.getByRole('link', { name: 'События' }),
-    navigation.getByRole('link', { name: 'Документы' }),
-    navigation.getByRole('link', { name: 'Администрирование' }),
-  ];
+test('all links on live production pages resolve', async ({ page, request }) => {
+  for (const path of ['/', '/legal/']) {
+    await page.goto(path);
+    const hrefs = await page.locator('a[href]').evaluateAll((links) =>
+      links.map((link) => link.href).filter((href) => new URL(href).origin === window.location.origin),
+    );
 
-  for (const link of links) {
-    const href = await link.getAttribute('href');
-    expect(href).toBeTruthy();
-    const response = await request.get(href);
-    expect(response.status(), `${href} must resolve successfully`).toBeLessThan(400);
+    for (const href of new Set(hrefs)) {
+      const response = await request.get(href);
+      expect(response.status(), `${href} linked from ${path} must resolve successfully`).toBeLessThan(
+        400,
+      );
+    }
   }
 });

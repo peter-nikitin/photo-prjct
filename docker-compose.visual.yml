@@ -1,0 +1,38 @@
+name: photo-prjct-visual
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  visual-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.visual-tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SECRET_KEY: visual-tests-not-a-secret
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DB_NAME: app
+      DB_USER: app
+      DB_PASSWORD: app
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      PYTHONPATH: .:src/backend
+      DJANGO_SETTINGS_MODULE: tests.visual.settings
+    volumes:
+      - ./tests/visual/visual.spec.js-snapshots:/workspace/tests/visual/visual.spec.js-snapshots
+      - ./playwright-report:/workspace/playwright-report
+      - ./test-results:/workspace/test-results
+

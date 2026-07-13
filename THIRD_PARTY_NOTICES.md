@@ -20,3 +20,15 @@ AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR 
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
 NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
 OF THIS SOFTWARE.
+
+## Inter Variable Font
+
+The Inter font files in `src/backend/static/ui/` are distributed by Fontsource from the Inter typeface
+by Rasmus Andersson.
+
+Sources: https://rsms.me/inter/ and https://fontsource.org/fonts/inter
+
+Copyright (c) 2016 The Inter Project Authors
+
+License: SIL Open Font License 1.1. The complete license is included at
+`src/backend/static/ui/INTER-LICENSE.txt`.

@@ -21,6 +21,7 @@ from ingestion.tests.fakes import FakeObject, FakeS3Client, client_error
 BUCKET = "private-bucket"
 INCOMING_KEY = "incoming/123e4567-e89b-12d3-a456-426614174000/123e4567-e89b-12d3-a456-426614174001"
 FINAL_KEY = "originals/123e4567e89b12d3a456426614174001"
+MISSING_FINAL_KEY = "originals/123e4567e89b12d3a456426614174002"
 
 
 @pytest.fixture
@@ -66,7 +67,7 @@ def test_presigned_post_has_exact_private_upload_policy(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
     before = timezone.now()
-    grant = storage.create_presigned_post(INCOMING_KEY, max_bytes=37)
+    grant = storage.create_presigned_post(incoming_key=INCOMING_KEY, max_bytes=37)
     after = timezone.now()
 
     assert grant.url == "https://upload.example.test/private"
@@ -105,7 +106,7 @@ def test_presign_rejects_non_incoming_keys_before_client_call(
     storage: PrivateUploadStorage, client: FakeS3Client, key: str
 ) -> None:
     with pytest.raises(ValueError):
-        storage.create_presigned_post(key, 10)
+        storage.create_presigned_post(incoming_key=key, max_bytes=10)
 
     assert client.calls == []
 
@@ -115,7 +116,7 @@ def test_presign_rejects_size_outside_configured_cap_before_client_call(
     storage: PrivateUploadStorage, client: FakeS3Client, max_bytes: int
 ) -> None:
     with pytest.raises(ValueError):
-        storage.create_presigned_post(INCOMING_KEY, max_bytes)
+        storage.create_presigned_post(incoming_key=INCOMING_KEY, max_bytes=max_bytes)
 
     assert client.calls == []
 
@@ -125,7 +126,7 @@ def test_inspect_returns_wire_and_comparison_etags(
 ) -> None:
     client.put_object(INCOMING_KEY, b"jpeg", '"abc-2"', "IMAGE/JPEG; Charset=Binary")
 
-    identity = storage.inspect(INCOMING_KEY)
+    identity = storage.inspect(key=INCOMING_KEY)
 
     assert identity == ObjectIdentity('"abc-2"', "abc-2", 4, "image/jpeg; charset=binary")
     assert calls(client, "head_object") == [{"Bucket": BUCKET, "Key": INCOMING_KEY}]
@@ -149,7 +150,7 @@ def test_inspect_rejects_unusable_metadata(response: dict[str, Any]) -> None:
         storage = PrivateUploadStorage(client=client)
 
     with pytest.raises(ObjectMismatch):
-        storage.inspect(INCOMING_KEY)
+        storage.inspect(key=INCOMING_KEY)
 
 
 def test_read_range_passes_exact_etag_and_closes_body(
@@ -157,8 +158,8 @@ def test_read_range_passes_exact_etag_and_closes_body(
 ) -> None:
     client.put_object(INCOMING_KEY, b"abcdef", '"wire-etag"')
 
-    assert storage.read_range(INCOMING_KEY, '"wire-etag"', 0, 0) == b"a"
-    assert storage.read_range(INCOMING_KEY, '"wire-etag"', 5, 5) == b"f"
+    assert storage.read_range(key=INCOMING_KEY, etag_wire='"wire-etag"', start=0, end=0) == b"a"
+    assert storage.read_range(key=INCOMING_KEY, etag_wire='"wire-etag"', start=5, end=5) == b"f"
 
     assert calls(client, "get_object") == [
         {"Bucket": BUCKET, "Key": INCOMING_KEY, "Range": "bytes=0-0", "IfMatch": '"wire-etag"'},
@@ -172,7 +173,7 @@ def test_read_range_rejects_invalid_bounds_before_client_call(
     storage: PrivateUploadStorage, client: FakeS3Client, start: int, end: int
 ) -> None:
     with pytest.raises(ValueError):
-        storage.read_range(INCOMING_KEY, '"abc"', start, end)
+        storage.read_range(key=INCOMING_KEY, etag_wire='"abc"', start=start, end=end)
     assert client.calls == []
 
 
@@ -200,11 +201,15 @@ def test_client_failures_map_to_sanitized_stable_errors(
 
     with pytest.raises(exception) as caught:
         if operation == "head_object":
-            storage.inspect("secret/key")
+            storage.inspect(key=INCOMING_KEY)
         elif operation == "get_object":
-            storage.read_range("secret/key", '"secret-etag"', 0, 1)
+            storage.read_range(key=INCOMING_KEY, etag_wire='"secret-etag"', start=0, end=1)
         else:
-            storage.promote(INCOMING_KEY, FINAL_KEY, '"secret-etag"')
+            storage.promote(
+                incoming_key=INCOMING_KEY,
+                final_key=FINAL_KEY,
+                etag_wire='"secret-etag"',
+            )
 
     rendered = str(caught.value)
     assert caught.value.code
@@ -218,7 +223,9 @@ def test_promote_conditionally_copies_and_verifies_final_identity(
 ) -> None:
     client.put_object(INCOMING_KEY, b"jpeg-data", '"source-etag"', "IMAGE/JPEG")
 
-    result = storage.promote(INCOMING_KEY, FINAL_KEY, '"source-etag"')
+    result = storage.promote(
+        incoming_key=INCOMING_KEY, final_key=FINAL_KEY, etag_wire='"source-etag"'
+    )
 
     assert result == ObjectIdentity('"source-etag"', "source-etag", 9, "image/jpeg")
     assert calls(client, "head_object") == [
@@ -243,7 +250,7 @@ def test_promote_rejects_malformed_keys_before_client_call(
     storage: PrivateUploadStorage, client: FakeS3Client, incoming: str, final: str
 ) -> None:
     with pytest.raises(ValueError):
-        storage.promote(incoming, final, '"etag"')
+        storage.promote(incoming_key=incoming, final_key=final, etag_wire='"etag"')
     assert client.calls == []
 
 
@@ -254,7 +261,7 @@ def test_promote_detects_overwrite_between_source_head_and_copy(
     client.mutate_on("copy_object", INCOMING_KEY, FakeObject(b"second", '"second"'))
 
     with pytest.raises(ObjectChanged):
-        storage.promote(INCOMING_KEY, FINAL_KEY, '"first"')
+        storage.promote(incoming_key=INCOMING_KEY, final_key=FINAL_KEY, etag_wire='"first"')
 
     assert FINAL_KEY not in client.objects
 
@@ -266,7 +273,7 @@ def test_promote_rejects_final_head_mismatch(
     client.mutate_on("head_object", FINAL_KEY, FakeObject(b"different", '"different"'))
 
     with pytest.raises(ObjectMismatch):
-        storage.promote(INCOMING_KEY, FINAL_KEY, '"first"')
+        storage.promote(incoming_key=INCOMING_KEY, final_key=FINAL_KEY, etag_wire='"first"')
 
 
 def test_promote_rejects_unusable_copy_result_etag(
@@ -276,14 +283,14 @@ def test_promote_rejects_unusable_copy_result_etag(
     client.copy_result_etag = "unquoted"
 
     with pytest.raises(ObjectMismatch):
-        storage.promote(INCOMING_KEY, FINAL_KEY, '"first"')
+        storage.promote(incoming_key=INCOMING_KEY, final_key=FINAL_KEY, etag_wire='"first"')
 
 
 def test_overwriting_incoming_after_promotion_cannot_change_final(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
     client.put_object(INCOMING_KEY, b"first", '"first"')
-    storage.promote(INCOMING_KEY, FINAL_KEY, '"first"')
+    storage.promote(incoming_key=INCOMING_KEY, final_key=FINAL_KEY, etag_wire='"first"')
 
     client.put_object(INCOMING_KEY, b"second", '"second"')
 
@@ -294,14 +301,48 @@ def test_overwriting_incoming_after_promotion_cannot_change_final(
 def test_delete_is_separate_and_missing_is_idempotent(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    storage.delete("missing/key")
-    assert calls(client, "delete_object") == [{"Bucket": BUCKET, "Key": "missing/key"}]
+    storage.delete(key=MISSING_FINAL_KEY)
+    assert calls(client, "delete_object") == [{"Bucket": BUCKET, "Key": MISSING_FINAL_KEY}]
 
 
 def test_delete_sanitizes_failures(storage: PrivateUploadStorage, client: FakeS3Client) -> None:
     client.failures["delete_object"] = client_error(500, message="raw signed fields secret")
 
     with pytest.raises(StorageUnavailable) as caught:
-        storage.delete("secret/key")
+        storage.delete(key=FINAL_KEY)
 
     assert str(caught.value) == "Object storage is unavailable."
+
+
+@pytest.mark.parametrize("method_name", ["inspect", "read_range", "delete"])
+def test_managed_object_methods_reject_arbitrary_keys_before_client_call(
+    storage: PrivateUploadStorage, client: FakeS3Client, method_name: str
+) -> None:
+    with pytest.raises(ValueError):
+        if method_name == "inspect":
+            storage.inspect(key="arbitrary/key")
+        elif method_name == "read_range":
+            storage.read_range(key="arbitrary/key", etag_wire='"etag"', start=0, end=0)
+        else:
+            storage.delete(key="arbitrary/key")
+
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "method_name,args",
+    [
+        ("create_presigned_post", (INCOMING_KEY, 10)),
+        ("inspect", (INCOMING_KEY,)),
+        ("read_range", (INCOMING_KEY, '"etag"', 0, 0)),
+        ("promote", (INCOMING_KEY, FINAL_KEY, '"etag"')),
+        ("delete", (FINAL_KEY,)),
+    ],
+)
+def test_public_storage_contract_is_keyword_only(
+    storage: PrivateUploadStorage, method_name: str, args: tuple[object, ...]
+) -> None:
+    method = getattr(storage, method_name)
+
+    with pytest.raises(TypeError):
+        method(*args)

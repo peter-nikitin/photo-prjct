@@ -90,7 +90,7 @@ class PrivateUploadStorage:
             )
         )
 
-    def create_presigned_post(self, incoming_key: str, max_bytes: int) -> UploadGrant:
+    def create_presigned_post(self, *, incoming_key: str, max_bytes: int) -> UploadGrant:
         _validate_incoming_key(incoming_key)
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
             raise ValueError("max_bytes must be an integer")
@@ -126,10 +126,12 @@ class PrivateUploadStorage:
             url=url, fields=fields, expires_at=timezone.now() + timedelta(seconds=expires_in)
         )
 
-    def inspect(self, key: str) -> ObjectIdentity:
+    def inspect(self, *, key: str) -> ObjectIdentity:
+        _validate_managed_key(key)
         return self._inspect(key)
 
-    def read_range(self, key: str, etag_wire: str, start: int, end: int) -> bytes:
+    def read_range(self, *, key: str, etag_wire: str, start: int, end: int) -> bytes:
+        _validate_managed_key(key)
         if (
             isinstance(start, bool)
             or isinstance(end, bool)
@@ -161,7 +163,7 @@ class PrivateUploadStorage:
         except (BotoCoreError, KeyError, AttributeError, TypeError):
             raise StorageUnavailable() from None
 
-    def promote(self, incoming_key: str, final_key: str, etag_wire: str) -> ObjectIdentity:
+    def promote(self, *, incoming_key: str, final_key: str, etag_wire: str) -> ObjectIdentity:
         _validate_incoming_key(incoming_key)
         _validate_final_key(final_key)
         expected_etag = _etag_value(etag_wire)
@@ -198,7 +200,8 @@ class PrivateUploadStorage:
             raise ObjectMismatch()
         return final
 
-    def delete(self, key: str) -> None:
+    def delete(self, *, key: str) -> None:
+        _validate_managed_key(key)
         try:
             self._client.delete_object(Bucket=self._bucket, Key=key)
         except ClientError as error:
@@ -243,6 +246,13 @@ def _validate_incoming_key(key: str) -> None:
 def _validate_final_key(key: str) -> None:
     if not isinstance(key, str) or _FINAL_KEY.fullmatch(key) is None:
         raise ValueError("invalid final object key")
+
+
+def _validate_managed_key(key: str) -> None:
+    if not isinstance(key, str) or (
+        _INCOMING_KEY.fullmatch(key) is None and _FINAL_KEY.fullmatch(key) is None
+    ):
+        raise ValueError("invalid managed object key")
 
 
 def _etag_value(etag_wire: object) -> str:

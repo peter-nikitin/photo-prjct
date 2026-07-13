@@ -15,6 +15,10 @@ valid_hostname() {
         '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
 }
 
+normalize_hostname() {
+    printf '%s\n' "$1" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz'
+}
+
 if ! valid_hostname "$PUBLIC_DOMAIN"; then
     echo "PUBLIC_DOMAIN must be a valid DNS hostname" >&2
     exit 2
@@ -25,7 +29,8 @@ if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
         echo "PUBLIC_DOMAIN_ALIAS must be empty or a valid DNS hostname" >&2
         exit 2
     fi
-    if [ "$PUBLIC_DOMAIN_ALIAS" = "$PUBLIC_DOMAIN" ]; then
+    if [ "$(normalize_hostname "$PUBLIC_DOMAIN_ALIAS")" = \
+        "$(normalize_hostname "$PUBLIC_DOMAIN")" ]; then
         echo "PUBLIC_DOMAIN_ALIAS must differ from PUBLIC_DOMAIN" >&2
         exit 2
     fi

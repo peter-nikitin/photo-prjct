@@ -92,3 +92,4 @@ fi
 expect_render_rejected newline-domain "$(printf 'findme-photo.ru\ninjected.example.com')" ""
 expect_render_rejected newline-alias findme-photo.ru \
     "$(printf 'www.findme-photo.ru\ninjected.example.com')"
+expect_render_rejected case-insensitive-duplicate findme-photo.ru FINDME-PHOTO.RU

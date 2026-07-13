@@ -34,6 +34,7 @@ def test_adr_index_lists_all_accepted_decisions() -> None:
     assert "Authentication model and photographer/operator permissions" not in open_decisions
     assert "Private media lifecycle and retention policy" not in open_decisions
     assert "Background task framework, broker, retry semantics" not in open_decisions
+    assert "Stage 3 background-processing worker, broker, retry contract" in open_decisions
 
 
 def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:

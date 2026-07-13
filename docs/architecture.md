@@ -230,6 +230,7 @@ broker, vector engine, and ML implementations shown for later processing require
 
 Each item needs evidence and an ADR before implementation commits the architecture:
 
+- Stage 3 background-processing worker, broker, retry contract, and processing SLA.
 - `pgvector` versus a dedicated vector database and migration thresholds.
 - Face detection/embedding implementation and biometric governance.
 - Bib-region detection/OCR implementation and model licensing.

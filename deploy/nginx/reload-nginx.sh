@@ -8,6 +8,9 @@ PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 valid_hostname() {
     hostname="$1"
     [ "${#hostname}" -le 253 ] || return 1
+    case "$hostname" in
+        *[!A-Za-z0-9.-]*) return 1 ;;
+    esac
     printf '%s\n' "$hostname" | grep -Eq \
         '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
 }
@@ -70,8 +73,16 @@ test_config="$(mktemp /tmp/nginx-candidate.conf.XXXXXX)"
 trap 'rm -f "$candidate" "$test_config"' EXIT
 
 render_config "$candidate"
-sed "s|include /etc/nginx/conf.d/\\\*.conf;|include $candidate;|" \
-    /etc/nginx/nginx.conf > "$test_config"
+{
+    printf '%s\n' \
+        'worker_processes auto;' \
+        'error_log stderr;' \
+        'events { worker_connections 1024; }' \
+        'http {' \
+        '    include /etc/nginx/mime.types;'
+    printf '    include %s;\n' "$candidate"
+    printf '%s\n' '}'
+} > "$test_config"
 
 nginx -t -c "$test_config"
 mv "$candidate" /etc/nginx/conf.d/default.conf

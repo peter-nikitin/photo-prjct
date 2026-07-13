@@ -13,7 +13,6 @@ set -u
 : "${DB_USER:?Set DB_USER}"
 : "${DB_PASSWORD:?Set DB_PASSWORD}"
 : "${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN}"
-PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 
 case "$DEPLOYMENT_TARGET" in
     staging)
@@ -48,9 +47,6 @@ diagnostics() {
 
 install -d -m 0755 "$DEPLOY_ROOT"
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"
-if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
-    ALLOWED_HOSTS="$ALLOWED_HOSTS,$PUBLIC_DOMAIN_ALIAS"
-fi
 
 umask 077
 {
@@ -64,7 +60,6 @@ umask 077
     printf 'DB_HOST=db\n'
     printf 'DB_PORT=5432\n'
     printf 'PUBLIC_DOMAIN=%s\n' "$PUBLIC_DOMAIN"
-    printf 'PUBLIC_DOMAIN_ALIAS=%s\n' "$PUBLIC_DOMAIN_ALIAS"
     printf 'MEDIA_STORAGE_BACKEND=%s\n' "${MEDIA_STORAGE_BACKEND:-filesystem}"
     printf 'MEDIA_S3_ENDPOINT_URL=%s\n' "${MEDIA_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}"
     printf 'MEDIA_S3_REGION=%s\n' "${MEDIA_S3_REGION:-ru-central1}"

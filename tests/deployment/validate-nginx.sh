@@ -50,3 +50,45 @@ validate_variant() {
 
 validate_variant alias www.findme-photo.ru
 validate_variant no-alias ""
+
+expect_render_rejected() {
+    name="$1"
+    domain="$2"
+    alias="$3"
+
+    if docker run --rm --entrypoint /bin/sh \
+        -e PUBLIC_DOMAIN="$domain" \
+        -e PUBLIC_DOMAIN_ALIAS="$alias" \
+        -v "$root_dir/deploy/nginx:/opt/nginx:ro" \
+        -v "$tmp_dir/rendered:/rendered" \
+        nginx:1.27-alpine \
+        /opt/nginx/reload-nginx.sh --render "/rendered/$name.conf"; then
+        echo "$name unexpectedly accepted invalid hostname input" >&2
+        exit 1
+    fi
+}
+
+mkdir -p "$tmp_dir/invalid-template" "$tmp_dir/working-conf"
+printf '%s\n' 'this is not valid nginx syntax;' > "$tmp_dir/invalid-template/https.conf.template"
+printf '%s\n' 'server { listen 8081; }' > "$tmp_dir/working-conf/expected.conf"
+cp "$tmp_dir/working-conf/expected.conf" "$tmp_dir/working-conf/default.conf"
+
+if docker run --rm --entrypoint /usr/bin/timeout \
+    --add-host web:127.0.0.1 \
+    -e PUBLIC_DOMAIN=findme-photo.ru \
+    -v "$root_dir/deploy/nginx:/source:ro" \
+    -v "$tmp_dir/invalid-template:/opt/nginx:ro" \
+    -v "$tmp_dir/working-conf:/etc/nginx/conf.d" \
+    nginx:1.27-alpine 3 /bin/sh /source/reload-nginx.sh; then
+    echo "invalid candidate unexpectedly passed nginx validation" >&2
+    exit 1
+fi
+
+if ! cmp -s "$tmp_dir/working-conf/expected.conf" "$tmp_dir/working-conf/default.conf"; then
+    echo "invalid candidate replaced the working Nginx configuration" >&2
+    exit 1
+fi
+
+expect_render_rejected newline-domain "$(printf 'findme-photo.ru\ninjected.example.com')" ""
+expect_render_rejected newline-alias findme-photo.ru \
+    "$(printf 'www.findme-photo.ru\ninjected.example.com')"

@@ -1,6 +1,10 @@
 from datetime import date
+from importlib import import_module
 from io import StringIO
+from types import SimpleNamespace
+from unittest.mock import Mock
 
+from django.conf import settings
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
@@ -39,7 +43,8 @@ class PhotoMigrationTests(TransactionTestCase):
             self.assertEqual(migrated_photo.src.name, "photos/legacy.jpg")
             self.assertIsNone(migrated_photo.original_key)
 
-            User = apps.get_model("auth", "User")
+            user_app_label, user_model_name = settings.AUTH_USER_MODEL.split(".", 1)
+            User = apps.get_model(user_app_label, user_model_name)
             uploader = User.objects.create(username="migration-photographer")
             private_values = {
                 "event_id": event.pk,
@@ -90,6 +95,15 @@ class PhotoMigrationTests(TransactionTestCase):
             stdout=backwards_stdout,
         )
         backwards_expand = backwards_stdout.getvalue()
+        backwards_constraints_stdout = StringIO()
+        call_command(
+            "sqlmigrate",
+            "picflow",
+            "0004",
+            backwards=True,
+            stdout=backwards_constraints_stdout,
+        )
+        backwards_constraints = backwards_constraints_stdout.getvalue()
 
         expand = outputs[("picflow", "0003")]
         constraints = outputs[("picflow", "0004")]
@@ -116,7 +130,50 @@ class PhotoMigrationTests(TransactionTestCase):
             constraints,
         )
         self.assertIn("picflow_photo_uploaded_by_fk", constraints)
+        self.assertIn('REFERENCES "auth_user" ("id")', constraints)
         self.assertIn("NOT VALID", constraints)
         self.assertIn("VALIDATE CONSTRAINT picflow_photo_uploaded_by_fk", validation)
         self.assertIn("VALIDATE CONSTRAINT picflow_photo_legacy_or_private_chk", validation)
         self.assertNotIn("lock_timeout", validation)
+        for constraint_name in (
+            "picflow_photo_legacy_or_private_chk",
+            "picflow_photo_uploaded_by_fk",
+            "picflow_photo_original_key_uniq",
+        ):
+            self.assertIn(
+                "BEGIN; SET LOCAL lock_timeout = '2s'; "
+                f"ALTER TABLE picflow_photo DROP CONSTRAINT {constraint_name}; COMMIT;",
+                backwards_constraints,
+            )
+        self.assertIn(
+            "DROP INDEX CONCURRENTLY IF EXISTS picflow_photo_original_key_uniq",
+            backwards_constraints,
+        )
+        self.assertIn(
+            "DROP INDEX CONCURRENTLY IF EXISTS picflow_photo_uploaded_by_idx",
+            backwards_constraints,
+        )
+
+    def test_uploaded_by_fk_uses_historical_user_table_and_primary_key(self) -> None:
+        migration_module = import_module(
+            "picflow.migrations.0004_photo_private_original_constraints"
+        )
+        operation = migration_module.AddNotValidUploadedByForeignKey()
+        historical_user = SimpleNamespace(
+            _meta=SimpleNamespace(
+                db_table="accounts_member",
+                pk=SimpleNamespace(column="member_uuid"),
+            )
+        )
+        apps = Mock()
+        apps.get_model.return_value = historical_user
+        to_state = SimpleNamespace(apps=apps)
+        schema_editor = Mock()
+        schema_editor.quote_name.side_effect = lambda value: f'"{value}"'
+
+        operation.database_forwards("picflow", schema_editor, Mock(), to_state)
+
+        apps.get_model.assert_called_once_with(*settings.AUTH_USER_MODEL.split(".", 1))
+        sql = schema_editor.execute.call_args.args[0]
+        self.assertIn('REFERENCES "accounts_member" ("member_uuid")', sql)
+        self.assertNotIn("auth_user", sql)

@@ -78,6 +78,19 @@ class UploadModelTests(TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             duplicate.save()
 
+    def test_storage_keys_are_globally_unique(self) -> None:
+        batch = self.make_batch()
+        batch.save()
+        first = self.make_item(batch)
+        first.save()
+        for field_name in ("incoming_key", "final_key"):
+            with self.subTest(field_name=field_name):
+                duplicate = self.make_item(batch, **{field_name: getattr(first, field_name)})
+                with self.assertRaises(ValidationError):
+                    duplicate.full_clean()
+                with self.assertRaises(IntegrityError), transaction.atomic():
+                    duplicate.save()
+
     def test_status_choices_and_database_checks_reject_unknown_values(self) -> None:
         batch = self.make_batch(status="unknown")
         with self.assertRaises(ValidationError):

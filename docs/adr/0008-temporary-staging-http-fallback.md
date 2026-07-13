@@ -1,10 +1,10 @@
 # 0008: Temporarily allow HTTP-only staging when public DNS is unroutable
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-07-13
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [0009](0009-separate-staging-http-edge.md)
 
 ## Context
 

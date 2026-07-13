@@ -23,8 +23,9 @@ def test_documentation_foundation_exists() -> None:
 def test_adr_index_lists_all_accepted_decisions() -> None:
     index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
 
-    for number in range(1, 9):
+    for number in (*range(1, 8), 9):
         assert re.search(rf"\| 000{number} \|.*\| Accepted \|", index)
+    assert re.search(r"\| 0008 \|.*\| Superseded \|", index)
 
 
 def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:
@@ -101,94 +102,82 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
 
 
 def test_production_compose_has_a_private_application_behind_https_edge() -> None:
-    compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
+    app_compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
+    production = yaml.safe_load(
+        (ROOT / "docker-compose.production.yml").read_text(encoding="utf-8")
+    )
 
-    assert "ports" not in compose["services"]["web"]
-    assert compose["services"]["nginx"]["ports"] == ["80:80", "443:443"]
-    assert compose["services"]["nginx"]["depends_on"]["web"]["condition"] == "service_healthy"
-    assert "certbot" in compose["services"]
-    assert compose["services"]["certbot"]["entrypoint"] == [
+    assert "ports" not in app_compose["services"]["web"]
+    assert production["services"]["nginx"]["ports"] == ["80:80", "443:443"]
+    assert production["services"]["nginx"]["depends_on"]["web"]["condition"] == "service_healthy"
+    assert "certbot" in production["services"]
+    assert production["services"]["certbot"]["entrypoint"] == [
         "/bin/sh",
         "/opt/certbot/renew-certificates.sh",
     ]
-    assert compose["services"]["nginx"]["healthcheck"]["test"] == [
+    assert production["services"]["nginx"]["healthcheck"]["test"] == [
         "CMD-SHELL",
         "wget -q -O /dev/null http://127.0.0.1/health/",
     ]
-    assert "letsencrypt" in compose["volumes"]
-    assert (ROOT / "deploy/nginx/http.conf").is_file()
+    assert "letsencrypt" in production["volumes"]
+    assert not (ROOT / "deploy/nginx/http.conf").exists()
     assert (ROOT / "deploy/nginx/https.conf").is_file()
 
 
 def test_deployment_workflows_configure_https_edge_without_committing_values() -> None:
-    for workflow_name in ("deploy.yml", "promote-production.yml"):
-        workflow = (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
+    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
 
-        assert "PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}" in workflow
-        assert "LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}" in workflow
-        assert "certbot" in workflow
-        assert "https://$PUBLIC_DOMAIN/health/" in workflow
+    assert "PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}" in staging
+    assert "LETSENCRYPT_EMAIL" not in staging
+    assert "ENABLE_HTTPS" not in staging
+    assert "LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}" in production
+    assert "docker-compose.production.yml" in production
 
 
 def test_staging_can_temporarily_disable_https_without_changing_production_default() -> None:
-    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
-    nginx_startup = (ROOT / "deploy/nginx/reload-nginx.sh").read_text(encoding="utf-8")
+    staging_compose = yaml.safe_load(
+        (ROOT / "docker-compose.staging.yml").read_text(encoding="utf-8")
+    )
 
-    assert "ENABLE_HTTPS: ${{ vars.ENABLE_HTTPS || 'false' }}" in staging
-    assert "ENABLE_HTTPS: ${{ vars.ENABLE_HTTPS || 'true' }}" in production
-    assert 'if [ "$ENABLE_HTTPS" != "true" ] && [ "$ENABLE_HTTPS" != "false" ]; then' in staging
-    assert 'if [ "$ENABLE_HTTPS" != "true" ] && [ "$ENABLE_HTTPS" != "false" ]; then' in production
-    assert 'if [ "$ENABLE_HTTPS" = "true" ]; then' in staging
-    assert 'if [ "$ENABLE_HTTPS" = "true" ]; then' in production
-    assert 'ENABLE_HTTPS="${ENABLE_HTTPS:-true}"' in nginx_startup
+    assert set(staging_compose["services"]) == {"nginx"}
+    assert staging_compose["services"]["nginx"]["ports"] == ["80:80"]
+    assert "certbot" not in staging_compose["services"]
+    assert "letsencrypt" not in staging_compose.get("volumes", {})
+    assert staging_compose["services"]["nginx"].get("command") is None
+    assert (ROOT / "deploy/nginx/staging.conf").is_file()
 
 
-def test_deployment_shell_scripts_have_valid_bash_syntax() -> None:
-    for workflow_name, job_name in (
-        ("deploy.yml", "deploy"),
-        ("promote-production.yml", "promote"),
-    ):
-        workflow = yaml.safe_load(
-            (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
-        )
-        apply_step = next(
-            step
-            for step in workflow["jobs"][job_name]["steps"]
-            if step["name"].startswith("Apply ")
-        )
-        result = subprocess.run(
-            ["bash", "-n"],
-            input=apply_step["with"]["script"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+def test_versioned_deployment_script_has_valid_shell_syntax() -> None:
+    result = subprocess.run(
+        ["sh", "-n", ROOT / "deploy/apply-deployment.sh"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-        assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stderr
 
 
 def test_deployment_workflows_always_allow_the_public_domain() -> None:
-    for workflow_name, job_name in (
-        ("deploy.yml", "deploy"),
-        ("promote-production.yml", "promote"),
-    ):
-        workflow = yaml.safe_load(
-            (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
-        )
-        apply_step = next(
-            step
-            for step in workflow["jobs"][job_name]["steps"]
-            if step["name"].startswith("Apply ")
-        )
-
-        assert (
-            'ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"'
-            in apply_step["with"]["script"]
-        )
+    for workflow_name in ("deploy.yml", "promote-production.yml"):
+        workflow = (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
+        assert "deploy/apply-deployment.sh" in workflow
+        assert "ALLOWED_HOSTS" in workflow
 
 
-def test_deployment_workflows_retry_and_report_edge_health_failures() -> None:
+def test_deployment_script_verifies_the_edge_and_exact_application_image() -> None:
+    script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+
+    assert "compose_up_status=0" in script
+    assert "compose up -d --remove-orphans || compose_up_status=$?" in script
+    assert "Deployment health check attempt $attempt failed; retrying" in script
+    assert "docker inspect --format '{{.Config.Image}}'" in script
+    assert '"$running_image" = "$APP_IMAGE"' in script
+    assert 'printf \'%s\\n\' "$APP_IMAGE" > "$DEPLOY_ROOT/deployed-image"' in script
+
+
+def test_deployment_workflows_use_the_versioned_deployment_script() -> None:
     for workflow_name, job_name in (
         ("deploy.yml", "deploy"),
         ("promote-production.yml", "promote"),
@@ -204,11 +193,9 @@ def test_deployment_workflows_retry_and_report_edge_health_failures() -> None:
 
         script = apply_step["with"]["script"]
 
-        assert " up -d --wait" not in script
-        assert " up -d\n" in script
-        assert "max_attempts=12" in script
-        assert "until curl --fail-with-body --silent --show-error" in script
-        assert "Deployment health check failed after $max_attempts attempts" in script
+        assert "/deploy/apply-deployment.sh" in script
+        assert "docker compose" not in script
+        assert "cat > /opt/photo-prjct/.env" not in script
 
 
 def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:

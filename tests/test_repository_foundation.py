@@ -164,6 +164,26 @@ def test_deployment_shell_scripts_have_valid_bash_syntax() -> None:
         assert result.returncode == 0, result.stderr
 
 
+def test_deployment_workflows_always_allow_the_public_domain() -> None:
+    for workflow_name, job_name in (
+        ("deploy.yml", "deploy"),
+        ("promote-production.yml", "promote"),
+    ):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
+        )
+        apply_step = next(
+            step
+            for step in workflow["jobs"][job_name]["steps"]
+            if step["name"].startswith("Apply ")
+        )
+
+        assert (
+            'ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"'
+            in apply_step["with"]["script"]
+        )
+
+
 def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:
     settings = (ROOT / "src/backend/config/settings.py").read_text(encoding="utf-8")
 

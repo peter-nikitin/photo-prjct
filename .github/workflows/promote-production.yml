@@ -81,6 +81,7 @@ jobs:
             set -eu
             install -d -m 0755 /opt/photo-prjct
             : "${PUBLIC_DOMAIN:?Set production variable PUBLIC_DOMAIN}"
+            ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"
             if [ "$ENABLE_HTTPS" != "true" ] && [ "$ENABLE_HTTPS" != "false" ]; then
               echo "ENABLE_HTTPS must be true or false" >&2
               exit 1

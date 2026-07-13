@@ -39,6 +39,9 @@ The repository currently contains an early Django prototype:
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
+- Nginx is the public HTTPS edge in deployed environments. It terminates TLS, serves ACME
+  HTTP-01 challenges, and proxies to the internal Django service; Certbot manages Let's Encrypt
+  certificates in persistent volumes.
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
@@ -46,9 +49,9 @@ The repository currently contains an early Django prototype:
 - Event covers use a public Yandex Object Storage bucket in deployed environments.
 
 ```text
-Browser -> Django/Gunicorn -> PostgreSQL
-                  |
-                  +-> packaged templates and static assets
+Browser -> Nginx HTTPS edge -> Django/Gunicorn -> PostgreSQL
+                                   |
+                                   +-> packaged templates and static assets
 
 GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
                                              |- Django
@@ -65,6 +68,7 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Load environment-specific configuration from environment variables and never commit secrets.
 - Keep architecture, decisions, and delivery plans in this repository.
 - Prefer simple, repeatable operations over premature distributed infrastructure.
+- Use Nginx and Certbot for the HTTPS edge as defined by [ADR 0007](adr/0007-nginx-certbot-https-edge.md).
 
 ## Target MVP architecture — proposed
 
@@ -193,7 +197,7 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Authentication model and photographer/operator permissions.
 - Free/paid event media access and anonymous original-download policy.
 - Observability stack, backup targets, retention, and recovery objectives.
-- Production HTTPS edge and static/media delivery topology.
+- CDN/WAF and static/media delivery topology beyond the Nginx edge.
 
 ## Change rules
 

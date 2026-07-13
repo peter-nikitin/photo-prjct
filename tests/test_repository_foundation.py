@@ -22,7 +22,7 @@ def test_documentation_foundation_exists() -> None:
 def test_adr_index_lists_all_accepted_decisions() -> None:
     index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
 
-    for number in range(1, 7):
+    for number in range(1, 8):
         assert re.search(rf"\| 000{number} \|.*\| Accepted \|", index)
 
 
@@ -97,3 +97,34 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
 
     assert compose["services"]["web"]["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
     assert "healthcheck" in compose["services"]["web"]
+
+
+def test_production_compose_has_a_private_application_behind_https_edge() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
+
+    assert "ports" not in compose["services"]["web"]
+    assert compose["services"]["nginx"]["ports"] == ["80:80", "443:443"]
+    assert compose["services"]["nginx"]["depends_on"]["web"]["condition"] == "service_healthy"
+    assert "certbot" in compose["services"]
+    assert compose["services"]["certbot"]["entrypoint"] == [
+        "/bin/sh",
+        "/opt/certbot/renew-certificates.sh",
+    ]
+    assert "letsencrypt" in compose["volumes"]
+    assert (ROOT / "deploy/nginx/default.conf").is_file()
+
+
+def test_deployment_workflows_configure_https_edge_without_committing_values() -> None:
+    for workflow_name in ("deploy.yml", "promote-production.yml"):
+        workflow = (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
+
+        assert "PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}" in workflow
+        assert "LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}" in workflow
+        assert "certbot" in workflow
+        assert "https://$PUBLIC_DOMAIN/health/" in workflow
+
+
+def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:
+    settings = (ROOT / "src/backend/config/settings.py").read_text(encoding="utf-8")
+
+    assert 'SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")' in settings

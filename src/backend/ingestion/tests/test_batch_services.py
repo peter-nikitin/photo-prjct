@@ -27,7 +27,13 @@ from ingestion.services.batches import (
     register_items,
     report_item_failed,
 )
-from ingestion.storage import ObjectChanged, ObjectMissing, StorageUnavailable, UploadGrant
+from ingestion.storage import (
+    ObjectChanged,
+    ObjectMismatch,
+    ObjectMissing,
+    StorageUnavailable,
+    UploadGrant,
+)
 from picflow.models import Event
 
 
@@ -203,6 +209,7 @@ class BatchServiceTests(TransactionTestCase):
         row = UploadItem.objects.get(id=item.id)
         self.assertEqual(row.error_code, "")
         self.assertEqual(row.sanitized_error_message, "")
+        self.assertIsNone(row.completed_at)
         self.assertEqual(UploadBatch.objects.get(id=batch.id).status, UploadBatch.Status.UPLOADING)
 
         row.status = UploadItem.Status.UPLOADED
@@ -233,6 +240,71 @@ class BatchServiceTests(TransactionTestCase):
         report_item_failed(
             uploader=self.user, batch_id=batch.id, item_id=item.id, code="transfer_cancelled"
         )
+
+    def test_terminal_timestamps_are_set_once_and_authorization_expiry_is_cleared(self) -> None:
+        storage = FakeStorage()
+        batch = self.make_batch()
+        item = self.register_one(batch.id)
+        authorize_item(
+            uploader=self.user,
+            batch_id=batch.id,
+            item_id=item.id,
+            reason=AuthorizationReason.DATA_ATTEMPT,
+            storage=storage,
+        )
+        first = report_item_failed(
+            uploader=self.user,
+            batch_id=batch.id,
+            item_id=item.id,
+            code="transfer_cancelled",
+        )
+        item_row = UploadItem.objects.get(id=item.id)
+        batch_row = UploadBatch.objects.get(id=batch.id)
+        self.assertIsNotNone(item_row.completed_at)
+        self.assertIsNone(item_row.authorization_expires_at)
+        self.assertIsNotNone(batch_row.completed_at)
+        item_completed_at = item_row.completed_at
+        batch_completed_at = batch_row.completed_at
+
+        repeated = report_item_failed(
+            uploader=self.user,
+            batch_id=batch.id,
+            item_id=item.id,
+            code="transfer_cancelled",
+        )
+        derived = derive_batch_status(uploader=self.user, batch_id=batch.id)
+        item_row.refresh_from_db()
+        batch_row.refresh_from_db()
+        self.assertEqual(first, repeated)
+        self.assertEqual(derived.status, UploadBatch.Status.FAILED)
+        self.assertEqual(item_row.completed_at, item_completed_at)
+        self.assertEqual(batch_row.completed_at, batch_completed_at)
+
+    def test_all_terminal_batch_statuses_set_completed_timestamp_once(self) -> None:
+        for uploaded, expected_status in (
+            (2, UploadBatch.Status.COMPLETED),
+            (1, UploadBatch.Status.PARTIAL),
+            (0, UploadBatch.Status.FAILED),
+        ):
+            with self.subTest(status=expected_status):
+                batch = self.make_batch(2)
+                items = [self.register_one(batch.id) for _ in range(2)]
+                for index, item in enumerate(items):
+                    UploadItem.objects.filter(id=item.id).update(
+                        status=(
+                            UploadItem.Status.UPLOADED
+                            if index < uploaded
+                            else UploadItem.Status.FAILED
+                        )
+                    )
+                first = derive_batch_status(uploader=self.user, batch_id=batch.id, finalize=True)
+                first_completed_at = UploadBatch.objects.get(id=batch.id).completed_at
+                self.assertEqual(first.status, expected_status)
+                self.assertIsNotNone(first_completed_at)
+                derive_batch_status(uploader=self.user, batch_id=batch.id)
+                self.assertEqual(
+                    UploadBatch.objects.get(id=batch.id).completed_at, first_completed_at
+                )
 
     def test_terminal_batches_reject_registration_and_authorization_without_reopening(self) -> None:
         storage = FakeStorage()
@@ -331,6 +403,10 @@ class BatchServiceTests(TransactionTestCase):
         self.assertEqual(classify_failure(ObjectChanged()).code, "object_changed")
         self.assertTrue(classify_failure(ObjectChanged()).retryable)
         self.assertEqual(classify_failure(ObjectMissing()).code, "object_missing")
+        mismatch = classify_failure(ObjectMismatch())
+        self.assertEqual(mismatch.code, "promotion_conflict")
+        self.assertFalse(mismatch.retryable)
+        self.assertIsNone(mismatch.action)
         self.assertEqual(classify_failure(StorageUnavailable()).code, "storage_unavailable")
         self.assertEqual(classify_failure(403).action, AuthorizationReason.GRANT_REFRESH)
         self.assertEqual(classify_failure(408).action, AuthorizationReason.DATA_ATTEMPT)

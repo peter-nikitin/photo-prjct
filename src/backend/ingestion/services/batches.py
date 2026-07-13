@@ -14,6 +14,7 @@ from picflow.models import Event
 from ingestion.models import UploadBatch, UploadItem
 from ingestion.storage import (
     ObjectChanged,
+    ObjectMismatch,
     ObjectMissing,
     StorageError,
     StorageUnavailable,
@@ -214,6 +215,7 @@ def manual_retry_item(
         item.sanitized_error_message = ""
         item.authorization_expires_at = None
         item.upload_attempts = 0
+        item.completed_at = None
         item.last_activity_at = now
         item.save(
             update_fields=[
@@ -222,6 +224,7 @@ def manual_retry_item(
                 "sanitized_error_message",
                 "authorization_expires_at",
                 "upload_attempts",
+                "completed_at",
                 "last_activity_at",
             ]
         )
@@ -266,6 +269,7 @@ def report_item_failed(
         item.error_code = code
         item.sanitized_error_message = public_messages[code]
         item.authorization_expires_at = None
+        item.completed_at = now
         item.last_activity_at = now
         item.save(
             update_fields=[
@@ -273,6 +277,7 @@ def report_item_failed(
                 "error_code",
                 "sanitized_error_message",
                 "authorization_expires_at",
+                "completed_at",
                 "last_activity_at",
             ]
         )
@@ -309,6 +314,8 @@ def classify_failure(failure: object) -> FailureDisposition:
         return FailureDisposition("storage_unavailable", True, AuthorizationReason.DATA_ATTEMPT)
     if isinstance(failure, ObjectMissing):
         return FailureDisposition("object_missing", True, AuthorizationReason.DATA_ATTEMPT)
+    if isinstance(failure, ObjectMismatch):
+        return FailureDisposition("promotion_conflict", False, None)
     if isinstance(failure, int) and (failure in {408, 429} or 500 <= failure <= 599):
         return FailureDisposition("storage_unavailable", True, AuthorizationReason.DATA_ATTEMPT)
     if isinstance(failure, StorageError):
@@ -378,7 +385,8 @@ def _derive_and_save(*, batch: UploadBatch, require_terminal: bool) -> BatchResu
 
     uploaded = counts[UploadItem.Status.UPLOADED]
     failed = counts[UploadItem.Status.FAILED]
-    status = batch.status
+    previous_status = batch.status
+    status = previous_status
     if persisted == batch.expected_item_count and active == 0:
         if uploaded == batch.expected_item_count:
             status = UploadBatch.Status.COMPLETED
@@ -389,7 +397,16 @@ def _derive_and_save(*, batch: UploadBatch, require_terminal: bool) -> BatchResu
 
     now = timezone.now()
     batch.status = status
-    batch.completed_at = now if status == UploadBatch.Status.COMPLETED else None
+    terminal_statuses = {
+        UploadBatch.Status.COMPLETED,
+        UploadBatch.Status.PARTIAL,
+        UploadBatch.Status.FAILED,
+    }
+    if status in terminal_statuses:
+        if previous_status not in terminal_statuses:
+            batch.completed_at = now
+    else:
+        batch.completed_at = None
     batch.last_activity_at = now
     batch.save(update_fields=["status", "completed_at", "last_activity_at"])
     return _batch_result(batch, uploaded=uploaded, failed=failed)

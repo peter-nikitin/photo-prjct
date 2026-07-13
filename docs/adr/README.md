@@ -27,3 +27,4 @@ place, and add the new record to this index.
 | 0005 | [Promote immutable images through staging](0005-promote-images-through-staging.md) | Accepted |
 | 0006 | [Use Yandex Object Storage for media](0006-yandex-object-storage-media.md) | Accepted |
 | 0007 | [Use Nginx and Certbot for the HTTPS edge](0007-nginx-certbot-https-edge.md) | Accepted |
+| 0008 | [Temporarily allow HTTP-only staging when public DNS is unroutable](0008-temporary-staging-http-fallback.md) | Accepted |

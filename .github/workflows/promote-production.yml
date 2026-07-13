@@ -137,10 +137,10 @@ jobs:
               --env-file /opt/photo-prjct/.env \
               -f /opt/photo-prjct/docker-compose.prod.yml up -d --wait
             if [ "$ENABLE_HTTPS" = "true" ]; then
-              curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+              curl --fail-with-body --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 \
                 --resolve "$PUBLIC_DOMAIN:443:127.0.0.1" "https://$PUBLIC_DOMAIN/health/"
             else
-              curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+              curl --fail-with-body --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 \
                 --resolve "$PUBLIC_DOMAIN:80:127.0.0.1" "http://$PUBLIC_DOMAIN/health/"
             fi
             printf '%s\n' "$APP_IMAGE" > /opt/photo-prjct/deployed-image

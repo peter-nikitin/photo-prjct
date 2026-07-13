@@ -24,9 +24,10 @@ def test_documentation_foundation_exists() -> None:
 def test_adr_index_lists_all_accepted_decisions() -> None:
     index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
 
-    for number in (*range(1, 8), 9):
-        assert re.search(rf"\| 000{number} \|.*\| Accepted \|", index)
-    assert re.search(r"\| 0008 \|.*\| Superseded \|", index)
+    for number in (*range(1, 8), 10):
+        assert re.search(rf"\| {number:04d} \|.*\| Accepted \|", index)
+    for number in (8, 9):
+        assert re.search(rf"\| {number:04d} \|.*\| Superseded \|", index)
 
 
 def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:

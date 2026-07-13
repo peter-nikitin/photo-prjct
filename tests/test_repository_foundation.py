@@ -128,3 +128,34 @@ def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:
     settings = (ROOT / "src/backend/config/settings.py").read_text(encoding="utf-8")
 
     assert 'SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")' in settings
+
+
+def test_prototype_archive_and_legacy_demo_assets_are_removed() -> None:
+    assert not (ROOT / "src/proto").exists()
+
+    templates = ROOT / "src/backend/templates"
+    assert not list(templates.glob("*.html")), "Legacy top-level UI templates remain"
+
+    static = ROOT / "src/backend/static"
+    assert not list(static.glob("*.js")), "Legacy demo JavaScript remains"
+    assert not list((static / "assets").glob("*")), "Legacy duplicate demo assets remain"
+
+
+def test_visual_design_skill_has_required_files() -> None:
+    skill = ROOT / ".agents/skills/update-visual-design"
+
+    for relative_path in (
+        "SKILL.md",
+        "agents/openai.yaml",
+        "references/screen-inventory.md",
+    ):
+        assert (skill / relative_path).is_file(), f"Missing {relative_path}"
+
+
+def test_production_django_configuration_excludes_visual_references() -> None:
+    for relative_path in ("src/backend/config/urls.py", "src/backend/config/settings.py"):
+        production_config = (ROOT / relative_path).read_text(encoding="utf-8")
+
+        assert "__visual__" not in production_config
+        assert "tests.visual" not in production_config
+        assert "design_reference" not in production_config

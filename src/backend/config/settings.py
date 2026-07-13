@@ -98,6 +98,8 @@ PHOTO_UPLOAD_CONCURRENCY = env.int("PHOTO_UPLOAD_CONCURRENCY", default=4)
 PHOTO_UPLOAD_GRANT_TTL_SECONDS = env.int("PHOTO_UPLOAD_GRANT_TTL_SECONDS", default=600)
 PHOTO_UPLOAD_STALE_AFTER_SECONDS = env.int("PHOTO_UPLOAD_STALE_AFTER_SECONDS", default=86_400)
 
+LOGIN_URL = "photographer_login"
+
 if env("MEDIA_STORAGE_BACKEND", default="filesystem") == "s3":
     STORAGES["default"] = {
         "BACKEND": "storages.backends.s3.S3Storage",

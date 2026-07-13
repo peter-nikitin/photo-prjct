@@ -1,0 +1,298 @@
+from __future__ import annotations
+
+import json
+from datetime import date, timedelta
+from typing import Any
+from unittest.mock import patch
+from uuid import UUID, uuid4
+
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
+from django.test import Client, TestCase, override_settings
+from django.urls import reverse
+from django.utils import timezone
+from ingestion.models import UploadItem
+from ingestion.storage import StorageUnavailable, UploadGrant
+from picflow.models import Event, Photo
+
+
+@override_settings(PHOTO_UPLOAD_ENABLED=True)
+class UploadViewTests(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.user = get_user_model().objects.create_user(username="photo", password="pass")
+        cls.user.user_permissions.add(
+            Permission.objects.get(content_type__app_label="ingestion", codename="upload_photos")
+        )
+        cls.event = Event.objects.create(
+            name="Race",
+            slug="race",
+            start_date=date(2026, 7, 13),
+            end_date=date(2026, 7, 13),
+            city="Moscow",
+        )
+
+    def setUp(self) -> None:
+        self.client.force_login(self.user)
+
+    def create_batch(self, expected: int = 1) -> tuple[UUID, dict[str, Any]]:
+        response = self.client.post(
+            reverse("upload_batch_create"),
+            json.dumps({"event_id": self.event.id, "expected_item_count": expected}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        return UUID(payload["batch"]["id"]), payload
+
+    def register_item(self, batch_id: UUID, client_item_id: UUID | None = None):
+        client_item_id = client_item_id or uuid4()
+        response = self.client.post(
+            reverse("upload_items_register", args=[batch_id]),
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "client_item_id": str(client_item_id),
+                            "filename": "race.jpg",
+                            "content_type": "image/jpeg",
+                            "size": 4,
+                        }
+                    ]
+                }
+            ),
+            content_type="application/json",
+        )
+        return client_item_id, response
+
+    def test_named_routes_match_the_public_contract(self) -> None:
+        batch = uuid4()
+        item = uuid4()
+        self.assertEqual(reverse("photographer_login"), "/photographer/login/")
+        self.assertEqual(reverse("photographer_logout"), "/photographer/logout/")
+        self.assertEqual(reverse("upload_page"), "/photographer/uploads/")
+        self.assertEqual(reverse("upload_batch_create"), "/photographer/uploads/batches/")
+        self.assertEqual(
+            reverse("upload_items_register", args=[batch]),
+            f"/photographer/uploads/{batch}/items/",
+        )
+        self.assertEqual(
+            reverse("upload_item_authorize", args=[batch, item]),
+            f"/photographer/uploads/{batch}/items/{item}/authorize/",
+        )
+        self.assertEqual(
+            reverse("upload_item_confirm", args=[batch, item]),
+            f"/photographer/uploads/{batch}/items/{item}/confirm/",
+        )
+        self.assertEqual(
+            reverse("upload_item_failed", args=[batch, item]),
+            f"/photographer/uploads/{batch}/items/{item}/failed/",
+        )
+        self.assertEqual(
+            reverse("upload_batch_finalize", args=[batch]),
+            f"/photographer/uploads/{batch}/finalize/",
+        )
+
+    def test_batch_create_returns_exact_public_shape_and_accepts_draft_event(self) -> None:
+        _, payload = self.create_batch(expected=42)
+        self.assertEqual(
+            payload,
+            {
+                "batch": {
+                    "id": payload["batch"]["id"],
+                    "status": "created",
+                    "expected_item_count": 42,
+                }
+            },
+        )
+
+    def test_registration_returns_201_then_idempotent_200_without_keys(self) -> None:
+        batch_id, _ = self.create_batch()
+        client_item_id = uuid4()
+        _, created = self.register_item(batch_id, client_item_id)
+        _, replay = self.register_item(batch_id, client_item_id)
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(created.json(), replay.json())
+        item = created.json()["items"][0]
+        self.assertEqual(
+            item,
+            {"id": item["id"], "client_item_id": str(client_item_id), "status": "pending"},
+        )
+        serialized = json.dumps(created.json())
+        self.assertNotIn("incoming", serialized)
+        self.assertNotIn("originals", serialized)
+
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_authorize_is_only_response_with_signed_form(self, storage_class) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+        expires_at = timezone.now() + timedelta(minutes=10)
+        storage_class.return_value.create_presigned_post.return_value = UploadGrant(
+            "https://storage.example/upload",
+            {"key": "opaque", "policy": "signed"},
+            expires_at,
+        )
+
+        response = self.client.post(
+            reverse("upload_item_authorize", args=[batch_id, item_id]),
+            json.dumps({"reason": "data_attempt"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["item"], {"id": item_id, "status": "authorized", "attempt": 1})
+        self.assertEqual(payload["grant"]["url"], "https://storage.example/upload")
+        self.assertEqual(payload["grant"]["fields"], {"key": "opaque", "policy": "signed"})
+        self.assertEqual(payload["grant"]["expires_at"], expires_at.isoformat())
+
+    @patch("ingestion.views.confirm_upload_item")
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_confirm_returns_uploaded_photo_without_private_metadata(
+        self, storage_class, confirm
+    ) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = UUID(registered.json()["items"][0]["id"])
+        item = UploadItem.objects.get(id=item_id)
+        item.status = UploadItem.Status.AUTHORIZED
+        item.upload_attempts = 1
+        item.authorization_expires_at = timezone.now() + timedelta(minutes=10)
+        item.save()
+        photo = Photo.objects.create(
+            id=item.id.hex,
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=item.final_key,
+            original_filename=item.original_filename,
+            original_size=item.expected_size,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+        item.photo = photo
+        item.status = UploadItem.Status.UPLOADED
+        item.authorization_expires_at = None
+        item.completed_at = timezone.now()
+        item.save()
+        confirm.return_value = photo
+
+        response = self.client.post(
+            reverse("upload_item_confirm", args=[batch_id, item_id]),
+            "{}",
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"item": {"id": str(item_id), "status": "uploaded", "photo_id": photo.id}},
+        )
+        self.assertNotIn(item.final_key, response.content.decode())
+        storage_class.assert_called_once_with()
+
+    def test_failed_and_finalize_return_exact_shapes(self) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+
+        failed = self.client.post(
+            reverse("upload_item_failed", args=[batch_id, item_id]),
+            json.dumps({"code": "transfer_cancelled"}),
+            content_type="application/json",
+        )
+        finalized = self.client.post(
+            reverse("upload_batch_finalize", args=[batch_id]),
+            "{}",
+            content_type="application/json",
+        )
+
+        self.assertEqual(failed.status_code, 200)
+        self.assertEqual(
+            failed.json(),
+            {
+                "item": {
+                    "id": item_id,
+                    "status": "failed",
+                    "error_code": "transfer_cancelled",
+                }
+            },
+        )
+        self.assertEqual(finalized.status_code, 200)
+        self.assertEqual(
+            finalized.json(),
+            {
+                "batch": {
+                    "id": str(batch_id),
+                    "status": "failed",
+                    "expected": 1,
+                    "uploaded": 0,
+                    "failed": 1,
+                }
+            },
+        )
+
+    def test_validation_and_conflict_errors_use_stable_envelope(self) -> None:
+        invalid_json = self.client.post(
+            reverse("upload_batch_create"), "{", content_type="application/json"
+        )
+        validation = self.client.post(
+            reverse("upload_batch_create"),
+            json.dumps({"event_id": self.event.id, "expected_item_count": 0}),
+            content_type="application/json",
+        )
+        batch_id, _ = self.create_batch()
+        conflict = self.client.post(
+            reverse("upload_batch_finalize", args=[batch_id]),
+            "{}",
+            content_type="application/json",
+        )
+
+        self.assertEqual(invalid_json.status_code, 400)
+        self.assertEqual(invalid_json.json()["error"]["code"], "invalid_json")
+        self.assertEqual(validation.status_code, 400)
+        self.assertEqual(validation.json()["error"]["code"], "validation_error")
+        self.assertIn("expected_item_count", validation.json()["error"]["fields"])
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.json()["error"]["code"], "missing_registrations")
+        for response in (invalid_json, validation, conflict):
+            self.assertEqual(set(response.json()["error"]), {"code", "message", "fields"})
+
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_storage_failures_are_sanitized_503(self, storage_class) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+        storage_class.return_value.create_presigned_post.side_effect = StorageUnavailable()
+
+        response = self.client.post(
+            reverse("upload_item_authorize", args=[batch_id, item_id]),
+            json.dumps({"reason": "data_attempt"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {
+                "error": {
+                    "code": "storage_unavailable",
+                    "message": "Object storage is temporarily unavailable.",
+                    "fields": {},
+                }
+            },
+        )
+        self.assertNotIn("bucket", response.content.decode())
+
+    def test_control_endpoints_require_csrf(self) -> None:
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.user)
+        response = csrf_client.post(
+            reverse("upload_batch_create"),
+            json.dumps({"event_id": self.event.id, "expected_item_count": 1}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)

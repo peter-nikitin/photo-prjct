@@ -1,5 +1,5 @@
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
 
 from config import views
 
@@ -9,5 +9,6 @@ urlpatterns = [
     path("events/", views.legacy_events_redirect, name="legacy_events"),
     path("events/<str:slug>/", views.event_detail, name="event_detail"),
     path("legal/", views.legal, name="legal"),
+    path("photographer/", include("ingestion.urls")),
     path("admin/", admin.site.urls),
 ]

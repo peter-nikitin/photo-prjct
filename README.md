@@ -80,6 +80,15 @@ The first command must return a redirect and the second must return `{"status": 
 renewal without changing a certificate, run `docker compose --project-name photo-prjct-staging
 --env-file .env -f docker-compose.prod.yml exec certbot certbot renew --dry-run` on the VM.
 
+### Temporary staging DNS fallback
+
+Until the staging domain resolves publicly to the VM, leave the staging Environment variable
+`ENABLE_HTTPS` unset or set it to `false`. Nginx remains the only edge and deploy verifies its HTTP
+health locally; Certbot issuance is skipped. This does not make an unroutable domain publicly
+available. To return to the standard production-like flow, set the domain A record to the VM public
+IP, wait for public DNS propagation, set `ENABLE_HTTPS=true`, rerun deployment, and validate the
+HTTP redirect, HTTPS health, certificate subject, and Certbot dry-run renewal. See [ADR 0008](docs/adr/0008-temporary-staging-http-fallback.md).
+
 `Promote production` is manually dispatched with the successfully staged commit SHA. It verifies
 that SHA against the marker on staging, pauses for the production Environment approval, checks out
 the selected revision, and deploys the same GHCR image without rebuilding it. Production remains

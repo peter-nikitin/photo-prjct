@@ -43,6 +43,8 @@ The repository currently contains an early Django application:
 - Nginx is the public HTTPS edge in deployed environments. It terminates TLS, serves ACME
   HTTP-01 challenges, and proxies to the internal Django service; Certbot manages Let's Encrypt
   certificates in persistent volumes.
+- Staging temporarily selects Nginx HTTP-only mode while its public DNS record is unroutable; this
+  narrow exception is governed by [ADR 0008](adr/0008-temporary-staging-http-fallback.md).
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.

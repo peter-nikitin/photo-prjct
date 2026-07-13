@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +46,11 @@ def _job_executable_scripts(workflow: dict[str, Any], job_name: str) -> list[str
     return scripts
 
 
-def _script_call_position(script: str, script_name: str) -> int | None:
+def _normalize_shell(script: str) -> str:
+    return re.sub(r"\\\r?\n\s*", " ", script)
+
+
+def _script_calls(script: str, script_name: str) -> list[tuple[int, list[str]]]:
     allowed_paths = {
         f"deploy/{script_name}",
         f"./deploy/{script_name}",
@@ -53,18 +58,19 @@ def _script_call_position(script: str, script_name: str) -> int | None:
         f"$DEPLOY_ROOT/deploy/{script_name}",
         f"${{DEPLOY_ROOT}}/deploy/{script_name}",
     }
+    calls = []
     offset = 0
-    for line in script.splitlines(keepends=True):
-        segment_offset = 0
+    for line in _normalize_shell(script).splitlines(keepends=True):
+        search_offset = 0
         for segment in re.split(r"\s*(?:&&|\|\||;)\s*", line):
+            segment_offset = line.find(segment, search_offset)
+            search_offset = segment_offset + len(segment)
             stripped = segment.strip()
             if not stripped or stripped.startswith("#"):
-                segment_offset += len(segment)
                 continue
             try:
                 tokens = shlex.split(stripped)
             except ValueError:
-                segment_offset += len(segment)
                 continue
 
             index = 0
@@ -85,16 +91,54 @@ def _script_call_position(script: str, script_name: str) -> int | None:
                 while index < len(tokens) and tokens[index].startswith("-"):
                     index += 1
                 if index < len(tokens) and tokens[index] in allowed_paths:
-                    return offset + segment_offset
-            segment_offset += len(segment)
+                    calls.append((offset + segment_offset, tokens[index + 1 :]))
         offset += len(line)
-    return None
+    return calls
+
+
+def _script_call_position(script: str, script_name: str) -> int | None:
+    calls = _script_calls(script, script_name)
+    return calls[0][0] if calls else None
+
+
+def _required_script_call_arguments(script: str, script_name: str) -> list[str]:
+    calls = _script_calls(script, script_name)
+    assert len(calls) == 1, f"Expected one executable call to deploy/{script_name}"
+    arguments = calls[0][1]
+    assert arguments, f"deploy/{script_name} requires arguments"
+    return arguments
 
 
 def _required_script_call_position(script: str, script_name: str) -> int:
     position = _script_call_position(script, script_name)
     assert position is not None, f"Missing executable call to deploy/{script_name}"
     return position
+
+
+def _assert_success_dependent_sequence(script: str, first_script: str, second_script: str) -> None:
+    normalized = _normalize_shell(script)
+    first_position = _required_script_call_position(normalized, first_script)
+    second_position = _required_script_call_position(normalized, second_script)
+    assert first_position < second_position
+
+    between_calls = normalized[first_position:second_position]
+    assert "||" not in between_calls
+    assert not re.search(r"(?<!\|)\|(?!\|)|(?<!&)&(?!&)", between_calls)
+    assert not re.search(r";\s*(?:true|:)\b", between_calls)
+
+    fail_fast = False
+    for match in re.finditer(r"(?m)^\s*set\s+([+-][A-Za-z]+)", normalized[:first_position]):
+        flags = match.group(1)
+        if "e" in flags:
+            fail_fast = flags.startswith("-")
+
+    same_line = "\n" not in normalized[first_position:second_position]
+    chained = same_line and "&&" in between_calls and ";" not in between_calls
+    if not chained:
+        assert "&&" not in between_calls
+    assert fail_fast or chained, (
+        f"{second_script} must depend on successful completion of {first_script}"
+    )
 
 
 def _envs(step: dict[str, Any]) -> set[str]:
@@ -135,23 +179,32 @@ def _contains_readonly_eligibility_check(script: str) -> bool:
 
 
 def _assert_no_embedded_certificate_or_marker_mutation(script: str) -> None:
+    normalized = _normalize_shell(script)
+    for line in normalized.splitlines():
+        for segment in re.split(r"\s*(?:&&|\|\||;)\s*", line):
+            if _script_call_position(segment, "certbot/renew-certificates.sh") is not None:
+                continue
+            if _script_call_position(segment, "certbot/reconcile-certificate.sh") is not None:
+                continue
+            executable_line = r"(?m)^\s*(?!#)[^\n]*"
+            assert not re.search(
+                executable_line + r"certbot(?:/certbot(?::[^\s]+)?)?[^\n]*\b(?:certonly|renew)\b",
+                segment,
+            )
+
     executable_line = r"(?m)^\s*(?!#)[^\n]*"
-    assert not re.search(
-        executable_line + r"certbot(?:/certbot(?::[^\s]+)?)?[^\n]*\b(?:certonly|renew)\b",
-        script,
-    )
-    assert not re.search(executable_line + r"fullchain\.pem", script)
+    assert not re.search(executable_line + r"fullchain\.pem", normalized)
 
     marker_root = r"[\"']?(?:/opt/photo-prjct|\$(?:DEPLOY_ROOT|\{DEPLOY_ROOT\}))[\"']?"
     marker_path = rf"{marker_root}/[\"']?(?:candidate-image|previous-image|deployed-image)[\"']?"
-    assert "candidate-image" not in script
-    assert "previous-image" not in script
-    assert not re.search(executable_line + rf"(?:>>?)\s*{marker_path}", script)
+    assert "candidate-image" not in normalized
+    assert "previous-image" not in normalized
+    assert not re.search(executable_line + rf"(?:>>?)\s*{marker_path}", normalized)
     assert not re.search(
         rf"(?m)(?:^|[;&|])\s*(?!#)(?:sudo\s+)?"
         rf"(?:mv|cp|tee|rm|touch|install|truncate)"
         rf"\b[^\n]*{marker_path}",
-        script,
+        normalized,
     )
 
 
@@ -164,6 +217,17 @@ def test_workflow_script_calls_are_executable_and_path_scoped() -> None:
     )
     for script in accepted_calls:
         assert _script_call_position(script, "finalize-deployment.sh") == 0
+    assert _required_script_call_arguments(accepted_calls[0], "finalize-deployment.sh") == [
+        "$APP_IMAGE"
+    ]
+    with pytest.raises(AssertionError):
+        _required_script_call_arguments(
+            "sh deploy/finalize-deployment.sh", "finalize-deployment.sh"
+        )
+    assert _required_script_call_arguments(
+        "bash deploy/rollback-deployment.sh $APP_IMAGE https",
+        "rollback-deployment.sh",
+    ) == ["$APP_IMAGE", "https"]
 
     assert (
         _script_call_position(
@@ -172,6 +236,42 @@ def test_workflow_script_calls_are_executable_and_path_scoped() -> None:
         )
         is None
     )
+
+
+def test_workflow_shell_guards_reject_embedded_operations_and_suppressed_errors() -> None:
+    with pytest.raises(AssertionError):
+        _assert_no_embedded_certificate_or_marker_mutation(
+            "docker run --rm certbot/certbot:v2.11.0 \\\n                certonly -d example.com"
+        )
+
+    _assert_no_embedded_certificate_or_marker_mutation(
+        'sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"'
+    )
+    _assert_no_embedded_certificate_or_marker_mutation("bash deploy/certbot/renew-certificates.sh")
+
+    _assert_success_dependent_sequence(
+        "set -eu\nsh deploy/apply-deployment.sh\nsh deploy/finalize-deployment.sh $APP_IMAGE",
+        "apply-deployment.sh",
+        "finalize-deployment.sh",
+    )
+    _assert_success_dependent_sequence(
+        "sh deploy/apply-deployment.sh && sh deploy/finalize-deployment.sh $APP_IMAGE",
+        "apply-deployment.sh",
+        "finalize-deployment.sh",
+    )
+    for bypass in (
+        "sh deploy/apply-deployment.sh || true\nsh deploy/finalize-deployment.sh $APP_IMAGE",
+        "set -e\nsh deploy/apply-deployment.sh; true; sh deploy/finalize-deployment.sh $APP_IMAGE",
+        "set -e\nsh deploy/apply-deployment.sh && true\n"
+        "sh deploy/finalize-deployment.sh $APP_IMAGE",
+        "set -e\nsh deploy/apply-deployment.sh | tee /tmp/apply.log\n"
+        "sh deploy/finalize-deployment.sh $APP_IMAGE",
+        "sh deploy/apply-deployment.sh\nsh deploy/finalize-deployment.sh $APP_IMAGE",
+    ):
+        with pytest.raises(AssertionError):
+            _assert_success_dependent_sequence(
+                bypass, "apply-deployment.sh", "finalize-deployment.sh"
+            )
 
 
 def test_documentation_foundation_exists() -> None:
@@ -375,11 +475,9 @@ def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -
     ):
         _assert_no_embedded_certificate_or_marker_mutation(executable)
 
-    staging_apply_position = _required_script_call_position(staging_apply, "apply-deployment.sh")
-    staging_finalize_position = _required_script_call_position(
-        staging_apply, "finalize-deployment.sh"
+    _assert_success_dependent_sequence(
+        staging_apply, "apply-deployment.sh", "finalize-deployment.sh"
     )
-    assert staging_apply_position < staging_finalize_position
     assert _script_call_position(staging_apply, "verify-public-edge.sh") is None
     assert _script_call_position(staging_apply, "rollback-deployment.sh") is None
     assert all(
@@ -390,8 +488,24 @@ def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -
 
     _required_script_call_position(production_apply, "apply-deployment.sh")
     _required_script_call_position(production_verify, "verify-public-edge.sh")
-    _required_script_call_position(production_finalize, "finalize-deployment.sh")
-    _required_script_call_position(production_rollback, "rollback-deployment.sh")
+
+    image_arguments = {"$APP_IMAGE", "${APP_IMAGE}"}
+    staging_finalize_arguments = _required_script_call_arguments(
+        staging_apply, "finalize-deployment.sh"
+    )
+    production_finalize_arguments = _required_script_call_arguments(
+        production_finalize, "finalize-deployment.sh"
+    )
+    production_rollback_arguments = _required_script_call_arguments(
+        production_rollback, "rollback-deployment.sh"
+    )
+    assert staging_finalize_arguments
+    assert production_finalize_arguments
+    assert len(production_rollback_arguments) >= 2
+    assert staging_finalize_arguments[0] in image_arguments
+    assert production_finalize_arguments[0] in image_arguments
+    assert production_rollback_arguments[0] in image_arguments
+    assert production_rollback_arguments[1] == "https"
 
     verify_id = production_verify_step.get("id")
     assert isinstance(verify_id, str) and verify_id

@@ -202,10 +202,13 @@ def test_deployment_workflows_retry_and_report_edge_health_failures() -> None:
             if step["name"].startswith("Apply ")
         )
 
-        assert (
-            "curl --fail-with-body --silent --show-error --retry 6 --retry-all-errors"
-            in apply_step["with"]["script"]
-        )
+        script = apply_step["with"]["script"]
+
+        assert " up -d --wait" not in script
+        assert " up -d\n" in script
+        assert "max_attempts=12" in script
+        assert "until curl --fail-with-body --silent --show-error" in script
+        assert "Deployment health check failed after $max_attempts attempts" in script
 
 
 def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:

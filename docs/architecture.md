@@ -31,9 +31,10 @@ manual corrections take precedence and the product must not claim certain identi
 
 ## Current architecture — implemented
 
-The repository currently contains an early Django prototype:
+The repository currently contains an early Django application:
 
-- Django 6 serves server-rendered templates and static JavaScript/CSS.
+- Django 6 serves the canonical production UI from server-rendered templates and local static CSS
+  and SVG assets under `src/backend`.
 - The `picflow` application owns the first target `Event` catalog model and a preliminary `Photo`
   model. Published events are managed through Django Admin and rendered by server-side templates.
 - PostgreSQL is configured entirely through environment variables.
@@ -45,7 +46,11 @@ The repository currently contains an early Django prototype:
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
-- Prototype-only frontend sources remain archived under `src/proto`; they are not routed by Django.
+- Unfinished screen concepts live only in the test-only Django visual-reference gallery under
+  `tests/visual`. Playwright renders it through isolated settings and `/__visual__/` routes; neither
+  the production URLconf nor the production Docker image includes the gallery. Visual regression
+  runs in a separate digest-pinned Python/Node/Chromium container with an ephemeral PostgreSQL
+  service, keeping local and CI rendering environments identical.
 - Event covers use a public Yandex Object Storage bucket in deployed environments.
 
 ```text

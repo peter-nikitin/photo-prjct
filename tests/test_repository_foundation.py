@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -27,7 +28,12 @@ def test_adr_index_lists_all_accepted_decisions() -> None:
 
 
 def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:
-    for skill_name in ("manage-yandex-cloud", "write-adr", "write-plan"):
+    for skill_name in (
+        "manage-yandex-cloud",
+        "update-visual-design",
+        "write-adr",
+        "write-plan",
+    ):
         skill_dir = ROOT / ".agents" / "skills" / skill_name
         skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         match = re.match(r"^---\n(.*?)\n---\n", skill_text, re.DOTALL)
@@ -165,6 +171,14 @@ def test_visual_design_skill_has_required_files() -> None:
     ):
         assert (skill / relative_path).is_file(), f"Missing {relative_path}"
 
+    guidance = (skill / "SKILL.md").read_text(encoding="utf-8")
+    inventory = (skill / "references/screen-inventory.md").read_text(encoding="utf-8")
+
+    assert "Never create `src/proto`" in guidance
+    assert "tests/visual/templates/design_reference/" in guidance
+    assert "| Promotions | design-reference |" in inventory
+    assert "| Catalog | production |" in inventory
+
 
 def test_production_django_configuration_excludes_visual_references() -> None:
     for relative_path in ("src/backend/config/urls.py", "src/backend/config/settings.py"):
@@ -173,3 +187,21 @@ def test_production_django_configuration_excludes_visual_references() -> None:
         assert "__visual__" not in production_config
         assert "tests.visual" not in production_config
         assert "design_reference" not in production_config
+
+
+def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    dockerfile = (ROOT / "Dockerfile.visual-tests").read_text(encoding="utf-8")
+    compose = yaml.safe_load((ROOT / "docker-compose.visual.yml").read_text(encoding="utf-8"))
+
+    assert package["scripts"]["test:visual"] == "sh tests/visual/run-in-container.sh test"
+    assert package["scripts"]["test:visual:update"] == (
+        "sh tests/visual/run-in-container.sh update"
+    )
+    assert dockerfile.count("@sha256:") == 2
+    assert "python:3.12-slim-bookworm@sha256:" in dockerfile
+    assert "node:22-bookworm-slim@sha256:" in dockerfile
+    assert "npx playwright install --with-deps chromium" in dockerfile
+    assert compose["services"]["visual-tests"]["depends_on"]["postgres"]["condition"] == (
+        "service_healthy"
+    )

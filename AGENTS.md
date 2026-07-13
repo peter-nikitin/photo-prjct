@@ -17,6 +17,18 @@ Current stage: development-foundation hardening on top of an early Django protot
 Keep these sources synchronized with relevant code changes. Do not turn an open architectural
 question into an implementation choice without an ADR.
 
+## Visual Design Workflow
+
+- Django templates under `src/backend/templates/` and assets under `src/backend/static/ui/` are the
+  production UI source of truth.
+- Use `$update-visual-design` for changes to templates, CSS, icons, responsive layouts, visual
+  snapshots, and new UI concepts.
+- Keep unfinished screens only in the test-only gallery under `tests/visual/`; do not add production
+  routes or working-looking controls before backend behavior exists.
+- Never create `src/proto`, another prototype/archive directory, or standalone demo HTML.
+- Run visual snapshots through the public npm commands; they build the pinned Docker visual-test
+  environment and must not be replaced with host-browser baselines.
+
 ## Technology Stack
 
 ### Backend
@@ -103,6 +115,7 @@ mypy
 pytest --cov --cov-report=term-missing
 python src/backend/manage.py check
 python src/backend/manage.py makemigrations --check --dry-run
+npm run test:visual
 ```
 
 Use environment variables matching `.env.example`. Tests and CI use PostgreSQL; do not add SQLite-only

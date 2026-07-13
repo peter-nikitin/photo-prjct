@@ -82,7 +82,7 @@ update the visual layer without recreating a prototype archive or exposing unfin
 
 ### Task 4: Add Playwright visual regression
 
-**Files:** npm manifests, Playwright config/specs/snapshots, `.gitignore`, CI workflow.
+**Files:** npm manifests, Playwright config/specs/snapshots, pinned visual-test container, `.gitignore`, CI workflow.
 
 - [ ] Pin `@playwright/test` in `package-lock.json`; expose `npm run test:visual` and
   `npm run test:visual:update`.
@@ -93,6 +93,8 @@ update the visual layer without recreating a prototype archive or exposing unfin
 - [ ] Assert no console errors, resource failures, horizontal overflow, or broken live links.
 - [ ] Run Playwright in CI and upload reports/diffs on failure; keep snapshots tracked and ignore
   generated reports, results, and `node_modules`.
+- [ ] Run both public visual commands through a digest-pinned Docker environment with ephemeral
+  PostgreSQL so local and CI baselines use the same Python, Node, Chromium, and OS stack.
 
 ### Task 5: Make the workflow durable
 

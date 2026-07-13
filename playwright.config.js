@@ -1,12 +1,14 @@
 const { defineConfig, devices } = require('@playwright/test');
 
+const isCI = process.env.CI === 'true';
+
 module.exports = defineConfig({
   testDir: 'tests/visual',
   testMatch: 'visual.spec.js',
   timeout: 60_000,
   fullyParallel: false,
-  forbidOnly: Boolean(process.env.CI),
-  retries: process.env.CI ? 1 : 0,
+  forbidOnly: isCI,
+  retries: isCI ? 1 : 0,
   workers: 1,
   reporter: [['html', { outputFolder: 'playwright-report', open: 'never' }]],
   outputDir: 'test-results',
@@ -37,7 +39,7 @@ module.exports = defineConfig({
     command:
       'PYTHONPATH=.:src/backend DJANGO_SETTINGS_MODULE=tests.visual.settings python src/backend/manage.py migrate --noinput && PYTHONPATH=.:src/backend DJANGO_SETTINGS_MODULE=tests.visual.settings python src/backend/manage.py runserver 127.0.0.1:8001 --noreload',
     url: 'http://127.0.0.1:8001/__visual__/catalog/empty/',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: !isCI,
     timeout: 120_000,
   },
 });

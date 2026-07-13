@@ -292,3 +292,4 @@ def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
     assert compose["services"]["visual-tests"]["depends_on"]["postgres"]["condition"] == (
         "service_healthy"
     )
+    assert compose["services"]["visual-tests"]["environment"]["CI"] == "${CI:-false}"

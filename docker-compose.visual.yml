@@ -31,8 +31,8 @@ services:
       DB_PORT: "5432"
       PYTHONPATH: .:src/backend
       DJANGO_SETTINGS_MODULE: tests.visual.settings
+      CI: ${CI:-false}
     volumes:
       - ./tests/visual/visual.spec.js-snapshots:/workspace/tests/visual/visual.spec.js-snapshots
       - ./playwright-report:/workspace/playwright-report
       - ./test-results:/workspace/test-results
-

@@ -1,7 +1,7 @@
 # Visual Design Integration Implementation Plan
 
 - Date: 2026-07-13
-- Status: Draft
+- Status: Implemented
 - Owner: project maintainer
 - Related architecture: [Current architecture](../architecture.md#current-architecture--implemented)
 - Related ADRs: `none`
@@ -52,61 +52,61 @@ update the visual layer without recreating a prototype archive or exposing unfin
 
 **Files:** this plan, Django view tests, repository foundation tests.
 
-- [ ] Add failing assertions for canonical UI paths, forbidden prototype paths, skill structure,
+- [x] Add failing assertions for canonical UI paths, forbidden prototype paths, skill structure,
   unavailable demo routes, production URL isolation, navigation, and external CDN removal.
-- [ ] Run targeted tests and record the expected RED result before implementation.
+- [x] Run targeted tests and record the expected RED result before implementation.
 
 ### Task 2: Deliver the production visual system
 
 **Files:** shared UI templates, catalog/legal templates, UI CSS, local icon sprite, notices.
 
-- [ ] Create a shared accessible shell with `FindMe Photo`, skip link, focus states, responsive
+- [x] Create a shared accessible shell with `FindMe Photo`, skip link, focus states, responsive
   navigation, and only catalog/legal/Admin destinations.
-- [ ] Adapt catalog, empty state, event detail, missing cover, and legal content to the approved visual
+- [x] Adapt catalog, empty state, event detail, missing cover, and legal content to the approved visual
   language while preserving server-rendered `Event` behavior.
-- [ ] Split shared design-system CSS from live catalog/legal CSS, vendor only used Lucide symbols,
+- [x] Split shared design-system CSS from live catalog/legal CSS, vendor only used Lucide symbols,
   and record the third-party license.
-- [ ] Run focused template/view tests until GREEN.
+- [x] Run focused template/view tests until GREEN.
 
 ### Task 3: Preserve unfinished screens outside production
 
 **Files:** `tests/visual/templates/design_reference/`, test-only static assets/settings/URLs/views.
 
-- [ ] Create deterministic static template states for search, dashboard, events, upload, orders,
+- [x] Create deterministic static template states for search, dashboard, events, upload, orders,
   promotions, and purchased photos without localStorage, fake APIs, or mutation logic.
-- [ ] Reuse the production design system; keep reference-only CSS/images under `tests/visual`.
-- [ ] Expose `/__visual__/` only from `tests.visual.settings` and prove production settings/URLs do not
+- [x] Reuse the production design system; keep reference-only CSS/images under `tests/visual`.
+- [x] Expose `/__visual__/` only from `tests.visual.settings` and prove production settings/URLs do not
   reference the gallery.
-- [ ] Remove `src/proto`, obsolete backend templates/static scripts, and duplicate demo assets.
-- [ ] Run repository and route contracts until GREEN.
+- [x] Remove `src/proto`, obsolete backend templates/static scripts, and duplicate demo assets.
+- [x] Run repository and route contracts until GREEN.
 
 ### Task 4: Add Playwright visual regression
 
 **Files:** npm manifests, Playwright config/specs/snapshots, pinned visual-test container, `.gitignore`, CI workflow.
 
-- [ ] Pin `@playwright/test` in `package-lock.json`; expose `npm run test:visual` and
+- [x] Pin `@playwright/test` in `package-lock.json`; expose `npm run test:visual` and
   `npm run test:visual:update`.
-- [ ] Use Chromium with animations disabled, `Europe/Moscow`, desktop `1440x1000`, and mobile
+- [x] Use Chromium with animations disabled, `Europe/Moscow`, desktop `1440x1000`, and mobile
   `390x844`.
-- [ ] Snapshot all desktop states and mobile catalog populated/empty, event covered/uncovered, legal,
+- [x] Snapshot all desktop states and mobile catalog populated/empty, event covered/uncovered, legal,
   search, and upload states.
-- [ ] Assert no console errors, resource failures, horizontal overflow, or broken live links.
-- [ ] Run Playwright in CI and upload reports/diffs on failure; keep snapshots tracked and ignore
+- [x] Assert no console errors, resource failures, horizontal overflow, or broken live links.
+- [x] Run Playwright in CI and upload reports/diffs on failure; keep snapshots tracked and ignore
   generated reports, results, and `node_modules`.
-- [ ] Run both public visual commands through a digest-pinned Docker environment with ephemeral
+- [x] Run both public visual commands through a digest-pinned Docker environment with ephemeral
   PostgreSQL so local and CI baselines use the same Python, Node, Chromium, and OS stack.
 
 ### Task 5: Make the workflow durable
 
 **Files:** `.agents/skills/update-visual-design/`, `AGENTS.md`, architecture, repository contracts.
 
-- [ ] Use the observed failing baseline (an agent proposed `src/proto/promotions/`) to write the
+- [x] Use the observed failing baseline (an agent proposed `src/proto/promotions/`) to write the
   minimal discipline skill and a production/design-reference screen inventory.
-- [ ] Require direct edits to live templates, test-only references for future screens, promotion of a
+- [x] Require direct edits to live templates, test-only references for future screens, promotion of a
   reference when behavior ships, reviewed snapshots, and complete checks.
-- [ ] Update `AGENTS.md` and architecture so Django templates/static are the UI source of truth and
+- [x] Update `AGENTS.md` and architecture so Django templates/static are the UI source of truth and
   `src/proto` is prohibited.
-- [ ] Validate the skill structure and run the same fresh-agent scenario with the skill to confirm
+- [x] Validate the skill structure and run the same fresh-agent scenario with the skill to confirm
   GREEN behavior.
 
 ## Verification

@@ -65,6 +65,21 @@ Create GitHub Environments named `staging` and `production`. Each environment ow
 for `VM_HOST`, `VM_USER`, `VM_SSH_KEY`, `SECRET_KEY`, `ALLOWED_HOSTS`, `DB_NAME`, `DB_USER`,
 `DB_PASSWORD`, `GHCR_USERNAME`, and `GHCR_READ_TOKEN`. Configure required reviewers on `production`.
 
+For the HTTPS edge, add `PUBLIC_DOMAIN` as an Environment variable and `LETSENCRYPT_EMAIL` as an
+Environment secret. The domain's A record must point to the target VM and ports 80/443 must be
+reachable. The deployment issues a missing Let's Encrypt certificate, then Nginx redirects HTTP to
+HTTPS and proxies to the private Django container. Certificate/account state is kept in persistent
+Docker volumes; Certbot attempts renewal every 12 hours. Verify a deployed edge with:
+
+```bash
+curl -I http://<public-domain>/
+curl --fail https://<public-domain>/health/
+```
+
+The first command must return a redirect and the second must return `{"status": "ok"}`. To validate
+renewal without changing a certificate, run `docker compose --project-name photo-prjct-staging
+--env-file .env -f docker-compose.prod.yml exec certbot certbot renew --dry-run` on the VM.
+
 `Promote production` is manually dispatched with the successfully staged commit SHA. It verifies
 that SHA against the marker on staging, pauses for the production Environment approval, checks out
 the selected revision, and deploys the same GHCR image without rebuilding it. Production remains

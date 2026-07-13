@@ -57,4 +57,8 @@ class Migration(migrations.Migration):
             name="src",
             field=models.FileField(blank=True, default="", upload_to="photos/"),
         ),
+        migrations.RunSQL(
+            sql=migrations.RunSQL.noop,
+            reverse_sql="SET LOCAL lock_timeout = '2s';",
+        ),
     ]

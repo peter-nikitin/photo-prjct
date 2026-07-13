@@ -81,12 +81,30 @@ class PhotoMigrationTests(TransactionTestCase):
             call_command("sqlmigrate", app_label, migration, stdout=stdout)
             outputs[(app_label, migration)] = stdout.getvalue()
 
+        backwards_stdout = StringIO()
+        call_command(
+            "sqlmigrate",
+            "picflow",
+            "0003",
+            backwards=True,
+            stdout=backwards_stdout,
+        )
+        backwards_expand = backwards_stdout.getvalue()
+
         expand = outputs[("picflow", "0003")]
         constraints = outputs[("picflow", "0004")]
         validation = outputs[("picflow", "0005")]
         self.assertIn('ADD COLUMN "original_key" varchar(255) NULL', expand)
         self.assertIn("SET LOCAL lock_timeout = '2s'", expand)
+        self.assertLess(
+            expand.index("SET LOCAL lock_timeout = '2s'"),
+            expand.index("ADD COLUMN"),
+        )
         self.assertNotIn("DROP COLUMN", expand)
+        self.assertLess(
+            backwards_expand.index("SET LOCAL lock_timeout = '2s'"),
+            backwards_expand.index("DROP COLUMN"),
+        )
         self.assertIn("CREATE INDEX CONCURRENTLY picflow_photo_uploaded_by_idx", constraints)
         self.assertIn(
             "CREATE UNIQUE INDEX CONCURRENTLY picflow_photo_original_key_uniq", constraints

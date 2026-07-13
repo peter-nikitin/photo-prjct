@@ -92,10 +92,10 @@ jobs:
             set -eu
             install -d -m 0755 /opt/photo-prjct
             : "${PUBLIC_DOMAIN:?Set staging variable PUBLIC_DOMAIN}"
-            case "$ENABLE_HTTPS" in
-              true|false) ;;
-              *) echo "ENABLE_HTTPS must be true or false" >&2; exit 1 ;;
-            esac
+            if [ "$ENABLE_HTTPS" != "true" ] && [ "$ENABLE_HTTPS" != "false" ]; then
+              echo "ENABLE_HTTPS must be true or false" >&2
+              exit 1
+            fi
             if [ "$ENABLE_HTTPS" = "true" ]; then
               : "${LETSENCRYPT_EMAIL:?Set staging secret LETSENCRYPT_EMAIL}"
             fi

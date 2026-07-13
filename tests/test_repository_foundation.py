@@ -1,4 +1,5 @@
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -132,11 +133,35 @@ def test_staging_can_temporarily_disable_https_without_changing_production_defau
 
     assert "ENABLE_HTTPS: ${{ vars.ENABLE_HTTPS || 'false' }}" in staging
     assert "ENABLE_HTTPS: ${{ vars.ENABLE_HTTPS || 'true' }}" in production
-    assert 'case "$ENABLE_HTTPS" in' in staging
-    assert 'case "$ENABLE_HTTPS" in' in production
+    assert 'if [ "$ENABLE_HTTPS" != "true" ] && [ "$ENABLE_HTTPS" != "false" ]; then' in staging
+    assert 'if [ "$ENABLE_HTTPS" != "true" ] && [ "$ENABLE_HTTPS" != "false" ]; then' in production
     assert 'if [ "$ENABLE_HTTPS" = "true" ]; then' in staging
     assert 'if [ "$ENABLE_HTTPS" = "true" ]; then' in production
     assert 'ENABLE_HTTPS="${ENABLE_HTTPS:-true}"' in nginx_startup
+
+
+def test_deployment_shell_scripts_have_valid_bash_syntax() -> None:
+    for workflow_name, job_name in (
+        ("deploy.yml", "deploy"),
+        ("promote-production.yml", "promote"),
+    ):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
+        )
+        apply_step = next(
+            step
+            for step in workflow["jobs"][job_name]["steps"]
+            if step["name"].startswith("Apply ")
+        )
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=apply_step["with"]["script"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
 
 
 def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:

@@ -108,38 +108,93 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
     assert "healthcheck" in compose["services"]["web"]
 
 
-def test_production_compose_has_a_private_application_behind_https_edge() -> None:
+def test_public_environments_share_one_https_edge_overlay() -> None:
     app_compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
-    production = yaml.safe_load(
-        (ROOT / "docker-compose.production.yml").read_text(encoding="utf-8")
+    shared_path = ROOT / "docker-compose.https.yml"
+    staging_workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    production_workflow = (ROOT / ".github/workflows/promote-production.yml").read_text(
+        encoding="utf-8"
     )
 
     assert "ports" not in app_compose["services"]["web"]
-    assert production["services"]["nginx"]["ports"] == ["80:80", "443:443"]
-    assert production["services"]["nginx"]["depends_on"]["web"]["condition"] == "service_healthy"
-    assert "certbot" in production["services"]
-    assert production["services"]["certbot"]["entrypoint"] == [
-        "/bin/sh",
-        "/opt/certbot/renew-certificates.sh",
-    ]
-    assert production["services"]["nginx"]["healthcheck"]["test"] == [
-        "CMD-SHELL",
-        "wget -q -O /dev/null http://127.0.0.1/health/",
-    ]
-    assert "letsencrypt" in production["volumes"]
-    assert not (ROOT / "deploy/nginx/http.conf").exists()
-    assert (ROOT / "deploy/nginx/https.conf").is_file()
+    assert shared_path.is_file(), "Missing docker-compose.https.yml"
+
+    shared = yaml.safe_load(shared_path.read_text(encoding="utf-8"))
+
+    assert shared["services"]["nginx"]["ports"] == ["80:80", "443:443"]
+    assert "certbot" in shared["services"]
+    for workflow_path in (ROOT / ".github/workflows").glob("*.yml"):
+        workflow_uses_shared_edge = "docker-compose.https.yml" in workflow_path.read_text(
+            encoding="utf-8"
+        )
+        assert workflow_uses_shared_edge == (workflow_path.name == "promote-production.yml")
+
+    assert "docker-compose.https.yml" in production_workflow
+    assert "docker-compose.staging.yml" in staging_workflow
+    assert not (ROOT / "docker-compose.production.yml").exists()
 
 
-def test_deployment_workflows_configure_https_edge_without_committing_values() -> None:
+def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None:
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
     staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
     production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
 
-    assert "PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}" in staging
+    public_variables = (
+        "PUBLIC_DOMAIN",
+        "PUBLIC_DOMAIN_ALIAS",
+        "EXPECTED_PUBLIC_IPV4",
+    )
+    for variable in public_variables:
+        assert re.search(rf"^{variable}=", example, re.MULTILINE)
+        workflow_assignment = f"{variable}: ${{{{ vars.{variable} }}}}"
+        assert workflow_assignment in staging
+        assert workflow_assignment in production
+        assert re.search(rf"^\s*envs: .*\b{variable}\b", staging, re.MULTILINE)
+        assert re.search(rf"^\s*envs: .*\b{variable}\b", production, re.MULTILINE)
+
     assert "LETSENCRYPT_EMAIL" not in staging
-    assert "ENABLE_HTTPS" not in staging
     assert "LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}" in production
-    assert "docker-compose.production.yml" in production
+    assert "docker-compose.https.yml" in production
+
+
+def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -> None:
+    script_paths = (
+        "deploy/certbot/reconcile-certificate.sh",
+        "deploy/finalize-deployment.sh",
+        "deploy/rollback-deployment.sh",
+        "deploy/verify-public-edge.sh",
+    )
+    for relative_path in script_paths:
+        assert (ROOT / relative_path).is_file(), f"Missing {relative_path}"
+
+    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+    apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+
+    assert "/deploy/apply-deployment.sh" in staging
+    assert "/deploy/finalize-deployment.sh" in staging
+    assert "deploy/verify-public-edge.sh" not in staging
+
+    for script_path in (
+        "/deploy/apply-deployment.sh",
+        "deploy/verify-public-edge.sh",
+        "/deploy/finalize-deployment.sh",
+        "/deploy/rollback-deployment.sh",
+    ):
+        assert script_path in production
+
+    assert "/deploy/certbot/reconcile-certificate.sh" in apply_script
+
+    for workflow in (staging, production):
+        for embedded_operation in (
+            "certbot certonly",
+            "certbot renew",
+            "fullchain.pem",
+            "> /opt/photo-prjct/candidate-image",
+            "> /opt/photo-prjct/previous-image",
+            "> /opt/photo-prjct/deployed-image",
+        ):
+            assert embedded_operation not in workflow
 
 
 def test_staging_can_temporarily_disable_https_without_changing_production_default() -> None:

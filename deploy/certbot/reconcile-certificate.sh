@@ -8,10 +8,13 @@ set -eu
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 
 valid_hostname() {
-    case "$1" in
+    hostname="$1"
+    [ "${#hostname}" -le 253 ] || return 1
+    case "$hostname" in
         "" | *[!A-Za-z0-9.-]*) return 1 ;;
     esac
-    return 0
+    printf '%s\n' "$hostname" | grep -Eq \
+        '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
 }
 
 valid_hostname "$PUBLIC_DOMAIN" || {
@@ -27,50 +30,23 @@ fi
 
 certificate_volume="${COMPOSE_PROJECT_NAME}_letsencrypt"
 certificate_path="/etc/letsencrypt/live/photo-prjct/fullchain.pem"
-
-normalize_names() {
-    tr ',' '\n' |
-        sed -n 's/^[[:space:]]*DNS:[[:space:]]*//p' |
-        tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz' |
-        LC_ALL=C sort -u
-}
-
-desired_names="$(
-    {
-        printf 'DNS:%s\n' "$PUBLIC_DOMAIN"
-        if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
-            printf 'DNS:%s\n' "$PUBLIC_DOMAIN_ALIAS"
-        fi
-    } | normalize_names
-)"
-
 docker volume create "$certificate_volume" >/dev/null
 
-certificate_exists=false
-existing_output=""
-if existing_output="$(docker run --rm --entrypoint openssl \
+if docker run --rm --entrypoint sh \
     -v "$certificate_volume:/etc/letsencrypt:ro" \
     certbot/certbot:v2.11.0 \
-    x509 -in "$certificate_path" -noout -ext subjectAltName 2>/dev/null)"; then
-    certificate_exists=true
-    existing_names="$(printf '%s\n' "$existing_output" | normalize_names)"
-    if [ "$existing_names" = "$desired_names" ]; then
-        echo "Certificate SAN set already matches configured public domains"
-        exit 0
-    fi
+    -c 'test -f "$1"' sh "$certificate_path"; then
+    echo "Certificate already exists"
+    exit 0
 fi
 
 alias_arguments=""
 if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
     alias_arguments="-d $PUBLIC_DOMAIN_ALIAS"
 fi
-renewal_argument=""
-if [ "$certificate_exists" = true ]; then
-    renewal_argument="--force-renewal"
-fi
 
 docker run --rm --network host \
     -v "$certificate_volume:/etc/letsencrypt" \
-    certbot/certbot:v2.11.0 certonly --standalone --non-interactive --agree-tos \
-    --email "$LETSENCRYPT_EMAIL" --cert-name photo-prjct \
-    -d "$PUBLIC_DOMAIN" $alias_arguments $renewal_argument
+    certbot/certbot:v2.11.0 certonly --standalone \
+    --non-interactive --agree-tos --email "$LETSENCRYPT_EMAIL" \
+    --cert-name photo-prjct -d "$PUBLIC_DOMAIN" $alias_arguments

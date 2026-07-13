@@ -59,7 +59,6 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}
           PUBLIC_DOMAIN_ALIAS: ${{ vars.PUBLIC_DOMAIN_ALIAS }}
-          EXPECTED_PUBLIC_IPV4: ${{ vars.EXPECTED_PUBLIC_IPV4 }}
           LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
           MEDIA_STORAGE_BACKEND: ${{ vars.MEDIA_STORAGE_BACKEND || 'filesystem' }}
           MEDIA_S3_ENDPOINT_URL: ${{ vars.MEDIA_S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
@@ -74,41 +73,5 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script_stop: true
-          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,PUBLIC_DOMAIN_ALIAS,EXPECTED_PUBLIC_IPV4,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,GHCR_USERNAME,GHCR_READ_TOKEN
+          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,PUBLIC_DOMAIN_ALIAS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,GHCR_USERNAME,GHCR_READ_TOKEN
           script: DEPLOYMENT_TARGET=production DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-production sh /opt/photo-prjct/deploy/apply-deployment.sh
-      - name: Verify production public edge
-        id: public_verify
-        continue-on-error: true
-        env:
-          PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}
-          PUBLIC_DOMAIN_ALIAS: ${{ vars.PUBLIC_DOMAIN_ALIAS }}
-          EXPECTED_PUBLIC_IPV4: ${{ vars.EXPECTED_PUBLIC_IPV4 }}
-        run: sh deploy/verify-public-edge.sh
-      - name: Finalize production deployment
-        if: steps.public_verify.outcome == 'success'
-        uses: appleboy/ssh-action@v1.0.3
-        env:
-          APP_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha }}
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          script_stop: true
-          envs: APP_IMAGE
-          script: DEPLOY_ROOT=/opt/photo-prjct sh /opt/photo-prjct/deploy/finalize-deployment.sh "$APP_IMAGE"
-      - name: Roll back production deployment
-        if: always() && steps.public_verify.outcome == 'failure'
-        uses: appleboy/ssh-action@v1.0.3
-        env:
-          APP_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha }}
-          PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          script_stop: true
-          envs: APP_IMAGE,PUBLIC_DOMAIN
-          script: DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-production sh /opt/photo-prjct/deploy/rollback-deployment.sh "$APP_IMAGE" https
-      - name: Fail production deployment
-        if: always() && steps.public_verify.outcome == 'failure'
-        run: exit 1

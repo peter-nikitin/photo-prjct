@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,33 +100,10 @@ def _script_call_position(script: str, script_name: str) -> int | None:
     return calls[0][0] if calls else None
 
 
-def _required_script_call_arguments(script: str, script_name: str) -> list[str]:
-    calls = _script_calls(script, script_name)
-    assert len(calls) == 1, f"Expected one executable call to deploy/{script_name}"
-    arguments = calls[0][1]
-    assert arguments, f"deploy/{script_name} requires arguments"
-    return arguments
-
-
 def _required_script_call_position(script: str, script_name: str) -> int:
     position = _script_call_position(script, script_name)
     assert position is not None, f"Missing executable call to deploy/{script_name}"
     return position
-
-
-def _assert_success_dependent_sequence(script: str, first_script: str, second_script: str) -> None:
-    normalized = _normalize_shell(script)
-    first_position = _required_script_call_position(normalized, first_script)
-    second_position = _required_script_call_position(normalized, second_script)
-    assert first_position < second_position
-
-    between_calls = normalized[first_position:second_position]
-    assert not re.search(r"(?m)^\s*set\s+[+-][A-Za-z]*e", normalized)
-    assert "||" not in between_calls
-    assert not re.search(r"(?<!\|)\|(?!\|)|(?<!&)&(?!&)", between_calls)
-    assert ";" not in between_calls
-    assert between_calls.count("&&") == 1
-    assert re.search(r"&&\s*$", between_calls)
 
 
 def _envs(step: dict[str, Any]) -> set[str]:
@@ -224,86 +200,6 @@ def _assert_no_embedded_certificate_or_marker_mutation(script: str) -> None:
         rf"\b[^\n]*{marker_path}",
         normalized,
     )
-
-
-def test_workflow_script_calls_are_executable_and_path_scoped() -> None:
-    accepted_calls = (
-        'sh "$DEPLOY_ROOT/deploy/finalize-deployment.sh" "$APP_IMAGE"',
-        'sh "$DEPLOY_ROOT"/deploy/finalize-deployment.sh "$APP_IMAGE"',
-        "env APP_IMAGE=image sh /opt/photo-prjct/deploy/finalize-deployment.sh image",
-        "bash ./deploy/finalize-deployment.sh image",
-    )
-    for script in accepted_calls:
-        assert _script_call_position(script, "finalize-deployment.sh") == 0
-    assert _required_script_call_arguments(accepted_calls[0], "finalize-deployment.sh") == [
-        "$APP_IMAGE"
-    ]
-    with pytest.raises(AssertionError):
-        _required_script_call_arguments(
-            "sh deploy/finalize-deployment.sh", "finalize-deployment.sh"
-        )
-    assert _required_script_call_arguments(
-        "bash deploy/rollback-deployment.sh $APP_IMAGE https",
-        "rollback-deployment.sh",
-    ) == ["$APP_IMAGE", "https"]
-
-    assert (
-        _script_call_position(
-            "sh /tmp/fake-deploy/finalize-deployment.sh image",
-            "finalize-deployment.sh",
-        )
-        is None
-    )
-
-
-def test_workflow_shell_guards_reject_embedded_operations_and_suppressed_errors() -> None:
-    with pytest.raises(AssertionError):
-        _assert_no_embedded_certificate_or_marker_mutation(
-            "docker run --rm certbot/certbot:v2.11.0 \\\n                certonly -d example.com"
-        )
-
-    _assert_no_embedded_certificate_or_marker_mutation(
-        'sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"'
-    )
-    _assert_no_embedded_certificate_or_marker_mutation(
-        "bash deploy/certbot/renew-certificates.sh --dry-run"
-    )
-
-    for delegated_bypass in (
-        'sh deploy/certbot/reconcile-certificate.sh "$(docker run '
-        'certbot/certbot:v2.11.0 certonly)"',
-        "sh deploy/certbot/reconcile-certificate.sh | tee /tmp/certbot.log",
-        "sh deploy/certbot/reconcile-certificate.sh && echo done",
-        "sh deploy/certbot/reconcile-certificate.sh; echo done",
-    ):
-        with pytest.raises(AssertionError):
-            _assert_no_embedded_certificate_or_marker_mutation(delegated_bypass)
-
-    _assert_success_dependent_sequence(
-        "sh deploy/apply-deployment.sh &&\n  sh deploy/finalize-deployment.sh $APP_IMAGE",
-        "apply-deployment.sh",
-        "finalize-deployment.sh",
-    )
-    _assert_success_dependent_sequence(
-        "sh deploy/apply-deployment.sh && sh deploy/finalize-deployment.sh $APP_IMAGE",
-        "apply-deployment.sh",
-        "finalize-deployment.sh",
-    )
-    for bypass in (
-        "sh deploy/apply-deployment.sh || true\nsh deploy/finalize-deployment.sh $APP_IMAGE",
-        "set -e\nsh deploy/apply-deployment.sh; true; sh deploy/finalize-deployment.sh $APP_IMAGE",
-        "set -e\nsh deploy/apply-deployment.sh && true\n"
-        "sh deploy/finalize-deployment.sh $APP_IMAGE",
-        "set -e\nsh deploy/apply-deployment.sh | tee /tmp/apply.log\n"
-        "sh deploy/finalize-deployment.sh $APP_IMAGE",
-        "set +e\nsh deploy/apply-deployment.sh && sh deploy/finalize-deployment.sh $APP_IMAGE",
-        "set -eu\nsh deploy/apply-deployment.sh && sh deploy/finalize-deployment.sh $APP_IMAGE",
-        "sh deploy/apply-deployment.sh\nsh deploy/finalize-deployment.sh $APP_IMAGE",
-    ):
-        with pytest.raises(AssertionError):
-            _assert_success_dependent_sequence(
-                bypass, "apply-deployment.sh", "finalize-deployment.sh"
-            )
 
 
 def test_documentation_foundation_exists() -> None:
@@ -441,39 +337,34 @@ def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None
     production = _load_workflow("promote-production.yml")
     staging_apply = _workflow_step(staging, "deploy", "Apply staging deployment")
     production_apply = _workflow_step(production, "promote", "Apply production deployment")
-    production_verify = _workflow_step(production, "promote", "Verify production public edge")
-
-    public_variables = (
-        "PUBLIC_DOMAIN",
-        "PUBLIC_DOMAIN_ALIAS",
-        "EXPECTED_PUBLIC_IPV4",
-    )
+    public_variables = ("PUBLIC_DOMAIN", "PUBLIC_DOMAIN_ALIAS")
     for variable in public_variables:
         assert re.search(rf"^{variable}=", example, re.MULTILINE)
         expected_value = f"${{{{ vars.{variable} }}}}"
         assert staging_apply["env"][variable] == expected_value
         assert production_apply["env"][variable] == expected_value
-        assert production_verify["env"][variable] == expected_value
         assert variable in _envs(staging_apply)
         assert variable in _envs(production_apply)
 
+    assert "EXPECTED_PUBLIC_IPV4" not in example
+    assert "EXPECTED_PUBLIC_IPV4" not in json.dumps(staging)
+    assert "EXPECTED_PUBLIC_IPV4" not in json.dumps(production)
     assert "LETSENCRYPT_EMAIL" not in json.dumps(staging)
     assert production_apply["env"]["LETSENCRYPT_EMAIL"] == ("${{ secrets.LETSENCRYPT_EMAIL }}")
     assert "LETSENCRYPT_EMAIL" in _envs(production_apply)
-    assert "LETSENCRYPT_EMAIL" not in production_verify.get("env", {})
 
 
 def test_focused_deployment_scripts_are_versioned() -> None:
     for relative_path in (
         "deploy/certbot/reconcile-certificate.sh",
-        "deploy/finalize-deployment.sh",
-        "deploy/rollback-deployment.sh",
         "deploy/verify-public-edge.sh",
     ):
         assert (ROOT / relative_path).is_file(), f"Missing {relative_path}"
+    assert not (ROOT / "deploy/finalize-deployment.sh").exists()
+    assert not (ROOT / "deploy/rollback-deployment.sh").exists()
 
 
-def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -> None:
+def test_deployment_workflows_use_one_blocking_apply_step() -> None:
     staging = _load_workflow("deploy.yml")
     production = _load_workflow("promote-production.yml")
     staging_apply_step = _workflow_step(staging, "deploy", "Apply staging deployment")
@@ -481,22 +372,9 @@ def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -
         production, "verify-staging", "Confirm image was deployed successfully to staging"
     )
     production_apply_step = _workflow_step(production, "promote", "Apply production deployment")
-    production_verify_step = _workflow_step(production, "promote", "Verify production public edge")
-    production_finalize_step = _workflow_step(
-        production, "promote", "Finalize production deployment"
-    )
-    production_rollback_step = _workflow_step(
-        production, "promote", "Roll back production deployment"
-    )
-    production_fail_step = _workflow_step(production, "promote", "Fail production deployment")
-
     staging_apply = _executable_script(staging_apply_step, "with.script")
     production_eligibility = _executable_script(production_eligibility_step, "with.script")
     production_apply = _executable_script(production_apply_step, "with.script")
-    production_verify = _executable_script(production_verify_step, "run")
-    production_finalize = _executable_script(production_finalize_step, "with.script")
-    production_rollback = _executable_script(production_rollback_step, "with.script")
-    production_fail = _executable_script(production_fail_step, "run")
     apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
 
     assert _contains_readonly_eligibility_check(production_eligibility)
@@ -507,67 +385,20 @@ def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -
     ):
         _assert_no_embedded_certificate_or_marker_mutation(executable)
 
-    _assert_success_dependent_sequence(
-        staging_apply, "apply-deployment.sh", "finalize-deployment.sh"
-    )
-    assert _script_call_position(staging_apply, "verify-public-edge.sh") is None
-    assert _script_call_position(staging_apply, "rollback-deployment.sh") is None
-    assert all(
-        _script_call_position(script, "verify-public-edge.sh") is None
-        and _script_call_position(script, "rollback-deployment.sh") is None
-        for script in _job_executable_scripts(staging, "deploy")
-    )
-
     _required_script_call_position(production_apply, "apply-deployment.sh")
-    _required_script_call_position(production_verify, "verify-public-edge.sh")
-
-    image_arguments = {"$APP_IMAGE", "${APP_IMAGE}"}
-    staging_finalize_arguments = _required_script_call_arguments(
-        staging_apply, "finalize-deployment.sh"
-    )
-    production_finalize_arguments = _required_script_call_arguments(
-        production_finalize, "finalize-deployment.sh"
-    )
-    production_rollback_arguments = _required_script_call_arguments(
-        production_rollback, "rollback-deployment.sh"
-    )
+    _required_script_call_position(staging_apply, "apply-deployment.sh")
 
     assert staging_apply_step["env"]["APP_IMAGE"] == "${{ needs.build.outputs.app_image }}"
     assert "APP_IMAGE" in _envs(staging_apply_step)
-    expected_production_image = production_apply_step["env"]["APP_IMAGE"]
-    for conditional_step in (production_finalize_step, production_rollback_step):
-        assert conditional_step["env"]["APP_IMAGE"] == expected_production_image
-        assert "APP_IMAGE" in _envs(conditional_step)
-
-    assert staging_finalize_arguments
-    assert production_finalize_arguments
-    assert len(production_rollback_arguments) >= 2
-    assert staging_finalize_arguments[0] in image_arguments
-    assert production_finalize_arguments[0] in image_arguments
-    assert production_rollback_arguments[0] in image_arguments
-    assert production_rollback_arguments[1] == "https"
-
-    verify_id = production_verify_step.get("id")
-    assert isinstance(verify_id, str) and verify_id
-    assert production_verify_step.get("continue-on-error") is True
-    success_condition = f"steps.{verify_id}.outcome == 'success'"
-    failure_condition = f"always() && steps.{verify_id}.outcome == 'failure'"
-    assert production_finalize_step.get("if") == success_condition
-    assert production_rollback_step.get("if") == failure_condition
-    assert production_fail_step.get("if") == failure_condition
-    assert re.search(r"(?m)^\s*exit\s+[1-9][0-9]*\s*$", production_fail)
-
-    promote_steps = production["jobs"]["promote"]["steps"]
-    apply_index = promote_steps.index(production_apply_step)
-    verify_index = promote_steps.index(production_verify_step)
-    assert apply_index < verify_index
-    assert verify_index < promote_steps.index(production_finalize_step)
-    assert verify_index < promote_steps.index(production_rollback_step)
-    assert verify_index < promote_steps.index(production_fail_step)
+    for workflow in (staging, production):
+        serialized = json.dumps(workflow)
+        assert "finalize-deployment.sh" not in serialized
+        assert "rollback-deployment.sh" not in serialized
+        assert "Verify production public edge" not in serialized
 
     assert "DEPLOYMENT_TARGET=staging" in staging_apply
     assert "DEPLOYMENT_TARGET=production" in production_apply
-    _required_script_call_position(apply_script, "certbot/reconcile-certificate.sh")
+    assert 'sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"' in apply_script
     assert re.search(r"(?m)^\s*(?!#)[^\n]*docker-compose\.https\.yml", apply_script)
 
 
@@ -587,8 +418,6 @@ def test_staging_can_temporarily_disable_https_without_changing_production_defau
 def test_versioned_deployment_script_has_valid_shell_syntax() -> None:
     for relative_path in (
         "deploy/apply-deployment.sh",
-        "deploy/finalize-deployment.sh",
-        "deploy/rollback-deployment.sh",
         "deploy/verify-public-edge.sh",
         "deploy/certbot/reconcile-certificate.sh",
     ):
@@ -615,53 +444,44 @@ def test_deployment_script_verifies_the_edge_and_exact_application_image() -> No
     assert "compose up -d --remove-orphans || compose_up_status=$?" in script
     assert "Deployment health check attempt $attempt failed; retrying" in script
     assert "docker inspect --format '{{.Config.Image}}'" in script
-    assert '"$running_image" = "$APP_IMAGE"' in script
-    assert 'mv "$candidate_tmp" "$DEPLOY_ROOT/candidate-image"' in script
-    assert '"$DEPLOY_ROOT/deployed-image" "$DEPLOY_ROOT/previous-image"' in script
-    assert not re.search(r'printf[^\n]+>\s*"?\$DEPLOY_ROOT/deployed-image', script)
+    assert '"$running_image" = "$requested_image"' in script
+    assert "candidate-image" not in script
+    assert "previous-image" not in script
+    assert 'mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"' in script
+    assert 'sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"' in script
     assert "down --volumes" not in script
 
 
-def test_apply_delegates_exact_certificate_reconciliation_and_restores_edge_on_failure() -> None:
+def test_apply_delegates_certificate_bootstrap_and_restores_edge_on_failure() -> None:
     script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
 
     assert "compose stop nginx" in script
     assert 'sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"' in script
-    assert re.search(
-        r'sh "\$DEPLOY_ROOT/deploy/certbot/reconcile-certificate\.sh" '
-        r"\|\| reconcile_status=\$\?.+compose start nginx",
-        script,
-        re.DOTALL,
-    )
+    assert "Certificate bootstrap failed" in script
+    assert "recover_previous_deployment" in script
+    assert "compose up -d --remove-orphans" in script
     assert "certbot/certbot:v2.11.0 certonly" not in script
 
 
-def test_focused_scripts_encode_exact_release_contracts() -> None:
+def test_focused_scripts_encode_minimal_release_contracts() -> None:
     reconcile = (ROOT / "deploy/certbot/reconcile-certificate.sh").read_text(encoding="utf-8")
-    finalize = (ROOT / "deploy/finalize-deployment.sh").read_text(encoding="utf-8")
-    rollback = (ROOT / "deploy/rollback-deployment.sh").read_text(encoding="utf-8")
     verify = (ROOT / "deploy/verify-public-edge.sh").read_text(encoding="utf-8")
 
     assert reconcile.count("certbot/certbot:v2.11.0 certonly") == 1
-    assert "--entrypoint openssl" in reconcile
-    assert "--force-renewal" in reconcile
+    assert "--entrypoint sh" in reconcile
+    assert "--force-renewal" not in reconcile
     assert "--network host" in reconcile
     assert "while " not in reconcile
+    assert "subjectAltName" not in reconcile
 
-    assert 'mv "$DEPLOY_ROOT/candidate-image" "$DEPLOY_ROOT/deployed-image"' in finalize
-    assert "docker" not in finalize
-
-    assert 'case "$edge_mode" in' in rollback
-    assert "docker-compose.staging.yml" in rollback
-    assert "docker-compose.https.yml" in rollback
-    assert "down --volumes" not in rollback
-
-    assert "https://dns.google/resolve" in verify
+    assert "dns.google" not in verify
+    assert "openssl" not in verify
+    assert "EXPECTED_PUBLIC_IPV4" not in verify
+    assert "EXPECTED_PUBLIC_IPV4" not in reconcile
     assert 'if [ -n "$PUBLIC_DOMAIN_ALIAS" ]' in verify
     assert "--max-time" in verify
-    assert "timeout 15 openssl s_client" in verify
     assert "http_code" in verify
-    assert "subjectAltName" in verify
+    assert "redirect_url" in verify
 
 
 def test_deployment_workflows_use_the_versioned_deployment_script() -> None:

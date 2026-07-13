@@ -147,6 +147,14 @@ def test_legacy_prototype_stylesheet_is_removed() -> None:
     assert not (static / "styles.css").exists(), "Legacy prototype stylesheet remains"
 
 
+def test_event_cards_keep_keyboard_focus_visible_inside_clipped_card() -> None:
+    catalog_css = (ROOT / "src/backend/static/ui/catalog.css").read_text(encoding="utf-8")
+
+    assert ".event-card:focus-within" in catalog_css
+    assert ".event-card-link:focus-visible" in catalog_css
+    assert "outline-offset: -4px" in catalog_css
+
+
 def test_visual_design_skill_has_required_files() -> None:
     skill = ROOT / ".agents/skills/update-visual-design"
 

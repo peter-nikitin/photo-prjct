@@ -73,6 +73,10 @@
   box-shadow: 0 10px 30px rgb(35 31 26 / 7%);
 }
 
+.event-card:focus-within {
+  border-color: var(--focus);
+}
+
 .event-card-link {
   display: flex;
   height: 100%;
@@ -83,6 +87,12 @@
 
 .event-card-link:hover {
   color: var(--ink);
+}
+
+.event-card-link:focus-visible {
+  border-radius: calc(var(--radius) - 1px);
+  outline: 3px solid var(--focus);
+  outline-offset: -4px;
 }
 
 .event-card-cover {

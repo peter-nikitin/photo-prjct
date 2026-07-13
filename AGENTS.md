@@ -103,8 +103,23 @@ No Kubernetes, service mesh, or microservices at this stage.
 
 ### Required Checks
 
-Install production and development dependencies with `pip install -r requirements-dev.txt`. Before
-considering a change complete, run:
+Verification must be proportional to the changed surface and its risk. Always run `git diff --check`.
+
+- Documentation-only changes (`*.md`, ADRs, plans, and skills): do not run Python, Django, database,
+  or coverage checks by default. Run a targeted repository-contract test only when the change affects
+  documented file paths, required structure, or workflow contracts.
+- Python application changes: run Ruff, mypy when typed surfaces change, and the smallest relevant
+  pytest selection. Expand to the full suite when shared behavior or test infrastructure changes.
+- Models, migrations, Django settings, dependencies, or database integration: run the complete check
+  set below against PostgreSQL.
+- Deployment, Compose, shell, or GitHub Actions changes: run the relevant syntax/configuration checks
+  and targeted repository-contract tests. Add application checks only when runtime behavior or
+  application configuration changes.
+- Run the complete check set for broad, cross-cutting, release-critical, or uncertain changes, or
+  when explicitly requested. CI remains the authoritative full regression check for pull requests.
+
+Install production and development dependencies with `pip install -r requirements-dev.txt` when the
+selected checks require them. The complete check set is:
 
 ```bash
 ruff format --check .

@@ -124,8 +124,7 @@ def register_items(
 
     with transaction.atomic():
         batch = _locked_owned_batch(uploader=uploader, batch_id=batch_id)
-        if batch.status == UploadBatch.Status.COMPLETED:
-            raise BatchConflict("batch_completed", "The upload batch is already completed.")
+        _ensure_open_batch(batch)
 
         client_ids = [item.client_item_id for item in items]
         existing = {
@@ -324,8 +323,7 @@ def _authorize_locked(
     reason: AuthorizationReason,
     storage: UploadStorage,
 ) -> AuthorizationResult:
-    if batch.status == UploadBatch.Status.COMPLETED:
-        raise BatchConflict("batch_completed", "The upload batch is already completed.")
+    _ensure_open_batch(batch)
     if item.status == UploadItem.Status.UPLOADED:
         raise ItemStateConflict("item_uploaded", "An uploaded item cannot be authorized.")
     if item.status == UploadItem.Status.FAILED:
@@ -388,16 +386,6 @@ def _derive_and_save(*, batch: UploadBatch, require_terminal: bool) -> BatchResu
             status = UploadBatch.Status.PARTIAL
         elif failed == batch.expected_item_count:
             status = UploadBatch.Status.FAILED
-    elif (
-        status
-        in {
-            UploadBatch.Status.UPLOADING,
-            UploadBatch.Status.PARTIAL,
-            UploadBatch.Status.FAILED,
-        }
-        and active
-    ):
-        status = UploadBatch.Status.UPLOADING
 
     now = timezone.now()
     batch.status = status
@@ -409,6 +397,16 @@ def _derive_and_save(*, batch: UploadBatch, require_terminal: bool) -> BatchResu
 
 def _locked_owned_batch(*, uploader: AbstractBaseUser, batch_id: UUID) -> UploadBatch:
     return UploadBatch.objects.select_for_update().get(id=batch_id, uploader_id=uploader.pk)
+
+
+def _ensure_open_batch(batch: UploadBatch) -> None:
+    if batch.status == UploadBatch.Status.COMPLETED:
+        raise BatchConflict("batch_completed", "The upload batch is already completed.")
+    if batch.status in {UploadBatch.Status.PARTIAL, UploadBatch.Status.FAILED}:
+        raise BatchConflict(
+            "batch_terminal",
+            "Retry a failed item explicitly before continuing this upload batch.",
+        )
 
 
 def _locked_item(*, batch: UploadBatch, item_id: UUID) -> UploadItem:

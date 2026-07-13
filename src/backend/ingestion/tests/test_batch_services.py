@@ -37,10 +37,11 @@ class FakeStorage:
 
     def create_presigned_post(self, *, incoming_key: str, max_bytes: int) -> UploadGrant:
         self.calls.append((incoming_key, max_bytes))
+        sequence = len(self.calls)
         return UploadGrant(
             url="https://upload.example.test",
-            fields={"policy": "write-only"},
-            expires_at=timezone.now() + timedelta(minutes=10),
+            fields={"policy": f"write-only-{sequence}"},
+            expires_at=timezone.now() + timedelta(minutes=10 + sequence),
         )
 
 
@@ -148,7 +149,12 @@ class BatchServiceTests(TransactionTestCase):
         )
         self.assertEqual(first.item.attempt, 1)
         self.assertEqual(refreshed.item.attempt, 1)
-        self.assertEqual(first.grant.fields, {"policy": "write-only"})
+        self.assertEqual(first.grant.fields, {"policy": "write-only-1"})
+        self.assertEqual(refreshed.grant.fields, {"policy": "write-only-2"})
+        self.assertNotEqual(first.grant.expires_at, refreshed.grant.expires_at)
+        persisted = UploadItem.objects.get(id=item.id)
+        self.assertEqual(persisted.authorization_expires_at, refreshed.grant.expires_at)
+        self.assertEqual(persisted.upload_attempts, 1)
         for expected in (2, 3, 4):
             result = authorize_item(
                 uploader=self.user,
@@ -179,7 +185,7 @@ class BatchServiceTests(TransactionTestCase):
             item_id=item.id,
             code="transfer_cancelled",
         )
-        with self.assertRaises(ItemStateConflict):
+        with self.assertRaises(BatchConflict):
             authorize_item(
                 uploader=self.user,
                 batch_id=batch.id,
@@ -227,6 +233,77 @@ class BatchServiceTests(TransactionTestCase):
         report_item_failed(
             uploader=self.user, batch_id=batch.id, item_id=item.id, code="transfer_cancelled"
         )
+
+    def test_terminal_batches_reject_registration_and_authorization_without_reopening(self) -> None:
+        storage = FakeStorage()
+        failed_batch = self.make_batch(2)
+        failed_item = self.register_one(failed_batch.id)
+        UploadItem.objects.filter(id=failed_item.id).update(status=UploadItem.Status.FAILED)
+        UploadBatch.objects.filter(id=failed_batch.id).update(status=UploadBatch.Status.FAILED)
+
+        with self.assertRaises(BatchConflict):
+            register_items(
+                uploader=self.user,
+                batch_id=failed_batch.id,
+                items=[self.item_input()],
+            )
+        with self.assertRaises(BatchConflict):
+            authorize_item(
+                uploader=self.user,
+                batch_id=failed_batch.id,
+                item_id=failed_item.id,
+                reason=AuthorizationReason.DATA_ATTEMPT,
+                storage=storage,
+            )
+        self.assertEqual(
+            UploadBatch.objects.get(id=failed_batch.id).status, UploadBatch.Status.FAILED
+        )
+
+        partial_batch = self.make_batch(2)
+        partial_items = [self.register_one(partial_batch.id) for _ in range(2)]
+        UploadItem.objects.filter(id=partial_items[0].id).update(status=UploadItem.Status.UPLOADED)
+        UploadItem.objects.filter(id=partial_items[1].id).update(status=UploadItem.Status.FAILED)
+        derive_batch_status(uploader=self.user, batch_id=partial_batch.id, finalize=True)
+
+        with self.assertRaises(BatchConflict):
+            register_items(
+                uploader=self.user,
+                batch_id=partial_batch.id,
+                items=[self.item_input(partial_items[0].client_item_id)],
+            )
+        UploadItem.objects.filter(id=partial_items[1].id).update(status=UploadItem.Status.PENDING)
+        with self.assertRaises(BatchConflict):
+            authorize_item(
+                uploader=self.user,
+                batch_id=partial_batch.id,
+                item_id=partial_items[1].id,
+                reason=AuthorizationReason.DATA_ATTEMPT,
+                storage=storage,
+            )
+        derived = derive_batch_status(uploader=self.user, batch_id=partial_batch.id, finalize=False)
+        self.assertEqual(derived.status, UploadBatch.Status.PARTIAL)
+
+    def test_manual_retry_is_the_only_transition_reopening_partial_batch(self) -> None:
+        storage = FakeStorage()
+        batch = self.make_batch(2)
+        uploaded, failed = [self.register_one(batch.id) for _ in range(2)]
+        UploadItem.objects.filter(id=uploaded.id).update(status=UploadItem.Status.UPLOADED)
+        report_item_failed(
+            uploader=self.user,
+            batch_id=batch.id,
+            item_id=failed.id,
+            code="transfer_cancelled",
+        )
+        self.assertEqual(UploadBatch.objects.get(id=batch.id).status, UploadBatch.Status.PARTIAL)
+
+        retried = manual_retry_item(
+            uploader=self.user,
+            batch_id=batch.id,
+            item_id=failed.id,
+            storage=storage,
+        )
+        self.assertEqual(retried.item.attempt, 1)
+        self.assertEqual(UploadBatch.objects.get(id=batch.id).status, UploadBatch.Status.UPLOADING)
 
     def test_derive_completed_partial_and_failed(self) -> None:
         for uploaded, expected_status in (
@@ -338,16 +415,23 @@ class RegistrationConcurrencyTests(TransactionTestCase):
                 worker_connection.close()
             return "unexpected_success"
 
+        def register_in_worker():
+            close_old_connections()
+            worker_connection = connections["default"]
+            try:
+                return register_items(
+                    uploader=self.user,
+                    batch_id=batch.id,
+                    items=[first, second],
+                )
+            finally:
+                worker_connection.close()
+
         with (
             patch.object(batch_services, "_metadata_matches", side_effect=pause_with_batch_lock),
             ThreadPoolExecutor(max_workers=2) as pool,
         ):
-            registration = pool.submit(
-                register_items,
-                uploader=self.user,
-                batch_id=batch.id,
-                items=[first, second],
-            )
+            registration = pool.submit(register_in_worker)
             self.assertTrue(lock_held.wait(timeout=5))
             finalization = pool.submit(finalize)
             with self.assertRaises(FutureTimeout):

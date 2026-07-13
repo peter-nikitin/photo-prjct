@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "scripts": {
+    "test:visual": "sh tests/visual/run-in-container.sh test",
+    "test:visual:update": "sh tests/visual/run-in-container.sh update",
+    "test:visual:inside": "playwright test",
+    "test:visual:update:inside": "playwright test --update-snapshots"
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "@playwright/test": "1.61.0"
+  }
+}

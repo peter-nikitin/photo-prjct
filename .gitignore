@@ -41,3 +41,6 @@ src/backend/staticfiles/
 # === testing ===
 .coverage
 .pytest_cache/
+node_modules/
+playwright-report/
+test-results/

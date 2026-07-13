@@ -1,12 +1,44 @@
-{% extends "catalog/base.html" %}
+{% extends "ui/base.html" %}
+{% load static %}
 {% block title %}{{ event.name }} — FindMe Photo{% endblock %}
+{% block body_class %}event-detail-page{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/catalog.css' %}">{% endblock %}
 {% block content %}
   <article class="event-detail">
-    <a class="back-link" href="{% url 'event_catalog' %}">← Все события</a>
-    {% if event.cover %}<img class="detail-cover" src="{{ event.cover.url }}" alt="Обложка события {{ event.name }}">{% else %}<div class="detail-cover cover-placeholder" aria-hidden="true"></div>{% endif %}
-    <span class="event-type">{{ event.get_access_type_display }}</span>
-    <h1>{{ event.name }}</h1>
-    <p class="event-meta">{{ event.city }} · {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</p>
-    {% if event.description %}<div class="description">{{ event.description|linebreaks }}</div>{% endif %}
+    <a class="back-link" href="{% url 'event_catalog' %}">
+      <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#arrow-left"></use></svg>
+      Все события
+    </a>
+    <div class="event-detail-grid">
+      <div class="detail-cover-wrap">
+        {% if event.cover %}
+          <img class="detail-cover" src="{{ event.cover.url }}" alt="Обложка события {{ event.name }}">
+        {% else %}
+          <div class="detail-cover cover-placeholder" role="img" aria-label="У события {{ event.name }} пока нет обложки">
+            <span aria-hidden="true">FM</span>
+          </div>
+        {% endif %}
+      </div>
+      <div class="event-detail-body">
+        <span class="event-type">{{ event.get_access_type_display }}</span>
+        <h1>{{ event.name }}</h1>
+        <dl class="event-detail-meta">
+          <div>
+            <dt><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#map-pin"></use></svg> Город</dt>
+            <dd>{{ event.city }}</dd>
+          </div>
+          <div>
+            <dt><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#calendar"></use></svg> Даты</dt>
+            <dd>{{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</dd>
+          </div>
+        </dl>
+        {% if event.description %}
+          <section class="description" aria-labelledby="description-title">
+            <h2 id="description-title">О событии</h2>
+            {{ event.description|linebreaks }}
+          </section>
+        {% endif %}
+      </div>
+    </div>
   </article>
 {% endblock %}

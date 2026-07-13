@@ -1,0 +1,30 @@
+{% extends "design_reference/base.html" %}
+{% block title %}Поиск фотографий{% endblock %}
+{% block content %}
+  <div class="search-layout">
+    <aside class="panel filters-panel">
+      <div class="panel-title"><strong>Поиск</strong><button class="text-button" type="button">Сбросить</button></div>
+      <label class="field"><span>Номер участника</span><input value="1842" aria-label="Номер участника"></label>
+      <div class="field"><span>По фотографии</span><div class="face-drop"><span class="face-mark">☺</span><strong>Фото загружено</strong><small>Совпадение от 70%</small></div></div>
+      <label class="field"><span>Мероприятие</span><select>{% for event in events %}<option>{{ event.name }}</option>{% endfor %}</select></label>
+      <div class="field"><span>Локация</span><div class="chips"><span class="chip active">Все</span><span class="chip">Старт</span><span class="chip">Трасса</span><span class="chip">Финиш</span></div></div>
+      <button class="button primary" type="button">Найти фото</button>
+    </aside>
+    <section class="reference-board">
+      <header class="screen-heading"><div><p class="eyebrow">London 10K</p><h1>Ваши фотографии</h1><p>Найдено {{ photos|length }} совпадения по номеру 1842</p></div><span class="badge">93% лучшее</span></header>
+      <div class="metric-grid"><article><strong>{{ photos|length }}</strong><span>фото</span></article><article><strong>4</strong><span>с лицом</span></article><article><strong>3</strong><span>номера</span></article></div>
+      <div class="photo-grid">
+        {% for photo in photos %}
+          <article class="photo-card{% if photo.selected %} selected{% endif %}"><div class="photo-wrap"><img src="{{ photo.image }}" alt="Фото {{ photo.photo_id }}"><span class="match">{{ photo.match }}%</span>{% if photo.selected %}<span class="selection-mark">✓</span>{% endif %}</div><div class="photo-meta"><strong>{{ photo.photo_id }}</strong><span>{{ photo.zone }} · {{ photo.time }}</span><small>№ {{ photo.bibs|join:", " }}</small></div></article>
+        {% endfor %}
+      </div>
+    </section>
+    <aside class="panel selection-panel">
+      <div class="panel-title"><strong>Подборка</strong><span class="badge">{{ selected|length }}</span></div>
+      <div class="selection-stack">{% for photo in selected %}<div><img src="{{ photo.image }}" alt="Выбрано {{ photo.photo_id }}"><span>{{ photo.photo_id }}</span><strong>{{ photo.price }} ₽</strong></div>{% endfor %}</div>
+      <div class="total"><span>Итого</span><strong>700 ₽</strong></div>
+      <label class="field"><span>Email для фото</span><input value="runner@example.com"></label>
+      <button class="button primary" type="button">Оформить заказ</button>
+    </aside>
+  </div>
+{% endblock %}

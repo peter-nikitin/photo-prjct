@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update Visual Design"
+  short_description: "Safely evolve FindMe Photo visual design"
+  default_prompt: "Use $update-visual-design to update this project visual layer safely."

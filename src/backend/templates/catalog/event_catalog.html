@@ -1,27 +1,55 @@
-{% extends "catalog/base.html" %}
+{% extends "ui/base.html" %}
+{% load static %}
 {% block title %}События — FindMe Photo{% endblock %}
+{% block body_class %}catalog-page{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/catalog.css' %}">{% endblock %}
 {% block content %}
-  <section class="hero">
-    <p class="eyebrow">Фотобанк мероприятий</p>
-    <h1>Найдите своё событие</h1>
-    <p>Выберите мероприятие, чтобы перейти к его странице.</p>
+  <section class="catalog-hero">
+    <div>
+      <p class="eyebrow">Фотобанк мероприятий</p>
+      <h1>Найдите своё событие</h1>
+      <p class="hero-copy">Выберите мероприятие, чтобы перейти к его странице.</p>
+    </div>
   </section>
   {% if events %}
     <section class="event-grid" aria-label="Опубликованные события">
       {% for event in events %}
         <article class="event-card">
-          <a href="{% url 'event_detail' event.slug %}">
-            {% if event.cover %}<img src="{{ event.cover.url }}" alt="Обложка события {{ event.name }}">{% else %}<div class="cover-placeholder" aria-hidden="true"></div>{% endif %}
+          <a class="event-card-link" href="{% url 'event_detail' event.slug %}">
+            <div class="event-card-cover">
+              {% if event.cover %}
+                <img src="{{ event.cover.url }}" alt="Обложка события {{ event.name }}">
+              {% else %}
+                <div class="cover-placeholder" role="img" aria-label="У события {{ event.name }} пока нет обложки">
+                  <span aria-hidden="true">FM</span>
+                </div>
+              {% endif %}
+            </div>
             <div class="event-card-body">
               <span class="event-type">{{ event.get_access_type_display }}</span>
               <h2>{{ event.name }}</h2>
-              <p>{{ event.city }} · {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</p>
+              <dl class="event-meta">
+                <div>
+                  <dt><span class="visually-hidden">Город</span><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#map-pin"></use></svg></dt>
+                  <dd>{{ event.city }}</dd>
+                </div>
+                <div>
+                  <dt><span class="visually-hidden">Дата</span><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#calendar"></use></svg></dt>
+                  <dd>{{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</dd>
+                </div>
+              </dl>
+              {% if event.description %}<p class="event-card-description">{{ event.description|truncatechars:150 }}</p>{% endif %}
+              <span class="card-action">Открыть событие <span aria-hidden="true">→</span></span>
             </div>
           </a>
         </article>
       {% endfor %}
     </section>
   {% else %}
-    <section class="empty-state"><h2>Событий пока нет</h2><p>Опубликованные мероприятия появятся здесь.</p></section>
+    <section class="empty-state">
+      <span class="empty-state-mark" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#calendar"></use></svg></span>
+      <h2>Событий пока нет</h2>
+      <p>Опубликованные мероприятия появятся здесь.</p>
+    </section>
   {% endif %}
 {% endblock %}

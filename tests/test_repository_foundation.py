@@ -1,3 +1,4 @@
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -29,7 +30,12 @@ def test_adr_index_lists_all_accepted_decisions() -> None:
 
 
 def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:
-    for skill_name in ("manage-yandex-cloud", "write-adr", "write-plan"):
+    for skill_name in (
+        "manage-yandex-cloud",
+        "update-visual-design",
+        "write-adr",
+        "write-plan",
+    ):
         skill_dir = ROOT / ".agents" / "skills" / skill_name
         skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         match = re.match(r"^---\n(.*?)\n---\n", skill_text, re.DOTALL)
@@ -202,3 +208,75 @@ def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:
     settings = (ROOT / "src/backend/config/settings.py").read_text(encoding="utf-8")
 
     assert 'SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")' in settings
+
+
+def test_prototype_archive_and_legacy_demo_assets_are_removed() -> None:
+    assert not (ROOT / "src/proto").exists()
+
+    templates = ROOT / "src/backend/templates"
+    assert not list(templates.glob("*.html")), "Legacy top-level UI templates remain"
+
+    static = ROOT / "src/backend/static"
+    assert not list(static.glob("*.js")), "Legacy demo JavaScript remains"
+    assert not list((static / "assets").glob("*")), "Legacy duplicate demo assets remain"
+
+
+def test_legacy_prototype_stylesheet_is_removed() -> None:
+    static = ROOT / "src/backend/static"
+
+    assert not (static / "styles.css").exists(), "Legacy prototype stylesheet remains"
+
+
+def test_event_cards_keep_keyboard_focus_visible_inside_clipped_card() -> None:
+    catalog_css = (ROOT / "src/backend/static/ui/catalog.css").read_text(encoding="utf-8")
+
+    assert ".event-card:focus-within" in catalog_css
+    assert ".event-card-link:focus-visible" in catalog_css
+    assert "outline-offset: -4px" in catalog_css
+
+
+def test_visual_design_skill_has_required_files() -> None:
+    skill = ROOT / ".agents/skills/update-visual-design"
+
+    for relative_path in (
+        "SKILL.md",
+        "agents/openai.yaml",
+        "references/screen-inventory.md",
+    ):
+        assert (skill / relative_path).is_file(), f"Missing {relative_path}"
+
+    guidance = (skill / "SKILL.md").read_text(encoding="utf-8")
+    inventory = (skill / "references/screen-inventory.md").read_text(encoding="utf-8")
+
+    assert "Never create `src/proto`" in guidance
+    assert "tests/visual/templates/design_reference/" in guidance
+    assert "| Promotions | design-reference |" in inventory
+    assert "| Catalog | production |" in inventory
+
+
+def test_production_django_configuration_excludes_visual_references() -> None:
+    for relative_path in ("src/backend/config/urls.py", "src/backend/config/settings.py"):
+        production_config = (ROOT / relative_path).read_text(encoding="utf-8")
+
+        assert "__visual__" not in production_config
+        assert "tests.visual" not in production_config
+        assert "design_reference" not in production_config
+
+
+def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    dockerfile = (ROOT / "Dockerfile.visual-tests").read_text(encoding="utf-8")
+    compose = yaml.safe_load((ROOT / "docker-compose.visual.yml").read_text(encoding="utf-8"))
+
+    assert package["scripts"]["test:visual"] == "sh tests/visual/run-in-container.sh test"
+    assert package["scripts"]["test:visual:update"] == (
+        "sh tests/visual/run-in-container.sh update"
+    )
+    assert dockerfile.count("@sha256:") == 2
+    assert "python:3.12-slim-bookworm@sha256:" in dockerfile
+    assert "node:22-bookworm-slim@sha256:" in dockerfile
+    assert "npx playwright install --with-deps chromium" in dockerfile
+    assert compose["services"]["visual-tests"]["depends_on"]["postgres"]["condition"] == (
+        "service_healthy"
+    )
+    assert compose["services"]["visual-tests"]["environment"]["CI"] == "${CI:-false}"

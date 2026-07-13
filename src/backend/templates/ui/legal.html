@@ -1,0 +1,38 @@
+{% extends "ui/base.html" %}
+{% load static %}
+{% block title %}Правовая информация — FindMe Photo{% endblock %}
+{% block body_class %}legal-page{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/catalog.css' %}">{% endblock %}
+{% block content %}
+  <header class="legal-hero">
+    <p class="eyebrow">Правовая информация</p>
+    <h1>Документы сервиса</h1>
+    <p>На этой странице собраны разделы для публикации правовой информации FindMe Photo.</p>
+  </header>
+  <div class="legal-layout">
+    <nav class="legal-navigation" aria-label="Разделы документов">
+      <a href="#offer">Публичная оферта</a>
+      <a href="#terms">Пользовательское соглашение</a>
+      <a href="#personal">Персональные данные</a>
+      <a href="#cookies">Cookies</a>
+    </nav>
+    <div class="legal-content">
+      <section id="offer">
+        <h2>Договор публичной оферты</h2>
+        <p>Раздел подготовлен для размещения текста оферты, информации об оплате, возврате и получении цифровых фотографий.</p>
+      </section>
+      <section id="terms">
+        <h2>Пользовательское соглашение</h2>
+        <p>Раздел подготовлен для размещения правил использования сервиса и порядка доступа к приобретённым материалам.</p>
+      </section>
+      <section id="personal">
+        <h2>Согласие на обработку персональных данных</h2>
+        <p>Раздел подготовлен для размещения информации о целях и порядке обработки данных, правах пользователя и контактах оператора.</p>
+      </section>
+      <section id="cookies">
+        <h2>Политика использования cookies</h2>
+        <p>Раздел подготовлен для размещения информации об используемых cookies и способах управления согласием.</p>
+      </section>
+    </div>
+  </div>
+{% endblock %}

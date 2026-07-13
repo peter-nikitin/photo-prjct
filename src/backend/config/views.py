@@ -27,4 +27,4 @@ def legacy_events_redirect(request):  # noqa: ARG001
 
 
 def legal(request):
-    return render(request, "legal.html")
+    return render(request, "ui/legal.html")

@@ -1,0 +1,43 @@
+{% load static %}
+{% static "ui/icons.svg" as ui_icons %}
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}FindMe Photo{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'ui/design-system.css' %}">
+    {% block extra_css %}{% endblock %}
+  </head>
+  <body class="{% block body_class %}{% endblock %}">
+    <a class="skip-link" href="#main-content">Перейти к содержанию</a>
+    <div class="site-shell">
+      <header class="topbar">
+        <a class="brand" href="{% url 'event_catalog' %}" aria-label="FindMe Photo — каталог событий">
+          <span class="brand-mark" aria-hidden="true">FM</span>
+          <span class="brand-copy">
+            <strong>FindMe Photo</strong>
+            <small>фотографии событий</small>
+          </span>
+        </a>
+        <nav class="site-navigation" aria-label="Основная навигация">
+          <a href="{% url 'event_catalog' %}">
+            <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#calendar"></use></svg>
+            <span>События</span>
+          </a>
+          <a href="{% url 'legal' %}">
+            <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#scale"></use></svg>
+            <span>Документы</span>
+          </a>
+          <a href="{% url 'admin:index' %}">
+            <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#settings"></use></svg>
+            <span>Администрирование</span>
+          </a>
+        </nav>
+      </header>
+      <main id="main-content" class="page-shell" tabindex="-1">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>

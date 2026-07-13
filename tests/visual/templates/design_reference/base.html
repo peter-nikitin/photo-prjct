@@ -1,0 +1,34 @@
+{% load static %}
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Визуальный эталон{% endblock %} — FindMe Photo</title>
+    <link rel="stylesheet" href="{% static 'ui/design-system.css' %}">
+    <link rel="stylesheet" href="{% static 'design-reference.css' %}">
+  </head>
+  <body class="reference-page">
+    <a class="skip-link" href="#reference-content">Перейти к содержанию</a>
+    <div class="reference-shell">
+      <header class="reference-topbar">
+        <a class="brand" href="{% url 'visual_reference_search' %}">
+          <span class="brand-mark" aria-hidden="true">FM</span>
+          <span class="brand-copy"><strong>FindMe Photo</strong><small>визуальные эталоны</small></span>
+        </a>
+        <nav class="reference-nav" aria-label="Эталонные экраны">
+          <a {% if active_screen == 'search' %}aria-current="page"{% endif %} href="{% url 'visual_reference_search' %}">Поиск</a>
+          <a {% if active_screen == 'dashboard' %}aria-current="page"{% endif %} href="{% url 'visual_reference_dashboard' %}">Фото</a>
+          <a {% if active_screen == 'events' %}aria-current="page"{% endif %} href="{% url 'visual_reference_events' %}">События</a>
+          <a {% if active_screen == 'upload' %}aria-current="page"{% endif %} href="{% url 'visual_reference_upload' %}">Загрузка</a>
+          <a {% if active_screen == 'orders' %}aria-current="page"{% endif %} href="{% url 'visual_reference_orders' %}">Заказы</a>
+          <a {% if active_screen == 'promotions' %}aria-current="page"{% endif %} href="{% url 'visual_reference_promotions' %}">Промокоды</a>
+          <a {% if active_screen == 'purchased' %}aria-current="page"{% endif %} href="{% url 'visual_reference_purchased' %}">Покупки</a>
+        </nav>
+      </header>
+      <main id="reference-content" class="reference-main" tabindex="-1">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>

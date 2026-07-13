@@ -1,0 +1,9 @@
+{% extends "design_reference/base.html" %}
+{% block title %}Загрузчик{% endblock %}
+{% block content %}
+  <header class="screen-heading"><div><p class="eyebrow">Импорт</p><h1>Загрузчик фото</h1><p>Файлы будут добавлены в фотобанк London 10K.</p></div><span class="badge">3 в очереди</span></header>
+  <div class="upload-layout">
+    <section class="reference-board"><div class="upload-settings"><label class="field"><span>Событие</span><select>{% for event in events %}<option>{{ event.name }}</option>{% endfor %}</select></label><label class="field"><span>Зона</span><select><option>Старт</option></select></label><label class="field"><span>Фотограф</span><select><option>Анна Смирнова</option></select></label></div><div class="dropzone"><span class="upload-icon">↑</span><strong>Перетащите фотографии сюда</strong><small>JPG и PNG до 25 МБ · пакетная загрузка</small></div><div class="queue-list">{% for item in queue %}<article><img src="{{ item.image }}" alt=""><div><strong>{{ item.name }}</strong><span>{{ item.meta }}</span></div><span class="status success">{{ item.status }}</span></article>{% endfor %}</div><div class="action-row"><button class="button primary" type="button">Загрузить 3 фото</button><button class="button secondary" type="button">Очистить</button></div></section>
+    <aside class="panel recognition"><div class="panel-title"><strong>Распознавание</strong><span class="badge">QR</span></div><div class="recognition-list"><div><b>QR</b><span>Считан до ватермарки</span></div><div><b>Номер участника</b><span>Из QR или имени файла</span></div><div><b>EXIF</b><span>Дата и время съёмки</span></div><div><b>Дубликаты</b><span>Пропускать автоматически</span></div></div></aside>
+  </div>
+{% endblock %}

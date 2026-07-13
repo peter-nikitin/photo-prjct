@@ -1,0 +1,9 @@
+{% extends "design_reference/base.html" %}
+{% block title %}Редактор событий{% endblock %}
+{% block content %}
+  <header class="screen-heading"><div><p class="eyebrow">Каталог</p><h1>События</h1><p>{{ events|length }} подготовленных события</p></div><button class="button primary" type="button">Новое событие</button></header>
+  <div class="management-layout">
+    <section class="reference-board"><div class="toolbar"><input placeholder="Название или город"><span class="badge">Активные</span></div><div class="record-list">{% for event in events %}<article class="event-row{% if forloop.first %} active{% endif %}"><div class="event-thumb">{% if event.cover %}<img src="{{ event.cover.url }}" alt="">{% else %}<span>FM</span>{% endif %}</div><div><strong>{{ event.name }}</strong><span>{{ event.city }} · {{ event.start_date|date:"d.m.Y" }}–{{ event.end_date|date:"d.m.Y" }}</span><small>{{ event.description }}</small></div><span class="status success">Опубликовано</span></article>{% endfor %}</div></section>
+    <aside class="panel editor"><div class="panel-title"><strong>Событие</strong><span class="badge">Edit</span></div><label class="field"><span>Название</span><input value="{{ events.0.name }}"></label><label class="field"><span>Локация</span><input value="{{ events.0.city }}"></label><label class="field"><span>Описание</span><textarea>{{ events.0.description }}</textarea></label><div class="two-fields"><label class="field"><span>Начало</span><input value="08.06.2026"></label><label class="field"><span>Конец</span><input value="09.06.2026"></label></div><div class="switches"><span>Показывать в поиске <b>Да</b></span><span>Доступно в загрузчике <b>Да</b></span></div><button class="button primary" type="button">Сохранить</button></aside>
+  </div>
+{% endblock %}

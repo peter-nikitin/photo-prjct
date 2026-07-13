@@ -1,41 +1,177 @@
 import json
 import re
+import shlex
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _workflow_job_script(workflow_name: str, job_name: str) -> str:
-    workflow = yaml.safe_load(
-        (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
-    )
-    executable_fields = []
+def _load_workflow(workflow_name: str) -> dict[str, Any]:
+    return yaml.safe_load((ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8"))
+
+
+def _workflow_step(workflow: dict[str, Any], job_name: str, step_name: str) -> dict[str, Any]:
+    matching_steps = [
+        step for step in workflow["jobs"][job_name]["steps"] if step.get("name") == step_name
+    ]
+    assert len(matching_steps) == 1, f"Expected one {step_name!r} step"
+    return matching_steps[0]
+
+
+def _executable_script(step: dict[str, Any], field: str) -> str:
+    if field == "run":
+        assert "uses" not in step
+        script = step.get("run")
+    else:
+        assert field == "with.script"
+        assert step.get("uses") == "appleboy/ssh-action@v1.0.3"
+        script = step.get("with", {}).get("script")
+
+    assert isinstance(script, str), f"Step {step.get('name')!r} has no {field}"
+    return script
+
+
+def _job_executable_scripts(workflow: dict[str, Any], job_name: str) -> list[str]:
+    scripts = []
     for step in workflow["jobs"][job_name]["steps"]:
         if "run" in step:
-            executable_fields.append(step["run"])
+            scripts.append(_executable_script(step, "run"))
         if "script" in step.get("with", {}):
-            executable_fields.append(step["with"]["script"])
-
-    return "\n".join(executable_fields)
-
-
-def _script_call_position(script: str, relative_path: str) -> int | None:
-    invocation = re.compile(
-        rf"(?m)^\s*"
-        rf"(?:[A-Z_][A-Z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s+)*"
-        rf"sh\s+\S*{re.escape(relative_path)}(?:\s|$)"
-    )
-    match = invocation.search(script)
-    return match.start() if match else None
+            scripts.append(_executable_script(step, "with.script"))
+    return scripts
 
 
-def _required_script_call_position(script: str, relative_path: str) -> int:
-    position = _script_call_position(script, relative_path)
-    assert position is not None, f"Missing executable call to {relative_path}"
+def _script_call_position(script: str, script_name: str) -> int | None:
+    allowed_paths = {
+        f"deploy/{script_name}",
+        f"./deploy/{script_name}",
+        f"/opt/photo-prjct/deploy/{script_name}",
+        f"$DEPLOY_ROOT/deploy/{script_name}",
+        f"${{DEPLOY_ROOT}}/deploy/{script_name}",
+    }
+    offset = 0
+    for line in script.splitlines(keepends=True):
+        segment_offset = 0
+        for segment in re.split(r"\s*(?:&&|\|\||;)\s*", line):
+            stripped = segment.strip()
+            if not stripped or stripped.startswith("#"):
+                segment_offset += len(segment)
+                continue
+            try:
+                tokens = shlex.split(stripped)
+            except ValueError:
+                segment_offset += len(segment)
+                continue
+
+            index = 0
+            if tokens and tokens[0] == "env":
+                index += 1
+                while index < len(tokens) and (
+                    tokens[index].startswith("-") or "=" in tokens[index]
+                ):
+                    index += 1
+            else:
+                while index < len(tokens) and re.fullmatch(
+                    r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[index]
+                ):
+                    index += 1
+
+            if index < len(tokens) and tokens[index] in {"sh", "bash"}:
+                index += 1
+                while index < len(tokens) and tokens[index].startswith("-"):
+                    index += 1
+                if index < len(tokens) and tokens[index] in allowed_paths:
+                    return offset + segment_offset
+            segment_offset += len(segment)
+        offset += len(line)
+    return None
+
+
+def _required_script_call_position(script: str, script_name: str) -> int:
+    position = _script_call_position(script, script_name)
+    assert position is not None, f"Missing executable call to deploy/{script_name}"
     return position
+
+
+def _envs(step: dict[str, Any]) -> set[str]:
+    envs = step.get("with", {}).get("envs", "")
+    assert isinstance(envs, str)
+    return {name.strip() for name in envs.split(",") if name.strip()}
+
+
+def _contains_readonly_eligibility_check(script: str) -> bool:
+    allowed_markers = {
+        "/opt/photo-prjct/deployed-image",
+        "$DEPLOY_ROOT/deployed-image",
+        "${DEPLOY_ROOT}/deployed-image",
+    }
+    for line in script.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            tokens = shlex.split(stripped)
+        except ValueError:
+            continue
+        if len(tokens) != 4 or tokens[0] != "test" or tokens[2] not in {"=", "=="}:
+            continue
+
+        marker_match = re.fullmatch(r"\$\(cat\s+([^\s)]+)\)", tokens[1])
+        if (
+            marker_match
+            and marker_match.group(1) in allowed_markers
+            and tokens[3]
+            in {
+                "$APP_IMAGE",
+                "${APP_IMAGE}",
+            }
+        ):
+            return True
+    return False
+
+
+def _assert_no_embedded_certificate_or_marker_mutation(script: str) -> None:
+    executable_line = r"(?m)^\s*(?!#)[^\n]*"
+    assert not re.search(
+        executable_line + r"certbot(?:/certbot(?::[^\s]+)?)?[^\n]*\b(?:certonly|renew)\b",
+        script,
+    )
+    assert not re.search(executable_line + r"fullchain\.pem", script)
+
+    marker_root = r"[\"']?(?:/opt/photo-prjct|\$(?:DEPLOY_ROOT|\{DEPLOY_ROOT\}))[\"']?"
+    marker_path = rf"{marker_root}/[\"']?(?:candidate-image|previous-image|deployed-image)[\"']?"
+    assert "candidate-image" not in script
+    assert "previous-image" not in script
+    assert not re.search(executable_line + rf"(?:>>?)\s*{marker_path}", script)
+    assert not re.search(
+        rf"(?m)(?:^|[;&|])\s*(?!#)(?:sudo\s+)?"
+        rf"(?:mv|cp|tee|rm|touch|install|truncate)"
+        rf"\b[^\n]*{marker_path}",
+        script,
+    )
+
+
+def test_workflow_script_calls_are_executable_and_path_scoped() -> None:
+    accepted_calls = (
+        'sh "$DEPLOY_ROOT/deploy/finalize-deployment.sh" "$APP_IMAGE"',
+        'sh "$DEPLOY_ROOT"/deploy/finalize-deployment.sh "$APP_IMAGE"',
+        "env APP_IMAGE=image sh /opt/photo-prjct/deploy/finalize-deployment.sh image",
+        "bash ./deploy/finalize-deployment.sh image",
+    )
+    for script in accepted_calls:
+        assert _script_call_position(script, "finalize-deployment.sh") == 0
+
+    assert (
+        _script_call_position(
+            "sh /tmp/fake-deploy/finalize-deployment.sh image",
+            "finalize-deployment.sh",
+        )
+        is None
+    )
 
 
 def test_documentation_foundation_exists() -> None:
@@ -141,10 +277,8 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
 def test_public_environments_share_one_https_edge_overlay() -> None:
     app_compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
     shared_path = ROOT / "docker-compose.https.yml"
-    staging_workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-    production_workflow = (ROOT / ".github/workflows/promote-production.yml").read_text(
-        encoding="utf-8"
-    )
+    staging_workflow = _load_workflow("deploy.yml")
+    production_workflow = _load_workflow("promote-production.yml")
 
     assert "ports" not in app_compose["services"]["web"]
     assert shared_path.is_file(), "Missing docker-compose.https.yml"
@@ -154,20 +288,28 @@ def test_public_environments_share_one_https_edge_overlay() -> None:
     assert shared["services"]["nginx"]["ports"] == ["80:80", "443:443"]
     assert "certbot" in shared["services"]
     for workflow_path in (ROOT / ".github/workflows").glob("*.yml"):
-        workflow_uses_shared_edge = "docker-compose.https.yml" in workflow_path.read_text(
-            encoding="utf-8"
+        workflow_uses_shared_edge = "docker-compose.https.yml" in json.dumps(
+            _load_workflow(workflow_path.name)
         )
         assert workflow_uses_shared_edge == (workflow_path.name == "promote-production.yml")
 
-    assert "docker-compose.https.yml" in production_workflow
-    assert "docker-compose.staging.yml" in staging_workflow
+    staging_copy = _workflow_step(staging_workflow, "deploy", "Copy staging deployment files")
+    production_copy = _workflow_step(
+        production_workflow, "promote", "Copy production deployment files"
+    )
+    assert "docker-compose.staging.yml" in staging_copy["with"]["source"].split(",")
+    assert "docker-compose.https.yml" not in staging_copy["with"]["source"].split(",")
+    assert "docker-compose.https.yml" in production_copy["with"]["source"].split(",")
     assert not (ROOT / "docker-compose.production.yml").exists()
 
 
 def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None:
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
-    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+    staging = _load_workflow("deploy.yml")
+    production = _load_workflow("promote-production.yml")
+    staging_apply = _workflow_step(staging, "deploy", "Apply staging deployment")
+    production_apply = _workflow_step(production, "promote", "Apply production deployment")
+    production_verify = _workflow_step(production, "promote", "Verify production public edge")
 
     public_variables = (
         "PUBLIC_DOMAIN",
@@ -176,15 +318,17 @@ def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None
     )
     for variable in public_variables:
         assert re.search(rf"^{variable}=", example, re.MULTILINE)
-        workflow_assignment = f"{variable}: ${{{{ vars.{variable} }}}}"
-        assert workflow_assignment in staging
-        assert workflow_assignment in production
-        assert re.search(rf"^\s*envs: .*\b{variable}\b", staging, re.MULTILINE)
-        assert re.search(rf"^\s*envs: .*\b{variable}\b", production, re.MULTILINE)
+        expected_value = f"${{{{ vars.{variable} }}}}"
+        assert staging_apply["env"][variable] == expected_value
+        assert production_apply["env"][variable] == expected_value
+        assert production_verify["env"][variable] == expected_value
+        assert variable in _envs(staging_apply)
+        assert variable in _envs(production_apply)
 
-    assert "LETSENCRYPT_EMAIL" not in staging
-    assert "LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}" in production
-    assert "docker-compose.https.yml" in production
+    assert "LETSENCRYPT_EMAIL" not in json.dumps(staging)
+    assert production_apply["env"]["LETSENCRYPT_EMAIL"] == ("${{ secrets.LETSENCRYPT_EMAIL }}")
+    assert "LETSENCRYPT_EMAIL" in _envs(production_apply)
+    assert "LETSENCRYPT_EMAIL" not in production_verify.get("env", {})
 
 
 def test_focused_deployment_scripts_are_versioned() -> None:
@@ -198,59 +342,79 @@ def test_focused_deployment_scripts_are_versioned() -> None:
 
 
 def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -> None:
-    staging = _workflow_job_script("deploy.yml", "deploy")
-    production = _workflow_job_script("promote-production.yml", "promote")
-    production_eligibility = _workflow_job_script("promote-production.yml", "verify-staging")
+    staging = _load_workflow("deploy.yml")
+    production = _load_workflow("promote-production.yml")
+    staging_apply_step = _workflow_step(staging, "deploy", "Apply staging deployment")
+    production_eligibility_step = _workflow_step(
+        production, "verify-staging", "Confirm image was deployed successfully to staging"
+    )
+    production_apply_step = _workflow_step(production, "promote", "Apply production deployment")
+    production_verify_step = _workflow_step(production, "promote", "Verify production public edge")
+    production_finalize_step = _workflow_step(
+        production, "promote", "Finalize production deployment"
+    )
+    production_rollback_step = _workflow_step(
+        production, "promote", "Roll back production deployment"
+    )
+    production_fail_step = _workflow_step(production, "promote", "Fail production deployment")
+
+    staging_apply = _executable_script(staging_apply_step, "with.script")
+    production_eligibility = _executable_script(production_eligibility_step, "with.script")
+    production_apply = _executable_script(production_apply_step, "with.script")
+    production_verify = _executable_script(production_verify_step, "run")
+    production_finalize = _executable_script(production_finalize_step, "with.script")
+    production_rollback = _executable_script(production_rollback_step, "with.script")
+    production_fail = _executable_script(production_fail_step, "run")
     apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
 
-    marker_root = r'["\']?(?:/opt/photo-prjct|\$(?:DEPLOY_ROOT|\{DEPLOY_ROOT\}))'
-    deployed_marker = rf"{marker_root}/deployed-image[\"\']?"
-    assert re.search(
-        rf"(?m)^\s*test\s+[^\n]*\bcat\s+{deployed_marker}[^\n]*\$APP_IMAGE",
-        production_eligibility,
+    assert _contains_readonly_eligibility_check(production_eligibility)
+    for executable in (
+        *_job_executable_scripts(staging, "deploy"),
+        *_job_executable_scripts(production, "verify-staging"),
+        *_job_executable_scripts(production, "promote"),
+    ):
+        _assert_no_embedded_certificate_or_marker_mutation(executable)
+
+    staging_apply_position = _required_script_call_position(staging_apply, "apply-deployment.sh")
+    staging_finalize_position = _required_script_call_position(
+        staging_apply, "finalize-deployment.sh"
+    )
+    assert staging_apply_position < staging_finalize_position
+    assert _script_call_position(staging_apply, "verify-public-edge.sh") is None
+    assert _script_call_position(staging_apply, "rollback-deployment.sh") is None
+    assert all(
+        _script_call_position(script, "verify-public-edge.sh") is None
+        and _script_call_position(script, "rollback-deployment.sh") is None
+        for script in _job_executable_scripts(staging, "deploy")
     )
 
-    for workflow in (staging, production, production_eligibility):
-        for embedded_operation in (
-            "certbot certonly",
-            "certbot renew",
-            "fullchain.pem",
-            "> /opt/photo-prjct/candidate-image",
-            "> /opt/photo-prjct/previous-image",
-            "> /opt/photo-prjct/deployed-image",
-        ):
-            assert embedded_operation not in workflow
+    _required_script_call_position(production_apply, "apply-deployment.sh")
+    _required_script_call_position(production_verify, "verify-public-edge.sh")
+    _required_script_call_position(production_finalize, "finalize-deployment.sh")
+    _required_script_call_position(production_rollback, "rollback-deployment.sh")
 
-        assert "candidate-image" not in workflow
-        assert "previous-image" not in workflow
+    verify_id = production_verify_step.get("id")
+    assert isinstance(verify_id, str) and verify_id
+    assert production_verify_step.get("continue-on-error") is True
+    success_condition = f"steps.{verify_id}.outcome == 'success'"
+    failure_condition = f"always() && steps.{verify_id}.outcome == 'failure'"
+    assert production_finalize_step.get("if") == success_condition
+    assert production_rollback_step.get("if") == failure_condition
+    assert production_fail_step.get("if") == failure_condition
+    assert re.search(r"(?m)^\s*exit\s+[1-9][0-9]*\s*$", production_fail)
 
-        marker_path = rf"{marker_root}/(?:candidate-image|previous-image|deployed-image)"
-        assert not re.search(rf"(?:>|>>)\s*{marker_path}", workflow)
-        assert not re.search(
-            rf"(?m)(?:^|[;&|]\s*)(?:sudo\s+)?"
-            rf"(?:mv|cp|tee|rm|touch|install)\b[^\n]*{marker_path}",
-            workflow,
-        )
+    promote_steps = production["jobs"]["promote"]["steps"]
+    apply_index = promote_steps.index(production_apply_step)
+    verify_index = promote_steps.index(production_verify_step)
+    assert apply_index < verify_index
+    assert verify_index < promote_steps.index(production_finalize_step)
+    assert verify_index < promote_steps.index(production_rollback_step)
+    assert verify_index < promote_steps.index(production_fail_step)
 
-    staging_apply = _required_script_call_position(staging, "deploy/apply-deployment.sh")
-    staging_finalize = _required_script_call_position(staging, "deploy/finalize-deployment.sh")
-    assert staging_apply < staging_finalize
-    assert _script_call_position(staging, "deploy/verify-public-edge.sh") is None
-    assert _script_call_position(staging, "deploy/rollback-deployment.sh") is None
-
-    production_apply = _required_script_call_position(production, "deploy/apply-deployment.sh")
-    production_verify = _required_script_call_position(production, "deploy/verify-public-edge.sh")
-    production_finalize = _required_script_call_position(
-        production, "deploy/finalize-deployment.sh"
-    )
-    production_rollback = _required_script_call_position(
-        production, "deploy/rollback-deployment.sh"
-    )
-    assert production_apply < production_verify
-    assert production_verify < production_finalize
-    assert production_verify < production_rollback
-
-    assert "/deploy/certbot/reconcile-certificate.sh" in apply_script
+    assert "DEPLOYMENT_TARGET=staging" in staging_apply
+    assert "DEPLOYMENT_TARGET=production" in production_apply
+    _required_script_call_position(apply_script, "certbot/reconcile-certificate.sh")
+    assert re.search(r"(?m)^\s*(?!#)[^\n]*docker-compose\.https\.yml", apply_script)
 
 
 def test_staging_can_temporarily_disable_https_without_changing_production_default() -> None:

@@ -72,6 +72,7 @@ jobs:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}
+          ENABLE_HTTPS: ${{ vars.ENABLE_HTTPS || 'false' }}
           LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
           MEDIA_STORAGE_BACKEND: ${{ vars.MEDIA_STORAGE_BACKEND || 'filesystem' }}
           MEDIA_S3_ENDPOINT_URL: ${{ vars.MEDIA_S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
@@ -86,12 +87,18 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script_stop: true
-          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,GHCR_USERNAME,GHCR_READ_TOKEN
+          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,ENABLE_HTTPS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,GHCR_USERNAME,GHCR_READ_TOKEN
           script: |
             set -eu
             install -d -m 0755 /opt/photo-prjct
             : "${PUBLIC_DOMAIN:?Set staging variable PUBLIC_DOMAIN}"
-            : "${LETSENCRYPT_EMAIL:?Set staging secret LETSENCRYPT_EMAIL}"
+            case "$ENABLE_HTTPS" in
+              true|false) ;;
+              *) echo "ENABLE_HTTPS must be true or false" >&2; exit 1 ;;
+            esac
+            if [ "$ENABLE_HTTPS" = "true" ]; then
+              : "${LETSENCRYPT_EMAIL:?Set staging secret LETSENCRYPT_EMAIL}"
+            fi
 
             umask 077
             cat > /opt/photo-prjct/.env <<EOF
@@ -105,6 +112,7 @@ jobs:
             DB_HOST=db
             DB_PORT=5432
             PUBLIC_DOMAIN=$PUBLIC_DOMAIN
+            ENABLE_HTTPS=$ENABLE_HTTPS
             MEDIA_STORAGE_BACKEND=$MEDIA_STORAGE_BACKEND
             MEDIA_S3_ENDPOINT_URL=$MEDIA_S3_ENDPOINT_URL
             MEDIA_S3_REGION=$MEDIA_S3_REGION
@@ -120,20 +128,27 @@ jobs:
             docker compose --project-name photo-prjct-staging \
               --env-file /opt/photo-prjct/.env \
               -f /opt/photo-prjct/docker-compose.prod.yml pull
-            docker volume create photo-prjct-staging_letsencrypt >/dev/null
-            if ! docker run --rm \
-              -v photo-prjct-staging_letsencrypt:/etc/letsencrypt \
-              alpine:3.21 test -f "/etc/letsencrypt/live/photo-prjct/fullchain.pem"; then
-              docker run --rm --network host \
+            if [ "$ENABLE_HTTPS" = "true" ]; then
+              docker volume create photo-prjct-staging_letsencrypt >/dev/null
+              if ! docker run --rm \
                 -v photo-prjct-staging_letsencrypt:/etc/letsencrypt \
-                certbot/certbot:v2.11.0 certonly --standalone --non-interactive --agree-tos \
-                --email "$LETSENCRYPT_EMAIL" --cert-name photo-prjct -d "$PUBLIC_DOMAIN"
+                alpine:3.21 test -f "/etc/letsencrypt/live/photo-prjct/fullchain.pem"; then
+                docker run --rm --network host \
+                  -v photo-prjct-staging_letsencrypt:/etc/letsencrypt \
+                  certbot/certbot:v2.11.0 certonly --standalone --non-interactive --agree-tos \
+                  --email "$LETSENCRYPT_EMAIL" --cert-name photo-prjct -d "$PUBLIC_DOMAIN"
+              fi
             fi
             docker compose --project-name photo-prjct-staging \
               --env-file /opt/photo-prjct/.env \
               -f /opt/photo-prjct/docker-compose.prod.yml up -d --wait
-            curl --fail --silent --show-error --retry 6 --retry-delay 5 \
-              --resolve "$PUBLIC_DOMAIN:443:127.0.0.1" "https://$PUBLIC_DOMAIN/health/"
+            if [ "$ENABLE_HTTPS" = "true" ]; then
+              curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+                --resolve "$PUBLIC_DOMAIN:443:127.0.0.1" "https://$PUBLIC_DOMAIN/health/"
+            else
+              curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+                --resolve "$PUBLIC_DOMAIN:80:127.0.0.1" "http://$PUBLIC_DOMAIN/health/"
+            fi
             printf '%s\n' "$APP_IMAGE" > /opt/photo-prjct/deployed-image
 
       - name: Capture staging diagnostics on failure

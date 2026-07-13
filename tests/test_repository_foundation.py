@@ -22,7 +22,7 @@ def test_documentation_foundation_exists() -> None:
 def test_adr_index_lists_all_accepted_decisions() -> None:
     index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
 
-    for number in range(1, 8):
+    for number in range(1, 9):
         assert re.search(rf"\| 000{number} \|.*\| Accepted \|", index)
 
 
@@ -111,7 +111,8 @@ def test_production_compose_has_a_private_application_behind_https_edge() -> Non
         "/opt/certbot/renew-certificates.sh",
     ]
     assert "letsencrypt" in compose["volumes"]
-    assert (ROOT / "deploy/nginx/default.conf").is_file()
+    assert (ROOT / "deploy/nginx/http.conf").is_file()
+    assert (ROOT / "deploy/nginx/https.conf").is_file()
 
 
 def test_deployment_workflows_configure_https_edge_without_committing_values() -> None:
@@ -122,6 +123,20 @@ def test_deployment_workflows_configure_https_edge_without_committing_values() -
         assert "LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}" in workflow
         assert "certbot" in workflow
         assert "https://$PUBLIC_DOMAIN/health/" in workflow
+
+
+def test_staging_can_temporarily_disable_https_without_changing_production_default() -> None:
+    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+    nginx_startup = (ROOT / "deploy/nginx/reload-nginx.sh").read_text(encoding="utf-8")
+
+    assert "ENABLE_HTTPS: ${{ vars.ENABLE_HTTPS || 'false' }}" in staging
+    assert "ENABLE_HTTPS: ${{ vars.ENABLE_HTTPS || 'true' }}" in production
+    assert 'case "$ENABLE_HTTPS" in' in staging
+    assert 'case "$ENABLE_HTTPS" in' in production
+    assert 'if [ "$ENABLE_HTTPS" = "true" ]; then' in staging
+    assert 'if [ "$ENABLE_HTTPS" = "true" ]; then' in production
+    assert 'ENABLE_HTTPS="${ENABLE_HTTPS:-true}"' in nginx_startup
 
 
 def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:

@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 from django.test import TestCase, modify_settings, override_settings
 from django.urls import reverse
@@ -147,7 +148,9 @@ class PageTests(TestCase):
 
                 markup = NavigationMarkupParser()
                 markup.feed(response.content.decode(response.charset))
-                navigation_targets = markup.anchor_hrefs | markup.form_actions
+                navigation_paths = {
+                    urlsplit(value).path for value in markup.anchor_hrefs | markup.form_actions
+                }
 
-                self.assertTrue(unfinished_targets.isdisjoint(navigation_targets))
+                self.assertTrue(unfinished_targets.isdisjoint(navigation_paths))
                 self.assertNotIn("search", markup.input_types)

@@ -585,14 +585,20 @@ def test_staging_can_temporarily_disable_https_without_changing_production_defau
 
 
 def test_versioned_deployment_script_has_valid_shell_syntax() -> None:
-    result = subprocess.run(
-        ["sh", "-n", ROOT / "deploy/apply-deployment.sh"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    for relative_path in (
+        "deploy/apply-deployment.sh",
+        "deploy/finalize-deployment.sh",
+        "deploy/rollback-deployment.sh",
+        "deploy/verify-public-edge.sh",
+        "deploy/certbot/reconcile-certificate.sh",
+    ):
+        result = subprocess.run(
+            ["sh", "-n", ROOT / relative_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"{relative_path}: {result.stderr}"
 
 
 def test_deployment_workflows_always_allow_the_public_domain() -> None:
@@ -610,7 +616,52 @@ def test_deployment_script_verifies_the_edge_and_exact_application_image() -> No
     assert "Deployment health check attempt $attempt failed; retrying" in script
     assert "docker inspect --format '{{.Config.Image}}'" in script
     assert '"$running_image" = "$APP_IMAGE"' in script
-    assert 'printf \'%s\\n\' "$APP_IMAGE" > "$DEPLOY_ROOT/deployed-image"' in script
+    assert 'mv "$candidate_tmp" "$DEPLOY_ROOT/candidate-image"' in script
+    assert '"$DEPLOY_ROOT/deployed-image" "$DEPLOY_ROOT/previous-image"' in script
+    assert not re.search(r'printf[^\n]+>\s*"?\$DEPLOY_ROOT/deployed-image', script)
+    assert "down --volumes" not in script
+
+
+def test_apply_delegates_exact_certificate_reconciliation_and_restores_edge_on_failure() -> None:
+    script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+
+    assert "compose stop nginx" in script
+    assert 'sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"' in script
+    assert re.search(
+        r'sh "\$DEPLOY_ROOT/deploy/certbot/reconcile-certificate\.sh" '
+        r"\|\| reconcile_status=\$\?.+compose start nginx",
+        script,
+        re.DOTALL,
+    )
+    assert "certbot/certbot:v2.11.0 certonly" not in script
+
+
+def test_focused_scripts_encode_exact_release_contracts() -> None:
+    reconcile = (ROOT / "deploy/certbot/reconcile-certificate.sh").read_text(encoding="utf-8")
+    finalize = (ROOT / "deploy/finalize-deployment.sh").read_text(encoding="utf-8")
+    rollback = (ROOT / "deploy/rollback-deployment.sh").read_text(encoding="utf-8")
+    verify = (ROOT / "deploy/verify-public-edge.sh").read_text(encoding="utf-8")
+
+    assert reconcile.count("certbot/certbot:v2.11.0 certonly") == 1
+    assert "--entrypoint openssl" in reconcile
+    assert "--force-renewal" in reconcile
+    assert "--network host" in reconcile
+    assert "while " not in reconcile
+
+    assert 'mv "$DEPLOY_ROOT/candidate-image" "$DEPLOY_ROOT/deployed-image"' in finalize
+    assert "docker" not in finalize
+
+    assert 'case "$edge_mode" in' in rollback
+    assert "docker-compose.staging.yml" in rollback
+    assert "docker-compose.https.yml" in rollback
+    assert "down --volumes" not in rollback
+
+    assert "https://dns.google/resolve" in verify
+    assert 'if [ -n "$PUBLIC_DOMAIN_ALIAS" ]' in verify
+    assert "--max-time" in verify
+    assert "timeout 15 openssl s_client" in verify
+    assert "http_code" in verify
+    assert "subjectAltName" in verify
 
 
 def test_deployment_workflows_use_the_versioned_deployment_script() -> None:

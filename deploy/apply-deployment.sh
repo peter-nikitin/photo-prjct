@@ -13,6 +13,8 @@ set -u
 : "${DB_USER:?Set DB_USER}"
 : "${DB_PASSWORD:?Set DB_PASSWORD}"
 : "${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN}"
+PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
+EXPECTED_PUBLIC_IPV4="${EXPECTED_PUBLIC_IPV4:-}"
 
 case "$DEPLOYMENT_TARGET" in
     staging)
@@ -47,6 +49,14 @@ diagnostics() {
 
 install -d -m 0755 "$DEPLOY_ROOT"
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"
+if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
+    ALLOWED_HOSTS="$ALLOWED_HOSTS,$PUBLIC_DOMAIN_ALIAS"
+fi
+
+if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
+    cp "$DEPLOY_ROOT/deployed-image" "$DEPLOY_ROOT/previous-image"
+fi
+rm -f "$DEPLOY_ROOT/candidate-image"
 
 umask 077
 {
@@ -60,6 +70,8 @@ umask 077
     printf 'DB_HOST=db\n'
     printf 'DB_PORT=5432\n'
     printf 'PUBLIC_DOMAIN=%s\n' "$PUBLIC_DOMAIN"
+    printf 'PUBLIC_DOMAIN_ALIAS=%s\n' "$PUBLIC_DOMAIN_ALIAS"
+    printf 'EXPECTED_PUBLIC_IPV4=%s\n' "$EXPECTED_PUBLIC_IPV4"
     printf 'MEDIA_STORAGE_BACKEND=%s\n' "${MEDIA_STORAGE_BACKEND:-filesystem}"
     printf 'MEDIA_S3_ENDPOINT_URL=%s\n' "${MEDIA_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}"
     printf 'MEDIA_S3_REGION=%s\n' "${MEDIA_S3_REGION:-ru-central1}"
@@ -73,17 +85,13 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
 fi
 
 if [ "$DEPLOYMENT_TARGET" = "production" ]; then
-    if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
-        cp "$DEPLOY_ROOT/deployed-image" "$DEPLOY_ROOT/previous-image"
-    fi
-    docker volume create "${COMPOSE_PROJECT_NAME}_letsencrypt" >/dev/null
-    if ! docker run --rm \
-        -v "${COMPOSE_PROJECT_NAME}_letsencrypt:/etc/letsencrypt" \
-        alpine:3.21 test -f "/etc/letsencrypt/live/photo-prjct/fullchain.pem"; then
-        docker run --rm --network host \
-            -v "${COMPOSE_PROJECT_NAME}_letsencrypt:/etc/letsencrypt" \
-            certbot/certbot:v2.11.0 certonly --standalone --non-interactive --agree-tos \
-            --email "$LETSENCRYPT_EMAIL" --cert-name photo-prjct -d "$PUBLIC_DOMAIN" || exit 1
+    compose stop nginx || true
+    reconcile_status=0
+    sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh" || reconcile_status=$?
+    if [ "$reconcile_status" -ne 0 ]; then
+        echo "Certificate reconciliation failed; restarting the preceding edge" >&2
+        compose start nginx || true
+        exit 1
     fi
 fi
 
@@ -108,7 +116,11 @@ while [ "$attempt" -le "$max_attempts" ]; do
 
     if [ "$running_image" = "$APP_IMAGE" ] && curl --fail-with-body --silent --show-error \
         --resolve "$PUBLIC_DOMAIN:$health_port:127.0.0.1" "$health_url"; then
-        printf '%s\n' "$APP_IMAGE" > "$DEPLOY_ROOT/deployed-image"
+        candidate_tmp="$(mktemp "$DEPLOY_ROOT/.candidate-image.XXXXXX")"
+        trap 'rm -f "$candidate_tmp"' EXIT
+        printf '%s\n' "$APP_IMAGE" > "$candidate_tmp"
+        mv "$candidate_tmp" "$DEPLOY_ROOT/candidate-image"
+        trap - EXIT
         exit 0
     fi
 

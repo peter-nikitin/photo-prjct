@@ -59,6 +59,13 @@ staging`, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, deploys it to
 edge, verifies that the running web container uses that exact image and that Nginx serves `/health/`,
 then records the successful image reference.
 
+The current single active environment is assigned the canonical public URL
+`https://findme-photo.ru/`. After staging and production are provisioned as separate live
+environments, `https://findme-photo.ru/` remains the production URL and staging uses
+`https://staging.findme-photo.ru/`. This records the intended domain routing; it does not mean DNS
+or TLS rollout is already complete. The current VM remains operationally staging during the
+transition even though it is assigned the root domain.
+
 Normal deployments reuse the `photo-prjct-staging` Compose project and preserve its
 `photo-prjct-staging_pgdata` database volume. Database reset is not part of the deployment workflow.
 

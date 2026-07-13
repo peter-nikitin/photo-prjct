@@ -65,6 +65,16 @@ Order of work:
 - Production environment runs via Docker Compose.
 - Deployment should be repeatable and require minimal manual intervention.
 
+### Deployment Domains
+
+- Assign `https://findme-photo.ru/` to the current single active environment. Treat it as the
+  canonical public URL while DNS and HTTPS activation follow the deployment workflow.
+- When staging and production are split into separate live environments, keep
+  `https://findme-photo.ru/` for production and use `https://staging.findme-photo.ru/` for staging.
+- Using the root domain during the transition does not make the current preemptible staging VM
+  production-ready, imply that DNS/TLS rollout is complete, or relax the production readiness
+  gates.
+
 ### Infrastructure Philosophy
 
 Prefer simple and maintainable solutions over complex cloud-native infrastructure.

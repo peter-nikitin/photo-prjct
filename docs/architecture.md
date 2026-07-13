@@ -73,6 +73,16 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Use the Nginx and Certbot HTTPS edge in production as defined by
   [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and [ADR 0009](adr/0009-separate-staging-http-edge.md).
 
+## Deployment domain assignment — accepted
+
+- The current single active environment is assigned the canonical public URL
+  `https://findme-photo.ru/`.
+- When staging and production become separate live environments, `https://findme-photo.ru/` remains
+  the production URL and staging moves to `https://staging.findme-photo.ru/`.
+- This assignment records the intended routing contract; it does not claim that DNS or TLS rollout
+  is already complete. Until that work is performed, the current preemptible VM retains the staging
+  lifecycle and HTTP topology defined by ADR 0009, and the production readiness gate still applies.
+
 ## Target MVP architecture — proposed
 
 The MVP remains one product with modules that have explicit responsibilities:

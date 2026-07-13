@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from threading import Event as ThreadEvent
 from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError
+from django.db import IntegrityError, close_old_connections
 from django.test import TransactionTestCase
 from django.utils import timezone
 from ingestion.models import UploadBatch, UploadItem
@@ -194,6 +196,33 @@ class ConfirmationTests(TransactionTestCase):
                     verified_source_etag=None,
                 )
 
+    def test_too_short_jpeg_fails_before_any_range_read(self) -> None:
+        for size in (1, 2, 3):
+            with self.subTest(size=size):
+                content = b"x" * size
+                UploadItem.objects.filter(id=self.item_id).update(
+                    expected_size=size,
+                    status=UploadItem.Status.AUTHORIZED,
+                    error_code="",
+                    sanitized_error_message="",
+                    completed_at=None,
+                    verified_source_etag=None,
+                )
+                self.storage.objects[self.item.incoming_key] = (
+                    content,
+                    '"short"',
+                    "image/jpeg",
+                )
+                self.storage.calls.clear()
+
+                self.confirm()
+
+                item = UploadItem.objects.get(id=self.item_id)
+                self.assertEqual(item.status, UploadItem.Status.FAILED)
+                self.assertEqual(item.error_code, "invalid_jpeg")
+                self.assertNotIn("short", item.sanitized_error_message)
+                self.assertFalse(any(call[0] == "read" for call in self.storage.calls))
+
     def test_etag_change_and_storage_failure_are_retryable_and_sanitized(self) -> None:
         for failure in (ObjectChanged(), StorageUnavailable()):
             with self.subTest(failure=type(failure).__name__):
@@ -292,6 +321,49 @@ class ConfirmationTests(TransactionTestCase):
         self.assert_completed_once(photo)
         self.assertEqual(sum(call[0] == "promote" for call in self.storage.calls), 1)
 
+    def test_stale_confirmation_does_not_fail_a_newer_source_checkpoint(self) -> None:
+        first_checkpoint_committed = ThreadEvent()
+        allow_first_to_continue = ThreadEvent()
+
+        def pause_first(checkpoint: str) -> None:
+            if checkpoint == "after_source_checkpoint":
+                first_checkpoint_committed.set()
+                self.assertTrue(allow_first_to_continue.wait(timeout=5))
+
+        def run_first() -> Photo | None:
+            close_old_connections()
+            try:
+                return confirm_upload_item(
+                    uploader=self.user,
+                    batch_id=self.batch_id,
+                    item_id=self.item_id,
+                    storage=self.storage,
+                    failpoint=pause_first,
+                )
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            stale_request = executor.submit(run_first)
+            self.assertTrue(first_checkpoint_committed.wait(timeout=5))
+            self.storage.add(self.item.incoming_key, self.jpeg, '"newer-etag"')
+
+            def stop_after_new_checkpoint(checkpoint: str) -> None:
+                if checkpoint == "after_source_checkpoint":
+                    raise SimulatedCrash(checkpoint)
+
+            with self.assertRaises(SimulatedCrash):
+                self.confirm(stop_after_new_checkpoint)
+            allow_first_to_continue.set()
+            self.assertIsNone(stale_request.result(timeout=5))
+
+        item = UploadItem.objects.get(id=self.item_id)
+        self.assertEqual(item.status, UploadItem.Status.AUTHORIZED)
+        self.assertEqual(item.verified_source_etag, "newer-etag")
+        self.assertEqual(item.error_code, "object_changed")
+        photo = self.confirm_success()
+        self.assert_completed_once(photo)
+
     def test_crash_checkpoints_converge_on_retry(self) -> None:
         checkpoints = (
             "after_source_checkpoint",
@@ -314,6 +386,8 @@ class ConfirmationTests(TransactionTestCase):
                     self.confirm(crash)
                 photo = self.confirm_success()
                 self.assert_completed_once(photo)
+                if checkpoint in {"after_photo_commit", "before_incoming_delete"}:
+                    self.assertNotIn(self.item.incoming_key, self.storage.objects)
                 UploadItem.objects.filter(id=self.item_id).update(
                     photo=None,
                     status=UploadItem.Status.AUTHORIZED,

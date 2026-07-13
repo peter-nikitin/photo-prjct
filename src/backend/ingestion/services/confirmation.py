@@ -17,7 +17,13 @@ from ingestion.services.batches import (
     _locked_owned_batch,
     classify_failure,
 )
-from ingestion.storage import ObjectIdentity, ObjectMismatch, ObjectMissing, StorageError
+from ingestion.storage import (
+    ObjectChanged,
+    ObjectIdentity,
+    ObjectMismatch,
+    ObjectMissing,
+    StorageError,
+)
 
 
 class ConfirmationStorage(Protocol):
@@ -51,52 +57,62 @@ def confirm_upload_item(
     checkpoint = ""
     source_etag_wire: str | None = None
     recovering_final = False
+    incoming_key = ""
 
     try:
         with transaction.atomic():
             batch = _locked_owned_batch(uploader=uploader, batch_id=batch_id)
             item = _locked_item(batch=batch, item_id=item_id)
             if item.status == UploadItem.Status.UPLOADED:
-                return _uploaded_photo(item)
-            _require_authorized(item)
-
-            recovering_final = _inspect_recoverable_final(storage=storage, item=item)
-            if recovering_final:
-                checkpoint = item.verified_source_etag or ""
+                existing_photo = _uploaded_photo(item)
+                incoming_key = item.incoming_key
             else:
-                source = storage.inspect(key=item.incoming_key)
-                _require_source_metadata(item=item, identity=source)
-                first = storage.read_range(
-                    key=item.incoming_key,
-                    etag_wire=source.etag_wire,
-                    start=0,
-                    end=1,
-                )
-                last = storage.read_range(
-                    key=item.incoming_key,
-                    etag_wire=source.etag_wire,
-                    start=item.expected_size - 2,
-                    end=item.expected_size - 1,
-                )
-                if first != b"\xff\xd8" or last != b"\xff\xd9":
-                    raise _VerificationFailure("invalid_jpeg")
+                existing_photo = None
+                _require_authorized(item)
 
-                checkpoint = source.etag_value
-                source_etag_wire = source.etag_wire
-                item.verified_source_etag = checkpoint
-                item.error_code = ""
-                item.sanitized_error_message = ""
-                item.last_activity_at = timezone.now()
-                item.save(
-                    update_fields=[
-                        "verified_source_etag",
-                        "error_code",
-                        "sanitized_error_message",
-                        "last_activity_at",
-                    ]
-                )
-                batch.last_activity_at = item.last_activity_at
-                batch.save(update_fields=["last_activity_at"])
+                recovering_final = _inspect_recoverable_final(storage=storage, item=item)
+                if recovering_final:
+                    checkpoint = item.verified_source_etag or ""
+                else:
+                    source = storage.inspect(key=item.incoming_key)
+                    _require_source_metadata(item=item, identity=source)
+                    if item.expected_size < 4:
+                        raise _VerificationFailure("invalid_jpeg")
+                    first = storage.read_range(
+                        key=item.incoming_key,
+                        etag_wire=source.etag_wire,
+                        start=0,
+                        end=1,
+                    )
+                    last = storage.read_range(
+                        key=item.incoming_key,
+                        etag_wire=source.etag_wire,
+                        start=item.expected_size - 2,
+                        end=item.expected_size - 1,
+                    )
+                    if first != b"\xff\xd8" or last != b"\xff\xd9":
+                        raise _VerificationFailure("invalid_jpeg")
+
+                    checkpoint = source.etag_value
+                    source_etag_wire = source.etag_wire
+                    item.verified_source_etag = checkpoint
+                    item.error_code = ""
+                    item.sanitized_error_message = ""
+                    item.last_activity_at = timezone.now()
+                    item.save(
+                        update_fields=[
+                            "verified_source_etag",
+                            "error_code",
+                            "sanitized_error_message",
+                            "last_activity_at",
+                        ]
+                    )
+                    batch.last_activity_at = item.last_activity_at
+                    batch.save(update_fields=["last_activity_at"])
+
+        if existing_photo is not None:
+            _best_effort_delete(storage=storage, incoming_key=incoming_key)
+            return existing_photo
 
         _run_failpoint(failpoint, "after_source_checkpoint")
 
@@ -104,64 +120,69 @@ def confirm_upload_item(
             batch = _locked_owned_batch(uploader=uploader, batch_id=batch_id)
             item = _locked_item(batch=batch, item_id=item_id)
             if item.status == UploadItem.Status.UPLOADED:
-                return _uploaded_photo(item)
-            _require_authorized(item)
-            if not checkpoint or item.verified_source_etag != checkpoint:
-                raise _VerificationFailure("promotion_conflict")
+                photo = _uploaded_photo(item)
+                incoming_key = item.incoming_key
+                completed_concurrently = True
+            else:
+                completed_concurrently = False
+                _require_authorized(item)
+                if not checkpoint or item.verified_source_etag != checkpoint:
+                    raise ObjectChanged()
 
-            if not recovering_final:
-                if source_etag_wire is None:
-                    raise _VerificationFailure("promotion_conflict")
-                storage.promote(
-                    incoming_key=item.incoming_key,
-                    final_key=item.final_key,
-                    etag_wire=source_etag_wire,
+                if not recovering_final:
+                    if source_etag_wire is None:
+                        raise _VerificationFailure("promotion_conflict")
+                    storage.promote(
+                        incoming_key=item.incoming_key,
+                        final_key=item.final_key,
+                        etag_wire=source_etag_wire,
+                    )
+                    _run_failpoint(failpoint, "after_copy")
+
+                final = storage.inspect(key=item.final_key)
+                _require_final_identity(item=item, identity=final, checkpoint=checkpoint)
+                _run_failpoint(failpoint, "after_final_head")
+
+                now = timezone.now()
+                photo = Photo.objects.create(
+                    id=item.id.hex,
+                    event=batch.event,
+                    src="",
+                    uploaded_by=batch.uploader,
+                    original_key=item.final_key,
+                    original_filename=item.original_filename,
+                    original_size=item.expected_size,
+                    original_content_type=item.declared_content_type,
+                    uploaded_at=now,
                 )
-                _run_failpoint(failpoint, "after_copy")
+                item.photo = photo
+                item.status = UploadItem.Status.UPLOADED
+                item.error_code = ""
+                item.sanitized_error_message = ""
+                item.authorization_expires_at = None
+                item.completed_at = now
+                item.last_activity_at = now
+                item.save(
+                    update_fields=[
+                        "photo",
+                        "status",
+                        "error_code",
+                        "sanitized_error_message",
+                        "authorization_expires_at",
+                        "completed_at",
+                        "last_activity_at",
+                    ]
+                )
+                batch.last_activity_at = now
+                _derive_and_save(batch=batch, require_terminal=False)
 
-            final = storage.inspect(key=item.final_key)
-            _require_final_identity(item=item, identity=final, checkpoint=checkpoint)
-            _run_failpoint(failpoint, "after_final_head")
-
-            now = timezone.now()
-            photo = Photo.objects.create(
-                id=item.id.hex,
-                event=batch.event,
-                src="",
-                uploaded_by=batch.uploader,
-                original_key=item.final_key,
-                original_filename=item.original_filename,
-                original_size=item.expected_size,
-                original_content_type=item.declared_content_type,
-                uploaded_at=now,
-            )
-            item.photo = photo
-            item.status = UploadItem.Status.UPLOADED
-            item.error_code = ""
-            item.sanitized_error_message = ""
-            item.authorization_expires_at = None
-            item.completed_at = now
-            item.last_activity_at = now
-            item.save(
-                update_fields=[
-                    "photo",
-                    "status",
-                    "error_code",
-                    "sanitized_error_message",
-                    "authorization_expires_at",
-                    "completed_at",
-                    "last_activity_at",
-                ]
-            )
-            batch.last_activity_at = now
-            _derive_and_save(batch=batch, require_terminal=False)
+        if completed_concurrently:
+            _best_effort_delete(storage=storage, incoming_key=incoming_key)
+            return photo
 
         _run_failpoint(failpoint, "after_photo_commit")
         _run_failpoint(failpoint, "before_incoming_delete")
-        try:
-            storage.delete(key=item.incoming_key)
-        except StorageError:
-            pass
+        _best_effort_delete(storage=storage, incoming_key=item.incoming_key)
         return photo
     except _VerificationFailure as failure:
         return _record_failure(
@@ -266,3 +287,10 @@ def _record_failure(
 def _run_failpoint(failpoint: Failpoint | None, checkpoint: str) -> None:
     if failpoint is not None:
         failpoint(checkpoint)
+
+
+def _best_effort_delete(*, storage: ConfirmationStorage, incoming_key: str) -> None:
+    try:
+        storage.delete(key=incoming_key)
+    except StorageError:
+        pass

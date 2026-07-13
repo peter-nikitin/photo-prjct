@@ -7,6 +7,8 @@ from unittest.mock import Mock
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
+from django.db.migrations.loader import MigrationLoader
+from django.db.migrations.writer import MigrationWriter
 from django.test import TransactionTestCase
 
 
@@ -155,9 +157,7 @@ class PhotoMigrationTests(TransactionTestCase):
         )
 
     def test_uploaded_by_fk_uses_historical_user_table_and_primary_key(self) -> None:
-        migration_module = import_module(
-            "picflow.migrations.0004_photo_private_original_constraints"
-        )
+        migration_module = import_module("picflow.migration_operations")
         operation = migration_module.AddNotValidUploadedByForeignKey()
         historical_user = SimpleNamespace(
             _meta=SimpleNamespace(
@@ -177,3 +177,14 @@ class PhotoMigrationTests(TransactionTestCase):
         sql = schema_editor.execute.call_args.args[0]
         self.assertIn('REFERENCES "accounts_member" ("member_uuid")', sql)
         self.assertNotIn("auth_user", sql)
+
+    def test_custom_operation_migration_serializes_to_valid_python(self) -> None:
+        migration = MigrationLoader(connection).get_migration(
+            "picflow", "0004_photo_private_original_constraints"
+        )
+
+        source = MigrationWriter(migration).as_string()
+
+        compile(source, "0004_photo_private_original_constraints.py", "exec")
+        self.assertIn("import picflow.migration_operations", source)
+        self.assertNotIn("import picflow.migrations.0004_", source)

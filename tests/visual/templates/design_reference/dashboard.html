@@ -1,0 +1,10 @@
+{% extends "design_reference/base.html" %}
+{% block title %}Панель фотографий{% endblock %}
+{% block content %}
+  <header class="screen-heading"><div><p class="eyebrow">Администрирование</p><h1>Фотографии</h1><p>Управление каталогом и метаданными снимков.</p></div><button class="button primary" type="button">Добавить фото</button></header>
+  <div class="metric-grid wide"><article><strong>{{ photos|length }}</strong><span>снимка в эталоне</span></article><article><strong>{{ events|length }}</strong><span>события</span></article><article><strong>{{ orders|length }}</strong><span>заказа</span></article><article><strong>75%</strong><span>с распознанным лицом</span></article></div>
+  <div class="management-layout">
+    <section class="reference-board"><div class="toolbar"><input placeholder="ID, событие, номер или фотограф"><span class="badge">London 10K</span></div><div class="record-list">{% for photo in photos %}<article class="record-row{% if forloop.first %} active{% endif %}"><img src="{{ photo.image }}" alt="{{ photo.photo_id }}"><div><strong>{{ photo.photo_id }}</strong><span>{{ photo.event }} · {{ photo.zone }}</span><small>{{ photo.photographer }} · № {{ photo.bibs|join:", " }}</small></div><span class="badge">{{ photo.match }}%</span></article>{% endfor %}</div></section>
+    <aside class="panel editor"><div class="panel-title"><strong>Карточка фото</strong><span class="badge">Edit</span></div><img class="editor-cover" src="{{ photos.0.image }}" alt="Редактируемое фото"><label class="field"><span>ID фото</span><input value="{{ photos.0.photo_id }}"></label><label class="field"><span>Событие</span><select><option>{{ photos.0.event }}</option></select></label><div class="two-fields"><label class="field"><span>Зона</span><input value="{{ photos.0.zone }}"></label><label class="field"><span>Время</span><input value="{{ photos.0.time }}"></label></div><label class="field"><span>Номера участников</span><input value="{{ photos.0.bibs|join:', ' }}"></label><button class="button primary" type="button">Сохранить</button></aside>
+  </div>
+{% endblock %}

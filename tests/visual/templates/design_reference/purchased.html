@@ -1,0 +1,6 @@
+{% extends "design_reference/base.html" %}
+{% block title %}Купленные фотографии{% endblock %}
+{% block content %}
+  <header class="screen-heading"><div><p class="eyebrow">Личный архив</p><h1>Купленные фотографии</h1><p>Оплаченные снимки сгруппированы по заказам.</p></div><button class="button secondary" type="button">Скачать всё</button></header>
+  <section class="reference-board purchased-board">{% for order in orders %}<article class="purchase-group"><header><div><strong>{{ order.id }}</strong><span>{{ order.created }} · {{ order.customer }}</span></div><span class="status success">{{ order.status }}</span></header><div class="purchase-gallery">{% for photo in photos %}{% if forloop.counter <= order.items %}<figure><img src="{{ photo.image }}" alt="Купленное фото {{ photo.photo_id }}"><figcaption><strong>{{ photo.photo_id }}</strong><span>{{ photo.event }} · {{ photo.zone }}</span><button class="text-button" type="button">Скачать</button></figcaption></figure>{% endif %}{% endfor %}</div></article>{% endfor %}</section>
+{% endblock %}

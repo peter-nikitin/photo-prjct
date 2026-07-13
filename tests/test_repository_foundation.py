@@ -122,23 +122,12 @@ def _assert_success_dependent_sequence(script: str, first_script: str, second_sc
     assert first_position < second_position
 
     between_calls = normalized[first_position:second_position]
+    assert not re.search(r"(?m)^\s*set\s+[+-][A-Za-z]*e", normalized)
     assert "||" not in between_calls
     assert not re.search(r"(?<!\|)\|(?!\|)|(?<!&)&(?!&)", between_calls)
-    assert not re.search(r";\s*(?:true|:)\b", between_calls)
-
-    fail_fast = False
-    for match in re.finditer(r"(?m)^\s*set\s+([+-][A-Za-z]+)", normalized[:first_position]):
-        flags = match.group(1)
-        if "e" in flags:
-            fail_fast = flags.startswith("-")
-
-    same_line = "\n" not in normalized[first_position:second_position]
-    chained = same_line and "&&" in between_calls and ";" not in between_calls
-    if not chained:
-        assert "&&" not in between_calls
-    assert fail_fast or chained, (
-        f"{second_script} must depend on successful completion of {first_script}"
-    )
+    assert ";" not in between_calls
+    assert between_calls.count("&&") == 1
+    assert re.search(r"&&\s*$", between_calls)
 
 
 def _envs(step: dict[str, Any]) -> set[str]:
@@ -178,14 +167,43 @@ def _contains_readonly_eligibility_check(script: str) -> bool:
     return False
 
 
+def _approved_certbot_delegation(segment: str) -> bool:
+    if re.search(r"[`]|\$\(|<\(|>\(", segment):
+        return False
+
+    approved_calls = [
+        call
+        for script_name in (
+            "certbot/renew-certificates.sh",
+            "certbot/reconcile-certificate.sh",
+        )
+        for call in _script_calls(segment, script_name)
+    ]
+    if len(approved_calls) != 1 or approved_calls[0][0] != 0:
+        return False
+
+    forbidden_arguments = re.compile(r"(?:^|/)(?:docker|sh|bash|certbot|certonly|renew)(?::|$|/)")
+    return all(
+        not re.search(r"[`();<>|&]", argument) and not forbidden_arguments.search(argument)
+        for argument in approved_calls[0][1]
+    )
+
+
 def _assert_no_embedded_certificate_or_marker_mutation(script: str) -> None:
     normalized = _normalize_shell(script)
     for line in normalized.splitlines():
-        for segment in re.split(r"\s*(?:&&|\|\||;)\s*", line):
-            if _script_call_position(segment, "certbot/renew-certificates.sh") is not None:
+        segments = re.split(r"\s*(?:&&|\|\||;)\s*", line)
+        for segment in segments:
+            if _approved_certbot_delegation(segment):
+                assert len(segments) == 1
                 continue
-            if _script_call_position(segment, "certbot/reconcile-certificate.sh") is not None:
-                continue
+            assert not any(
+                _script_calls(segment, script_name)
+                for script_name in (
+                    "certbot/renew-certificates.sh",
+                    "certbot/reconcile-certificate.sh",
+                )
+            ), "Approved Certbot scripts must be invoked as standalone commands"
             executable_line = r"(?m)^\s*(?!#)[^\n]*"
             assert not re.search(
                 executable_line + r"certbot(?:/certbot(?::[^\s]+)?)?[^\n]*\b(?:certonly|renew)\b",
@@ -247,10 +265,22 @@ def test_workflow_shell_guards_reject_embedded_operations_and_suppressed_errors(
     _assert_no_embedded_certificate_or_marker_mutation(
         'sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"'
     )
-    _assert_no_embedded_certificate_or_marker_mutation("bash deploy/certbot/renew-certificates.sh")
+    _assert_no_embedded_certificate_or_marker_mutation(
+        "bash deploy/certbot/renew-certificates.sh --dry-run"
+    )
+
+    for delegated_bypass in (
+        'sh deploy/certbot/reconcile-certificate.sh "$(docker run '
+        'certbot/certbot:v2.11.0 certonly)"',
+        "sh deploy/certbot/reconcile-certificate.sh | tee /tmp/certbot.log",
+        "sh deploy/certbot/reconcile-certificate.sh && echo done",
+        "sh deploy/certbot/reconcile-certificate.sh; echo done",
+    ):
+        with pytest.raises(AssertionError):
+            _assert_no_embedded_certificate_or_marker_mutation(delegated_bypass)
 
     _assert_success_dependent_sequence(
-        "set -eu\nsh deploy/apply-deployment.sh\nsh deploy/finalize-deployment.sh $APP_IMAGE",
+        "sh deploy/apply-deployment.sh &&\n  sh deploy/finalize-deployment.sh $APP_IMAGE",
         "apply-deployment.sh",
         "finalize-deployment.sh",
     )
@@ -266,6 +296,8 @@ def test_workflow_shell_guards_reject_embedded_operations_and_suppressed_errors(
         "sh deploy/finalize-deployment.sh $APP_IMAGE",
         "set -e\nsh deploy/apply-deployment.sh | tee /tmp/apply.log\n"
         "sh deploy/finalize-deployment.sh $APP_IMAGE",
+        "set +e\nsh deploy/apply-deployment.sh && sh deploy/finalize-deployment.sh $APP_IMAGE",
+        "set -eu\nsh deploy/apply-deployment.sh && sh deploy/finalize-deployment.sh $APP_IMAGE",
         "sh deploy/apply-deployment.sh\nsh deploy/finalize-deployment.sh $APP_IMAGE",
     ):
         with pytest.raises(AssertionError):
@@ -499,6 +531,14 @@ def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -
     production_rollback_arguments = _required_script_call_arguments(
         production_rollback, "rollback-deployment.sh"
     )
+
+    assert staging_apply_step["env"]["APP_IMAGE"] == "${{ needs.build.outputs.app_image }}"
+    assert "APP_IMAGE" in _envs(staging_apply_step)
+    expected_production_image = production_apply_step["env"]["APP_IMAGE"]
+    for conditional_step in (production_finalize_step, production_rollback_step):
+        assert conditional_step["env"]["APP_IMAGE"] == expected_production_image
+        assert "APP_IMAGE" in _envs(conditional_step)
+
     assert staging_finalize_arguments
     assert production_finalize_arguments
     assert len(production_rollback_arguments) >= 2

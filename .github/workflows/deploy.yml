@@ -71,6 +71,12 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MEDIA_STORAGE_BACKEND: ${{ vars.MEDIA_STORAGE_BACKEND || 'filesystem' }}
+          MEDIA_S3_ENDPOINT_URL: ${{ vars.MEDIA_S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
+          MEDIA_S3_REGION: ${{ vars.MEDIA_S3_REGION || 'ru-central1' }}
+          MEDIA_S3_PUBLIC_BUCKET: ${{ vars.MEDIA_S3_PUBLIC_BUCKET }}
+          MEDIA_S3_ACCESS_KEY_ID: ${{ secrets.MEDIA_S3_ACCESS_KEY_ID }}
+          MEDIA_S3_SECRET_ACCESS_KEY: ${{ secrets.MEDIA_S3_SECRET_ACCESS_KEY }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         with:
@@ -78,7 +84,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script_stop: true
-          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,GHCR_USERNAME,GHCR_READ_TOKEN
+          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,GHCR_USERNAME,GHCR_READ_TOKEN
           script: |
             set -eu
             install -d -m 0755 /opt/photo-prjct
@@ -94,6 +100,12 @@ jobs:
             DB_PASSWORD=$DB_PASSWORD
             DB_HOST=db
             DB_PORT=5432
+            MEDIA_STORAGE_BACKEND=$MEDIA_STORAGE_BACKEND
+            MEDIA_S3_ENDPOINT_URL=$MEDIA_S3_ENDPOINT_URL
+            MEDIA_S3_REGION=$MEDIA_S3_REGION
+            MEDIA_S3_PUBLIC_BUCKET=$MEDIA_S3_PUBLIC_BUCKET
+            MEDIA_S3_ACCESS_KEY_ID=$MEDIA_S3_ACCESS_KEY_ID
+            MEDIA_S3_SECRET_ACCESS_KEY=$MEDIA_S3_SECRET_ACCESS_KEY
             EOF
 
             if [ -n "$GHCR_READ_TOKEN" ]; then

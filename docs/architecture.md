@@ -34,16 +34,16 @@ manual corrections take precedence and the product must not claim certain identi
 The repository currently contains an early Django prototype:
 
 - Django 6 serves server-rendered templates and static JavaScript/CSS.
-- The `picflow` application contains preliminary `Event` and `Photo` models. They demonstrate
-  persistence and page bootstrapping; they are not the final domain model.
+- The `picflow` application owns the first target `Event` catalog model and a preliminary `Photo`
+  model. Published events are managed through Django Admin and rendered by server-side templates.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
-- Prototype-only frontend sources also remain under `src/proto`; Django templates and static files
-  under `src/backend` are the active application copy.
+- Prototype-only frontend sources remain archived under `src/proto`; they are not routed by Django.
+- Event covers use a public Yandex Object Storage bucket in deployed environments.
 
 ```text
 Browser -> Django/Gunicorn -> PostgreSQL
@@ -72,7 +72,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 
 | Module | Responsibility | Status |
 | --- | --- | --- |
-| Catalog | Events, locations, publication state, photographers | Proposed |
+| Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Batch upload, file metadata, processing state, retries | Proposed |
 | Media | Originals, thumbnails, previews, watermarks, purchased exports | Proposed |
 | Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed |
@@ -184,7 +184,7 @@ broker, vector engine, and ML implementations require separate ADRs.
 
 Each item needs evidence and an ADR before implementation commits the architecture:
 
-- S3-compatible storage provider and media lifecycle policy.
+- Private media lifecycle and retention policy.
 - Background task framework, broker, retry semantics, and processing SLA.
 - `pgvector` versus a dedicated vector database and migration thresholds.
 - Face detection/embedding implementation and biometric governance.

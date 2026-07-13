@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import environ
 
@@ -63,10 +64,30 @@ TEMPLATES = [
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
-STORAGES = {
+STORAGES: dict[str, dict[str, Any]] = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+if env("MEDIA_STORAGE_BACKEND", default="filesystem") == "s3":
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "access_key": env("MEDIA_S3_ACCESS_KEY_ID"),
+            "secret_key": env("MEDIA_S3_SECRET_ACCESS_KEY"),
+            "bucket_name": env("MEDIA_S3_PUBLIC_BUCKET"),
+            "endpoint_url": env("MEDIA_S3_ENDPOINT_URL", default="https://storage.yandexcloud.net"),
+            "region_name": env("MEDIA_S3_REGION", default="ru-central1"),
+            "default_acl": "public-read",
+            "querystring_auth": False,
+            "file_overwrite": False,
+        },
+    }
 
 SECRET_KEY = env("SECRET_KEY")

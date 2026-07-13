@@ -25,3 +25,4 @@ place, and add the new record to this index.
 | 0003 | [Deploy with Docker Compose to Yandex Cloud](0003-docker-compose-yandex-cloud.md) | Accepted |
 | 0004 | [Keep engineering knowledge in the repository](0004-repository-engineering-knowledge.md) | Accepted |
 | 0005 | [Promote immutable images through staging](0005-promote-images-through-staging.md) | Accepted |
+| 0006 | [Use Yandex Object Storage for media](0006-yandex-object-storage-media.md) | Accepted |

@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-from django.test import TestCase, modify_settings, override_settings
+from django.test import SimpleTestCase, TestCase, modify_settings, override_settings
 from django.urls import reverse
 
 from picflow.models import Event
@@ -23,6 +23,29 @@ class NavigationMarkupParser(HTMLParser):
             self.form_actions.add(action)
         elif tag == "input" and (input_type := attributes.get("type")):
             self.input_types.add(input_type.lower())
+
+
+@override_settings(
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+)
+@modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
+class PublicShellTests(SimpleTestCase):
+    def test_legal_page_uses_shared_accessible_shell(self) -> None:
+        response = self.client.get(reverse("legal"))
+
+        self.assertTemplateUsed(response, "ui/base.html")
+        self.assertTemplateUsed(response, "ui/legal.html")
+        self.assertContains(response, '<html lang="ru">')
+        self.assertContains(response, 'href="#main-content"')
+        self.assertContains(response, 'id="main-content"')
+        self.assertContains(response, 'href="/static/ui/design-system.css"')
+        self.assertContains(response, 'href="/static/ui/catalog.css"')
+        self.assertContains(response, f'href="{reverse("event_catalog")}"')
+        self.assertContains(response, f'href="{reverse("legal")}"')
+        self.assertContains(response, f'href="{reverse("admin:index")}"')
+        self.assertNotContains(response, "Прототип")
+        for section_id in ("offer", "terms", "personal", "cookies"):
+            self.assertContains(response, f'id="{section_id}"')
 
 
 @override_settings(
@@ -98,6 +121,26 @@ class PageTests(TestCase):
         event = self.make_event(description="Race description")
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
         self.assertContains(response, "Race description")
+
+    def test_public_pages_use_shared_accessible_shell(self) -> None:
+        event = self.make_event()
+
+        for path in (
+            reverse("event_catalog"),
+            reverse("event_detail", kwargs={"slug": event.slug}),
+            reverse("legal"),
+        ):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertTemplateUsed(response, "ui/base.html")
+                self.assertContains(response, '<html lang="ru">')
+                self.assertContains(response, 'href="#main-content"')
+                self.assertContains(response, 'id="main-content"')
+                self.assertContains(response, 'href="/static/ui/design-system.css"')
+                self.assertContains(response, 'href="/static/ui/catalog.css"')
+                self.assertContains(response, f'href="{reverse("event_catalog")}"')
+                self.assertContains(response, f'href="{reverse("legal")}"')
+                self.assertContains(response, f'href="{reverse("admin:index")}"')
 
     def test_event_detail_returns_404_for_draft_event(self) -> None:
         draft = self.make_event(

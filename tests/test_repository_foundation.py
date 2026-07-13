@@ -8,6 +8,36 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _workflow_job_script(workflow_name: str, job_name: str) -> str:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
+    )
+    executable_fields = []
+    for step in workflow["jobs"][job_name]["steps"]:
+        if "run" in step:
+            executable_fields.append(step["run"])
+        if "script" in step.get("with", {}):
+            executable_fields.append(step["with"]["script"])
+
+    return "\n".join(executable_fields)
+
+
+def _script_call_position(script: str, relative_path: str) -> int | None:
+    invocation = re.compile(
+        rf"(?m)^\s*"
+        rf"(?:[A-Z_][A-Z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s+)*"
+        rf"sh\s+\S*{re.escape(relative_path)}(?:\s|$)"
+    )
+    match = invocation.search(script)
+    return match.start() if match else None
+
+
+def _required_script_call_position(script: str, relative_path: str) -> int:
+    position = _script_call_position(script, relative_path)
+    assert position is not None, f"Missing executable call to {relative_path}"
+    return position
+
+
 def test_documentation_foundation_exists() -> None:
     expected_paths = (
         "docs/architecture.md",
@@ -157,35 +187,30 @@ def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None
     assert "docker-compose.https.yml" in production
 
 
-def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -> None:
-    script_paths = (
+def test_focused_deployment_scripts_are_versioned() -> None:
+    for relative_path in (
         "deploy/certbot/reconcile-certificate.sh",
         "deploy/finalize-deployment.sh",
         "deploy/rollback-deployment.sh",
         "deploy/verify-public-edge.sh",
-    )
-    for relative_path in script_paths:
+    ):
         assert (ROOT / relative_path).is_file(), f"Missing {relative_path}"
 
-    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+
+def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -> None:
+    staging = _workflow_job_script("deploy.yml", "deploy")
+    production = _workflow_job_script("promote-production.yml", "promote")
+    production_eligibility = _workflow_job_script("promote-production.yml", "verify-staging")
     apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
 
-    assert "/deploy/apply-deployment.sh" in staging
-    assert "/deploy/finalize-deployment.sh" in staging
-    assert "deploy/verify-public-edge.sh" not in staging
+    marker_root = r'["\']?(?:/opt/photo-prjct|\$(?:DEPLOY_ROOT|\{DEPLOY_ROOT\}))'
+    deployed_marker = rf"{marker_root}/deployed-image[\"\']?"
+    assert re.search(
+        rf"(?m)^\s*test\s+[^\n]*\bcat\s+{deployed_marker}[^\n]*\$APP_IMAGE",
+        production_eligibility,
+    )
 
-    for script_path in (
-        "/deploy/apply-deployment.sh",
-        "deploy/verify-public-edge.sh",
-        "/deploy/finalize-deployment.sh",
-        "/deploy/rollback-deployment.sh",
-    ):
-        assert script_path in production
-
-    assert "/deploy/certbot/reconcile-certificate.sh" in apply_script
-
-    for workflow in (staging, production):
+    for workflow in (staging, production, production_eligibility):
         for embedded_operation in (
             "certbot certonly",
             "certbot renew",
@@ -195,6 +220,37 @@ def test_deployment_workflows_delegate_edge_and_marker_operations_to_scripts() -
             "> /opt/photo-prjct/deployed-image",
         ):
             assert embedded_operation not in workflow
+
+        assert "candidate-image" not in workflow
+        assert "previous-image" not in workflow
+
+        marker_path = rf"{marker_root}/(?:candidate-image|previous-image|deployed-image)"
+        assert not re.search(rf"(?:>|>>)\s*{marker_path}", workflow)
+        assert not re.search(
+            rf"(?m)(?:^|[;&|]\s*)(?:sudo\s+)?"
+            rf"(?:mv|cp|tee|rm|touch|install)\b[^\n]*{marker_path}",
+            workflow,
+        )
+
+    staging_apply = _required_script_call_position(staging, "deploy/apply-deployment.sh")
+    staging_finalize = _required_script_call_position(staging, "deploy/finalize-deployment.sh")
+    assert staging_apply < staging_finalize
+    assert _script_call_position(staging, "deploy/verify-public-edge.sh") is None
+    assert _script_call_position(staging, "deploy/rollback-deployment.sh") is None
+
+    production_apply = _required_script_call_position(production, "deploy/apply-deployment.sh")
+    production_verify = _required_script_call_position(production, "deploy/verify-public-edge.sh")
+    production_finalize = _required_script_call_position(
+        production, "deploy/finalize-deployment.sh"
+    )
+    production_rollback = _required_script_call_position(
+        production, "deploy/rollback-deployment.sh"
+    )
+    assert production_apply < production_verify
+    assert production_verify < production_finalize
+    assert production_verify < production_rollback
+
+    assert "/deploy/certbot/reconcile-certificate.sh" in apply_script
 
 
 def test_staging_can_temporarily_disable_https_without_changing_production_default() -> None:

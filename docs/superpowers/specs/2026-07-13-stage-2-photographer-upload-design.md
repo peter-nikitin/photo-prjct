@@ -179,6 +179,11 @@ content length from 1 byte through 50 MB. It verifies incoming and final objects
 only the required byte ranges for minimal signature validation, copies a valid incoming object to a
 new final key with server credentials, and deletes incoming or rejected objects.
 
+Confirmation captures the incoming object's ETag from `HEAD`. Both byte-range reads and the
+server-side copy use that ETag as an `If-Match`/copy-source condition. If the browser overwrites the
+incoming key between verification steps, Object Storage rejects the conditional operation and the
+item returns to a retryable failure instead of promoting different bytes.
+
 The browser receives the URL and fields required by the presigned POST but receives no storage
 credentials and no final key. CORS allows `POST` from the configured application origins and only
 the headers required by the POST policy. Browser access never includes object read, list, copy, or
@@ -242,7 +247,7 @@ transition locks the batch row and recalculates state from persisted items.
 | Entity | From | Trigger | To |
 | --- | --- | --- | --- |
 | Batch | `created` | First item is authorized | `uploading` |
-| Batch | `created` | Empty batch is inactive for 24 hours | `failed` |
+| Batch | `created` | No activity for 24 hours, with or without registered pending items | `failed` |
 | Batch | `uploading` | All items uploaded | `completed` |
 | Batch | `uploading` | Items terminal, some uploaded and some failed | `partial` |
 | Batch | `uploading` | Items terminal, all failed | `failed` |
@@ -250,6 +255,7 @@ transition locks the batch row and recalculates state from persisted items.
 | Item | none | Idempotent registration | `pending` |
 | Item | `pending`, `authorized`, or `failed` | Grant issue or refresh | `authorized` |
 | Item | `authorized` | Verify, promote, and create photo succeed | `uploaded` |
+| Item | `authorized` | Browser reports exhausted transfer retries | `failed` |
 | Item | `authorized` | Non-retryable verification or promotion failure | `failed` |
 | Item | `pending` or `authorized` | No activity for 24 hours | `failed` |
 
@@ -275,12 +281,13 @@ batch.
 6. The browser requests presigned POST authorization for the next small queue window.
 7. Up to four files upload directly to their incoming private-bucket keys.
 8. After Object Storage reports success, the browser asks Django to confirm that item.
-9. Django checks the incoming object size and metadata, reads the JPEG start and end signatures,
-   and rejects an object that does not begin with `FF D8` and end with `FF D9`. This is container
-   signature validation, not complete image decoding or proof that the file is safe to render.
-10. Django copies the valid object to a new final key never authorized to the browser, verifies the
-    final object with `HEAD`, creates photo metadata and marks the item `uploaded` in one database
-    transaction, then deletes the incoming object best-effort.
+9. Django captures the incoming ETag while checking object size and metadata, then uses the same
+   ETag as a condition while reading the JPEG start and end signatures. It rejects an object that
+   changes or does not begin with `FF D8` and end with `FF D9`. This is container signature
+   validation, not complete image decoding or proof that the file is safe to render.
+10. Django conditionally copies that same incoming ETag to a new final key never authorized to the
+    browser, verifies the final object with `HEAD`, creates photo metadata and marks the item
+    `uploaded` in one database transaction, then deletes the incoming object best-effort.
 11. Once all selected items are terminal, Django marks the batch `completed` when all succeeded,
     `partial` when success and failure coexist, or `failed` when every item failed.
 
@@ -292,6 +299,9 @@ container; Stage 3 must decode and validate it before creating any public deriva
 ## Failure and lifecycle behavior
 
 - A transient network or Object Storage failure is retried up to three times with increasing delay.
+- After those attempts, the browser reports the item failed through an idempotent control endpoint;
+  Django locks the item, rejects failure reports for an already uploaded item, and derives the batch
+  state from persisted items.
 - An expired grant is refreshed without incrementing the file's data-failure count.
 - A terminal item exposes a stable, localized error category and a manual retry action.
 - A retry reuses the same `UploadItem` and incoming key. An uploaded item cannot be authorized or
@@ -361,8 +371,9 @@ and recognition remains outside this stage.
 - Registration limits for file count, size, filename, and allowed content type.
 - Lost-response registration retry, conflicting client item UUID reuse, and concurrent registration
   versus finalization under the 10,000-item server limit.
-- S3 adapter tests for presigned POST constraints, refresh, `HEAD`, range signature reads, promotion,
-  post-promotion incoming overwrite, mismatch, deletion, and sanitized failures.
+- S3 adapter tests for presigned POST constraints, refresh, `HEAD`, ETag-conditional range signature
+  reads and promotion, overwrite between verification steps, post-promotion incoming overwrite,
+  mismatch, deletion, and sanitized failures.
 - Cleanup tests for the 24-hour boundary, active-item race prevention, final objects without photos,
   linked-final preservation, and idempotent missing-object handling.
 - Security assertions that read responses and public pages do not expose keys or signed URLs.

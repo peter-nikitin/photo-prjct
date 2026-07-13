@@ -135,14 +135,32 @@ jobs:
             fi
             docker compose --project-name photo-prjct-production \
               --env-file /opt/photo-prjct/.env \
-              -f /opt/photo-prjct/docker-compose.prod.yml up -d --wait
+              -f /opt/photo-prjct/docker-compose.prod.yml up -d
             if [ "$ENABLE_HTTPS" = "true" ]; then
-              curl --fail-with-body --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 \
-                --resolve "$PUBLIC_DOMAIN:443:127.0.0.1" "https://$PUBLIC_DOMAIN/health/"
+              health_port=443
+              health_url="https://$PUBLIC_DOMAIN/health/"
             else
-              curl --fail-with-body --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 \
-                --resolve "$PUBLIC_DOMAIN:80:127.0.0.1" "http://$PUBLIC_DOMAIN/health/"
+              health_port=80
+              health_url="http://$PUBLIC_DOMAIN/health/"
             fi
+            attempt=1
+            max_attempts=12
+            until curl --fail-with-body --silent --show-error \
+              --resolve "$PUBLIC_DOMAIN:$health_port:127.0.0.1" "$health_url"; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "Deployment health check failed after $max_attempts attempts" >&2
+                docker compose --project-name photo-prjct-production \
+                  --env-file /opt/photo-prjct/.env \
+                  -f /opt/photo-prjct/docker-compose.prod.yml ps || true
+                docker compose --project-name photo-prjct-production \
+                  --env-file /opt/photo-prjct/.env \
+                  -f /opt/photo-prjct/docker-compose.prod.yml logs --tail=200 || true
+                exit 1
+              fi
+              echo "Deployment health check attempt $attempt failed; retrying" >&2
+              attempt=$((attempt + 1))
+              sleep 5
+            done
             printf '%s\n' "$APP_IMAGE" > /opt/photo-prjct/deployed-image
 
       - name: Capture production diagnostics on failure

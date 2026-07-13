@@ -1,9 +1,27 @@
 from datetime import date, timedelta
+from html.parser import HTMLParser
 
 from django.test import TestCase, modify_settings, override_settings
 from django.urls import reverse
 
 from picflow.models import Event
+
+
+class NavigationMarkupParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor_hrefs: set[str] = set()
+        self.form_actions: set[str] = set()
+        self.input_types: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "a" and (href := attributes.get("href")):
+            self.anchor_hrefs.add(href)
+        elif tag == "form" and (action := attributes.get("action")):
+            self.form_actions.add(action)
+        elif tag == "input" and (input_type := attributes.get("type")):
+            self.input_types.add(input_type.lower())
 
 
 @override_settings(
@@ -112,20 +130,24 @@ class PageTests(TestCase):
             reverse("event_detail", kwargs={"slug": event.slug}),
             reverse("legal"),
         )
-        unfinished_targets = (
+        unfinished_targets = {
             "/upload/",
             "/orders/",
             "/promos/",
             "/promotions/",
             "/purchased/",
             "/search/",
-        )
+        }
 
         for path in public_paths:
             with self.subTest(path=path):
                 response = self.client.get(path)
                 self.assertEqual(response.status_code, 200)
                 self.assertNotContains(response, "unpkg.com")
-                for target in unfinished_targets:
-                    self.assertNotContains(response, f'href="{target}"')
-                self.assertNotContains(response, 'type="search"')
+
+                markup = NavigationMarkupParser()
+                markup.feed(response.content.decode(response.charset))
+                navigation_targets = markup.anchor_hrefs | markup.form_actions
+
+                self.assertTrue(unfinished_targets.isdisjoint(navigation_targets))
+                self.assertNotIn("search", markup.input_types)

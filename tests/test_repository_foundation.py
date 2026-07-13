@@ -141,6 +141,18 @@ def test_prototype_archive_and_legacy_demo_assets_are_removed() -> None:
     assert not list((static / "assets").glob("*")), "Legacy duplicate demo assets remain"
 
 
+def test_legacy_prototype_stylesheet_is_removed() -> None:
+    static = ROOT / "src/backend/static"
+
+    assert not (static / "styles.css").exists(), "Legacy prototype stylesheet remains"
+
+
+def test_legacy_catalog_stylesheet_is_removed() -> None:
+    static = ROOT / "src/backend/static"
+
+    assert not (static / "catalog.css").exists(), "Legacy catalog stylesheet remains"
+
+
 def test_visual_design_skill_has_required_files() -> None:
     skill = ROOT / ".agents/skills/update-visual-design"
 

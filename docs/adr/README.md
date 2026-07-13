@@ -29,3 +29,6 @@ place, and add the new record to this index.
 | 0007 | [Use Nginx and Certbot for the HTTPS edge](0007-nginx-certbot-https-edge.md) | Accepted |
 | 0008 | [Temporarily allow HTTP-only staging when public DNS is unroutable](0008-temporary-staging-http-fallback.md) | Superseded |
 | 0009 | [Separate the staging HTTP edge from the production HTTPS edge](0009-separate-staging-http-edge.md) | Accepted |
+| 0010 | [Use Django photographer permissions](0010-use-django-photographer-permissions.md) | Accepted |
+| 0011 | [Use direct private Object Storage ingestion](0011-use-direct-private-object-storage-ingestion.md) | Accepted |
+| 0012 | [Keep Stage 2 ingestion request-driven](0012-keep-stage-2-ingestion-request-driven.md) | Accepted |

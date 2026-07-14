@@ -1,6 +1,6 @@
 # 0010: Share the HTTPS edge across public environments
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-07-13
 - Deciders: project maintainers
 - Supersedes: [0009](0009-separate-staging-http-edge.md)

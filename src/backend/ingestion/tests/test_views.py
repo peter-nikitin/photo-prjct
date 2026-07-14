@@ -261,6 +261,115 @@ class UploadViewTests(TestCase):
         for response in (invalid_json, validation, conflict):
             self.assertEqual(set(response.json()["error"]), {"code", "message", "fields"})
 
+    def test_deeply_nested_json_returns_stable_invalid_json(self) -> None:
+        body = '{"nested":' * 10_000 + "null" + "}" * 10_000
+
+        response = self.client.post(
+            reverse("upload_batch_create"), body, content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {
+                "error": {
+                    "code": "invalid_json",
+                    "message": "Request body must be valid JSON.",
+                    "fields": {},
+                }
+            },
+        )
+
+    @patch("ingestion.views.confirm_upload_item", return_value=None)
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_confirm_preserves_retryable_error_codes(self, storage_class, confirm_upload) -> None:
+        cases = {
+            "object_changed": "The uploaded object changed. Upload the file again.",
+            "object_missing": "The uploaded object is not available yet.",
+            "storage_unavailable": "Object storage is temporarily unavailable.",
+        }
+        for code, message in cases.items():
+            with self.subTest(code=code):
+                batch_id, _ = self.create_batch()
+                _, registered = self.register_item(batch_id)
+                item_id = registered.json()["items"][0]["id"]
+                UploadItem.objects.filter(pk=item_id).update(
+                    error_code=code,
+                    sanitized_error_message=message,
+                )
+
+                response = self.client.post(
+                    reverse("upload_item_confirm", args=[batch_id, item_id]),
+                    "{}",
+                    content_type="application/json",
+                )
+
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(
+                    response.json(),
+                    {"error": {"code": code, "message": message, "fields": {}}},
+                )
+        self.assertEqual(confirm_upload.call_count, 3)
+        self.assertEqual(storage_class.call_count, 3)
+
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_confirm_converges_when_reread_observes_concurrent_completion(
+        self, storage_class
+    ) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+
+        def complete_concurrently(**kwargs):
+            item = UploadItem.objects.get(pk=item_id)
+            photo = Photo.objects.create(
+                id=item.id.hex,
+                event=self.event,
+                src="",
+                uploaded_by=self.user,
+                original_key=item.final_key,
+                original_filename=item.original_filename,
+                original_size=item.expected_size,
+                original_content_type=item.declared_content_type,
+                uploaded_at=timezone.now(),
+            )
+            item.photo = photo
+            item.status = UploadItem.Status.UPLOADED
+            item.authorization_expires_at = None
+            item.completed_at = timezone.now()
+            item.save(
+                update_fields=[
+                    "photo",
+                    "status",
+                    "authorization_expires_at",
+                    "completed_at",
+                ]
+            )
+            return None
+
+        with patch(
+            "ingestion.views.confirm_upload_item", side_effect=complete_concurrently
+        ) as confirm_upload:
+            response = self.client.post(
+                reverse("upload_item_confirm", args=[batch_id, item_id]),
+                "{}",
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "item": {
+                    "id": item_id,
+                    "status": "uploaded",
+                    "photo_id": UUID(item_id).hex,
+                }
+            },
+        )
+        confirm_upload.assert_called_once()
+        storage_class.assert_called_once_with()
+
     @patch("ingestion.views.PrivateUploadStorage")
     def test_storage_failures_are_sanitized_503(self, storage_class) -> None:
         batch_id, _ = self.create_batch()

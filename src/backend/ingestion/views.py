@@ -235,8 +235,27 @@ def upload_item_confirm(request: HttpRequest, batch: UUID, item: UUID) -> JsonRe
         state = _owned_item(request, batch, item)
         if state is None:
             return _not_found()
-        if state.error_code in {"storage_unavailable", "object_missing", "object_changed"}:
-            return _storage_unavailable()
+        if state.status == UploadItem.Status.UPLOADED and state.photo_id is not None:
+            return JsonResponse(
+                {
+                    "item": {
+                        "id": str(state.id),
+                        "status": UploadItem.Status.UPLOADED,
+                        "photo_id": str(state.photo_id),
+                    }
+                }
+            )
+        retryable_messages = {
+            "object_changed": "The uploaded object changed. Upload the file again.",
+            "object_missing": "The uploaded object is not available yet.",
+            "storage_unavailable": "Object storage is temporarily unavailable.",
+        }
+        if state.error_code in retryable_messages:
+            return _error(
+                state.error_code,
+                retryable_messages[state.error_code],
+                status=503,
+            )
         return _error(
             state.error_code or "confirmation_failed",
             state.sanitized_error_message or "The upload could not be confirmed.",
@@ -292,7 +311,7 @@ def _json_form(
 ) -> tuple[dict[str, Any] | None, JsonResponse | None]:
     try:
         parsed = json.loads(request.body or b"{}")
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
         return None, _error("invalid_json", "Request body must be valid JSON.", status=400)
     if not isinstance(parsed, dict):
         return None, _error("invalid_json", "Request body must be a JSON object.", status=400)

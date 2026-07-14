@@ -13,7 +13,10 @@ from ingestion.models import UploadBatch, UploadItem
 from picflow.models import Event
 
 
-@override_settings(PHOTO_UPLOAD_ENABLED=True)
+@override_settings(
+    PHOTO_UPLOAD_ENABLED=True,
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
+)
 class UploadPermissionTests(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:

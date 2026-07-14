@@ -25,6 +25,10 @@ class FixtureEvent:
     access_label: str = "Открытый доступ"
     cover: FixtureImage | None = None
 
+    @property
+    def pk(self) -> str:
+        return self.slug
+
     def get_access_type_display(self) -> str:
         return self.access_label
 
@@ -194,29 +198,108 @@ PROMOTIONS = (
     ),
 )
 
-UPLOAD_QUEUE = (
+UPLOAD_LIMITS = MappingProxyType(
+    {
+        "max_files": 10_000,
+        "max_files_label": "10 000",
+        "max_file_bytes": 52_428_800,
+        "max_file_megabytes": 50,
+        "registration_chunk": 100,
+        "concurrency": 4,
+        "queue_window": 20,
+    }
+)
+
+ACTIVE_UPLOAD_QUEUE = (
     MappingProxyType(
         {
-            "name": "IMG_1842_1048.jpg",
-            "meta": "8,4 МБ · QR 1842",
-            "status": "Готово",
-            "image": PHOTOS[0].image,
+            "name": "DSC_4182.jpg",
+            "meta": "18,4 МБ",
+            "status": "Загружено",
+            "status_class": "uploaded",
+            "progress": 100,
         }
     ),
     MappingProxyType(
         {
-            "name": "IMG_1842_1190.jpg",
-            "meta": "7,9 МБ · EXIF 10:07",
-            "status": "Распознано",
-            "image": PHOTOS[1].image,
+            "name": "DSC_4183.jpg",
+            "meta": "21,7 МБ",
+            "status": "Передача · 68%",
+            "status_class": "active",
+            "progress": 68,
         }
     ),
     MappingProxyType(
         {
-            "name": "finish_1316.jpg",
-            "meta": "9,1 МБ · номер 516",
+            "name": "DSC_4184.jpg",
+            "meta": "19,1 МБ",
             "status": "Ожидает",
-            "image": PHOTOS[2].image,
+            "status_class": "pending",
+            "progress": 0,
+        }
+    ),
+)
+
+PARTIAL_UPLOAD_QUEUE = (
+    MappingProxyType(
+        {
+            "name": "DSC_4298.jpg",
+            "meta": "17,8 МБ",
+            "status": "Загружено",
+            "status_class": "uploaded",
+            "progress": 100,
+        }
+    ),
+    MappingProxyType(
+        {
+            "name": "DSC_4299.jpg",
+            "meta": "22,3 МБ",
+            "status": "Ошибка",
+            "status_class": "failed",
+            "progress": 61,
+            "error": "Соединение прервано. Файл можно отправить ещё раз.",
+            "retry": True,
+        }
+    ),
+    MappingProxyType(
+        {
+            "name": "DSC_4300.jpg",
+            "meta": "20,6 МБ",
+            "status": "Ошибка",
+            "status_class": "failed",
+            "progress": 0,
+            "error": "Хранилище временно недоступно.",
+            "retry": True,
+        }
+    ),
+)
+
+COMPLETE_UPLOAD_QUEUE = (
+    MappingProxyType(
+        {
+            "name": "DSC_4298.jpg",
+            "meta": "17,8 МБ",
+            "status": "Загружено",
+            "status_class": "uploaded",
+            "progress": 100,
+        }
+    ),
+    MappingProxyType(
+        {
+            "name": "DSC_4299.jpg",
+            "meta": "22,3 МБ",
+            "status": "Загружено",
+            "status_class": "uploaded",
+            "progress": 100,
+        }
+    ),
+    MappingProxyType(
+        {
+            "name": "DSC_4300.jpg",
+            "meta": "20,6 МБ",
+            "status": "Загружено",
+            "status_class": "uploaded",
+            "progress": 100,
         }
     ),
 )
@@ -266,8 +349,78 @@ def reference_events(request: HttpRequest) -> HttpResponse:
     return _reference(request, "events", events=EVENTS)
 
 
-def reference_upload(request: HttpRequest) -> HttpResponse:
-    return _reference(request, "upload", queue=UPLOAD_QUEUE, events=EVENTS)
+def _upload(
+    request: HttpRequest,
+    *,
+    state: str,
+    summary: dict[str, int | str],
+    queue: tuple[MappingProxyType[str, Any], ...] = (),
+) -> HttpResponse:
+    return _render(
+        request,
+        "ingestion/upload.html",
+        {
+            "events": EVENTS,
+            "upload_limits": UPLOAD_LIMITS,
+            "upload_state": state,
+            "upload_summary": summary,
+            "upload_queue": queue,
+            "photographer_upload_navigation": True,
+        },
+    )
+
+
+def upload_empty(request: HttpRequest) -> HttpResponse:
+    return _upload(
+        request,
+        state="empty",
+        summary={"progress": 0, "total": 0, "uploaded": 0, "failed": 0, "bytes": "0 Б"},
+    )
+
+
+def upload_active(request: HttpRequest) -> HttpResponse:
+    return _upload(
+        request,
+        state="active",
+        summary={
+            "progress": 36,
+            "total": 128,
+            "uploaded": 41,
+            "failed": 0,
+            "bytes": "2,1 из 5,8 ГБ",
+        },
+        queue=ACTIVE_UPLOAD_QUEUE,
+    )
+
+
+def upload_partial(request: HttpRequest) -> HttpResponse:
+    return _upload(
+        request,
+        state="partial",
+        summary={
+            "progress": 100,
+            "total": 128,
+            "uploaded": 124,
+            "failed": 4,
+            "bytes": "5,6 ГБ",
+        },
+        queue=PARTIAL_UPLOAD_QUEUE,
+    )
+
+
+def upload_complete(request: HttpRequest) -> HttpResponse:
+    return _upload(
+        request,
+        state="complete",
+        summary={
+            "progress": 100,
+            "total": 128,
+            "uploaded": 128,
+            "failed": 0,
+            "bytes": "5,8 ГБ",
+        },
+        queue=COMPLETE_UPLOAD_QUEUE,
+    )
 
 
 def reference_orders(request: HttpRequest) -> HttpResponse:

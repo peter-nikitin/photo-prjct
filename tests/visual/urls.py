@@ -15,7 +15,10 @@ visual_patterns = [
         name="visual_reference_dashboard",
     ),
     path("reference/events/", views.reference_events, name="visual_reference_events"),
-    path("reference/upload/", views.reference_upload, name="visual_reference_upload"),
+    path("upload/empty/", views.upload_empty, name="visual_upload_empty"),
+    path("upload/active/", views.upload_active, name="visual_upload_active"),
+    path("upload/partial/", views.upload_partial, name="visual_upload_partial"),
+    path("upload/complete/", views.upload_complete, name="visual_upload_complete"),
     path("reference/orders/", views.reference_orders, name="visual_reference_orders"),
     path(
         "reference/promotions/",

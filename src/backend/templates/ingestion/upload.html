@@ -1,0 +1,135 @@
+{% extends "ui/base.html" %}
+{% load static %}
+{% block title %}Загрузка фотографий — FindMe Photo{% endblock %}
+{% block body_class %}upload-page upload-state-{{ upload_state|default:"empty" }}{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/upload.css' %}">{% endblock %}
+{% block content %}
+  <div class="upload-screen"
+       data-upload-root
+       data-state="{{ upload_state|default:'empty' }}"
+       data-create-batch-url="{% url 'upload_batch_create' %}"
+       data-csrf-token="{{ csrf_token }}"
+       data-max-files="{{ upload_limits.max_files|default:10000 }}"
+       data-max-file-bytes="{{ upload_limits.max_file_bytes|default:52428800 }}"
+       data-registration-chunk="{{ upload_limits.registration_chunk|default:100 }}"
+       data-concurrency="{{ upload_limits.concurrency|default:4 }}"
+       data-queue-window-size="{{ upload_limits.queue_window|default:20 }}">
+    <header class="upload-heading">
+      <div>
+        <p class="eyebrow">Кабинет фотографа</p>
+        <h1>Загрузка фотографий</h1>
+        <p>Выберите событие и JPEG-оригиналы. До четырёх файлов будут передаваться одновременно.</p>
+      </div>
+      {% if request.user.is_authenticated %}
+        <div class="account-chip">
+          <span>{{ request.user.get_username }}</span>
+          <form method="post" action="{% url 'photographer_logout' %}">
+            {% csrf_token %}
+            <button type="submit">Выйти</button>
+          </form>
+        </div>
+      {% endif %}
+    </header>
+
+    <section class="upload-workspace" aria-labelledby="upload-settings-title">
+      <div class="upload-controls">
+        <h2 id="upload-settings-title">Новая загрузка</h2>
+        <label class="upload-field" for="upload-event">
+          <span>Событие</span>
+          <select id="upload-event" name="event_id" required>
+            <option value="">Выберите событие</option>
+            {% for event in events %}
+              <option value="{{ event.pk }}">{{ event.name }} · {{ event.start_date|date:"d.m.Y" }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <div class="drop-target" data-upload-drop-target>
+          <svg class="drop-target-icon icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>
+          <div>
+            <strong>Перетащите JPEG сюда</strong>
+            <span>или выберите файлы — до {{ upload_limits.max_files_label|default:"10 000" }} штук, каждый не больше {{ upload_limits.max_file_megabytes|default:50 }} МБ</span>
+          </div>
+          <label class="button file-picker" for="upload-files">Выбрать фотографии</label>
+          <input class="visually-hidden"
+                 id="upload-files"
+                 name="photos"
+                 type="file"
+                 accept="image/jpeg,.jpg,.jpeg"
+                 multiple>
+        </div>
+
+        <p class="close-warning">
+          <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#alert"></use></svg>
+          <span>Закрытие или перезагрузка страницы остановит незавершённые передачи. Уже загруженные фотографии сохранятся.</span>
+        </p>
+      </div>
+
+      <aside class="upload-summary" aria-labelledby="upload-summary-title" aria-live="polite">
+        <div class="summary-heading">
+          <div>
+            <p class="eyebrow">Текущая очередь</p>
+            <h2 id="upload-summary-title">
+              {% if upload_state == "complete" %}Загрузка завершена{% elif upload_state == "partial" %}Загружено частично{% elif upload_state == "active" %}Идёт загрузка{% else %}Файлы не выбраны{% endif %}
+            </h2>
+          </div>
+          <span class="summary-percent" data-summary-percent>{{ upload_summary.progress|default:0 }}%</span>
+        </div>
+        <progress data-upload-progress max="100" value="{{ upload_summary.progress|default:0 }}">
+          {{ upload_summary.progress|default:0 }}%
+        </progress>
+        <dl class="summary-metrics">
+          <div><dt>Выбрано</dt><dd data-total-count>{{ upload_summary.total|default:0 }}</dd></div>
+          <div><dt>Загружено</dt><dd data-uploaded-count>{{ upload_summary.uploaded|default:0 }}</dd></div>
+          <div><dt>Ошибки</dt><dd data-failed-count>{{ upload_summary.failed|default:0 }}</dd></div>
+          <div><dt>Объём</dt><dd data-total-bytes>{{ upload_summary.bytes|default:"0 Б" }}</dd></div>
+        </dl>
+        <p class="summary-message" data-summary-message>
+          {% if upload_state == "complete" %}Все оригиналы сохранены.{% elif upload_state == "partial" %}Успешные файлы сохранены. Повторите передачу файлов с ошибкой.{% elif upload_state == "active" %}Не закрывайте страницу до окончания передачи.{% else %}Здесь появится общий прогресс.{% endif %}
+        </p>
+      </aside>
+    </section>
+
+    <section class="queue-panel" aria-labelledby="queue-title">
+      <div class="queue-heading">
+        <div>
+          <p class="eyebrow">Файлы</p>
+          <h2 id="queue-title">Состояние очереди</h2>
+        </div>
+        <span class="queue-window-note">Показаны последние 20 файлов</span>
+      </div>
+      <div class="queue-list" data-upload-queue>
+        {% for item in upload_queue %}
+          <article class="queue-item queue-item-{{ item.status_class }}">
+            <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>
+            <div class="queue-file-copy">
+              <strong>{{ item.name }}</strong>
+              <span>{{ item.meta }}</span>
+              {% if item.error %}<p id="queue-error-{{ forloop.counter }}" class="queue-error">{{ item.error }}</p>{% endif %}
+            </div>
+            <div class="queue-item-progress">
+              <span>{{ item.status }}</span>
+              <progress max="100" value="{{ item.progress }}">{{ item.progress }}%</progress>
+            </div>
+            {% if item.retry %}
+              <button class="retry-button" type="button" data-retry-item aria-describedby="queue-error-{{ forloop.counter }}">Повторить</button>
+            {% endif %}
+          </article>
+        {% empty %}
+          <div class="queue-empty" data-queue-empty>
+            <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#image"></use></svg>
+            <p><strong>Очередь пока пуста</strong><span>Выбранные фотографии появятся здесь.</span></p>
+          </div>
+        {% endfor %}
+      </div>
+      <template id="upload-queue-row-template">
+        <article class="queue-item">
+          <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>
+          <div class="queue-file-copy"><strong data-file-name></strong><span data-file-meta></span><p data-file-error></p></div>
+          <div class="queue-item-progress"><span data-file-status></span><progress max="100" value="0">0%</progress></div>
+          <button class="retry-button" type="button" data-retry-item>Повторить</button>
+        </article>
+      </template>
+    </section>
+  </div>
+{% endblock %}

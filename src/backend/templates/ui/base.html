@@ -25,6 +25,12 @@
             <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#calendar"></use></svg>
             <span>События</span>
           </a>
+          {% if photographer_upload_navigation %}
+            <a href="{% url 'upload_page' %}">
+              <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>
+              <span>Загрузить</span>
+            </a>
+          {% endif %}
           <a href="{% url 'legal' %}">
             <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#scale"></use></svg>
             <span>Документы</span>

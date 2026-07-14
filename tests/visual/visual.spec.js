@@ -12,7 +12,10 @@ const desktopPages = [
   ['reference-search', '/__visual__/reference/search/'],
   ['reference-dashboard', '/__visual__/reference/dashboard/'],
   ['reference-events', '/__visual__/reference/events/'],
-  ['reference-upload', '/__visual__/reference/upload/'],
+  ['upload-empty', '/__visual__/upload/empty/'],
+  ['upload-active', '/__visual__/upload/active/'],
+  ['upload-partial', '/__visual__/upload/partial/'],
+  ['upload-complete', '/__visual__/upload/complete/'],
   ['reference-orders', '/__visual__/reference/orders/'],
   ['reference-promotions', '/__visual__/reference/promotions/'],
   ['reference-purchased', '/__visual__/reference/purchased/'],
@@ -25,7 +28,10 @@ const mobilePages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
-  ['reference-upload', '/__visual__/reference/upload/'],
+  ['upload-empty', '/__visual__/upload/empty/'],
+  ['upload-active', '/__visual__/upload/active/'],
+  ['upload-partial', '/__visual__/upload/partial/'],
+  ['upload-complete', '/__visual__/upload/complete/'],
 ];
 
 function collectBrowserFailures(page) {
@@ -96,6 +102,7 @@ async function capturePage(page, { path, snapshot, viewport }) {
   await expect(page).toHaveScreenshot(snapshot, {
     animations: 'disabled',
     fullPage: true,
+    timeout: 15_000,
   });
 }
 

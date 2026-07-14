@@ -12,6 +12,7 @@ from django.contrib.auth.views import LoginView, LogoutView, redirect_to_login
 from django.core.exceptions import PermissionDenied
 from django.forms import Form
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
+from django.shortcuts import render
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_POST
@@ -46,7 +47,7 @@ UploadView = Callable[..., HttpResponse]
 
 
 class PhotographerLoginView(LoginView):
-    template_name = "admin/login.html"
+    template_name = "registration/login.html"
     redirect_authenticated_user = True
 
     def get_success_url(self) -> str:
@@ -98,7 +99,23 @@ def _upload_access(*, json_errors: bool = False) -> Callable[[UploadView], Uploa
 @require_GET
 @_upload_access()
 def upload_page(request: HttpRequest) -> HttpResponse:
-    return HttpResponse()
+    return render(
+        request,
+        "ingestion/upload.html",
+        {
+            "events": Event.objects.all(),
+            "upload_limits": {
+                "max_files": settings.PHOTO_UPLOAD_MAX_FILES,
+                "max_files_label": f"{settings.PHOTO_UPLOAD_MAX_FILES:,}".replace(",", " "),
+                "max_file_bytes": settings.PHOTO_UPLOAD_MAX_FILE_BYTES,
+                "max_file_megabytes": settings.PHOTO_UPLOAD_MAX_FILE_BYTES // (1024 * 1024),
+                "registration_chunk": settings.PHOTO_UPLOAD_REGISTRATION_CHUNK,
+                "concurrency": settings.PHOTO_UPLOAD_CONCURRENCY,
+                "queue_window": 20,
+            },
+            "upload_state": "empty",
+        },
+    )
 
 
 @require_POST

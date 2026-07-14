@@ -14,11 +14,27 @@
 | Staging | Existing preemptible VM; stable VM, disk, subnet, security-group, and address IDs still require successful read-only discovery | Disposable application/data; automatic deploy from `main` |
 | Production | Not provisioned | Separate non-preemptible VM after sizing evidence and pricing approval |
 
+## Public endpoint observations
+
+Observed through public DNS on 2026-07-13:
+
+- `findme-photo.ru` A: `111.88.151.64`
+- `www.findme-photo.ru` A: `111.88.151.64`
+- no AAAA answer was observed for either name;
+- authoritative nameservers: `ns3-l2.nic.ru`, `ns4-cloud.nic.ru`, `ns4-l2.nic.ru`,
+  `ns8-cloud.nic.ru`, and `ns8-l2.nic.ru`.
+
+These are public DNS observations, not proof that the address is statically allocated or attached to
+a particular Yandex Cloud resource ID. The current VM remains preemptible staging and its deployed
+edge was still HTTP-only when these facts were recorded. The HTTPS preparation work did not activate
+TLS or change live server/cloud state.
+
 ## Discovery status
 
-Read-only resource listing through the local profile timed out on 2026-07-11 without returning
-resource data. Do not guess names or IDs from the deployment workflow. Retry safe inventory before a
-resource-specific operation and update this reference only with reviewed stable identifiers.
+Read-only resource listing through the local profile timed out without returning resource data on
+2026-07-11; discovery remained unresolved on 2026-07-13. Do not guess names or IDs from the
+deployment workflow or public DNS. Retry safe inventory before a resource-specific operation and
+update this reference only with reviewed stable identifiers.
 
 Required inventory:
 

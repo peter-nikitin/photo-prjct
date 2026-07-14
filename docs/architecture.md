@@ -40,11 +40,17 @@ The repository currently contains an early Django application:
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
-- Staging runs a minimal HTTP Nginx edge that proxies to the internal Django service. Its public DNS
-  record is currently unroutable, so the workflow verifies the VM-local edge only.
-- A future production deployment uses an explicit HTTPS overlay where Nginx terminates TLS, serves
-  ACME HTTP-01 challenges, and Certbot manages Let's Encrypt certificates in persistent volumes.
-  This environment split is governed by [ADR 0009](adr/0009-separate-staging-http-edge.md).
+- Staging currently runs a minimal HTTP Nginx edge that proxies to the internal Django service.
+  Public DNS now routes the canonical domain to the staging VM, but TLS activation is not yet
+  implemented.
+- Every public environment will use one shared HTTPS overlay where Nginx terminates TLS, serves ACME
+  HTTP-01 challenges, and Certbot manages Let's Encrypt certificates in environment-specific
+  persistent volumes. This accepted transition is governed by
+  [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
+- HTTPS deployment ensures a certificate exists, validates canonical redirects and trusted health
+  with `curl`, restores the prior application image in process on failure, and records the successful
+  image only after all checks pass. DNS is an activation preflight, and hostname changes require an
+  operator-controlled certificate reissue.
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
@@ -75,8 +81,9 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Load environment-specific configuration from environment variables and never commit secrets.
 - Keep architecture, decisions, and delivery plans in this repository.
 - Prefer simple, repeatable operations over premature distributed infrastructure.
-- Use the Nginx and Certbot HTTPS edge in production as defined by
-  [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and [ADR 0009](adr/0009-separate-staging-http-edge.md).
+- Use the shared Nginx and Certbot HTTPS edge in every public environment as defined by
+  [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and
+  [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
 
 ## Deployment domain assignment — accepted
 
@@ -84,9 +91,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   `https://findme-photo.ru/`.
 - When staging and production become separate live environments, `https://findme-photo.ru/` remains
   the production URL and staging moves to `https://staging.findme-photo.ru/`.
-- This assignment records the intended routing contract; it does not claim that DNS or TLS rollout
-  is already complete. Until that work is performed, the current preemptible VM retains the staging
-  lifecycle and HTTP topology defined by ADR 0009, and the production readiness gate still applies.
+- Public DNS now routes the canonical and `www` names to the current VM. TLS rollout is not yet
+  complete. Until the shared HTTPS edge is activated, the current preemptible VM retains its staging
+  lifecycle and temporary HTTP topology; the production readiness gate still applies throughout and
+  after activation.
 
 ## Target MVP architecture — proposed
 

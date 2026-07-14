@@ -97,6 +97,23 @@ GitHub → CI/CD → Yandex Cloud VM → Docker Compose → Django + PostgreSQL
 
 No Kubernetes, service mesh, or microservices at this stage.
 
+## Operational Change Fast Lane
+
+For a small, reversible DNS, public-domain, HTTPS, Nginx, Certbot, Compose, GitHub Actions, or
+single-VM change, default to the smallest reversible change that fits the existing deployment
+entrypoint and accepted ADRs.
+
+- Use one worktree, one branch, and one pull request for implementation and related documentation.
+  Do not create a separate documentation PR.
+- Prefer one implementation pass, one combined requirements-and-quality review, and one final
+  proportional verification run.
+- Take a scope checkpoint before adding multi-environment orchestration, a new service, persistent
+  release state, a DNS or certificate-management platform, data migration, a pricing-affecting
+  cloud change, or behavior that conflicts with an accepted ADR. Confirm that expansion with the
+  user before implementing it.
+- Existing approval gates still apply. In particular, a plan does not authorize cloud mutations or
+  pricing-affecting changes.
+
 ## Development Environment
 
 - Local development currently uses Python virtual environments.

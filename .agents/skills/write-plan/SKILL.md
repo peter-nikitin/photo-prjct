@@ -10,6 +10,14 @@ description: Use when planning multi-step, cross-cutting, migration-sensitive, o
 Turn an approved outcome into decision-complete, verifiable work that follows the repository's
 architecture and accepted ADRs.
 
+## Operational fast lane
+
+Do not require a plan file for a small, reversible single VM or domain change that is already
+governed by an accepted ADR and the existing deployment entrypoint. Record the scope and acceptance
+checks in the pull request instead. Take a scope checkpoint and return to the normal planning
+workflow when the change introduces multi-environment coordination, persistent release state, a
+data migration, a pricing-affecting cloud action, or a conflict with an accepted ADR.
+
 ## Workflow
 
 1. Inspect the relevant implementation, tests, deployment configuration, `docs/architecture.md`,

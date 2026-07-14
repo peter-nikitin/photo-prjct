@@ -226,6 +226,7 @@ def test_adr_index_lists_all_accepted_decisions() -> None:
 
 def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:
     for skill_name in (
+        "deliver-operational-change",
         "manage-yandex-cloud",
         "update-visual-design",
         "write-adr",
@@ -274,6 +275,48 @@ def test_yandex_cloud_skill_requires_pricing_confirmation() -> None:
     assert "b1gmcsmr51o5kvp86l55" in inventory
     assert "b1g2qttgfhb4gdunvlge" in inventory
     assert "token" not in inventory.lower()
+
+
+def test_operational_fast_lane_is_project_context() -> None:
+    guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "## Operational Change Fast Lane" in guidance
+    assert "smallest reversible change" in guidance
+    assert "one worktree, one branch, and one pull request" in guidance
+    assert "Do not create a separate documentation PR" in guidance
+    assert "scope checkpoint" in guidance.lower()
+
+
+def test_operational_change_skill_prevents_platform_scope_drift() -> None:
+    skill = (ROOT / ".agents/skills/deliver-operational-change/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    for required in (
+        "deploy/apply-deployment.sh",
+        "authoritative DNS or DNS-over-HTTPS",
+        "198.18.0.0/15",
+        "one worktree, one branch, and one pull request",
+        "one combined review",
+        "temporary `.env`",
+        "Proposed",
+        "Approval of a plan is not approval to execute",
+    ):
+        assert required in skill
+
+    assert "candidate" in skill
+    assert "persistent state" in skill
+    assert "multi-environment" in skill
+    assert "Do not create a separate documentation PR" in skill
+
+
+def test_write_plan_has_an_operational_fast_lane() -> None:
+    skill = (ROOT / ".agents/skills/write-plan/SKILL.md").read_text(encoding="utf-8")
+
+    assert "## Operational fast lane" in skill
+    assert "Do not require a plan file" in skill
+    assert "single VM" in skill
+    assert "scope checkpoint" in skill.lower()
 
 
 def test_deployment_workflows_separate_staging_and_production() -> None:

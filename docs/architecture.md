@@ -46,7 +46,11 @@ The repository currently contains an early Django application:
 - Every public environment will use one shared HTTPS overlay where Nginx terminates TLS, serves ACME
   HTTP-01 challenges, and Certbot manages Let's Encrypt certificates in environment-specific
   persistent volumes. This accepted transition is governed by
-  [ADR 0010](adr/0010-share-https-edge-across-environments.md).
+  [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
+- HTTPS deployment ensures a certificate exists, validates canonical redirects and trusted health
+  with `curl`, restores the prior application image in process on failure, and records the successful
+  image only after all checks pass. DNS is an activation preflight, and hostname changes require an
+  operator-controlled certificate reissue.
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
@@ -79,7 +83,7 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Prefer simple, repeatable operations over premature distributed infrastructure.
 - Use the shared Nginx and Certbot HTTPS edge in every public environment as defined by
   [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and
-  [ADR 0010](adr/0010-share-https-edge-across-environments.md).
+  [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
 
 ## Deployment domain assignment — accepted
 

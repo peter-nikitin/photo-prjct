@@ -4,7 +4,7 @@
 - Date: 2026-07-13
 - Deciders: project maintainers
 - Supersedes: [0009](0009-separate-staging-http-edge.md)
-- Superseded by: none
+- Superseded by: [0011](0011-use-minimal-shared-https-rollout.md)
 
 ## Context
 

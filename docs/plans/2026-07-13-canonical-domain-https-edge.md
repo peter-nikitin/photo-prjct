@@ -25,7 +25,7 @@ GitHub Actions, RU-CENTER DNS, Yandex Cloud VM.
 - Related ADRs: [0003](../adr/0003-docker-compose-yandex-cloud.md),
   [0005](../adr/0005-promote-images-through-staging.md),
   [0007](../adr/0007-nginx-certbot-https-edge.md),
-  [0010](../adr/0010-share-https-edge-across-environments.md)
+  [0011](../adr/0011-use-minimal-shared-https-rollout.md)
 - Design spec:
   [Canonical domain HTTPS edge design](../superpowers/specs/2026-07-13-canonical-domain-https-edge-design.md)
 

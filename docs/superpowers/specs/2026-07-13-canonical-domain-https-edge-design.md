@@ -39,8 +39,8 @@ There is no independent release-state machine or workflow-level recovery job. DN
 preflight for first activation, not a deployment-script gate. This is appropriate while one VM owns
 one public endpoint and deployments are infrequent.
 
-ADR 0010 governs the shared edge and environment assignment. The current VM remains staging and
-retains its preemptible availability characteristics after HTTPS activation.
+ADR 0011 governs the shared edge, minimal rollout, and environment assignment. The current VM
+remains staging and retains its preemptible availability characteristics after HTTPS activation.
 
 ## Components and traffic flow
 
@@ -103,7 +103,7 @@ consumption in an otherwise one-domain setup.
 ## Deployment and recovery contract
 
 The deploy script remembers the prior `APP_IMAGE` from the protected remote `.env`, writes the
-requested environment atomically, and applies the selected Compose overlay. It then verifies:
+requested environment, and applies the selected Compose overlay. It then verifies:
 
 - the running web container uses the requested immutable image;
 - the VM-local edge health endpoint succeeds;
@@ -124,7 +124,7 @@ removed or replaced by a failed attempt.
 
 ### Preparation release
 
-- Add ADR 0010, the shared overlay, rendered Nginx configuration, minimal certificate bootstrap,
+- Add ADR 0011, the shared overlay, rendered Nginx configuration, minimal certificate bootstrap,
   smoke checks, in-process recovery, tests, and operator documentation.
 - Keep the staging workflow on `docker-compose.staging.yml` and port 80.
 - Validate Compose, shell, Nginx, and focused deployment behavior without requesting a live

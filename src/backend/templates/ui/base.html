@@ -21,21 +21,21 @@
           </span>
         </a>
         <nav class="site-navigation" aria-label="Основная навигация">
-          <a href="{% url 'event_catalog' %}">
+          <a href="{% url 'event_catalog' %}" aria-label="События">
             <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#calendar"></use></svg>
             <span>События</span>
           </a>
           {% if photographer_upload_navigation %}
-            <a href="{% url 'upload_page' %}">
+            <a href="{% url 'upload_page' %}" aria-label="Загрузить фотографии">
               <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>
               <span>Загрузить</span>
             </a>
           {% endif %}
-          <a href="{% url 'legal' %}">
+          <a href="{% url 'legal' %}" aria-label="Документы">
             <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#scale"></use></svg>
             <span>Документы</span>
           </a>
-          <a href="{% url 'admin:index' %}">
+          <a href="{% url 'admin:index' %}" aria-label="Администрирование">
             <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#settings"></use></svg>
             <span>Администрирование</span>
           </a>

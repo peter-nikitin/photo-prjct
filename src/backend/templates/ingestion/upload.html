@@ -99,8 +99,8 @@
         <span class="queue-window-note">Показаны последние 20 файлов</span>
       </div>
       <div class="queue-list" data-upload-queue>
-        {% for item in upload_queue %}
-          <article class="queue-item queue-item-{{ item.status_class }}">
+        {% for item in upload_queue|slice:":20" %}
+          <article class="queue-item queue-item-{{ item.status_class }}" data-rendered-queue-item>
             <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>
             <div class="queue-file-copy">
               <strong>{{ item.name }}</strong>

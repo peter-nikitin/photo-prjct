@@ -7,11 +7,24 @@ from typing import Any
 
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
+from django.test import override_settings
 
 
 @dataclass(frozen=True)
 class FixtureImage:
     url: str
+
+
+@dataclass(frozen=True)
+class FixtureUser:
+    username: str
+    is_authenticated: bool = True
+
+    def get_username(self) -> str:
+        return self.username
+
+    def has_perm(self, permission: str) -> bool:
+        return permission == "ingestion.upload_photos"
 
 
 @dataclass(frozen=True)
@@ -356,18 +369,19 @@ def _upload(
     summary: dict[str, int | str],
     queue: tuple[MappingProxyType[str, Any], ...] = (),
 ) -> HttpResponse:
-    return _render(
-        request,
-        "ingestion/upload.html",
-        {
-            "events": EVENTS,
-            "upload_limits": UPLOAD_LIMITS,
-            "upload_state": state,
-            "upload_summary": summary,
-            "upload_queue": queue,
-            "photographer_upload_navigation": True,
-        },
-    )
+    request.user = FixtureUser("Анна Смирнова")
+    with override_settings(PHOTO_UPLOAD_ENABLED=True):
+        return _render(
+            request,
+            "ingestion/upload.html",
+            {
+                "events": EVENTS,
+                "upload_limits": UPLOAD_LIMITS,
+                "upload_state": state,
+                "upload_summary": summary,
+                "upload_queue": queue,
+            },
+        )
 
 
 def upload_empty(request: HttpRequest) -> HttpResponse:

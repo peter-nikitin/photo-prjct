@@ -4,7 +4,9 @@ from datetime import date
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
+from django.template.loader import render_to_string
 from django.test import TestCase, override_settings
+from django.test.client import RequestFactory
 from django.urls import reverse
 from picflow.models import Event
 
@@ -70,10 +72,39 @@ class UploadTemplateTests(TestCase):
     def test_upload_navigation_requires_feature_and_permission(self) -> None:
         response = self.client.get(reverse("event_catalog"))
         self.assertContains(response, reverse("upload_page"))
+        self.assertContains(response, 'aria-label="Загрузить фотографии"')
 
         self.user.user_permissions.clear()
         response = self.client.get(reverse("event_catalog"))
         self.assertNotContains(response, reverse("upload_page"))
+
+    def test_upload_template_renders_at_most_twenty_queue_items(self) -> None:
+        request = RequestFactory().get(reverse("upload_page"))
+        request.user = self.user
+        queue = [
+            {
+                "name": f"photo-{index}.jpg",
+                "meta": "10 МБ",
+                "status": "Ожидает",
+                "status_class": "pending",
+                "progress": 0,
+            }
+            for index in range(25)
+        ]
+
+        html = render_to_string(
+            "ingestion/upload.html",
+            {
+                "events": [self.event],
+                "upload_state": "active",
+                "upload_queue": queue,
+            },
+            request=request,
+        )
+
+        self.assertEqual(html.count("data-rendered-queue-item"), 20)
+        self.assertIn("photo-19.jpg", html)
+        self.assertNotIn("photo-20.jpg", html)
 
         self.user.user_permissions.add(
             Permission.objects.get(content_type__app_label="ingestion", codename="upload_photos")

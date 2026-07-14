@@ -448,6 +448,8 @@ def test_deployment_script_verifies_the_edge_and_exact_application_image() -> No
     assert "candidate-image" not in script
     assert "previous-image" not in script
     assert 'mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"' in script
+    assert 'mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX"' in script
+    assert "trap" in script and "recover_previous_deployment" in script
     assert 'sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"' in script
     assert "down --volumes" not in script
 
@@ -465,6 +467,7 @@ def test_apply_delegates_certificate_bootstrap_and_restores_edge_on_failure() ->
 
 def test_focused_scripts_encode_minimal_release_contracts() -> None:
     reconcile = (ROOT / "deploy/certbot/reconcile-certificate.sh").read_text(encoding="utf-8")
+    renew = (ROOT / "deploy/certbot/renew-certificates.sh").read_text(encoding="utf-8")
     verify = (ROOT / "deploy/verify-public-edge.sh").read_text(encoding="utf-8")
 
     assert reconcile.count("certbot/certbot:v2.11.0 certonly") == 1
@@ -473,6 +476,11 @@ def test_focused_scripts_encode_minimal_release_contracts() -> None:
     assert "--network host" in reconcile
     assert "while " not in reconcile
     assert "subjectAltName" not in reconcile
+    assert "fullchain.pem" in reconcile
+    assert "privkey.pem" in reconcile
+
+    assert "certbot renew" in renew
+    assert "sleep 43200" in renew
 
     assert "dns.google" not in verify
     assert "openssl" not in verify

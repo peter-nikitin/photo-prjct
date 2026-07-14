@@ -29,23 +29,29 @@ def fake_bin(tmp_path: Path) -> Path:
     return path
 
 
-def _certificate_env(tmp_path: Path, fake_bin: Path, *, present: bool) -> dict[str, str]:
+def _certificate_env(
+    tmp_path: Path,
+    fake_bin: Path,
+    *,
+    complete: bool,
+    alias: str = "www.findme-photo.ru",
+) -> dict[str, str]:
     _write_executable(
         fake_bin / "docker",
         """
 printf '%s\n' "$*" >> "$COMMAND_LOG"
 case " $* " in
-  *" --entrypoint sh "*) [ "$CERT_PRESENT" = yes ] ;;
+  *" --entrypoint sh "*) [ "$CERT_COMPLETE" = yes ] ;;
 esac
 """,
     )
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "docker.log"),
-        "CERT_PRESENT": "yes" if present else "no",
+        "CERT_COMPLETE": "yes" if complete else "no",
         "COMPOSE_PROJECT_NAME": "photo-test",
         "PUBLIC_DOMAIN": "findme-photo.ru",
-        "PUBLIC_DOMAIN_ALIAS": "www.findme-photo.ru",
+        "PUBLIC_DOMAIN_ALIAS": alias,
         "LETSENCRYPT_EMAIL": "ops@example.com",
     }
 
@@ -53,7 +59,7 @@ esac
 def test_existing_certificate_skips_issuance(tmp_path: Path, fake_bin: Path) -> None:
     result = _run(
         "deploy/certbot/reconcile-certificate.sh",
-        env=_certificate_env(tmp_path, fake_bin, present=True),
+        env=_certificate_env(tmp_path, fake_bin, complete=True),
     )
 
     assert result.returncode == 0, result.stderr
@@ -62,12 +68,16 @@ def test_existing_certificate_skips_issuance(tmp_path: Path, fake_bin: Path) -> 
     assert " certonly " not in f" {commands} "
 
 
+@pytest.mark.parametrize(
+    ("alias", "expected_domains"),
+    [("www.findme-photo.ru", 2), ("", 1)],
+)
 def test_missing_certificate_is_issued_once_for_configured_hosts(
-    tmp_path: Path, fake_bin: Path
+    tmp_path: Path, fake_bin: Path, alias: str, expected_domains: int
 ) -> None:
     result = _run(
         "deploy/certbot/reconcile-certificate.sh",
-        env=_certificate_env(tmp_path, fake_bin, present=False),
+        env=_certificate_env(tmp_path, fake_bin, complete=False, alias=alias),
     )
 
     assert result.returncode == 0, result.stderr
@@ -79,9 +89,9 @@ def test_missing_certificate_is_issued_once_for_configured_hosts(
     assert "certbot/certbot:v2.11.0 certonly --standalone" in command
     assert "--non-interactive --agree-tos --email ops@example.com" in command
     assert "--cert-name photo-prjct" in command
-    assert command.count(" -d ") == 2
+    assert command.count(" -d ") == expected_domains
     assert "-d findme-photo.ru" in command
-    assert "-d www.findme-photo.ru" in command
+    assert ("-d www.findme-photo.ru" in command) is bool(alias)
     assert "--force-renewal" not in command
 
 
@@ -191,6 +201,7 @@ def _apply_env(tmp_path: Path, fake_bin: Path, *, scenario: str) -> dict[str, st
         """
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
 case " $* " in
+  *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
   *" compose "*" ps -q web "*) printf 'web-id\n' ;;
   *" inspect "*" web-id "*) sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" ;;
 esac
@@ -206,6 +217,16 @@ fi
 """,
     )
     _write_executable(fake_bin / "sleep", ":")
+    _write_executable(
+        fake_bin / "mv",
+        """
+printf 'mv %s\n' "$*" >> "$COMMAND_LOG"
+case "$*" in
+  *"/deployed-image") [ "$APPLY_SCENARIO" != marker-failure ] || exit 1 ;;
+esac
+/bin/mv "$@"
+""",
+    )
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "apply.log"),
@@ -238,7 +259,7 @@ def test_apply_success_commits_deployed_image_only_after_checks(
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert "up -d --remove-orphans" in commands
+    assert commands.count("up -d --remove-orphans") == 1
     assert "https://findme-photo.ru/health/" in commands
 
 
@@ -274,3 +295,47 @@ def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.index("stop nginx") < commands.index("up -d --remove-orphans")
     assert "docker-compose.https.yml" in commands
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_reconciliations"),
+    [("pull-failure", 1), ("marker-failure", 2)],
+)
+def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
+    tmp_path: Path,
+    fake_bin: Path,
+    scenario: str,
+    expected_reconciliations: int,
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario=scenario),
+    )
+
+    assert result.returncode != 0
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
+    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=old-image\n")
+    commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
+    assert commands.count("up -d --remove-orphans") == expected_reconciliations
+
+
+def test_failed_certificate_renewal_waits_before_next_attempt(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    log = tmp_path / "renew.log"
+    _write_executable(fake_bin / "certbot", 'printf "certbot %s\\n" "$*" >> "$COMMAND_LOG"\nexit 1')
+    _write_executable(fake_bin / "sleep", 'printf "sleep %s\\n" "$*" >> "$COMMAND_LOG"\nexit 7')
+
+    result = _run(
+        "deploy/certbot/renew-certificates.sh",
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "COMMAND_LOG": str(log),
+        },
+    )
+
+    assert result.returncode == 7
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        "certbot renew --webroot --webroot-path /var/www/certbot --quiet",
+        "sleep 43200",
+    ]

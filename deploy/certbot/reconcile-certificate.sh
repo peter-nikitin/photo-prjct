@@ -30,12 +30,13 @@ fi
 
 certificate_volume="${COMPOSE_PROJECT_NAME}_letsencrypt"
 certificate_path="/etc/letsencrypt/live/photo-prjct/fullchain.pem"
+private_key_path="/etc/letsencrypt/live/photo-prjct/privkey.pem"
 docker volume create "$certificate_volume" >/dev/null
 
 if docker run --rm --entrypoint sh \
     -v "$certificate_volume:/etc/letsencrypt:ro" \
     certbot/certbot:v2.11.0 \
-    -c 'test -f "$1"' sh "$certificate_path"; then
+    -c 'test -f "$1" && test -f "$2"' sh "$certificate_path" "$private_key_path"; then
     echo "Certificate already exists"
     exit 0
 fi

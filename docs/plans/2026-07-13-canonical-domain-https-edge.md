@@ -146,9 +146,9 @@ validation.
   without an issuance request.
 - [x] Verify canonical HTTP redirect, optional alias HTTP/HTTPS redirects, and canonical trusted
   HTTPS health with `curl`, including exact 308 destination path and query.
-- [x] Remember the prior `APP_IMAGE` from the protected remote `.env`. On registry, issuance, pull,
-  Compose, local-health, or public-smoke failure, restore that image and reconcile the selected
-  overlay before exiting non-zero.
+- [x] Remember the prior `APP_IMAGE` from the protected remote `.env` and atomically write the
+  requested environment. On registry, issuance, pull, Compose, local-health, or public-smoke
+  failure, restore that image and reconcile the selected overlay before exiting non-zero.
 - [x] Atomically update `deployed-image` only after image identity, local edge health, and the HTTPS
   smoke checks succeed. Preparation staging records success after its existing HTTP local health.
 - [x] Cover missing/existing certificate behavior, alias/no-alias smoke checks, failed-apply

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-set -u
+set -eu
 
 : "${DEPLOYMENT_TARGET:?Set DEPLOYMENT_TARGET to staging or production}"
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
@@ -48,22 +48,27 @@ diagnostics() {
 
 env_tmp=""
 marker_tmp=""
+mutation_started=0
+deployment_committed=0
+recovery_in_progress=0
+
 cleanup() {
     rm -f ${env_tmp:+"$env_tmp"} ${marker_tmp:+"$marker_tmp"}
 }
-trap cleanup EXIT
 
 replace_env_image() {
     image="$1"
-    env_tmp="$(mktemp "$DEPLOY_ROOT/.env.restore.XXXXXX")"
-    awk -v image="$image" '
+    env_tmp="$(mktemp "$DEPLOY_ROOT/.env.restore.XXXXXX")" || return 1
+    if ! awk -v image="$image" '
         BEGIN { replaced = 0 }
         /^APP_IMAGE=/ && !replaced { print "APP_IMAGE=" image; replaced = 1; next }
         { print }
         END { if (!replaced) print "APP_IMAGE=" image }
-    ' "$DEPLOY_ROOT/.env" > "$env_tmp"
-    chmod 600 "$env_tmp"
-    mv "$env_tmp" "$DEPLOY_ROOT/.env"
+    ' "$DEPLOY_ROOT/.env" > "$env_tmp"; then
+        return 1
+    fi
+    chmod 600 "$env_tmp" || return 1
+    mv "$env_tmp" "$DEPLOY_ROOT/.env" || return 1
     env_tmp=""
 }
 
@@ -78,12 +83,33 @@ recover_previous_deployment() {
     echo "Previous application image and edge reconciled" >&2
 }
 
-fail_with_recovery() {
-    echo "$1" >&2
-    if ! recover_previous_deployment; then
-        echo "Previous deployment recovery failed" >&2
-        diagnostics
+on_exit() {
+    status=$?
+    set +e
+    trap - EXIT INT TERM HUP
+
+    if [ "$mutation_started" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
+        [ "$status" -ne 0 ] || status=1
+        if [ "$recovery_in_progress" -eq 0 ]; then
+            recovery_in_progress=1
+            if ! recover_previous_deployment; then
+                echo "Previous deployment recovery failed" >&2
+                diagnostics
+            fi
+        fi
     fi
+
+    cleanup
+    exit "$status"
+}
+
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+fail() {
+    echo "$1" >&2
     exit 1
 }
 
@@ -99,6 +125,7 @@ if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
 fi
 
 umask 077
+env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
 {
     printf 'APP_IMAGE=%s\n' "$requested_image"
     printf 'SECRET_KEY=%s\n' "$SECRET_KEY"
@@ -117,31 +144,35 @@ umask 077
     printf 'MEDIA_S3_PUBLIC_BUCKET=%s\n' "${MEDIA_S3_PUBLIC_BUCKET:-}"
     printf 'MEDIA_S3_ACCESS_KEY_ID=%s\n' "${MEDIA_S3_ACCESS_KEY_ID:-}"
     printf 'MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${MEDIA_S3_SECRET_ACCESS_KEY:-}"
-} > "$DEPLOY_ROOT/.env"
+} > "$env_tmp"
+chmod 600 "$env_tmp"
+mutation_started=1
+mv "$env_tmp" "$DEPLOY_ROOT/.env"
+env_tmp=""
 
 if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     if ! printf '%s\n' "$GHCR_READ_TOKEN" | \
         docker login ghcr.io -u "${GHCR_USERNAME:?Set GHCR_USERNAME}" --password-stdin; then
-        fail_with_recovery "Container registry login failed"
+        fail "Container registry login failed"
     fi
 fi
 
 if [ "$DEPLOYMENT_TARGET" = production ]; then
     compose stop nginx || true
     if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
-        fail_with_recovery "Certificate bootstrap failed"
+        fail "Certificate bootstrap failed"
     fi
 fi
 
 if ! compose pull; then
-    fail_with_recovery "Deployment image pull failed"
+    fail "Deployment image pull failed"
 fi
 
 compose_up_status=0
 compose up -d --remove-orphans || compose_up_status=$?
 echo "docker compose up exit status: $compose_up_status" >&2
 if [ "$compose_up_status" -ne 0 ]; then
-    fail_with_recovery "Deployment Compose reconciliation failed"
+    fail "Deployment Compose reconciliation failed"
 fi
 
 attempt=1
@@ -160,7 +191,7 @@ while [ "$attempt" -le "$max_attempts" ]; do
         break
     fi
     if [ "$attempt" -eq "$max_attempts" ]; then
-        fail_with_recovery "Requested deployment failed local health verification"
+        fail "Requested deployment failed local health verification"
     fi
     echo "Deployment health check attempt $attempt failed; retrying" >&2
     attempt=$((attempt + 1))
@@ -169,10 +200,11 @@ done
 
 if [ "$DEPLOYMENT_TARGET" = production ] && \
     ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
-    fail_with_recovery "Requested deployment failed public HTTPS smoke verification"
+    fail "Requested deployment failed public HTTPS smoke verification"
 fi
 
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.XXXXXX")"
 printf '%s\n' "$requested_image" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
+deployment_committed=1

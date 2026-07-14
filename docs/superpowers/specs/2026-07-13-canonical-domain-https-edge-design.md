@@ -102,8 +102,8 @@ consumption in an otherwise one-domain setup.
 
 ## Deployment and recovery contract
 
-The deploy script remembers the prior `APP_IMAGE` from the protected remote `.env`, writes the
-requested environment, and applies the selected Compose overlay. It then verifies:
+The deploy script remembers the prior `APP_IMAGE` from the protected remote `.env`, atomically
+writes the requested environment, and applies the selected Compose overlay. It then verifies:
 
 - the running web container uses the requested immutable image;
 - the VM-local edge health endpoint succeeds;

@@ -102,7 +102,7 @@ When readiness evidence and pricing are approved, I want a separate non-preempti
 environment, so I can serve customers without staging lifecycle constraints.
 
 - Status: Candidate
-- Evidence: [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md)
+- Evidence: [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production)
 - Last updated: 2026-07-17
 
 ### EJ-008 — Operator — Activate trusted HTTPS
@@ -111,7 +111,7 @@ When the canonical domain prerequisites are confirmed, I want the prepared share
 activated and observed, so I can serve trusted canonical traffic and renew certificates safely.
 
 - Status: Planned
-- Evidence: [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md)
+- Evidence: [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release)
 - Last updated: 2026-07-17
 
 ### EJ-009 — Operator — Detect service degradation
@@ -144,7 +144,7 @@ This log is append-only.
 | 2026-07-17 | EJ-004 | Not recorded | Validated | [`docker-compose.staging.yml`](../docker-compose.staging.yml), [`deploy/nginx/staging.conf`](../deploy/nginx/staging.conf), and [`test_public_environments_share_one_https_edge_overlay`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-005 | Not recorded | Validated | [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-006 | Not recorded | Validated | [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py) |
-| 2026-07-17 | EJ-007 | Not recorded | Candidate | [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md) |
-| 2026-07-17 | EJ-008 | Not recorded | Planned | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md) |
+| 2026-07-17 | EJ-007 | Not recorded | Candidate | [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production) |
+| 2026-07-17 | EJ-008 | Not recorded | Planned | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release) |
 | 2026-07-17 | EJ-009 | Not recorded | Candidate | [Architecture open decisions — Observability stack](architecture.md#open-decisions) |
 | 2026-07-17 | EJ-010 | Not recorded | Candidate | [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions) |

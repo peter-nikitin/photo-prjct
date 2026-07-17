@@ -14,7 +14,7 @@ removing Markdown reads and assertions from the test suite.
 **Tech Stack:** Markdown, pytest, YAML, GitHub Actions.
 
 - Date: 2026-07-17
-- Status: In progress
+- Status: Ready for review
 - Owner: project maintainer
 - Related architecture: [`docs/architecture.md`](../architecture.md)
 - Related ADRs: [0011](../adr/0011-use-minimal-shared-https-rollout.md) governs the factual
@@ -314,13 +314,13 @@ removing Markdown reads and assertions from the test suite.
 - Verify: `tests/test_repository_foundation.py`
 - Verify: `.github/workflows/ci.yml`
 
-- [ ] **Step 1: Check whitespace and patch integrity**
+- [x] **Step 1: Check whitespace and patch integrity**
 
   Run: `git diff --check origin/main...HEAD`
 
   Expected: exit code 0 with no output.
 
-- [ ] **Step 2: Run the remaining repository contracts**
+- [x] **Step 2: Run the remaining repository contracts**
 
   Run:
 
@@ -333,7 +333,7 @@ removing Markdown reads and assertions from the test suite.
 
   Expected: 14 tests pass.
 
-- [ ] **Step 3: Confirm documentation and test boundaries**
+- [x] **Step 3: Confirm documentation and test boundaries**
 
   Run:
 
@@ -346,13 +346,13 @@ removing Markdown reads and assertions from the test suite.
   specification, implementation plan, `AGENTS.md`, two job registries, authoritative architecture
   and canonical HTTPS plan status updates, repository test file, and CI workflow.
 
-- [ ] **Step 4: Review job status evidence**
+- [x] **Step 4: Review job status evidence**
 
   Check every `Validated` row against an executable test or implemented configuration, every
   `Delivered` row against implemented behavior, and every unimplemented target against architecture
   status. Downgrade any status that lacks evidence.
 
-- [ ] **Step 5: Confirm the worktree is clean after commits**
+- [x] **Step 5: Confirm the worktree is clean after commits**
 
   Run: `git status --short --branch`
 

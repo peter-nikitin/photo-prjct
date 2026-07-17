@@ -13,6 +13,9 @@ Each job has a stable `EJ-NNN` identifier and uses this Jobs-to-be-Done form:
 Every job records its current status, supporting evidence, and last-updated date. Status must not
 advance from a proposal alone; an advance requires evidence appropriate to the new status.
 
+When a job's status changes, update its current-state row and detail together, append exactly one new
+history row with PR or commit evidence where available, and never edit earlier history rows.
+
 ## Statuses
 
 | Status | Definition |
@@ -20,8 +23,8 @@ advance from a proposal alone; an advance requires evidence appropriate to the n
 | Candidate | The job is recognized as potentially valuable, but has not been committed to a delivery plan. |
 | Planned | The job is committed to a decision-complete delivery plan, but implementation has not started. |
 | In progress | Implementation of the planned job has started but is not yet delivered. |
-| Delivered | The job is available in the product, but its expected outcome has not yet been validated with sufficient evidence. |
-| Validated | Evidence shows that the delivered job works and supports its expected outcome. |
+| Delivered | The capability is implemented and available in the relevant workflow or environment. |
+| Validated | Automated evidence or observed operation demonstrates the expected outcome. |
 | Deferred | Work on the job is intentionally postponed, with the reason recorded. |
 
 ## Current state
@@ -75,7 +78,7 @@ When staging is deployed before HTTPS activation, I want its dedicated HTTP edge
 application traffic, so I can operate the current environment without presenting it as production.
 
 - Status: Validated
-- Evidence: [`docker-compose.staging.yml`](../docker-compose.staging.yml), [`deploy/nginx/staging.conf`](../deploy/nginx/staging.conf), and [`test_public_environments_share_one_https_edge_overlay`](../tests/test_repository_foundation.py)
+- Evidence: [`docker-compose.staging.yml`](../docker-compose.staging.yml), [`deploy/nginx/staging.conf`](../deploy/nginx/staging.conf), and [`tests/test_repository_foundation.py::test_public_environments_share_one_https_edge_overlay`](../tests/test_repository_foundation.py)
 - Last updated: 2026-07-17
 
 ### EJ-005 — Contributor — Reproduce visual regression
@@ -84,16 +87,16 @@ When UI rendering changes, I want Playwright to run in the same pinned container
 and in CI, so I can review deterministic snapshots.
 
 - Status: Validated
-- Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
+- Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
 - Last updated: 2026-07-17
 
 ### EJ-006 — Maintainer — Promote the staging-verified image
 
-When a staging image is approved, I want an approval-gated workflow to verify and select that exact
-image for production, so I can avoid rebuilding a different artifact.
+When a staging image is selected for promotion, I want the production-environment workflow to verify
+and reuse that exact image, so I can avoid rebuilding a different artifact.
 
 - Status: Validated
-- Evidence: [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py)
+- Evidence: [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py)
 - Last updated: 2026-07-17
 
 ### EJ-007 — Operator — Provision a production environment
@@ -141,9 +144,9 @@ This log is append-only.
 | 2026-07-17 | EJ-001 | Not recorded | Validated | [`docker-compose.yml`](../docker-compose.yml), [`.env.example`](../.env.example), and [`src/backend/config/settings.py`](../src/backend/config/settings.py) |
 | 2026-07-17 | EJ-002 | Not recorded | Validated | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json) |
 | 2026-07-17 | EJ-003 | Not recorded | Validated | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`Dockerfile`](../Dockerfile), [`docker-compose.prod.yml`](../docker-compose.prod.yml), and [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh) |
-| 2026-07-17 | EJ-004 | Not recorded | Validated | [`docker-compose.staging.yml`](../docker-compose.staging.yml), [`deploy/nginx/staging.conf`](../deploy/nginx/staging.conf), and [`test_public_environments_share_one_https_edge_overlay`](../tests/test_repository_foundation.py) |
-| 2026-07-17 | EJ-005 | Not recorded | Validated | [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py) |
-| 2026-07-17 | EJ-006 | Not recorded | Validated | [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py) |
+| 2026-07-17 | EJ-004 | Not recorded | Validated | [`docker-compose.staging.yml`](../docker-compose.staging.yml), [`deploy/nginx/staging.conf`](../deploy/nginx/staging.conf), and [`tests/test_repository_foundation.py::test_public_environments_share_one_https_edge_overlay`](../tests/test_repository_foundation.py) |
+| 2026-07-17 | EJ-005 | Not recorded | Validated | [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py) |
+| 2026-07-17 | EJ-006 | Not recorded | Validated | [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-007 | Not recorded | Candidate | [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production) |
 | 2026-07-17 | EJ-008 | Not recorded | Planned | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release) |
 | 2026-07-17 | EJ-009 | Not recorded | Candidate | [Architecture open decisions — Observability stack](architecture.md#open-decisions) |

@@ -12,6 +12,9 @@ Each job has a stable `PJ-NNN` identifier and uses this Jobs-to-be-Done form:
 Every job records its current status, supporting evidence, and last-updated date. Status must not
 advance from a proposal alone; an advance requires evidence appropriate to the new status.
 
+When a job's status changes, update its current-state row and detail together, append exactly one new
+history row with PR or commit evidence where available, and never edit earlier history rows.
+
 ## Statuses
 
 | Status | Definition |
@@ -47,7 +50,7 @@ When an event is ready for customers, I want to create and publish its catalog r
 it discoverable without developer assistance.
 
 - Status: Validated
-- Evidence: [`EventAdminTests.test_admin_creates_and_publishes_event`](../src/backend/picflow/tests/test_admin.py)
+- Evidence: [`src/backend/picflow/tests/test_admin.py::EventAdminTests::test_admin_creates_and_publishes_event`](../src/backend/picflow/tests/test_admin.py)
 - Last updated: 2026-07-17
 
 ### PJ-002 — Visitor — Discover published events
@@ -56,7 +59,7 @@ When I arrive at FindMe Photo, I want to browse only published events in a usefu
 choose the event I attended.
 
 - Status: Validated
-- Evidence: [`PageTests.test_catalog_only_shows_published_events` and `PageTests.test_catalog_orders_upcoming_then_past`](../src/backend/picflow/tests/test_views.py)
+- Evidence: [`src/backend/picflow/tests/test_views.py::PageTests::test_catalog_only_shows_published_events`](../src/backend/picflow/tests/test_views.py) and [`src/backend/picflow/tests/test_views.py::PageTests::test_catalog_orders_upcoming_then_past`](../src/backend/picflow/tests/test_views.py)
 - Last updated: 2026-07-17
 
 ### PJ-003 — Visitor — Review event details
@@ -64,7 +67,7 @@ choose the event I attended.
 When I find an event, I want to open its public details, so I can confirm it is the event I attended.
 
 - Status: Validated
-- Evidence: [`PageTests.test_event_detail_renders_published_event` and `PageTests.test_event_detail_returns_404_for_draft_event`](../src/backend/picflow/tests/test_views.py)
+- Evidence: [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_renders_published_event`](../src/backend/picflow/tests/test_views.py) and [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_returns_404_for_draft_event`](../src/backend/picflow/tests/test_views.py)
 - Last updated: 2026-07-17
 
 ### PJ-004 — Photographer — Upload an event batch
@@ -147,9 +150,9 @@ This log is append-only.
 
 | Date | Job | Previous status | New status | Evidence or reason |
 | --- | --- | --- | --- | --- |
-| 2026-07-17 | PJ-001 | Not recorded | Validated | [`EventAdminTests.test_admin_creates_and_publishes_event`](../src/backend/picflow/tests/test_admin.py) |
-| 2026-07-17 | PJ-002 | Not recorded | Validated | [`PageTests.test_catalog_only_shows_published_events` and `PageTests.test_catalog_orders_upcoming_then_past`](../src/backend/picflow/tests/test_views.py) |
-| 2026-07-17 | PJ-003 | Not recorded | Validated | [`PageTests.test_event_detail_renders_published_event` and `PageTests.test_event_detail_returns_404_for_draft_event`](../src/backend/picflow/tests/test_views.py) |
+| 2026-07-17 | PJ-001 | Not recorded | Validated | [`src/backend/picflow/tests/test_admin.py::EventAdminTests::test_admin_creates_and_publishes_event`](../src/backend/picflow/tests/test_admin.py) |
+| 2026-07-17 | PJ-002 | Not recorded | Validated | [`src/backend/picflow/tests/test_views.py::PageTests::test_catalog_only_shows_published_events`](../src/backend/picflow/tests/test_views.py) and [`src/backend/picflow/tests/test_views.py::PageTests::test_catalog_orders_upcoming_then_past`](../src/backend/picflow/tests/test_views.py) |
+| 2026-07-17 | PJ-003 | Not recorded | Validated | [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_renders_published_event`](../src/backend/picflow/tests/test_views.py) and [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_returns_404_for_draft_event`](../src/backend/picflow/tests/test_views.py) |
 | 2026-07-17 | PJ-004 | Not recorded | Candidate | [Target MVP architecture — Ingestion](architecture.md#target-mvp-architecture--proposed) |
 | 2026-07-17 | PJ-005 | Not recorded | Candidate | [Architecture evolution stages — Photo-bank core](architecture.md#evolution-stages) |
 | 2026-07-17 | PJ-006 | Not recorded | Candidate | [Target MVP architecture — Moderation](architecture.md#target-mvp-architecture--proposed) |

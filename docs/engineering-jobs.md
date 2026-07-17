@@ -38,7 +38,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-005 | Contributor | Reproduce visual regression | Validated | 2026-07-17 |
 | EJ-006 | Maintainer | Promote the staging-verified image | Validated | 2026-07-17 |
 | EJ-007 | Operator | Provision a production environment | Candidate | 2026-07-17 |
-| EJ-008 | Operator | Activate trusted HTTPS | Validated | 2026-07-17 |
+| EJ-008 | Operator | Activate trusted HTTPS | Delivered | 2026-07-17 |
 | EJ-009 | Operator | Detect service degradation | Candidate | 2026-07-17 |
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-17 |
 
@@ -114,7 +114,7 @@ environment, so I can serve customers without staging lifecycle constraints.
 When the canonical domain prerequisites are confirmed, I want the prepared shared HTTPS edge
 activated and observed, so I can serve trusted canonical traffic and renew certificates safely.
 
-- Status: Validated
+- Status: Delivered
 - Evidence: [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
 - Last updated: 2026-07-17
 
@@ -149,6 +149,6 @@ This log is append-only.
 | 2026-07-17 | EJ-005 | Not recorded | Validated | [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-006 | Not recorded | Validated | [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-007 | Not recorded | Candidate | [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production) |
-| 2026-07-17 | EJ-008 | Not recorded | Validated | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
+| 2026-07-17 | EJ-008 | Not recorded | Delivered | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
 | 2026-07-17 | EJ-009 | Not recorded | Candidate | [Architecture open decisions — Observability stack](architecture.md#open-decisions) |
 | 2026-07-17 | EJ-010 | Not recorded | Candidate | [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions) |

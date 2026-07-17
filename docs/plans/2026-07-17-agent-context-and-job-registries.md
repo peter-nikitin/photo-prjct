@@ -17,8 +17,9 @@ removing Markdown reads and assertions from the test suite.
 - Status: Ready
 - Owner: project maintainer
 - Related architecture: [`docs/architecture.md`](../architecture.md)
-- Related ADRs: none; this change reorganizes documentation ownership without making an
-  architectural decision
+- Related ADRs: [0011](../adr/0011-use-minimal-shared-https-rollout.md) governs the factual
+  activation-validation and cleanup status synchronized here; this change makes no architectural
+  decision
 - Related design:
   [`docs/superpowers/specs/2026-07-17-agent-context-and-job-registries-design.md`](../superpowers/specs/2026-07-17-agent-context-and-job-registries-design.md)
 
@@ -35,9 +36,9 @@ removing Markdown reads and assertions from the test suite.
 - Preserve tests for executable YAML, runtime configuration, deployment scripts, Compose, Django,
   and visual-test isolation.
 - Remove the duplicate targeted pytest invocation from CI.
-- Synchronize the factual HTTPS activation status in `docs/architecture.md` and
-  `docs/plans/2026-07-13-canonical-domain-https-edge.md` with the merged deployment and observed
-  public behavior.
+- Synchronize the factual HTTPS status in `docs/architecture.md` and
+  `docs/plans/2026-07-13-canonical-domain-https-edge.md` with the live switch and observed public
+  behavior while preserving the remaining ADR 0011 validation and temporary-fallback cleanup.
 
 ### Out of scope
 
@@ -59,8 +60,9 @@ removing Markdown reads and assertions from the test suite.
 - The remaining repository foundation tests pass.
 - CI runs the full pytest suite once rather than repeating `tests/test_repository_foundation.py`.
 - `docs/architecture.md` and the canonical HTTPS plan describe shared HTTPS as the normal staging
-  edge, retain the HTTP overlay only as a manual recovery fallback, and distinguish completed public
-  verification from remaining browser, internal-state, and renewal follow-ups.
+  edge, retain the HTTP overlay only as a temporary manual recovery fallback pending ADR 0011
+  cleanup, and distinguish completed public verification from remaining browser, internal-state,
+  and renewal follow-ups.
 
 ## Chunk 1: Stable context and job registries
 
@@ -178,7 +180,7 @@ removing Markdown reads and assertions from the test suite.
   | `EJ-005` | Contributor | Reproduce visual regression | When UI rendering changes, I want Playwright to run in the same pinned container environment locally and in CI, so I can review deterministic snapshots. | `Validated` | `package.json`, `Dockerfile.visual-tests`, `docker-compose.visual.yml`, and `tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment` |
   | `EJ-006` | Maintainer | Promote the staging-verified image | When a staging image is selected for promotion, I want the production-environment workflow to verify and reuse that exact image, so I can avoid rebuilding a different artifact. | `Validated` | `.github/workflows/promote-production.yml` and `tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production` |
   | `EJ-007` | Operator | Provision a production environment | When readiness evidence and pricing are approved, I want a separate non-preemptible production environment, so I can serve customers without staging lifecycle constraints. | `Candidate` | `docs/architecture.md#accepted-constraints` and `docs/superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production` |
-  | `EJ-008` | Operator | Activate trusted HTTPS | When the canonical domain prerequisites are confirmed, I want the prepared shared HTTPS edge activated and observed, so I can serve trusted canonical traffic and renew certificates safely. | `Validated` | `docs/plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release`, `.github/workflows/deploy.yml`, and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
+  | `EJ-008` | Operator | Activate trusted HTTPS | When the canonical domain prerequisites are confirmed, I want the prepared shared HTTPS edge activated and observed, so I can serve trusted canonical traffic and renew certificates safely. | `Delivered` | `docs/plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release`, `.github/workflows/deploy.yml`, and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
   | `EJ-009` | Operator | Detect service degradation | When a product or processing component becomes unhealthy, I want monitoring and actionable alerts, so I can respond before failures persist unnoticed. | `Candidate` | `docs/architecture.md#open-decisions` (`Observability stack`) |
   | `EJ-010` | Operator | Restore service data | When transactional data or media metadata is lost or corrupted, I want a tested backup and restore procedure with agreed recovery targets, so I can recover service safely. | `Candidate` | `docs/architecture.md#security-privacy-and-legal-boundaries` and `#open-decisions` |
 
@@ -205,15 +207,15 @@ removing Markdown reads and assertions from the test suite.
 - Modify: `docs/architecture.md`
 - Modify: `docs/plans/2026-07-13-canonical-domain-https-edge.md`
 
-- [x] **Step 1: Record the merged activation without changing decisions or runtime**
+- [x] **Step 1: Record live HTTPS and pending validation without changing decisions or runtime**
 
-  Replace the stale current-HTTP and pending-activation descriptions with the implemented shared
-  HTTPS staging topology. Record merged PR #32, successful GitHub Actions staging deploy run
+  Replace the stale current-HTTP descriptions with the implemented shared HTTPS staging topology.
+  Record merged PR #32, successful GitHub Actions staging deploy run
   [29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740), and the
   observed canonical redirects and trusted apex response. Keep browser observation, remote
   marker/container inspection, and the Certbot renewal dry-run explicitly incomplete. Retain
-  `docker-compose.staging.yml` and `deploy/nginx/staging.conf` as manual recovery assets excluded
-  from normal deployment.
+  `docker-compose.staging.yml` and `deploy/nginx/staging.conf` as temporary manual recovery assets
+  excluded from normal deployment until validation permits the cleanup required by ADR 0011.
 
   Expected: authoritative sources describe the deployed state and remaining evidence accurately;
   no architecture decision, runtime configuration, or deployment behavior changes.
@@ -381,7 +383,8 @@ removing Markdown reads and assertions from the test suite.
 
   - reduce `AGENTS.md` to stable project orientation and source routing;
   - add separate product and engineering JTBD registries with current status and append-only history;
-  - synchronize authoritative documentation with the completed staging HTTPS activation;
+  - synchronize authoritative documentation with live staging HTTPS, public verification, and the
+    remaining ADR 0011 validation and cleanup;
   - remove repository tests that enforce Markdown content or existence.
 
   ## Preserved checks
@@ -408,9 +411,10 @@ removing Markdown reads and assertions from the test suite.
 ## Operational impact and rollout
 
 None. The change does not modify runtime configuration, database state, deployment behavior,
-architecture decisions, or application code. It records an HTTPS activation that merged separately
-while this branch was in progress. CI becomes slightly faster by removing one duplicate pytest
-invocation.
+architecture decisions, or application code. It records a live HTTPS switch and public verification
+that merged separately while this branch was in progress, without claiming the remaining activation
+validation or ADR 0011 cleanup is complete. CI becomes slightly faster by removing one duplicate
+pytest invocation.
 
 ## Rollback
 

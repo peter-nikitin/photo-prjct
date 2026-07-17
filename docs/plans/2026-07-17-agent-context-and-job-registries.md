@@ -167,11 +167,11 @@ removing Markdown reads and assertions from the test suite.
   | `EJ-001` | Developer | Reproduce local PostgreSQL development | When I start repository work, I want Django and PostgreSQL to run from the documented environment contract, so I can reproduce production-relevant behavior locally. | `Validated` | `docker-compose.yml`, `.env.example`, and `src/backend/config/settings.py` |
   | `EJ-002` | Contributor | Receive complete CI feedback | When I push a change or open a pull request, I want formatting, lint, types, PostgreSQL tests, migrations, Django checks, and visual regression to run automatically, so I can detect regressions before merge. | `Validated` | `.github/workflows/ci.yml`, `pyproject.toml`, and `package.json` |
   | `EJ-003` | Maintainer | Deploy an immutable image to staging | When `main` advances, I want one SHA-tagged image built and applied to staging, so I can test the exact artifact that may later be promoted. | `Validated` | `.github/workflows/deploy.yml`, `Dockerfile`, `docker-compose.prod.yml`, and `deploy/apply-deployment.sh` |
-  | `EJ-004` | Operator | Run the current staging HTTP edge | When staging is deployed before HTTPS activation, I want its dedicated HTTP edge to proxy health and application traffic, so I can operate the current environment without presenting it as production. | `Validated` | `docker-compose.staging.yml`, `deploy/nginx/staging.conf`, and `tests/test_repository_foundation.py::test_public_environments_share_one_https_edge_overlay` |
+  | `EJ-004` | Operator | Run the current staging HTTPS edge | When staging is deployed after HTTPS activation, I want the shared HTTPS edge to terminate trusted traffic and proxy the application, so I can operate the current environment without presenting it as production. | `Validated` | `.github/workflows/deploy.yml`, `docker-compose.https.yml`, `deploy/apply-deployment.sh`, and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
   | `EJ-005` | Contributor | Reproduce visual regression | When UI rendering changes, I want Playwright to run in the same pinned container environment locally and in CI, so I can review deterministic snapshots. | `Validated` | `package.json`, `Dockerfile.visual-tests`, `docker-compose.visual.yml`, and `tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment` |
   | `EJ-006` | Maintainer | Promote the staging-verified image | When a staging image is selected for promotion, I want the production-environment workflow to verify and reuse that exact image, so I can avoid rebuilding a different artifact. | `Validated` | `.github/workflows/promote-production.yml` and `tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production` |
   | `EJ-007` | Operator | Provision a production environment | When readiness evidence and pricing are approved, I want a separate non-preemptible production environment, so I can serve customers without staging lifecycle constraints. | `Candidate` | `docs/architecture.md#accepted-constraints` and `docs/superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production` |
-  | `EJ-008` | Operator | Activate trusted HTTPS | When the canonical domain prerequisites are confirmed, I want the prepared shared HTTPS edge activated and observed, so I can serve trusted canonical traffic and renew certificates safely. | `Planned` | `docs/plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release` |
+  | `EJ-008` | Operator | Activate trusted HTTPS | When the canonical domain prerequisites are confirmed, I want the prepared shared HTTPS edge activated and observed, so I can serve trusted canonical traffic and renew certificates safely. | `Validated` | `docs/plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release`, `.github/workflows/deploy.yml`, and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
   | `EJ-009` | Operator | Detect service degradation | When a product or processing component becomes unhealthy, I want monitoring and actionable alerts, so I can respond before failures persist unnoticed. | `Candidate` | `docs/architecture.md#open-decisions` (`Observability stack`) |
   | `EJ-010` | Operator | Restore service data | When transactional data or media metadata is lost or corrupted, I want a tested backup and restore procedure with agreed recovery targets, so I can recover service safely. | `Candidate` | `docs/architecture.md#security-privacy-and-legal-boundaries` and `#open-decisions` |
 
@@ -240,7 +240,7 @@ removing Markdown reads and assertions from the test suite.
   ../../.venv/bin/pytest tests/test_repository_foundation.py -q
   ```
 
-  Expected: 20 tests pass.
+  Expected: 14 tests pass.
 
 ### Task 5: Remove the redundant CI invocation
 
@@ -300,7 +300,7 @@ removing Markdown reads and assertions from the test suite.
   ../../.venv/bin/pytest tests/test_repository_foundation.py -q
   ```
 
-  Expected: 20 tests pass.
+  Expected: 14 tests pass.
 
 - [ ] **Step 3: Confirm documentation and test boundaries**
 
@@ -361,7 +361,7 @@ removing Markdown reads and assertions from the test suite.
   ## Verification
 
   - `git diff --check origin/main...HEAD`
-  - `pytest tests/test_repository_foundation.py -q` — 20 passed
+  - `pytest tests/test_repository_foundation.py -q` — 14 passed
   - no Markdown content/existence references remain in Python tests
   EOF
   ```

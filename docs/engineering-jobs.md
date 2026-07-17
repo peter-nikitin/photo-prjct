@@ -34,11 +34,11 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-001 | Developer | Reproduce local PostgreSQL development | Validated | 2026-07-17 |
 | EJ-002 | Contributor | Receive complete CI feedback | Validated | 2026-07-17 |
 | EJ-003 | Maintainer | Deploy an immutable image to staging | Validated | 2026-07-17 |
-| EJ-004 | Operator | Run the current staging HTTP edge | Validated | 2026-07-17 |
+| EJ-004 | Operator | Run the current staging HTTPS edge | Validated | 2026-07-17 |
 | EJ-005 | Contributor | Reproduce visual regression | Validated | 2026-07-17 |
 | EJ-006 | Maintainer | Promote the staging-verified image | Validated | 2026-07-17 |
 | EJ-007 | Operator | Provision a production environment | Candidate | 2026-07-17 |
-| EJ-008 | Operator | Activate trusted HTTPS | Planned | 2026-07-17 |
+| EJ-008 | Operator | Activate trusted HTTPS | Validated | 2026-07-17 |
 | EJ-009 | Operator | Detect service degradation | Candidate | 2026-07-17 |
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-17 |
 
@@ -72,13 +72,14 @@ artifact that may later be promoted.
 - Evidence: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`Dockerfile`](../Dockerfile), [`docker-compose.prod.yml`](../docker-compose.prod.yml), and [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh)
 - Last updated: 2026-07-17
 
-### EJ-004 — Operator — Run the current staging HTTP edge
+### EJ-004 — Operator — Run the current staging HTTPS edge
 
-When staging is deployed before HTTPS activation, I want its dedicated HTTP edge to proxy health and
-application traffic, so I can operate the current environment without presenting it as production.
+When staging is deployed after HTTPS activation, I want the shared HTTPS edge to terminate trusted
+traffic and proxy the application, so I can operate the current environment without presenting it as
+production.
 
 - Status: Validated
-- Evidence: [`docker-compose.staging.yml`](../docker-compose.staging.yml), [`deploy/nginx/staging.conf`](../deploy/nginx/staging.conf), and [`tests/test_repository_foundation.py::test_public_environments_share_one_https_edge_overlay`](../tests/test_repository_foundation.py)
+- Evidence: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
 - Last updated: 2026-07-17
 
 ### EJ-005 — Contributor — Reproduce visual regression
@@ -113,8 +114,8 @@ environment, so I can serve customers without staging lifecycle constraints.
 When the canonical domain prerequisites are confirmed, I want the prepared shared HTTPS edge
 activated and observed, so I can serve trusted canonical traffic and renew certificates safely.
 
-- Status: Planned
-- Evidence: [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release)
+- Status: Validated
+- Evidence: [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
 - Last updated: 2026-07-17
 
 ### EJ-009 — Operator — Detect service degradation
@@ -144,10 +145,10 @@ This log is append-only.
 | 2026-07-17 | EJ-001 | Not recorded | Validated | [`docker-compose.yml`](../docker-compose.yml), [`.env.example`](../.env.example), and [`src/backend/config/settings.py`](../src/backend/config/settings.py) |
 | 2026-07-17 | EJ-002 | Not recorded | Validated | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json) |
 | 2026-07-17 | EJ-003 | Not recorded | Validated | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`Dockerfile`](../Dockerfile), [`docker-compose.prod.yml`](../docker-compose.prod.yml), and [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh) |
-| 2026-07-17 | EJ-004 | Not recorded | Validated | [`docker-compose.staging.yml`](../docker-compose.staging.yml), [`deploy/nginx/staging.conf`](../deploy/nginx/staging.conf), and [`tests/test_repository_foundation.py::test_public_environments_share_one_https_edge_overlay`](../tests/test_repository_foundation.py) |
+| 2026-07-17 | EJ-004 | Not recorded | Validated | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
 | 2026-07-17 | EJ-005 | Not recorded | Validated | [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-006 | Not recorded | Validated | [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-007 | Not recorded | Candidate | [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production) |
-| 2026-07-17 | EJ-008 | Not recorded | Planned | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release) |
+| 2026-07-17 | EJ-008 | Not recorded | Validated | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
 | 2026-07-17 | EJ-009 | Not recorded | Candidate | [Architecture open decisions — Observability stack](architecture.md#open-decisions) |
 | 2026-07-17 | EJ-010 | Not recorded | Candidate | [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions) |

@@ -100,5 +100,6 @@ This documentation and test-maintenance change will be verified with:
 
 - `git diff --check`;
 - collection and execution of the remaining repository foundation tests using `.env.example`;
-- inspection that no remaining test reads Markdown solely to enforce prose or document structure;
+- inspection that no remaining repository contract test reads or asserts against Markdown content
+  or existence;
 - inspection that `AGENTS.md` contains orientation and source routing only.

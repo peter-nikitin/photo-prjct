@@ -81,6 +81,9 @@ jobs:
       - name: Install visual test dependencies
         run: npm ci
 
+      - name: Run JavaScript unit tests
+        run: npm run test:js
+
       - name: Run containerized visual regression tests
         run: npm run test:visual
 

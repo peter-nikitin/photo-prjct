@@ -14,7 +14,7 @@ removing Markdown reads and assertions from the test suite.
 **Tech Stack:** Markdown, pytest, YAML, GitHub Actions.
 
 - Date: 2026-07-17
-- Status: Ready for review
+- Status: Complete
 - Owner: project maintainer
 - Related architecture: [`docs/architecture.md`](../architecture.md)
 - Related ADRs: [0011](../adr/0011-use-minimal-shared-https-rollout.md) governs the factual
@@ -362,13 +362,13 @@ removing Markdown reads and assertions from the test suite.
 
 **Files:** none.
 
-- [ ] **Step 1: Push the dedicated branch**
+- [x] **Step 1: Push the dedicated branch**
 
   Run: `git push -u origin agent-instruction-sources`
 
   Expected: the remote branch is created or updated without touching `main`.
 
-- [ ] **Step 2: Open a draft pull request**
+- [x] **Step 2: Open a draft pull request**
 
   Run:
 
@@ -400,13 +400,20 @@ removing Markdown reads and assertions from the test suite.
   EOF
   ```
 
-  Expected: GitHub returns the draft PR URL.
+  Expected and observed: GitHub returned draft PR #33 at
+  `https://github.com/peter-nikitin/photo-prjct/pull/33`.
 
-- [ ] **Step 3: Verify the pull request**
+- [x] **Step 3: Verify the pull request**
 
-  Run: `env -u GITHUB_TOKEN gh pr view agent-instruction-sources --json url,state,isDraft`
+  Run:
 
-  Expected: state `OPEN`, `isDraft: true`, and a reviewable URL. Do not merge.
+  ```bash
+  env -u GITHUB_TOKEN gh api repos/peter-nikitin/photo-prjct/pulls/33 \
+    --jq '{url: .html_url, state: .state, draft: .draft, head: .head.ref, base: .base.ref}'
+  ```
+
+  Expected and observed: PR #33 is open and draft, with head `agent-instruction-sources`, base
+  `main`, and URL `https://github.com/peter-nikitin/photo-prjct/pull/33`. Do not merge.
 
 ## Operational impact and rollout
 

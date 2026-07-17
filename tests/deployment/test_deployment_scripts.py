@@ -175,7 +175,9 @@ def test_public_smoke_rejects_wrong_redirect_or_unhealthy_https(
     assert message in result.stderr
 
 
-def _apply_env(tmp_path: Path, fake_bin: Path, *, scenario: str) -> dict[str, str]:
+def _apply_env(
+    tmp_path: Path, fake_bin: Path, *, scenario: str, target: str = "production"
+) -> dict[str, str]:
     (tmp_path / ".env").write_text(
         "APP_IMAGE=old-image\nSECRET_KEY=old-secret\nKEEP=value\n", encoding="utf-8"
     )
@@ -186,7 +188,10 @@ def _apply_env(tmp_path: Path, fake_bin: Path, *, scenario: str) -> dict[str, st
     cert_dir.mkdir(parents=True)
     _write_executable(
         cert_dir / "reconcile-certificate.sh",
-        '[ "$APPLY_SCENARIO" != certificate-failure ]',
+        """
+printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
+[ "$APPLY_SCENARIO" != certificate-failure ]
+""",
     )
     deploy_dir = tmp_path / "deploy"
     _write_executable(
@@ -194,6 +199,7 @@ def _apply_env(tmp_path: Path, fake_bin: Path, *, scenario: str) -> dict[str, st
         """
 [ "$(cat "$DEPLOY_ROOT/deployed-image")" = old-image ]
 [ "$APPLY_SCENARIO" != public-failure ]
+printf 'verify-public-edge\n' >> "$COMMAND_LOG"
 """,
     )
     _write_executable(
@@ -231,9 +237,9 @@ esac
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "apply.log"),
         "APPLY_SCENARIO": scenario,
-        "DEPLOYMENT_TARGET": "production",
+        "DEPLOYMENT_TARGET": target,
         "DEPLOY_ROOT": str(tmp_path),
-        "COMPOSE_PROJECT_NAME": "photo-production",
+        "COMPOSE_PROJECT_NAME": f"photo-{target}",
         "APP_IMAGE": "new-image",
         "SECRET_KEY": "new-secret",
         "DEBUG": "False",
@@ -245,6 +251,24 @@ esac
         "PUBLIC_DOMAIN_ALIAS": "",
         "LETSENCRYPT_EMAIL": "ops@example.com",
     }
+
+
+def test_staging_apply_activates_https_edge_and_public_checks(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="success", target="staging"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
+    assert "docker-compose.https.yml" in commands
+    assert "docker-compose.staging.yml" not in commands
+    assert "stop nginx" in commands
+    assert "reconcile-certificate" in commands
+    assert "https://findme-photo.ru/health/" in commands
+    assert "verify-public-edge" in commands
 
 
 def test_apply_success_commits_deployed_image_only_after_checks(

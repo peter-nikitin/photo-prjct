@@ -155,6 +155,7 @@ def test_deployment_workflows_separate_staging_and_production() -> None:
     assert production["jobs"]["promote"]["environment"] == "production"
     assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
 
+
 def test_production_compose_uses_an_immutable_application_image() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
 

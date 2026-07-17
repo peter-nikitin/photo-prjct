@@ -14,7 +14,7 @@ removing Markdown reads and assertions from the test suite.
 **Tech Stack:** Markdown, pytest, YAML, GitHub Actions.
 
 - Date: 2026-07-17
-- Status: Ready
+- Status: In progress
 - Owner: project maintainer
 - Related architecture: [`docs/architecture.md`](../architecture.md)
 - Related ADRs: [0011](../adr/0011-use-minimal-shared-https-rollout.md) governs the factual
@@ -72,7 +72,7 @@ removing Markdown reads and assertions from the test suite.
 
 - Create: `docs/plans/2026-07-17-agent-context-and-job-registries.md`
 
-- [ ] **Step 1: Commit the reviewed plan before implementation**
+- [x] **Step 1: Commit the reviewed plan before implementation**
 
   Run:
 
@@ -89,14 +89,14 @@ removing Markdown reads and assertions from the test suite.
 
 - Modify: `AGENTS.md`
 
-- [ ] **Step 1: Replace dynamic guidance with stable orientation**
+- [x] **Step 1: Replace dynamic guidance with stable orientation**
 
   Keep a short `Project` section describing FindMe Photo as an event photo marketplace. Add a
   `Where to find information` section pointing to the two job registries, architecture, ADRs,
   plans, and the project skills directory. Do not name individual skills or retain workflow,
   deployment, validation, current-stage, or roadmap content.
 
-- [ ] **Step 2: Inspect the result**
+- [x] **Step 2: Inspect the result**
 
   Run: `sed -n '1,120p' AGENTS.md`
 
@@ -112,12 +112,12 @@ removing Markdown reads and assertions from the test suite.
 - Reference: `src/backend/picflow/tests/test_admin.py`
 - Reference: `src/backend/picflow/tests/test_views.py`
 
-- [ ] **Step 1: Add the shared registry contract**
+- [x] **Step 1: Add the shared registry contract**
 
   Document the JTBD form, stable `PJ-XXX` IDs, allowed product actors, shared statuses, evidence
   requirement, and append-only status-history rule.
 
-- [ ] **Step 2: Seed current product outcomes**
+- [x] **Step 2: Seed current product outcomes**
 
   Add exactly these rows, each last updated on 2026-07-17:
 
@@ -137,7 +137,7 @@ removing Markdown reads and assertions from the test suite.
 
   Do not infer delivery from test-only design reference screens.
 
-- [ ] **Step 3: Seed history**
+- [x] **Step 3: Seed history**
 
   Add one `Not recorded` to initial-status entry dated 2026-07-17 for every `PJ-XXX` row. Link each
   history reason to the same evidence used by the registry.
@@ -162,12 +162,12 @@ removing Markdown reads and assertions from the test suite.
 - Reference: `deploy/apply-deployment.sh`
 - Reference: `tests/test_repository_foundation.py`
 
-- [ ] **Step 1: Add the shared registry contract**
+- [x] **Step 1: Add the shared registry contract**
 
   Document the JTBD form, stable `EJ-XXX` IDs, engineering actors, shared statuses, evidence
   requirement, capability-level boundary, and append-only status-history rule.
 
-- [ ] **Step 2: Seed current engineering capabilities**
+- [x] **Step 2: Seed current engineering capabilities**
 
   Add exactly these rows, each last updated on 2026-07-17:
 
@@ -184,12 +184,12 @@ removing Markdown reads and assertions from the test suite.
   | `EJ-009` | Operator | Detect service degradation | When a product or processing component becomes unhealthy, I want monitoring and actionable alerts, so I can respond before failures persist unnoticed. | `Candidate` | `docs/architecture.md#open-decisions` (`Observability stack`) |
   | `EJ-010` | Operator | Restore service data | When transactional data or media metadata is lost or corrupted, I want a tested backup and restore procedure with agreed recovery targets, so I can recover service safely. | `Candidate` | `docs/architecture.md#security-privacy-and-legal-boundaries` and `#open-decisions` |
 
-- [ ] **Step 3: Seed history**
+- [x] **Step 3: Seed history**
 
   Add one `Not recorded` to initial-status entry dated 2026-07-17 for every `EJ-XXX` row. Keep
   commands and implementation sequences out of the registry and link to plans where available.
 
-- [ ] **Step 4: Commit the context and registries**
+- [x] **Step 4: Commit the context and registries**
 
   Run:
 
@@ -228,7 +228,7 @@ removing Markdown reads and assertions from the test suite.
 
 - Modify: `tests/test_repository_foundation.py`
 
-- [ ] **Step 1: Remove Markdown-only tests**
+- [x] **Step 1: Remove Markdown-only tests**
 
   Delete these tests completely:
 
@@ -241,14 +241,14 @@ removing Markdown reads and assertions from the test suite.
   - `test_write_plan_has_an_operational_fast_lane`;
   - `test_visual_design_skill_has_required_files`.
 
-- [ ] **Step 2: Split the mixed skill metadata test**
+- [x] **Step 2: Split the mixed skill metadata test**
 
   Rename `test_project_skills_have_valid_metadata_and_ui_configuration` to
   `test_project_skill_ui_configuration_is_valid`. Remove `SKILL.md` reads and frontmatter
   assertions. Retain parsing and validation of each `agents/openai.yaml`, including the expected
   interface keys.
 
-- [ ] **Step 3: Prove that Markdown contracts are gone**
+- [x] **Step 3: Prove that Markdown contracts are gone**
 
   Run:
 
@@ -258,7 +258,7 @@ removing Markdown reads and assertions from the test suite.
 
   Expected: no matches.
 
-- [ ] **Step 4: Run the focused tests**
+- [x] **Step 4: Run the focused tests**
 
   Run:
 
@@ -277,19 +277,19 @@ removing Markdown reads and assertions from the test suite.
 
 - Modify: `.github/workflows/ci.yml`
 
-- [ ] **Step 1: Remove the duplicate step**
+- [x] **Step 1: Remove the duplicate step**
 
   Delete `Validate project skills`, which reruns
   `pytest tests/test_repository_foundation.py -q` after the full `pytest --cov` step has already
   collected the same tests.
 
-- [ ] **Step 2: Confirm one pytest invocation remains**
+- [x] **Step 2: Confirm one pytest invocation remains**
 
   Run: `rg -n 'pytest' .github/workflows/ci.yml`
 
   Expected: only `pytest --cov --cov-report=term-missing` remains.
 
-- [ ] **Step 3: Commit the test and CI cleanup**
+- [x] **Step 3: Commit the test and CI cleanup**
 
   Run:
 

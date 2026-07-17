@@ -105,4 +105,7 @@ This documentation and test-maintenance change will be verified with:
 - collection and execution of the remaining repository foundation tests using `.env.example`;
 - inspection that no remaining repository contract test reads or asserts against Markdown content
   or existence;
-- inspection that `AGENTS.md` contains orientation and source routing only.
+- inspection that `AGENTS.md` contains orientation and source routing only;
+- inspection that `docs/architecture.md` and the canonical HTTPS plan match merged PR #32, the
+  successful staging deploy, and public endpoint evidence while leaving exactly browser observation,
+  internal-state inspection, renewal validation, and the ADR 0011 cleanup incomplete.

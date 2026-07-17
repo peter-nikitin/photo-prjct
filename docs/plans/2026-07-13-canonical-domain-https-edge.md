@@ -88,8 +88,8 @@ GitHub Actions, RU-CENTER DNS, Yandex Cloud VM.
 
 ## Chunk 1: Preparation release
 
-This release is implemented on the preparation branch. It must be reviewed and deployed while the
-staging workflow still selects the HTTP overlay.
+This release was implemented on the preparation branch and was reviewed and deployed while the
+staging workflow still selected the HTTP overlay.
 
 ### Task 1: Share and validate the HTTPS edge
 
@@ -357,7 +357,8 @@ access, or destructive impact.
 
 ## Recovery summary
 
-- **Preparation:** revert the preparation merge; staging never left HTTP.
+- **Preparation (historical, pre-activation):** before activation, reverting the preparation merge
+  meant staging had not yet left HTTP.
 - **Failed apply:** the deploy process restores the prior `APP_IMAGE`, reconciles the same selected
   overlay, leaves `deployed-image` unchanged, and exits non-zero.
 - **Failed initial certificate issuance:** inspect DNS, public port reachability, and Certbot output

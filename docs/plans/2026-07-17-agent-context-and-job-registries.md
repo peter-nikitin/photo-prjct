@@ -35,11 +35,15 @@ removing Markdown reads and assertions from the test suite.
 - Preserve tests for executable YAML, runtime configuration, deployment scripts, Compose, Django,
   and visual-test isolation.
 - Remove the duplicate targeted pytest invocation from CI.
+- Synchronize the factual HTTPS activation status in `docs/architecture.md` and
+  `docs/plans/2026-07-13-canonical-domain-https-edge.md` with the merged deployment and observed
+  public behavior.
 
 ### Out of scope
 
-- Changing application behavior, architecture, ADRs, accepted plans, deployment topology, or domain
-  decisions.
+- Changing application behavior, architecture decisions, ADRs, deployment topology, or domain
+  decisions. Factual status synchronization in existing architecture and plan documents is in
+  scope.
 - Adding a Markdown linter or replacement documentation-contract tests.
 - Tracking implementation tasks in either job registry.
 - Listing individual skills in `AGENTS.md`.
@@ -54,6 +58,9 @@ removing Markdown reads and assertions from the test suite.
 - No remaining test reads or asserts against a `.md` file or Markdown file existence.
 - The remaining repository foundation tests pass.
 - CI runs the full pytest suite once rather than repeating `tests/test_repository_foundation.py`.
+- `docs/architecture.md` and the canonical HTTPS plan describe shared HTTPS as the normal staging
+  edge, retain the HTTP overlay only as a manual recovery fallback, and distinguish completed public
+  verification from remaining browser, internal-state, and renewal follow-ups.
 
 ## Chunk 1: Stable context and job registries
 
@@ -191,6 +198,26 @@ removing Markdown reads and assertions from the test suite.
 
   Expected: one documentation commit with no application or architecture changes.
 
+### Task 3A: Synchronize authoritative HTTPS status
+
+**Files:**
+
+- Modify: `docs/architecture.md`
+- Modify: `docs/plans/2026-07-13-canonical-domain-https-edge.md`
+
+- [x] **Step 1: Record the merged activation without changing decisions or runtime**
+
+  Replace the stale current-HTTP and pending-activation descriptions with the implemented shared
+  HTTPS staging topology. Record merged PR #32, successful GitHub Actions staging deploy run
+  [29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740), and the
+  observed canonical redirects and trusted apex response. Keep browser observation, remote
+  marker/container inspection, and the Certbot renewal dry-run explicitly incomplete. Retain
+  `docker-compose.staging.yml` and `deploy/nginx/staging.conf` as manual recovery assets excluded
+  from normal deployment.
+
+  Expected: authoritative sources describe the deployed state and remaining evidence accurately;
+  no architecture decision, runtime configuration, or deployment behavior changes.
+
 ## Chunk 2: Remove Markdown contracts while preserving executable tests
 
 ### Task 4: Delete Markdown reads and assertions from repository tests
@@ -280,6 +307,8 @@ removing Markdown reads and assertions from the test suite.
 - Verify: `AGENTS.md`
 - Verify: `docs/product-jobs.md`
 - Verify: `docs/engineering-jobs.md`
+- Verify: `docs/architecture.md`
+- Verify: `docs/plans/2026-07-13-canonical-domain-https-edge.md`
 - Verify: `tests/test_repository_foundation.py`
 - Verify: `.github/workflows/ci.yml`
 
@@ -312,7 +341,8 @@ removing Markdown reads and assertions from the test suite.
   ```
 
   Expected: the first command has no matches. The changed-file list contains only the approved
-  specification, plan, `AGENTS.md`, two job registries, repository test file, and CI workflow.
+  specification, implementation plan, `AGENTS.md`, two job registries, authoritative architecture
+  and canonical HTTPS plan status updates, repository test file, and CI workflow.
 
 - [ ] **Step 4: Review job status evidence**
 
@@ -351,6 +381,7 @@ removing Markdown reads and assertions from the test suite.
 
   - reduce `AGENTS.md` to stable project orientation and source routing;
   - add separate product and engineering JTBD registries with current status and append-only history;
+  - synchronize authoritative documentation with the completed staging HTTPS activation;
   - remove repository tests that enforce Markdown content or existence.
 
   ## Preserved checks
@@ -376,15 +407,17 @@ removing Markdown reads and assertions from the test suite.
 
 ## Operational impact and rollout
 
-None. The change does not modify runtime configuration, database state, deployment behavior, or
-application code. CI becomes slightly faster by removing one duplicate pytest invocation.
+None. The change does not modify runtime configuration, database state, deployment behavior,
+architecture decisions, or application code. It records an HTTPS activation that merged separately
+while this branch was in progress. CI becomes slightly faster by removing one duplicate pytest
+invocation.
 
 ## Rollback
 
-Revert the two implementation commits in reverse order: first `test: remove markdown repository
-contracts`, then `docs: separate agent context from job status`. Keep the reviewed design and plan
-history. Reverting the registries loses only documentation history; it does not alter runtime or
-persistent application data.
+Revert the implementation commits in reverse order: first the factual source-synchronization commit,
+then `test: remove markdown repository contracts`, then `docs: separate agent context from job
+status`. Keep the reviewed design and plan history. Reverting the registries or factual status
+updates loses only documentation history; it does not alter runtime or persistent application data.
 
 ## Open questions
 

@@ -5,7 +5,7 @@
 > (`- [ ]`) syntax for tracking.
 
 **Goal:** Activate trusted HTTPS for `findme-photo.ru` on the current single staging VM through a
-small shared Nginx/Certbot edge, then remove the temporary HTTP edge after renewal is proven.
+small shared Nginx/Certbot edge while retaining the HTTP edge as a manual recovery fallback.
 
 **Architecture:** Combine `docker-compose.prod.yml` with an environment-neutral HTTPS overlay. The
 deployment issues a missing certificate once, applies one immutable image, validates local health
@@ -18,7 +18,8 @@ GitHub Actions, RU-CENTER DNS, Yandex Cloud VM.
 ---
 
 - Date: 2026-07-13
-- Status: Preparation implemented; live activation and cleanup not started
+- Status: HTTPS activation complete; browser, internal-state, and renewal follow-ups remain; manual
+  HTTP recovery fallback retained
 - Owner: project maintainer
 - Related architecture: [Current architecture](../architecture.md#current-architecture--implemented),
   [deployment domain assignment](../architecture.md#deployment-domain-assignment--accepted)
@@ -38,7 +39,8 @@ GitHub Actions, RU-CENTER DNS, Yandex Cloud VM.
 - One-shot certificate issuance when certificate state is absent and periodic renewal afterward.
 - Exact redirect and trusted HTTPS health smoke checks using `curl`.
 - In-process restoration of the prior application image after a failed apply.
-- Separate preparation, activation, and HTTP-edge cleanup releases.
+- Separate preparation and activation releases, with the HTTP edge retained only for manual
+  recovery.
 - Focused deployment tests and stable operational documentation.
 
 ### Out of scope
@@ -62,7 +64,8 @@ GitHub Actions, RU-CENTER DNS, Yandex Cloud VM.
 - `deployed-image` changes only after image identity, local health, redirects, and HTTPS health pass.
 - Any failed apply attempts to restore the prior `APP_IMAGE` without deleting data or certificate
   volumes and exits non-zero.
-- `certbot renew --dry-run` succeeds before the temporary HTTP overlay is removed.
+- `certbot renew --dry-run` remains an explicit operational follow-up before renewal readiness is
+  considered validated; the manual HTTP recovery fallback remains available independently.
 - No secret or certificate private-key material is tracked or printed.
 
 ## File responsibility map
@@ -71,14 +74,14 @@ GitHub Actions, RU-CENTER DNS, Yandex Cloud VM.
 | --- | --- |
 | `docker-compose.prod.yml` | Shared PostgreSQL and private Django services. |
 | `docker-compose.https.yml` | Shared Nginx, Certbot, public ports, and certificate volumes. |
-| `docker-compose.staging.yml` | Temporary HTTP edge retained through initial activation. |
+| `docker-compose.staging.yml` | Manual HTTP recovery fallback; excluded from normal staging deployment. |
 | `deploy/nginx/https.conf.template` | Canonical, alias, ACME, health, and unknown-host routing. |
 | `deploy/nginx/reload-nginx.sh` | Validate inputs, render atomically, start Nginx, and reload certificates. |
 | `deploy/certbot/reconcile-certificate.sh` | Reuse an existing certificate or issue it once when absent. |
 | `deploy/certbot/renew-certificates.sh` | Periodic webroot renewal checks. |
 | `deploy/verify-public-edge.sh` | Exact redirect and trusted HTTPS health smoke checks. |
 | `deploy/apply-deployment.sh` | Apply one image, recover in process on failure, and record success. |
-| `.github/workflows/deploy.yml` | Automatic staging deployment; HTTP until activation. |
+| `.github/workflows/deploy.yml` | Automatic staging deployment through the shared HTTPS overlay. |
 | `.github/workflows/promote-production.yml` | Future production deployment through the shared HTTPS edge. |
 | `tests/test_repository_foundation.py` | Repository, workflow, and deployment-source contracts. |
 | `tests/deployment/test_deployment_scripts.py` | Behavioral certificate, smoke, recovery, and marker tests. |
@@ -196,32 +199,32 @@ env SECRET_KEY=test DEBUG=False ALLOWED_HOSTS=localhost \
 sh tests/deployment/validate-nginx.sh
 ```
 
-Expected: every command exits 0, and `.github/workflows/deploy.yml` still copies
-`docker-compose.staging.yml` without certificate bootstrap.
+Historical preparation expectation: every command exited 0, and `.github/workflows/deploy.yml`
+still copied `docker-compose.staging.yml` without certificate bootstrap before activation.
 
 ## Chunk 2: HTTPS activation release
 
-Activation is a separate PR and merge after preparation deploys successfully. Do not combine it
-with cleanup.
+Activation was delivered in a separate PR after preparation deployed successfully. The manual HTTP
+recovery fallback is retained rather than handled by a cleanup release.
 
 ### Task 4: Configure and verify staging inputs
 
 **External configuration:** GitHub Environment `staging`; RU-CENTER DNS.
 
-- [ ] Set Environment variable `PUBLIC_DOMAIN=findme-photo.ru`.
-- [ ] Set optional Environment variable `PUBLIC_DOMAIN_ALIAS=www.findme-photo.ru`.
-- [ ] Set Environment secret `LETSENCRYPT_EMAIL` to the maintainer-selected operational email;
+- [x] Set Environment variable `PUBLIC_DOMAIN=findme-photo.ru`.
+- [x] Set optional Environment variable `PUBLIC_DOMAIN_ALIAS=www.findme-photo.ru`.
+- [x] Set Environment secret `LETSENCRYPT_EMAIL` to the maintainer-selected operational email;
   confirm only that the secret exists.
-- [ ] From a public network, manually confirm apex and alias resolve to `111.88.151.64`, no obsolete
+- [x] From a public network, manually confirm apex and alias resolve to `111.88.151.64`, no obsolete
   address is returned, and ports 80/443 reach the intended VM. DNS evidence is an activation
   prerequisite, not a recurring deploy gate.
-- [ ] Confirm the preparation deployment is healthy:
+- [x] Confirm the preparation deployment is healthy:
 
   ```bash
   curl --fail-with-body --silent --show-error http://findme-photo.ru/health/
   ```
 
-  Expected: HTTP 200 and the Django health response.
+  Historical pre-activation expectation: HTTP 200 and the Django health response.
 
 If the configured alias differs from the name on an existing environment certificate, do not merge
 activation until a maintenance window is approved. During that window, stop Nginx, back up the
@@ -239,14 +242,14 @@ Use `@superpowers:test-driven-development`.
 - Modify: `deploy/apply-deployment.sh`
 - Modify: `tests/test_repository_foundation.py`
 
-- [ ] First change the repository contract to require staging to copy/use
+- [x] First change the repository contract to require staging to copy/use
   `docker-compose.https.yml`, pass `LETSENCRYPT_EMAIL`, and stop selecting the HTTP overlay.
-- [ ] Run the focused repository test and confirm it fails for the expected staging-overlay reason.
-- [ ] Select the shared HTTPS overlay for staging. Keep the production path behavior unchanged.
-- [ ] Copy the shared overlay and pass the three activation inputs through the staging workflow.
-- [ ] Preserve in-process recovery and the rule that `deployed-image` changes only after the public
+- [x] Run the focused repository test and confirm it fails for the expected staging-overlay reason.
+- [x] Select the shared HTTPS overlay for staging. Keep the production path behavior unchanged.
+- [x] Copy the shared overlay and pass the three activation inputs through the staging workflow.
+- [x] Preserve in-process recovery and the rule that `deployed-image` changes only after the public
   smoke succeeds.
-- [ ] Run:
+- [x] Run:
 
   ```bash
   git diff --check
@@ -265,22 +268,21 @@ Use `@superpowers:test-driven-development`.
 
   Expected: every command exits 0; staging uses the shared overlay and only Nginx publishes 80/443.
 
-- [ ] Commit activation as `feat: activate HTTPS for canonical domain`.
+- [x] Commit activation as `feat: activate HTTPS for canonical domain`.
 
 ### Task 6: Observe activation to a terminal result
 
 **Runtime target:** Compose project `photo-prjct-staging` on the current preemptible VM.
 
-- [ ] Merge only after Chunk 1 and Task 4 are satisfied. No `yc` mutation is required.
-- [ ] Monitor build and remote apply until GitHub Actions reaches a terminal state.
-- [ ] Confirm externally:
-
-  ```text
-  http://findme-photo.ru/health/      -> 308 https://findme-photo.ru/health/
-  https://findme-photo.ru/health/     -> 200 with trusted TLS
-  http://www.findme-photo.ru/health/  -> 308 canonical HTTPS
-  https://www.findme-photo.ru/health/ -> 308 canonical HTTPS
-  ```
+- [x] Merge activation [PR #32](https://github.com/peter-nikitin/photo-prjct/pull/32) only after
+  Chunk 1 and Task 4 are satisfied. No `yc` mutation was required.
+- [x] Monitor build and remote apply until GitHub Actions reaches a terminal state. Staging deploy
+  run [29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
+  completed successfully.
+- [x] Confirm `http://findme-photo.ru/` returns 308 to `https://findme-photo.ru/`.
+- [x] Confirm `https://findme-photo.ru/` returns 200 with `ssl_verify_result` 0.
+- [x] Confirm `http://www.findme-photo.ru/` returns 308 to `https://findme-photo.ru/`.
+- [x] Confirm `https://www.findme-photo.ru/` returns 308 to `https://findme-photo.ru/`.
 
 - [ ] Open the canonical URL in a normal browser and confirm certificate trust for the apex and
   alias. This is an operator observation, not an automated certificate-set comparison.
@@ -303,41 +305,27 @@ Use `@superpowers:test-driven-development`.
   recovery succeeded before deciding on a manual retry; do not repeat certificate issuance without
   identifying DNS, reachability, or rate-limit cause.
 
-## Chunk 3: Post-activation cleanup
+## Chunk 3: Manual HTTP recovery fallback retained
 
-Start only after Task 6 succeeds and renewal simulation passes. Deliver as a separate PR.
-
-### Task 7: Remove the temporary HTTP edge
-
-Use `@superpowers:test-driven-development`.
-
-**Files:**
-
-- Delete: `docker-compose.staging.yml`
-- Delete: `deploy/nginx/staging.conf`
-- Modify: `tests/test_repository_foundation.py`
-- Modify: `README.md`
-- Modify: `docs/architecture.md`
-- Modify: `.agents/skills/manage-yandex-cloud/references/inventory.md`
-
-- [ ] Change tests to require the temporary HTTP overlay/configuration to be absent and all public
-  deployment paths to use `docker-compose.https.yml`.
-- [ ] Run the focused test and confirm it fails while the temporary files exist.
-- [ ] Delete only the obsolete HTTP overlay and configuration. Keep the HTTPS overlay, certificate
-  bootstrap, renewal scripts, and certificate/data volumes.
-- [ ] Record the successful activation run, trusted browser observation, and renewal result. Keep
-  the VM classified as preemptible staging and production as unprovisioned.
-- [ ] Run the full preparation regression commands plus the HTTPS Compose render.
-- [ ] Confirm no tracked deployment path references the removed files.
-- [ ] Commit cleanup as `refactor: remove staging HTTP edge`.
+Status: complete. `docker-compose.staging.yml` and `deploy/nginx/staging.conf` are intentionally
+retained for manual recovery and are excluded from normal staging deployment. The executable
+contract
+[`tests/test_repository_foundation.py::test_http_edge_fallback_remains_available_for_manual_recovery`](../../tests/test_repository_foundation.py)
+protects the fallback while the normal deploy workflow is required to select the shared HTTPS
+overlay. No deletion cleanup is planned.
 
 ## Operational impact and order
 
-1. Merge and observe preparation; public runtime remains HTTP.
-2. Configure the three staging inputs and manually verify DNS/reachability.
-3. Merge activation; expect a short edge interruption while initial Certbot issuance owns port 80.
-4. Verify redirects, trusted HTTPS health, browser trust, marker state, and renewal simulation.
-5. Merge cleanup; normal future failures restore the prior application image on the HTTPS topology.
+1. Preparation merged and deployed while the public runtime still used HTTP.
+2. The three staging inputs were configured and DNS/reachability were verified.
+3. Activation PR #32 merged, and staging deploy run
+   [29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
+   completed successfully.
+4. Public apex and `www` HTTP/HTTPS behavior was checked, including trusted TLS on the canonical
+   apex.
+5. Remaining operator follow-up: observe the apex and alias in a normal browser.
+6. Remaining operator follow-up: inspect remote marker, container, port, and volume state.
+7. Remaining operator follow-up: run the Certbot renewal dry-run.
 
 No database migration, data reset, VM restart, public-IP change, security-group change, or pricing
 mutation is part of this plan. Any newly discovered need for Yandex Cloud mutation must stop and
@@ -358,5 +346,6 @@ access, or destructive impact.
 
 ## Open questions
 
-None. The maintainer must supply `LETSENCRYPT_EMAIL` before activation; this is an external secret,
-not an unresolved implementation choice.
+None. No implementation choice remains. Browser trust observation, remote marker/container-state
+inspection, and the Certbot renewal dry-run remain operational evidence follow-ups rather than open
+design questions.

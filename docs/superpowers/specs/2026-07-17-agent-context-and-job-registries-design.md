@@ -8,13 +8,16 @@ capabilities remain, which are under delivery, and which have been completed or 
 
 ## Scope and non-goals
 
-This change is documentation routing and test maintenance only. It will not change architecture,
-ADRs, delivery plans, application behavior, deployment topology, or domain decisions. Architecture,
-plans, executable configuration, and tests are inputs and evidence for the initial registries, not
-targets for redesign.
+This change is documentation routing, factual source synchronization, and test maintenance only. It
+will not change architecture decisions, ADRs, application behavior, deployment topology, or domain
+decisions. Architecture, plans, executable configuration, and tests are inputs and evidence for the
+initial registries, not targets for redesign.
 
 Implementation edits are limited to `AGENTS.md`, the two job registries, Markdown-focused cleanup in
-repository contract tests, and removal of the redundant CI test invocation.
+repository contract tests, removal of the redundant CI test invocation, and factual status updates
+to `docs/architecture.md` and `docs/plans/2026-07-13-canonical-domain-https-edge.md`. Those two source
+updates record the HTTPS activation that merged while this branch was in progress; they do not alter
+an architecture decision or runtime behavior.
 
 ## AGENTS.md responsibility
 

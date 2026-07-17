@@ -40,9 +40,13 @@ The repository currently contains an early Django application:
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
-- Staging currently runs a minimal HTTP Nginx edge that proxies to the internal Django service.
-  Public DNS now routes the canonical domain to the staging VM, but TLS activation is not yet
-  implemented.
+- Staging's normal deployment uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and
+  proxy the internal Django service. The canonical apex and `www` names route to that edge, with
+  HTTP and alias traffic redirected to canonical HTTPS.
+- `docker-compose.staging.yml` and `deploy/nginx/staging.conf` remain available only as a temporary
+  manual HTTP recovery fallback while browser, internal-state, and renewal validation remain. The
+  normal staging deploy workflow does not select them, and cleanup after validation remains required
+  by [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
 - Every public environment will use one shared HTTPS overlay where Nginx terminates TLS, serves ACME
   HTTP-01 challenges, and Certbot manages Let's Encrypt certificates in environment-specific
   persistent volumes. This accepted transition is governed by
@@ -91,10 +95,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   `https://findme-photo.ru/`.
 - When staging and production become separate live environments, `https://findme-photo.ru/` remains
   the production URL and staging moves to `https://staging.findme-photo.ru/`.
-- Public DNS now routes the canonical and `www` names to the current VM. TLS rollout is not yet
-  complete. Until the shared HTTPS edge is activated, the current preemptible VM retains its staging
-  lifecycle and temporary HTTP topology; the production readiness gate still applies throughout and
-  after activation.
+- Public DNS routes the canonical and `www` names to the current VM, where trusted HTTPS is active.
+  The apex serves canonical HTTPS, and HTTP and `www` requests redirect to it. HTTPS activation does
+  not change the current VM's preemptible staging classification or relax the production readiness
+  gate.
 
 ## Target MVP architecture — proposed
 

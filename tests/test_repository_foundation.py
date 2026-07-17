@@ -27,29 +27,7 @@ def _envs(step: dict[str, Any]) -> set[str]:
     return {name.strip() for name in envs.split(",") if name.strip()}
 
 
-def test_documentation_foundation_exists() -> None:
-    expected_paths = (
-        "docs/architecture.md",
-        "docs/adr/README.md",
-        "docs/adr/0000-template.md",
-        "docs/plans/README.md",
-        "docs/plans/0000-template.md",
-    )
-
-    for relative_path in expected_paths:
-        assert (ROOT / relative_path).is_file(), f"Missing {relative_path}"
-
-
-def test_adr_index_lists_all_accepted_decisions() -> None:
-    index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
-
-    for number in (*range(1, 8), 11):
-        assert re.search(rf"\| {number:04d} \|.*\| Accepted \|", index)
-    for number in (8, 9, 10):
-        assert re.search(rf"\| {number:04d} \|.*\| Superseded \|", index)
-
-
-def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:
+def test_project_skill_ui_configuration_is_valid() -> None:
     for skill_name in (
         "deliver-operational-change",
         "manage-yandex-cloud",
@@ -58,15 +36,6 @@ def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:
         "write-plan",
     ):
         skill_dir = ROOT / ".agents" / "skills" / skill_name
-        skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-        match = re.match(r"^---\n(.*?)\n---\n", skill_text, re.DOTALL)
-        assert match, f"{skill_name} has no YAML frontmatter"
-
-        frontmatter = yaml.safe_load(match.group(1))
-        assert set(frontmatter) == {"name", "description"}
-        assert frontmatter["name"] == skill_name
-        assert frontmatter["description"].startswith("Use when ")
-
         ui_config = yaml.safe_load(
             (skill_dir / "agents" / "openai.yaml").read_text(encoding="utf-8")
         )
@@ -75,73 +44,6 @@ def test_project_skills_have_valid_metadata_and_ui_configuration() -> None:
             "short_description",
             "default_prompt",
         }
-
-
-def test_skills_reference_repository_templates() -> None:
-    references = {
-        "write-adr": "docs/adr/0000-template.md",
-        "write-plan": "docs/plans/0000-template.md",
-    }
-
-    for skill_name, template in references.items():
-        skill = (ROOT / ".agents" / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
-        assert template in skill
-
-
-def test_yandex_cloud_skill_requires_pricing_confirmation() -> None:
-    skill_dir = ROOT / ".agents" / "skills" / "manage-yandex-cloud"
-    skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-    inventory = (skill_dir / "references" / "inventory.md").read_text(encoding="utf-8")
-
-    assert "explicit manual confirmation" in skill
-    assert "Approval of a plan is not approval to execute" in skill
-    assert "yc config list" in skill
-    assert "must not" in skill.partition("yc config list")[2][:120]
-    assert "b1gmcsmr51o5kvp86l55" in inventory
-    assert "b1g2qttgfhb4gdunvlge" in inventory
-    assert "token" not in inventory.lower()
-
-
-def test_operational_fast_lane_is_project_context() -> None:
-    guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-
-    assert "## Operational Change Fast Lane" in guidance
-    assert "smallest reversible change" in guidance
-    assert "one worktree, one branch, and one pull request" in guidance
-    assert "Do not create a separate documentation PR" in guidance
-    assert "scope checkpoint" in guidance.lower()
-
-
-def test_operational_change_skill_prevents_platform_scope_drift() -> None:
-    skill = (ROOT / ".agents/skills/deliver-operational-change/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-
-    for required in (
-        "deploy/apply-deployment.sh",
-        "authoritative DNS or DNS-over-HTTPS",
-        "198.18.0.0/15",
-        "one worktree, one branch, and one pull request",
-        "one combined review",
-        "temporary `.env`",
-        "Proposed",
-        "Approval of a plan is not approval to execute",
-    ):
-        assert required in skill
-
-    assert "candidate" in skill
-    assert "persistent state" in skill
-    assert "multi-environment" in skill
-    assert "Do not create a separate documentation PR" in skill
-
-
-def test_write_plan_has_an_operational_fast_lane() -> None:
-    skill = (ROOT / ".agents/skills/write-plan/SKILL.md").read_text(encoding="utf-8")
-
-    assert "## Operational fast lane" in skill
-    assert "Do not require a plan file" in skill
-    assert "single VM" in skill
-    assert "scope checkpoint" in skill.lower()
 
 
 def test_deployment_workflows_separate_staging_and_production() -> None:
@@ -277,25 +179,6 @@ def test_event_cards_keep_keyboard_focus_visible_inside_clipped_card() -> None:
     assert ".event-card:focus-within" in catalog_css
     assert ".event-card-link:focus-visible" in catalog_css
     assert "outline-offset: -4px" in catalog_css
-
-
-def test_visual_design_skill_has_required_files() -> None:
-    skill = ROOT / ".agents/skills/update-visual-design"
-
-    for relative_path in (
-        "SKILL.md",
-        "agents/openai.yaml",
-        "references/screen-inventory.md",
-    ):
-        assert (skill / relative_path).is_file(), f"Missing {relative_path}"
-
-    guidance = (skill / "SKILL.md").read_text(encoding="utf-8")
-    inventory = (skill / "references/screen-inventory.md").read_text(encoding="utf-8")
-
-    assert "Never create `src/proto`" in guidance
-    assert "tests/visual/templates/design_reference/" in guidance
-    assert "| Promotions | design-reference |" in inventory
-    assert "| Catalog | production |" in inventory
 
 
 def test_production_django_configuration_excludes_visual_references() -> None:

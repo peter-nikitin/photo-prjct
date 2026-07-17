@@ -17,22 +17,18 @@ PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 requested_image="$APP_IMAGE"
 
 case "$DEPLOYMENT_TARGET" in
-    staging)
-        overlay_file="$DEPLOY_ROOT/docker-compose.staging.yml"
-        health_port=80
-        health_url="http://$PUBLIC_DOMAIN/health/"
-        ;;
-    production)
-        : "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL}"
-        overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
-        health_port=443
-        health_url="https://$PUBLIC_DOMAIN/health/"
+    staging|production)
         ;;
     *)
         echo "DEPLOYMENT_TARGET must be staging or production" >&2
         exit 2
         ;;
 esac
+
+: "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL}"
+overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
+health_port=443
+health_url="https://$PUBLIC_DOMAIN/health/"
 
 compose() {
     docker compose --project-name "$COMPOSE_PROJECT_NAME" \
@@ -157,11 +153,9 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     fi
 fi
 
-if [ "$DEPLOYMENT_TARGET" = production ]; then
-    compose stop nginx || true
-    if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
-        fail "Certificate bootstrap failed"
-    fi
+compose stop nginx || true
+if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
+    fail "Certificate bootstrap failed"
 fi
 
 if ! compose pull; then
@@ -198,8 +192,7 @@ while [ "$attempt" -le "$max_attempts" ]; do
     sleep 5
 done
 
-if [ "$DEPLOYMENT_TARGET" = production ] && \
-    ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
+if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
     fail "Requested deployment failed public HTTPS smoke verification"
 fi
 

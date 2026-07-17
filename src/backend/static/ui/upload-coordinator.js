@@ -149,7 +149,7 @@
       retry.hidden = item.status !== 'failed';
       retry.dataset.clientItemId = item.clientItemId;
       const cancel = row.querySelector('[data-cancel-item]');
-      cancel.hidden = item.status !== 'uploading';
+      cancel.hidden = !['registered', 'retry_pending', 'uploading'].includes(item.status);
       cancel.dataset.clientItemId = item.clientItemId;
       queue.append(row);
     }
@@ -179,6 +179,7 @@
       XMLHttpRequest: dependencies.XMLHttpRequest || globalScope.XMLHttpRequest,
       FormData: dependencies.FormData || globalScope.FormData,
       crypto: dependencies.crypto || globalScope.crypto,
+      AbortController: dependencies.AbortController || globalScope.AbortController,
       setTimeout: dependencies.setTimeout || globalScope.setTimeout.bind(globalScope),
       clearTimeout: dependencies.clearTimeout || globalScope.clearTimeout.bind(globalScope),
       onChange: () => renderPage(root, coordinator, globalError),
@@ -234,6 +235,7 @@
       this.XMLHttpRequest = options.XMLHttpRequest;
       this.FormData = options.FormData;
       this.crypto = options.crypto;
+      this.AbortController = options.AbortController;
       this.setTimeout = options.setTimeout;
       this.clearTimeout = options.clearTimeout;
       this.onChange = options.onChange || (() => {});
@@ -303,6 +305,7 @@
 
     createCycleToken() {
       return {
+        abortController: new this.AbortController(),
         cancelled: false,
         failureReported: false,
         retryTimer: null,
@@ -311,8 +314,12 @@
     }
 
     enqueueTransfer(item, initialGrant = null, token = item.cycleToken) {
+      return this.enqueueWork(() => this.processItem(item, initialGrant, token));
+    }
+
+    enqueueWork(run) {
       return new Promise((resolve, reject) => {
-        this.transferQueue.push({ initialGrant, item, reject, resolve, token });
+        this.transferQueue.push({ reject, resolve, run });
         this.drainTransferQueue();
       });
     }
@@ -322,7 +329,7 @@
       while (this.runningTransfers < limit && this.transferQueue.length) {
         const queued = this.transferQueue.shift();
         this.runningTransfers += 1;
-        this.processItem(queued.item, queued.initialGrant, queued.token)
+        queued.run()
           .then(queued.resolve, queued.reject)
           .finally(() => {
             this.runningTransfers -= 1;
@@ -346,6 +353,7 @@
             authorization = await this.control(
               interpolate(this.config.authorizeUrl, { batch: this.batchId, item: item.id }),
               { reason: 'data_attempt' },
+              token,
             );
           } catch (error) {
             if (token.cancelled) {
@@ -388,6 +396,7 @@
             authorization = await this.control(
               interpolate(this.config.authorizeUrl, { batch: this.batchId, item: item.id }),
               { reason: 'grant_refresh' },
+              token,
             );
           } catch (error) {
             if (token.cancelled) {
@@ -491,6 +500,7 @@
       if (!item || !token || ['uploaded', 'failed'].includes(item.status)) return false;
       if (token.cancelled) return true;
       token.cancelled = true;
+      token.abortController.abort();
       if (item.xhr) item.xhr.abort();
       if (token.retryTimer !== null) this.clearTimeout(token.retryTimer);
       token.wakeRetry?.();
@@ -512,7 +522,7 @@
       item.error = '';
       item.cycleToken = this.createCycleToken();
       this.onChange(this);
-      const cycle = this.runManualRetry(item, item.cycleToken);
+      const cycle = this.enqueueWork(() => this.runManualRetry(item, item.cycleToken));
       this.manualRetryCycles.set(clientItemId, cycle);
       cycle.then(
         () => this.manualRetryCycles.delete(clientItemId),
@@ -522,42 +532,45 @@
     }
 
     async runManualRetry(item, token) {
-      let authorization;
+      let completed = true;
       try {
-        authorization = await this.control(
+        const authorization = await this.control(
           interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
           {},
+          token,
         );
+        this.finalized = false;
+        if (token.cancelled) {
+          await this.finishCancellation(item, token);
+        } else {
+          await this.processItem(item, authorization.grant, token);
+        }
       } catch (error) {
         if (token.cancelled) {
           await this.finishCancellation(item, token);
-          await this.finalizeIfReady();
-          return true;
+        } else {
+          this.settleManualRetryFailure(item);
+          completed = false;
         }
-        item.status = 'failed';
-        item.error = 'Не удалось повторить загрузку. Повторите попытку.';
-        this.active = this.items.some(
-          (candidate) => !['uploaded', 'failed'].includes(candidate.status),
-        );
-        this.onChange(this);
-        return false;
       }
-      this.finalized = false;
-      if (token.cancelled) {
-        await this.finishCancellation(item, token);
-        await this.finalizeIfReady();
-        return true;
-      }
-      await this.enqueueTransfer(item, authorization.grant, token);
       await this.finalizeIfReady();
-      return true;
+      return completed;
+    }
+
+    settleManualRetryFailure(item) {
+      item.status = 'failed';
+      item.error = 'Не удалось повторить загрузку. Повторите попытку.';
+      this.active = this.items.some(
+        (candidate) => !['uploaded', 'failed'].includes(candidate.status),
+      );
+      this.onChange(this);
     }
 
     shouldWarnBeforeUnload() {
       return this.active;
     }
 
-    async control(url, body) {
+    async control(url, body, token = null) {
       const result = await this.fetch(url, {
         method: 'POST',
         credentials: 'same-origin',
@@ -566,6 +579,7 @@
           'X-CSRFToken': this.config.csrfToken,
         },
         body: JSON.stringify(body),
+        signal: token?.abortController.signal,
       });
       const payload = await result.json();
       if (!result.ok) {

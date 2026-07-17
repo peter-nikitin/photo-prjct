@@ -65,6 +65,7 @@ function response(status, body = {}) {
 function makeHarness({
   xhrResults = [],
   onAuthorizeControl = null,
+  onConfirmControl = null,
   onRetryControl = null,
   retryTimer = null,
 } = {}) {
@@ -93,7 +94,7 @@ function makeHarness({
     }
     if (url.endsWith('/authorize/')) {
       if (onAuthorizeControl) {
-        return onAuthorizeControl({ body, url });
+        return onAuthorizeControl({ body, options, url });
       }
       return response(200, {
         item: { id: url.split('/')[3], status: 'authorized', attempt: 1 },
@@ -110,6 +111,9 @@ function makeHarness({
       });
     }
     if (url.endsWith('/confirm/')) {
+      if (onConfirmControl) {
+        return onConfirmControl({ body, options, url });
+      }
       return response(200, { item: { id: url.split('/')[3], status: 'uploaded' } });
     }
     if (url.endsWith('/failed/')) {
@@ -170,6 +174,7 @@ function makeHarness({
     XMLHttpRequest: FakeXHR,
     FormData: FakeFormData,
     crypto: { randomUUID: () => ids.shift() },
+    AbortController,
     setTimeout: retryTimer?.setTimeout || ((callback, delay) => {
       delays.push(delay);
       queueMicrotask(callback);
@@ -311,6 +316,39 @@ test('simultaneous manual retries share the four-transfer concurrency limit', as
   assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 6);
 });
 
+test('manual retry grants are requested just in time inside the bounded work queue', async () => {
+  let activeRetryGrants = 0;
+  let maxActiveRetryGrants = 0;
+  const { coordinator } = makeHarness({
+    xhrResults: Array.from({ length: 20 }, () => ({ type: 'load', status: 400 })),
+    onRetryControl: ({ url }) => {
+      activeRetryGrants += 1;
+      maxActiveRetryGrants = Math.max(maxActiveRetryGrants, activeRetryGrants);
+      return new Promise((resolve) => {
+        setImmediate(() => {
+          activeRetryGrants -= 1;
+          resolve(response(200, {
+            item: { id: url.split('/')[3], status: 'authorized', attempt: 1 },
+            grant: { url: 'https://storage.example/', fields: { policy: 'retry-secret' } },
+          }));
+        });
+      });
+    },
+  });
+  await coordinator.start(
+    Array.from({ length: 20 }, (_, index) => ({
+      name: `${index}.jpg`,
+      type: 'image/jpeg',
+      size: 4,
+    })),
+    '42',
+  );
+
+  await Promise.all(coordinator.items.map((item) => coordinator.manualRetry(item.clientItemId)));
+
+  assert.equal(maxActiveRetryGrants, 4);
+});
+
 test('a queued manual retry is nonterminal immediately and duplicate clicks share one cycle', async () => {
   let releaseSecondRetry;
   const secondRetry = new Promise((resolve) => {
@@ -437,6 +475,46 @@ test('cancel wins a grant-refresh network race and reports cancellation once', a
   assert.equal(coordinator.items[0].error, 'Передача отменена.');
 });
 
+test('cancel aborts a pending authorization without waiting for its response', async () => {
+  let notifyAuthorization;
+  const authorizationStarted = new Promise((resolve) => {
+    notifyAuthorization = resolve;
+  });
+  let rejectAuthorization;
+  const authorizationResponse = new Promise((_, reject) => {
+    rejectAuthorization = reject;
+  });
+  const { calls, coordinator } = makeHarness({
+    onAuthorizeControl: ({ options }) => {
+      options.signal?.addEventListener('abort', () => {
+        rejectAuthorization(new DOMException('Aborted', 'AbortError'));
+      });
+      notifyAuthorization();
+      return authorizationResponse;
+    },
+  });
+  const completion = coordinator.start(
+    [{ name: 'cancel-authorization.jpg', type: 'image/jpeg', size: 4 }],
+    '42',
+  );
+  await authorizationStarted;
+
+  assert.equal(coordinator.cancel(coordinator.items[0].clientItemId), true);
+  const converged = await Promise.race([
+    completion.then(() => true, () => false),
+    new Promise((resolve) => setTimeout(() => resolve(false), 25)),
+  ]);
+  if (!converged) {
+    rejectAuthorization(new Error('test cleanup'));
+    await completion.catch(() => {});
+  }
+
+  assert.equal(converged, true);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
+  assert.equal(coordinator.items[0].status, 'failed');
+  assert.equal(coordinator.items[0].error, 'Передача отменена.');
+});
+
 test('cancel during manual retry authorization closes the reopened batch once', async () => {
   let notifyRetry;
   const retryStarted = new Promise((resolve) => {
@@ -497,6 +575,72 @@ test('manual retry control failures restore a stable retryable terminal state', 
     assert.equal(coordinator.active, false);
     assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
   }
+});
+
+test('a confirm network failure is contained across the whole manual retry cycle', async () => {
+  const { calls, coordinator } = makeHarness({
+    xhrResults: [
+      { type: 'load', status: 400 },
+      { type: 'load', status: 204 },
+    ],
+    onConfirmControl: () => {
+      throw new Error('private confirm network detail');
+    },
+  });
+  await coordinator.start(
+    [{ name: 'confirm-network.jpg', type: 'image/jpeg', size: 4 }],
+    '42',
+  );
+
+  const retried = await coordinator.manualRetry(coordinator.items[0].clientItemId);
+
+  assert.equal(retried, false);
+  assert.equal(coordinator.items[0].status, 'failed');
+  assert.equal(coordinator.items[0].error, 'Не удалось повторить загрузку. Повторите попытку.');
+  assert.equal(coordinator.active, false);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 2);
+});
+
+test('a failed pending retry finalizes once after a sibling retry succeeds', async () => {
+  let releaseSecondRetry;
+  const secondRetry = new Promise((resolve) => {
+    releaseSecondRetry = () => resolve(response(503, {
+      error: { code: 'storage_unavailable', message: 'Private detail.' },
+    }));
+  });
+  const { calls, coordinator } = makeHarness({
+    xhrResults: [
+      { type: 'load', status: 400 },
+      { type: 'load', status: 400 },
+      { type: 'load', status: 204 },
+    ],
+    onRetryControl: ({ url }) => {
+      if (url.includes('/item-2/')) return secondRetry;
+      return response(200, {
+        item: { id: 'item-1', status: 'authorized', attempt: 1 },
+        grant: { url: 'https://storage.example/', fields: { policy: 'retry-secret' } },
+      });
+    },
+  });
+  await coordinator.start(
+    [
+      { name: 'one.jpg', type: 'image/jpeg', size: 4 },
+      { name: 'two.jpg', type: 'image/jpeg', size: 4 },
+    ],
+    '42',
+  );
+
+  const first = coordinator.manualRetry(coordinator.items[0].clientItemId);
+  const second = coordinator.manualRetry(coordinator.items[1].clientItemId);
+  await first;
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+  releaseSecondRetry();
+
+  assert.deepEqual(await Promise.all([first, second]), [true, false]);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 2);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 2);
+  assert.equal(coordinator.active, false);
 });
 
 test('close warning is active only while registered work is unfinished', async () => {

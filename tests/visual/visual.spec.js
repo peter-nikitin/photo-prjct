@@ -108,7 +108,13 @@ async function capturePage(page, { path, snapshot, viewport }) {
 
 async function installUploadStubs(
   page,
-  { retryFailureStatus = null, storageStatuses = [204], storageDelay = 0 } = {},
+  {
+    authorizeDelay = 0,
+    confirmFailureStatus = null,
+    retryFailureStatus = null,
+    storageStatuses = [204],
+    storageDelay = 0,
+  } = {},
 ) {
   let itemSequence = 0;
   let activeTransfers = 0;
@@ -145,6 +151,9 @@ async function installUploadStubs(
         json: { error: { code: 'storage_unavailable', message: 'Private detail.' } },
       });
     }
+    if (url.pathname.endsWith('/authorize/') && authorizeDelay) {
+      await new Promise((resolve) => setTimeout(resolve, authorizeDelay));
+    }
     if (url.pathname.endsWith('/authorize/') || url.pathname.endsWith('/retry/')) {
       return route.fulfill({
         json: {
@@ -154,6 +163,12 @@ async function installUploadStubs(
       });
     }
     if (url.pathname.endsWith('/confirm/')) {
+      if (confirmFailureStatus) {
+        return route.fulfill({
+          status: confirmFailureStatus,
+          json: { error: { code: 'storage_unavailable', message: 'Private detail.' } },
+        });
+      }
       return route.fulfill({ json: { item: { id: item, status: 'uploaded' } } });
     }
     if (url.pathname.endsWith('/failed/')) {
@@ -283,6 +298,26 @@ test('slow upload has an active close warning and visible cancel control', async
   expect(stubs.pageErrors).toEqual([]);
 });
 
+test('cancel is visible during authorization and aborts the pending control request', async ({ page }) => {
+  const stubs = await installUploadStubs(page, { authorizeDelay: 1000 });
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles({
+    name: 'cancel-authorization.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from('cancel-authorization'),
+  });
+
+  const cancel = page.getByRole('button', { name: 'Отменить' });
+  await expect(cancel).toBeVisible({ timeout: 250 });
+  await cancel.click();
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
+  await expect(page.locator('[data-file-error]')).toHaveText('Передача отменена.');
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/failed/'))).toHaveLength(1);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
 test('expired grant is refreshed once without starting another data attempt', async ({ page }) => {
   const stubs = await installUploadStubs(page, { storageStatuses: [403, 204] });
   await page.goto('/__visual__/upload/empty/');
@@ -362,5 +397,29 @@ test('manual retry 503 remains retryable without leaking an unhandled page error
   );
   await expect(page.getByRole('button', { name: 'Повторить' })).toBeVisible();
   expect(await page.evaluate(() => window.document.querySelector('[data-upload-root]').uploadCoordinator.active)).toBe(false);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('manual retry confirm failure is contained without an unhandled page error', async ({ page }) => {
+  const stubs = await installUploadStubs(page, {
+    confirmFailureStatus: 503,
+    storageStatuses: [400, 204],
+  });
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles({
+    name: 'retry-confirm-503.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from('retry-confirm-503'),
+  });
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
+
+  await page.getByRole('button', { name: 'Повторить' }).click();
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
+  await expect(page.locator('[data-file-error]')).toHaveText(
+    'Не удалось повторить загрузку. Повторите попытку.',
+  );
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/failed/'))).toHaveLength(1);
   expect(stubs.pageErrors).toEqual([]);
 });

@@ -8,6 +8,12 @@
        data-upload-root
        data-state="{{ upload_state|default:'empty' }}"
        data-create-batch-url="{% url 'upload_batch_create' %}"
+       data-register-url-template="{{ upload_control_urls.register|default:'/photographer/uploads/{batch}/items/' }}"
+       data-authorize-url-template="{{ upload_control_urls.authorize|default:'/photographer/uploads/{batch}/items/{item}/authorize/' }}"
+       data-retry-url-template="{{ upload_control_urls.retry|default:'/photographer/uploads/{batch}/items/{item}/retry/' }}"
+       data-confirm-url-template="{{ upload_control_urls.confirm|default:'/photographer/uploads/{batch}/items/{item}/confirm/' }}"
+       data-failed-url-template="{{ upload_control_urls.failed|default:'/photographer/uploads/{batch}/items/{item}/failed/' }}"
+       data-finalize-url-template="{{ upload_control_urls.finalize|default:'/photographer/uploads/{batch}/finalize/' }}"
        data-csrf-token="{{ csrf_token }}"
        data-max-files="{{ upload_limits.max_files|default:10000 }}"
        data-max-file-bytes="{{ upload_limits.max_file_bytes|default:52428800 }}"
@@ -65,7 +71,7 @@
         </p>
       </div>
 
-      <aside class="upload-summary" aria-labelledby="upload-summary-title" aria-live="polite">
+      <aside class="upload-summary" aria-labelledby="upload-summary-title" aria-live="polite" role="status">
         <div class="summary-heading">
           <div>
             <p class="eyebrow">Текущая очередь</p>
@@ -128,8 +134,10 @@
           <div class="queue-file-copy"><strong data-file-name></strong><span data-file-meta></span><p data-file-error></p></div>
           <div class="queue-item-progress"><span data-file-status></span><progress max="100" value="0">0%</progress></div>
           <button class="retry-button" type="button" data-retry-item>Повторить</button>
+          <button class="cancel-button" type="button" data-cancel-item>Отменить</button>
         </article>
       </template>
     </section>
+    <script src="{% static 'ui/upload-coordinator.js' %}"></script>
   </div>
 {% endblock %}

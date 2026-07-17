@@ -81,6 +81,10 @@ class UploadViewTests(TestCase):
             f"/photographer/uploads/{batch}/items/{item}/authorize/",
         )
         self.assertEqual(
+            reverse("upload_item_retry", args=[batch, item]),
+            f"/photographer/uploads/{batch}/items/{item}/retry/",
+        )
+        self.assertEqual(
             reverse("upload_item_confirm", args=[batch, item]),
             f"/photographer/uploads/{batch}/items/{item}/confirm/",
         )
@@ -193,6 +197,91 @@ class UploadViewTests(TestCase):
         )
         self.assertNotIn(item.final_key, response.content.decode())
         storage_class.assert_called_once_with()
+
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_manual_retry_returns_public_item_and_transient_signed_form(
+        self, storage_class
+    ) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+        self.client.post(
+            reverse("upload_item_failed", args=[batch_id, item_id]),
+            json.dumps({"code": "transfer_retries_exhausted"}),
+            content_type="application/json",
+        )
+        expires_at = timezone.now() + timedelta(minutes=10)
+        storage_class.return_value.create_presigned_post.return_value = UploadGrant(
+            "https://storage.example/retry",
+            {"key": "opaque", "policy": "fresh"},
+            expires_at,
+        )
+
+        response = self.client.post(
+            reverse("upload_item_retry", args=[batch_id, item_id]),
+            "{}",
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "item": {"id": item_id, "status": "authorized", "attempt": 1},
+                "grant": {
+                    "url": "https://storage.example/retry",
+                    "fields": {"key": "opaque", "policy": "fresh"},
+                    "expires_at": expires_at.isoformat(),
+                },
+            },
+        )
+        self.assertNotIn("incoming/", response.content.decode())
+        self.assertNotIn("originals/", response.content.decode())
+
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_manual_retry_requires_exact_empty_object_and_failed_state(self, storage_class) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+
+        extra = self.client.post(
+            reverse("upload_item_retry", args=[batch_id, item_id]),
+            json.dumps({"reason": "data_attempt"}),
+            content_type="application/json",
+        )
+        pending = self.client.post(
+            reverse("upload_item_retry", args=[batch_id, item_id]),
+            "{}",
+            content_type="application/json",
+        )
+
+        self.assertEqual(extra.status_code, 400)
+        self.assertEqual(extra.json()["error"]["code"], "validation_error")
+        self.assertEqual(pending.status_code, 409)
+        self.assertEqual(pending.json()["error"]["code"], "item_not_failed")
+        storage_class.return_value.create_presigned_post.assert_not_called()
+
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_manual_retry_storage_failure_is_sanitized_503(self, storage_class) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+        self.client.post(
+            reverse("upload_item_failed", args=[batch_id, item_id]),
+            json.dumps({"code": "transfer_cancelled"}),
+            content_type="application/json",
+        )
+        storage_class.return_value.create_presigned_post.side_effect = StorageUnavailable()
+
+        response = self.client.post(
+            reverse("upload_item_retry", args=[batch_id, item_id]),
+            "{}",
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "storage_unavailable")
+        self.assertNotIn("bucket", response.content.decode())
 
     def test_failed_and_finalize_return_exact_shapes(self) -> None:
         batch_id, _ = self.create_batch()
@@ -405,3 +494,12 @@ class UploadViewTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
+
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        retry = csrf_client.post(
+            reverse("upload_item_retry", args=[batch_id, registered.json()["items"][0]["id"]]),
+            "{}",
+            content_type="application/json",
+        )
+        self.assertEqual(retry.status_code, 403)

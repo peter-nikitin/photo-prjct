@@ -18,6 +18,11 @@ urlpatterns = [
         name="upload_item_authorize",
     ),
     path(
+        "uploads/<uuid:batch>/items/<uuid:item>/retry/",
+        views.upload_item_retry,
+        name="upload_item_retry",
+    ),
+    path(
         "uploads/<uuid:batch>/items/<uuid:item>/confirm/",
         views.upload_item_confirm,
         name="upload_item_confirm",

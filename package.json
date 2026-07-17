@@ -1,6 +1,7 @@
 {
   "private": true,
   "scripts": {
+    "test:js": "node --test tests/js/*.test.js",
     "test:visual": "sh tests/visual/run-in-container.sh test",
     "test:visual:update": "sh tests/visual/run-in-container.sh update",
     "test:visual:inside": "playwright test",

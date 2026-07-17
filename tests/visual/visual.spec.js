@@ -106,6 +106,72 @@ async function capturePage(page, { path, snapshot, viewport }) {
   });
 }
 
+async function installUploadStubs(page, { storageStatuses = [204], storageDelay = 0 } = {}) {
+  let itemSequence = 0;
+  let activeTransfers = 0;
+  let maxActiveTransfers = 0;
+  const controlCalls = [];
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.route('**/photographer/uploads/**', async (route) => {
+    const request = route.request();
+    if (request.method() !== 'POST') {
+      return route.continue();
+    }
+    const url = new URL(request.url());
+    const body = request.postDataJSON();
+    controlCalls.push({ path: url.pathname, body });
+    if (url.pathname.endsWith('/batches/')) {
+      return route.fulfill({ json: { batch: { id: 'batch-1' } } });
+    }
+    if (url.pathname === '/photographer/uploads/batch-1/items/') {
+      return route.fulfill({
+        json: {
+          items: body.items.map((item) => ({
+            id: `item-${++itemSequence}`,
+            client_item_id: item.client_item_id,
+            status: 'pending',
+          })),
+        },
+      });
+    }
+    const item = url.pathname.match(/items\/(item-\d+)\//)?.[1];
+    if (url.pathname.endsWith('/authorize/') || url.pathname.endsWith('/retry/')) {
+      return route.fulfill({
+        json: {
+          item: { id: item, status: 'authorized', attempt: 1 },
+          grant: { url: `http://storage.test/upload/${item}`, fields: { policy: 'secret' } },
+        },
+      });
+    }
+    if (url.pathname.endsWith('/confirm/')) {
+      return route.fulfill({ json: { item: { id: item, status: 'uploaded' } } });
+    }
+    if (url.pathname.endsWith('/failed/')) {
+      return route.fulfill({ json: { item: { id: item, status: 'failed' } } });
+    }
+    if (url.pathname.endsWith('/finalize/')) {
+      return route.fulfill({ json: { batch: { id: 'batch-1', status: 'complete' } } });
+    }
+    return route.abort();
+  });
+  await page.route('http://storage.test/**', async (route) => {
+    activeTransfers += 1;
+    maxActiveTransfers = Math.max(maxActiveTransfers, activeTransfers);
+    if (storageDelay) {
+      await new Promise((resolve) => setTimeout(resolve, storageDelay));
+    }
+    const status = storageStatuses.shift() ?? 204;
+    activeTransfers -= 1;
+    await route.fulfill({
+      status,
+      body: '',
+      headers: { 'access-control-allow-origin': '*' },
+    });
+  });
+  return { controlCalls, pageErrors, getMaxActiveTransfers: () => maxActiveTransfers };
+}
+
 test.describe('desktop visual regression', () => {
   for (const [name, path] of desktopPages) {
     test(name, async ({ page }) => {
@@ -144,4 +210,122 @@ test('all links on live production pages resolve', async ({ page, request }) => 
       );
     }
   }
+});
+
+test('browser coordinator completes a successful upload and announces progress', async ({ page }) => {
+  const stubs = await installUploadStubs(page);
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles([
+    { name: 'one.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('one') },
+    { name: 'two.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('two') },
+  ]);
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  await expect(page.locator('[data-summary-message]')).toContainText('2 из 2');
+  await expect(page.getByRole('status')).toContainText('2 из 2');
+  await expect(page.locator('[data-upload-queue] .queue-item')).toHaveCount(2);
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/confirm/'))).toHaveLength(2);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('browser coordinator preserves success when another upload fails', async ({ page }) => {
+  const stubs = await installUploadStubs(page, { storageStatuses: [204, 400] });
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles([
+    { name: 'good.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('good') },
+    { name: 'bad.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('bad') },
+  ]);
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
+  await expect(page.locator('[data-uploaded-count]')).toHaveText('1');
+  await expect(page.locator('[data-failed-count]')).toHaveText('1');
+  await expect(page.getByRole('button', { name: 'Повторить' })).toHaveCount(1);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('slow upload has an active close warning and visible cancel control', async ({ page }) => {
+  const stubs = await installUploadStubs(page, { storageDelay: 400 });
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles({
+    name: 'slow.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from('slow'),
+  });
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Идёт загрузка');
+  await expect(page.getByRole('button', { name: 'Отменить' })).toBeVisible();
+  const warned = await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(warned).toBe(true);
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  expect(
+    await page.evaluate(() => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+  ).toBe(false);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('expired grant is refreshed once without starting another data attempt', async ({ page }) => {
+  const stubs = await installUploadStubs(page, { storageStatuses: [403, 204] });
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles({
+    name: 'expired.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from('expired'),
+  });
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  expect(
+    stubs.controlCalls
+      .filter(({ path }) => path.endsWith('/authorize/'))
+      .map(({ body }) => body.reason),
+  ).toEqual(['data_attempt', 'grant_refresh']);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('browser queue never exceeds four simultaneous transfers', async ({ page }) => {
+  const stubs = await installUploadStubs(page, { storageDelay: 100 });
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles(
+    Array.from({ length: 8 }, (_, index) => ({
+      name: `${index}.jpg`,
+      mimeType: 'image/jpeg',
+      buffer: Buffer.from(String(index)),
+    })),
+  );
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  expect(stubs.getMaxActiveTransfers()).toBe(4);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('failed file can be retried from the keyboard without losing its row', async ({ page }) => {
+  const stubs = await installUploadStubs(page, { storageStatuses: [400, 204] });
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles({
+    name: 'keyboard.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from('keyboard'),
+  });
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
+  const retry = page.getByRole('button', { name: 'Повторить' });
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  await expect(page.locator('[data-upload-queue] .queue-item')).toHaveCount(1);
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/retry/'))).toHaveLength(1);
+  expect(stubs.pageErrors).toEqual([]);
 });

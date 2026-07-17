@@ -49,6 +49,7 @@ class UploadPermissionTests(TestCase):
             ("post", reverse("upload_batch_create")),
             ("post", reverse("upload_items_register", args=[batch])),
             ("post", reverse("upload_item_authorize", args=[batch, item])),
+            ("post", reverse("upload_item_retry", args=[batch, item])),
             ("post", reverse("upload_item_confirm", args=[batch, item])),
             ("post", reverse("upload_item_failed", args=[batch, item])),
             ("post", reverse("upload_batch_finalize", args=[batch])),
@@ -132,10 +133,12 @@ class UploadPermissionTests(TestCase):
         urls = [
             reverse("upload_items_register", args=[batch.id]),
             reverse("upload_item_authorize", args=[batch.id, item.id]),
+            reverse("upload_item_retry", args=[batch.id, item.id]),
             reverse("upload_item_confirm", args=[batch.id, item.id]),
             reverse("upload_item_failed", args=[batch.id, item.id]),
             reverse("upload_batch_finalize", args=[batch.id]),
             reverse("upload_item_authorize", args=[foreign_batch.id, item.id]),
+            reverse("upload_item_retry", args=[foreign_batch.id, item.id]),
         ]
         for url in urls:
             response = client.post(url, "{}", content_type="application/json")

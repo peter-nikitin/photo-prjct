@@ -52,6 +52,14 @@ class UploadTemplateTests(TestCase):
         self.assertContains(response, "data-csrf-token=")
         self.assertContains(response, "Закрытие или перезагрузка страницы остановит")
         self.assertContains(response, 'data-queue-window-size="20"')
+        self.assertContains(
+            response, 'data-register-url-template="/photographer/uploads/{batch}/items/"'
+        )
+        self.assertContains(
+            response,
+            'data-retry-url-template="/photographer/uploads/{batch}/items/{item}/retry/"',
+        )
+        self.assertContains(response, 'src="/static/ui/upload-coordinator.js"')
 
     def test_upload_page_omits_deferred_controls_claims_and_private_keys(self) -> None:
         response = self.client.get(reverse("upload_page"))
@@ -66,6 +74,8 @@ class UploadTemplateTests(TestCase):
             "incoming/",
             "originals/",
             "design-reference",
+            "localStorage",
+            "indexedDB",
         ):
             self.assertNotIn(forbidden, html)
 

@@ -68,3 +68,11 @@ class FailureForm(forms.Form):
 
 class EmptyJsonForm(forms.Form):
     pass
+
+
+class ExactEmptyJsonForm(forms.Form):
+    def clean(self) -> dict[str, Any]:
+        cleaned_data = super().clean()
+        if self.data:
+            raise forms.ValidationError("Request body must be an empty object.")
+        return cleaned_data

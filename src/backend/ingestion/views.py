@@ -22,12 +22,14 @@ from ingestion.forms import (
     AuthorizationForm,
     BatchCreateForm,
     EmptyJsonForm,
+    ExactEmptyJsonForm,
     FailureForm,
     ItemRegistrationForm,
 )
 from ingestion.models import UploadBatch, UploadItem
 from ingestion.services.batches import (
     AuthorizationReason,
+    AuthorizationResult,
     BatchConflict,
     BatchInput,
     BatchResult,
@@ -37,6 +39,7 @@ from ingestion.services.batches import (
     authorize_item,
     create_batch,
     derive_batch_status,
+    manual_retry_item,
     register_items,
     report_item_failed,
 )
@@ -44,6 +47,8 @@ from ingestion.services.confirmation import confirm_upload_item
 from ingestion.storage import PrivateUploadStorage, StorageError
 
 UploadView = Callable[..., HttpResponse]
+_URL_BATCH = UUID("00000000-0000-4000-8000-000000000001")
+_URL_ITEM = UUID("00000000-0000-4000-8000-000000000002")
 
 
 class PhotographerLoginView(LoginView):
@@ -114,8 +119,30 @@ def upload_page(request: HttpRequest) -> HttpResponse:
                 "queue_window": 20,
             },
             "upload_state": "empty",
+            "upload_control_urls": _upload_control_urls(),
         },
     )
+
+
+def _upload_control_urls() -> dict[str, str]:
+    batch = str(_URL_BATCH)
+    item = str(_URL_ITEM)
+
+    def item_url(name: str) -> str:
+        return (
+            reverse(name, args=[_URL_BATCH, _URL_ITEM])
+            .replace(batch, "{batch}")
+            .replace(item, "{item}")
+        )
+
+    return {
+        "register": reverse("upload_items_register", args=[_URL_BATCH]).replace(batch, "{batch}"),
+        "authorize": item_url("upload_item_authorize"),
+        "retry": item_url("upload_item_retry"),
+        "confirm": item_url("upload_item_confirm"),
+        "failed": item_url("upload_item_failed"),
+        "finalize": reverse("upload_batch_finalize", args=[_URL_BATCH]).replace(batch, "{batch}"),
+    }
 
 
 @require_POST
@@ -211,20 +238,31 @@ def upload_item_authorize(request: HttpRequest, batch: UUID, item: UUID) -> Json
         return _service_error(exc)
     except StorageError:
         return _storage_unavailable()
-    return JsonResponse(
-        {
-            "item": {
-                "id": str(result.item.id),
-                "status": result.item.status,
-                "attempt": result.item.attempt,
-            },
-            "grant": {
-                "url": result.grant.url,
-                "fields": result.grant.fields,
-                "expires_at": result.grant.expires_at.isoformat(),
-            },
-        }
-    )
+    return JsonResponse(_authorization_payload(result))
+
+
+@require_POST
+@_upload_access(json_errors=True)
+def upload_item_retry(request: HttpRequest, batch: UUID, item: UUID) -> JsonResponse:
+    if _owned_item(request, batch, item) is None:
+        return _not_found()
+    _, error = _json_form(request, ExactEmptyJsonForm)
+    if error is not None:
+        return error
+    try:
+        result = manual_retry_item(
+            uploader=request.user,
+            batch_id=batch,
+            item_id=item,
+            storage=PrivateUploadStorage(),
+        )
+    except (UploadBatch.DoesNotExist, UploadItem.DoesNotExist):
+        return _not_found()
+    except (BatchConflict, ItemStateConflict) as exc:
+        return _service_error(exc)
+    except StorageError:
+        return _storage_unavailable()
+    return JsonResponse(_authorization_payload(result))
 
 
 @require_POST
@@ -390,6 +428,21 @@ def _service_error(exc: BatchConflict | ItemStateConflict) -> JsonResponse:
 
 def _failed_item_payload(item: ItemResult) -> dict[str, object]:
     return {"id": str(item.id), "status": item.status, "error_code": item.error_code}
+
+
+def _authorization_payload(result: AuthorizationResult) -> dict[str, object]:
+    return {
+        "item": {
+            "id": str(result.item.id),
+            "status": result.item.status,
+            "attempt": result.item.attempt,
+        },
+        "grant": {
+            "url": result.grant.url,
+            "fields": result.grant.fields,
+            "expires_at": result.grant.expires_at.isoformat(),
+        },
+    }
 
 
 def _final_batch_payload(batch: BatchResult) -> dict[str, object]:

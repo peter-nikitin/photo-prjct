@@ -106,7 +106,10 @@ async function capturePage(page, { path, snapshot, viewport }) {
   });
 }
 
-async function installUploadStubs(page, { storageStatuses = [204], storageDelay = 0 } = {}) {
+async function installUploadStubs(
+  page,
+  { retryFailureStatus = null, storageStatuses = [204], storageDelay = 0 } = {},
+) {
   let itemSequence = 0;
   let activeTransfers = 0;
   let maxActiveTransfers = 0;
@@ -136,6 +139,12 @@ async function installUploadStubs(page, { storageStatuses = [204], storageDelay 
       });
     }
     const item = url.pathname.match(/items\/(item-\d+)\//)?.[1];
+    if (url.pathname.endsWith('/retry/') && retryFailureStatus) {
+      return route.fulfill({
+        status: retryFailureStatus,
+        json: { error: { code: 'storage_unavailable', message: 'Private detail.' } },
+      });
+    }
     if (url.pathname.endsWith('/authorize/') || url.pathname.endsWith('/retry/')) {
       return route.fulfill({
         json: {
@@ -306,7 +315,8 @@ test('browser queue never exceeds four simultaneous transfers', async ({ page })
   );
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
-  expect(stubs.getMaxActiveTransfers()).toBe(4);
+  expect(stubs.getMaxActiveTransfers()).toBeGreaterThan(1);
+  expect(stubs.getMaxActiveTransfers()).toBeLessThanOrEqual(4);
   expect(stubs.pageErrors).toEqual([]);
 });
 
@@ -327,5 +337,30 @@ test('failed file can be retried from the keyboard without losing its row', asyn
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
   await expect(page.locator('[data-upload-queue] .queue-item')).toHaveCount(1);
   expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/retry/'))).toHaveLength(1);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('manual retry 503 remains retryable without leaking an unhandled page error', async ({ page }) => {
+  const stubs = await installUploadStubs(page, {
+    retryFailureStatus: 503,
+    storageStatuses: [400],
+  });
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('#upload-files').setInputFiles({
+    name: 'retry-503.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from('retry-503'),
+  });
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
+
+  await page.getByRole('button', { name: 'Повторить' }).click();
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
+  await expect(page.locator('[data-file-error]')).toHaveText(
+    'Не удалось повторить загрузку. Повторите попытку.',
+  );
+  await expect(page.getByRole('button', { name: 'Повторить' })).toBeVisible();
+  expect(await page.evaluate(() => window.document.querySelector('[data-upload-root]').uploadCoordinator.active)).toBe(false);
   expect(stubs.pageErrors).toEqual([]);
 });

@@ -180,6 +180,7 @@
       FormData: dependencies.FormData || globalScope.FormData,
       crypto: dependencies.crypto || globalScope.crypto,
       setTimeout: dependencies.setTimeout || globalScope.setTimeout.bind(globalScope),
+      clearTimeout: dependencies.clearTimeout || globalScope.clearTimeout.bind(globalScope),
       onChange: () => renderPage(root, coordinator, globalError),
     });
     const input = root.querySelector('#upload-files');
@@ -234,6 +235,7 @@
       this.FormData = options.FormData;
       this.crypto = options.crypto;
       this.setTimeout = options.setTimeout;
+      this.clearTimeout = options.clearTimeout;
       this.onChange = options.onChange || (() => {});
       this.items = [];
       this.batchId = null;
@@ -241,7 +243,9 @@
       this.registeredAll = false;
       this.finalizing = false;
       this.finalized = false;
-      this.nextIndex = 0;
+      this.transferQueue = [];
+      this.runningTransfers = 0;
+      this.manualRetryCycles = new Map();
     }
 
     async start(files, eventId) {
@@ -257,7 +261,7 @@
         progress: 0,
         error: '',
         xhr: null,
-        cycle: 0,
+        cycleToken: this.createCycleToken(),
       }));
       this.active = true;
       this.onChange(this);
@@ -290,42 +294,80 @@
         this.onChange(this);
       }
       this.registeredAll = true;
-      this.nextIndex = 0;
-      const workers = Array.from(
-        { length: Math.min(this.config.concurrency, 4, this.items.length) },
-        () => this.worker(),
+      await Promise.all(
+        this.items.map((item) => this.enqueueTransfer(item, null, item.cycleToken)),
       );
-      await Promise.all(workers);
       await this.finalizeIfReady();
       return this;
     }
 
-    async worker() {
-      while (this.nextIndex < this.items.length) {
-        const item = this.items[this.nextIndex++];
-        await this.processItem(item);
+    createCycleToken() {
+      return {
+        cancelled: false,
+        failureReported: false,
+        retryTimer: null,
+        wakeRetry: null,
+      };
+    }
+
+    enqueueTransfer(item, initialGrant = null, token = item.cycleToken) {
+      return new Promise((resolve, reject) => {
+        this.transferQueue.push({ initialGrant, item, reject, resolve, token });
+        this.drainTransferQueue();
+      });
+    }
+
+    drainTransferQueue() {
+      const limit = Math.min(this.config.concurrency, 4);
+      while (this.runningTransfers < limit && this.transferQueue.length) {
+        const queued = this.transferQueue.shift();
+        this.runningTransfers += 1;
+        this.processItem(queued.item, queued.initialGrant, queued.token)
+          .then(queued.resolve, queued.reject)
+          .finally(() => {
+            this.runningTransfers -= 1;
+            this.drainTransferQueue();
+          });
       }
     }
 
-    async processItem(item, initialGrant = null) {
+    async processItem(item, initialGrant = null, token = item.cycleToken) {
       let grant = initialGrant;
       let dataAttempt = 0;
       let refreshed = false;
       while (dataAttempt < 4) {
+        if (token.cancelled) {
+          await this.finishCancellation(item, token);
+          return;
+        }
         if (!grant) {
-          const authorization = await this.control(
-            interpolate(this.config.authorizeUrl, { batch: this.batchId, item: item.id }),
-            { reason: 'data_attempt' },
-          );
+          let authorization;
+          try {
+            authorization = await this.control(
+              interpolate(this.config.authorizeUrl, { batch: this.batchId, item: item.id }),
+              { reason: 'data_attempt' },
+            );
+          } catch (error) {
+            if (token.cancelled) {
+              await this.finishCancellation(item, token);
+              return;
+            }
+            throw error;
+          }
           grant = authorization.grant;
+        }
+        if (token.cancelled) {
+          await this.finishCancellation(item, token);
+          return;
         }
         item.status = 'uploading';
         item.error = '';
         this.onChange(this);
         const outcome = await this.transfer(item, grant);
         grant = null;
-        if (outcome.type === 'cancelled') {
-          await this.failItem(item, 'transfer_cancelled', 'Передача отменена.');
+        if (token.cancelled || outcome.type === 'cancelled') {
+          token.cancelled = true;
+          await this.finishCancellation(item, token);
           return;
         }
         if (outcome.status >= 200 && outcome.status < 300) {
@@ -341,10 +383,19 @@
         }
         if (outcome.status === 403 && !refreshed) {
           refreshed = true;
-          const authorization = await this.control(
-            interpolate(this.config.authorizeUrl, { batch: this.batchId, item: item.id }),
-            { reason: 'grant_refresh' },
-          );
+          let authorization;
+          try {
+            authorization = await this.control(
+              interpolate(this.config.authorizeUrl, { batch: this.batchId, item: item.id }),
+              { reason: 'grant_refresh' },
+            );
+          } catch (error) {
+            if (token.cancelled) {
+              await this.finishCancellation(item, token);
+              return;
+            }
+            throw error;
+          }
           grant = authorization.grant;
           continue;
         }
@@ -361,8 +412,30 @@
           );
           return;
         }
-        await new Promise((resolve) => this.setTimeout(resolve, [1000, 3000, 7000][dataAttempt - 1]));
+        await this.waitForRetry(token, [1000, 3000, 7000][dataAttempt - 1]);
       }
+    }
+
+    waitForRetry(token, delay) {
+      return new Promise((resolve) => {
+        if (token.cancelled) {
+          resolve();
+          return;
+        }
+        const finish = () => {
+          token.retryTimer = null;
+          token.wakeRetry = null;
+          resolve();
+        };
+        token.wakeRetry = finish;
+        token.retryTimer = this.setTimeout(finish, delay);
+      });
+    }
+
+    async finishCancellation(item, token) {
+      if (token.failureReported) return;
+      token.failureReported = true;
+      await this.failItem(item, 'transfer_cancelled', 'Передача отменена.');
     }
 
     transfer(item, grant) {
@@ -414,27 +487,68 @@
 
     cancel(clientItemId) {
       const item = this.items.find((candidate) => candidate.clientItemId === clientItemId);
-      if (item?.xhr) {
-        item.xhr.abort();
-        return true;
-      }
-      return false;
+      const token = item?.cycleToken;
+      if (!item || !token || ['uploaded', 'failed'].includes(item.status)) return false;
+      if (token.cancelled) return true;
+      token.cancelled = true;
+      if (item.xhr) item.xhr.abort();
+      if (token.retryTimer !== null) this.clearTimeout(token.retryTimer);
+      token.wakeRetry?.();
+      return true;
     }
 
-    async manualRetry(clientItemId) {
+    manualRetry(clientItemId) {
+      const existing = this.manualRetryCycles.get(clientItemId);
+      if (existing) {
+        return existing;
+      }
       const item = this.items.find((candidate) => candidate.clientItemId === clientItemId);
       if (!item || item.status !== 'failed') {
-        return false;
+        return Promise.resolve(false);
       }
       this.active = true;
-      this.finalized = false;
+      item.status = 'retry_pending';
       item.progress = 0;
       item.error = '';
-      const authorization = await this.control(
-        interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
-        {},
+      item.cycleToken = this.createCycleToken();
+      this.onChange(this);
+      const cycle = this.runManualRetry(item, item.cycleToken);
+      this.manualRetryCycles.set(clientItemId, cycle);
+      cycle.then(
+        () => this.manualRetryCycles.delete(clientItemId),
+        () => this.manualRetryCycles.delete(clientItemId),
       );
-      await this.processItem(item, authorization.grant);
+      return cycle;
+    }
+
+    async runManualRetry(item, token) {
+      let authorization;
+      try {
+        authorization = await this.control(
+          interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
+          {},
+        );
+      } catch (error) {
+        if (token.cancelled) {
+          await this.finishCancellation(item, token);
+          await this.finalizeIfReady();
+          return true;
+        }
+        item.status = 'failed';
+        item.error = 'Не удалось повторить загрузку. Повторите попытку.';
+        this.active = this.items.some(
+          (candidate) => !['uploaded', 'failed'].includes(candidate.status),
+        );
+        this.onChange(this);
+        return false;
+      }
+      this.finalized = false;
+      if (token.cancelled) {
+        await this.finishCancellation(item, token);
+        await this.finalizeIfReady();
+        return true;
+      }
+      await this.enqueueTransfer(item, authorization.grant, token);
       await this.finalizeIfReady();
       return true;
     }

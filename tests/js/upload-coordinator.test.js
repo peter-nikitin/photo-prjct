@@ -62,7 +62,12 @@ function response(status, body = {}) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
 
-function makeHarness({ xhrResults = [] } = {}) {
+function makeHarness({
+  xhrResults = [],
+  onAuthorizeControl = null,
+  onRetryControl = null,
+  retryTimer = null,
+} = {}) {
   const calls = [];
   const delays = [];
   let itemSequence = 0;
@@ -87,12 +92,18 @@ function makeHarness({ xhrResults = [] } = {}) {
       });
     }
     if (url.endsWith('/authorize/')) {
+      if (onAuthorizeControl) {
+        return onAuthorizeControl({ body, url });
+      }
       return response(200, {
         item: { id: url.split('/')[3], status: 'authorized', attempt: 1 },
         grant: { url: 'https://storage.example/', fields: { policy: 'secret' } },
       });
     }
     if (url.endsWith('/retry/')) {
+      if (onRetryControl) {
+        return onRetryControl({ body, url });
+      }
       return response(200, {
         item: { id: url.split('/')[3], status: 'authorized', attempt: 1 },
         grant: { url: 'https://storage.example/', fields: { policy: 'retry-secret' } },
@@ -159,13 +170,22 @@ function makeHarness({ xhrResults = [] } = {}) {
     XMLHttpRequest: FakeXHR,
     FormData: FakeFormData,
     crypto: { randomUUID: () => ids.shift() },
-    setTimeout: (callback, delay) => {
+    setTimeout: retryTimer?.setTimeout || ((callback, delay) => {
       delays.push(delay);
       queueMicrotask(callback);
       return 1;
-    },
+    }),
+    clearTimeout: retryTimer?.clearTimeout || clearTimeout,
   });
-  return { calls, coordinator, delays, getMaxActive: () => maxActive };
+  return {
+    calls,
+    coordinator,
+    delays,
+    getMaxActive: () => maxActive,
+    resetMaxActive: () => {
+      maxActive = active;
+    },
+  };
 }
 
 test('prepareSelection validates JPEG files and assigns one stable UUID per accepted file', () => {
@@ -266,6 +286,217 @@ test('cancellation is terminal for the cycle and manual retry reuses the item an
   assert.equal(original.status, 'uploaded');
   assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 1);
   assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 2);
+});
+
+test('simultaneous manual retries share the four-transfer concurrency limit', async () => {
+  const { calls, coordinator, getMaxActive, resetMaxActive } = makeHarness({
+    xhrResults: [
+      ...Array.from({ length: 6 }, () => ({ type: 'load', status: 400 })),
+      ...Array.from({ length: 6 }, () => ({ type: 'load', status: 204 })),
+    ],
+  });
+  await coordinator.start(
+    Array.from({ length: 6 }, (_, index) => ({
+      name: `${index}.jpg`,
+      type: 'image/jpeg',
+      size: 4,
+    })),
+    '42',
+  );
+  resetMaxActive();
+
+  await Promise.all(coordinator.items.map((item) => coordinator.manualRetry(item.clientItemId)));
+
+  assert.equal(getMaxActive(), 4);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 6);
+});
+
+test('a queued manual retry is nonterminal immediately and duplicate clicks share one cycle', async () => {
+  let releaseSecondRetry;
+  const secondRetry = new Promise((resolve) => {
+    releaseSecondRetry = () => resolve(response(200, {
+      item: { id: 'item-2', status: 'authorized', attempt: 1 },
+      grant: { url: 'https://storage.example/', fields: { policy: 'retry-secret' } },
+    }));
+  });
+  const { calls, coordinator } = makeHarness({
+    xhrResults: [
+      { type: 'load', status: 400 },
+      { type: 'load', status: 400 },
+      { type: 'load', status: 204 },
+      { type: 'load', status: 204 },
+    ],
+    onRetryControl: ({ url }) => {
+      if (url.includes('/item-2/')) return secondRetry;
+      return response(200, {
+        item: { id: 'item-1', status: 'authorized', attempt: 1 },
+        grant: { url: 'https://storage.example/', fields: { policy: 'retry-secret' } },
+      });
+    },
+  });
+  await coordinator.start(
+    [
+      { name: 'one.jpg', type: 'image/jpeg', size: 4 },
+      { name: 'two.jpg', type: 'image/jpeg', size: 4 },
+    ],
+    '42',
+  );
+
+  const first = coordinator.manualRetry(coordinator.items[0].clientItemId);
+  const second = coordinator.manualRetry(coordinator.items[1].clientItemId);
+  const duplicate = coordinator.manualRetry(coordinator.items[1].clientItemId);
+  await first;
+
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+  releaseSecondRetry();
+  await Promise.all([second, duplicate]);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 2);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 2);
+});
+
+test('cancel during automatic backoff clears the timer and reports one terminal cancellation', async () => {
+  let notifyBackoff;
+  const backoffStarted = new Promise((resolve) => {
+    notifyBackoff = resolve;
+  });
+  const scheduled = new Map();
+  let timerSequence = 0;
+  const retryTimer = {
+    setTimeout(callback, delay) {
+      const id = ++timerSequence;
+      scheduled.set(id, callback);
+      notifyBackoff(delay);
+      return id;
+    },
+    clearTimeout(id) {
+      scheduled.delete(id);
+    },
+  };
+  const { calls, coordinator } = makeHarness({
+    xhrResults: [{ type: 'error' }, { type: 'load', status: 204 }],
+    retryTimer,
+  });
+  const completion = coordinator.start(
+    [{ name: 'cancel-backoff.jpg', type: 'image/jpeg', size: 4 }],
+    '42',
+  );
+  const delay = await backoffStarted;
+
+  const cancelled = coordinator.cancel(coordinator.items[0].clientItemId);
+  const remainingAfterCancel = scheduled.size;
+  for (const [id, callback] of scheduled) {
+    scheduled.delete(id);
+    callback();
+  }
+  await completion;
+
+  assert.equal(delay, 1000);
+  assert.equal(cancelled, true);
+  assert.equal(remainingAfterCancel, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
+  assert.equal(coordinator.items[0].status, 'failed');
+  assert.equal(coordinator.items[0].error, 'Передача отменена.');
+});
+
+test('cancel wins a grant-refresh network race and reports cancellation once', async () => {
+  let notifyRefresh;
+  const refreshStarted = new Promise((resolve) => {
+    notifyRefresh = resolve;
+  });
+  let rejectRefresh;
+  const refreshResponse = new Promise((_, reject) => {
+    rejectRefresh = reject;
+  });
+  const { calls, coordinator } = makeHarness({
+    xhrResults: [{ type: 'load', status: 403 }],
+    onAuthorizeControl: ({ body }) => {
+      if (body.reason === 'grant_refresh') {
+        notifyRefresh();
+        return refreshResponse;
+      }
+      return response(200, {
+        item: { id: 'item-1', status: 'authorized', attempt: 1 },
+        grant: { url: 'https://storage.example/', fields: { policy: 'secret' } },
+      });
+    },
+  });
+  const completion = coordinator.start(
+    [{ name: 'cancel-refresh.jpg', type: 'image/jpeg', size: 4 }],
+    '42',
+  );
+  await refreshStarted;
+
+  assert.equal(coordinator.cancel(coordinator.items[0].clientItemId), true);
+  rejectRefresh(new Error('refresh network failed'));
+  await completion;
+
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/confirm/')).length, 0);
+  assert.equal(coordinator.items[0].status, 'failed');
+  assert.equal(coordinator.items[0].error, 'Передача отменена.');
+});
+
+test('cancel during manual retry authorization closes the reopened batch once', async () => {
+  let notifyRetry;
+  const retryStarted = new Promise((resolve) => {
+    notifyRetry = resolve;
+  });
+  let releaseRetry;
+  const retryResponse = new Promise((resolve) => {
+    releaseRetry = () => resolve(response(200, {
+      item: { id: 'item-1', status: 'authorized', attempt: 1 },
+      grant: { url: 'https://storage.example/', fields: { policy: 'retry-secret' } },
+    }));
+  });
+  const { calls, coordinator } = makeHarness({
+    xhrResults: [{ type: 'load', status: 400 }],
+    onRetryControl: () => {
+      notifyRetry();
+      return retryResponse;
+    },
+  });
+  await coordinator.start(
+    [{ name: 'cancel-retry-authorization.jpg', type: 'image/jpeg', size: 4 }],
+    '42',
+  );
+  const retry = coordinator.manualRetry(coordinator.items[0].clientItemId);
+  await retryStarted;
+
+  assert.equal(coordinator.cancel(coordinator.items[0].clientItemId), true);
+  releaseRetry();
+  await retry;
+
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 2);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 2);
+  assert.equal(coordinator.items[0].status, 'failed');
+  assert.equal(coordinator.items[0].error, 'Передача отменена.');
+});
+
+test('manual retry control failures restore a stable retryable terminal state', async () => {
+  for (const failure of ['503', 'network']) {
+    const { calls, coordinator } = makeHarness({
+      xhrResults: [{ type: 'load', status: 400 }],
+      onRetryControl: () => {
+        if (failure === 'network') throw new Error('private network detail');
+        return response(503, {
+          error: { code: 'storage_unavailable', message: 'Object storage unavailable.' },
+        });
+      },
+    });
+    await coordinator.start(
+      [{ name: `${failure}.jpg`, type: 'image/jpeg', size: 4 }],
+      '42',
+    );
+
+    const retried = await coordinator.manualRetry(coordinator.items[0].clientItemId);
+
+    assert.equal(retried, false);
+    assert.equal(coordinator.items[0].status, 'failed');
+    assert.equal(coordinator.items[0].error, 'Не удалось повторить загрузку. Повторите попытку.');
+    assert.equal(coordinator.active, false);
+    assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+  }
 });
 
 test('close warning is active only while registered work is unfinished', async () => {

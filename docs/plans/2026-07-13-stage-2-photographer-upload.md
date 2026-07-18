@@ -16,7 +16,7 @@
 - Related design: [Stage 2 Photographer Upload Design](../superpowers/specs/2026-07-13-stage-2-photographer-upload-design.md)
 - Related roadmap: [Stage 2: Photographer access and simple upload](2026-07-11-mvp-product-roadmap.md#этап-2-доступ-фотографов-и-простая-загрузка)
 - Related architecture: [Target MVP architecture](../architecture.md#target-mvp-architecture--proposed), [Photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing)
-- Related ADRs: [0001](../adr/0001-django-modular-monolith.md), [0002](../adr/0002-postgresql-system-of-record.md), [0006](../adr/0006-yandex-object-storage-media.md); Task 1 adds ADRs 0010–0012 before implementation depends on them.
+- Related ADRs: [0001](../adr/0001-django-modular-monolith.md), [0002](../adr/0002-postgresql-system-of-record.md), [0006](../adr/0006-yandex-object-storage-media.md); Task 1 adds the photographer-ingestion ADRs, renumbered to 0012–0014 after merging the HTTPS decisions from `main`, before implementation depends on them.
 - Required implementation skills: `@superpowers:test-driven-development`, `@django-expert:django-expert`, `@django-safe-migration:django-safe-migration`, `@update-visual-design`, `@manage-yandex-cloud`, and `@superpowers:verification-before-completion`.
 
 ## Current readiness audit
@@ -83,9 +83,9 @@ Audited against `origin/main` at commit `71574cd` before this plan was written.
 
 ### Documentation and decisions
 
-- Create `docs/adr/0010-use-django-photographer-permissions.md`: authentication and additive role decision.
-- Create `docs/adr/0011-use-direct-private-object-storage-ingestion.md`: presigned POST, incoming/final keys, retention, cleanup, IAM, and CORS.
-- Create `docs/adr/0012-keep-stage-2-ingestion-request-driven.md`: explicit no-worker boundary for Stage 2.
+- Create `docs/adr/0012-use-django-photographer-permissions.md`: authentication and additive role decision.
+- Create `docs/adr/0013-use-direct-private-object-storage-ingestion.md`: presigned POST, incoming/final keys, retention, cleanup, IAM, and CORS.
+- Create `docs/adr/0014-keep-stage-2-ingestion-request-driven.md`: explicit no-worker boundary for Stage 2.
 - Modify `docs/adr/README.md`, `docs/architecture.md`, and this plan as statuses move from planned to implemented.
 
 ### Django ingestion module
@@ -126,22 +126,22 @@ Audited against `origin/main` at commit `71574cd` before this plan was written.
 ### Task 1: Record the approved architecture decisions
 
 **Files:**
-- Create: `docs/adr/0010-use-django-photographer-permissions.md`
-- Create: `docs/adr/0011-use-direct-private-object-storage-ingestion.md`
-- Create: `docs/adr/0012-keep-stage-2-ingestion-request-driven.md`
+- Create: `docs/adr/0012-use-django-photographer-permissions.md`
+- Create: `docs/adr/0013-use-direct-private-object-storage-ingestion.md`
+- Create: `docs/adr/0014-keep-stage-2-ingestion-request-driven.md`
 - Modify: `docs/adr/README.md`
 - Modify: `docs/architecture.md`
 - Test: `tests/test_repository_foundation.py`
 
 - [ ] **Step 1: Write the failing ADR-index contract test**
 
-Extend `test_adr_index_lists_all_accepted_decisions` so it expects ADRs 0010–0012 with status `Accepted`, and add assertions that the architecture no longer lists authentication, private ingestion, or Stage 2 async execution as open choices.
+Extend `test_adr_index_lists_all_accepted_decisions` so it expects ADRs 0012–0014 with status `Accepted`, and add assertions that the architecture no longer lists authentication, private ingestion, or Stage 2 async execution as open choices.
 
 - [ ] **Step 2: Run the contract test and confirm the expected failure**
 
 Run: `pytest tests/test_repository_foundation.py::test_adr_index_lists_all_accepted_decisions -q`
 
-Expected: FAIL because ADRs 0010–0012 and their index rows do not exist.
+Expected: FAIL because the photographer-ingestion ADRs and their index rows do not exist.
 
 - [ ] **Step 3: Write the accepted ADRs from the approved design**
 

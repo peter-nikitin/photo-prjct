@@ -1,4 +1,4 @@
-# 0011: Use direct private Object Storage ingestion
+# 0013: Use direct private Object Storage ingestion
 
 - Status: Accepted
 - Date: 2026-07-13

@@ -1,10 +1,10 @@
 # 0009: Separate the staging HTTP edge from the production HTTPS edge
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-07-13
 - Deciders: project maintainers
 - Supersedes: [0008](0008-temporary-staging-http-fallback.md)
-- Superseded by: none
+- Superseded by: [0010](0010-share-https-edge-across-environments.md)
 
 ## Context
 

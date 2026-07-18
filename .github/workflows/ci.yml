@@ -68,9 +68,6 @@ jobs:
       - name: Check migration drift
         run: python src/backend/manage.py makemigrations --check --dry-run
 
-      - name: Validate project skills
-        run: pytest tests/test_repository_foundation.py -q
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:

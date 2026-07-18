@@ -1,4 +1,4 @@
-# 0012: Keep Stage 2 ingestion request-driven
+# 0014: Keep Stage 2 ingestion request-driven
 
 - Status: Accepted
 - Date: 2026-07-13

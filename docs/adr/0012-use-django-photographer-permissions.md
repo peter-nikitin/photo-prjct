@@ -1,4 +1,4 @@
-# 0010: Use Django photographer permissions
+# 0012: Use Django photographer permissions
 
 - Status: Accepted
 - Date: 2026-07-13

@@ -40,11 +40,21 @@ The repository currently contains an early Django application:
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
-- Staging runs a minimal HTTP Nginx edge that proxies to the internal Django service. Its public DNS
-  record is currently unroutable, so the workflow verifies the VM-local edge only.
-- A future production deployment uses an explicit HTTPS overlay where Nginx terminates TLS, serves
-  ACME HTTP-01 challenges, and Certbot manages Let's Encrypt certificates in persistent volumes.
-  This environment split is governed by [ADR 0009](adr/0009-separate-staging-http-edge.md).
+- Staging's normal deployment uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and
+  proxy the internal Django service. The canonical apex and `www` names route to that edge, with
+  HTTP and alias traffic redirected to canonical HTTPS.
+- `docker-compose.staging.yml` and `deploy/nginx/staging.conf` remain available only as a temporary
+  manual HTTP recovery fallback while browser, internal-state, and renewal validation remain. The
+  normal staging deploy workflow does not select them, and cleanup after validation remains required
+  by [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
+- Every public environment will use one shared HTTPS overlay where Nginx terminates TLS, serves ACME
+  HTTP-01 challenges, and Certbot manages Let's Encrypt certificates in environment-specific
+  persistent volumes. This accepted transition is governed by
+  [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
+- HTTPS deployment ensures a certificate exists, validates canonical redirects and trusted health
+  with `curl`, restores the prior application image in process on failure, and records the successful
+  image only after all checks pass. DNS is an activation preflight, and hostname changes require an
+  operator-controlled certificate reissue.
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
@@ -75,18 +85,19 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Load environment-specific configuration from environment variables and never commit secrets.
 - Keep architecture, decisions, and delivery plans in this repository.
 - Prefer simple, repeatable operations over premature distributed infrastructure.
-- Use the Nginx and Certbot HTTPS edge in production as defined by
-  [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and [ADR 0009](adr/0009-separate-staging-http-edge.md).
+- Use the shared Nginx and Certbot HTTPS edge in every public environment as defined by
+  [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and
+  [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
 - Use Django sessions and the additive `ingestion.upload_photos` permission for photographer
   uploads. Staff and photographer access remain independent; authorized photographers see all
   events but own only their batches, as defined by
-  [ADR 0010](adr/0010-use-django-photographer-permissions.md).
+  [ADR 0012](adr/0012-use-django-photographer-permissions.md).
 - Upload originals directly to a private incoming Object Storage prefix with constrained 10-minute
   grants, then promote verified objects to browser-inaccessible final keys under the lifecycle and
-  access boundaries in [ADR 0011](adr/0011-use-direct-private-object-storage-ingestion.md).
+  access boundaries in [ADR 0013](adr/0013-use-direct-private-object-storage-ingestion.md).
 - Keep Stage 2 ingestion control and confirmation request-driven, with bounded browser transfer
   concurrency and no worker or broker, as defined by
-  [ADR 0012](adr/0012-keep-stage-2-ingestion-request-driven.md).
+  [ADR 0014](adr/0014-keep-stage-2-ingestion-request-driven.md).
 
 ## Deployment domain assignment — accepted
 
@@ -94,9 +105,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   `https://findme-photo.ru/`.
 - When staging and production become separate live environments, `https://findme-photo.ru/` remains
   the production URL and staging moves to `https://staging.findme-photo.ru/`.
-- This assignment records the intended routing contract; it does not claim that DNS or TLS rollout
-  is already complete. Until that work is performed, the current preemptible VM retains the staging
-  lifecycle and HTTP topology defined by ADR 0009, and the production readiness gate still applies.
+- Public DNS routes the canonical and `www` names to the current VM, where trusted HTTPS is active.
+  The apex serves canonical HTTPS, and HTTP and `www` requests redirect to it. HTTPS activation does
+  not change the current VM's preemptible staging classification or relax the production readiness
+  gate.
 
 ## Target MVP architecture — proposed
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deliver Operational Change"
+  short_description: "Ship small operational changes without scope drift"
+  default_prompt: "Use $deliver-operational-change to deliver this DNS, HTTPS, deployment, or single-VM change through the fastest safe repository workflow."

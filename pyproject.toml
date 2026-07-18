@@ -27,7 +27,7 @@ addopts = "--strict-config --strict-markers"
 
 [tool.coverage.run]
 branch = true
-source = ["src/backend/config", "src/backend/picflow"]
+source = ["src/backend/config", "src/backend/ingestion", "src/backend/picflow"]
 omit = ["*/migrations/*", "*/tests/*", "*/asgi.py", "*/wsgi.py"]
 
 [tool.coverage.report]

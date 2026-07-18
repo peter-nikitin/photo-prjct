@@ -1,0 +1,30 @@
+{% extends "ui/base.html" %}
+{% load static %}
+{% block title %}Вход для фотографов — FindMe Photo{% endblock %}
+{% block body_class %}upload-auth-page{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/upload.css' %}">{% endblock %}
+{% block content %}
+  <section class="login-shell" aria-labelledby="login-title">
+    <div class="login-intro">
+      <p class="eyebrow">Кабинет фотографа</p>
+      <h1 id="login-title">Вход для фотографов</h1>
+      <p>Загрузите оригиналы со съёмки прямо в фотобанк события.</p>
+    </div>
+    <form class="login-card" method="post">
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+        <div class="form-error" role="alert">Неверное имя пользователя или пароль.</div>
+      {% endif %}
+      <label class="upload-field" for="{{ form.username.id_for_label }}">
+        <span>Имя пользователя</span>
+        {{ form.username }}
+      </label>
+      <label class="upload-field" for="{{ form.password.id_for_label }}">
+        <span>Пароль</span>
+        {{ form.password }}
+      </label>
+      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+      <button class="button" type="submit">Войти</button>
+    </form>
+  </section>
+{% endblock %}

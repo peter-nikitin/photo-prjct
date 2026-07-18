@@ -1,8 +1,11 @@
 from datetime import date, timedelta
+from uuid import uuid4
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.utils import timezone
 
 from picflow.models import Event, Photo
 
@@ -63,13 +66,53 @@ class EventModelTests(TestCase):
 
 
 class PhotoModelTests(TestCase):
-    def test_string_representation_uses_identifier(self) -> None:
-        event = Event.objects.create(
+    def setUp(self) -> None:
+        self.event = Event.objects.create(
             name="Test Run",
             slug="test-run",
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
         )
-        photo = Photo(id="TEST-001", event=event, src="photos/test.jpg")
+        self.photographer = get_user_model().objects.create_user(username="photographer")
+
+    def test_string_representation_uses_identifier(self) -> None:
+        photo = Photo(id="TEST-001", event=self.event, src="photos/test.jpg")
         self.assertEqual(str(photo), "TEST-001")
+
+    def private_photo(self, **overrides):
+        values = {
+            "id": uuid4().hex,
+            "event": self.event,
+            "src": "",
+            "uploaded_by": self.photographer,
+            "original_key": f"originals/{uuid4().hex}",
+            "original_filename": "race.jpg",
+            "original_size": 30 * 1024 * 1024,
+            "original_content_type": "image/jpeg",
+            "uploaded_at": timezone.now(),
+        }
+        values.update(overrides)
+        return Photo(**values)
+
+    def test_legacy_photo_shape_is_valid(self) -> None:
+        Photo(id="LEGACY", event=self.event, src="photos/legacy.jpg").full_clean()
+
+    def test_complete_private_photo_shape_is_valid(self) -> None:
+        self.private_photo().full_clean()
+
+    def test_mixed_photo_shape_is_invalid(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.private_photo(src="photos/public.jpg").full_clean()
+
+    def test_incomplete_private_photo_shape_is_invalid(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.private_photo(original_size=None).full_clean()
+
+    def test_original_key_is_unique(self) -> None:
+        key = "originals/shared"
+        first = self.private_photo(original_key=key)
+        first.full_clean()
+        first.save()
+        with self.assertRaises(ValidationError):
+            self.private_photo(original_key=key).full_clean()

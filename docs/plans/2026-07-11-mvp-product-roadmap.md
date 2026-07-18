@@ -77,7 +77,32 @@ Django modular monolith + PostgreSQL + Docker Compose на Yandex Cloud VM.
 **Результат:** авторизованный фотограф выбирает любое событие и загружает в него пакет фотографий,
 а оригиналы остаются приватными.
 
-### Контекст будущего плана
+**Статус:** подробное проектирование завершено, продуктовая реализация этапа не начата.
+
+- [Подробный план реализации этапа 2](2026-07-13-stage-2-photographer-upload.md)
+- [Согласованный design загрузки](../superpowers/specs/2026-07-13-stage-2-photographer-upload-design.md)
+
+### Уже готово для этапа
+
+- [x] Django users, session authentication и Django Admin для управления пользователями.
+- [x] Каталог событий с типом `free`/`paid`, состоянием публикации и административным контуром.
+- [x] ADR 0006 о раздельных public/private storage boundaries и неизменяемых object keys.
+- [x] Базовая S3-интеграция с Yandex Object Storage для публичных обложек событий.
+- [x] PostgreSQL, Docker Compose, CI/CD, staging и базовый production design system.
+- [x] Согласованный и независимо проверенный design браузерной загрузки этапа 2.
+
+### Остаётся реализовать
+
+- [ ] Принять ADR по роли фотографа, прямой приватной загрузке и request-driven ingestion.
+- [ ] Настроить отдельный private bucket, IAM, CORS, секреты и feature flag.
+- [ ] Добавить модели и безопасные миграции пакетов, файлов и приватных оригиналов.
+- [ ] Реализовать Photographer permission, login/logout, ownership и Admin inspection.
+- [ ] Реализовать presigned POST, ETag-bound проверку, promotion и stale cleanup.
+- [ ] Реализовать JSON control endpoints и браузерную очередь из четырёх параллельных загрузок.
+- [ ] Добавить permission, storage, migration, API, JavaScript, visual, contract и load tests.
+- [ ] Пройти staging rollout; только после этого отметить этап и архитектуру реализованными.
+
+### Зафиксированные границы реализации
 
 - До реализации принять ADR по минимальной модели аутентификации и ролям.
 - Использовать Django users и группу или permission `Photographer`; администраторы продолжают
@@ -88,8 +113,10 @@ Django modular monolith + PostgreSQL + Docker Compose на Yandex Cloud VM.
 - Хранить оригиналы приватно по неизменяемым storage keys, не раскрывая keys в HTML или API.
 - Хранить состояния пакета и отдельных файлов, включая частичный сбой и возможность безопасного
   повтора без повторной загрузки успешных файлов.
-- Принять отдельные ADR по media storage, жизненному циклу файлов и необходимому асинхронному
-  выполнению до выбора конкретных технологий.
+- Для этого этапа использовать прямую загрузку отдельных JPEG из живой страницы в private Object
+  Storage; не добавлять ZIP, desktop client, восстановление очереди, broker или worker.
+- До реализации принять ADR по private ingestion, жизненному циклу файлов и request-driven
+  выполнению; не менять принятую ADR 0006 без superseding ADR.
 
 ### Контекст автоматизированных тестов
 

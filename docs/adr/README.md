@@ -31,3 +31,6 @@ place, and add the new record to this index.
 | 0009 | [Separate the staging HTTP edge from the production HTTPS edge](0009-separate-staging-http-edge.md) | Superseded |
 | 0010 | [Share the HTTPS edge across public environments](0010-share-https-edge-across-environments.md) | Superseded |
 | 0011 | [Use a minimal shared HTTPS rollout](0011-use-minimal-shared-https-rollout.md) | Accepted |
+| 0012 | [Use Django photographer permissions](0012-use-django-photographer-permissions.md) | Accepted |
+| 0013 | [Use direct private Object Storage ingestion](0013-use-direct-private-object-storage-ingestion.md) | Accepted |
+| 0014 | [Keep Stage 2 ingestion request-driven](0014-keep-stage-2-ingestion-request-driven.md) | Accepted |

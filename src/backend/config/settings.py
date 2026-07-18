@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "ingestion.apps.IngestionConfig",
     "picflow.apps.PicflowConfig",
 ]
 
@@ -57,6 +58,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "ingestion.context_processors.photographer_navigation",
             ],
         },
     },
@@ -76,6 +78,29 @@ STORAGES: dict[str, dict[str, Any]] = {
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+PRIVATE_MEDIA_S3_BUCKET = env("PRIVATE_MEDIA_S3_BUCKET", default="")
+PRIVATE_MEDIA_S3_ACCESS_KEY_ID = env("PRIVATE_MEDIA_S3_ACCESS_KEY_ID", default="")
+PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY = env("PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY", default="")
+PRIVATE_MEDIA_S3_ENDPOINT_URL = env(
+    "MEDIA_S3_ENDPOINT_URL",
+    default="https://storage.yandexcloud.net",
+)
+PRIVATE_MEDIA_S3_REGION = env("MEDIA_S3_REGION", default="ru-central1")
+PRIVATE_MEDIA_ALLOWED_ORIGINS = [
+    origin.strip() for origin in env.list("PRIVATE_MEDIA_ALLOWED_ORIGINS", default=[])
+]
+
+PHOTO_UPLOAD_ENABLED = env.bool("PHOTO_UPLOAD_ENABLED", default=False)
+PHOTO_UPLOAD_MAX_FILES = env.int("PHOTO_UPLOAD_MAX_FILES", default=10_000)
+PHOTO_UPLOAD_MAX_FILE_BYTES = env.int("PHOTO_UPLOAD_MAX_FILE_BYTES", default=50 * 1024 * 1024)
+PHOTO_UPLOAD_REGISTRATION_CHUNK = env.int("PHOTO_UPLOAD_REGISTRATION_CHUNK", default=100)
+PHOTO_UPLOAD_CONCURRENCY = env.int("PHOTO_UPLOAD_CONCURRENCY", default=4)
+PHOTO_UPLOAD_GRANT_TTL_SECONDS = env.int("PHOTO_UPLOAD_GRANT_TTL_SECONDS", default=600)
+PHOTO_UPLOAD_STALE_AFTER_SECONDS = env.int("PHOTO_UPLOAD_STALE_AFTER_SECONDS", default=86_400)
+
+LOGIN_URL = "photographer_login"
+
 if env("MEDIA_STORAGE_BACKEND", default="filesystem") == "s3":
     STORAGES["default"] = {
         "BACKEND": "storages.backends.s3.S3Storage",

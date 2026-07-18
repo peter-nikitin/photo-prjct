@@ -88,6 +88,16 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Use the shared Nginx and Certbot HTTPS edge in every public environment as defined by
   [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and
   [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
+- Use Django sessions and the additive `ingestion.upload_photos` permission for photographer
+  uploads. Staff and photographer access remain independent; authorized photographers see all
+  events but own only their batches, as defined by
+  [ADR 0012](adr/0012-use-django-photographer-permissions.md).
+- Upload originals directly to a private incoming Object Storage prefix with constrained 10-minute
+  grants, then promote verified objects to browser-inaccessible final keys under the lifecycle and
+  access boundaries in [ADR 0013](adr/0013-use-direct-private-object-storage-ingestion.md).
+- Keep Stage 2 ingestion control and confirmation request-driven, with bounded browser transfer
+  concurrency and no worker or broker, as defined by
+  [ADR 0014](adr/0014-keep-stage-2-ingestion-request-driven.md).
 
 ## Deployment domain assignment — accepted
 
@@ -107,7 +117,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Module | Responsibility | Status |
 | --- | --- | --- |
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
-| Ingestion | Batch upload, file metadata, processing state, retries | Proposed |
+| Ingestion | Photographer permissions, request-driven batch upload, object promotion, upload state | Proposed |
 | Media | Originals, thumbnails, previews, watermarks, purchased exports | Proposed |
 | Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed |
 | Search | Event-scoped face/bib/time/location queries | Proposed |
@@ -134,22 +144,31 @@ Customer/operator
       `---- vector search capability
 ```
 
-The diagram shows required capabilities, not selected products. Object storage provider, queue and
-broker, vector engine, and ML implementations require separate ADRs.
+The diagram shows target capabilities, not one delivery stage. Yandex Object Storage is selected by
+ADR 0006, and Stage 2 ingestion reaches it directly without the task queue or workers. The queue,
+broker, vector engine, and ML implementations shown for later processing require separate ADRs.
 
 ## Core data flows — proposed
 
 ### Photo ingestion and indexing
 
-1. An operator creates an event and uploads a batch associated with an event, photographer, and
-   optional location.
-2. The application stores the original privately and records an immutable storage key.
-3. Background work extracts EXIF metadata and generates thumbnail, preview, and watermarked assets.
-4. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
+1. An authorized photographer creates a batch for any event. The photographer may access only their
+   own batches; superusers retain administrative visibility.
+2. A browser-managed queue uploads files with bounded concurrency to generated keys in a private
+   incoming prefix using constrained 10-minute presigned POST grants.
+3. In a confirmation request, Django verifies the incoming object and binds validation and
+   server-side promotion to its ETag. The browser is never authorized to write the immutable final
+   key.
+4. Django records the confirmed original and upload state in PostgreSQL. Confirmed originals have no
+   automatic deletion in this stage; unconfirmed objects become stale after 24 hours without
+   activity.
+5. Later background work extracts EXIF metadata and generates thumbnail, preview, and watermarked
+   assets. Worker and broker technology remains undecided for that later stage.
+6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
    embeddings. Each result records model version, confidence, geometry, and processing status.
-5. Search indexes are updated only within the photo's event scope.
-6. Operators can correct or suppress candidates. Manual decisions outrank automated results.
-7. Failures remain visible and retryable without re-uploading the original.
+7. Search indexes are updated only within the photo's event scope.
+8. Operators can correct or suppress candidates. Manual decisions outrank automated results.
+9. Failures remain visible and retryable without re-uploading the original.
 
 ### Search
 
@@ -174,6 +193,10 @@ broker, vector engine, and ML implementations require separate ADRs.
   for paid events and unwatermarked reduced copies for free events. A free-event original may be
   delivered anonymously only through a controlled application response or short-lived access that
   does not expose its permanent storage key.
+- Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
+  least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
+- Photographer routes require the additive upload permission, and non-superuser batch access is
+  restricted to the owning uploader.
 - Secrets and credentials are environment-provided; `.env` files remain untracked.
 - Face images and embeddings may be biometric personal data. Collection basis, consent, retention,
   deletion, access control, and incident handling must be approved before face search is released.
@@ -192,9 +215,10 @@ broker, vector engine, and ML implementations require separate ADRs.
    and operational baseline.
 2. **Event catalog:** minimal free/paid event domain, Django Admin management, publication, and a
    public catalog.
-3. **Photo-bank core:** photographer access, private originals, batch ingestion, derivatives,
-   explicit photo publication, and event galleries. Free events permit controlled anonymous original
-   downloads; paid events expose only watermarked previews until commerce grants entitlement.
+3. **Photo-bank core:** Django photographer permission, request-driven direct upload to private
+   originals, then derivatives, explicit photo publication, and event galleries. Free events permit
+   controlled anonymous original downloads; paid events expose only watermarked previews until
+   commerce grants entitlement. Stage 2 upload itself adds no worker or broker.
 4. **Repeatable processing:** versioned jobs and immutable analysis runs executed by a worker or ML
    container while Django and PostgreSQL retain product and transactional ownership.
 5. **Bib validation and search:** benchmark detected regions and OCR on representative uploaded
@@ -218,13 +242,11 @@ broker, vector engine, and ML implementations require separate ADRs.
 
 Each item needs evidence and an ADR before implementation commits the architecture:
 
-- Private media lifecycle and retention policy.
-- Background task framework, broker, retry semantics, and processing SLA.
+- Stage 3 background-processing worker, broker, retry contract, and processing SLA.
 - `pgvector` versus a dedicated vector database and migration thresholds.
 - Face detection/embedding implementation and biometric governance.
 - Bib-region detection/OCR implementation and model licensing.
 - Payment provider, callback contract, refunds, and download entitlement policy.
-- Authentication model and photographer/operator permissions.
 - Free/paid event media access and anonymous original-download policy.
 - Observability stack, backup targets, retention, and recovery objectives.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.

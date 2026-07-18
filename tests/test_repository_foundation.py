@@ -21,6 +21,21 @@ def _workflow_step(workflow: dict[str, Any], job_name: str, step_name: str) -> d
     return matching_steps[0]
 
 
+def test_adr_index_lists_all_accepted_decisions() -> None:
+    index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
+    architecture = (ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+    open_decisions = architecture.partition("## Open decisions")[2].partition("## Change rules")[0]
+
+    for number in (*range(1, 8), 11, 12, 13, 14):
+        assert re.search(rf"\| {number:04d} \|.*\| Accepted \|", index)
+    for number in (8, 9, 10):
+        assert re.search(rf"\| {number:04d} \|.*\| Superseded \|", index)
+    assert "Authentication model and photographer/operator permissions" not in open_decisions
+    assert "Private media lifecycle and retention policy" not in open_decisions
+    assert "Background task framework, broker, retry semantics" not in open_decisions
+    assert "Stage 3 background-processing worker, broker, retry contract" in open_decisions
+
+
 def _envs(step: dict[str, Any]) -> set[str]:
     envs = step.get("with", {}).get("envs", "")
     assert isinstance(envs, str)

@@ -1,7 +1,7 @@
 # Event Photo Gallery Design
 
 - Date: 2026-07-18
-- Status: Approved design
+- Status: Needs revision after spec review
 - Owner: project maintainer
 - Related architecture: [System architecture](../../architecture.md)
 - Visual reference: [Photobank prototype PR](https://github.com/peter-nikitin/photo-prjct/pull/1/files)

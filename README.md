@@ -15,18 +15,110 @@ unresolved decisions are documented rather than assumed to be implemented.
 
 ## Local development
 
-Requirements: Python 3.12+, Docker, and Docker Compose.
+Requirements: Git, Docker, and Docker Compose. Python 3.12+ is required only for running management
+commands and quality checks directly on the host.
+
+The `main` checkout and a feature worktree use separate source directories and Compose projects, so
+each directory needs its own ignored `.env` file. Both configurations expose PostgreSQL on port
+`5432` and Django on port `8000`; stop one before starting the other unless you intentionally change
+the port mappings.
+
+### Run the `main` version
+
+Use the repository's main checkout for the latest merged version:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-cp .env.example .env
-docker compose up --build
+cd /Users/petrnikitin/Documents/Sites/photo-prjct
+git switch main
+git pull --ff-only
+test -f .env || cp .env.example .env
+docker compose up --build -d
+docker compose logs -f web
 ```
 
-The application is available at `http://localhost:8000`. Local Compose supplies PostgreSQL at
-`db:5432`; application configuration comes from `.env`.
+Do not overwrite an existing `.env`; update it from `.env.example` instead. The container entrypoint
+applies migrations and collects static files automatically. Once the web service has started, leave
+the logs with `Ctrl+C` and create an administrator if the local database is new:
+
+```bash
+docker compose exec web python manage.py createsuperuser
+```
+
+Open the application at `http://localhost:8000/` and Django Admin at
+`http://localhost:8000/admin/`.
+
+### Run the photographer-upload worktree version
+
+The in-progress photographer-upload implementation lives in a separate worktree. If it already
+exists, enter it directly:
+
+```bash
+cd /Users/petrnikitin/Documents/Sites/photo-prjct/.worktrees/stage-2-photographer-upload
+git status --short --branch
+```
+
+To create that worktree from the pull-request branch when it does not exist, run from the main
+checkout:
+
+```bash
+cd /Users/petrnikitin/Documents/Sites/photo-prjct
+git fetch origin stage-2-implementation-plan
+git worktree add -b stage-2-photographer-upload \
+  .worktrees/stage-2-photographer-upload origin/stage-2-implementation-plan
+cd .worktrees/stage-2-photographer-upload
+```
+
+Create a worktree-local configuration without overwriting an existing one:
+
+```bash
+test -f .env || cp .env.example .env
+```
+
+The upload feature is disabled by default. To test real browser-to-storage uploads, set these values
+in the worktree's `.env`:
+
+```dotenv
+DEBUG=True
+ALLOWED_HOSTS=localhost,127.0.0.1
+PHOTO_UPLOAD_ENABLED=True
+PRIVATE_MEDIA_S3_BUCKET=<private-bucket>
+PRIVATE_MEDIA_S3_ACCESS_KEY_ID=<access-key>
+PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=<secret-key>
+PRIVATE_MEDIA_ALLOWED_ORIGINS=http://localhost:8000
+```
+
+The bucket and credentials must be real, and its CORS policy must allow the exact
+`http://localhost:8000` origin. With the feature disabled, the rest of the application still runs,
+but `/photographer/uploads/` returns 404. With placeholder storage values, the page may render but a
+real upload will not complete.
+
+Start the worktree version:
+
+```bash
+docker compose up --build -d
+docker compose logs -f web
+```
+
+The entrypoint applies migrations, creates the `Photographer` permission group, and collects static
+files. For a fresh database, create a superuser:
+
+```bash
+docker compose exec web python manage.py createsuperuser
+```
+
+Use Django Admin at `http://localhost:8000/admin/` to create at least one event, then open
+`http://localhost:8000/photographer/uploads/`. A superuser already has upload permission; a regular
+user must belong to the `Photographer` group.
+
+### Stop a local version
+
+Run this from the same checkout or worktree that started Compose:
+
+```bash
+docker compose down
+```
+
+This keeps the PostgreSQL volume. Do not add `-v` unless deleting the local database is intentional.
 
 ## Quality checks
 

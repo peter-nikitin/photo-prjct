@@ -16,7 +16,6 @@ VISUAL_ROUTES = {
     "visual_reference_search": "/__visual__/reference/search/",
     "visual_reference_dashboard": "/__visual__/reference/dashboard/",
     "visual_reference_events": "/__visual__/reference/events/",
-    "visual_reference_upload": "/__visual__/reference/upload/",
     "visual_reference_orders": "/__visual__/reference/orders/",
     "visual_reference_promotions": "/__visual__/reference/promotions/",
     "visual_reference_purchased": "/__visual__/reference/purchased/",
@@ -30,7 +29,6 @@ REFERENCE_TEMPLATES = {
     "promotions.html",
     "purchased.html",
     "search.html",
-    "upload.html",
 }
 
 

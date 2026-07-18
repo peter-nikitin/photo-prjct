@@ -69,9 +69,9 @@ Event detail view
     |
     +-- GalleryPhotoFactory
             |
-            +-- stable preview and large application URLs
+            +-- stable small- and large-preview application URLs
             |
-            +-- GalleryPhoto(photo_id, preview_media, large_media, alt)
+            +-- GalleryPhoto(photo_id, preview_media_small, preview_media_large, alt)
     |
     +-- event_detail.html -> GLightbox markup
 
@@ -87,33 +87,33 @@ resolver chooses the actual storage variant. The template owns markup only.
 `GalleryPhoto` is an immutable application value rather than a Django model. Its public contract is:
 
 - `photo_id`: stable `Photo` identity;
-- `preview_media`: a `GalleryMedia` for the list/card image;
-- `large_media`: a `GalleryMedia` for the lightbox image;
+- `preview_media_small`: a `GalleryMedia` for the list/card image;
+- `preview_media_large`: a `GalleryMedia` for the lightbox image;
 - `alt`: useful accessible text that does not expose filenames or storage keys.
 
-`GalleryMedia` contains the stable browser URL and presentation variant (`preview` or `large`). It
-may gain responsive-source metadata when
-derivatives exist, but the initial lightbox contract does not require intrinsic dimensions that the
-current `Photo` model cannot provide.
+`GalleryMedia` contains the stable browser URL and presentation variant (`preview-small` or
+`preview-large`). It may gain responsive-source metadata when derivatives exist, but the initial
+lightbox contract does not require intrinsic dimensions that the current `Photo` model cannot
+provide.
 
 For the initial implementation, both media values address the same application endpoint with an
-explicit `preview` or `large` variant. The endpoint resolver maps both variants to the original.
-When a thumbnail field or derivative record is added, only the resolver changes: it selects the
-thumbnail for `preview` and retains the appropriate larger variant for `large`.
+explicit `preview-small` or `preview-large` variant. The endpoint resolver maps both variants to the
+original. When derivative records are added, only the resolver changes: it selects the small
+derivative for `preview-small` and the larger derivative for `preview-large`.
 
 Neither value object exposes `original_key`. The URLs are deterministic application routes, not
 signed URLs or expiring capabilities.
 
-## Future cart boundary
+## Future commerce seam
 
-`GalleryPhoto.photo_id` is the only trusted bridge to commerce. A later cart adapter may convert a
-gallery item into a cart reference containing that identity, but cart creation must reload the
-authoritative `Photo` and re-evaluate publication, availability, access type, price, and permission
-server-side. Media URLs, alt text, and any browser-supplied price are never trusted cart data.
+`GalleryPhoto.photo_id` is the only trusted bridge available to future commerce. Both media fields
+remain public presentation previews; neither is a purchased asset or a promise of original access.
+A future cart boundary can use the stable photo identity without changing the gallery template or
+exposing storage metadata.
 
-No cart class or conversion method is added in this increment because the cart domain does not yet
-exist. The stable identity and separate presentation model keep that conversion possible without
-coupling the gallery to a speculative cart schema.
+Cart, payment, entitlement, purchased-file generation, and protected delivery contracts are not
+designed in this increment. They will be decided when commerce is implemented rather than coupled
+to a speculative schema now.
 
 ## Photo eligibility and ordering
 
@@ -140,7 +140,7 @@ The public media endpoint is a stable unsigned route addressed by event slug, ph
 requested presentation variant:
 
 ```text
-GET /events/<event-slug>/photos/<photo-id>/media/<preview|large>/
+GET /events/<event-slug>/photos/<photo-id>/media/<preview-small|preview-large>/
 ```
 
 It reloads the published free event and eligible uploaded photo on every request, then asks the
@@ -182,20 +182,20 @@ The event header and event metadata remain unchanged. A new section below them c
 - a linked image and compact photo identifier;
 - an empty state when no items are available.
 
-Activating a card opens its `large_media` in GLightbox 3.3.1. GLightbox is selected because the
-current upload metadata does not include intrinsic pixel dimensions, which PhotoSwipe requires.
+Activating a card opens its `preview_media_large` in GLightbox 3.3.1. GLightbox is selected because
+the current upload metadata does not include intrinsic pixel dimensions, which PhotoSwipe requires.
 GLightbox assets are pinned and served from `src/backend/static/ui/`; no CDN or runtime package fetch
 is allowed. The gallery supports
 keyboard opening, next/previous navigation, Escape to close, focus restoration, touch gestures, and
 reduced-motion preferences provided by the library and local styles.
 
 Images use lazy loading outside the first immediately visible content. The page remains usable when
-JavaScript fails: each card is a normal link to its stable large-media application URL.
+JavaScript fails: each card is a normal link to its stable large-preview application URL.
 
 ## Verification
 
 - Factory tests prove only eligible uploaded rows become `GalleryPhoto` instances, no S3 operation
-  occurs while building the page, and preview and large URLs use the stable variant routes.
+  occurs while building the page, and small- and large-preview URLs use the stable variant routes.
 - Resolver/storage tests prove reads are restricted to validated final keys, stream without a
   public S3 redirect, sanitize failures, and never return permanent keys as presentation fields.
 - View tests prove event scoping, stable ordering, empty state, omission of legacy rows, and absence

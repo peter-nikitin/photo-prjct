@@ -1,7 +1,7 @@
 # Staging Seed Photo Media Design
 
 - Date: 2026-07-18
-- Status: Approved by independent spec review; pending maintainer approval
+- Status: Approved
 - Owner: project maintainer
 - Related gallery design: [Event photo gallery](2026-07-18-event-photo-gallery-design.md)
 - Related architecture: [System architecture](../../architecture.md)

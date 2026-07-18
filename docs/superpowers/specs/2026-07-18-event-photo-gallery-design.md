@@ -1,7 +1,7 @@
 # Event Photo Gallery Design
 
 - Date: 2026-07-18
-- Status: Approved by independent spec review; pending maintainer approval
+- Status: Approved
 - Owner: project maintainer
 - Related architecture: [System architecture](../../architecture.md)
 - Visual reference: [Photobank prototype PR](https://github.com/peter-nikitin/photo-prjct/pull/1/files)
@@ -103,6 +103,24 @@ derivative for `preview-small` and the larger derivative for `preview-large`.
 
 Neither value object exposes `original_key`. The URLs are deterministic application routes, not
 signed URLs or expiring capabilities.
+
+## Future processing seam
+
+Using the original for both preview variants is an explicit transitional policy while derivative
+generation does not exist. A later background-processing increment will start only after the
+original and its `Photo` row are durably stored. It will create and verify the small and large
+preview objects, persist their metadata, and only then atomically mark the photo ready for gallery
+publication.
+
+At that point the gallery eligibility query will require readiness and the media resolver will map
+`preview-small` and `preview-large` to the corresponding derivatives. `GalleryPhoto`, the event
+detail template, and the lightbox contract will not change. A partial or failed processing result
+will not become gallery-visible and will never fall back to a paid original.
+
+The worker, broker, task recovery, derivative persistence schema, and readiness representation are
+outside this increment and require their own design and execution decision. The gallery neither
+starts processing nor probes S3 to infer readiness; it consumes only database state owned by the
+future processing boundary.
 
 ## Future commerce seam
 

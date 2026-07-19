@@ -45,9 +45,10 @@
   by `8518dcf`, `62db0db`, `dbaa147`, `80dc494`, `dbd815e`, and `bf2b7be`; its focused deployment
   behavior is covered by the Task 8 verification run. Commit `4ba3f68` resolves the gallery typing
   findings discovered during reconciliation. PR #45 CI run
-  [29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091) passed current
-  HEAD `7d6a718`: all 44 visual tests passed in 47.7 seconds, the full coverage step passed 264 tests
-  at 89.10%, and all quality checks were green. No live environment activation is claimed.
+  [29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091) passed the
+  CI-tested implementation commit `7d6a718`: all 44 visual tests passed in 47.7 seconds, the full
+  coverage step passed 264 tests at 89.10%, and all quality checks were green. Later documentation
+  evidence commits were not part of that run. No live environment activation is claimed.
 
 ## Scope
 
@@ -480,9 +481,10 @@ existing image-only rollback semantics; this task does not claim full environmen
     restart rendered the first two pre-existing catalog pages and returned their resources with
     HTTP 200, but both timed out after 60 seconds in `page.waitForLoadState("networkidle")`. It was
     stopped without a blind retry.
-  - Authoritative current-HEAD evidence: PR #45 CI run
+  - Authoritative implementation evidence: PR #45 CI run
     [29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091) passed all 44
-    visual tests in 47.7 seconds, 264 tests at 89.10% coverage, and every quality check for `7d6a718`.
+    visual tests in 47.7 seconds, 264 tests at 89.10% coverage, and every quality check for the
+    CI-tested implementation commit `7d6a718`; it did not test the later docs-only evidence commits.
 - [x] Compare delivered behavior with the approved specification, accepted ADR 0015, all other
   applicable ADRs, and `docs/architecture.md`.
 - [x] Record only verified gallery/private-stream behavior. Update PJ-005 and matching engineering evidence without claiming derivatives, paid previews, downloads, commerce, or unperformed staging activation.

@@ -1,7 +1,7 @@
 # Role-aware service navigation implementation plan
 
 - Date: 2026-07-19
-- Status: Ready for implementation
+- Status: Complete
 - Owner: project maintainer
 - Related specification: [Role-aware service navigation design](../superpowers/specs/2026-07-19-role-aware-service-navigation-design.md)
 - Related architecture: [Accepted constraints](../architecture.md#accepted-constraints),
@@ -53,7 +53,7 @@ to an authenticated user who has its corresponding Django capability.
   `photographer_upload_navigation` context boolean.
 - Produces: rendered navigation whose service links match the approved role matrix.
 
-- [ ] **Step 1: Write the failing behavioral tests**
+- [x] **Step 1: Write the failing behavioral tests**
 
   Update anonymous shell assertions so `reverse("admin:index")` is absent. Add a database-backed
   test that creates an ordinary user, photographer, staff user, and staff photographer; log each in
@@ -61,7 +61,7 @@ to an authenticated user who has its corresponding Django capability.
   `Permission.objects.get(content_type__app_label="ingestion", codename="upload_photos")` and
   `@override_settings(PHOTO_UPLOAD_ENABLED=True)` so the test exercises real permission evaluation.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
   Run:
 
@@ -78,7 +78,7 @@ to an authenticated user who has its corresponding Django capability.
   Expected: anonymous assertions fail because the unconditional administration link is present,
   and non-staff authenticated cases fail for the same reason.
 
-- [ ] **Step 3: Implement the minimal template guard**
+- [x] **Step 3: Implement the minimal template guard**
 
   Wrap only the existing administration anchor in:
 
@@ -92,7 +92,7 @@ to an authenticated user who has its corresponding Django capability.
 
   Do not change the upload-link condition or public links.
 
-- [ ] **Step 4: Run targeted and regression checks**
+- [x] **Step 4: Run targeted and regression checks**
 
   Run the complete view and template suites:
 
@@ -110,7 +110,7 @@ to an authenticated user who has its corresponding Django capability.
 
   Expected: all tests and static checks pass.
 
-- [ ] **Step 5: Commit the behavior change**
+- [x] **Step 5: Commit the behavior change**
 
   ```bash
   git add src/backend/picflow/tests/test_views.py src/backend/templates/ui/base.html
@@ -119,12 +119,12 @@ to an authenticated user who has its corresponding Django capability.
 
 ### Final task: Architecture and ADR reconciliation
 
-- [ ] Compare delivered behavior with the approved specification and ADR 0012.
-- [ ] Confirm the change remains a reversible UI detail and does not alter authentication or
+- [x] Compare delivered behavior with the approved specification and ADR 0012.
+- [x] Confirm the change remains a reversible UI detail and does not alter authentication or
   authorization boundaries.
-- [ ] Confirm `docs/architecture.md` needs no update because implemented system structure and role
+- [x] Confirm `docs/architecture.md` needs no update because implemented system structure and role
   boundaries remain unchanged.
-- [ ] Record conformance to ADR 0012 in the pull request.
+- [x] Record conformance to ADR 0012 in the pull request.
 
 ## Verification
 

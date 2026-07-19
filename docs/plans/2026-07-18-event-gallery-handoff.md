@@ -1,162 +1,179 @@
-# Event gallery planning handoff
+# Event gallery lifecycle handoff
 
-- Date: 2026-07-18
-- Status: Paused after spec review
+- Date: 2026-07-19
+- Status: Blocked on specification and ADR lifecycle reconciliation
 - Branch: `event-gallery`
-- Worktree: `.worktrees/event-gallery`
-- Last committed design revision: `b9e8802`
-- Implementation: not started
-- Cloud mutations: not started and not authorized
+- Worktree: `/Users/petrnikitin/Documents/Sites/photo-prjct/.worktrees/event-gallery`
+- Lifecycle baseline: `origin/main` at `a51cb6d` was merged into the branch by merge commit
+  `3f279d1`
+- Authorized scope: documentation handoff only; no lifecycle remediation or implementation in this
+  handoff
 
-## User-approved direction
+## Current delivery state
 
-The work is intentionally split into two independently planned parts.
+- Gallery Tasks 1-6 in
+  [the gallery plan](2026-07-18-event-photo-gallery.md) are implemented in commit range
+  `676bbf2..0ee60ac`. The range includes the planned task commits and follow-up interaction,
+  accessibility, and lifecycle fixes.
+- Task 6's last recorded visual verification passed all 43 tests.
+- Gallery Task 7, deployment propagation and candidate private-media preflight, has not started.
+- Gallery Task 8, final verification and repository-truth reconciliation, has not started.
+- Every task in
+  [the staging seed-media plan](2026-07-18-staging-seed-photo-media.md) is unstarted. There is no
+  manifest, seed command, startup gate, uploader, or seed deployment configuration.
+- No cloud object was uploaded. Reference-photo seeding is not enabled. The gallery is not activated
+  on staging. No IAM, bucket policy, ACL, CORS, lifecycle, quota, or other cloud configuration was
+  changed.
 
-1. The event gallery receives a presentation model derived from `Photo`. That model encapsulates
-   the preview and enlarged media choices, so adding a dedicated thumbnail later does not change the
-   page contract. Stable photo identity remains the future bridge to a server-validated cart item.
-2. The thirteen legacy seed-photo rows should reference fixed private S3 originals uploaded once.
-   Creating a new developer database or redeploying a dev stand must never create more S3 objects.
+## Lifecycle review verdict
 
-The gallery should use the visual language of the original prototype from PR 1, but only as a
-simple responsive list with an enlarged lightbox view. Search, recognition, selection, pricing,
-checkout, and downloads remain out of scope.
+The two specifications were approved before the repository introduced the specification-to-ADR
+lifecycle gate. That approval selected the designs; it did **not** accept either architectural
+decision below. The specifications and plans are now blocked under the current workflow until the
+exact remediation in this handoff is complete.
 
-## Artifacts written
+| Artifact | Current text | Required lifecycle state |
+| --- | --- | --- |
+| [Gallery specification](../superpowers/specs/2026-07-18-event-photo-gallery-design.md) | `Approved`; broad architecture link; no `Related ADRs` or `ADR impact` | Approved design requiring ADR 0015; blocked for further implementation |
+| [Seed specification](../superpowers/specs/2026-07-18-staging-seed-photo-media-design.md) | `Approved`; broad architecture link; ADRs 0006 and 0013 only; no `ADR impact` | Approved design requiring ADR 0016; blocked before implementation |
+| [Gallery plan](2026-07-18-event-photo-gallery.md) | `Draft`; Tasks 1-6 implemented despite unchecked boxes | Lifecycle-blocked; Tasks 7-8 must not start |
+| [Seed plan](2026-07-18-staging-seed-photo-media.md) | `Draft`; no task started | Lifecycle-blocked; no task may start |
 
-- `docs/superpowers/specs/2026-07-18-event-photo-gallery-design.md`
-- `docs/superpowers/specs/2026-07-18-staging-seed-photo-media-design.md`
+## Exact specification corrections
 
-Both specifications are marked `Needs revision after spec review`. No implementation plan should be
-written until the blocking review findings below are resolved and the specifications pass another
-review.
+### Gallery specification
 
-## Verified repository state
+Update
+`docs/superpowers/specs/2026-07-18-event-photo-gallery-design.md` as follows:
 
-- Main checkout was left unchanged; its pre-existing `.gitignore` modification belongs to the user.
-- The isolated worktree started from `93c0394`.
-- Baseline verification passed:
+- Replace the broad `Related architecture` link with exact links to `Current architecture —
+  implemented`, `Target MVP architecture — proposed`, `Photo ingestion and indexing`, `Purchase
+  and download`, `Security, privacy, and legal boundaries`, `Evolution stages`, and `Open
+  decisions` in `docs/architecture.md`.
+- Add `Related ADRs` links for ADRs 0001, 0002, 0006, 0013, and 0014. Add ADR 0015 after it is
+  created.
+- Add `ADR impact: Requires new ADR — anonymous complete-original delivery for uploaded photos on
+  published free events`.
+- Preserve the selected presentation-model, eligibility, close-safe streaming, and local-lightbox
+  design. Do not relabel the complete original as a derivative or silently broaden it into a
+  general download policy.
 
-  ```text
-  DB_HOST=127.0.0.1 pytest -q \
-    src/backend/picflow/tests/test_models.py \
-    src/backend/picflow/tests/test_views.py \
-    tests/test_repository_foundation.py
+### Seed specification
 
-  38 passed, 13 subtests passed
-  ```
+Update
+`docs/superpowers/specs/2026-07-18-staging-seed-photo-media-design.md` as follows:
 
-- The local database contained 14 photos: thirteen legacy `src` rows and one uploaded
-  `original_key` row.
-- `picflow/migrations/0001_initial.py` creates only the historical `Photo(id, event, src)` shape.
-  Private-original fields appear in `0003`; the uploaded-row constraints are added and validated in
-  `0004` and `0005`.
-- The existing private-storage key validator accepts only `originals/<32 lowercase hex chars>` for
-  final objects.
-- PhotoSwipe was rejected during design verification because it requires intrinsic image dimensions
-  that `Photo` does not store. GLightbox 3.3.1 is the proposed local, MIT-licensed lightbox.
+- Replace the broad `Related architecture` link with exact links to `Current architecture —
+  implemented`, `Accepted constraints`, `Target MVP architecture — proposed`, `Photo ingestion and
+  indexing`, `Security, privacy, and legal boundaries`, `Evolution stages`, and `Open decisions`.
+- Set `Related ADRs` to ADRs 0002, 0003, 0005, 0006, and 0013. Add ADR 0016 after it is created.
+- Add `ADR impact: Requires new ADR — deterministic thirteen-photo staging reference-media
+  exception to the normal ADR 0013 ingestion path`.
+- Preserve the database-only routine path and separately confirmed operator uploader. Do not
+  describe the exception as conformance to ADR 0013: ADR 0013 remains authoritative for normal
+  photographer ingestion.
 
-## Blocking spec-review findings
+## Required proposed ADRs
 
-### Event gallery
+Create both records from `docs/adr/0000-template.md`, add them to `docs/adr/README.md`, and leave
+each `Proposed` until the maintainer accepts that exact decision separately.
 
-1. The media URL contract is inconsistent. The spec uses “stable”, “opaque short-lived
-   capability”, deterministic event/photo/variant endpoint, and signed fallback terminology without
-   choosing one routing, expiry, authorization, and caching model.
-2. The factory is described as a pure converter, but another section asks it to omit photos after
-   storage resolution failures. Those failures can occur only when the media endpoint reads S3, not
-   while the event page is built.
-3. Streaming behavior is incomplete. The contract must distinguish failures before response headers
-   from failures after streaming begins and must guarantee that the S3 body closes on normal
-   completion, exception, and client disconnect.
-4. Cache and revocation semantics are undefined for a stable public URL when an event is later
-   unpublished. Exact `Cache-Control`, `Content-Length`, ETag, and revocation behavior are required.
+### ADR 0015: anonymous complete-original delivery on published free events
 
-### Seed media
+Suggested path:
+`docs/adr/0015-allow-anonymous-free-event-original-delivery.md`.
 
-1. An unconditional data migration would create rows in local and future production databases that
-   reference staging-only bucket keys. The seed mechanism must be explicitly environment-scoped
-   without making schema migrations depend on environment variables or S3 availability.
-2. The inactive seed-uploader contract lacks an exact identifier, collision checks,
-   historical-model-safe password value, database-alias usage, and reverse lifecycle.
-3. The proposed manifest says checksums are committed but does not define a checksum field.
-   `HEAD` alone is insufficient to prove bytes match the intended source.
-4. “Upload exactly once” is not yet race-safe. The runbook needs compare-and-skip behavior for a
-   matching object and conditional create-or-abort behavior for an absent or conflicting key.
-5. Legacy-object deletion appears in the workflow without being in scope or having an inventory and
-   rollback. Cleanup must be removed from this increment or specified as a separate destructive
-   operation.
+The decision must be narrow: an anonymous client may receive the complete stored original inline
+only for an eligible completed upload belonging to a currently published free event. Delivery goes
+through the stable event/photo/variant Django route; every request rechecks database eligibility;
+the private bucket, permanent object key, and credentials remain undisclosed; and the initial
+response is private/no-store with no Range, response ETag, or redirect to Object Storage.
 
-## Recommended decisions for the next session
+Explicitly exclude paid-event media, attachment/download product UX, purchased entitlements,
+derivative generation or readiness, watermarks, cart/checkout/commerce, public-bucket or CDN
+delivery, general signed-URL policy, retention/deletion, and broader anonymous-original access.
 
-These are recommendations, not yet approved spec text.
+### ADR 0016: deterministic thirteen-photo staging reference-media exception
 
-### Gallery media contract
+Suggested path:
+`docs/adr/0016-allow-deterministic-staging-reference-media.md`.
 
-- Use one deterministic Django endpoint addressed by event slug, photo ID, and requested variant.
-- Do not sign the application URL and do not redirect to a presigned S3 URL; a redirect would expose
-  the permanent object key.
-- Keep `GalleryPhotoFactory` database-only. It creates URLs for eligible rows and performs no S3
-  calls. Storage failures belong exclusively to the media endpoint.
-- Restrict original-backed rendering to published free events. Paid originals remain unavailable
-  until a watermarked preview exists.
-- Return `404` for missing or ineligible media. Map S3 failures that occur before headers to a
-  sanitized `503`. If the body fails after headers, log the safe photo identity, close the S3 body,
-  and terminate the stream; the status can no longer be changed.
-- Require the iterator or response wrapper to close the S3 body in `finally`, including client
-  disconnects.
-- Prefer `Cache-Control: no-store` for the first mechanism so unpublishing revokes access on the next
-  request. Return safe `Content-Type`, `Content-Length`, `Content-Disposition: inline`, and
-  `X-Content-Type-Options: nosniff`. Defer Range and conditional GET support.
+The decision must be narrow: the thirteen frozen prototype identities may use fixed final keys in
+the existing private `hires-staging` bucket and deterministic PostgreSQL reconciliation. A separate
+operator action may conditionally create only absent fixed objects after an all-key dry run and
+fresh confirmation. This is an explicit staging reference-data exception; ADR 0013 continues to
+govern all normal photographer ingestion through incoming keys, verification, and promotion.
 
-### Environment-scoped seed records
+Explicitly exclude production, arbitrary legacy backfill, per-database object copies, deployment,
+migration, startup, or seed-command S3 access, overwrite, copy, multipart upload, ACL/IAM/CORS or
+lifecycle changes, deletion, and automatic seed enablement.
 
-- Do not put staging object references in an unconditional Django data migration.
-- Prefer an idempotent, database-only management command such as `seed_reference_photos`, invoked
-  explicitly for staging/dev environments after normal migrations. It must never upload or inspect
-  S3 and must not run in production entrypoint paths unless separately enabled by an explicit
-  environment contract.
-- Use an exact inactive username, for example `findme-photo-seed-uploader`, and require all expected
-  flags before reuse. Store the historical-model-safe unusable password sentinel `!`; do not assume
-  `set_unusable_password()` exists on a historical model.
-- Use the selected database alias for every ORM operation. Define cleanup only for rows and the
-  uploader that still exactly match the seed contract.
-- Put photo ID, event slug, source Git blob path, destination key, filename, byte size, content type,
-  and SHA-256 in one committed manifest consumed by command tests and the operator runbook.
-- Make the one-time object operation compare first. Matching size and checksum means skip; a
-  conflicting existing object means abort. Creating an absent object must use a conditional
-  no-overwrite mechanism supported by the chosen S3 client or stop for a reviewed alternative.
-- Keep S3 deletion out of this increment. Any later cleanup requires a separate exact inventory,
-  read-only reference check, rollback description, and fresh destructive-action confirmation.
+Specification approval is decision evidence only. It must not be recorded as ADR acceptance. Ask
+the maintainer to accept ADR 0015 and ADR 0016 separately, naming each exact decision; acceptance of
+one does not unblock the other plan.
 
-## Source asset evidence
+## Exact plan corrections after ADR acceptance
 
-The six prototype blobs referenced by the thirteen historical rows still exist in Git commit
-`cb4ce51`. Their measured metadata is:
+Only after the applicable ADR is explicitly accepted may its plan be unblocked and edited.
 
-| Source asset | Bytes | SHA-256 |
-| --- | ---: | --- |
-| `run-city-1842.png` | 112267 | `f62fc170134dc541db3f923e8be4451d4a6116dfacc79d3d738c2fbe2175e2d4` |
-| `run-track-1190.png` | 108295 | `e034e81322e3bc68d86a2b530b15b43101f9f6b834a1d7092f1d327e435a18ef` |
-| `run-finish-1842.png` | 113160 | `baeebc3924d57505bb55476f0b808e715d8502954e1a8bb59ed5fe2fbbbd2ae4` |
-| `run-park-1204.png` | 107844 | `fd25fc1c10dea881f94dba41009e34533259592252abdd5ec01bd9c436a89356` |
-| `run-finish-1204.png` | 113569 | `5b6fd0f142b21ae49427d994409c197f1b109bc9d427438497c1fd98a71dec4e` |
-| `run-expo-3125.png` | 111727 | `aa6e51a45f9cfea60fbbda593de9b3b0ec38dd7b592b050cfe6e02afd7bf3219` |
+For `docs/plans/2026-07-18-event-photo-gallery.md`:
 
-The thirteen rows reuse these six byte sequences. Because `Photo.original_key` is globally unique,
-keeping all thirteen photo IDs requires thirteen distinct final keys even when bytes repeat. Those
-copies are created once, not once per database or deployment.
+- Change `Status: Draft` to `Status: In progress — Tasks 1-6 complete; Tasks 7-8 not started`.
+- Replace `Approved specification` with the template field `Related specification` and retain the
+  exact gallery-specification link.
+- Add exact architecture links matching the corrected specification, add accepted ADR 0015 to the
+  existing applicable ADR links, and add
+  `ADR impact: Resolved — conforms to accepted ADR 0015 and applicable ADRs 0001, 0002, 0006, 0013,
+  and 0014`.
+- Mark Tasks 1-6 complete and record commit range `676bbf2..0ee60ac` plus the 43-passed Task 6 visual
+  result. Leave every Task 7 and Task 8 checkbox open.
+- Keep Task 7 before Task 8. Task 8 must be the final architecture and ADR reconciliation after all
+  behavior verification and before push.
 
-## Exact continuation sequence
+For `docs/plans/2026-07-18-staging-seed-photo-media.md`:
 
-1. Revise the two specifications to resolve every blocking item above.
-2. Re-run the independent spec review until both specifications are approved.
-3. Ask the maintainer to review the revised spec files.
-4. Only after approval, create two separate decision-complete implementation plans under
-   `docs/plans/`: one for the gallery and one for seed media.
-5. Run independent plan review for each plan chunk.
-6. Stop again before implementation unless the maintainer explicitly asks to proceed.
-7. Immediately before any Yandex Object Storage mutation, show the active non-secret cloud/folder
-   context, exact bucket/object targets, commands, impact, verification, rollback, and price delta or
-   state that it is unknown; then obtain fresh explicit confirmation.
+- Change `Status: Draft` to `Status: Ready for implementation`.
+- Replace `Approved specification` with `Related specification`, add accepted ADR 0016, use the
+  corrected exact architecture/ADR links, and add
+  `ADR impact: Resolved — conforms to accepted ADR 0016 while ADR 0013 remains authoritative for
+  normal ingestion`.
+- Leave every task checkbox open. Its final task must reconcile the implemented exception with ADRs
+  0016 and 0013 and with `docs/architecture.md` before push.
 
+## Repository truth that remains stale
+
+- `docs/architecture.md` does not yet record the branch's implemented gallery presentation,
+  event-scoped private-original route, or local lightbox. After gallery Task 7 verification, Task 8
+  must add only verified implemented facts, summarize/link accepted ADR 0015, and narrow the open
+  free/paid media-policy item to the unresolved paid-event and broader download-policy decisions.
+  It must not claim staging activation, seed media, derivatives, workers, or commerce.
+- `docs/product-jobs.md` still lists PJ-005 as `Candidate`. During lifecycle remediation it should
+  move to `In progress` with the implementation range as evidence; after Task 8 it may move to
+  `Validated` only with the final Python, JavaScript, visual, and deployment evidence. PJ-009 stays
+  `Candidate`: inline gallery delivery does not implement the separate download product job. Each
+  transition must update the current row and detail and append one history row.
+- `docs/engineering-jobs.md` has no capability entry for safe private gallery-media delivery. The
+  final gallery reconciliation should add the next stable job only if Task 7's candidate-image read
+  preflight and final checks are complete, with evidence limited to the verified route, safe stream,
+  and deployment gate. It must not claim IAM mutation or live staging evidence.
+- Seed implementation, if later completed, may add implemented reference-data mechanism wording and
+  accepted ADR 0016 to architecture, but must still state that no object upload or environment
+  enablement occurred unless separately evidenced.
+
+## Continuation order
+
+1. Correct both specifications with the exact metadata and classifications above.
+2. Create ADR 0015 and ADR 0016 as `Proposed`; update the ADR index.
+3. Obtain separate explicit maintainer acceptance for each ADR.
+4. Unblock and update only the plan whose ADR is accepted, using the exact status and metadata
+   changes above.
+5. For the gallery, complete Task 7, then Task 8 final verification and architecture/ADR/job
+   reconciliation.
+6. Execute seed-media Tasks 1-8 separately only after ADR 0016 is accepted; do not combine seed work
+   or operator mutation with the gallery continuation.
+7. Stop before any uploader `--apply`. A future apply still requires a fresh session-specific scope
+   display, dry run, exact bucket and thirteen keys, active non-secret context, total bytes, price
+   impact or unknown, verification and no-delete rollback, followed by fresh explicit confirmation.
+
+No step in this handoff authorizes object creation, seed enablement, gallery activation, IAM change,
+or any other cloud mutation.

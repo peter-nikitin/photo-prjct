@@ -58,7 +58,10 @@ def test_visual_fixture_module_has_no_orm_dependency() -> None:
     assert "django.db" not in source
 
 
-@override_settings(ROOT_URLCONF="tests.visual.urls")
+@override_settings(
+    ROOT_URLCONF="tests.visual.urls",
+    STORAGES=visual_settings.STORAGES,
+)
 def test_event_header_routes_preserve_their_pre_gallery_visual_contract() -> None:
     client = Client()
 

@@ -294,3 +294,4 @@ def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
     }
     assert visual_service["depends_on"]["postgres"]["condition"] == "service_healthy"
     assert visual_service["environment"]["CI"] == "${CI:-false}"
+    assert visual_service["environment"]["NODE_PATH"] == "/opt/visual-test-deps/node_modules"

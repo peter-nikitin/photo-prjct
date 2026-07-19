@@ -31,6 +31,7 @@ services:
       DB_HOST: postgres
       DB_PORT: "5432"
       PYTHONPATH: .:src/backend
+      NODE_PATH: /opt/visual-test-deps/node_modules
       DJANGO_SETTINGS_MODULE: tests.visual.settings
       CI: ${CI:-false}
     volumes:

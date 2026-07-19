@@ -87,9 +87,13 @@ production.
 When UI rendering changes, I want Playwright to run in the same pinned container environment locally
 and in CI, so I can review deterministic snapshots.
 
+Local runs tag the dependency-only visual-test image from its Dockerfile and lock files, then mount
+the current source at runtime. Source-only changes therefore reuse the installed Chromium instead of
+rebuilding it.
+
 - Status: Validated
-- Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
-- Last updated: 2026-07-17
+- Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), [`tests/visual/run-in-container.sh`](../tests/visual/run-in-container.sh), [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
+- Last updated: 2026-07-19
 
 ### EJ-006 — Maintainer — Promote the staging-verified image
 
@@ -152,3 +156,4 @@ This log is append-only.
 | 2026-07-17 | EJ-008 | Not recorded | Delivered | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
 | 2026-07-17 | EJ-009 | Not recorded | Candidate | [Architecture open decisions — Observability stack](architecture.md#open-decisions) |
 | 2026-07-17 | EJ-010 | Not recorded | Candidate | [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions) |
+| 2026-07-19 | EJ-005 | Validated | Validated | Local visual runs now reuse a dependency-keyed image; [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py) verifies build-once behavior. |

@@ -2,8 +2,17 @@ from dataclasses import FrozenInstanceError
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
+from ingestion.storage import OpenedObject
 
-from picflow.gallery import GalleryMedia, GalleryPhoto, GalleryPhotoFactory
+from picflow.gallery import (
+    CloseableMediaIterator,
+    FinalObjectStorage,
+    GalleryMedia,
+    GalleryPhoto,
+    GalleryPhotoFactory,
+    PublicMediaResolver,
+    ResolvedPublicMedia,
+)
 from picflow.models import Event, Photo
 
 
@@ -89,3 +98,144 @@ class GalleryPresentationContractTests(SimpleTestCase):
             ],
         )
         boto3_client.assert_not_called()
+
+
+class _ReadableBody:
+    def __init__(self, reads: list[bytes | Exception]) -> None:
+        self._reads = iter(reads)
+        self.close_calls = 0
+
+    def read(self, amt: int | None = None) -> bytes:  # noqa: ARG002
+        result = next(self._reads)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _FinalObjectStorage:
+    def __init__(self, opened_objects: list[OpenedObject]) -> None:
+        self._opened_objects = iter(opened_objects)
+        self.opened_keys: list[str] = []
+
+    def open_final(self, *, key: str) -> OpenedObject:
+        self.opened_keys.append(key)
+        return next(self._opened_objects)
+
+
+class PublicGalleryMediaTests(SimpleTestCase):
+    def test_resolver_maps_both_variants_to_original(self) -> None:
+        jpeg_body = _ReadableBody([])
+        png_body = _ReadableBody([])
+        storage: FinalObjectStorage = _FinalObjectStorage(
+            [
+                OpenedObject(body=jpeg_body, size=123, content_type="image/jpeg"),
+                OpenedObject(body=png_body, size=456, content_type="image/png"),
+            ]
+        )
+        resolver = PublicMediaResolver(storage)
+        photo = Photo(id="photo-42", original_key="originals/0123456789abcdef0123456789abcdef")
+
+        small = resolver.resolve(photo=photo, variant="preview-small")
+        large = resolver.resolve(photo=photo, variant="preview-large")
+
+        self.assertEqual(
+            small,
+            ResolvedPublicMedia(
+                body=jpeg_body,
+                content_length=123,
+                content_type="image/jpeg",
+                extension="jpg",
+            ),
+        )
+        self.assertEqual(
+            large,
+            ResolvedPublicMedia(
+                body=png_body,
+                content_length=456,
+                content_type="image/png",
+                extension="png",
+            ),
+        )
+        self.assertEqual(storage.opened_keys, [photo.original_key, photo.original_key])
+
+    def test_resolver_rejects_unknown_variant_before_storage(self) -> None:
+        storage: FinalObjectStorage = _FinalObjectStorage([])
+        resolver = PublicMediaResolver(storage)
+        photo = Photo(id="photo-42", original_key="originals/0123456789abcdef0123456789abcdef")
+
+        with self.assertRaisesMessage(ValueError, "ineligible gallery media"):
+            resolver.resolve(photo=photo, variant="original")  # type: ignore[arg-type]
+
+        self.assertEqual(storage.opened_keys, [])
+
+    def test_resolver_requires_original_key_before_storage(self) -> None:
+        storage: FinalObjectStorage = _FinalObjectStorage([])
+        resolver = PublicMediaResolver(storage)
+        photo = Photo(id="photo-42", original_key=None)
+
+        with self.assertRaisesMessage(ValueError, "ineligible gallery media"):
+            resolver.resolve(photo=photo, variant="preview-small")
+
+        self.assertEqual(storage.opened_keys, [])
+
+    def test_iterator_closes_after_eof(self) -> None:
+        body = _ReadableBody([b"first", b""])
+        iterator = CloseableMediaIterator(
+            media=ResolvedPublicMedia(body, 5, "image/jpeg", "jpg"),
+            event_slug="city-run",
+            photo_id="photo-42",
+        )
+
+        self.assertEqual(list(iterator), [b"first"])
+        self.assertEqual(body.close_calls, 1)
+
+    def test_iterator_closes_and_sanitizes_read_failure(self) -> None:
+        body = _ReadableBody([RuntimeError("S3 access token: secret")])
+        iterator = CloseableMediaIterator(
+            media=ResolvedPublicMedia(body, 5, "image/jpeg", "jpg"),
+            event_slug="city-run",
+            photo_id="photo-42",
+        )
+
+        with self.assertLogs("picflow.gallery", level="ERROR") as logs:
+            with self.assertRaises(StopIteration):
+                next(iterator)
+
+        self.assertEqual(body.close_calls, 1)
+        self.assertEqual(logs.output, ["ERROR:picflow.gallery:Public photo stream ended early"])
+        self.assertEqual(logs.records[0].event_slug, "city-run")
+        self.assertEqual(logs.records[0].photo_id, "photo-42")
+
+    def test_iterator_close_before_first_next_closes_body(self) -> None:
+        body = _ReadableBody([])
+        iterator = CloseableMediaIterator(
+            media=ResolvedPublicMedia(body, 0, "image/jpeg", "jpg"),
+            event_slug="city-run",
+            photo_id="photo-42",
+        )
+
+        iterator.close()
+
+        self.assertEqual(body.close_calls, 1)
+        with self.assertRaises(StopIteration):
+            next(iterator)
+        self.assertEqual(body.close_calls, 1)
+
+    def test_iterator_close_after_partial_read_closes_body(self) -> None:
+        body = _ReadableBody([b"first"])
+        iterator = CloseableMediaIterator(
+            media=ResolvedPublicMedia(body, 5, "image/jpeg", "jpg"),
+            event_slug="city-run",
+            photo_id="photo-42",
+        )
+
+        self.assertEqual(next(iterator), b"first")
+        iterator.close()
+
+        self.assertEqual(body.close_calls, 1)
+        with self.assertRaises(StopIteration):
+            next(iterator)
+        self.assertEqual(body.close_calls, 1)

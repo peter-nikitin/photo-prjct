@@ -1,5 +1,6 @@
 import os
 import shutil
+import stat
 import subprocess
 import textwrap
 from pathlib import Path
@@ -8,6 +9,22 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
+PREVIOUS_ENV = (
+    b"APP_IMAGE=old-image\n"
+    b"SECRET_KEY=old-secret\n"
+    b"DEBUG=True\n"
+    b"ALLOWED_HOSTS=old.example\n"
+    b"DB_NAME=old-app\n"
+    b"DB_USER=old-user\n"
+    b"DB_PASSWORD=old-password\n"
+    b"DB_HOST=old-db\n"
+    b"DB_PORT=6543\n"
+    b"PUBLIC_DOMAIN=old.example\n"
+    b"PHOTO_UPLOAD_ENABLED=True\n"
+    b"PRIVATE_MEDIA_S3_BUCKET=old-private-bucket\n"
+    b"KEEP_EXACTLY=old-only-setting\n"
+)
+
 
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
@@ -15,9 +32,7 @@ def _write_executable(path: Path, body: str) -> None:
 
 
 def _write_python_executable(path: Path, body: str) -> None:
-    path.write_text(
-        "#!/usr/bin/env python3\n" + textwrap.dedent(body), encoding="utf-8"
-    )
+    path.write_text("#!/usr/bin/env python3\n" + textwrap.dedent(body), encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -185,11 +200,17 @@ def test_public_smoke_rejects_wrong_redirect_or_unhealthy_https(
 
 
 def _apply_env(
-    tmp_path: Path, fake_bin: Path, *, scenario: str, target: str = "production"
+    tmp_path: Path,
+    fake_bin: Path,
+    *,
+    scenario: str,
+    target: str = "production",
+    previous_env: bytes | None = PREVIOUS_ENV,
 ) -> dict[str, str]:
-    (tmp_path / ".env").write_text(
-        "APP_IMAGE=old-image\nSECRET_KEY=old-secret\nKEEP=value\n", encoding="utf-8"
-    )
+    if previous_env is not None:
+        (tmp_path / ".env").write_bytes(previous_env)
+        (tmp_path / ".env").chmod(0o640)
+        (tmp_path / "previous-env.expected").write_bytes(previous_env)
     (tmp_path / "deployed-image").write_text("old-image\n", encoding="utf-8")
     for name in ("docker-compose.prod.yml", "docker-compose.https.yml"):
         (tmp_path / name).write_text("services: {}\n", encoding="utf-8")
@@ -250,7 +271,11 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
 
             def first(self):
                 record("preflight-first")
-                if scenario in {"private-media-success", "private-media-failure"}:
+                if scenario in {
+                    "private-media-success",
+                    "private-media-failure",
+                    "private-media-config-failure",
+                }:
                     return types.SimpleNamespace(original_key="originals/eligible-photo")
                 return None
 
@@ -285,6 +310,8 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
         class PrivateUploadStorage:
             def __init__(self):
                 record("preflight-storage-init")
+                if scenario == "private-media-config-failure":
+                    raise RuntimeError("private config detail must stay hidden")
 
             def open_final(self, *, key):
                 record(f"preflight-open {key}")
@@ -318,7 +345,7 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
         fake_bin / "docker",
         """
 case " $* " in
-  *" run --rm --no-deps -T --entrypoint python web manage.py shell -c "*)
+  *" run --rm --no-deps -T --entrypoint python web manage.py shell"*)
     for gallery_preflight do :; done
     {
       printf 'APP_IMAGE=%s docker' "${APP_IMAGE-unset}"
@@ -333,8 +360,20 @@ case " $* " in
       done
       printf '\n'
     } >> "$COMMAND_LOG"
+    case " $* " in
+      *" manage.py shell --no-imports -c "*) : ;;
+      *) printf '8 objects imported automatically (use -v 2 for details).\n' ;;
+    esac
     GALLERY_PREFLIGHT="$gallery_preflight" "$GALLERY_PREFLIGHT_HARNESS"
     exit $?
+    ;;
+esac
+case " $* " in
+  *" compose "*" up -d --remove-orphans"*)
+    if [ "${APP_IMAGE-unset}" = unset ] && [ -f "$PREVIOUS_ENV_EXPECTED" ]; then
+      cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
+      printf 'recovery-env-exact-before-up\n' >> "$COMMAND_LOG"
+    fi
     ;;
 esac
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
@@ -377,6 +416,7 @@ esac
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "apply.log"),
+        "PREVIOUS_ENV_EXPECTED": str(tmp_path / "previous-env.expected"),
         "GALLERY_PREFLIGHT_HARNESS": str(gallery_preflight_harness),
         "APPLY_SCENARIO": scenario,
         "DEPLOYMENT_TARGET": target,
@@ -389,6 +429,7 @@ esac
         "DB_NAME": "app",
         "DB_USER": "app",
         "DB_PASSWORD": "password",
+        "PHOTO_UPLOAD_ENABLED": "False",
         "PUBLIC_DOMAIN": "findme-photo.ru",
         "PUBLIC_DOMAIN_ALIAS": "",
         "LETSENCRYPT_EMAIL": "ops@example.com",
@@ -399,9 +440,21 @@ def _apply_log(tmp_path: Path) -> list[str]:
     return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
 
 
-def test_apply_propagates_private_media_read_settings(
-    tmp_path: Path, fake_bin: Path
-) -> None:
+def _env_metadata(path: Path) -> tuple[int, int, int, int]:
+    metadata = path.stat()
+    return (
+        stat.S_IMODE(metadata.st_mode),
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_mtime_ns,
+    )
+
+
+def _assert_no_env_temporary_files(tmp_path: Path) -> None:
+    assert list(tmp_path.glob(".env.*")) == []
+
+
+def test_apply_propagates_private_media_read_settings(tmp_path: Path, fake_bin: Path) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
@@ -429,9 +482,11 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     )
 
     assert result.returncode == 0, result.stderr
-    assert [
-        line for line in result.stdout.splitlines() if line.startswith("gallery-")
-    ] == ["gallery-private-media-preflight-skipped:no-eligible-photo"]
+    assert result.stdout == (
+        "gallery-private-media-preflight-skipped:no-eligible-photo\n"
+        "Removed upload cleanup schedule.\n"
+    )
+    assert result.stderr == "docker compose up exit status: 0\n"
     commands = _apply_log(tmp_path)
     assert "preflight-filter eligible-private-photo" in commands
     assert "preflight-order-by id" in commands
@@ -450,9 +505,10 @@ def test_candidate_private_media_preflight_reads_when_photo_exists(
     )
 
     assert result.returncode == 0, result.stderr
-    assert [
-        line for line in result.stdout.splitlines() if line.startswith("gallery-")
-    ] == ["gallery-private-media-preflight-ok"]
+    assert result.stdout == (
+        "gallery-private-media-preflight-ok\nRemoved upload cleanup schedule.\n"
+    )
+    assert result.stderr == "docker compose up exit status: 0\n"
     commands = _apply_log(tmp_path)
     assert commands.count("preflight-storage-init") == 1
     assert commands.count("preflight-open originals/eligible-photo") == 1
@@ -479,11 +535,10 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
         "APP_IMAGE=new-image docker compose --project-name photo-production "
         f"--env-file {tmp_path}/.env -f {tmp_path}/docker-compose.prod.yml "
         f"-f {tmp_path}/docker-compose.https.yml run --rm --no-deps -T "
-        "--entrypoint python web manage.py shell -c <gallery_media_preflight>"
+        "--entrypoint python web manage.py shell --no-imports -c "
+        "<gallery_media_preflight>"
     )
-    stop_nginx = next(
-        index for index, command in enumerate(commands) if " stop nginx" in command
-    )
+    stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
     candidate_up = next(
         index
         for index, command in enumerate(commands)
@@ -492,28 +547,72 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
     assert candidate_pull < candidate_run < stop_nginx < candidate_up
 
 
-def test_failed_candidate_private_media_preflight_with_photo_keeps_old_service_active(
-    tmp_path: Path, fake_bin: Path
+@pytest.mark.parametrize("scenario", ["private-media-failure", "private-media-config-failure"])
+def test_failed_candidate_private_media_preflight_restores_complete_previous_state(
+    tmp_path: Path, fake_bin: Path, scenario: str
 ) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    previous_metadata = _env_metadata(tmp_path / ".env")
     result = _run(
         "deploy/apply-deployment.sh",
-        env=_apply_env(tmp_path, fake_bin, scenario="private-media-failure"),
+        env=env,
     )
 
     assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Gallery private-media read prerequisite failed\n"
+        "Candidate image failed private-media read prerequisite\n"
+    )
     assert "Gallery private-media read prerequisite failed" in result.stderr
     assert "private failure detail" not in result.stderr
+    assert "private config detail" not in result.stderr
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith(
-        "APP_IMAGE=old-image\n"
-    )
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert _env_metadata(tmp_path / ".env") == previous_metadata
     commands = _apply_log(tmp_path)
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
-    assert not any(
-        "APP_IMAGE=new-image" in command and " up -d --remove-orphans" in command
-        for command in commands
-    )
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_candidate_pull_failure_restores_complete_env_without_service_reconciliation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="pull-failure")
+    previous_metadata = _env_metadata(tmp_path / ".env")
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert _env_metadata(tmp_path / ".env") == previous_metadata
+    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    commands = _apply_log(tmp_path)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_pre_switch_failure_restores_absent_previous_env_without_reconciliation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="pull-failure", previous_env=None)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert not (tmp_path / ".env").exists()
+    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    commands = _apply_log(tmp_path)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
 
 
 def test_workflows_forward_private_media_settings() -> None:
@@ -541,9 +640,7 @@ def test_workflows_forward_private_media_settings() -> None:
         assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in forwarded
 
 
-def test_deployment_path_performs_no_iam_mutation(
-    tmp_path: Path, fake_bin: Path
-) -> None:
+def test_deployment_path_performs_no_iam_mutation(tmp_path: Path, fake_bin: Path) -> None:
     for tool in ("yc", "aws", "s3cmd"):
         _write_executable(
             fake_bin / tool,
@@ -611,10 +708,10 @@ def test_apply_failure_restores_previous_image_and_overlay_without_marker_change
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=old-image\n")
-    assert "SECRET_KEY=new-secret\n" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") >= 2
+    assert commands.count("recovery-env-exact-before-up") == 1
 
 
 def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
@@ -627,16 +724,16 @@ def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=old-image\n")
-    assert "SECRET_KEY=new-secret\n" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.index("stop nginx") < commands.index("up -d --remove-orphans")
+    assert commands.count("recovery-env-exact-before-up") == 1
     assert "docker-compose.https.yml" in commands
 
 
 @pytest.mark.parametrize(
     ("scenario", "expected_reconciliations"),
-    [("pull-failure", 1), ("marker-failure", 2)],
+    [("marker-failure", 2)],
 )
 def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
     tmp_path: Path,
@@ -651,9 +748,10 @@ def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=old-image\n")
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") == expected_reconciliations
+    assert commands.count("recovery-env-exact-before-up") == 1
 
 
 def test_failed_certificate_renewal_waits_before_next_attempt(

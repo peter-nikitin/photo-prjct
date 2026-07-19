@@ -53,11 +53,18 @@ overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
 health_port=443
 health_url="https://$PUBLIC_DOMAIN/health/"
 
-compose() {
+compose_with_env_file() {
+    compose_env_file="$1"
+    shift
+    APP_ENV_FILE="$compose_env_file" \
     docker compose --project-name "$COMPOSE_PROJECT_NAME" \
-        --env-file "$DEPLOY_ROOT/.env" \
+        --env-file "$compose_env_file" \
         -f "$DEPLOY_ROOT/docker-compose.prod.yml" \
         -f "$overlay_file" "$@"
+}
+
+compose() {
+    compose_with_env_file "$DEPLOY_ROOT/.env" "$@"
 }
 
 diagnostics() {
@@ -65,30 +72,34 @@ diagnostics() {
     compose logs --tail=100 web nginx || true
 }
 
-env_tmp=""
+requested_env_tmp=""
+recovery_env_tmp=""
 marker_tmp=""
 mutation_started=0
 deployment_committed=0
 recovery_in_progress=0
 
 cleanup() {
-    rm -f ${env_tmp:+"$env_tmp"} ${marker_tmp:+"$marker_tmp"}
+    rm -f \
+        ${requested_env_tmp:+"$requested_env_tmp"} \
+        ${recovery_env_tmp:+"$recovery_env_tmp"} \
+        ${marker_tmp:+"$marker_tmp"}
 }
 
 replace_env_image() {
     image="$1"
-    env_tmp="$(mktemp "$DEPLOY_ROOT/.env.restore.XXXXXX")" || return 1
+    recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.restore.XXXXXX")" || return 1
     if ! awk -v image="$image" '
         BEGIN { replaced = 0 }
         /^APP_IMAGE=/ && !replaced { print "APP_IMAGE=" image; replaced = 1; next }
         { print }
         END { if (!replaced) print "APP_IMAGE=" image }
-    ' "$DEPLOY_ROOT/.env" > "$env_tmp"; then
+    ' "$DEPLOY_ROOT/.env" > "$recovery_env_tmp"; then
         return 1
     fi
-    chmod 600 "$env_tmp" || return 1
-    mv "$env_tmp" "$DEPLOY_ROOT/.env" || return 1
-    env_tmp=""
+    chmod 600 "$recovery_env_tmp" || return 1
+    mv "$recovery_env_tmp" "$DEPLOY_ROOT/.env" || return 1
+    recovery_env_tmp=""
 }
 
 recover_previous_deployment() {
@@ -139,11 +150,15 @@ fail() {
 install -d -m 0755 "$DEPLOY_ROOT"
 previous_image=""
 previous_upload_enabled="False"
+has_successful_deployment=0
 if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_image="$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
     previous_upload_enabled="$(
         sed -n 's/^PHOTO_UPLOAD_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
+fi
+if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
+    has_successful_deployment=1
 fi
 
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"
@@ -152,7 +167,7 @@ if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
 fi
 
 umask 077
-env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
+requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
 {
     printf 'APP_IMAGE=%s\n' "$requested_image"
     printf 'SECRET_KEY=%s\n' "$SECRET_KEY"
@@ -176,11 +191,8 @@ env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PRIVATE_MEDIA_S3_ACCESS_KEY_ID=%s\n' "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}"
     printf 'PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:-}"
     printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
-} > "$env_tmp"
-chmod 600 "$env_tmp"
-mutation_started=1
-mv "$env_tmp" "$DEPLOY_ROOT/.env"
-env_tmp=""
+} > "$requested_env_tmp"
+chmod 600 "$requested_env_tmp"
 
 if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     if ! printf '%s\n' "$GHCR_READ_TOKEN" | \
@@ -188,6 +200,48 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
         fail "Container registry login failed"
     fi
 fi
+
+if ! compose_with_env_file "$requested_env_tmp" pull web; then
+    fail "Candidate application image pull failed"
+fi
+
+gallery_media_preflight='
+from contextlib import closing
+from ingestion.storage import PrivateUploadStorage
+from picflow.models import Event, Photo
+try:
+    photo = Photo.objects.filter(
+        event__publication_status=Event.PublicationStatus.PUBLISHED,
+        event__access_type=Event.AccessType.FREE,
+        src="",
+        original_key__isnull=False,
+    ).order_by("id").first()
+except Exception:
+    raise SystemExit("Gallery private-media read prerequisite failed") from None
+if photo is None:
+    print("gallery-private-media-preflight-skipped:no-eligible-photo")
+else:
+    try:
+        opened = PrivateUploadStorage().open_final(key=photo.original_key)
+        with closing(opened.body) as body:
+            if not body.read(1):
+                raise RuntimeError
+    except Exception:
+        raise SystemExit("Gallery private-media read prerequisite failed") from None
+    print("gallery-private-media-preflight-ok")
+'
+if [ "$has_successful_deployment" -eq 0 ]; then
+    echo "gallery-private-media-preflight-skipped:no-existing-deployment"
+else
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py shell --no-imports -c "$gallery_media_preflight"; then
+        fail "Candidate image failed private-media read prerequisite"
+    fi
+fi
+
+mutation_started=1
+mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
+requested_env_tmp=""
 
 compose stop nginx || true
 if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then

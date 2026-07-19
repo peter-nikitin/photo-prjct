@@ -37,6 +37,25 @@ The repository currently contains an early Django application:
   and SVG assets under `src/backend`.
 - The `picflow` application owns the first target `Event` catalog model and a preliminary `Photo`
   model. Published events are managed through Django Admin and rendered by server-side templates.
+- Published free-event detail pages select only completed uploaded `Photo` rows with a private
+  original key and no legacy `src`, in stable ID order. A database-only factory converts them to
+  immutable `GalleryPhoto` presentation values, so templates consume separate small- and
+  large-preview application URLs without inspecting storage fields or selecting media variants.
+- The current small- and large-preview resolver deliberately opens the same private original for
+  both variants. The event-scoped GET endpoint rechecks publication, free access, and photo
+  eligibility on every request, then streams the object inline with `private, no-store` caching and
+  sanitized 404/503 outcomes. It exposes no permanent key, credential, S3 redirect, ETag, Range, or
+  attachment behavior, and its owning iterator closes the storage body before iteration, at EOF,
+  or after a read failure.
+- Event galleries use locally packaged GLightbox 3.3.1 assets with normal anchor fallback.
+  Task 6's browser run and inspected snapshots verified responsive populated and empty layouts,
+  keyboard and pointer operation, mobile swipe, Escape/control close, focus restoration, and
+  operation with JavaScript disabled. The later local implementation rerun was infrastructure-blocked:
+  after a Docker LinuxKit/API wedge and restart, two pre-existing catalog cases rendered with
+  HTTP-200 resources but timed out waiting for `networkidle`. PR #45 CI run
+  [29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091) then passed all
+  44 visual tests for the CI-tested implementation commit `7d6a718` in 47.7 seconds; later docs-only
+  evidence commits were not included. Neither automated result represents a live staging activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
@@ -58,6 +77,18 @@ The repository currently contains an early Django application:
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
+- Both deployment workflows propagate the existing private-media bucket and credential settings.
+  Before environment promotion or any service switch, `apply-deployment.sh` pulls only the candidate
+  web image. If no successful `deployed-image` marker exists, it emits the sanitized
+  `gallery-private-media-preflight-skipped:no-existing-deployment` marker and continues the normal
+  first-deployment path without constructing an ORM preflight container; this is not `GetObject`
+  validation. Once that marker exists, the candidate runs its read-only gallery preflight against a
+  mode-0600 temporary environment file and the existing Compose network/database. An eligible row
+  must yield one nonempty byte and a sanitized success marker; no eligible row yields a distinct
+  skip marker that is also not storage-permission evidence; an unavailable established database
+  fails closed before promotion. Automated tests validate these paths and failure cleanup, but no
+  staging deployment, IAM state, cloud policy, or private object was changed or validated by this
+  delivery.
 - Unfinished screen concepts live only in the test-only Django visual-reference gallery under
   `tests/visual`. Playwright renders it through isolated settings and `/__visual__/` routes; neither
   the production URLconf nor the production Docker image includes the gallery. Visual regression
@@ -69,6 +100,7 @@ The repository currently contains an early Django application:
 Browser -> Nginx HTTPS edge -> Django/Gunicorn -> PostgreSQL
                                    |
                                    +-> packaged templates and static assets
+                                   `-> private originals in Object Storage
 
 GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
                                              |- Django
@@ -98,6 +130,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Keep Stage 2 ingestion control and confirmation request-driven, with bounded browser transfer
   concurrency and no worker or broker, as defined by
   [ADR 0014](adr/0014-keep-stage-2-ingestion-request-driven.md).
+- Allow anonymous inline delivery of a complete private original only for an eligible completed
+  upload in a currently published free event, within the narrow boundary of
+  [ADR 0015](adr/0015-allow-anonymous-free-event-original-delivery.md). Paid-event media and
+  broader attachment or download policy remain unresolved.
 
 ## Deployment domain assignment — accepted
 
@@ -189,10 +225,12 @@ broker, vector engine, and ML implementations shown for later processing require
 
 ## Security, privacy, and legal boundaries
 
-- Originals remain private storage objects. Public pages receive derived media: watermarked previews
-  for paid events and unwatermarked reduced copies for free events. A free-event original may be
-  delivered anonymously only through a controlled application response or short-lived access that
-  does not expose its permanent storage key.
+- Originals remain private storage objects. The target policy is for public pages to receive derived
+  media: watermarked previews for paid events and unwatermarked reduced copies for free events.
+  During the current ADR 0015 transition, only eligible completed uploads for published free events
+  use a controlled inline Django response backed by the original; paid-event media remains
+  unavailable. The response does not expose the permanent storage key, but it delivers the complete
+  unsanitized original and therefore cannot prevent recipients from saving or redistributing it.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
 - Photographer routes require the additive upload permission, and non-superuser batch access is
@@ -247,7 +285,8 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Face detection/embedding implementation and biometric governance.
 - Bib-region detection/OCR implementation and model licensing.
 - Payment provider, callback contract, refunds, and download entitlement policy.
-- Free/paid event media access and anonymous original-download policy.
+- Paid-event media access and the broader attachment/download policy beyond ADR 0015's narrow
+  anonymous inline delivery for eligible free-event originals.
 - Observability stack, backup targets, retention, and recovery objectives.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.
 

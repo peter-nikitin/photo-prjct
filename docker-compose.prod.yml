@@ -17,7 +17,7 @@ services:
   web:
     image: ${APP_IMAGE:?APP_IMAGE must be set}
     env_file:
-      - .env
+      - ${APP_ENV_FILE:-.env}
     expose:
       - "8000"
     depends_on:

@@ -34,7 +34,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-002 | Visitor | Discover published events | Validated | 2026-07-17 |
 | PJ-003 | Visitor | Review event details | Validated | 2026-07-17 |
 | PJ-004 | Photographer | Upload an event batch | Candidate | 2026-07-17 |
-| PJ-005 | Visitor | Browse an event gallery | Candidate | 2026-07-17 |
+| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-07-19 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
 | PJ-008 | Customer | Find photos by face | Candidate | 2026-07-17 |
@@ -84,9 +84,9 @@ can submit it for processing.
 When an event has published photos, I want to browse its gallery, so I can inspect photos from that
 event.
 
-- Status: Candidate
-- Evidence: [Architecture evolution stages — Photo-bank core](architecture.md#evolution-stages)
-- Last updated: 2026-07-17
+- Status: Validated
+- Evidence: [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_builds_ordered_gallery_without_storage`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_excludes_legacy_other_event_and_paid_originals`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_gallery_markup_and_loading_policy`](../src/backend/picflow/tests/test_views.py), Task 6's passing keyboard, pointer, touch, focus-restoration, no-JavaScript, populated, and empty interaction/snapshot evidence in [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js), and [PR #45 CI run 29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091), which passed all 44 visual tests for the CI-tested implementation commit `7d6a718` after the local Docker/`networkidle` failure; later docs-only evidence commits were not included in that run.
+- Last updated: 2026-07-19
 
 ### PJ-006 — Operator — Review processing results
 
@@ -161,3 +161,7 @@ This log is append-only.
 | 2026-07-17 | PJ-009 | Not recorded | Candidate | [Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) |
 | 2026-07-17 | PJ-010 | Not recorded | Candidate | [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download) |
 | 2026-07-17 | PJ-011 | Not recorded | Candidate | [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download) |
+| 2026-07-19 | PJ-005 | Candidate | Validated | Automated page, eligibility, markup, accessibility, interaction, and visual coverage verifies browsing eligible uploaded photos for a published free event. |
+| 2026-07-19 | PJ-005 | Validated | Validated | Clarified evidence: automated page, eligibility, and markup tests plus Task 6's passing interaction and inspected snapshot evidence support validation; complete current-HEAD visual evidence awaits PR CI after a local Docker/`networkidle` timeout. |
+| 2026-07-19 | PJ-005 | Validated | Validated | PR #45 CI run 29693681091 supplied the pending current-HEAD evidence: all 44 visual tests passed for `7d6a718`; the earlier local Docker/`networkidle` timeout remains an infrastructure-only boundary, not passing evidence. |
+| 2026-07-19 | PJ-005 | Validated | Validated | Provenance correction: PR #45 CI run 29693681091 passed all 44 visual tests for the CI-tested implementation commit `7d6a718`; later docs-only evidence commits were not included in that run. |

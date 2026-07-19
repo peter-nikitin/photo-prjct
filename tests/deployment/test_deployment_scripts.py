@@ -1,15 +1,38 @@
 import os
 import shutil
+import stat
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
+PREVIOUS_ENV = (
+    b"APP_IMAGE=old-image\n"
+    b"SECRET_KEY=old-secret\n"
+    b"DEBUG=True\n"
+    b"ALLOWED_HOSTS=old.example\n"
+    b"DB_NAME=old-app\n"
+    b"DB_USER=old-user\n"
+    b"DB_PASSWORD=old-password\n"
+    b"DB_HOST=old-db\n"
+    b"DB_PORT=6543\n"
+    b"PUBLIC_DOMAIN=old.example\n"
+    b"PHOTO_UPLOAD_ENABLED=True\n"
+    b"PRIVATE_MEDIA_S3_BUCKET=old-private-bucket\n"
+    b"KEEP_EXACTLY=old-only-setting\n"
+)
+
 
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _write_python_executable(path: Path, body: str) -> None:
+    path.write_text("#!/usr/bin/env python3\n" + textwrap.dedent(body), encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -177,12 +200,18 @@ def test_public_smoke_rejects_wrong_redirect_or_unhealthy_https(
 
 
 def _apply_env(
-    tmp_path: Path, fake_bin: Path, *, scenario: str, target: str = "production"
+    tmp_path: Path,
+    fake_bin: Path,
+    *,
+    scenario: str,
+    target: str = "production",
 ) -> dict[str, str]:
-    (tmp_path / ".env").write_text(
-        "APP_IMAGE=old-image\nSECRET_KEY=old-secret\nKEEP=value\n", encoding="utf-8"
-    )
+    (tmp_path / ".env").write_bytes(PREVIOUS_ENV)
+    (tmp_path / ".env").chmod(0o640)
+    (tmp_path / "previous-env.expected").write_bytes(PREVIOUS_ENV)
     (tmp_path / "deployed-image").write_text("old-image\n", encoding="utf-8")
+    (tmp_path / "deployment-target").write_text("old-target\n", encoding="utf-8")
+    (tmp_path / "compose-project-name").write_text("old-project\n", encoding="utf-8")
     for name in ("docker-compose.prod.yml", "docker-compose.https.yml"):
         (tmp_path / name).write_text("services: {}\n", encoding="utf-8")
     cert_dir = tmp_path / "deploy" / "certbot"
@@ -202,14 +231,187 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
     _write_executable(
         deploy_dir / "verify-public-edge.sh",
         """
-[ "$(cat "$DEPLOY_ROOT/deployed-image")" = old-image ]
+if [ "$APPLY_SCENARIO" = fresh-first-deployment ]; then
+  [ ! -e "$DEPLOY_ROOT/deployed-image" ]
+else
+  [ "$(cat "$DEPLOY_ROOT/deployed-image")" = old-image ]
+fi
 [ "$APPLY_SCENARIO" != public-failure ]
 printf 'verify-public-edge\n' >> "$COMMAND_LOG"
 """,
     )
+    gallery_preflight_harness = fake_bin / "gallery-preflight-harness"
+    _write_python_executable(
+        gallery_preflight_harness,
+        r"""
+        import os
+        import sys
+        import types
+
+
+        command_log = os.environ["COMMAND_LOG"]
+        scenario = os.environ["APPLY_SCENARIO"]
+
+
+        def record(message):
+            with open(command_log, "a", encoding="utf-8") as log:
+                log.write(f"{message}\n")
+
+
+        class Event:
+            class PublicationStatus:
+                PUBLISHED = "published"
+
+            class AccessType:
+                FREE = "free"
+
+
+        class QuerySet:
+            def order_by(self, field):
+                if field != "id":
+                    raise RuntimeError("candidate query must use stable id ordering")
+                record("preflight-order-by id")
+                return self
+
+            def first(self):
+                record("preflight-first")
+                if scenario in {
+                    "private-media-success",
+                    "private-media-failure",
+                    "private-media-config-failure",
+                }:
+                    return types.SimpleNamespace(original_key="originals/eligible-photo")
+                return None
+
+
+        class Manager:
+            def filter(self, **filters):
+                if scenario == "private-media-db-failure":
+                    raise ConnectionError("database unavailable detail must stay hidden")
+                expected = {
+                    "event__publication_status": Event.PublicationStatus.PUBLISHED,
+                    "event__access_type": Event.AccessType.FREE,
+                    "src": "",
+                    "original_key__isnull": False,
+                }
+                if filters != expected:
+                    raise RuntimeError("candidate query changed its eligibility boundary")
+                record("preflight-filter eligible-private-photo")
+                return QuerySet()
+
+
+        class Photo:
+            objects = Manager()
+
+
+        class Body:
+            def read(self, amount):
+                record(f"preflight-read {amount}")
+                return b"x"
+
+            def close(self):
+                record("preflight-close")
+
+
+        class PrivateUploadStorage:
+            def __init__(self):
+                record("preflight-storage-init")
+                if scenario == "private-media-config-failure":
+                    raise RuntimeError("private config detail must stay hidden")
+
+            def open_final(self, *, key):
+                record(f"preflight-open {key}")
+                if scenario == "private-media-failure":
+                    raise PermissionError("private failure detail must stay hidden")
+                return types.SimpleNamespace(body=Body())
+
+
+        ingestion = types.ModuleType("ingestion")
+        ingestion.__path__ = []
+        storage = types.ModuleType("ingestion.storage")
+        storage.PrivateUploadStorage = PrivateUploadStorage
+        picflow = types.ModuleType("picflow")
+        picflow.__path__ = []
+        models = types.ModuleType("picflow.models")
+        models.Event = Event
+        models.Photo = Photo
+        sys.modules.update(
+            {
+                "ingestion": ingestion,
+                "ingestion.storage": storage,
+                "picflow": picflow,
+                "picflow.models": models,
+            }
+        )
+
+        exec(compile(os.environ["GALLERY_PREFLIGHT"], "<gallery-media-preflight>", "exec"))
+        """,
+    )
     _write_executable(
         fake_bin / "docker",
         """
+compose_env_file=""
+previous_argument=""
+for argument do
+  if [ "$previous_argument" = --env-file ]; then
+    compose_env_file="$argument"
+  fi
+  previous_argument="$argument"
+done
+validate_candidate_env() {
+  candidate_access_key="$(sed -n 's/^PRIVATE_MEDIA_S3_ACCESS_KEY_ID=//p' "$compose_env_file")"
+  candidate_secret_key="$(sed -n 's/^PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=//p' "$compose_env_file")"
+  [ "$compose_env_file" != "$DEPLOY_ROOT/.env" ]
+  [ "$APP_ENV_FILE" = "$compose_env_file" ]
+  [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = new-image ]
+  [ "$(sed -n 's/^SECRET_KEY=//p' "$compose_env_file")" = "$EXPECTED_REQUESTED_SECRET" ]
+  [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
+  [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
+  [ "$candidate_secret_key" = "$PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" ]
+  if [ "$APPLY_SCENARIO" = fresh-first-deployment ]; then
+    [ ! -e "$DEPLOY_ROOT/.env" ]
+  else
+    cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
+  fi
+  printf 'candidate-requested-env-with-canonical-untouched\n' >> "$COMMAND_LOG"
+}
+case " $* " in
+  *" run --rm --no-deps -T --entrypoint python web manage.py shell"*)
+    validate_candidate_env
+    for gallery_preflight do :; done
+    {
+      printf 'APP_IMAGE=%s docker' "${APP_IMAGE-unset}"
+      argument_number=1
+      for argument do
+        if [ "$argument_number" -eq "$#" ]; then
+          printf ' <gallery_media_preflight>'
+        else
+          printf ' %s' "$argument"
+        fi
+        argument_number=$((argument_number + 1))
+      done
+      printf '\n'
+    } >> "$COMMAND_LOG"
+    case " $* " in
+      *" manage.py shell --no-imports -c "*) : ;;
+      *) printf '8 objects imported automatically (use -v 2 for details).\n' ;;
+    esac
+    GALLERY_PREFLIGHT="$gallery_preflight" "$GALLERY_PREFLIGHT_HARNESS"
+    exit $?
+    ;;
+esac
+case " $* " in
+  *" compose "*" pull web"*)
+    validate_candidate_env
+    ;;
+  *" compose "*" stop nginx"*)
+    [ "$compose_env_file" = "$DEPLOY_ROOT/.env" ]
+    [ "$APP_ENV_FILE" = "$DEPLOY_ROOT/.env" ]
+    [ "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" = new-image ]
+    [ "$(sed -n 's/^SECRET_KEY=//p' "$DEPLOY_ROOT/.env")" = new-secret ]
+    printf 'requested-env-promoted-before-stop\n' >> "$COMMAND_LOG"
+    ;;
+esac
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
 case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
@@ -241,6 +443,26 @@ printf 'crontab %s\n' "$*" >> "$COMMAND_LOG"
         fake_bin / "mv",
         """
 printf 'mv %s\n' "$*" >> "$COMMAND_LOG"
+source_path="${1-}"
+target_path="${2-}"
+case "$source_path:$target_path" in
+  *"/.env.requested."*":$DEPLOY_ROOT/.env")
+    case "$APPLY_SCENARIO" in
+      promotion-rename-failure)
+        exit 1
+        ;;
+      promotion-term|promotion-hup)
+        /bin/mv "$@"
+        if [ "$APPLY_SCENARIO" = promotion-term ]; then
+          kill -TERM "$PPID"
+        else
+          kill -HUP "$PPID"
+        fi
+        exit 0
+        ;;
+    esac
+    ;;
+esac
 case "$*" in
   *"/deployed-image") [ "$APPLY_SCENARIO" != marker-failure ] || exit 1 ;;
 esac
@@ -250,21 +472,287 @@ esac
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "apply.log"),
+        "PREVIOUS_ENV_EXPECTED": str(tmp_path / "previous-env.expected"),
+        "GALLERY_PREFLIGHT_HARNESS": str(gallery_preflight_harness),
         "APPLY_SCENARIO": scenario,
         "DEPLOYMENT_TARGET": target,
         "DEPLOY_ROOT": str(tmp_path),
         "COMPOSE_PROJECT_NAME": f"photo-{target}",
         "APP_IMAGE": "new-image",
         "SECRET_KEY": "new-secret",
+        "EXPECTED_REQUESTED_SECRET": "new-secret",
         "DEBUG": "False",
         "ALLOWED_HOSTS": "localhost",
         "DB_NAME": "app",
         "DB_USER": "app",
         "DB_PASSWORD": "password",
+        "PHOTO_UPLOAD_ENABLED": "False",
+        "PRIVATE_MEDIA_S3_BUCKET": "requested-private-bucket",
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "requested-private-access",
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "requested-private-secret",
         "PUBLIC_DOMAIN": "findme-photo.ru",
         "PUBLIC_DOMAIN_ALIAS": "",
         "LETSENCRYPT_EMAIL": "ops@example.com",
     }
+
+
+def _apply_log(tmp_path: Path) -> list[str]:
+    return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
+
+
+def _env_metadata(path: Path) -> tuple[int, int, int, int]:
+    metadata = path.stat()
+    return (
+        stat.S_IMODE(metadata.st_mode),
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_mtime_ns,
+    )
+
+
+def _assert_no_env_temporary_files(tmp_path: Path) -> None:
+    assert list(tmp_path.glob(".env.*")) == []
+
+
+def test_apply_propagates_private_media_read_settings(tmp_path: Path, fake_bin: Path) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PRIVATE_MEDIA_S3_BUCKET": "private-gallery",
+            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "gallery-access",
+            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "gallery-secret",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert "PRIVATE_MEDIA_S3_BUCKET=private-gallery" in deployed_env
+    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID=gallery-access" in deployed_env
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=gallery-secret" in deployed_env
+
+
+def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "gallery-private-media-preflight-skipped:no-eligible-photo\n"
+        "Removed upload cleanup schedule.\n"
+    )
+    assert result.stderr == "docker compose up exit status: 0\n"
+    commands = _apply_log(tmp_path)
+    assert "preflight-filter eligible-private-photo" in commands
+    assert "preflight-order-by id" in commands
+    assert "preflight-first" in commands
+    assert not any(command.startswith("preflight-storage") for command in commands)
+    assert not any(command.startswith("preflight-open") for command in commands)
+    assert not any(command.startswith("preflight-read") for command in commands)
+
+
+def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-deployment")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "gallery-private-media-preflight-skipped:no-existing-deployment\n"
+        "Removed upload cleanup schedule.\n"
+    )
+    assert result.stderr == "docker compose up exit status: 0\n"
+    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
+    assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
+    assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
+    commands = _apply_log(tmp_path)
+    candidate_pull = next(index for index, command in enumerate(commands) if " pull web" in command)
+    promotion = next(
+        index
+        for index, command in enumerate(commands)
+        if "/.env.requested." in command and command.endswith(f" {tmp_path}/.env")
+    )
+    stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
+    assert candidate_pull < promotion < stop_nginx
+    assert not any(" run --rm --no-deps" in command for command in commands)
+    assert not any(command.startswith("preflight-") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_candidate_private_media_preflight_reads_when_photo_exists(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "gallery-private-media-preflight-ok\nRemoved upload cleanup schedule.\n"
+    )
+    assert result.stderr == "docker compose up exit status: 0\n"
+    commands = _apply_log(tmp_path)
+    assert commands.count("preflight-storage-init") == 1
+    assert commands.count("preflight-open originals/eligible-photo") == 1
+    assert commands.count("preflight-read 1") == 1
+    assert commands.count("preflight-close") == 1
+
+
+def test_candidate_private_media_preflight_runs_before_service_switch(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    candidate_pull = next(
+        index
+        for index, command in enumerate(commands)
+        if " pull web" in command and "APP_IMAGE=new-image" in command
+    )
+    candidate_command = next(
+        command
+        for command in commands
+        if " run --rm --no-deps -T --entrypoint python web " in command
+    )
+    candidate_run = commands.index(candidate_command)
+    assert f"--env-file {tmp_path}/.env.requested." in candidate_command
+    assert "manage.py shell --no-imports -c <gallery_media_preflight>" in candidate_command
+    stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
+    candidate_up = next(
+        index
+        for index, command in enumerate(commands)
+        if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+    )
+    assert candidate_pull < candidate_run < stop_nginx < candidate_up
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "private-media-failure",
+        "private-media-config-failure",
+        "private-media-db-failure",
+    ],
+)
+def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched(
+    tmp_path: Path, fake_bin: Path, scenario: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    previous_metadata = _env_metadata(tmp_path / ".env")
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Gallery private-media read prerequisite failed\n"
+        "Candidate image failed private-media read prerequisite\n"
+    )
+    assert "Gallery private-media read prerequisite failed" in result.stderr
+    assert "private failure detail" not in result.stderr
+    assert "private config detail" not in result.stderr
+    assert "database unavailable detail" not in result.stderr
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert _env_metadata(tmp_path / ".env") == previous_metadata
+    commands = _apply_log(tmp_path)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 2
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="pull-failure")
+    previous_metadata = _env_metadata(tmp_path / ".env")
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert _env_metadata(tmp_path / ".env") == previous_metadata
+    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
+    commands = _apply_log(tmp_path)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 1
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_workflows_forward_private_media_settings() -> None:
+    for relative_path in (
+        ".github/workflows/deploy.yml",
+        ".github/workflows/promote-production.yml",
+    ):
+        workflow = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in workflow
+        assert (
+            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID: "
+            "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}" in workflow
+        )
+        assert (
+            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: "
+            "${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}" in workflow
+        )
+        forwarded = next(
+            line
+            for line in workflow.splitlines()
+            if "envs: APP_IMAGE" in line and "SECRET_KEY" in line
+        )
+        assert "PRIVATE_MEDIA_S3_BUCKET" in forwarded
+        assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in forwarded
+        assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in forwarded
+
+
+def test_deployment_path_performs_no_iam_mutation(tmp_path: Path, fake_bin: Path) -> None:
+    for tool in ("yc", "aws", "s3cmd"):
+        _write_executable(
+            fake_bin / tool,
+            f'printf \'{tool} %s\\n\' "$*" >> "$COMMAND_LOG"\nexit 97',
+        )
+
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path)).lower()
+    assert "yc " not in commands
+    assert "aws " not in commands
+    assert "s3cmd " not in commands
+    assert "policy" not in commands
+    assert " iam " not in commands
+    assert "role-binding" not in commands
+    assert "bucket-policy" not in commands
 
 
 def test_staging_apply_activates_https_edge_and_public_checks(
@@ -296,9 +784,13 @@ def test_apply_success_commits_deployed_image_only_after_checks(
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
+    assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
+    assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") == 1
+    assert commands.count("requested-env-promoted-before-stop") == 1
     assert "https://findme-photo.ru/health/" in commands
+    _assert_no_env_temporary_files(tmp_path)
 
 
 @pytest.mark.parametrize("scenario", ["health-failure", "public-failure"])
@@ -312,8 +804,9 @@ def test_apply_failure_restores_previous_image_and_overlay_without_marker_change
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=old-image\n")
-    assert "SECRET_KEY=new-secret\n" in (tmp_path / ".env").read_text(encoding="utf-8")
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert deployed_env.startswith("APP_IMAGE=old-image\n")
+    assert "SECRET_KEY=new-secret\n" in deployed_env
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") >= 2
 
@@ -328,16 +821,78 @@ def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=old-image\n")
-    assert "SECRET_KEY=new-secret\n" in (tmp_path / ".env").read_text(encoding="utf-8")
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert deployed_env.startswith("APP_IMAGE=old-image\n")
+    assert "SECRET_KEY=new-secret\n" in deployed_env
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.index("stop nginx") < commands.index("up -d --remove-orphans")
     assert "docker-compose.https.yml" in commands
 
 
 @pytest.mark.parametrize(
+    ("scenario", "expected_status"),
+    [("promotion-term", 143), ("promotion-hup", 129)],
+)
+def test_signal_after_env_promotion_enters_existing_image_only_recovery(
+    tmp_path: Path,
+    fake_bin: Path,
+    scenario: str,
+    expected_status: int,
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario=scenario),
+    )
+
+    assert result.returncode == expected_status
+    assert "Previous application image and edge reconciled" in result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert deployed_env.startswith("APP_IMAGE=old-image\n")
+    assert "SECRET_KEY=new-secret\n" in deployed_env
+    assert "DEBUG=False\n" in deployed_env
+    assert "KEEP_EXACTLY=old-only-setting\n" not in deployed_env
+    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
+    commands = _apply_log(tmp_path)
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 2
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert sum(" up -d --remove-orphans" in command for command in commands) == 1
+    assert any(
+        "APP_IMAGE=unset" in command and " up -d --remove-orphans" in command
+        for command in commands
+    )
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_failed_env_promotion_removes_secret_bearing_requested_temp(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    requested_secret = "promotion-secret-must-not-persist"
+    env = _apply_env(tmp_path, fake_bin, scenario="promotion-rename-failure")
+    env["SECRET_KEY"] = requested_secret
+    env["EXPECTED_REQUESTED_SECRET"] = requested_secret
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
+    commands = _apply_log(tmp_path)
+    assert sum(" up -d --remove-orphans" in command for command in commands) == 1
+    assert requested_secret not in result.stdout
+    assert requested_secret not in result.stderr
+    assert requested_secret not in "\n".join(commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+@pytest.mark.parametrize(
     ("scenario", "expected_reconciliations"),
-    [("pull-failure", 1), ("marker-failure", 2)],
+    [("marker-failure", 2)],
 )
 def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
     tmp_path: Path,
@@ -352,7 +907,9 @@ def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=old-image\n")
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert deployed_env.startswith("APP_IMAGE=old-image\n")
+    assert "SECRET_KEY=new-secret\n" in deployed_env
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") == expected_reconciliations
 

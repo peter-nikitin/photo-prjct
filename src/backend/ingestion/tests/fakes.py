@@ -24,8 +24,8 @@ class FakeBody:
         self._stream = BytesIO(content)
         self.closed = False
 
-    def read(self) -> bytes:
-        return self._stream.read()
+    def read(self, amt: int | None = None) -> bytes:
+        return self._stream.read(amt)
 
     def close(self) -> None:
         self.closed = True
@@ -89,11 +89,19 @@ class FakeS3Client:
         self.calls.append(("get_object", kwargs))
         self._raise("get_object")
         obj = self._find(kwargs["Key"])
-        if kwargs.get("IfMatch") != obj.etag:
-            raise client_error(412, "PreconditionFailed")
-        start, end = (int(value) for value in kwargs["Range"].removeprefix("bytes=").split("-"))
-        self.last_body = FakeBody(obj.content[start : end + 1])
-        return {"Body": self.last_body}
+        if "Range" in kwargs:
+            if kwargs.get("IfMatch") != obj.etag:
+                raise client_error(412, "PreconditionFailed")
+            start, end = (int(value) for value in kwargs["Range"].removeprefix("bytes=").split("-"))
+            self.last_body = FakeBody(obj.content[start : end + 1])
+            return {"Body": self.last_body}
+
+        self.last_body = FakeBody(obj.content)
+        return {
+            "Body": self.last_body,
+            "ContentLength": len(obj.content),
+            "ContentType": obj.content_type,
+        }
 
     def copy_object(self, **kwargs: Any) -> dict[str, Any]:
         self._before("copy_object")

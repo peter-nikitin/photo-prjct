@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from django.test import override_settings
+from django.test import Client, override_settings
 from django.urls import reverse
 
 from tests.visual import settings as visual_settings
@@ -12,6 +12,8 @@ VISUAL_ROUTES = {
     "visual_catalog_empty": "/__visual__/catalog/empty/",
     "visual_event_covered": "/__visual__/event/covered/",
     "visual_event_uncovered": "/__visual__/event/uncovered/",
+    "visual_event_gallery_populated": "/__visual__/event/gallery-populated/",
+    "visual_event_gallery_empty": "/__visual__/event/gallery-empty/",
     "visual_legal": "/__visual__/legal/",
     "visual_reference_search": "/__visual__/reference/search/",
     "visual_reference_dashboard": "/__visual__/reference/dashboard/",
@@ -54,6 +56,27 @@ def test_visual_fixture_module_has_no_orm_dependency() -> None:
     assert "picflow.models" not in source
     assert ".objects" not in source
     assert "django.db" not in source
+
+
+@override_settings(
+    ROOT_URLCONF="tests.visual.urls",
+    STORAGES=visual_settings.STORAGES,
+)
+def test_event_header_routes_preserve_their_pre_gallery_visual_contract() -> None:
+    client = Client()
+
+    for path in ("/__visual__/event/covered/", "/__visual__/event/uncovered/"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert b'data-visual-header-only="true"' in response.content
+
+    for path in (
+        "/__visual__/event/gallery-populated/",
+        "/__visual__/event/gallery-empty/",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert b'data-visual-header-only="true"' not in response.content
 
 
 def test_visual_settings_allow_local_test_clients() -> None:

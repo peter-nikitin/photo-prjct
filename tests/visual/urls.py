@@ -7,6 +7,16 @@ visual_patterns = [
     path("catalog/empty/", views.catalog_empty, name="visual_catalog_empty"),
     path("event/covered/", views.event_covered, name="visual_event_covered"),
     path("event/uncovered/", views.event_uncovered, name="visual_event_uncovered"),
+    path(
+        "event/gallery-populated/",
+        views.event_gallery_populated,
+        name="visual_event_gallery_populated",
+    ),
+    path(
+        "event/gallery-empty/",
+        views.event_gallery_empty,
+        name="visual_event_gallery_empty",
+    ),
     path("legal/", views.legal, name="visual_legal"),
     path("reference/search/", views.reference_search, name="visual_reference_search"),
     path(

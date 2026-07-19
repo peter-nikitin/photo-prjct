@@ -136,6 +136,7 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
 
     assert compose["services"]["web"]["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
+    assert compose["services"]["web"]["env_file"] == ["${APP_ENV_FILE:-.env}"]
     assert "healthcheck" in compose["services"]["web"]
 
 
@@ -315,6 +316,25 @@ def test_event_cards_keep_keyboard_focus_visible_inside_clipped_card() -> None:
     assert ".event-card:focus-within" in catalog_css
     assert ".event-card-link:focus-visible" in catalog_css
     assert "outline-offset: -4px" in catalog_css
+
+
+def test_event_gallery_lightbox_respects_reduced_motion_and_touch_targets() -> None:
+    catalog_css = (ROOT / "src/backend/static/ui/catalog.css").read_text(encoding="utf-8")
+
+    assert ".glightbox-container .gclose," in catalog_css
+    assert ".glightbox-container .gprev," in catalog_css
+    assert ".glightbox-container .gnext" in catalog_css
+    assert "min-width: 44px;" in catalog_css
+    assert "min-height: 44px;" in catalog_css
+    assert "@media (prefers-reduced-motion: reduce)" in catalog_css
+    assert ".glightbox-container .gslider," in catalog_css
+    assert ".glightbox-container .gfadeIn," in catalog_css
+    assert ".glightbox-container .gzoomOut" in catalog_css
+    assert "transition: none !important;" not in catalog_css
+    assert "animation: none !important;" not in catalog_css
+    assert "transition-duration: 0.01ms !important;" in catalog_css
+    assert "animation-duration: 0.01ms !important;" in catalog_css
+    assert "animation-iteration-count: 1 !important;" in catalog_css
 
 
 def test_production_django_configuration_excludes_visual_references() -> None:

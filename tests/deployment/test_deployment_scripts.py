@@ -433,6 +433,23 @@ printf 'crontab %s\n' "$*" >> "$COMMAND_LOG"
         fake_bin / "mv",
         """
 printf 'mv %s\n' "$*" >> "$COMMAND_LOG"
+source_path="${1-}"
+target_path="${2-}"
+case "$source_path:$target_path" in
+  *"/.env.requested."*":$DEPLOY_ROOT/.env")
+    case "$APPLY_SCENARIO" in
+      promotion-term|promotion-hup)
+        /bin/mv "$@"
+        if [ "$APPLY_SCENARIO" = promotion-term ]; then
+          kill -TERM "$PPID"
+        else
+          kill -HUP "$PPID"
+        fi
+        exit 0
+        ;;
+    esac
+    ;;
+esac
 case "$*" in
   *"/deployed-image") [ "$APPLY_SCENARIO" != marker-failure ] || exit 1 ;;
 esac
@@ -754,6 +771,43 @@ def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.index("stop nginx") < commands.index("up -d --remove-orphans")
     assert "docker-compose.https.yml" in commands
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_status"),
+    [("promotion-term", 143), ("promotion-hup", 129)],
+)
+def test_signal_after_env_promotion_enters_existing_image_only_recovery(
+    tmp_path: Path,
+    fake_bin: Path,
+    scenario: str,
+    expected_status: int,
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario=scenario),
+    )
+
+    assert result.returncode == expected_status
+    assert "Previous application image and edge reconciled" in result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert deployed_env.startswith("APP_IMAGE=old-image\n")
+    assert "SECRET_KEY=new-secret\n" in deployed_env
+    assert "DEBUG=False\n" in deployed_env
+    assert "KEEP_EXACTLY=old-only-setting\n" not in deployed_env
+    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
+    commands = _apply_log(tmp_path)
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 2
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert sum(" up -d --remove-orphans" in command for command in commands) == 1
+    assert any(
+        "APP_IMAGE=unset" in command and " up -d --remove-orphans" in command
+        for command in commands
+    )
+    _assert_no_env_temporary_files(tmp_path)
 
 
 @pytest.mark.parametrize(

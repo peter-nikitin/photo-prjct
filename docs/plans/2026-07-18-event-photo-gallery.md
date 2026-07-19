@@ -415,9 +415,9 @@ existing image-only rollback semantics; this task does not claim full environmen
       fail "Candidate image failed private-media read prerequisite"
   fi
 
+  mutation_started=1
   mv "$env_tmp" "$DEPLOY_ROOT/.env"
   env_tmp=""
-  mutation_started=1
   ```
 
   `--entrypoint python` bypasses the image entrypoint, so this candidate container performs no

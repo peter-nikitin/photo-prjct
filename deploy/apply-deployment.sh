@@ -227,9 +227,9 @@ if ! compose_with_env_file "$env_tmp" run --rm --no-deps -T --entrypoint python 
     fail "Candidate image failed private-media read prerequisite"
 fi
 
+mutation_started=1
 mv "$env_tmp" "$DEPLOY_ROOT/.env"
 env_tmp=""
-mutation_started=1
 
 compose stop nginx || true
 if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then

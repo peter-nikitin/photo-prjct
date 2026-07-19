@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import boto3
 from botocore.client import Config
@@ -29,6 +29,12 @@ class _S3Client(Protocol):
     def delete_object(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
+class ReadableBody(Protocol):
+    def read(self, amt: int | None = None) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class UploadGrant:
     url: str
@@ -42,6 +48,13 @@ class ObjectIdentity:
     etag_value: str
     size: int
     content_type: str
+
+
+@dataclass(frozen=True)
+class OpenedObject:
+    body: ReadableBody
+    size: int
+    content_type: Literal["image/jpeg", "image/png"]
 
 
 class StorageError(Exception):
@@ -129,6 +142,39 @@ class PrivateUploadStorage:
     def inspect(self, *, key: str) -> ObjectIdentity:
         _validate_managed_key(key)
         return self._inspect(key)
+
+    def open_final(self, *, key: str) -> OpenedObject:
+        _validate_final_key(key)
+        try:
+            response = self._client.get_object(Bucket=self._bucket, Key=key)
+        except ClientError as error:
+            raise _mapped_error(error) from None
+        except BotoCoreError:
+            raise StorageUnavailable() from None
+
+        body = response.get("Body")
+        try:
+            size = response["ContentLength"]
+            raw_content_type = response["ContentType"].strip().lower()
+            if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+                raise TypeError
+            if raw_content_type == "image/jpeg":
+                content_type: Literal["image/jpeg", "image/png"] = "image/jpeg"
+            elif raw_content_type == "image/png":
+                content_type = "image/png"
+            else:
+                raise TypeError
+            if not callable(getattr(body, "read", None)) or not callable(
+                getattr(body, "close", None)
+            ):
+                raise TypeError
+        except (KeyError, AttributeError, TypeError):
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
+            raise ObjectMismatch() from None
+
+        return OpenedObject(body=cast(ReadableBody, body), size=size, content_type=content_type)
 
     def read_range(self, *, key: str, etag_wire: str, start: int, end: int) -> bytes:
         _validate_managed_key(key)

@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import BotoCoreError
 from django.test import override_settings
 from django.utils import timezone
 from ingestion.storage import (
@@ -16,7 +17,7 @@ from ingestion.storage import (
     StorageError,
     StorageUnavailable,
 )
-from ingestion.tests.fakes import FakeObject, FakeS3Client, client_error
+from ingestion.tests.fakes import FakeBody, FakeObject, FakeS3Client, client_error
 
 BUCKET = "private-bucket"
 INCOMING_KEY = "incoming/123e4567-e89b-12d3-a456-426614174000/123e4567-e89b-12d3-a456-426614174001"
@@ -166,6 +167,78 @@ def test_read_range_passes_exact_etag_and_closes_body(
         {"Bucket": BUCKET, "Key": INCOMING_KEY, "Range": "bytes=5-5", "IfMatch": '"wire-etag"'},
     ]
     assert client.last_body is not None and client.last_body.closed
+
+
+def test_open_final_returns_validated_stream_without_reading_it(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(FINAL_KEY, b"jpeg-data", '"final-etag"', " IMAGE/JPEG ")
+
+    opened = storage.open_final(key=FINAL_KEY)
+
+    assert opened.size == 9
+    assert opened.content_type == "image/jpeg"
+    assert calls(client, "get_object") == [{"Bucket": BUCKET, "Key": FINAL_KEY}]
+    assert opened.body is client.last_body
+    assert opened.body.read(1) == b"j"
+    assert client.last_body is not None and not client.last_body.closed
+
+
+def test_open_final_rejects_invalid_key_before_client_call(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    with pytest.raises(ValueError):
+        storage.open_final(key=INCOMING_KEY)
+
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"ContentLength": True, "ContentType": "image/jpeg"},
+        {"ContentLength": -1, "ContentType": "image/jpeg"},
+        {"ContentLength": "9", "ContentType": "image/jpeg"},
+        {"ContentLength": 9, "ContentType": "image/jpeg; charset=binary"},
+        {"ContentLength": 9, "ContentType": "image/gif"},
+    ],
+)
+def test_open_final_closes_body_when_response_metadata_is_invalid(response: dict[str, Any]) -> None:
+    body = FakeBody(b"jpeg-data")
+    client = FakeS3Client()
+    client.get_object = lambda **kwargs: {"Body": body, **response}  # type: ignore[method-assign]
+    with override_settings(PRIVATE_MEDIA_S3_BUCKET=BUCKET):
+        storage = PrivateUploadStorage(client=client)
+
+    with pytest.raises(ObjectMismatch):
+        storage.open_final(key=FINAL_KEY)
+
+    assert body.closed
+
+
+@pytest.mark.parametrize(
+    "failure,exception",
+    [
+        (client_error(404, message="raw secret body"), ObjectMissing),
+        (client_error(409, message="raw secret body"), ObjectChanged),
+        (client_error(412, message="raw secret body"), ObjectChanged),
+        (client_error(500, message="raw secret body"), StorageUnavailable),
+        (BotoCoreError(), StorageUnavailable),
+    ],
+)
+def test_open_final_maps_client_and_sdk_failures_to_sanitized_errors(
+    storage: PrivateUploadStorage,
+    client: FakeS3Client,
+    failure: Exception,
+    exception: type[StorageError],
+) -> None:
+    client.failures["get_object"] = failure
+
+    with pytest.raises(exception) as caught:
+        storage.open_final(key=FINAL_KEY)
+
+    assert caught.value.code
+    assert "secret" not in str(caught.value)
 
 
 @pytest.mark.parametrize("start,end", [(-1, 0), (1, 0)])

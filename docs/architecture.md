@@ -98,6 +98,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Keep Stage 2 ingestion control and confirmation request-driven, with bounded browser transfer
   concurrency and no worker or broker, as defined by
   [ADR 0014](adr/0014-keep-stage-2-ingestion-request-driven.md).
+- Allow anonymous inline delivery of a complete private original only for an eligible completed
+  upload in a currently published free event, within the narrow boundary of
+  [ADR 0015](adr/0015-allow-anonymous-free-event-original-delivery.md). Paid-event media and
+  broader attachment or download policy remain unresolved.
 
 ## Deployment domain assignment — accepted
 
@@ -247,7 +251,8 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Face detection/embedding implementation and biometric governance.
 - Bib-region detection/OCR implementation and model licensing.
 - Payment provider, callback contract, refunds, and download entitlement policy.
-- Free/paid event media access and anonymous original-download policy.
+- Paid-event media access and the broader attachment/download policy beyond ADR 0015's narrow
+  anonymous inline delivery for eligible free-event originals.
 - Observability stack, backup targets, retention, and recovery objectives.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.
 

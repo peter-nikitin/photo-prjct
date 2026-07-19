@@ -13,8 +13,8 @@
 
 - Gallery Tasks 1-6 in
   [the gallery plan](2026-07-18-event-photo-gallery.md) are implemented in commit range
-  `676bbf2..0ee60ac`. The range includes the planned task commits and follow-up interaction,
-  accessibility, and lifecycle fixes.
+  `676bbf2^..0ee60ac` (inclusive of `676bbf2`). The range includes the planned task commits and
+  follow-up interaction, accessibility, and lifecycle fixes.
 - Task 6's last recorded visual verification passed all 43 tests.
 - Gallery Task 7, deployment propagation and candidate private-media preflight, has not started.
 - Gallery Task 8, final verification and repository-truth reconciliation, has not started.
@@ -48,7 +48,8 @@ accepting ADR 0015 does not authorize or unblock seed-media implementation.
 - ADRs 0015 and 0016 were created as Proposed decisions. The maintainer's later explicit acceptance
   applies only to ADR 0015; ADR 0016 remains Proposed.
 - The gallery specification now conforms to ADR 0015. The gallery plan records Tasks 1-6 as complete
-  from `676bbf2..0ee60ac`, leaves Tasks 7-8 open, and ends with architecture and ADR reconciliation.
+  from the inclusive range `676bbf2^..0ee60ac`, leaves Tasks 7-8 open, and ends with architecture
+  and ADR reconciliation.
 - The seed plan uses the current plan metadata, remains blocked on ADR 0016, leaves every task open,
   and is deferred to a separate future task where the approved design may be reconsidered.
 
@@ -56,9 +57,9 @@ accepting ADR 0015 does not authorize or unblock seed-media implementation.
 
 - `docs/architecture.md` does not yet record the branch's implemented gallery presentation,
   event-scoped private-original route, or local lightbox. After gallery Task 7 verification, Task 8
-  must add only verified implemented facts, summarize/link accepted ADR 0015, and narrow the open
-  free/paid media-policy item to the unresolved paid-event and broader download-policy decisions.
-  It must not claim staging activation, seed media, derivatives, workers, or commerce.
+  must add only verified implemented facts. The accepted-constraint summary/link for ADR 0015 and
+  the narrowed paid-event and broader attachment/download-policy open decision are already
+  recorded; Task 8 must not claim staging activation, seed media, derivatives, workers, or commerce.
 - `docs/product-jobs.md` still lists PJ-005 as `Candidate` and is intentionally unchanged during
   lifecycle remediation. Gallery Task 8 owns the evidence-backed transition after final Python,
   JavaScript, visual, and deployment verification. PJ-009 stays `Candidate`: inline gallery
@@ -75,7 +76,9 @@ accepting ADR 0015 does not authorize or unblock seed-media implementation.
 
 1. Complete Gallery Task 7: deployment propagation and the candidate private-media read preflight.
 2. Complete Gallery Task 8: final verification, architecture/ADR/job reconciliation, and pull-request
-   outcome. The current PR scope is Gallery Tasks 7-8 only.
+   outcome. The remaining continuation work is Gallery Tasks 7-8. The eventual PR contains the
+   complete Gallery Tasks 1-8 delivery and its specifications, plans, ADRs, and lifecycle
+   documentation; it contains no seed implementation.
 3. Revisit seed media in a separate future task. Before implementation, confirm the design still
    applies and obtain explicit acceptance of ADR 0016 (or replace it through the ADR lifecycle if
    the design changes); every seed implementation checkbox remains open until then.

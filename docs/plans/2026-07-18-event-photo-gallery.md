@@ -40,7 +40,8 @@
   [0015](../adr/0015-allow-anonymous-free-event-original-delivery.md)
 - ADR impact: Resolved — conforms to accepted ADR 0015 and applicable ADRs 0001, 0002, 0006,
   0013, and 0014.
-- Completion evidence: Tasks 1-6 are implemented in commit range `676bbf2..0ee60ac`; Task 6's
+- Completion evidence: Tasks 1-6 are implemented in the inclusive commit range
+  `676bbf2^..0ee60ac`; Task 6's
   final visual verification passed all 43 tests.
 
 ## Scope

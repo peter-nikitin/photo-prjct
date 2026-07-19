@@ -1,7 +1,7 @@
 # Specification and ADR Reconciliation Design
 
 - Date: 2026-07-19
-- Status: Draft for written review
+- Status: Approved design
 - Owner: project maintainer
 - Related architecture: [Document purpose](../../architecture.md#document-purpose),
   [Architectural status vocabulary](../../architecture.md#architectural-status-vocabulary), and

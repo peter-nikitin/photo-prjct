@@ -16,7 +16,7 @@ objects and couple deployments to storage mutation.
 ## Decision drivers
 
 - Keep reference identities and private object keys deterministic across staging rebuilds.
-- Ensure migrations, startup, deployment, and database seeding never create storage objects.
+- Ensure migrations, startup, deployment, and database seeding make zero S3 calls.
 - Prevent overwrite or deletion of existing private objects.
 - Keep production disabled and preserve ADR 0013 for normal photographer ingestion.
 
@@ -32,26 +32,35 @@ objects and couple deployments to storage mutation.
 Define a versioned manifest containing exactly thirteen fixed prototype photo identities, their
 metadata, and immutable final object keys in the existing private `hires-staging` bucket. A
 separately authorized operator may conditionally create only absent manifest objects after a full
-all-key dry run and fresh explicit confirmation. Existing mismatches abort the operation; creation
-must not overwrite or delete an object.
+all-key dry run and fresh explicit confirmation immediately before execution. Within this
+reference-seeding mechanism, the separately confirmed uploader is the only component allowed to
+call S3. Its complete allowed S3 API surface is `HeadObject` for every manifest key before any
+creation (and repeat `HeadObject` calls only for post-create verification or conditional-write race
+resolution), followed by single-part `PutObject` only for objects found absent, with
+`If-None-Match: *`.
+
+The uploader must not call `GetObject`, any list API, `CopyObject`, any multipart API, any ACL API,
+any delete API, or unconditional `PutObject`; it must never overwrite an object. An existing
+mismatch aborts the operation before any PUT.
 
 Database reconciliation is opt-in, idempotent, and database-only. Production is forced disabled.
-Migrations, application startup, normal deployment, and the seed command perform zero S3 writes;
-none may upload, overwrite, copy, or delete reference objects. Automatic seed enablement and
-per-database object copies are excluded.
+Migrations, application startup, normal deployment, and the `seed_reference_photos` command,
+including its forward, idempotent, and revert paths, perform zero S3 calls: no `HEAD`, GET, list,
+copy, upload, or delete. Automatic seed enablement and per-database object copies are excluded.
 
 This is an adjacent staging reference-data exception to ADR 0013. ADR 0013 remains authoritative
 for every normal photographer upload through incoming keys, verification, and promotion. This
 decision conforms to ADRs 0002, 0003, 0005, and 0006 and supersedes none. It does not authorize
-production reference media, arbitrary legacy backfill, IAM, ACL, CORS, lifecycle, quota, or public
-access changes.
+production reference media, arbitrary legacy backfill, IAM or service-account role changes, bucket
+policy, ACL, CORS, lifecycle, quota, credential broadening, public-access changes, or any other cloud
+configuration mutation.
 
 ## Consequences
 
 ### Positive
 
 - Staging databases can reconcile the same identities without creating duplicate objects.
-- Routine deployment and database paths remain free of storage mutation.
+- Routine deployment and database paths remain free of all S3 calls.
 - Conditional creation and immutable keys prevent accidental replacement of reference media.
 
 ### Negative
@@ -68,10 +77,14 @@ access changes.
 
 ## Validation and rollback
 
-Validate the exact thirteen-entry manifest, complete all-key preflight before any conditional PUT,
-zero S3 writes from migrations/startup/deployment/seed paths, forced-false production configuration,
-and no overwrite or delete path. Roll back database reconciliation only; immutable objects remain
-for reuse and require a separate decision before deletion.
+Validate the exact thirteen-entry manifest; zero S3 calls from migrations, startup, deployment, and
+all seed-command paths; forced-false production configuration; a complete all-key `HeadObject`
+preflight before any single-part conditional `PutObject`; `If-None-Match: *` on every PUT; and the
+absence of GET, list, copy, multipart, ACL, delete, unconditional PUT, or overwrite paths.
+Reconsider before changing the manifest scope, target bucket or environment, immutable-key
+contract, or allowed S3 API surface, or if conditional create semantics cannot be verified. Roll
+back database reconciliation only, without an S3 call; immutable objects remain for reuse and
+require a separate decision and fresh destructive confirmation before deletion.
 
 ## References
 

@@ -49,6 +49,7 @@ def test_project_skill_ui_configuration_is_valid() -> None:
         "update-visual-design",
         "write-adr",
         "write-plan",
+        "write-spec",
     ):
         skill_dir = ROOT / ".agents" / "skills" / skill_name
         ui_config = yaml.safe_load(
@@ -127,9 +128,52 @@ def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None
     assert "LETSENCRYPT_EMAIL" in _envs(production_apply)
 
 
+def test_private_upload_configuration_is_wired_to_deployments() -> None:
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Apply staging deployment")
+    production = _workflow_step(
+        _load_workflow("promote-production.yml"), "promote", "Apply production deployment"
+    )
+    expected = {
+        "PHOTO_UPLOAD_ENABLED": "${{ vars.PHOTO_UPLOAD_ENABLED || 'False' }}",
+        "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}",
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": ("${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}"),
+        "PRIVATE_MEDIA_ALLOWED_ORIGINS": "${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}",
+    }
+
+    for name, value in expected.items():
+        assert re.search(rf"^{name}=", example, re.MULTILINE)
+        assert staging["env"][name] == value
+        assert production["env"][name] == value
+        assert name in _envs(staging)
+        assert name in _envs(production)
+        assert f"printf '{name}=%s\\n'" in apply_script
+
+
+def test_staging_storage_probe_is_manual_explicit_and_uses_the_deployed_container() -> None:
+    staging = _load_workflow("deploy.yml")
+    workflow_dispatch = staging[True]["workflow_dispatch"]
+    probe_input = workflow_dispatch["inputs"]["verify_private_storage"]
+    probe = _workflow_step(staging, "deploy", "Verify private upload storage contract")
+
+    assert probe_input["type"] == "boolean"
+    assert probe_input["default"] is False
+    assert probe["if"] == "${{ inputs.verify_private_storage }}"
+    assert probe["env"]["PRIVATE_MEDIA_ALLOWED_ORIGINS"] == (
+        "${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}"
+    )
+    assert probe["with"]["envs"] == "PRIVATE_MEDIA_ALLOWED_ORIGINS"
+    assert "exec -T -e PHOTO_UPLOAD_ENABLED=True web" in probe["with"]["script"]
+    assert "--confirm-real-storage" in probe["with"]["script"]
+
+
 def test_focused_deployment_scripts_are_versioned() -> None:
     for relative_path in (
         "deploy/certbot/reconcile-certificate.sh",
+        "deploy/install-upload-cleanup-cron.sh",
+        "deploy/run-upload-cleanup.sh",
         "deploy/verify-public-edge.sh",
     ):
         assert (ROOT / relative_path).is_file(), f"Missing {relative_path}"
@@ -153,6 +197,8 @@ def test_http_edge_fallback_remains_available_for_manual_recovery() -> None:
 def test_versioned_deployment_script_has_valid_shell_syntax() -> None:
     for relative_path in (
         "deploy/apply-deployment.sh",
+        "deploy/install-upload-cleanup-cron.sh",
+        "deploy/run-upload-cleanup.sh",
         "deploy/verify-public-edge.sh",
         "deploy/certbot/reconcile-certificate.sh",
     ):
@@ -163,6 +209,23 @@ def test_versioned_deployment_script_has_valid_shell_syntax() -> None:
             check=False,
         )
         assert result.returncode == 0, f"{relative_path}: {result.stderr}"
+
+
+def test_upload_cleanup_schedule_is_bounded_and_deployment_managed() -> None:
+    apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+    install_script = (ROOT / "deploy/install-upload-cleanup-cron.sh").read_text(encoding="utf-8")
+    run_script = (ROOT / "deploy/run-upload-cleanup.sh").read_text(encoding="utf-8")
+
+    assert install_script.count("# BEGIN photo-prjct-upload-cleanup") == 2
+    assert install_script.count("# END photo-prjct-upload-cleanup") == 2
+    assert "17 3 * * *" in install_script
+    assert "crontab -l" in install_script
+    assert "flock -n -E 75" in run_script
+    assert "exec -T web python manage.py cleanup_stale_uploads" in run_script
+    assert "printf '%s\\n' \"$DEPLOYMENT_TARGET\"" in apply_script
+    assert "printf '%s\\n' \"$COMPOSE_PROJECT_NAME\"" in apply_script
+    assert 'install-upload-cleanup-cron.sh" install' in apply_script
+    assert 'install-upload-cleanup-cron.sh" remove' in apply_script
 
 
 def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:
@@ -228,6 +291,7 @@ def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     dockerfile = (ROOT / "Dockerfile.visual-tests").read_text(encoding="utf-8")
     compose = yaml.safe_load((ROOT / "docker-compose.visual.yml").read_text(encoding="utf-8"))
+    visual_service = compose["services"]["visual-tests"]
 
     assert package["scripts"]["test:visual"] == "sh tests/visual/run-in-container.sh test"
     assert package["scripts"]["test:visual:update"] == (
@@ -237,7 +301,28 @@ def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
     assert "python:3.12-slim-bookworm@sha256:" in dockerfile
     assert "node:22-bookworm-slim@sha256:" in dockerfile
     assert "npx playwright install --with-deps chromium" in dockerfile
-    assert compose["services"]["visual-tests"]["depends_on"]["postgres"]["condition"] == (
-        "service_healthy"
-    )
-    assert compose["services"]["visual-tests"]["environment"]["CI"] == "${CI:-false}"
+    assert "COPY . ." not in dockerfile
+    assert visual_service["image"] == "${VISUAL_TEST_IMAGE:-photo-prjct-visual-deps:local}"
+    assert set(visual_service["volumes"]) == {
+        "./src:/workspace/src:ro",
+        "./tests:/workspace/tests:ro",
+        "./package.json:/workspace/package.json:ro",
+        "./playwright.config.js:/workspace/playwright.config.js:ro",
+        "./tests/visual/visual.spec.js-snapshots:/workspace/tests/visual/visual.spec.js-snapshots",
+        "./playwright-report:/workspace/playwright-report",
+        "./test-results:/workspace/test-results",
+    }
+    assert visual_service["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert visual_service["environment"]["CI"] == "${CI:-false}"
+    assert visual_service["environment"]["NODE_PATH"] == "/opt/visual-test-deps/node_modules"
+
+
+def test_local_node_version_matches_ci_and_visual_container() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    node_setup = _workflow_step(_load_workflow("ci.yml"), "quality", "Set up Node.js")
+    dockerfile = (ROOT / "Dockerfile.visual-tests").read_text(encoding="utf-8")
+
+    assert (ROOT / ".nvmrc").read_text(encoding="utf-8").strip() == "22"
+    assert package["engines"]["node"] == ">=22 <23"
+    assert node_setup["with"]["node-version"] == "22"
+    assert "FROM node:22-bookworm-slim@sha256:" in dockerfile

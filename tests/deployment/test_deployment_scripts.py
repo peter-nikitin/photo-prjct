@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -194,6 +195,10 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
 """,
     )
     deploy_dir = tmp_path / "deploy"
+    shutil.copy2(
+        ROOT / "deploy/install-upload-cleanup-cron.sh",
+        deploy_dir / "install-upload-cleanup-cron.sh",
+    )
     _write_executable(
         deploy_dir / "verify-public-edge.sh",
         """
@@ -223,6 +228,15 @@ fi
 """,
     )
     _write_executable(fake_bin / "sleep", ":")
+    _write_executable(
+        fake_bin / "crontab",
+        """
+if [ "${1-}" = -l ]; then
+  exit 1
+fi
+printf 'crontab %s\n' "$*" >> "$COMMAND_LOG"
+""",
+    )
     _write_executable(
         fake_bin / "mv",
         """

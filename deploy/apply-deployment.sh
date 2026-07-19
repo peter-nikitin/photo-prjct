@@ -16,6 +16,29 @@ set -eu
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 requested_image="$APP_IMAGE"
 
+case "${PHOTO_UPLOAD_ENABLED:-False}" in
+    True)
+        command -v crontab >/dev/null 2>&1 || {
+            echo "crontab is required when photographer uploads are enabled" >&2
+            exit 1
+        }
+        command -v flock >/dev/null 2>&1 || {
+            echo "flock is required when photographer uploads are enabled" >&2
+            exit 1
+        }
+        : "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
+        : "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
+        : "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
+        : "${PRIVATE_MEDIA_ALLOWED_ORIGINS:?Set PRIVATE_MEDIA_ALLOWED_ORIGINS}"
+        ;;
+    False)
+        ;;
+    *)
+        echo "PHOTO_UPLOAD_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
 case "$DEPLOYMENT_TARGET" in
     staging|production)
         ;;
@@ -91,6 +114,10 @@ on_exit() {
             if ! recover_previous_deployment; then
                 echo "Previous deployment recovery failed" >&2
                 diagnostics
+            elif [ "${previous_upload_enabled:-False}" = True ]; then
+                sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
+            else
+                sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
             fi
         fi
     fi
@@ -111,8 +138,12 @@ fail() {
 
 install -d -m 0755 "$DEPLOY_ROOT"
 previous_image=""
+previous_upload_enabled="False"
 if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_image="$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    previous_upload_enabled="$(
+        sed -n 's/^PHOTO_UPLOAD_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
+    )"
 fi
 
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"
@@ -140,6 +171,11 @@ env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'MEDIA_S3_PUBLIC_BUCKET=%s\n' "${MEDIA_S3_PUBLIC_BUCKET:-}"
     printf 'MEDIA_S3_ACCESS_KEY_ID=%s\n' "${MEDIA_S3_ACCESS_KEY_ID:-}"
     printf 'MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${MEDIA_S3_SECRET_ACCESS_KEY:-}"
+    printf 'PHOTO_UPLOAD_ENABLED=%s\n' "${PHOTO_UPLOAD_ENABLED:-False}"
+    printf 'PRIVATE_MEDIA_S3_BUCKET=%s\n' "${PRIVATE_MEDIA_S3_BUCKET:-}"
+    printf 'PRIVATE_MEDIA_S3_ACCESS_KEY_ID=%s\n' "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}"
+    printf 'PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:-}"
+    printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
 } > "$env_tmp"
 chmod 600 "$env_tmp"
 mutation_started=1
@@ -194,6 +230,22 @@ done
 
 if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
     fail "Requested deployment failed public HTTPS smoke verification"
+fi
+
+marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.XXXXXX")"
+printf '%s\n' "$DEPLOYMENT_TARGET" > "$marker_tmp"
+mv "$marker_tmp" "$DEPLOY_ROOT/deployment-target"
+marker_tmp=""
+
+marker_tmp="$(mktemp "$DEPLOY_ROOT/.compose-project-name.XXXXXX")"
+printf '%s\n' "$COMPOSE_PROJECT_NAME" > "$marker_tmp"
+mv "$marker_tmp" "$DEPLOY_ROOT/compose-project-name"
+marker_tmp=""
+
+if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
+    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
+else
+    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove
 fi
 
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.XXXXXX")"

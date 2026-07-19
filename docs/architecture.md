@@ -257,3 +257,10 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Create an ADR for durable choices with meaningful alternatives or cross-cutting consequences.
 - Do not rewrite accepted decisions here; summarize them and link to their ADR.
 - Create an implementation plan before substantial delivery work and link it to relevant ADRs.
+- Before approving a specification, read the ADR index and applicable ADRs and record exact related
+  architecture, related ADRs, and ADR impact.
+- After specification approval and before planning, resolve required new or superseding ADRs with
+  explicit decision authority; specification approval alone does not accept an ADR.
+- Before completing delivery, reconcile implemented behavior with the approved specification,
+  applicable ADRs, and this document. Update implemented facts, or supersede a changed decision
+  instead of editing an accepted ADR.

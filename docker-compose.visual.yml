@@ -14,6 +14,7 @@ services:
       retries: 15
 
   visual-tests:
+    image: ${VISUAL_TEST_IMAGE:-photo-prjct-visual-deps:local}
     build:
       context: .
       dockerfile: Dockerfile.visual-tests
@@ -30,9 +31,14 @@ services:
       DB_HOST: postgres
       DB_PORT: "5432"
       PYTHONPATH: .:src/backend
+      NODE_PATH: /opt/visual-test-deps/node_modules
       DJANGO_SETTINGS_MODULE: tests.visual.settings
       CI: ${CI:-false}
     volumes:
+      - ./src:/workspace/src:ro
+      - ./tests:/workspace/tests:ro
+      - ./package.json:/workspace/package.json:ro
+      - ./playwright.config.js:/workspace/playwright.config.js:ro
       - ./tests/visual/visual.spec.js-snapshots:/workspace/tests/visual/visual.spec.js-snapshots
       - ./playwright-report:/workspace/playwright-report
       - ./test-results:/workspace/test-results

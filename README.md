@@ -15,13 +15,28 @@ unresolved decisions are documented rather than assumed to be implemented.
 
 ## Local development
 
-Requirements: Git, Docker, and Docker Compose. Python 3.12+ is required only for running management
-commands and quality checks directly on the host.
+Requirements: Git, Docker, Docker Compose, NVM, and Node 22. Python 3.12+ is required only for
+running management commands and quality checks directly on the host.
 
 The `main` checkout and a feature worktree use separate source directories and Compose projects, so
 each directory needs its own ignored `.env` file. Both configurations expose PostgreSQL on port
 `5432` and Django on port `8000`; stop one before starting the other unless you intentionally change
 the port mappings.
+
+### Prepare Node.js
+
+The repository uses Node 22 for JavaScript unit tests and local npm commands. With
+[NVM](https://github.com/nvm-sh/nvm) installed, prepare the pinned major version once per checkout:
+
+```bash
+nvm install
+nvm use
+node --version
+npm ci
+```
+
+`node --version` must report `v22.x.x`. NVM reads `.nvmrc`, matching GitHub Actions and the
+containerized visual-test environment.
 
 ### Run the `main` version
 
@@ -147,7 +162,7 @@ checks, migration drift detection, and repository skill-structure tests.
 ## Deployment
 
 The existing preemptible Yandex Cloud VM is the staging environment. A push to `main` runs `Deploy
-staging`, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, deploys it to the HTTP staging
+staging`, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, deploys it behind the shared HTTPS
 edge, verifies that the running web container uses that exact image and that Nginx serves `/health/`,
 then records the successful image reference.
 
@@ -171,12 +186,9 @@ configure `PUBLIC_DOMAIN_ALIAS`. For the current assignment, the intended values
 have `LETSENCRYPT_EMAIL` as an Environment secret. HTTP-only environments do not receive or read
 that secret.
 
-The preparation release deliberately leaves staging on its existing HTTP overlay and does not
-request a certificate. HTTPS activation is a separate release after the staging Environment values,
-public DNS, and ports 80/443 are verified. The shared HTTPS overlay then issues a certificate only
-when none exists, redirects HTTP to HTTPS, and proxies to private Django. Certificate/account state
-is kept in persistent Docker volumes; Certbot attempts renewal every 12 hours. Verify an activated
-edge with:
+The shared HTTPS overlay issues a certificate only when none exists, redirects HTTP to HTTPS, and
+proxies to private Django. Certificate/account state is kept in persistent Docker volumes; Certbot
+attempts renewal every 12 hours. Verify the edge with:
 
 ```bash
 curl -I http://<public-domain>/
@@ -191,6 +203,36 @@ same Compose project and both `docker-compose.prod.yml` and `docker-compose.http
 Changing `PUBLIC_DOMAIN` or `PUBLIC_DOMAIN_ALIAS` does not automatically replace an existing
 certificate. Treat such a change as maintenance: back up the environment certificate volume,
 remove the named certificate explicitly, and rerun deployment once to issue the new name set.
+
+### Enable photographer uploads on staging
+
+Keep `PHOTO_UPLOAD_ENABLED=False` for the first deployment of an ingestion-capable image. Configure
+these GitHub Environment or repository values before that deployment:
+
+- variable `PRIVATE_MEDIA_S3_BUCKET` with the separate private bucket name;
+- variable `PRIVATE_MEDIA_ALLOWED_ORIGINS` with the exact public origin, currently
+  `https://findme-photo.ru`;
+- secrets `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` and `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY` for the
+  least-privilege service account.
+
+After the disabled deployment is healthy, run the opt-in storage contract inside the staging web
+container. The one-process override keeps the public upload routes disabled while the probe creates
+and removes its temporary objects:
+
+```bash
+cd /opt/photo-prjct
+docker compose --project-name photo-prjct-staging \
+  --env-file .env \
+  -f docker-compose.prod.yml \
+  -f docker-compose.https.yml \
+  exec -T -e PHOTO_UPLOAD_ENABLED=True web \
+  sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin "$PRIVATE_MEDIA_ALLOWED_ORIGINS"'
+```
+
+Only after this command succeeds, set `PHOTO_UPLOAD_ENABLED=True` and redeploy the same reviewed
+revision. Enabled deployment validates private configuration and host `crontab`/`flock`, then
+installs one daily 03:17 host-time cleanup entry. Disable and redeploy to hide all upload routes and
+remove only that managed cron block; confirmed database rows and private originals remain intact.
 
 `Promote production` is manually dispatched with the successfully staged commit SHA. It verifies
 that SHA against the marker on staging, pauses for the production Environment approval, checks out

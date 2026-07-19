@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      verify_private_storage:
+        description: Run the confirmed real-storage contract probe after disabled deployment
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   build:
@@ -72,6 +78,11 @@ jobs:
           MEDIA_S3_PUBLIC_BUCKET: ${{ vars.MEDIA_S3_PUBLIC_BUCKET }}
           MEDIA_S3_ACCESS_KEY_ID: ${{ secrets.MEDIA_S3_ACCESS_KEY_ID }}
           MEDIA_S3_SECRET_ACCESS_KEY: ${{ secrets.MEDIA_S3_SECRET_ACCESS_KEY }}
+          PHOTO_UPLOAD_ENABLED: ${{ vars.PHOTO_UPLOAD_ENABLED || 'False' }}
+          PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}
+          PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}
+          PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: ${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}
+          PRIVATE_MEDIA_ALLOWED_ORIGINS: ${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         with:
@@ -79,5 +90,24 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script_stop: true
-          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,PUBLIC_DOMAIN_ALIAS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,GHCR_USERNAME,GHCR_READ_TOKEN
+          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,PUBLIC_DOMAIN_ALIAS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,PHOTO_UPLOAD_ENABLED,PRIVATE_MEDIA_S3_BUCKET,PRIVATE_MEDIA_S3_ACCESS_KEY_ID,PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY,PRIVATE_MEDIA_ALLOWED_ORIGINS,GHCR_USERNAME,GHCR_READ_TOKEN
           script: DEPLOYMENT_TARGET=staging DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging sh /opt/photo-prjct/deploy/apply-deployment.sh
+      - name: Verify private upload storage contract
+        if: ${{ inputs.verify_private_storage }}
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          PRIVATE_MEDIA_ALLOWED_ORIGINS: ${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: PRIVATE_MEDIA_ALLOWED_ORIGINS
+          script_stop: true
+          script: |
+            cd /opt/photo-prjct
+            docker compose --project-name photo-prjct-staging \
+              --env-file .env \
+              -f docker-compose.prod.yml \
+              -f docker-compose.https.yml \
+              exec -T -e PHOTO_UPLOAD_ENABLED=True web \
+              sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin "$PRIVATE_MEDIA_ALLOWED_ORIGINS"'

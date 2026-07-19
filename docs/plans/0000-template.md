@@ -3,8 +3,10 @@
 - Date: YYYY-MM-DD
 - Status: Draft
 - Owner: project maintainer
+- Related specification: link or `none`
 - Related architecture: link
 - Related ADRs: links or `none`
+- ADR impact: resolved classification and links
 
 ## Goal
 
@@ -34,7 +36,14 @@ State the user or operational outcome in one sentence.
 - [ ] Run the targeted test and confirm the expected failure.
 - [ ] Implement the smallest complete change.
 - [ ] Run targeted and regression checks.
-- [ ] Update architecture or ADR links when required.
+
+### Final task: Architecture and ADR reconciliation
+
+- [ ] Compare delivered behavior with the approved specification, applicable ADRs, and
+  `docs/architecture.md`.
+- [ ] Update implemented architecture facts when boundaries, topology, or status changed.
+- [ ] Stop for a decision instead of contradicting an accepted ADR; supersede rather than edit it.
+- [ ] Record the reconciliation outcome in the pull request.
 
 ## Verification
 

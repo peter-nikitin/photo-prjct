@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Specification"
+  short_description: "Create architecture-aligned specifications"
+  default_prompt: "Use $write-spec to prepare a FindMe Photo specification and resolve its ADR impact before planning."

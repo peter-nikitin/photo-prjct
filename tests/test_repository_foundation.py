@@ -49,6 +49,7 @@ def test_project_skill_ui_configuration_is_valid() -> None:
         "update-visual-design",
         "write-adr",
         "write-plan",
+        "write-spec",
     ):
         skill_dir = ROOT / ".agents" / "skills" / skill_name
         ui_config = yaml.safe_load(

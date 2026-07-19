@@ -308,11 +308,14 @@ class GalleryPageTests(TestCase):
                 "photo_media",
                 kwargs={"slug": event.slug, "photo_id": photo.id, "variant": "preview-large"},
             )
+            alt = f"Фото {photo.id} с события {event.name}"
             self.assertContains(
                 response,
-                f'href="{large_url}"',
+                f'class="gallery-card-link glightbox" href="{large_url}" '
+                f'data-gallery="event-photos" aria-label="Открыть: {alt}"',
             )
             self.assertContains(response, f'src="{small_url}"')
+            self.assertContains(response, f'alt="{alt}"')
             if index <= 4:
                 self.assertContains(response, f'src="{small_url}" loading="eager" fetchpriority="high"')
             else:

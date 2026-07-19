@@ -46,6 +46,9 @@ test('initializes GLightbox once with local gallery options', () => {
 });
 
 test('does nothing without root or GLightbox', () => {
-  assert.doesNotThrow(() => loadGalleryModule({ glightbox: () => {} }));
+  const calls = [];
+
+  assert.doesNotThrow(() => loadGalleryModule({ glightbox: (options) => calls.push(options) }));
+  assert.deepEqual(calls, []);
   assert.doesNotThrow(() => loadGalleryModule({ root: {} }));
 });

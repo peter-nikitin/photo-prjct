@@ -11,10 +11,15 @@
 
   function initializeEventGallery(root, GLightbox) {
     if (!root || typeof GLightbox !== 'function') return null;
+    let lastTrigger = null;
+    root.addEventListener('click', (event) => {
+      lastTrigger = event.target.closest?.('.gallery-card-link') ?? null;
+    });
     return GLightbox({
       selector: '.event-gallery .glightbox',
       touchNavigation: true,
       loop: false,
+      onClose: () => lastTrigger?.focus(),
     });
   }
 

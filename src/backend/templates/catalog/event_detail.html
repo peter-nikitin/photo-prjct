@@ -46,17 +46,21 @@
     <section class="event-gallery" aria-labelledby="gallery-title">
       <div class="event-gallery-heading">
         <h2 id="gallery-title">Фотографии</h2>
+        <span class="event-gallery-count">{{ gallery_photos|length }} фото</span>
       </div>
       {% if gallery_photos %}
         <div class="event-gallery-grid">
           {% for photo in gallery_photos %}
-            <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" aria-label="Открыть: {{ photo.alt }}">
-              {% if forloop.counter <= 4 %}
-                <img src="{{ photo.preview_media_small.url }}" loading="eager" fetchpriority="high" alt="{{ photo.alt }}">
-              {% else %}
-                <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
-              {% endif %}
-            </a>
+            <figure class="gallery-card">
+              <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" aria-label="Открыть: {{ photo.alt }}">
+                {% if forloop.counter <= 4 %}
+                  <img src="{{ photo.preview_media_small.url }}" loading="eager" fetchpriority="high" alt="{{ photo.alt }}">
+                {% else %}
+                  <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
+                {% endif %}
+              </a>
+              <figcaption class="gallery-photo-id">Фото {{ photo.photo_id }}</figcaption>
+            </figure>
           {% endfor %}
         </div>
       {% else %}

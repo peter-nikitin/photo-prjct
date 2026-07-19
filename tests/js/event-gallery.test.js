@@ -34,15 +34,44 @@ function loadGalleryModule({ root = null, glightbox = null } = {}) {
 test('initializes GLightbox once with local gallery options', () => {
   const calls = [];
 
-  loadGalleryModule({ root: {}, glightbox: (options) => calls.push(options) });
+  loadGalleryModule({
+    root: { addEventListener() {} },
+    glightbox: (options) => calls.push(options),
+  });
 
-  assert.deepEqual(calls, [
-    {
-      selector: '.event-gallery .glightbox',
-      touchNavigation: true,
-      loop: false,
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].selector, '.event-gallery .glightbox');
+  assert.equal(calls[0].touchNavigation, true);
+  assert.equal(calls[0].loop, false);
+});
+
+test('restores focus to the pointer-opened card after close', () => {
+  let clickListener;
+  let options;
+  let focusCalls = 0;
+  const card = {
+    focus: () => {
+      focusCalls += 1;
     },
-  ]);
+  };
+  const root = {
+    addEventListener: (type, listener) => {
+      if (type === 'click') clickListener = listener;
+    },
+  };
+
+  loadGalleryModule({
+    root,
+    glightbox: (receivedOptions) => {
+      options = receivedOptions;
+      return {};
+    },
+  });
+
+  clickListener({ target: { closest: () => card } });
+  options.onClose();
+
+  assert.equal(focusCalls, 1);
 });
 
 test('does nothing without root or GLightbox', () => {

@@ -326,7 +326,7 @@
 .event-gallery-heading {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 20px;
 }
 
@@ -334,10 +334,25 @@
   margin: 0;
 }
 
+.event-gallery-count {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .event-gallery-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
+}
+
+.gallery-card {
+  min-width: 0;
+  margin: 0;
 }
 
 .gallery-card-link {
@@ -365,6 +380,15 @@
 .gallery-card-link:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
+}
+
+.gallery-photo-id {
+  margin: 8px 2px 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .glightbox-container .gclose,

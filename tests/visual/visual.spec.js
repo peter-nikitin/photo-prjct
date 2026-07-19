@@ -260,6 +260,20 @@ test('gallery supports keyboard navigation and focus restoration', async ({ page
   await expect(firstCard).toBeFocused();
 });
 
+test('gallery supports pointer open and visible close control', async ({ page }) => {
+  await page.goto('/__visual__/event/gallery-populated/');
+  const firstCard = page.locator('.gallery-card-link').first();
+
+  await firstCard.click();
+  await expect(page.locator('.glightbox-container')).toBeVisible();
+  const closeButton = page.locator('.glightbox-container .gclose');
+  await expect(closeButton).toBeVisible();
+  await closeButton.click();
+
+  await expect(page.locator('.glightbox-container')).toBeHidden();
+  await expect(firstCard).toBeFocused();
+});
+
 test('gallery supports mobile swipe', async ({ browser }) => {
   const context = await browser.newContext({
     hasTouch: true,
@@ -273,13 +287,26 @@ test('gallery supports mobile swipe', async ({ browser }) => {
     const currentImage = page.locator('.gslide.current .gslide-image img');
     await expect(currentImage).toHaveAttribute('src', /run-city-1842\.png$/);
 
-    await page.locator('.gslide.current').dispatchEvent('touchstart', {
-      touches: [{ clientX: 330, clientY: 420 }],
+    const slideBox = await page.locator('.gslide.current').boundingBox();
+    expect(slideBox).not.toBeNull();
+    const startX = slideBox.x + slideBox.width * 0.85;
+    const y = slideBox.y + slideBox.height * 0.5;
+    const cdp = await context.newCDPSession(page);
+    const touchPoint = (x) => ({ x, y, id: 1, radiusX: 1, radiusY: 1, force: 1 });
+
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [touchPoint(startX)],
     });
-    await page.locator('.gslide.current').dispatchEvent('touchmove', {
-      touches: [{ clientX: 40, clientY: 420 }],
-    });
-    await page.locator('.gslide.current').dispatchEvent('touchend', { changedTouches: [] });
+    for (const x of [0.7, 0.55, 0.4, 0.25, 0.15].map(
+      (fraction) => slideBox.x + slideBox.width * fraction,
+    )) {
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [touchPoint(x)],
+      });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
 
     await expect(currentImage).toHaveAttribute('src', /run-track-1190\.png$/);
   } finally {

@@ -296,6 +296,7 @@ class GalleryPageTests(TestCase):
 
         self.assertContains(response, "Фотографии")
         self.assertContains(response, 'class="event-gallery"')
+        self.assertContains(response, 'class="event-gallery-count">5 фото</span>')
         self.assertContains(response, "/static/ui/glightbox.min.css")
         self.assertContains(response, "/static/ui/glightbox.min.js")
         self.assertContains(response, "/static/ui/event-gallery.js")
@@ -316,6 +317,10 @@ class GalleryPageTests(TestCase):
             )
             self.assertContains(response, f'src="{small_url}"')
             self.assertContains(response, f'alt="{alt}"')
+            self.assertContains(
+                response,
+                f'<figcaption class="gallery-photo-id">Фото {photo.id}</figcaption>',
+            )
             if index <= 4:
                 self.assertContains(
                     response, f'src="{small_url}" loading="eager" fetchpriority="high"'
@@ -332,6 +337,7 @@ class GalleryPageTests(TestCase):
         self.assertContains(response, 'class="event-gallery"')
         self.assertContains(response, 'aria-labelledby="gallery-title"')
         self.assertContains(response, 'id="gallery-title"')
+        self.assertContains(response, 'class="event-gallery-count">0 фото</span>')
         self.assertContains(response, "Фотографии пока не опубликованы")
 
 

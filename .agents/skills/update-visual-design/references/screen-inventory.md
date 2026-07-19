@@ -18,3 +18,7 @@ This inventory is the canonical map from visual concepts to Django templates and
 | Purchased photos | design-reference | `tests/visual/templates/design_reference/purchased.html` | none | `/__visual__/reference/purchased/` | `desktop-reference-purchased.png` |
 
 Snapshot files live in `tests/visual/visual.spec.js-snapshots/`. The `/__visual__/` routes exist only with `tests.visual.settings`.
+
+The existing covered/uncovered event fixtures intentionally hide `.event-gallery`; their four
+snapshots remain focused regression surfaces for the event header and hero. Gallery layout and
+states are covered separately by the populated/empty event-gallery fixtures.

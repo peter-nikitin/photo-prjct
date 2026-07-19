@@ -151,6 +151,23 @@ def test_private_upload_configuration_is_wired_to_deployments() -> None:
         assert f"printf '{name}=%s\\n'" in apply_script
 
 
+def test_staging_storage_probe_is_manual_explicit_and_uses_the_deployed_container() -> None:
+    staging = _load_workflow("deploy.yml")
+    workflow_dispatch = staging[True]["workflow_dispatch"]
+    probe_input = workflow_dispatch["inputs"]["verify_private_storage"]
+    probe = _workflow_step(staging, "deploy", "Verify private upload storage contract")
+
+    assert probe_input["type"] == "boolean"
+    assert probe_input["default"] is False
+    assert probe["if"] == "${{ inputs.verify_private_storage }}"
+    assert probe["env"]["PRIVATE_MEDIA_ALLOWED_ORIGINS"] == (
+        "${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}"
+    )
+    assert probe["with"]["envs"] == "PRIVATE_MEDIA_ALLOWED_ORIGINS"
+    assert "exec -T -e PHOTO_UPLOAD_ENABLED=True web" in probe["with"]["script"]
+    assert "--confirm-real-storage" in probe["with"]["script"]
+
+
 def test_focused_deployment_scripts_are_versioned() -> None:
     for relative_path in (
         "deploy/certbot/reconcile-certificate.sh",

@@ -2,6 +2,8 @@ from datetime import date, timedelta
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.test import SimpleTestCase, TestCase, modify_settings, override_settings
 from django.urls import reverse
 
@@ -42,7 +44,7 @@ class PublicShellTests(SimpleTestCase):
         self.assertContains(response, 'href="/static/ui/catalog.css"')
         self.assertContains(response, f'href="{reverse("event_catalog")}"')
         self.assertContains(response, f'href="{reverse("legal")}"')
-        self.assertContains(response, f'href="{reverse("admin:index")}"')
+        self.assertNotContains(response, f'href="{reverse("admin:index")}"')
         self.assertNotContains(response, "Прототип")
         for section_id in ("offer", "terms", "personal", "cookies"):
             self.assertContains(response, f'id="{section_id}"')
@@ -140,7 +142,44 @@ class PageTests(TestCase):
                 self.assertContains(response, 'href="/static/ui/catalog.css"')
                 self.assertContains(response, f'href="{reverse("event_catalog")}"')
                 self.assertContains(response, f'href="{reverse("legal")}"')
-                self.assertContains(response, f'href="{reverse("admin:index")}"')
+                self.assertNotContains(response, f'href="{reverse("admin:index")}"')
+
+    @override_settings(PHOTO_UPLOAD_ENABLED=True)
+    def test_service_navigation_matches_user_capabilities(self) -> None:
+        upload_permission = Permission.objects.get(
+            content_type__app_label="ingestion", codename="upload_photos"
+        )
+        users = get_user_model().objects
+        ordinary_user = users.create_user(username="ordinary")
+        photographer = users.create_user(username="photographer")
+        staff_user = users.create_user(username="staff", is_staff=True)
+        staff_photographer = users.create_user(username="staff-photographer", is_staff=True)
+        photographer.user_permissions.add(upload_permission)
+        staff_photographer.user_permissions.add(upload_permission)
+
+        cases = (
+            (ordinary_user, False, False),
+            (photographer, True, False),
+            (staff_user, False, True),
+            (staff_photographer, True, True),
+        )
+
+        for user, sees_upload, sees_admin in cases:
+            with self.subTest(username=user.username):
+                self.client.force_login(user)
+                response = self.client.get(reverse("event_catalog"))
+
+                if sees_upload:
+                    self.assertContains(response, f'href="{reverse("upload_page")}"')
+                else:
+                    self.assertNotContains(response, f'href="{reverse("upload_page")}"')
+
+                if sees_admin:
+                    self.assertContains(response, f'href="{reverse("admin:index")}"')
+                else:
+                    self.assertNotContains(response, f'href="{reverse("admin:index")}"')
+
+                self.client.logout()
 
     def test_event_detail_returns_404_for_draft_event(self) -> None:
         draft = self.make_event(

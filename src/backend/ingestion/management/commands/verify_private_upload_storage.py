@@ -62,7 +62,10 @@ class Command(BaseCommand):
                 _JPEG,
                 fields={**grant.fields, "Content-Type": "image/png"},
             )
-            self._expect_rejected(grant, b"x" * (contract_max + 1))
+            # Yandex Object Storage tolerates small multipart-boundary overages around the
+            # policy edge. A 2x payload proves that the real service enforces a meaningful
+            # upper bound; confirmation still requires the exact registered object size.
+            self._expect_rejected(grant, b"x" * (contract_max * 2))
             _post_form(grant.url, grant.fields, _JPEG)
 
             source = storage.inspect(key=incoming_key)

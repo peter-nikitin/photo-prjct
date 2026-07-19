@@ -105,6 +105,7 @@ class VerifyPrivateStorageCommandTests(SimpleTestCase):
             )
 
         self.assertEqual(post_form.call_count, 4)
+        self.assertEqual(len(post_form.call_args_list[2].args[2]), 2048)
         self.assertEqual(request.call_count, 2)
         self.assertEqual(len(storage.deleted), 2)
         self.assertIn("verified", output.getvalue())

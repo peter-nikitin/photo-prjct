@@ -532,9 +532,11 @@
   .glightbox-container .gslideInRight,
   .glightbox-container .gzoomIn,
   .glightbox-container .gzoomOut {
-    -webkit-transition: none !important;
-    transition: none !important;
-    -webkit-animation: none !important;
-    animation: none !important;
+    -webkit-transition-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    -webkit-animation-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    -webkit-animation-iteration-count: 1 !important;
+    animation-iteration-count: 1 !important;
   }
 }

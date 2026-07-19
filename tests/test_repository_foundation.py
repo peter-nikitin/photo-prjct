@@ -193,6 +193,7 @@ def test_event_cards_keep_keyboard_focus_visible_inside_clipped_card() -> None:
 
     assert ".event-card:focus-within" in catalog_css
     assert ".event-card-link:focus-visible" in catalog_css
+    assert "outline-offset: -4px" in catalog_css
 
 
 def test_event_gallery_lightbox_respects_reduced_motion_and_touch_targets() -> None:
@@ -207,9 +208,11 @@ def test_event_gallery_lightbox_respects_reduced_motion_and_touch_targets() -> N
     assert ".glightbox-container .gslider," in catalog_css
     assert ".glightbox-container .gfadeIn," in catalog_css
     assert ".glightbox-container .gzoomOut" in catalog_css
-    assert "transition: none !important;" in catalog_css
-    assert "animation: none !important;" in catalog_css
-    assert "outline-offset: -4px" in catalog_css
+    assert "transition: none !important;" not in catalog_css
+    assert "animation: none !important;" not in catalog_css
+    assert "transition-duration: 0.01ms !important;" in catalog_css
+    assert "animation-duration: 0.01ms !important;" in catalog_css
+    assert "animation-iteration-count: 1 !important;" in catalog_css
 
 
 def test_production_django_configuration_excludes_visual_references() -> None:

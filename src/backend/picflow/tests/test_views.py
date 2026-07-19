@@ -296,9 +296,9 @@ class GalleryPageTests(TestCase):
 
         self.assertContains(response, "Фотографии")
         self.assertContains(response, 'class="event-gallery"')
-        self.assertContains(response, '/static/ui/glightbox.min.css')
-        self.assertContains(response, '/static/ui/glightbox.min.js')
-        self.assertContains(response, '/static/ui/event-gallery.js')
+        self.assertContains(response, "/static/ui/glightbox.min.css")
+        self.assertContains(response, "/static/ui/glightbox.min.js")
+        self.assertContains(response, "/static/ui/event-gallery.js")
         for index, photo in enumerate(photos, start=1):
             small_url = reverse(
                 "photo_media",
@@ -317,7 +317,9 @@ class GalleryPageTests(TestCase):
             self.assertContains(response, f'src="{small_url}"')
             self.assertContains(response, f'alt="{alt}"')
             if index <= 4:
-                self.assertContains(response, f'src="{small_url}" loading="eager" fetchpriority="high"')
+                self.assertContains(
+                    response, f'src="{small_url}" loading="eager" fetchpriority="high"'
+                )
             else:
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
 

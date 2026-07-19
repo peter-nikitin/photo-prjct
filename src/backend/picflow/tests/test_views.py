@@ -555,6 +555,25 @@ class GalleryMediaViewTests(TransactionTestCase):
         storage_class.assert_called_once_with()
         s3_client.get_object.assert_not_called()
 
+    def test_photo_media_does_not_hide_unrelated_resolver_value_error(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event)
+        resolver = Mock()
+        resolver.resolve.side_effect = ValueError("programmer bug")
+
+        with (
+            patch("config.views._public_media_resolver", return_value=resolver),
+            self.assertRaisesRegex(ValueError, "programmer bug"),
+        ):
+            views.photo_media(
+                RequestFactory().get(self.media_url(event=event, photo=photo)),
+                event.slug,
+                photo.id,
+                "preview-small",
+            )
+
+        resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
+
     def test_photo_media_closes_body_after_mid_stream_failure(self) -> None:
         event = self.make_event()
         photo = self.make_private_photo(event)

@@ -3,7 +3,12 @@ from datetime import date
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET
-from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
+from ingestion.storage import (
+    ObjectMissing,
+    PrivateUploadStorage,
+    StorageError,
+    StorageUnavailable,
+)
 from picflow.gallery import (
     GALLERY_VARIANTS,
     CloseableMediaIterator,
@@ -44,7 +49,11 @@ def event_detail(request, slug: str):
 
 
 def _public_media_resolver() -> PublicMediaResolver:
-    return PublicMediaResolver(storage=PrivateUploadStorage())
+    try:
+        storage = PrivateUploadStorage()
+    except ValueError:
+        raise StorageUnavailable() from None
+    return PublicMediaResolver(storage=storage)
 
 
 @require_GET
@@ -59,7 +68,7 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
         media = _public_media_resolver().resolve(photo=photo, variant=variant)
     except ObjectMissing:
         return HttpResponse(status=404)
-    except (StorageError, ValueError):
+    except StorageError:
         return HttpResponse(status=503)
     stream = CloseableMediaIterator(media=media, event_slug=event.slug, photo_id=photo.pk)
     response = StreamingHttpResponse(stream, content_type=media.content_type)

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, Self
 
 from django.urls import reverse
-from ingestion.storage import OpenedObject, ReadableBody
+from ingestion.storage import ObjectMismatch, OpenedObject, ReadableBody
 
 from picflow.models import Photo
 
@@ -67,7 +67,10 @@ class PublicMediaResolver:
     def resolve(self, *, photo: Photo, variant: GalleryVariant) -> ResolvedPublicMedia:
         if variant not in GALLERY_VARIANTS or not photo.original_key:
             raise ValueError("ineligible gallery media")
-        opened = self._storage.open_final(key=photo.original_key)
+        try:
+            opened = self._storage.open_final(key=photo.original_key)
+        except ValueError:
+            raise ObjectMismatch() from None
         extension: Literal["jpg", "png"] = "jpg" if opened.content_type == "image/jpeg" else "png"
         return ResolvedPublicMedia(
             body=opened.body,

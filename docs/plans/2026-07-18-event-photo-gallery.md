@@ -22,7 +22,7 @@
 ---
 
 - Date: 2026-07-18
-- Status: In progress — Tasks 1-7 complete; Task 8 reconciliation recorded with visual CI evidence pending
+- Status: Complete — Tasks 1-8 verified and recorded
 - Owner: project maintainer
 - Related specification: [Event photo gallery design](../superpowers/specs/2026-07-18-event-photo-gallery-design.md)
 - Related architecture: [Current architecture — implemented](../architecture.md#current-architecture--implemented),
@@ -44,7 +44,10 @@
   `676bbf2^..0ee60ac`; Task 6's final visual verification passed all 43 tests. Task 7 is implemented
   by `8518dcf`, `62db0db`, `dbaa147`, `80dc494`, `dbd815e`, and `bf2b7be`; its focused deployment
   behavior is covered by the Task 8 verification run. Commit `4ba3f68` resolves the gallery typing
-  findings discovered during reconciliation. No live environment activation is claimed.
+  findings discovered during reconciliation. PR #45 CI run
+  [29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091) passed current
+  HEAD `7d6a718`: all 44 visual tests passed in 47.7 seconds, the full coverage step passed 264 tests
+  at 89.10%, and all quality checks were green. No live environment activation is claimed.
 
 ## Scope
 
@@ -470,14 +473,16 @@ existing image-only rollback semantics; this task does not claim full environmen
 **Interfaces:** Consumes verified Tasks 1-7 evidence; produces current-architecture wording, PJ-005 status/evidence, and matching engineering capability evidence without expanding runtime scope.
 
 - [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py src/backend/picflow/tests/test_views.py src/backend/ingestion/tests/test_storage.py tests/test_visual_reference.py tests/deployment/test_deployment_scripts.py`; expected GREEN is all selected modules passed.
-- [ ] Run `ruff format --check . && ruff check . && mypy`; expected GREEN is three zero exits. Run `python src/backend/manage.py check && python src/backend/manage.py makemigrations --check --dry-run`; expected GREEN is no system-check issue and `No changes detected`. Run `npm run test:js && npm run test:visual`; expected GREEN is all JS/visual tests passed.
+- [x] Run `ruff format --check . && ruff check . && mypy`; expected GREEN is three zero exits. Run `python src/backend/manage.py check && python src/backend/manage.py makemigrations --check --dry-run`; expected GREEN is no system-check issue and `No changes detected`. Run `npm run test:js && npm run test:visual`; expected GREEN is all JS/visual tests passed.
   - Verified portions: Ruff format and lint passed; fresh `mypy` after `4ba3f68` reported no issues in
     50 source files; Django checks passed with no model changes; and all 25 JavaScript tests passed.
-  - Pending evidence: the one permitted local visual run after a Docker LinuxKit/API wedge and
+  - Local boundary: the one permitted local visual run after a Docker LinuxKit/API wedge and
     restart rendered the first two pre-existing catalog pages and returned their resources with
     HTTP 200, but both timed out after 60 seconds in `page.waitForLoadState("networkidle")`. It was
-    stopped without a blind retry; pull-request CI is authoritative for the complete current-HEAD
-    visual suite.
+    stopped without a blind retry.
+  - Authoritative current-HEAD evidence: PR #45 CI run
+    [29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091) passed all 44
+    visual tests in 47.7 seconds, 264 tests at 89.10% coverage, and every quality check for `7d6a718`.
 - [x] Compare delivered behavior with the approved specification, accepted ADR 0015, all other
   applicable ADRs, and `docs/architecture.md`.
 - [x] Record only verified gallery/private-stream behavior. Update PJ-005 and matching engineering evidence without claiming derivatives, paid previews, downloads, commerce, or unperformed staging activation.
@@ -485,7 +490,7 @@ existing image-only rollback semantics; this task does not claim full environmen
   edit an accepted decision.
 - [x] Run `git diff --check` and scan browser-facing files for original keys, credentials, and permanent S3 URLs; expect none.
 - [x] Confirm status contains no migration, worker/broker, derivative/readiness schema, purchase behavior, or unrelated file.
-- [ ] Record the architecture and ADR reconciliation outcome in the pull request before push.
+- [x] Record the architecture and ADR reconciliation outcome in the pull request before push.
 - [x] Commit: `git add docs/architecture.md docs/product-jobs.md docs/engineering-jobs.md && git commit -m "docs: record event gallery delivery evidence"`.
 
 ## Verification

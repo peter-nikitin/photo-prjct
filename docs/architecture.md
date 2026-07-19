@@ -50,10 +50,12 @@ The repository currently contains an early Django application:
 - Event galleries use locally packaged GLightbox 3.3.1 assets with normal anchor fallback.
   Task 6's browser run and inspected snapshots verified responsive populated and empty layouts,
   keyboard and pointer operation, mobile swipe, Escape/control close, focus restoration, and
-  operation with JavaScript disabled. A complete current-HEAD visual rerun awaits pull-request CI:
-  after a local Docker LinuxKit/API wedge and restart, the first two pre-existing catalog cases
-  rendered with HTTP-200 resources but timed out waiting for `networkidle`. Neither the prior visual
-  evidence nor the pending rerun represents a live staging activation.
+  operation with JavaScript disabled. The first local current-HEAD rerun was infrastructure-blocked:
+  after a Docker LinuxKit/API wedge and restart, two pre-existing catalog cases rendered with
+  HTTP-200 resources but timed out waiting for `networkidle`. PR #45 CI run
+  [29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091) then passed all
+  44 visual tests for current HEAD `7d6a718` in 47.7 seconds. Neither automated result represents a
+  live staging activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.

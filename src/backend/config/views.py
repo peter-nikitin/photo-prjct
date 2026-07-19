@@ -1,5 +1,4 @@
 from datetime import date
-from typing import cast
 
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -8,8 +7,8 @@ from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from picflow.gallery import (
     GALLERY_VARIANTS,
     CloseableMediaIterator,
+    GalleryPhoto,
     GalleryPhotoFactory,
-    GalleryVariant,
     PublicMediaResolver,
 )
 from picflow.models import Event, Photo
@@ -29,7 +28,7 @@ def event_catalog(request):
 
 def event_detail(request, slug: str):
     event = get_object_or_404(Event.objects.published(), slug=slug)
-    gallery_photos = ()
+    gallery_photos: tuple[GalleryPhoto, ...] = ()
     if event.access_type == Event.AccessType.FREE:
         gallery_photos = tuple(
             GalleryPhotoFactory.from_photo(photo=photo, event_slug=event.slug)
@@ -57,7 +56,7 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
     )
     photo = get_object_or_404(Photo, pk=photo_id, event=event, src="", original_key__isnull=False)
     try:
-        media = _public_media_resolver().resolve(photo=photo, variant=cast(GalleryVariant, variant))
+        media = _public_media_resolver().resolve(photo=photo, variant=variant)
     except ObjectMissing:
         return HttpResponse(status=404)
     except StorageError:

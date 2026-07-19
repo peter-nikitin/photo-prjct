@@ -6,7 +6,6 @@ from ingestion.storage import OpenedObject
 
 from picflow.gallery import (
     CloseableMediaIterator,
-    FinalObjectStorage,
     GalleryMedia,
     GalleryPhoto,
     GalleryPhotoFactory,
@@ -37,10 +36,12 @@ class GalleryPresentationContractTests(SimpleTestCase):
         self.assertEqual(gallery_photo.preview_media_small, small)
         self.assertEqual(gallery_photo.preview_media_large, large)
         self.assertEqual(gallery_photo.alt, "Фото photo-42 с события City Run")
+        alt_field = "alt"
         with self.assertRaises(FrozenInstanceError):
-            gallery_photo.alt = "changed"
+            setattr(gallery_photo, alt_field, "changed")
+        url_field = "url"
         with self.assertRaises(FrozenInstanceError):
-            small.url = "/changed/"
+            setattr(small, url_field, "/changed/")
 
     @patch("boto3.client")
     @patch("picflow.gallery.reverse")
@@ -129,7 +130,7 @@ class PublicGalleryMediaTests(SimpleTestCase):
     def test_resolver_maps_both_variants_to_original(self) -> None:
         jpeg_body = _ReadableBody([])
         png_body = _ReadableBody([])
-        storage: FinalObjectStorage = _FinalObjectStorage(
+        storage = _FinalObjectStorage(
             [
                 OpenedObject(body=jpeg_body, size=123, content_type="image/jpeg"),
                 OpenedObject(body=png_body, size=456, content_type="image/png"),
@@ -162,7 +163,7 @@ class PublicGalleryMediaTests(SimpleTestCase):
         self.assertEqual(storage.opened_keys, [photo.original_key, photo.original_key])
 
     def test_resolver_rejects_unknown_variant_before_storage(self) -> None:
-        storage: FinalObjectStorage = _FinalObjectStorage([])
+        storage = _FinalObjectStorage([])
         resolver = PublicMediaResolver(storage)
         photo = Photo(id="photo-42", original_key="originals/0123456789abcdef0123456789abcdef")
 
@@ -172,7 +173,7 @@ class PublicGalleryMediaTests(SimpleTestCase):
         self.assertEqual(storage.opened_keys, [])
 
     def test_resolver_requires_original_key_before_storage(self) -> None:
-        storage: FinalObjectStorage = _FinalObjectStorage([])
+        storage = _FinalObjectStorage([])
         resolver = PublicMediaResolver(storage)
         photo = Photo(id="photo-42", original_key=None)
 

@@ -351,7 +351,7 @@ class GalleryPageTests(TestCase):
             self.assertContains(
                 response,
                 f'class="gallery-card-link glightbox" href="{large_url}" '
-                f'data-gallery="event-photos" aria-label="Открыть: {alt}"',
+                f'data-gallery="event-photos" data-type="image" aria-label="Открыть: {alt}"',
             )
             self.assertContains(response, f'src="{small_url}"')
             self.assertContains(response, f'alt="{alt}"')

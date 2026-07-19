@@ -8,14 +8,16 @@ WORKDIR /workspace
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PATH="/opt/visual-test-deps/node_modules/.bin:${PATH}"
 
-COPY src/backend/requirements.txt ./src/backend/requirements.txt
-RUN python -m pip install --no-cache-dir -r src/backend/requirements.txt
-
+WORKDIR /opt/visual-test-deps
 COPY package.json package-lock.json ./
 RUN npm ci
 RUN npx playwright install --with-deps chromium
 
-COPY . .
+COPY src/backend/requirements.txt ./requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
+
+WORKDIR /workspace
 
 CMD ["npm", "run", "test:visual:inside"]

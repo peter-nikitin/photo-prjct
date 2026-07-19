@@ -205,13 +205,13 @@ def _apply_env(
     *,
     scenario: str,
     target: str = "production",
-    previous_env: bytes | None = PREVIOUS_ENV,
 ) -> dict[str, str]:
-    if previous_env is not None:
-        (tmp_path / ".env").write_bytes(previous_env)
-        (tmp_path / ".env").chmod(0o640)
-        (tmp_path / "previous-env.expected").write_bytes(previous_env)
+    (tmp_path / ".env").write_bytes(PREVIOUS_ENV)
+    (tmp_path / ".env").chmod(0o640)
+    (tmp_path / "previous-env.expected").write_bytes(PREVIOUS_ENV)
     (tmp_path / "deployed-image").write_text("old-image\n", encoding="utf-8")
+    (tmp_path / "deployment-target").write_text("old-target\n", encoding="utf-8")
+    (tmp_path / "compose-project-name").write_text("old-project\n", encoding="utf-8")
     for name in ("docker-compose.prod.yml", "docker-compose.https.yml"):
         (tmp_path / name).write_text("services: {}\n", encoding="utf-8")
     cert_dir = tmp_path / "deploy" / "certbot"
@@ -344,8 +344,30 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
     _write_executable(
         fake_bin / "docker",
         """
+compose_env_file=""
+previous_argument=""
+for argument do
+  if [ "$previous_argument" = --env-file ]; then
+    compose_env_file="$argument"
+  fi
+  previous_argument="$argument"
+done
+validate_candidate_env() {
+  candidate_access_key="$(sed -n 's/^PRIVATE_MEDIA_S3_ACCESS_KEY_ID=//p' "$compose_env_file")"
+  candidate_secret_key="$(sed -n 's/^PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=//p' "$compose_env_file")"
+  [ "$compose_env_file" != "$DEPLOY_ROOT/.env" ]
+  [ "$APP_ENV_FILE" = "$compose_env_file" ]
+  [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = new-image ]
+  [ "$(sed -n 's/^SECRET_KEY=//p' "$compose_env_file")" = new-secret ]
+  [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
+  [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
+  [ "$candidate_secret_key" = "$PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" ]
+  cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
+  printf 'candidate-requested-env-with-canonical-untouched\n' >> "$COMMAND_LOG"
+}
 case " $* " in
   *" run --rm --no-deps -T --entrypoint python web manage.py shell"*)
+    validate_candidate_env
     for gallery_preflight do :; done
     {
       printf 'APP_IMAGE=%s docker' "${APP_IMAGE-unset}"
@@ -369,11 +391,15 @@ case " $* " in
     ;;
 esac
 case " $* " in
-  *" compose "*" up -d --remove-orphans"*)
-    if [ "${APP_IMAGE-unset}" = unset ] && [ -f "$PREVIOUS_ENV_EXPECTED" ]; then
-      cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
-      printf 'recovery-env-exact-before-up\n' >> "$COMMAND_LOG"
-    fi
+  *" compose "*" pull web"*)
+    validate_candidate_env
+    ;;
+  *" compose "*" stop nginx"*)
+    [ "$compose_env_file" = "$DEPLOY_ROOT/.env" ]
+    [ "$APP_ENV_FILE" = "$DEPLOY_ROOT/.env" ]
+    [ "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" = new-image ]
+    [ "$(sed -n 's/^SECRET_KEY=//p' "$DEPLOY_ROOT/.env")" = new-secret ]
+    printf 'requested-env-promoted-before-stop\n' >> "$COMMAND_LOG"
     ;;
 esac
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
@@ -430,6 +456,9 @@ esac
         "DB_USER": "app",
         "DB_PASSWORD": "password",
         "PHOTO_UPLOAD_ENABLED": "False",
+        "PRIVATE_MEDIA_S3_BUCKET": "requested-private-bucket",
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "requested-private-access",
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "requested-private-secret",
         "PUBLIC_DOMAIN": "findme-photo.ru",
         "PUBLIC_DOMAIN_ALIAS": "",
         "LETSENCRYPT_EMAIL": "ops@example.com",
@@ -531,13 +560,14 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
         for index, command in enumerate(commands)
         if " pull web" in command and "APP_IMAGE=new-image" in command
     )
-    candidate_run = commands.index(
-        "APP_IMAGE=new-image docker compose --project-name photo-production "
-        f"--env-file {tmp_path}/.env -f {tmp_path}/docker-compose.prod.yml "
-        f"-f {tmp_path}/docker-compose.https.yml run --rm --no-deps -T "
-        "--entrypoint python web manage.py shell --no-imports -c "
-        "<gallery_media_preflight>"
+    candidate_command = next(
+        command
+        for command in commands
+        if " run --rm --no-deps -T --entrypoint python web " in command
     )
+    candidate_run = commands.index(candidate_command)
+    assert f"--env-file {tmp_path}/.env.requested." in candidate_command
+    assert "manage.py shell --no-imports -c <gallery_media_preflight>" in candidate_command
     stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
     candidate_up = next(
         index
@@ -548,7 +578,7 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
 
 
 @pytest.mark.parametrize("scenario", ["private-media-failure", "private-media-config-failure"])
-def test_failed_candidate_private_media_preflight_restores_complete_previous_state(
+def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched(
     tmp_path: Path, fake_bin: Path, scenario: str
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario=scenario)
@@ -568,6 +598,8 @@ def test_failed_candidate_private_media_preflight_restores_complete_previous_sta
     assert "private failure detail" not in result.stderr
     assert "private config detail" not in result.stderr
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert _env_metadata(tmp_path / ".env") == previous_metadata
     commands = _apply_log(tmp_path)
@@ -575,10 +607,11 @@ def test_failed_candidate_private_media_preflight_restores_complete_previous_sta
     assert "reconcile-certificate" not in commands
     assert not any(" up -d --remove-orphans" in command for command in commands)
     assert not any(command.startswith("crontab ") for command in commands)
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 2
     _assert_no_env_temporary_files(tmp_path)
 
 
-def test_candidate_pull_failure_restores_complete_env_without_service_reconciliation(
+def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliation(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="pull-failure")
@@ -590,28 +623,14 @@ def test_candidate_pull_failure_restores_complete_env_without_service_reconcilia
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert _env_metadata(tmp_path / ".env") == previous_metadata
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = _apply_log(tmp_path)
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
     assert not any(" up -d --remove-orphans" in command for command in commands)
     assert not any(command.startswith("crontab ") for command in commands)
-    _assert_no_env_temporary_files(tmp_path)
-
-
-def test_pre_switch_failure_restores_absent_previous_env_without_reconciliation(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="pull-failure", previous_env=None)
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert not (tmp_path / ".env").exists()
-    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
-    commands = _apply_log(tmp_path)
-    assert not any(" stop nginx" in command for command in commands)
-    assert "reconcile-certificate" not in commands
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 1
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -692,9 +711,13 @@ def test_apply_success_commits_deployed_image_only_after_checks(
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
+    assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
+    assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") == 1
+    assert commands.count("requested-env-promoted-before-stop") == 1
     assert "https://findme-photo.ru/health/" in commands
+    _assert_no_env_temporary_files(tmp_path)
 
 
 @pytest.mark.parametrize("scenario", ["health-failure", "public-failure"])
@@ -708,10 +731,11 @@ def test_apply_failure_restores_previous_image_and_overlay_without_marker_change
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert deployed_env.startswith("APP_IMAGE=old-image\n")
+    assert "SECRET_KEY=new-secret\n" in deployed_env
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") >= 2
-    assert commands.count("recovery-env-exact-before-up") == 1
 
 
 def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
@@ -724,10 +748,11 @@ def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert deployed_env.startswith("APP_IMAGE=old-image\n")
+    assert "SECRET_KEY=new-secret\n" in deployed_env
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.index("stop nginx") < commands.index("up -d --remove-orphans")
-    assert commands.count("recovery-env-exact-before-up") == 1
     assert "docker-compose.https.yml" in commands
 
 
@@ -748,10 +773,11 @@ def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert deployed_env.startswith("APP_IMAGE=old-image\n")
+    assert "SECRET_KEY=new-secret\n" in deployed_env
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") == expected_reconciliations
-    assert commands.count("recovery-env-exact-before-up") == 1
 
 
 def test_failed_certificate_renewal_waits_before_next_attempt(

@@ -136,6 +136,7 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
 
     assert compose["services"]["web"]["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
+    assert compose["services"]["web"]["env_file"] == ["${APP_ENV_FILE:-.env}"]
     assert "healthcheck" in compose["services"]["web"]
 
 

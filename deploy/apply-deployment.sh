@@ -53,11 +53,18 @@ overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
 health_port=443
 health_url="https://$PUBLIC_DOMAIN/health/"
 
-compose() {
+compose_with_env_file() {
+    compose_env_file="$1"
+    shift
+    APP_ENV_FILE="$compose_env_file" \
     docker compose --project-name "$COMPOSE_PROJECT_NAME" \
-        --env-file "$DEPLOY_ROOT/.env" \
+        --env-file "$compose_env_file" \
         -f "$DEPLOY_ROOT/docker-compose.prod.yml" \
         -f "$overlay_file" "$@"
+}
+
+compose() {
+    compose_with_env_file "$DEPLOY_ROOT/.env" "$@"
 }
 
 diagnostics() {
@@ -66,41 +73,37 @@ diagnostics() {
 }
 
 env_tmp=""
-env_backup=""
 marker_tmp=""
-previous_env_present=0
-env_restore_required=0
-service_switch_started=0
+mutation_started=0
 deployment_committed=0
 recovery_in_progress=0
 
 cleanup() {
     rm -f ${env_tmp:+"$env_tmp"} ${marker_tmp:+"$marker_tmp"}
-    if [ "$env_restore_required" -eq 0 ]; then
-        rm -f ${env_backup:+"$env_backup"}
-    fi
 }
 
-restore_previous_env() {
-    [ "$env_restore_required" -eq 1 ] || return 0
-    if [ "$previous_env_present" -eq 1 ]; then
-        mv "$env_backup" "$DEPLOY_ROOT/.env" || return 1
-        env_backup=""
-    else
-        rm -f "$DEPLOY_ROOT/.env" || return 1
+replace_env_image() {
+    image="$1"
+    env_tmp="$(mktemp "$DEPLOY_ROOT/.env.restore.XXXXXX")" || return 1
+    if ! awk -v image="$image" '
+        BEGIN { replaced = 0 }
+        /^APP_IMAGE=/ && !replaced { print "APP_IMAGE=" image; replaced = 1; next }
+        { print }
+        END { if (!replaced) print "APP_IMAGE=" image }
+    ' "$DEPLOY_ROOT/.env" > "$env_tmp"; then
+        return 1
     fi
-    env_restore_required=0
+    chmod 600 "$env_tmp" || return 1
+    mv "$env_tmp" "$DEPLOY_ROOT/.env" || return 1
+    env_tmp=""
 }
 
 recover_previous_deployment() {
-    restore_previous_env || return 1
-    if [ "$service_switch_started" -eq 0 ]; then
-        return 0
-    fi
     if [ -z "$previous_image" ]; then
         echo "No previous APP_IMAGE is available for recovery" >&2
         return 1
     fi
+    replace_env_image "$previous_image" || return 1
     unset APP_IMAGE
     compose up -d --remove-orphans || return 1
     echo "Previous application image and edge reconciled" >&2
@@ -111,19 +114,17 @@ on_exit() {
     set +e
     trap - EXIT INT TERM HUP
 
-    if [ "$env_restore_required" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
+    if [ "$mutation_started" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
         [ "$status" -ne 0 ] || status=1
         if [ "$recovery_in_progress" -eq 0 ]; then
             recovery_in_progress=1
             if ! recover_previous_deployment; then
                 echo "Previous deployment recovery failed" >&2
                 diagnostics
-            elif [ "$service_switch_started" -eq 1 ]; then
-                if [ "${previous_upload_enabled:-False}" = True ]; then
-                    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
-                else
-                    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
-                fi
+            elif [ "${previous_upload_enabled:-False}" = True ]; then
+                sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
+            else
+                sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
             fi
         fi
     fi
@@ -146,7 +147,6 @@ install -d -m 0755 "$DEPLOY_ROOT"
 previous_image=""
 previous_upload_enabled="False"
 if [ -f "$DEPLOY_ROOT/.env" ]; then
-    previous_env_present=1
     previous_image="$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
     previous_upload_enabled="$(
         sed -n 's/^PHOTO_UPLOAD_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
@@ -185,14 +185,6 @@ env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
 } > "$env_tmp"
 chmod 600 "$env_tmp"
-if [ "$previous_env_present" -eq 1 ]; then
-    env_backup="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")"
-    mv "$DEPLOY_ROOT/.env" "$env_backup"
-    env_restore_required=1
-fi
-mv "$env_tmp" "$DEPLOY_ROOT/.env"
-env_tmp=""
-env_restore_required=1
 
 if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     if ! printf '%s\n' "$GHCR_READ_TOKEN" | \
@@ -201,7 +193,7 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     fi
 fi
 
-if ! compose pull web; then
+if ! compose_with_env_file "$env_tmp" pull web; then
     fail "Candidate application image pull failed"
 fi
 
@@ -230,12 +222,15 @@ else:
         raise SystemExit("Gallery private-media read prerequisite failed") from None
     print("gallery-private-media-preflight-ok")
 '
-if ! compose run --rm --no-deps -T --entrypoint python web \
+if ! compose_with_env_file "$env_tmp" run --rm --no-deps -T --entrypoint python web \
     manage.py shell --no-imports -c "$gallery_media_preflight"; then
     fail "Candidate image failed private-media read prerequisite"
 fi
 
-service_switch_started=1
+mv "$env_tmp" "$DEPLOY_ROOT/.env"
+env_tmp=""
+mutation_started=1
+
 compose stop nginx || true
 if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
     fail "Certificate bootstrap failed"
@@ -300,4 +295,3 @@ printf '%s\n' "$requested_image" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
 deployment_committed=1
-env_restore_required=0

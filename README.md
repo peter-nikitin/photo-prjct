@@ -15,13 +15,28 @@ unresolved decisions are documented rather than assumed to be implemented.
 
 ## Local development
 
-Requirements: Git, Docker, and Docker Compose. Python 3.12+ is required only for running management
-commands and quality checks directly on the host.
+Requirements: Git, Docker, Docker Compose, NVM, and Node 22. Python 3.12+ is required only for
+running management commands and quality checks directly on the host.
 
 The `main` checkout and a feature worktree use separate source directories and Compose projects, so
 each directory needs its own ignored `.env` file. Both configurations expose PostgreSQL on port
 `5432` and Django on port `8000`; stop one before starting the other unless you intentionally change
 the port mappings.
+
+### Prepare Node.js
+
+The repository uses Node 22 for JavaScript unit tests and local npm commands. With
+[NVM](https://github.com/nvm-sh/nvm) installed, prepare the pinned major version once per checkout:
+
+```bash
+nvm install
+nvm use
+node --version
+npm ci
+```
+
+`node --version` must report `v22.x.x`. NVM reads `.nvmrc`, matching GitHub Actions and the
+containerized visual-test environment.
 
 ### Run the `main` version
 

@@ -222,6 +222,24 @@ test('prepareSelection validates JPEG files and assigns one stable UUID per acce
   );
 });
 
+test('prepareSelection accepts a JPEG extension when drag-and-drop omits the MIME type', () => {
+  const file = { name: 'dropped.JPEG', type: '', size: 4 };
+  const options = {
+    maxFiles: 2,
+    maxFileBytes: 8,
+    crypto: { randomUUID: () => '00000000-0000-4000-8000-000000000001' },
+  };
+
+  const selection = prepareSelection([file], options);
+
+  assert.equal(selection.items[0].file, file);
+  assert.equal(selection.items[0].contentType, 'image/jpeg');
+  assert.throws(
+    () => prepareSelection([{ name: 'bad.png', type: '', size: 4 }], options),
+    /JPEG/,
+  );
+});
+
 test('network and retryable HTTP failures use exactly three delayed automatic retries', async () => {
   const { calls, coordinator, delays } = makeHarness({
     xhrResults: [

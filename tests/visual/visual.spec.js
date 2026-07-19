@@ -8,6 +8,8 @@ const desktopPages = [
   ['catalog-empty', '/__visual__/catalog/empty/'],
   ['event-covered', '/__visual__/event/covered/'],
   ['event-uncovered', '/__visual__/event/uncovered/'],
+  ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
+  ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
   ['reference-dashboard', '/__visual__/reference/dashboard/'],
@@ -26,6 +28,8 @@ const mobilePages = [
   ['catalog-empty', '/__visual__/catalog/empty/'],
   ['event-covered', '/__visual__/event/covered/'],
   ['event-uncovered', '/__visual__/event/uncovered/'],
+  ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
+  ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
   ['upload-empty', '/__visual__/upload/empty/'],
@@ -233,6 +237,68 @@ test('all links on live production pages resolve', async ({ page, request }) => 
         400,
       );
     }
+  }
+});
+
+test('gallery supports keyboard navigation and focus restoration', async ({ page }) => {
+  await page.goto('/__visual__/event/gallery-populated/');
+  const firstCard = page.locator('.gallery-card-link').first();
+  const currentImage = page.locator('.gslide.current .gslide-image img');
+
+  await firstCard.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.glightbox-container')).toBeVisible();
+  await expect(currentImage).toHaveAttribute('src', /run-city-1842\.png$/);
+
+  await page.keyboard.press('ArrowRight');
+  await expect(currentImage).toHaveAttribute('src', /run-track-1190\.png$/);
+  await page.keyboard.press('ArrowLeft');
+  await expect(currentImage).toHaveAttribute('src', /run-city-1842\.png$/);
+
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.glightbox-container')).toBeHidden();
+  await expect(firstCard).toBeFocused();
+});
+
+test('gallery supports mobile swipe', async ({ browser }) => {
+  const context = await browser.newContext({
+    hasTouch: true,
+    isMobile: true,
+    viewport: MOBILE_VIEWPORT,
+  });
+  const page = await context.newPage();
+  try {
+    await page.goto('/__visual__/event/gallery-populated/');
+    await page.locator('.gallery-card-link').first().tap();
+    const currentImage = page.locator('.gslide.current .gslide-image img');
+    await expect(currentImage).toHaveAttribute('src', /run-city-1842\.png$/);
+
+    await page.locator('.gslide.current').dispatchEvent('touchstart', {
+      touches: [{ clientX: 330, clientY: 420 }],
+    });
+    await page.locator('.gslide.current').dispatchEvent('touchmove', {
+      touches: [{ clientX: 40, clientY: 420 }],
+    });
+    await page.locator('.gslide.current').dispatchEvent('touchend', { changedTouches: [] });
+
+    await expect(currentImage).toHaveAttribute('src', /run-track-1190\.png$/);
+  } finally {
+    await context.close();
+  }
+});
+
+test('gallery fallback link works without JavaScript', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    await page.goto('/__visual__/event/gallery-populated/');
+    const firstCard = page.locator('.gallery-card-link').first();
+    await expect(firstCard).toHaveAttribute('href', /\/static\/images\/run-city-1842\.png$/);
+
+    await firstCard.click();
+    await expect(page).toHaveURL(/\/static\/images\/run-city-1842\.png$/);
+  } finally {
+    await context.close();
   }
 });
 

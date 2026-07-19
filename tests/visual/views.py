@@ -60,6 +60,20 @@ class FixturePhoto:
     selected: bool = False
 
 
+@dataclass(frozen=True)
+class FixtureGalleryMedia:
+    url: str
+    variant: str
+
+
+@dataclass(frozen=True)
+class FixtureGalleryPhoto:
+    photo_id: str
+    preview_media_small: FixtureGalleryMedia
+    preview_media_large: FixtureGalleryMedia
+    alt: str
+
+
 EVENTS = (
     FixtureEvent(
         "London 10K",
@@ -137,6 +151,23 @@ PHOTOS = (
         88,
         250,
     ),
+)
+
+
+def _gallery_photo(photo_id: str, image: str) -> FixtureGalleryPhoto:
+    return FixtureGalleryPhoto(
+        photo_id=photo_id,
+        preview_media_small=FixtureGalleryMedia(image, "preview-small"),
+        preview_media_large=FixtureGalleryMedia(image, "preview-large"),
+        alt=f"Фото {photo_id} с события London 10K",
+    )
+
+
+GALLERY_PHOTOS = (
+    _gallery_photo("1048", "/static/images/run-city-1842.png"),
+    _gallery_photo("1190", "/static/images/run-track-1190.png"),
+    _gallery_photo("1316", "/static/images/run-finish-1842.png"),
+    _gallery_photo("3125", "/static/images/run-expo-3125.png"),
 )
 
 ORDERS = (
@@ -322,6 +353,14 @@ def _render(request: HttpRequest, template: str, context: dict[str, Any]) -> Htt
     return render(request, template, context)
 
 
+def _header_only_event(response: HttpResponse) -> HttpResponse:
+    fixture_style = (
+        b'\n    <style data-visual-header-only="true">.event-gallery { display: none; }</style>\n  '
+    )
+    response.content = response.content.replace(b"</head>", fixture_style + b"</head>", 1)
+    return response
+
+
 def catalog_populated(request: HttpRequest) -> HttpResponse:
     return _render(request, "catalog/event_catalog.html", {"events": EVENTS})
 
@@ -331,11 +370,27 @@ def catalog_empty(request: HttpRequest) -> HttpResponse:
 
 
 def event_covered(request: HttpRequest) -> HttpResponse:
-    return _render(request, "catalog/event_detail.html", {"event": EVENTS[0]})
+    return _header_only_event(_render(request, "catalog/event_detail.html", {"event": EVENTS[0]}))
 
 
 def event_uncovered(request: HttpRequest) -> HttpResponse:
-    return _render(request, "catalog/event_detail.html", {"event": EVENTS[1]})
+    return _header_only_event(_render(request, "catalog/event_detail.html", {"event": EVENTS[1]}))
+
+
+def event_gallery_populated(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "catalog/event_detail.html",
+        {"event": EVENTS[0], "gallery_photos": GALLERY_PHOTOS},
+    )
+
+
+def event_gallery_empty(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "catalog/event_detail.html",
+        {"event": EVENTS[0], "gallery_photos": ()},
+    )
 
 
 def legal(request: HttpRequest) -> HttpResponse:

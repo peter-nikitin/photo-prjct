@@ -34,7 +34,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-002 | Visitor | Discover published events | Validated | 2026-07-17 |
 | PJ-003 | Visitor | Review event details | Validated | 2026-07-17 |
 | PJ-004 | Photographer | Upload an event batch | Candidate | 2026-07-17 |
-| PJ-005 | Visitor | Browse an event gallery | Candidate | 2026-07-17 |
+| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-07-19 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
 | PJ-008 | Customer | Find photos by face | Candidate | 2026-07-17 |
@@ -84,9 +84,9 @@ can submit it for processing.
 When an event has published photos, I want to browse its gallery, so I can inspect photos from that
 event.
 
-- Status: Candidate
-- Evidence: [Architecture evolution stages — Photo-bank core](architecture.md#evolution-stages)
-- Last updated: 2026-07-17
+- Status: Validated
+- Evidence: [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_builds_ordered_gallery_without_storage`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_excludes_legacy_other_event_and_paid_originals`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_gallery_markup_and_loading_policy`](../src/backend/picflow/tests/test_views.py), and the keyboard, pointer, touch, focus-restoration, no-JavaScript, populated, and empty browser coverage in [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js)
+- Last updated: 2026-07-19
 
 ### PJ-006 — Operator — Review processing results
 
@@ -161,3 +161,4 @@ This log is append-only.
 | 2026-07-17 | PJ-009 | Not recorded | Candidate | [Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) |
 | 2026-07-17 | PJ-010 | Not recorded | Candidate | [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download) |
 | 2026-07-17 | PJ-011 | Not recorded | Candidate | [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download) |
+| 2026-07-19 | PJ-005 | Candidate | Validated | Automated page, eligibility, markup, accessibility, interaction, and visual coverage verifies browsing eligible uploaded photos for a published free event. |

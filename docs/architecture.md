@@ -37,6 +37,20 @@ The repository currently contains an early Django application:
   and SVG assets under `src/backend`.
 - The `picflow` application owns the first target `Event` catalog model and a preliminary `Photo`
   model. Published events are managed through Django Admin and rendered by server-side templates.
+- Published free-event detail pages select only completed uploaded `Photo` rows with a private
+  original key and no legacy `src`, in stable ID order. A database-only factory converts them to
+  immutable `GalleryPhoto` presentation values, so templates consume separate small- and
+  large-preview application URLs without inspecting storage fields or selecting media variants.
+- The current small- and large-preview resolver deliberately opens the same private original for
+  both variants. The event-scoped GET endpoint rechecks publication, free access, and photo
+  eligibility on every request, then streams the object inline with `private, no-store` caching and
+  sanitized 404/503 outcomes. It exposes no permanent key, credential, S3 redirect, ETag, Range, or
+  attachment behavior, and its owning iterator closes the storage body before iteration, at EOF,
+  or after a read failure.
+- Event galleries use locally packaged GLightbox 3.3.1 assets with normal anchor fallback.
+  Automated browser and visual coverage verifies responsive populated and empty layouts, keyboard
+  and pointer operation, mobile swipe, Escape/control close, focus restoration, and operation with
+  JavaScript disabled. This evidence does not represent a live staging activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
@@ -58,6 +72,13 @@ The repository currently contains an early Django application:
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
+- Both deployment workflows propagate the existing private-media bucket and credential settings.
+  Before environment promotion or any service switch, `apply-deployment.sh` pulls only the candidate
+  web image and runs its read-only gallery preflight against a mode-0600 temporary environment file
+  and the existing Compose network/database. An eligible row must yield one nonempty byte and a
+  sanitized success marker; no eligible row yields a skip marker that is not storage-permission
+  evidence. Automated tests validate this gate and failure cleanup, but no staging deployment, IAM
+  state, cloud policy, or private object was changed or validated by this delivery.
 - Unfinished screen concepts live only in the test-only Django visual-reference gallery under
   `tests/visual`. Playwright renders it through isolated settings and `/__visual__/` routes; neither
   the production URLconf nor the production Docker image includes the gallery. Visual regression
@@ -69,6 +90,7 @@ The repository currently contains an early Django application:
 Browser -> Nginx HTTPS edge -> Django/Gunicorn -> PostgreSQL
                                    |
                                    +-> packaged templates and static assets
+                                   `-> private originals in Object Storage
 
 GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
                                              |- Django
@@ -193,10 +215,12 @@ broker, vector engine, and ML implementations shown for later processing require
 
 ## Security, privacy, and legal boundaries
 
-- Originals remain private storage objects. Public pages receive derived media: watermarked previews
-  for paid events and unwatermarked reduced copies for free events. A free-event original may be
-  delivered anonymously only through a controlled application response or short-lived access that
-  does not expose its permanent storage key.
+- Originals remain private storage objects. The target policy is for public pages to receive derived
+  media: watermarked previews for paid events and unwatermarked reduced copies for free events.
+  During the current ADR 0015 transition, only eligible completed uploads for published free events
+  use a controlled inline Django response backed by the original; paid-event media remains
+  unavailable. The response does not expose the permanent storage key, but it delivers the complete
+  unsanitized original and therefore cannot prevent recipients from saving or redistributing it.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
 - Photographer routes require the additive upload permission, and non-superuser batch access is

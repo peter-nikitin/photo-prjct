@@ -22,7 +22,7 @@
 ---
 
 - Date: 2026-07-18
-- Status: In progress — Tasks 1-6 complete; Tasks 7-8 not started
+- Status: In progress — Tasks 1-7 complete; Task 8 reconciliation recorded with visual CI evidence pending
 - Owner: project maintainer
 - Related specification: [Event photo gallery design](../superpowers/specs/2026-07-18-event-photo-gallery-design.md)
 - Related architecture: [Current architecture — implemented](../architecture.md#current-architecture--implemented),
@@ -41,8 +41,10 @@
 - ADR impact: Resolved — conforms to accepted ADR 0015 and applicable ADRs 0001, 0002, 0006,
   0013, and 0014.
 - Completion evidence: Tasks 1-6 are implemented in the inclusive commit range
-  `676bbf2^..0ee60ac`; Task 6's
-  final visual verification passed all 43 tests.
+  `676bbf2^..0ee60ac`; Task 6's final visual verification passed all 43 tests. Task 7 is implemented
+  by `8518dcf`, `62db0db`, `dbaa147`, `80dc494`, `dbd815e`, and `bf2b7be`; its focused deployment
+  behavior is covered by the Task 8 verification run. Commit `4ba3f68` resolves the gallery typing
+  findings discovered during reconciliation. No live environment activation is claimed.
 
 ## Scope
 
@@ -352,7 +354,7 @@ atomically promotes the temp to canonical `.env`. Candidate failure removes the 
 canonical env, service, certificate, cron, or marker state. Failures after promotion retain the
 existing image-only rollback semantics; this task does not claim full environment restoration.
 
-- [ ] Add `test_apply_propagates_private_media_read_settings`,
+- [x] Add `test_apply_propagates_private_media_read_settings`,
   `test_candidate_private_media_preflight_skips_when_no_eligible_photo`,
   `test_candidate_private_media_preflight_reads_when_photo_exists`,
   `test_candidate_private_media_preflight_runs_before_service_switch`, parametrized
@@ -367,8 +369,8 @@ existing image-only rollback semantics; this task does not claim full environmen
   failure must preserve canonical `.env` bytes and metadata plus old image/deployment/project markers,
   remove requested temp files, and perform zero stop, certificate, cron, or `compose up` action. The
   IAM test proves no `yc`, `aws`, `s3cmd`, policy, role-binding, or bucket-policy mutation path.
-- [ ] Run `pytest -q tests/deployment/test_deployment_scripts.py -k 'private_media'`; expected RED shows missing `PRIVATE_MEDIA_S3_BUCKET` and no candidate one-off `compose run` before `stop nginx`.
-- [ ] Add workflow env entries for bucket variable plus access/secret secrets and include all three in `envs`. Add exact shell output lines for `PRIVATE_MEDIA_S3_BUCKET`, `PRIVATE_MEDIA_S3_ACCESS_KEY_ID`, and `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY`, retaining empty defaults and existing endpoint/region; never echo values to logs. After registry login but before `compose stop nginx`, pull only `web` and execute this read-only gate:
+- [x] Run `pytest -q tests/deployment/test_deployment_scripts.py -k 'private_media'`; expected RED shows missing `PRIVATE_MEDIA_S3_BUCKET` and no candidate one-off `compose run` before `stop nginx`.
+- [x] Add workflow env entries for bucket variable plus access/secret secrets and include all three in `envs`. Add exact shell output lines for `PRIVATE_MEDIA_S3_BUCKET`, `PRIVATE_MEDIA_S3_ACCESS_KEY_ID`, and `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY`, retaining empty defaults and existing endpoint/region; never echo values to logs. After registry login but before `compose stop nginx`, pull only `web` and execute this read-only gate:
 
   ```sh
   compose_with_env_file() {
@@ -426,12 +428,12 @@ existing image-only rollback semantics; this task does not claim full environmen
   Nginx, canonical env, and markers remain untouched throughout the gate. Candidate failure only
   removes the requested temp. Success promotes it and continues with existing `compose stop nginx`,
   certificate reconciliation, remaining pull, `compose up`, and image-only post-switch rollback.
-- [ ] Run `pytest -q tests/deployment/test_deployment_scripts.py -k 'private_media or
+- [x] Run `pytest -q tests/deployment/test_deployment_scripts.py -k 'private_media or
   candidate_pull_failure or apply_success'`; expected GREEN is all selected tests passed. Run
   `pytest -q tests/deployment/test_deployment_scripts.py`,
   `pytest -q tests/test_repository_foundation.py`, `sh -n deploy/apply-deployment.sh`, and
   `dash -n deploy/apply-deployment.sh`; expected GREEN is zero failures and zero syntax exits.
-- [ ] Run the exact Compose verification command:
+- [x] Run the exact Compose verification command:
 
   ```sh
   APP_IMAGE=example.invalid/photo-prjct:config-check \
@@ -441,7 +443,7 @@ existing image-only rollback semantics; this task does not claim full environmen
 
   Expected GREEN is exit zero without pulling an image or creating/changing a container. Do not add
   `APP_IMAGE` to `.env.example`; it is a per-verification placeholder and a real deployment input.
-- [ ] Commit the scoped workflows, apply script, production Compose selector, env example, and
+- [x] Commit the scoped workflows, apply script, production Compose selector, env example, and
   behavioral/config tests with the verified Task 7 implementation.
 
 ### Task 8: Architecture and ADR reconciliation
@@ -450,17 +452,23 @@ existing image-only rollback semantics; this task does not claim full environmen
 
 **Interfaces:** Consumes verified Tasks 1-7 evidence; produces current-architecture wording, PJ-005 status/evidence, and matching engineering capability evidence without expanding runtime scope.
 
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py src/backend/picflow/tests/test_views.py src/backend/ingestion/tests/test_storage.py tests/test_visual_reference.py tests/deployment/test_deployment_scripts.py`; expected GREEN is all selected modules passed.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py src/backend/picflow/tests/test_views.py src/backend/ingestion/tests/test_storage.py tests/test_visual_reference.py tests/deployment/test_deployment_scripts.py`; expected GREEN is all selected modules passed.
 - [ ] Run `ruff format --check . && ruff check . && mypy`; expected GREEN is three zero exits. Run `python src/backend/manage.py check && python src/backend/manage.py makemigrations --check --dry-run`; expected GREEN is no system-check issue and `No changes detected`. Run `npm run test:js && npm run test:visual`; expected GREEN is all JS/visual tests passed.
-- [ ] Compare delivered behavior with the approved specification, accepted ADR 0015, all other
+  - Verified portions: Ruff format and lint passed; fresh `mypy` after `4ba3f68` reported no issues in
+    50 source files; Django checks passed with no model changes; and all 25 JavaScript tests passed.
+  - Pending evidence: the one permitted local visual run after a Docker LinuxKit/API wedge and
+    restart rendered the first two pre-existing catalog pages and returned their resources with
+    HTTP 200, but both timed out after 60 seconds in `page.waitForLoadState("networkidle")`. It was
+    stopped without a blind retry; pull-request CI is authoritative for the complete visual suite.
+- [x] Compare delivered behavior with the approved specification, accepted ADR 0015, all other
   applicable ADRs, and `docs/architecture.md`.
-- [ ] Record only verified gallery/private-stream behavior. Update PJ-005 and matching engineering evidence without claiming derivatives, paid previews, downloads, commerce, or unperformed staging activation.
-- [ ] Stop for a new decision rather than contradicting an accepted ADR; supersede rather than
+- [x] Record only verified gallery/private-stream behavior. Update PJ-005 and matching engineering evidence without claiming derivatives, paid previews, downloads, commerce, or unperformed staging activation.
+- [x] Stop for a new decision rather than contradicting an accepted ADR; supersede rather than
   edit an accepted decision.
-- [ ] Run `git diff --check` and scan browser-facing files for original keys, credentials, and permanent S3 URLs; expect none.
-- [ ] Confirm status contains no migration, worker/broker, derivative/readiness schema, purchase behavior, or unrelated file.
+- [x] Run `git diff --check` and scan browser-facing files for original keys, credentials, and permanent S3 URLs; expect none.
+- [x] Confirm status contains no migration, worker/broker, derivative/readiness schema, purchase behavior, or unrelated file.
 - [ ] Record the architecture and ADR reconciliation outcome in the pull request before push.
-- [ ] Commit: `git add docs/architecture.md docs/product-jobs.md docs/engineering-jobs.md && git commit -m "docs: record event gallery delivery evidence"`.
+- [x] Commit: `git add docs/architecture.md docs/product-jobs.md docs/engineering-jobs.md && git commit -m "docs: record event gallery delivery evidence"`.
 
 ## Verification
 

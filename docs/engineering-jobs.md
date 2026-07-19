@@ -41,6 +41,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-008 | Operator | Activate trusted HTTPS | Delivered | 2026-07-17 |
 | EJ-009 | Operator | Detect service degradation | Candidate | 2026-07-17 |
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-17 |
+| EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 
 ## Job details
 
@@ -148,6 +149,24 @@ procedure with agreed recovery targets, so I can recover service safely.
 - Evidence: [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions)
 - Last updated: 2026-07-17
 
+### EJ-011 — Maintainer — Gate private gallery media activation
+
+When I deploy a gallery-capable image, I want its candidate code and requested private-media
+settings checked before environment promotion or a service switch, so I can avoid activating media
+delivery that cannot read an eligible original.
+
+The deployment entrypoint uses a mode-0600 temporary environment file for a candidate-image
+one-off. With an eligible row it opens the final object, reads one nonempty byte, closes the body,
+and emits only the sanitized success marker. With no eligible row it emits a skip marker that is not
+permission evidence. Pull, open, read, or close failure removes the requested temporary file before
+canonical environment promotion or service reconciliation. These are automated repository
+guarantees; no live staging or production activation, IAM permission, bucket policy, or object was
+validated or changed by this delivery.
+
+- Status: Validated
+- Evidence: [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_reads_when_photo_exists`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_runs_before_service_switch`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched`](../tests/deployment/test_deployment_scripts.py), and [`tests/deployment/test_deployment_scripts.py::test_deployment_path_performs_no_iam_mutation`](../tests/deployment/test_deployment_scripts.py)
+- Last updated: 2026-07-19
+
 ## Status log
 
 This log is append-only.
@@ -167,3 +186,4 @@ This log is append-only.
 | 2026-07-19 | EJ-005 | Validated | Validated | Local visual runs now reuse a dependency-keyed image; [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py) verifies build-once behavior. |
 | 2026-07-19 | EJ-002 | Validated | Validated | Pull requests retain the complete suite while branch-push CI is limited to `main`; [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and [`tests/test_repository_foundation.py`](../tests/test_repository_foundation.py) enforce the trigger contract. |
 | 2026-07-19 | EJ-005 | Validated | Validated | CI reuses a dependency-keyed GHCR image with build fallback, and [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml) publishes changed dependency images only from `main`. |
+| 2026-07-19 | EJ-011 | Not recorded | Validated | Behavioral deployment tests verify candidate private-media preflight, ordering, temporary-environment cleanup, and the absence of an IAM mutation path; no live environment activation is claimed. |

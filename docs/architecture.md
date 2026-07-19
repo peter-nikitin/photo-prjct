@@ -48,9 +48,12 @@ The repository currently contains an early Django application:
   attachment behavior, and its owning iterator closes the storage body before iteration, at EOF,
   or after a read failure.
 - Event galleries use locally packaged GLightbox 3.3.1 assets with normal anchor fallback.
-  Automated browser and visual coverage verifies responsive populated and empty layouts, keyboard
-  and pointer operation, mobile swipe, Escape/control close, focus restoration, and operation with
-  JavaScript disabled. This evidence does not represent a live staging activation.
+  Task 6's browser run and inspected snapshots verified responsive populated and empty layouts,
+  keyboard and pointer operation, mobile swipe, Escape/control close, focus restoration, and
+  operation with JavaScript disabled. A complete current-HEAD visual rerun awaits pull-request CI:
+  after a local Docker LinuxKit/API wedge and restart, the first two pre-existing catalog cases
+  rendered with HTTP-200 resources but timed out waiting for `networkidle`. Neither the prior visual
+  evidence nor the pending rerun represents a live staging activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.

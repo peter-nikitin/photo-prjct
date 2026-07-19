@@ -459,7 +459,8 @@ existing image-only rollback semantics; this task does not claim full environmen
   - Pending evidence: the one permitted local visual run after a Docker LinuxKit/API wedge and
     restart rendered the first two pre-existing catalog pages and returned their resources with
     HTTP 200, but both timed out after 60 seconds in `page.waitForLoadState("networkidle")`. It was
-    stopped without a blind retry; pull-request CI is authoritative for the complete visual suite.
+    stopped without a blind retry; pull-request CI is authoritative for the complete current-HEAD
+    visual suite.
 - [x] Compare delivered behavior with the approved specification, accepted ADR 0015, all other
   applicable ADRs, and `docs/architecture.md`.
 - [x] Record only verified gallery/private-stream behavior. Update PJ-005 and matching engineering evidence without claiming derivatives, paid previews, downloads, commerce, or unperformed staging activation.

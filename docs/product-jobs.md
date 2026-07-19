@@ -85,7 +85,7 @@ When an event has published photos, I want to browse its gallery, so I can inspe
 event.
 
 - Status: Validated
-- Evidence: [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_builds_ordered_gallery_without_storage`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_excludes_legacy_other_event_and_paid_originals`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_gallery_markup_and_loading_policy`](../src/backend/picflow/tests/test_views.py), and the keyboard, pointer, touch, focus-restoration, no-JavaScript, populated, and empty browser coverage in [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js)
+- Evidence: [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_builds_ordered_gallery_without_storage`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_excludes_legacy_other_event_and_paid_originals`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_gallery_markup_and_loading_policy`](../src/backend/picflow/tests/test_views.py), and Task 6's passing keyboard, pointer, touch, focus-restoration, no-JavaScript, populated, and empty interaction/snapshot evidence in [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js). A complete current-HEAD visual rerun awaits pull-request CI because the local post-Docker-restart run rendered HTTP-200 pages/resources but timed out waiting for `networkidle`.
 - Last updated: 2026-07-19
 
 ### PJ-006 — Operator — Review processing results
@@ -161,4 +161,4 @@ This log is append-only.
 | 2026-07-17 | PJ-009 | Not recorded | Candidate | [Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) |
 | 2026-07-17 | PJ-010 | Not recorded | Candidate | [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download) |
 | 2026-07-17 | PJ-011 | Not recorded | Candidate | [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download) |
-| 2026-07-19 | PJ-005 | Candidate | Validated | Automated page, eligibility, markup, accessibility, interaction, and visual coverage verifies browsing eligible uploaded photos for a published free event. |
+| 2026-07-19 | PJ-005 | Candidate | Validated | Automated page, eligibility, and markup tests plus Task 6's passing interaction and inspected snapshot evidence verify browsing eligible uploaded photos for a published free event; complete current-HEAD visual evidence awaits PR CI after a local Docker/`networkidle` timeout. |

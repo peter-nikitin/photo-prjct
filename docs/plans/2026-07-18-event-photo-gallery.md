@@ -84,15 +84,21 @@
 - HTML/response headers contain no object key, permanent S3 URL, credential, ETag, or raw exception.
 - Keyboard/pointer open, next/previous, Escape/control close, focus restoration, touch, and no-JavaScript fallback pass.
 - Inspected desktop/mobile populated/empty snapshots and focused Python/JS/deploy/visual checks pass.
-- Before any service switch, a one-off container from the candidate immutable `APP_IMAGE` uses the
-  requested temporary deployment environment and existing Compose network/database while canonical
-  `.env` remains untouched. If no eligible `Photo` exists it prints only
+- Before any service switch, the candidate immutable `APP_IMAGE` is pulled. If no successful
+  `deployed-image` marker exists, the first deployment prints only
+  `gallery-private-media-preflight-skipped:no-existing-deployment`, constructs no ORM preflight
+  container, and continues the normal first-deployment path; this skip is not `GetObject` evidence.
+  Once that marker exists, a one-off container uses the requested temporary deployment environment
+  and existing Compose network/database while canonical `.env` remains untouched. If no eligible
+  `Photo` exists it prints only
   `gallery-private-media-preflight-skipped:no-eligible-photo` and exits zero. If a row exists it must
   open its `originals/*` object, read exactly one nonempty byte, close it, and print only
   `gallery-private-media-preflight-ok`; `AccessDenied` or any other read failure exits nonzero before
   env promotion, `stop nginx`, or candidate `compose up`, leaving canonical env, services, and
   deployment markers untouched.
-- The no-eligible-photo skip permits an empty production deployment but is not evidence of storage permission. The first later eligible production upload is accepted only after an immediate media-route smoke request succeeds and media 404/503 plus safe stream-termination monitoring remains clean.
+- Neither first-deployment nor no-eligible-photo skip is storage-permission evidence. The first later
+  eligible production upload is accepted only after an immediate media-route smoke request succeeds
+  and media 404/503 plus safe stream-termination monitoring remains clean.
 
 ## Implementation
 
@@ -346,8 +352,9 @@ existing endpoint/region feed Django's private aliases. Build requested settings
 mode-0600 temp file while canonical `.env` stays untouched. `compose_with_env_file` supplies that
 same absolute path through both Compose `--env-file` and service selector `APP_ENV_FILE`;
 `docker-compose.prod.yml` defaults the selector to `.env` for normal operations. Before stopping
-Nginx or reconciling services, the helper pulls only candidate `web` and runs the exact
-`compose run --rm --no-deps -T --entrypoint python web` one-off with
+Nginx or reconciling services, the helper always pulls only candidate `web`. Without a successful
+`deployed-image` marker it emits the exact no-existing-deployment skip and starts no ORM container.
+With the marker it runs the exact `compose run --rm --no-deps -T --entrypoint python web` one-off with
 `manage.py shell --no-imports -c "$gallery_media_preflight"` on the existing project
 network/database. Only a successful gate
 atomically promotes the temp to canonical `.env`. Candidate failure removes the temp and changes no
@@ -355,6 +362,7 @@ canonical env, service, certificate, cron, or marker state. Failures after promo
 existing image-only rollback semantics; this task does not claim full environment restoration.
 
 - [x] Add `test_apply_propagates_private_media_read_settings`,
+  `test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow`,
   `test_candidate_private_media_preflight_skips_when_no_eligible_photo`,
   `test_candidate_private_media_preflight_reads_when_photo_exists`,
   `test_candidate_private_media_preflight_runs_before_service_switch`, parametrized
@@ -363,8 +371,11 @@ existing image-only rollback semantics; this task does not claim full environmen
   `test_workflows_forward_private_media_settings`, behavioral
   `test_deployment_path_performs_no_iam_mutation`, and Compose selector coverage in
   `test_production_compose_uses_an_immutable_application_image`. Assert requested bucket/access/secret
-  reach the candidate container without logging their values. Assert no-row exact output and zero
-  storage calls; eligible-row exact output plus one `open_final`, one-byte read, and close; pull/run
+  reach the candidate container without logging their values. Assert the fresh-root exact skip,
+  zero candidate `compose run`, candidate pull before promotion/switch, and successful normal first
+  deployment. Assert established no-row exact output and zero
+  storage calls; established database failure is sanitized and fails closed; eligible-row exact
+  output plus one `open_final`, one-byte read, and close; pull/run
   ordering before env promotion/stop/up; and exact `manage.py shell --no-imports -c`. Pull or gallery
   failure must preserve canonical `.env` bytes and metadata plus old image/deployment/project markers,
   remove requested temp files, and perform zero stop, certificate, cron, or `compose up` action. The
@@ -412,9 +423,13 @@ existing image-only rollback semantics; this task does not claim full environmen
           raise SystemExit("Gallery private-media read prerequisite failed") from None
       print("gallery-private-media-preflight-ok")
   '
-  if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T --entrypoint python web \
-      manage.py shell --no-imports -c "$gallery_media_preflight"; then
-      fail "Candidate image failed private-media read prerequisite"
+  if [ "$has_successful_deployment" -eq 0 ]; then
+      echo "gallery-private-media-preflight-skipped:no-existing-deployment"
+  else
+      if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+          --entrypoint python web manage.py shell --no-imports -c "$gallery_media_preflight"; then
+          fail "Candidate image failed private-media read prerequisite"
+      fi
   fi
 
   mutation_started=1
@@ -422,6 +437,8 @@ existing image-only rollback semantics; this task does not claim full environmen
   requested_env_tmp=""
   ```
 
+  Absence of the successful `deployed-image` marker is the only first-deployment bypass; an
+  established marker keeps the gate fail closed even if its database is unavailable.
   `--entrypoint python` bypasses the image entrypoint, so this candidate container performs no
   migration, seed, group bootstrap, collectstatic, or Gunicorn startup. `--no-deps` reuses the
   already-running Compose network/database without starting or replacing a service. The old web,
@@ -490,13 +507,22 @@ Expected: zero exits; no migration; no browser failures; only the four inspected
 
 - Configure the existing private bucket/access/secret in each GitHub Environment before activation. The same credentials currently serve ingestion, so their existing permissions must remain unchanged by this delivery.
 - Treat final-prefix `GetObject` as an external prerequisite, not an IAM implementation step.
-  `apply-deployment.sh` checks it with the Task 7 candidate-image one-off after pulling requested
-  immutable `APP_IMAGE` but before canonical env promotion, `stop nginx`, or `compose up`. The one-off
-  uses the requested temp through both Compose env selectors, the existing network/database, and
-  candidate `open_final` code while bypassing the normal entrypoint. With an eligible row, success is
-  exactly one nonempty byte plus `gallery-private-media-preflight-ok`; it prints no key, credential,
-  ETag, or SDK detail and mutates no object, row, policy, role, ACL, or service.
-- A fresh production database with no eligible row is not a storage failure: the one-off prints only `gallery-private-media-preflight-skipped:no-eligible-photo` and exits zero without constructing `PrivateUploadStorage` or making an S3 call. Staging rollout after verified reference-photo reconciliation expects `gallery-private-media-preflight-ok`, not the skip result.
+  On an established deployment, `apply-deployment.sh` checks it with the Task 7 candidate-image
+  one-off after pulling requested immutable `APP_IMAGE` but before canonical env promotion,
+  `stop nginx`, or `compose up`. The one-off uses the requested temp through both Compose env
+  selectors, the existing network/database, and candidate `open_final` code while bypassing the
+  normal entrypoint. With an eligible row, success is exactly one nonempty byte plus
+  `gallery-private-media-preflight-ok`; it prints no key, credential, ETag, or SDK detail and mutates
+  no object, row, policy, role, ACL, or service. A first deployment defers this check as described
+  below.
+- A fresh unprovisioned environment has no successful `deployed-image` marker and cannot use the
+  existing Compose database before its first `compose up`; it prints only
+  `gallery-private-media-preflight-skipped:no-existing-deployment` and runs no ORM container. This
+  permits bootstrap and is not `GetObject` validation. On the next deployment the marker exists, so
+  the normal gate runs and fails closed if the database is unavailable. An established deployment
+  with no eligible row prints only `gallery-private-media-preflight-skipped:no-eligible-photo`,
+  constructs no `PrivateUploadStorage`, and makes no S3 call. Staging rollout after verified
+  reference-photo reconciliation expects `gallery-private-media-preflight-ok`, not either skip.
 - If an eligible row exists and the one-off encounters missing configuration, `AccessDenied`,
   `StorageUnavailable`, a missing/empty object, or any other open/read/close failure, it emits only
   `Gallery private-media read prerequisite failed`, exits nonzero, deletes the requested temp, and

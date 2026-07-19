@@ -231,7 +231,11 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
     _write_executable(
         deploy_dir / "verify-public-edge.sh",
         """
-[ "$(cat "$DEPLOY_ROOT/deployed-image")" = old-image ]
+if [ "$APPLY_SCENARIO" = fresh-first-deployment ]; then
+  [ ! -e "$DEPLOY_ROOT/deployed-image" ]
+else
+  [ "$(cat "$DEPLOY_ROOT/deployed-image")" = old-image ]
+fi
 [ "$APPLY_SCENARIO" != public-failure ]
 printf 'verify-public-edge\n' >> "$COMMAND_LOG"
 """,
@@ -282,6 +286,8 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
 
         class Manager:
             def filter(self, **filters):
+                if scenario == "private-media-db-failure":
+                    raise ConnectionError("database unavailable detail must stay hidden")
                 expected = {
                     "event__publication_status": Event.PublicationStatus.PUBLISHED,
                     "event__access_type": Event.AccessType.FREE,
@@ -362,7 +368,11 @@ validate_candidate_env() {
   [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
   [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
   [ "$candidate_secret_key" = "$PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" ]
-  cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
+  if [ "$APPLY_SCENARIO" = fresh-first-deployment ]; then
+    [ ! -e "$DEPLOY_ROOT/.env" ]
+  else
+    cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
+  fi
   printf 'candidate-requested-env-with-canonical-untouched\n' >> "$COMMAND_LOG"
 }
 case " $* " in
@@ -546,6 +556,40 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     assert not any(command.startswith("preflight-read") for command in commands)
 
 
+def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-deployment")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "gallery-private-media-preflight-skipped:no-existing-deployment\n"
+        "Removed upload cleanup schedule.\n"
+    )
+    assert result.stderr == "docker compose up exit status: 0\n"
+    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
+    assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
+    assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
+    commands = _apply_log(tmp_path)
+    candidate_pull = next(index for index, command in enumerate(commands) if " pull web" in command)
+    promotion = next(
+        index
+        for index, command in enumerate(commands)
+        if "/.env.requested." in command and command.endswith(f" {tmp_path}/.env")
+    )
+    stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
+    assert candidate_pull < promotion < stop_nginx
+    assert not any(" run --rm --no-deps" in command for command in commands)
+    assert not any(command.startswith("preflight-") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
 def test_candidate_private_media_preflight_reads_when_photo_exists(
     tmp_path: Path, fake_bin: Path
 ) -> None:
@@ -598,7 +642,14 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
     assert candidate_pull < candidate_run < stop_nginx < candidate_up
 
 
-@pytest.mark.parametrize("scenario", ["private-media-failure", "private-media-config-failure"])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "private-media-failure",
+        "private-media-config-failure",
+        "private-media-db-failure",
+    ],
+)
 def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched(
     tmp_path: Path, fake_bin: Path, scenario: str
 ) -> None:
@@ -618,6 +669,7 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
     assert "Gallery private-media read prerequisite failed" in result.stderr
     assert "private failure detail" not in result.stderr
     assert "private config detail" not in result.stderr
+    assert "database unavailable detail" not in result.stderr
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
     assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
     assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"

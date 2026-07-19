@@ -77,11 +77,16 @@ The repository currently contains an early Django application:
   after GitHub Environment approval; production infrastructure is not provisioned yet.
 - Both deployment workflows propagate the existing private-media bucket and credential settings.
   Before environment promotion or any service switch, `apply-deployment.sh` pulls only the candidate
-  web image and runs its read-only gallery preflight against a mode-0600 temporary environment file
-  and the existing Compose network/database. An eligible row must yield one nonempty byte and a
-  sanitized success marker; no eligible row yields a skip marker that is not storage-permission
-  evidence. Automated tests validate this gate and failure cleanup, but no staging deployment, IAM
-  state, cloud policy, or private object was changed or validated by this delivery.
+  web image. If no successful `deployed-image` marker exists, it emits the sanitized
+  `gallery-private-media-preflight-skipped:no-existing-deployment` marker and continues the normal
+  first-deployment path without constructing an ORM preflight container; this is not `GetObject`
+  validation. Once that marker exists, the candidate runs its read-only gallery preflight against a
+  mode-0600 temporary environment file and the existing Compose network/database. An eligible row
+  must yield one nonempty byte and a sanitized success marker; no eligible row yields a distinct
+  skip marker that is also not storage-permission evidence; an unavailable established database
+  fails closed before promotion. Automated tests validate these paths and failure cleanup, but no
+  staging deployment, IAM state, cloud policy, or private object was changed or validated by this
+  delivery.
 - Unfinished screen concepts live only in the test-only Django visual-reference gallery under
   `tests/visual`. Playwright renders it through isolated settings and `/__visual__/` routes; neither
   the production URLconf nor the production Docker image includes the gallery. Visual regression

@@ -150,11 +150,15 @@ fail() {
 install -d -m 0755 "$DEPLOY_ROOT"
 previous_image=""
 previous_upload_enabled="False"
+has_successful_deployment=0
 if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_image="$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
     previous_upload_enabled="$(
         sed -n 's/^PHOTO_UPLOAD_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
+fi
+if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
+    has_successful_deployment=1
 fi
 
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"
@@ -226,9 +230,13 @@ else:
         raise SystemExit("Gallery private-media read prerequisite failed") from None
     print("gallery-private-media-preflight-ok")
 '
-if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T --entrypoint python web \
-    manage.py shell --no-imports -c "$gallery_media_preflight"; then
-    fail "Candidate image failed private-media read prerequisite"
+if [ "$has_successful_deployment" -eq 0 ]; then
+    echo "gallery-private-media-preflight-skipped:no-existing-deployment"
+else
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py shell --no-imports -c "$gallery_media_preflight"; then
+        fail "Candidate image failed private-media read prerequisite"
+    fi
 fi
 
 mutation_started=1

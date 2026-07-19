@@ -155,18 +155,23 @@ When I deploy a gallery-capable image, I want its candidate code and requested p
 settings checked before environment promotion or a service switch, so I can avoid activating media
 delivery that cannot read an eligible original.
 
-The deployment entrypoint uses a mode-0600 temporary environment file for a candidate-image
-one-off. Automated tests cover candidate pull failure; the no-eligible-row skip without storage
-construction; the successful storage construction, final-object open, one-byte read, and body
-close; sanitized storage-construction and object-open failures; ordering before environment
+The deployment entrypoint always pulls the candidate web image. With no successful
+`deployed-image` marker, automated tests prove that a truly fresh deployment emits the sanitized
+`no-existing-deployment` skip, constructs no ORM preflight container, and completes the normal
+first-deployment flow; that skip is not `GetObject` validation. Once the marker exists, the
+entrypoint uses a mode-0600 temporary environment file for the fail-closed candidate-image one-off.
+Tests cover candidate pull failure; the no-eligible-row skip without storage construction; the
+successful storage construction, final-object open, one-byte read, and body close; sanitized
+database-query, storage-construction, and object-open failures; ordering before environment
 promotion and service switching; preservation of canonical environment, deployment markers, and
 services on those pre-promotion failures; and removal of the secret-bearing temporary file when
 environment promotion itself fails. They do not exercise empty-read, read-exception, or
-close-exception failure paths. This is repository automation evidence only: no live staging or
-production activation, IAM permission, bucket policy, or private object was validated or changed.
+close-exception failure paths.
+This is repository automation evidence only: no live staging or production activation, IAM
+permission, bucket policy, or private object was validated or changed.
 
 - Status: Validated
-- Evidence: [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), [`tests/deployment/test_deployment_scripts.py::test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliation`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_skips_when_no_eligible_photo`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_reads_when_photo_exists`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_runs_before_service_switch`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched`](../tests/deployment/test_deployment_scripts.py), and [`tests/deployment/test_deployment_scripts.py::test_failed_env_promotion_removes_secret_bearing_requested_temp`](../tests/deployment/test_deployment_scripts.py)
+- Evidence: [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), [`tests/deployment/test_deployment_scripts.py::test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliation`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_skips_when_no_eligible_photo`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_reads_when_photo_exists`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_runs_before_service_switch`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched`](../tests/deployment/test_deployment_scripts.py), and [`tests/deployment/test_deployment_scripts.py::test_failed_env_promotion_removes_secret_bearing_requested_temp`](../tests/deployment/test_deployment_scripts.py)
 - Last updated: 2026-07-19
 
 ## Status log
@@ -190,3 +195,4 @@ This log is append-only.
 | 2026-07-19 | EJ-005 | Validated | Validated | CI reuses a dependency-keyed GHCR image with build fallback, and [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml) publishes changed dependency images only from `main`. |
 | 2026-07-19 | EJ-011 | Not recorded | Validated | Behavioral deployment tests verify candidate private-media preflight, ordering, temporary-environment cleanup, and the absence of an IAM mutation path; no live environment activation is claimed. |
 | 2026-07-19 | EJ-011 | Validated | Validated | Clarified boundary: automated tests cover candidate pull failure, no-row skip, successful one-byte read/close, sanitized storage construction/open failures with pre-promotion state preserved, and promotion-fault temporary-file cleanup; empty-read/read-exception/close-exception paths and live activation are not claimed. |
+| 2026-07-19 | EJ-011 | Validated | Validated | Fresh unprovisioned deployments now skip the unavailable ORM gate based on absence of the successful `deployed-image` marker; established deployments retain the fail-closed database/no-row/storage gate, and neither skip is live `GetObject` evidence. |

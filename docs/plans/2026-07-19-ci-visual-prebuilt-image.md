@@ -4,7 +4,7 @@
 > plan task-by-task. Multi-agent execution is intentionally excluded for this delivery.
 
 - Date: 2026-07-19
-- Status: Approved
+- Status: Complete
 - Owner: project maintainer
 - Related specification: [CI visual-test prebuilt image design](../superpowers/specs/2026-07-19-ci-visual-prebuilt-image-design.md)
 - Related architecture: [Current architecture](../architecture.md#current-architecture--implemented), [Accepted constraints](../architecture.md#accepted-constraints)
@@ -75,18 +75,18 @@ GitHub Actions, GHCR, POSIX shell, Docker Compose, pytest, PyYAML, Playwright.
 - Produces: `VISUAL_TEST_IMAGE=<prefix>:<dependency-key>` and pull-before-build behavior when the
   registry prefix is present.
 
-- [ ] Extend the fake Docker executable with a `pull` case controlled by `DOCKER_PULL_HIT`. Add a
+- [x] Extend the fake Docker executable with a `pull` case controlled by `DOCKER_PULL_HIT`. Add a
   registry-hit test that asserts one pull, zero builds, and one test run. Add a registry-miss test
   that asserts one pull, one build, and one test run. Keep the existing local build-once and
   snapshot-update assertions.
-- [ ] Run the focused runner tests and expect the new registry tests to fail because the runner does
+- [x] Run the focused runner tests and expect the new registry tests to fail because the runner does
   not call `docker pull`.
-- [ ] In `tests/visual/run-in-container.sh`, select
+- [x] In `tests/visual/run-in-container.sh`, select
   `image_prefix="${VISUAL_TEST_IMAGE_PREFIX:-photo-prjct-visual-deps}"`; on a missing local image,
   attempt `docker pull` only when `VISUAL_TEST_IMAGE_PREFIX` is non-empty, otherwise or on pull
   failure execute the existing Compose build.
-- [ ] Re-run the focused runner tests and expect all tests to pass.
-- [ ] Commit both files with message `feat: reuse visual test image from registry`.
+- [x] Re-run the focused runner tests and expect all tests to pass.
+- [x] Commit both files with message `feat: reuse visual test image from registry`.
 
 ### Task 2: Enforce workflow triggers and least-privilege publishing
 
@@ -100,22 +100,22 @@ GitHub Actions, GHCR, POSIX shell, Docker Compose, pytest, PyYAML, Playwright.
 - Produces: read-only CI image prefix and a main-only GHCR tag
   `ghcr.io/${GITHUB_REPOSITORY}-visual-tests:<dependency-key>`.
 
-- [ ] Add a repository test that asserts CI `push.branches == ["main"]`, the quality job permissions
+- [x] Add a repository test that asserts CI `push.branches == ["main"]`, the quality job permissions
   equal `{"contents": "read", "packages": "read"}`, one GHCR login step exists, and the visual
   step receives `VISUAL_TEST_IMAGE_PREFIX` with no publishing variable. Add a publisher test that
   asserts main-only and path-filtered triggers, permissions `contents: read` plus `packages: write`,
   one GHCR login, one key-computation step, and `docker/build-push-action@v6` with `push: true`.
-- [ ] Run the new repository tests and expect failures because CI has broad push triggers and the
+- [x] Run the new repository tests and expect failures because CI has broad push triggers and the
   publisher workflow is absent.
-- [ ] Restrict `.github/workflows/ci.yml` push branches to `main`, declare the read-only job
+- [x] Restrict `.github/workflows/ci.yml` push branches to `main`, declare the read-only job
   permissions, log in with `docker/login-action@v3`, and pass
   `VISUAL_TEST_IMAGE_PREFIX: ghcr.io/${{ github.repository }}-visual-tests` only to the visual step.
-- [ ] Create `.github/workflows/visual-test-image.yml`, triggered on `main` changes to the Dockerfile,
+- [x] Create `.github/workflows/visual-test-image.yml`, triggered on `main` changes to the Dockerfile,
   lock files, or its own workflow plus `workflow_dispatch`. Give its sole build job only read/write
   package permissions, calculate the exact dependency key with `git hash-object`, log in to GHCR,
   and build/push `Dockerfile.visual-tests` via `docker/build-push-action@v6`.
-- [ ] Re-run the focused repository tests and parse all workflow YAML files successfully.
-- [ ] Commit the tests and workflows with message `ci: publish prebuilt visual test image`.
+- [x] Re-run the focused repository tests and parse all workflow YAML files successfully.
+- [x] Commit the tests and workflows with message `ci: publish prebuilt visual test image`.
 
 ### Task 3: Record delivered CI behavior and perform final reconciliation
 
@@ -128,15 +128,15 @@ GitHub Actions, GHCR, POSIX shell, Docker Compose, pytest, PyYAML, Playwright.
 - Consumes: verified workflow and runner behavior from Tasks 1 and 2.
 - Produces: current EJ-002/EJ-005 evidence and final architecture/ADR result.
 
-- [ ] Update EJ-002 to state that PR checks run once while `main` retains branch-push validation.
+- [x] Update EJ-002 to state that PR checks run once while `main` retains branch-push validation.
   Update EJ-005 to state that CI pulls the dependency-keyed GHCR image and falls back to building a
   missing key. Append one `Validated -> Validated` history row for each job with code/test evidence.
-- [ ] Mark this plan `Status: Complete` only after all local verification succeeds.
-- [ ] Run the complete verification matrix below, then compare the result with the specification,
+- [x] Mark this plan `Status: Complete` only after all local verification succeeds.
+- [x] Run the complete verification matrix below, then compare the result with the specification,
   ADR 0003, ADR 0005, and `docs/architecture.md`.
-- [ ] Record in the PR: `Conforms to ADR 0003 and ADR 0005; docs/architecture.md needs no update
+- [x] Record in the PR: `Conforms to ADR 0003 and ADR 0005; docs/architecture.md needs no update
   because the pinned visual-test container boundary is unchanged.`
-- [ ] Commit documentation with message `docs: record prebuilt visual CI image`.
+- [x] Commit documentation with message `docs: record prebuilt visual CI image`.
 
 ## Verification
 

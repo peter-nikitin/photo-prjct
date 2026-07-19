@@ -59,6 +59,10 @@ When I push a change or open a pull request, I want formatting, lint, types, Pos
 migrations, Django checks, and visual regression to run automatically, so I can detect regressions
 before merge.
 
+Pull requests run through the `pull_request` trigger, while branch-push validation is limited to
+`main`. Updating a feature branch therefore does not create a duplicate push run alongside its pull
+request run.
+
 - Status: Validated
 - Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json)
 - Last updated: 2026-07-17
@@ -90,6 +94,10 @@ and in CI, so I can review deterministic snapshots.
 Local runs tag the dependency-only visual-test image from its Dockerfile and lock files, then mount
 the current source at runtime. Source-only changes therefore reuse the installed Chromium instead of
 rebuilding it.
+
+CI computes the same dependency key and pulls the corresponding read-only GHCR image before falling
+back to a local build. A separate main-only workflow publishes a new keyed image when the visual
+Dockerfile or dependency lock files change; pull requests never receive package write permission.
 
 - Status: Validated
 - Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), [`tests/visual/run-in-container.sh`](../tests/visual/run-in-container.sh), [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
@@ -157,3 +165,5 @@ This log is append-only.
 | 2026-07-17 | EJ-009 | Not recorded | Candidate | [Architecture open decisions — Observability stack](architecture.md#open-decisions) |
 | 2026-07-17 | EJ-010 | Not recorded | Candidate | [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions) |
 | 2026-07-19 | EJ-005 | Validated | Validated | Local visual runs now reuse a dependency-keyed image; [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py) verifies build-once behavior. |
+| 2026-07-19 | EJ-002 | Validated | Validated | Pull requests retain the complete suite while branch-push CI is limited to `main`; [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and [`tests/test_repository_foundation.py`](../tests/test_repository_foundation.py) enforce the trigger contract. |
+| 2026-07-19 | EJ-005 | Validated | Validated | CI reuses a dependency-keyed GHCR image with build fallback, and [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml) publishes changed dependency images only from `main`. |

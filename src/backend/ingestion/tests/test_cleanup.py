@@ -43,7 +43,7 @@ class CleanupStaleUploadsTests(TestCase):
         batch.refresh_from_db()
         return batch
 
-    def item(self, batch: UploadBatch, *, status: str = UploadItem.Status.PENDING) -> UploadItem:
+    def item(self, batch: UploadBatch, *, status: str = "pending") -> UploadItem:
         item_id = uuid4()
         item = UploadItem.objects.create(
             id=item_id,
@@ -71,7 +71,7 @@ class CleanupStaleUploadsTests(TestCase):
 
     def test_stale_active_item_is_failed_and_unlinked_objects_are_deleted(self) -> None:
         batch = self.batch()
-        item = self.item(batch, status=UploadItem.Status.AUTHORIZED)
+        item = self.item(batch, status="authorized")
 
         self.run_cleanup()
 
@@ -84,7 +84,7 @@ class CleanupStaleUploadsTests(TestCase):
 
     def test_linked_final_object_is_preserved_and_batch_becomes_partial(self) -> None:
         batch = self.batch(expected=2)
-        uploaded = self.item(batch, status=UploadItem.Status.UPLOADED)
+        uploaded = self.item(batch, status="uploaded")
         photo = Photo.objects.create(
             id=uploaded.id.hex,
             event=self.event,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import urllib.error
 from datetime import timedelta
+from email.message import Message
 from io import StringIO
 from unittest.mock import patch
 
@@ -50,7 +51,7 @@ class ContractStorage:
 
 
 def rejected_request() -> urllib.error.HTTPError:
-    return urllib.error.HTTPError("https://storage.invalid", 403, "Forbidden", {}, None)
+    return urllib.error.HTTPError("https://storage.invalid", 403, "Forbidden", Message(), None)
 
 
 @override_settings(

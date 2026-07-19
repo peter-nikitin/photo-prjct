@@ -11,7 +11,8 @@ dependency_key=$(
     git hash-object src/backend/requirements.txt
   } | git hash-object --stdin
 )
-VISUAL_TEST_IMAGE="photo-prjct-visual-deps:${dependency_key}"
+image_prefix="${VISUAL_TEST_IMAGE_PREFIX:-photo-prjct-visual-deps}"
+VISUAL_TEST_IMAGE="${image_prefix}:${dependency_key}"
 export VISUAL_TEST_IMAGE
 
 case "$mode" in
@@ -30,6 +31,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if ! docker image inspect "$VISUAL_TEST_IMAGE" >/dev/null 2>&1; then
-  docker compose -f "$compose_file" build visual-tests
+  if [ -z "${VISUAL_TEST_IMAGE_PREFIX:-}" ] || ! docker pull "$VISUAL_TEST_IMAGE"; then
+    docker compose -f "$compose_file" build visual-tests
+  fi
 fi
 docker compose -f "$compose_file" run --rm visual-tests npm run "$inside_script"

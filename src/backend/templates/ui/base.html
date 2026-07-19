@@ -35,10 +35,12 @@
             <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#scale"></use></svg>
             <span>Документы</span>
           </a>
-          <a href="{% url 'admin:index' %}" aria-label="Администрирование">
-            <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#settings"></use></svg>
-            <span>Администрирование</span>
-          </a>
+          {% if request.user.is_staff %}
+            <a href="{% url 'admin:index' %}" aria-label="Администрирование">
+              <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#settings"></use></svg>
+              <span>Администрирование</span>
+            </a>
+          {% endif %}
         </nav>
       </header>
       <main id="main-content" class="page-shell" tabindex="-1">

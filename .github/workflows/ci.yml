@@ -2,12 +2,16 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
   quality:
     name: Quality checks
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
 
     services:
       postgres:
@@ -81,8 +85,17 @@ jobs:
       - name: Run JavaScript unit tests
         run: npm run test:js
 
+      - name: Log in to GHCR for visual tests
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run containerized visual regression tests
         run: npm run test:visual
+        env:
+          VISUAL_TEST_IMAGE_PREFIX: ghcr.io/${{ github.repository }}-visual-tests
 
       - name: Upload visual test artifacts
         if: failure()

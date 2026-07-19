@@ -74,6 +74,64 @@ def test_deployment_workflows_separate_staging_and_production() -> None:
     assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
 
 
+def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
+    ci = _load_workflow("ci.yml")
+    quality = ci["jobs"]["quality"]
+
+    assert ci[True]["push"]["branches"] == ["main"]
+    assert "pull_request" in ci[True]
+    assert quality["permissions"] == {"contents": "read", "packages": "read"}
+
+    login = _workflow_step(ci, "quality", "Log in to GHCR for visual tests")
+    visual = _workflow_step(ci, "quality", "Run containerized visual regression tests")
+    assert login["uses"] == "docker/login-action@v3"
+    assert login["with"] == {
+        "registry": "ghcr.io",
+        "username": "${{ github.actor }}",
+        "password": "${{ secrets.GITHUB_TOKEN }}",
+    }
+    assert visual["env"] == {
+        "VISUAL_TEST_IMAGE_PREFIX": "ghcr.io/${{ github.repository }}-visual-tests"
+    }
+    assert "PUSH_VISUAL_TEST_IMAGE" not in visual["env"]
+
+
+def test_visual_image_publisher_is_main_only_and_dependency_keyed() -> None:
+    publisher = _load_workflow("visual-test-image.yml")
+    build = publisher["jobs"]["build"]
+    push = publisher[True]["push"]
+
+    assert set(publisher[True]) == {"push", "workflow_dispatch"}
+    assert push["branches"] == ["main"]
+    assert set(push["paths"]) == {
+        ".github/workflows/visual-test-image.yml",
+        "Dockerfile.visual-tests",
+        "package-lock.json",
+        "src/backend/requirements.txt",
+    }
+    assert build["permissions"] == {"contents": "read", "packages": "write"}
+
+    image = _workflow_step(publisher, "build", "Select visual test image reference")
+    login = _workflow_step(publisher, "build", "Log in to GHCR")
+    publish = _workflow_step(publisher, "build", "Build and publish visual test image")
+    assert image["id"] == "image"
+    for dependency in (
+        "Dockerfile.visual-tests",
+        "package-lock.json",
+        "src/backend/requirements.txt",
+    ):
+        assert f"git hash-object {dependency}" in image["run"]
+    assert "ghcr.io/${GITHUB_REPOSITORY}-visual-tests:${dependency_key}" in image["run"]
+    assert login["uses"] == "docker/login-action@v3"
+    assert publish["uses"] == "docker/build-push-action@v6"
+    assert publish["with"] == {
+        "context": ".",
+        "file": "./Dockerfile.visual-tests",
+        "push": True,
+        "tags": "${{ steps.image.outputs.image }}",
+    }
+
+
 def test_production_compose_uses_an_immutable_application_image() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
 

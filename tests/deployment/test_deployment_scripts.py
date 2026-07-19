@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _write_python_executable(path: Path, body: str) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n" + textwrap.dedent(body), encoding="utf-8"
+    )
     path.chmod(0o755)
 
 
@@ -207,9 +215,128 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
 printf 'verify-public-edge\n' >> "$COMMAND_LOG"
 """,
     )
+    gallery_preflight_harness = fake_bin / "gallery-preflight-harness"
+    _write_python_executable(
+        gallery_preflight_harness,
+        r"""
+        import os
+        import sys
+        import types
+
+
+        command_log = os.environ["COMMAND_LOG"]
+        scenario = os.environ["APPLY_SCENARIO"]
+
+
+        def record(message):
+            with open(command_log, "a", encoding="utf-8") as log:
+                log.write(f"{message}\n")
+
+
+        class Event:
+            class PublicationStatus:
+                PUBLISHED = "published"
+
+            class AccessType:
+                FREE = "free"
+
+
+        class QuerySet:
+            def order_by(self, field):
+                if field != "id":
+                    raise RuntimeError("candidate query must use stable id ordering")
+                record("preflight-order-by id")
+                return self
+
+            def first(self):
+                record("preflight-first")
+                if scenario in {"private-media-success", "private-media-failure"}:
+                    return types.SimpleNamespace(original_key="originals/eligible-photo")
+                return None
+
+
+        class Manager:
+            def filter(self, **filters):
+                expected = {
+                    "event__publication_status": Event.PublicationStatus.PUBLISHED,
+                    "event__access_type": Event.AccessType.FREE,
+                    "src": "",
+                    "original_key__isnull": False,
+                }
+                if filters != expected:
+                    raise RuntimeError("candidate query changed its eligibility boundary")
+                record("preflight-filter eligible-private-photo")
+                return QuerySet()
+
+
+        class Photo:
+            objects = Manager()
+
+
+        class Body:
+            def read(self, amount):
+                record(f"preflight-read {amount}")
+                return b"x"
+
+            def close(self):
+                record("preflight-close")
+
+
+        class PrivateUploadStorage:
+            def __init__(self):
+                record("preflight-storage-init")
+
+            def open_final(self, *, key):
+                record(f"preflight-open {key}")
+                if scenario == "private-media-failure":
+                    raise PermissionError("private failure detail must stay hidden")
+                return types.SimpleNamespace(body=Body())
+
+
+        ingestion = types.ModuleType("ingestion")
+        ingestion.__path__ = []
+        storage = types.ModuleType("ingestion.storage")
+        storage.PrivateUploadStorage = PrivateUploadStorage
+        picflow = types.ModuleType("picflow")
+        picflow.__path__ = []
+        models = types.ModuleType("picflow.models")
+        models.Event = Event
+        models.Photo = Photo
+        sys.modules.update(
+            {
+                "ingestion": ingestion,
+                "ingestion.storage": storage,
+                "picflow": picflow,
+                "picflow.models": models,
+            }
+        )
+
+        exec(compile(os.environ["GALLERY_PREFLIGHT"], "<gallery-media-preflight>", "exec"))
+        """,
+    )
     _write_executable(
         fake_bin / "docker",
         """
+case " $* " in
+  *" run --rm --no-deps -T --entrypoint python web manage.py shell -c "*)
+    for gallery_preflight do :; done
+    {
+      printf 'APP_IMAGE=%s docker' "${APP_IMAGE-unset}"
+      argument_number=1
+      for argument do
+        if [ "$argument_number" -eq "$#" ]; then
+          printf ' <gallery_media_preflight>'
+        else
+          printf ' %s' "$argument"
+        fi
+        argument_number=$((argument_number + 1))
+      done
+      printf '\n'
+    } >> "$COMMAND_LOG"
+    GALLERY_PREFLIGHT="$gallery_preflight" "$GALLERY_PREFLIGHT_HARNESS"
+    exit $?
+    ;;
+esac
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
 case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
@@ -250,6 +377,7 @@ esac
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "apply.log"),
+        "GALLERY_PREFLIGHT_HARNESS": str(gallery_preflight_harness),
         "APPLY_SCENARIO": scenario,
         "DEPLOYMENT_TARGET": target,
         "DEPLOY_ROOT": str(tmp_path),
@@ -265,6 +393,177 @@ esac
         "PUBLIC_DOMAIN_ALIAS": "",
         "LETSENCRYPT_EMAIL": "ops@example.com",
     }
+
+
+def _apply_log(tmp_path: Path) -> list[str]:
+    return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
+
+
+def test_apply_propagates_private_media_read_settings(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PRIVATE_MEDIA_S3_BUCKET": "private-gallery",
+            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "gallery-access",
+            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "gallery-secret",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert "PRIVATE_MEDIA_S3_BUCKET=private-gallery" in deployed_env
+    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID=gallery-access" in deployed_env
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=gallery-secret" in deployed_env
+
+
+def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert [
+        line for line in result.stdout.splitlines() if line.startswith("gallery-")
+    ] == ["gallery-private-media-preflight-skipped:no-eligible-photo"]
+    commands = _apply_log(tmp_path)
+    assert "preflight-filter eligible-private-photo" in commands
+    assert "preflight-order-by id" in commands
+    assert "preflight-first" in commands
+    assert not any(command.startswith("preflight-storage") for command in commands)
+    assert not any(command.startswith("preflight-open") for command in commands)
+    assert not any(command.startswith("preflight-read") for command in commands)
+
+
+def test_candidate_private_media_preflight_reads_when_photo_exists(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert [
+        line for line in result.stdout.splitlines() if line.startswith("gallery-")
+    ] == ["gallery-private-media-preflight-ok"]
+    commands = _apply_log(tmp_path)
+    assert commands.count("preflight-storage-init") == 1
+    assert commands.count("preflight-open originals/eligible-photo") == 1
+    assert commands.count("preflight-read 1") == 1
+    assert commands.count("preflight-close") == 1
+
+
+def test_candidate_private_media_preflight_runs_before_service_switch(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    candidate_pull = next(
+        index
+        for index, command in enumerate(commands)
+        if " pull web" in command and "APP_IMAGE=new-image" in command
+    )
+    candidate_run = commands.index(
+        "APP_IMAGE=new-image docker compose --project-name photo-production "
+        f"--env-file {tmp_path}/.env -f {tmp_path}/docker-compose.prod.yml "
+        f"-f {tmp_path}/docker-compose.https.yml run --rm --no-deps -T "
+        "--entrypoint python web manage.py shell -c <gallery_media_preflight>"
+    )
+    stop_nginx = next(
+        index for index, command in enumerate(commands) if " stop nginx" in command
+    )
+    candidate_up = next(
+        index
+        for index, command in enumerate(commands)
+        if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+    )
+    assert candidate_pull < candidate_run < stop_nginx < candidate_up
+
+
+def test_failed_candidate_private_media_preflight_with_photo_keeps_old_service_active(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-failure"),
+    )
+
+    assert result.returncode != 0
+    assert "Gallery private-media read prerequisite failed" in result.stderr
+    assert "private failure detail" not in result.stderr
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
+    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith(
+        "APP_IMAGE=old-image\n"
+    )
+    commands = _apply_log(tmp_path)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(
+        "APP_IMAGE=new-image" in command and " up -d --remove-orphans" in command
+        for command in commands
+    )
+
+
+def test_workflows_forward_private_media_settings() -> None:
+    for relative_path in (
+        ".github/workflows/deploy.yml",
+        ".github/workflows/promote-production.yml",
+    ):
+        workflow = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in workflow
+        assert (
+            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID: "
+            "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}" in workflow
+        )
+        assert (
+            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: "
+            "${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}" in workflow
+        )
+        forwarded = next(
+            line
+            for line in workflow.splitlines()
+            if "envs: APP_IMAGE" in line and "SECRET_KEY" in line
+        )
+        assert "PRIVATE_MEDIA_S3_BUCKET" in forwarded
+        assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in forwarded
+        assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in forwarded
+
+
+def test_deployment_path_performs_no_iam_mutation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    for tool in ("yc", "aws", "s3cmd"):
+        _write_executable(
+            fake_bin / tool,
+            f'printf \'{tool} %s\\n\' "$*" >> "$COMMAND_LOG"\nexit 97',
+        )
+
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path)).lower()
+    assert "yc " not in commands
+    assert "aws " not in commands
+    assert "s3cmd " not in commands
+    assert "policy" not in commands
+    assert " iam " not in commands
+    assert "role-binding" not in commands
+    assert "bucket-policy" not in commands
 
 
 def test_staging_apply_activates_https_edge_and_public_checks(

@@ -189,6 +189,40 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     fi
 fi
 
+if ! compose pull web; then
+    fail "Candidate application image pull failed"
+fi
+
+gallery_media_preflight='
+from contextlib import closing
+from ingestion.storage import PrivateUploadStorage
+from picflow.models import Event, Photo
+try:
+    photo = Photo.objects.filter(
+        event__publication_status=Event.PublicationStatus.PUBLISHED,
+        event__access_type=Event.AccessType.FREE,
+        src="",
+        original_key__isnull=False,
+    ).order_by("id").first()
+except Exception:
+    raise SystemExit("Gallery private-media read prerequisite failed") from None
+if photo is None:
+    print("gallery-private-media-preflight-skipped:no-eligible-photo")
+else:
+    try:
+        opened = PrivateUploadStorage().open_final(key=photo.original_key)
+        with closing(opened.body) as body:
+            if not body.read(1):
+                raise RuntimeError
+    except Exception:
+        raise SystemExit("Gallery private-media read prerequisite failed") from None
+    print("gallery-private-media-preflight-ok")
+'
+if ! compose run --rm --no-deps -T --entrypoint python web \
+    manage.py shell -c "$gallery_media_preflight"; then
+    fail "Candidate image failed private-media read prerequisite"
+fi
+
 compose stop nginx || true
 if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
     fail "Certificate bootstrap failed"

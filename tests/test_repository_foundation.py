@@ -127,9 +127,35 @@ def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None
     assert "LETSENCRYPT_EMAIL" in _envs(production_apply)
 
 
+def test_private_upload_configuration_is_wired_to_deployments() -> None:
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Apply staging deployment")
+    production = _workflow_step(
+        _load_workflow("promote-production.yml"), "promote", "Apply production deployment"
+    )
+    expected = {
+        "PHOTO_UPLOAD_ENABLED": "${{ vars.PHOTO_UPLOAD_ENABLED || 'False' }}",
+        "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}",
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": ("${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}"),
+        "PRIVATE_MEDIA_ALLOWED_ORIGINS": "${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}",
+    }
+
+    for name, value in expected.items():
+        assert re.search(rf"^{name}=", example, re.MULTILINE)
+        assert staging["env"][name] == value
+        assert production["env"][name] == value
+        assert name in _envs(staging)
+        assert name in _envs(production)
+        assert f"printf '{name}=%s\\n'" in apply_script
+
+
 def test_focused_deployment_scripts_are_versioned() -> None:
     for relative_path in (
         "deploy/certbot/reconcile-certificate.sh",
+        "deploy/install-upload-cleanup-cron.sh",
+        "deploy/run-upload-cleanup.sh",
         "deploy/verify-public-edge.sh",
     ):
         assert (ROOT / relative_path).is_file(), f"Missing {relative_path}"
@@ -153,6 +179,8 @@ def test_http_edge_fallback_remains_available_for_manual_recovery() -> None:
 def test_versioned_deployment_script_has_valid_shell_syntax() -> None:
     for relative_path in (
         "deploy/apply-deployment.sh",
+        "deploy/install-upload-cleanup-cron.sh",
+        "deploy/run-upload-cleanup.sh",
         "deploy/verify-public-edge.sh",
         "deploy/certbot/reconcile-certificate.sh",
     ):
@@ -163,6 +191,23 @@ def test_versioned_deployment_script_has_valid_shell_syntax() -> None:
             check=False,
         )
         assert result.returncode == 0, f"{relative_path}: {result.stderr}"
+
+
+def test_upload_cleanup_schedule_is_bounded_and_deployment_managed() -> None:
+    apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+    install_script = (ROOT / "deploy/install-upload-cleanup-cron.sh").read_text(encoding="utf-8")
+    run_script = (ROOT / "deploy/run-upload-cleanup.sh").read_text(encoding="utf-8")
+
+    assert install_script.count("# BEGIN photo-prjct-upload-cleanup") == 2
+    assert install_script.count("# END photo-prjct-upload-cleanup") == 2
+    assert "17 3 * * *" in install_script
+    assert "crontab -l" in install_script
+    assert "flock -n -E 75" in run_script
+    assert "exec -T web python manage.py cleanup_stale_uploads" in run_script
+    assert "printf '%s\\n' \"$DEPLOYMENT_TARGET\"" in apply_script
+    assert "printf '%s\\n' \"$COMPOSE_PROJECT_NAME\"" in apply_script
+    assert 'install-upload-cleanup-cron.sh" install' in apply_script
+    assert 'install-upload-cleanup-cron.sh" remove' in apply_script
 
 
 def test_django_trusts_the_https_scheme_from_the_edge_proxy() -> None:

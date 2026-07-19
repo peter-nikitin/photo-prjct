@@ -4,9 +4,23 @@
 - Status: Approved
 - Owner: project maintainer
 - Related gallery design: [Event photo gallery](2026-07-18-event-photo-gallery-design.md)
-- Related architecture: [System architecture](../../architecture.md)
-- Related ADRs: [0006](../../adr/0006-yandex-object-storage-media.md),
-  [0013](../../adr/0013-use-direct-private-object-storage-ingestion.md)
+- Related architecture: [Current architecture — implemented](../../architecture.md#current-architecture--implemented),
+  [Accepted constraints](../../architecture.md#accepted-constraints),
+  [Target MVP architecture — proposed](../../architecture.md#target-mvp-architecture--proposed),
+  [Photo ingestion and indexing](../../architecture.md#photo-ingestion-and-indexing),
+  [Security, privacy, and legal boundaries](../../architecture.md#security-privacy-and-legal-boundaries),
+  [Evolution stages](../../architecture.md#evolution-stages), and
+  [Open decisions](../../architecture.md#open-decisions)
+- Related ADRs: [0002](../../adr/0002-postgresql-system-of-record.md),
+  [0003](../../adr/0003-docker-compose-yandex-cloud.md),
+  [0005](../../adr/0005-promote-images-through-staging.md),
+  [0006](../../adr/0006-yandex-object-storage-media.md),
+  [0013](../../adr/0013-use-direct-private-object-storage-ingestion.md), and
+  [0016 (Proposed)](../../adr/0016-allow-deterministic-staging-reference-media.md)
+- ADR impact: Requires new ADR — deterministic thirteen-photo staging reference-media exception
+  to the normal ADR 0013 ingestion path
+- ADR lifecycle: Specification approval does not accept ADR 0016; it remains Proposed pending
+  separate maintainer acceptance.
 
 ## Outcome
 

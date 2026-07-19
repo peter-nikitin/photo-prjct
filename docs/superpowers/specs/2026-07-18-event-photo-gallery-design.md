@@ -3,7 +3,23 @@
 - Date: 2026-07-18
 - Status: Approved
 - Owner: project maintainer
-- Related architecture: [System architecture](../../architecture.md)
+- Related architecture: [Current architecture — implemented](../../architecture.md#current-architecture--implemented),
+  [Target MVP architecture — proposed](../../architecture.md#target-mvp-architecture--proposed),
+  [Photo ingestion and indexing](../../architecture.md#photo-ingestion-and-indexing),
+  [Purchase and download](../../architecture.md#purchase-and-download),
+  [Security, privacy, and legal boundaries](../../architecture.md#security-privacy-and-legal-boundaries),
+  [Evolution stages](../../architecture.md#evolution-stages), and
+  [Open decisions](../../architecture.md#open-decisions)
+- Related ADRs: [0001](../../adr/0001-django-modular-monolith.md),
+  [0002](../../adr/0002-postgresql-system-of-record.md),
+  [0006](../../adr/0006-yandex-object-storage-media.md),
+  [0013](../../adr/0013-use-direct-private-object-storage-ingestion.md),
+  [0014](../../adr/0014-keep-stage-2-ingestion-request-driven.md), and
+  [0015 (Proposed)](../../adr/0015-allow-anonymous-free-event-original-delivery.md)
+- ADR impact: Requires new ADR — anonymous complete-original delivery for uploaded photos on
+  published free events
+- ADR lifecycle: Specification approval does not accept ADR 0015; it remains Proposed pending
+  separate maintainer acceptance.
 - Visual reference: [Photobank prototype PR](https://github.com/peter-nikitin/photo-prjct/pull/1/files)
 
 ## Outcome

@@ -253,6 +253,30 @@ test('browser coordinator completes a successful upload and announces progress',
   expect(stubs.pageErrors).toEqual([]);
 });
 
+test('browser coordinator accepts a dropped JPEG when the browser omits its MIME type', async ({
+  page,
+}) => {
+  const stubs = await installUploadStubs(page);
+  await page.goto('/__visual__/upload/empty/');
+  await page.locator('#upload-event').selectOption({ index: 1 });
+  await page.locator('[data-upload-drop-target]').evaluate((dropTarget) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['jpeg'], 'dropped.jpeg'));
+    dropTarget.dispatchEvent(
+      new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }),
+    );
+    dropTarget.dispatchEvent(
+      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }),
+    );
+  });
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  const registration = stubs.controlCalls.find(({ path }) => path.endsWith('/items/'));
+  expect(registration.body.items[0].content_type).toBe('image/jpeg');
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/confirm/'))).toHaveLength(1);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
 test('browser coordinator preserves success when another upload fails', async ({ page }) => {
   const stubs = await installUploadStubs(page, { storageStatuses: [204, 400] });
   await page.goto('/__visual__/upload/empty/');

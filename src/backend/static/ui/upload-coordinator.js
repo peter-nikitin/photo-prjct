@@ -17,7 +17,8 @@
       throw new SelectionError(`Выберите от 1 до ${maxFiles} файлов.`);
     }
     for (const file of selected) {
-      if (file.type !== 'image/jpeg') {
+      const hasJpegExtension = /\.jpe?g$/i.test(file.name);
+      if (file.type !== 'image/jpeg' && !(!file.type && hasJpegExtension)) {
         throw new SelectionError('Можно загружать только JPEG-файлы.');
       }
       if (file.size < 1 || file.size > maxFileBytes) {
@@ -25,7 +26,11 @@
       }
     }
     return {
-      items: selected.map((file) => ({ clientItemId: crypto.randomUUID(), file })),
+      items: selected.map((file) => ({
+        clientItemId: crypto.randomUUID(),
+        contentType: 'image/jpeg',
+        file,
+      })),
     };
   }
 
@@ -281,7 +286,7 @@
             items: group.map((item) => ({
               client_item_id: item.clientItemId,
               filename: item.file.name,
-              content_type: item.file.type,
+              content_type: item.contentType,
               size: item.file.size,
             })),
           },

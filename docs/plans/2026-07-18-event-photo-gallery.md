@@ -381,7 +381,7 @@ existing image-only rollback semantics; this task does not claim full environmen
               -f "$overlay_file" "$@"
   }
 
-  if ! compose_with_env_file "$env_tmp" pull web; then
+  if ! compose_with_env_file "$requested_env_tmp" pull web; then
       fail "Candidate application image pull failed"
   fi
 
@@ -410,14 +410,14 @@ existing image-only rollback semantics; this task does not claim full environmen
           raise SystemExit("Gallery private-media read prerequisite failed") from None
       print("gallery-private-media-preflight-ok")
   '
-  if ! compose_with_env_file "$env_tmp" run --rm --no-deps -T --entrypoint python web \
+  if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T --entrypoint python web \
       manage.py shell --no-imports -c "$gallery_media_preflight"; then
       fail "Candidate image failed private-media read prerequisite"
   fi
 
   mutation_started=1
-  mv "$env_tmp" "$DEPLOY_ROOT/.env"
-  env_tmp=""
+  mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
+  requested_env_tmp=""
   ```
 
   `--entrypoint python` bypasses the image entrypoint, so this candidate container performs no

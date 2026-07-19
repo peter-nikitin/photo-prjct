@@ -358,7 +358,7 @@ validate_candidate_env() {
   [ "$compose_env_file" != "$DEPLOY_ROOT/.env" ]
   [ "$APP_ENV_FILE" = "$compose_env_file" ]
   [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = new-image ]
-  [ "$(sed -n 's/^SECRET_KEY=//p' "$compose_env_file")" = new-secret ]
+  [ "$(sed -n 's/^SECRET_KEY=//p' "$compose_env_file")" = "$EXPECTED_REQUESTED_SECRET" ]
   [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
   [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
   [ "$candidate_secret_key" = "$PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" ]
@@ -438,6 +438,9 @@ target_path="${2-}"
 case "$source_path:$target_path" in
   *"/.env.requested."*":$DEPLOY_ROOT/.env")
     case "$APPLY_SCENARIO" in
+      promotion-rename-failure)
+        exit 1
+        ;;
       promotion-term|promotion-hup)
         /bin/mv "$@"
         if [ "$APPLY_SCENARIO" = promotion-term ]; then
@@ -467,6 +470,7 @@ esac
         "COMPOSE_PROJECT_NAME": f"photo-{target}",
         "APP_IMAGE": "new-image",
         "SECRET_KEY": "new-secret",
+        "EXPECTED_REQUESTED_SECRET": "new-secret",
         "DEBUG": "False",
         "ALLOWED_HOSTS": "localhost",
         "DB_NAME": "app",
@@ -807,6 +811,30 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
         "APP_IMAGE=unset" in command and " up -d --remove-orphans" in command
         for command in commands
     )
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_failed_env_promotion_removes_secret_bearing_requested_temp(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    requested_secret = "promotion-secret-must-not-persist"
+    env = _apply_env(tmp_path, fake_bin, scenario="promotion-rename-failure")
+    env["SECRET_KEY"] = requested_secret
+    env["EXPECTED_REQUESTED_SECRET"] = requested_secret
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
+    commands = _apply_log(tmp_path)
+    assert sum(" up -d --remove-orphans" in command for command in commands) == 1
+    assert requested_secret not in result.stdout
+    assert requested_secret not in result.stderr
+    assert requested_secret not in "\n".join(commands)
     _assert_no_env_temporary_files(tmp_path)
 
 

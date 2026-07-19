@@ -40,5 +40,8 @@ Do not create a separate documentation PR; use one worktree, one branch, and one
    and the repository's known virtual environment when the worktree lacks them; do not copy secrets.
 4. Use one combined review for requirements and quality, fix findings in the same branch, then run
    one final proportional verification including `git diff --check`.
-5. Push one draft pull request with the outcome, rollback, and evidence. Do not merge or mutate the
+5. Re-read applicable ADRs and `docs/architecture.md` after verification. Record one result: no ADR
+   impact, conformance, architecture update, new ADR, or superseding ADR. Update implemented facts
+   in the same change; stop for explicit authority rather than contradicting an accepted ADR.
+6. Push one draft pull request with the outcome, rollback, and evidence. Do not merge or mutate the
    live environment unless the user explicitly requested and authorized that action.

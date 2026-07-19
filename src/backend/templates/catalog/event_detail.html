@@ -2,7 +2,10 @@
 {% load static %}
 {% block title %}{{ event.name }} — FindMe Photo{% endblock %}
 {% block body_class %}event-detail-page{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/catalog.css' %}">{% endblock %}
+{% block extra_css %}
+  <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
+  <link rel="stylesheet" href="{% static 'ui/glightbox.min.css' %}">
+{% endblock %}
 {% block content %}
   <article class="event-detail">
     <a class="back-link" href="{% url 'event_catalog' %}">
@@ -40,5 +43,29 @@
         {% endif %}
       </div>
     </div>
+    <section class="event-gallery" aria-labelledby="gallery-title">
+      <div class="event-gallery-heading">
+        <h2 id="gallery-title">Фотографии</h2>
+      </div>
+      {% if gallery_photos %}
+        <div class="event-gallery-grid">
+          {% for photo in gallery_photos %}
+            <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" aria-label="Открыть: {{ photo.alt }}">
+              {% if forloop.counter <= 4 %}
+                <img src="{{ photo.preview_media_small.url }}" loading="eager" fetchpriority="high" alt="{{ photo.alt }}">
+              {% else %}
+                <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
+              {% endif %}
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>
+      {% endif %}
+    </section>
   </article>
+{% endblock %}
+{% block extra_js %}
+  <script src="{% static 'ui/glightbox.min.js' %}"></script>
+  <script src="{% static 'ui/event-gallery.js' %}"></script>
 {% endblock %}

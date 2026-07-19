@@ -213,6 +213,10 @@ class PageTests(TestCase):
                 self.assertNotIn("search", markup.input_types)
 
 
+@override_settings(
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+)
+@modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
 class GalleryPageTests(TestCase):
     def setUp(self) -> None:
         Event.objects.update(publication_status=Event.PublicationStatus.DRAFT)
@@ -283,6 +287,47 @@ class GalleryPageTests(TestCase):
             tuple(item.photo_id for item in response.context["gallery_photos"]), (included.id,)
         )
         self.assertEqual(paid_response.context["gallery_photos"], ())
+
+    def test_event_detail_gallery_markup_and_loading_policy(self) -> None:
+        event = self.make_event()
+        photos = [self.make_private_photo(event, id=f"gallery-{index}") for index in range(1, 6)]
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertContains(response, "Фотографии")
+        self.assertContains(response, 'class="event-gallery"')
+        self.assertContains(response, '/static/ui/glightbox.min.css')
+        self.assertContains(response, '/static/ui/glightbox.min.js')
+        self.assertContains(response, '/static/ui/event-gallery.js')
+        for index, photo in enumerate(photos, start=1):
+            small_url = reverse(
+                "photo_media",
+                kwargs={"slug": event.slug, "photo_id": photo.id, "variant": "preview-small"},
+            )
+            large_url = reverse(
+                "photo_media",
+                kwargs={"slug": event.slug, "photo_id": photo.id, "variant": "preview-large"},
+            )
+            self.assertContains(
+                response,
+                f'href="{large_url}"',
+            )
+            self.assertContains(response, f'src="{small_url}"')
+            if index <= 4:
+                self.assertContains(response, f'src="{small_url}" loading="eager" fetchpriority="high"')
+            else:
+                self.assertContains(response, f'src="{small_url}" loading="lazy"')
+
+    def test_event_detail_empty_gallery_is_accessible(self) -> None:
+        event = self.make_event()
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertContains(response, "Фотографии")
+        self.assertContains(response, 'class="event-gallery"')
+        self.assertContains(response, 'aria-labelledby="gallery-title"')
+        self.assertContains(response, 'id="gallery-title"')
+        self.assertContains(response, "Фотографии пока не опубликованы")
 
 
 class _ReadableBody:

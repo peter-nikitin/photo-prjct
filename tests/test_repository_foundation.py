@@ -284,3 +284,14 @@ def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
         "service_healthy"
     )
     assert compose["services"]["visual-tests"]["environment"]["CI"] == "${CI:-false}"
+
+
+def test_local_node_version_matches_ci_and_visual_container() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    node_setup = _workflow_step(_load_workflow("ci.yml"), "quality", "Set up Node.js")
+    dockerfile = (ROOT / "Dockerfile.visual-tests").read_text(encoding="utf-8")
+
+    assert (ROOT / ".nvmrc").read_text(encoding="utf-8").strip() == "22"
+    assert package["engines"]["node"] == ">=22 <23"
+    assert node_setup["with"]["node-version"] == "22"
+    assert "FROM node:22-bookworm-slim@sha256:" in dockerfile

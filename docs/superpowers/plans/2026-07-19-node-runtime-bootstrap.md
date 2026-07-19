@@ -54,6 +54,9 @@ def test_local_node_version_matches_ci_and_visual_container() -> None:
 Run:
 
 ```bash
+set -a
+source /Users/petrnikitin/Documents/Sites/photo-prjct/.env
+set +a
 /Users/petrnikitin/Documents/Sites/photo-prjct/.venv/bin/pytest tests/test_repository_foundation.py::test_local_node_version_matches_ci_and_visual_container -q
 ```
 
@@ -107,6 +110,9 @@ containerized visual-test environment.
 Run:
 
 ```bash
+set -a
+source /Users/petrnikitin/Documents/Sites/photo-prjct/.env
+set +a
 /Users/petrnikitin/Documents/Sites/photo-prjct/.venv/bin/pytest tests/test_repository_foundation.py::test_local_node_version_matches_ci_and_visual_container -q
 zsh -lic 'cd /Users/petrnikitin/Documents/Sites/photo-prjct/.worktrees/fix-node-bootstrap && nvm use >/dev/null && npm ci && npm run test:js'
 git diff --check

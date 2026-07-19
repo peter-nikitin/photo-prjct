@@ -1,7 +1,7 @@
 # Role-aware service navigation design
 
 - Date: 2026-07-19
-- Status: Awaiting written review
+- Status: Approved
 - Related architecture: [Accepted constraints](../../architecture.md#accepted-constraints),
   [Security, privacy, and legal boundaries](../../architecture.md#security-privacy-and-legal-boundaries)
 - Related ADRs: [ADR 0012 — Use Django photographer permissions](../../adr/0012-use-django-photographer-permissions.md)

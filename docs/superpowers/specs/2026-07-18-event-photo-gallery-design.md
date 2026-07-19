@@ -15,11 +15,9 @@
   [0006](../../adr/0006-yandex-object-storage-media.md),
   [0013](../../adr/0013-use-direct-private-object-storage-ingestion.md),
   [0014](../../adr/0014-keep-stage-2-ingestion-request-driven.md), and
-  [0015 (Proposed)](../../adr/0015-allow-anonymous-free-event-original-delivery.md)
-- ADR impact: Requires new ADR — anonymous complete-original delivery for uploaded photos on
-  published free events
-- ADR lifecycle: Specification approval does not accept ADR 0015; it remains Proposed pending
-  separate maintainer acceptance.
+  [0015](../../adr/0015-allow-anonymous-free-event-original-delivery.md)
+- ADR impact: Conforms to ADR 0015
+- ADR lifecycle: ADR 0015 was explicitly accepted by the project maintainer on 2026-07-19.
 - Visual reference: [Photobank prototype PR](https://github.com/peter-nikitin/photo-prjct/pull/1/files)
 
 ## Outcome

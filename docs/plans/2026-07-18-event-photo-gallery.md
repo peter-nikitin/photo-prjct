@@ -22,11 +22,26 @@
 ---
 
 - Date: 2026-07-18
-- Status: Draft
+- Status: In progress — Tasks 1-6 complete; Tasks 7-8 not started
 - Owner: project maintainer
-- Related architecture: [Current architecture](../architecture.md#current-architecture--implemented), [Photo ingestion](../architecture.md#photo-ingestion-and-indexing), [Security boundaries](../architecture.md#security-privacy-and-legal-boundaries)
-- Related ADRs: [0001](../adr/0001-django-modular-monolith.md), [0006](../adr/0006-yandex-object-storage-media.md), [0013](../adr/0013-use-direct-private-object-storage-ingestion.md), [0014](../adr/0014-keep-stage-2-ingestion-request-driven.md)
-- Approved specification: [Event photo gallery design](../superpowers/specs/2026-07-18-event-photo-gallery-design.md)
+- Related specification: [Event photo gallery design](../superpowers/specs/2026-07-18-event-photo-gallery-design.md)
+- Related architecture: [Current architecture — implemented](../architecture.md#current-architecture--implemented),
+  [Target MVP architecture — proposed](../architecture.md#target-mvp-architecture--proposed),
+  [Photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing),
+  [Purchase and download](../architecture.md#purchase-and-download),
+  [Security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries),
+  [Evolution stages](../architecture.md#evolution-stages), and
+  [Open decisions](../architecture.md#open-decisions)
+- Related ADRs: [0001](../adr/0001-django-modular-monolith.md),
+  [0002](../adr/0002-postgresql-system-of-record.md),
+  [0006](../adr/0006-yandex-object-storage-media.md),
+  [0013](../adr/0013-use-direct-private-object-storage-ingestion.md),
+  [0014](../adr/0014-keep-stage-2-ingestion-request-driven.md), and
+  [0015](../adr/0015-allow-anonymous-free-event-original-delivery.md)
+- ADR impact: Resolved — conforms to accepted ADR 0015 and applicable ADRs 0001, 0002, 0006,
+  0013, and 0014.
+- Completion evidence: Tasks 1-6 are implemented in commit range `676bbf2..0ee60ac`; Task 6's
+  final visual verification passed all 43 tests.
 
 ## Scope
 
@@ -91,11 +106,11 @@ class GalleryPhoto:
     alt: str
 ```
 
-- [ ] Add `test_gallery_values_are_frozen` and `test_factory_builds_stable_variant_urls_without_storage` with exact field/URL/alt assertions and patched `boto3.client` call count zero.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py -k 'gallery_values or factory'`; expected RED is `ModuleNotFoundError: No module named 'picflow.gallery'`.
-- [ ] Add the exact dataclasses above and `GalleryPhotoFactory.from_photo`; its local `media(variant)` calls `reverse("photo_media", kwargs={"slug": event_slug, "photo_id": photo.pk, "variant": variant})`, constructs both variants, and uses `alt=f"Фото {photo.pk} с события {photo.event.name}"`. Add no query or storage import.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py -k 'gallery_values or factory'`; expected GREEN is `2 passed` with no selected failure.
-- [ ] Commit: `git add src/backend/picflow/gallery.py src/backend/picflow/tests/test_gallery.py && git commit -m "feat: define event gallery presentation contract"`.
+- [x] Add `test_gallery_values_are_frozen` and `test_factory_builds_stable_variant_urls_without_storage` with exact field/URL/alt assertions and patched `boto3.client` call count zero.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py -k 'gallery_values or factory'`; expected RED is `ModuleNotFoundError: No module named 'picflow.gallery'`.
+- [x] Add the exact dataclasses above and `GalleryPhotoFactory.from_photo`; its local `media(variant)` calls `reverse("photo_media", kwargs={"slug": event_slug, "photo_id": photo.pk, "variant": variant})`, constructs both variants, and uses `alt=f"Фото {photo.pk} с события {photo.event.name}"`. Add no query or storage import.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py -k 'gallery_values or factory'`; expected GREEN is `2 passed` with no selected failure.
+- [x] Commit: `git add src/backend/picflow/gallery.py src/backend/picflow/tests/test_gallery.py && git commit -m "feat: define event gallery presentation contract"`.
 
 ### Task 2: Validated final-object open
 
@@ -103,9 +118,9 @@ class GalleryPhoto:
 
 **Interfaces:** Add `ReadableBody.read(amt: int | None = None) -> bytes`/`close()`; frozen `OpenedObject(body: ReadableBody, size: int, content_type: Literal["image/jpeg", "image/png"])`; `PrivateUploadStorage.open_final(*, key: str) -> OpenedObject`.
 
-- [ ] Add `test_open_final_returns_validated_stream_without_reading_it`, `test_open_final_rejects_invalid_key_before_client_call`, `test_open_final_closes_body_when_response_metadata_is_invalid`, and parametrized error-mapping tests. Extend `FakeBody.read(self, amt: int | None = None)` and make `FakeS3Client.get_object` return `Body`, `ContentLength`, and `ContentType` when no Range is supplied.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/ingestion/tests/test_storage.py -k 'open_final'`; expected RED is `AttributeError: 'PrivateUploadStorage' object has no attribute 'open_final'`.
-- [ ] Add the typed `ReadableBody` protocol/`OpenedObject` dataclass and implement `open_final`: validate with `_validate_final_key`; call `get_object(Bucket=self._bucket, Key=key)` once; require callable `read`/`close`, non-boolean nonnegative integer length, and normalized exact JPEG/PNG content type; close the body before `ObjectMismatch` on invalid metadata; map client/SDK failures with existing sanitized exceptions. Do not read bytes or add list/write/copy/delete authority.
+- [x] Add `test_open_final_returns_validated_stream_without_reading_it`, `test_open_final_rejects_invalid_key_before_client_call`, `test_open_final_closes_body_when_response_metadata_is_invalid`, and parametrized error-mapping tests. Extend `FakeBody.read(self, amt: int | None = None)` and make `FakeS3Client.get_object` return `Body`, `ContentLength`, and `ContentType` when no Range is supplied.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/ingestion/tests/test_storage.py -k 'open_final'`; expected RED is `AttributeError: 'PrivateUploadStorage' object has no attribute 'open_final'`.
+- [x] Add the typed `ReadableBody` protocol/`OpenedObject` dataclass and implement `open_final`: validate with `_validate_final_key`; call `get_object(Bucket=self._bucket, Key=key)` once; require callable `read`/`close`, non-boolean nonnegative integer length, and normalized exact JPEG/PNG content type; close the body before `ObjectMismatch` on invalid metadata; map client/SDK failures with existing sanitized exceptions. Do not read bytes or add list/write/copy/delete authority.
 
   ```python
   def open_final(self, *, key: str) -> OpenedObject:
@@ -136,8 +151,8 @@ class GalleryPhoto:
           raise ObjectMismatch() from None
       return OpenedObject(body=body, size=size, content_type=content_type)
   ```
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/ingestion/tests/test_storage.py -k 'open_final'`; expected GREEN is all selected tests passed. Then run `DB_HOST=127.0.0.1 pytest -q src/backend/ingestion/tests/test_storage.py`; expected GREEN is the complete module passed.
-- [ ] Commit: `git add src/backend/ingestion/storage.py src/backend/ingestion/tests/fakes.py src/backend/ingestion/tests/test_storage.py && git commit -m "feat: open validated private photo originals"`.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/ingestion/tests/test_storage.py -k 'open_final'`; expected GREEN is all selected tests passed. Then run `DB_HOST=127.0.0.1 pytest -q src/backend/ingestion/tests/test_storage.py`; expected GREEN is the complete module passed.
+- [x] Commit: `git add src/backend/ingestion/storage.py src/backend/ingestion/tests/fakes.py src/backend/ingestion/tests/test_storage.py && git commit -m "feat: open validated private photo originals"`.
 
 ### Task 3: Transitional resolver and close-safe iterator
 
@@ -193,10 +208,10 @@ class CloseableMediaIterator(Iterator[bytes]):
         return self
 ```
 
-- [ ] Add exact failing tests `test_resolver_maps_both_variants_to_original`, `test_resolver_rejects_unknown_variant_before_storage`, `test_resolver_requires_original_key_before_storage`, `test_iterator_closes_after_eof`, `test_iterator_closes_and_sanitizes_read_failure`, `test_iterator_close_before_first_next_closes_body`, and `test_iterator_close_after_partial_read_closes_body`. The pre-iteration test must instantiate the iterator, call `close()` without `iter()`/`next()`, and assert the body is closed exactly once.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py -k 'resolver or iterator'`; expected RED is import failure for `FinalObjectStorage`/`CloseableMediaIterator`.
-- [ ] Implement `PublicMediaResolver.resolve`: reject variants outside `GALLERY_VARIANTS`; reject falsey `original_key`; call only `self._storage.open_final(key=photo.original_key)`; map content type to a typed safe extension; return the exact frozen fields above. Both variants deliberately take this identical branch.
-- [ ] Implement `CloseableMediaIterator` as an owning object, not a generator. Store the body during `__init__`; `close()` closes it once even before the first `next`; `__next__` raises `StopIteration` when closed, otherwise reads one chunk, closes/raises `StopIteration` at EOF, and on `Exception` logs only `Public photo stream ended early` with `extra={"event_slug": ..., "photo_id": ...}`, closes, and raises `StopIteration`. This explicit owner fixes the generator-before-first-next leak and lets `StreamingHttpResponse.close()` find the iterator's `close` method.
+- [x] Add exact failing tests `test_resolver_maps_both_variants_to_original`, `test_resolver_rejects_unknown_variant_before_storage`, `test_resolver_requires_original_key_before_storage`, `test_iterator_closes_after_eof`, `test_iterator_closes_and_sanitizes_read_failure`, `test_iterator_close_before_first_next_closes_body`, and `test_iterator_close_after_partial_read_closes_body`. The pre-iteration test must instantiate the iterator, call `close()` without `iter()`/`next()`, and assert the body is closed exactly once.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py -k 'resolver or iterator'`; expected RED is import failure for `FinalObjectStorage`/`CloseableMediaIterator`.
+- [x] Implement `PublicMediaResolver.resolve`: reject variants outside `GALLERY_VARIANTS`; reject falsey `original_key`; call only `self._storage.open_final(key=photo.original_key)`; map content type to a typed safe extension; return the exact frozen fields above. Both variants deliberately take this identical branch.
+- [x] Implement `CloseableMediaIterator` as an owning object, not a generator. Store the body during `__init__`; `close()` closes it once even before the first `next`; `__next__` raises `StopIteration` when closed, otherwise reads one chunk, closes/raises `StopIteration` at EOF, and on `Exception` logs only `Public photo stream ended early` with `extra={"event_slug": ..., "photo_id": ...}`, closes, and raises `StopIteration`. This explicit owner fixes the generator-before-first-next leak and lets `StreamingHttpResponse.close()` find the iterator's `close` method.
 
   ```python
   def __next__(self) -> bytes:
@@ -221,8 +236,8 @@ class CloseableMediaIterator(Iterator[bytes]):
           self._closed = True
           self._body.close()
   ```
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py -k 'resolver or iterator'`; expected GREEN is all selected tests passed. Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py`; expected GREEN is the full module passed.
-- [ ] Commit: `git add src/backend/picflow/gallery.py src/backend/picflow/tests/test_gallery.py && git commit -m "feat: resolve gallery variants to private media"`.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py -k 'resolver or iterator'`; expected GREEN is all selected tests passed. Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py`; expected GREEN is the full module passed.
+- [x] Commit: `git add src/backend/picflow/gallery.py src/backend/picflow/tests/test_gallery.py && git commit -m "feat: resolve gallery variants to private media"`.
 
 ### Task 4: Eligibility query and media endpoint
 
@@ -238,10 +253,10 @@ path(
 )
 ```
 
-- [ ] Add page tests `test_event_detail_builds_ordered_gallery_without_storage` and `test_event_detail_excludes_legacy_other_event_and_paid_originals`. Add endpoint tests named for success headers, each 404 boundary, missing-object 404, storage 503, mid-stream closure, and `test_photo_media_rejects_non_get_methods_before_storage` parametrized over `head`, `post`, `put`, `patch`, `delete`, and `options`. Patch `_public_media_resolver`; assert each non-GET returns 405 with `Allow: GET` and zero resolver/storage calls. Add `test_photo_media_response_close_before_iteration_closes_body` that calls `response.close()` before consuming `streaming_content`.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_views.py -k 'gallery or photo_media'`; expected RED is missing `gallery_photos`/`photo_media` route (404 or `NoReverseMatch`).
-- [ ] Implement the page query exactly as `Photo.objects.filter(event=event, src="", original_key__isnull=False).select_related("event").order_by("id")` only for free events, factory-map to tuple, and never touch storage.
-- [ ] Implement `_public_media_resolver()` exactly as `return PublicMediaResolver(storage=PrivateUploadStorage())`. Decorate `photo_media` with `@require_GET` so every other method returns 405 before event lookup or resolver construction. Validate variant; load published free event/scoped eligible photo; call `_public_media_resolver().resolve(...)` before response construction; map `ObjectMissing` to empty 404 and other `StorageError` to bodyless 503; pass `CloseableMediaIterator(...)` directly as `streaming_content`; set only the approved headers.
+- [x] Add page tests `test_event_detail_builds_ordered_gallery_without_storage` and `test_event_detail_excludes_legacy_other_event_and_paid_originals`. Add endpoint tests named for success headers, each 404 boundary, missing-object 404, storage 503, mid-stream closure, and `test_photo_media_rejects_non_get_methods_before_storage` parametrized over `head`, `post`, `put`, `patch`, `delete`, and `options`. Patch `_public_media_resolver`; assert each non-GET returns 405 with `Allow: GET` and zero resolver/storage calls. Add `test_photo_media_response_close_before_iteration_closes_body` that calls `response.close()` before consuming `streaming_content`.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_views.py -k 'gallery or photo_media'`; expected RED is missing `gallery_photos`/`photo_media` route (404 or `NoReverseMatch`).
+- [x] Implement the page query exactly as `Photo.objects.filter(event=event, src="", original_key__isnull=False).select_related("event").order_by("id")` only for free events, factory-map to tuple, and never touch storage.
+- [x] Implement `_public_media_resolver()` exactly as `return PublicMediaResolver(storage=PrivateUploadStorage())`. Decorate `photo_media` with `@require_GET` so every other method returns 405 before event lookup or resolver construction. Validate variant; load published free event/scoped eligible photo; call `_public_media_resolver().resolve(...)` before response construction; map `ObjectMissing` to empty 404 and other `StorageError` to bodyless 503; pass `CloseableMediaIterator(...)` directly as `streaming_content`; set only the approved headers.
 
   ```python
   def _public_media_resolver() -> PublicMediaResolver:
@@ -277,8 +292,8 @@ path(
       response["X-Content-Type-Options"] = "nosniff"
       return response
   ```
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_views.py -k 'gallery or photo_media'`; expected GREEN is all selected tests passed. Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py src/backend/picflow/tests/test_views.py src/backend/ingestion/tests/test_storage.py`; expected GREEN is all three modules passed.
-- [ ] Commit: `git add src/backend/config/views.py src/backend/config/urls.py src/backend/picflow/tests/test_views.py && git commit -m "feat: serve event-scoped gallery media"`.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_views.py -k 'gallery or photo_media'`; expected GREEN is all selected tests passed. Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py src/backend/picflow/tests/test_views.py src/backend/ingestion/tests/test_storage.py`; expected GREEN is all three modules passed.
+- [x] Commit: `git add src/backend/config/views.py src/backend/config/urls.py src/backend/picflow/tests/test_views.py && git commit -m "feat: serve event-scoped gallery media"`.
 
 ### Task 5: Markup and local GLightbox
 
@@ -286,13 +301,13 @@ path(
 
 **Interfaces:** Cards are `.gallery-card-link.glightbox`, `href=preview_media_large.url`, image `src=preview_media_small.url`, `data-gallery="event-photos"`; initializer options `{selector: ".event-gallery .glightbox", touchNavigation: true, loop: false}`.
 
-- [ ] Add Django tests `test_event_detail_gallery_markup_and_loading_policy` and `test_event_detail_empty_gallery_is_accessible`, plus Node tests `initializes GLightbox once with local gallery options` and `does nothing without root or GLightbox`. Assert the first four images are eager/high and later images lazy.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_views.py -k 'gallery_markup or empty_gallery'`; expected RED is missing `Фотографии`/gallery markup. Run `node --test tests/js/event-gallery.test.js`; expected RED is the initializer test failing to load absent `src/backend/static/ui/event-gallery.js`.
-- [ ] Pin `"glightbox": "3.3.1"` in devDependencies and run `npm install --package-lock-only`; expected GREEN is exit zero and lockfile version 3.3.1. Run `gallery_vendor_tmp="$(mktemp -d)"; npm pack glightbox@3.3.1 --pack-destination "$gallery_vendor_tmp"; tar -xzf "$gallery_vendor_tmp/glightbox-3.3.1.tgz" -C "$gallery_vendor_tmp"; cp "$gallery_vendor_tmp/package/dist/js/glightbox.min.js" src/backend/static/ui/glightbox.min.js; cp "$gallery_vendor_tmp/package/dist/css/glightbox.min.css" src/backend/static/ui/glightbox.min.css; cp "$gallery_vendor_tmp/package/LICENSE.md" src/backend/static/ui/GLIGHTBOX-LICENSE.txt`; expected GREEN is three nonempty destination files. Remove only the printed temporary directory after validating `package/package.json` says 3.3.1/MIT; commit no archive.
-- [ ] Append template markup using `{% for photo in gallery_photos %}` and `forloop.counter <= 4` for eager/high attributes, otherwise lazy; anchors use large URL and images small URL/alt. Add `{% block extra_js %}{% endblock %}` immediately before `</body>` in `ui/base.html` and override it in event detail to load local GLightbox then `event-gallery.js`. Implement the initializer with one DOM-ready call and the exact options above.
-- [ ] Add CSS with `aspect-ratio: 4 / 3`, `object-fit: cover`, explicit four/three/two/one column breakpoints, visible `:focus-visible`, 44px minimum interactive target, and `@media (prefers-reduced-motion: reduce)` transition/animation suppression.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_views.py -k 'gallery_markup or empty_gallery'`; expected GREEN is selected tests passed. Run `node --test tests/js/event-gallery.test.js`; expected GREEN is all tests passed. Run `SECRET_KEY=test DB_NAME=app DB_USER=app DB_PASSWORD=app DB_HOST=127.0.0.1 DB_PORT=5432 python src/backend/manage.py collectstatic --noinput`; expected GREEN includes successful collection and no manifest error.
-- [ ] Commit: `git add package.json package-lock.json src/backend/templates/catalog/event_detail.html src/backend/templates/ui/base.html src/backend/static/ui/catalog.css src/backend/static/ui/event-gallery.js src/backend/static/ui/glightbox.min.js src/backend/static/ui/glightbox.min.css src/backend/static/ui/GLIGHTBOX-LICENSE.txt src/backend/picflow/tests/test_views.py tests/js/event-gallery.test.js && git commit -m "feat: add accessible event gallery lightbox"`.
+- [x] Add Django tests `test_event_detail_gallery_markup_and_loading_policy` and `test_event_detail_empty_gallery_is_accessible`, plus Node tests `initializes GLightbox once with local gallery options` and `does nothing without root or GLightbox`. Assert the first four images are eager/high and later images lazy.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_views.py -k 'gallery_markup or empty_gallery'`; expected RED is missing `Фотографии`/gallery markup. Run `node --test tests/js/event-gallery.test.js`; expected RED is the initializer test failing to load absent `src/backend/static/ui/event-gallery.js`.
+- [x] Pin `"glightbox": "3.3.1"` in devDependencies and run `npm install --package-lock-only`; expected GREEN is exit zero and lockfile version 3.3.1. Run `gallery_vendor_tmp="$(mktemp -d)"; npm pack glightbox@3.3.1 --pack-destination "$gallery_vendor_tmp"; tar -xzf "$gallery_vendor_tmp/glightbox-3.3.1.tgz" -C "$gallery_vendor_tmp"; cp "$gallery_vendor_tmp/package/dist/js/glightbox.min.js" src/backend/static/ui/glightbox.min.js; cp "$gallery_vendor_tmp/package/dist/css/glightbox.min.css" src/backend/static/ui/glightbox.min.css; cp "$gallery_vendor_tmp/package/LICENSE.md" src/backend/static/ui/GLIGHTBOX-LICENSE.txt`; expected GREEN is three nonempty destination files. Remove only the printed temporary directory after validating `package/package.json` says 3.3.1/MIT; commit no archive.
+- [x] Append template markup using `{% for photo in gallery_photos %}` and `forloop.counter <= 4` for eager/high attributes, otherwise lazy; anchors use large URL and images small URL/alt. Add `{% block extra_js %}{% endblock %}` immediately before `</body>` in `ui/base.html` and override it in event detail to load local GLightbox then `event-gallery.js`. Implement the initializer with one DOM-ready call and the exact options above.
+- [x] Add CSS with `aspect-ratio: 4 / 3`, `object-fit: cover`, explicit four/three/two/one column breakpoints, visible `:focus-visible`, 44px minimum interactive target, and `@media (prefers-reduced-motion: reduce)` transition/animation suppression.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_views.py -k 'gallery_markup or empty_gallery'`; expected GREEN is selected tests passed. Run `node --test tests/js/event-gallery.test.js`; expected GREEN is all tests passed. Run `SECRET_KEY=test DB_NAME=app DB_USER=app DB_PASSWORD=app DB_HOST=127.0.0.1 DB_PORT=5432 python src/backend/manage.py collectstatic --noinput`; expected GREEN includes successful collection and no manifest error.
+- [x] Commit: `git add package.json package-lock.json src/backend/templates/catalog/event_detail.html src/backend/templates/ui/base.html src/backend/static/ui/catalog.css src/backend/static/ui/event-gallery.js src/backend/static/ui/glightbox.min.js src/backend/static/ui/glightbox.min.css src/backend/static/ui/GLIGHTBOX-LICENSE.txt src/backend/picflow/tests/test_views.py tests/js/event-gallery.test.js && git commit -m "feat: add accessible event gallery lightbox"`.
 
 ### Task 6: Browser and visual coverage
 
@@ -300,12 +315,12 @@ path(
 
 **Interfaces:** Add `/__visual__/event/gallery-populated/` and `gallery-empty/` named `visual_event_gallery_populated`/`empty`; fixtures match presentation values and use local static images only.
 
-- [ ] Add `test_visual_routes_have_deterministic_names_and_paths` entries and Playwright tests named `gallery supports keyboard navigation and focus restoration`, `gallery supports mobile swipe`, and `gallery fallback link works without JavaScript`, covering the exact interactions and a separate `javaScriptEnabled: false` context.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q tests/test_visual_reference.py -k 'routes or orm'`; expected RED identifies missing gallery route names. Add ORM-free frozen/mapping fixtures and exact populated/empty routes with local static images.
-- [ ] Run `DB_HOST=127.0.0.1 pytest -q tests/test_visual_reference.py -k 'routes or orm'`; expected GREEN is selected contract tests passed. Run `npm run test:visual`; expected RED reports exactly four missing gallery snapshot files while existing snapshots remain matched.
-- [ ] Run `npm run test:visual:update`; inspect all four at 1440x1000 and 390x844 for 4:3 layout, no overflow, empty state, IDs, and unchanged header. Correct/regenerate if needed.
-- [ ] Run `npm run test:visual`; expected GREEN is every interaction and snapshot passed with zero console/request/resource failures.
-- [ ] Commit: `git add tests/visual/views.py tests/visual/urls.py tests/visual/visual.spec.js tests/visual/visual.spec.js-snapshots tests/test_visual_reference.py && git commit -m "test: cover event gallery interactions and visuals"`.
+- [x] Add `test_visual_routes_have_deterministic_names_and_paths` entries and Playwright tests named `gallery supports keyboard navigation and focus restoration`, `gallery supports mobile swipe`, and `gallery fallback link works without JavaScript`, covering the exact interactions and a separate `javaScriptEnabled: false` context.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q tests/test_visual_reference.py -k 'routes or orm'`; expected RED identifies missing gallery route names. Add ORM-free frozen/mapping fixtures and exact populated/empty routes with local static images.
+- [x] Run `DB_HOST=127.0.0.1 pytest -q tests/test_visual_reference.py -k 'routes or orm'`; expected GREEN is selected contract tests passed. Run `npm run test:visual`; expected RED reports exactly four missing gallery snapshot files while existing snapshots remain matched.
+- [x] Run `npm run test:visual:update`; inspect all four at 1440x1000 and 390x844 for 4:3 layout, no overflow, empty state, IDs, and unchanged header. Correct/regenerate if needed.
+- [x] Run `npm run test:visual`; expected GREEN is every interaction and snapshot passed with zero console/request/resource failures.
+- [x] Commit: `git add tests/visual/views.py tests/visual/urls.py tests/visual/visual.spec.js tests/visual/visual.spec.js-snapshots tests/test_visual_reference.py && git commit -m "test: cover event gallery interactions and visuals"`.
 
 ### Task 7: Deployment propagation
 
@@ -357,7 +372,7 @@ path(
 - [ ] Run `pytest -q tests/deployment/test_deployment_scripts.py -k 'private_media'`; expected GREEN is selected tests passed. Run `pytest -q tests/deployment/test_deployment_scripts.py` and `sh -n deploy/apply-deployment.sh`; expected GREEN is full deployment tests passed and shell exit zero. Run `docker compose --env-file .env.example -f docker-compose.prod.yml -f docker-compose.https.yml config >/dev/null`; expected GREEN is exit zero for the existing Compose model.
 - [ ] Commit: `git add .github/workflows/deploy.yml .github/workflows/promote-production.yml deploy/apply-deployment.sh tests/deployment/test_deployment_scripts.py .env.example && git commit -m "ops: propagate private gallery media settings"`.
 
-### Task 8: Verification and repository truth
+### Task 8: Architecture and ADR reconciliation
 
 **Files:** Modify `docs/architecture.md`, `docs/product-jobs.md`, `docs/engineering-jobs.md`.
 
@@ -365,9 +380,14 @@ path(
 
 - [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_gallery.py src/backend/picflow/tests/test_views.py src/backend/ingestion/tests/test_storage.py tests/test_visual_reference.py tests/deployment/test_deployment_scripts.py`; expected GREEN is all selected modules passed.
 - [ ] Run `ruff format --check . && ruff check . && mypy`; expected GREEN is three zero exits. Run `python src/backend/manage.py check && python src/backend/manage.py makemigrations --check --dry-run`; expected GREEN is no system-check issue and `No changes detected`. Run `npm run test:js && npm run test:visual`; expected GREEN is all JS/visual tests passed.
+- [ ] Compare delivered behavior with the approved specification, accepted ADR 0015, all other
+  applicable ADRs, and `docs/architecture.md`.
 - [ ] Record only verified gallery/private-stream behavior. Update PJ-005 and matching engineering evidence without claiming derivatives, paid previews, downloads, commerce, or unperformed staging activation.
+- [ ] Stop for a new decision rather than contradicting an accepted ADR; supersede rather than
+  edit an accepted decision.
 - [ ] Run `git diff --check` and scan browser-facing files for original keys, credentials, and permanent S3 URLs; expect none.
 - [ ] Confirm status contains no migration, worker/broker, derivative/readiness schema, purchase behavior, or unrelated file.
+- [ ] Record the architecture and ADR reconciliation outcome in the pull request before push.
 - [ ] Commit: `git add docs/architecture.md docs/product-jobs.md docs/engineering-jobs.md && git commit -m "docs: record event gallery delivery evidence"`.
 
 ## Verification

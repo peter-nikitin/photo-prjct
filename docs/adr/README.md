@@ -34,5 +34,5 @@ place, and add the new record to this index.
 | 0012 | [Use Django photographer permissions](0012-use-django-photographer-permissions.md) | Accepted |
 | 0013 | [Use direct private Object Storage ingestion](0013-use-direct-private-object-storage-ingestion.md) | Accepted |
 | 0014 | [Keep Stage 2 ingestion request-driven](0014-keep-stage-2-ingestion-request-driven.md) | Accepted |
-| 0015 | [Allow anonymous free-event original delivery](0015-allow-anonymous-free-event-original-delivery.md) | Proposed |
+| 0015 | [Allow anonymous free-event original delivery](0015-allow-anonymous-free-event-original-delivery.md) | Accepted |
 | 0016 | [Allow deterministic staging reference media](0016-allow-deterministic-staging-reference-media.md) | Proposed |

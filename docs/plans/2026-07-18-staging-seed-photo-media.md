@@ -22,11 +22,26 @@
 ---
 
 - Date: 2026-07-18
-- Status: Draft
+- Status: Blocked — ADR 0016 is Proposed and not accepted
 - Owner: project maintainer
-- Related architecture: [Current architecture](../architecture.md#current-architecture--implemented), [Accepted constraints](../architecture.md#accepted-constraints), [Photo ingestion](../architecture.md#photo-ingestion-and-indexing)
-- Related ADRs: [0001](../adr/0001-django-modular-monolith.md), [0006](../adr/0006-yandex-object-storage-media.md), [0013](../adr/0013-use-direct-private-object-storage-ingestion.md), [0014](../adr/0014-keep-stage-2-ingestion-request-driven.md)
-- Approved specification: [Staging seed photo media design](../superpowers/specs/2026-07-18-staging-seed-photo-media-design.md)
+- Delivery disposition: Deferred to a separate future task where the design may change; no seed
+  implementation is authorized in the current gallery continuation.
+- Related specification: [Staging seed photo media design](../superpowers/specs/2026-07-18-staging-seed-photo-media-design.md)
+- Related architecture: [Current architecture — implemented](../architecture.md#current-architecture--implemented),
+  [Accepted constraints](../architecture.md#accepted-constraints),
+  [Target MVP architecture — proposed](../architecture.md#target-mvp-architecture--proposed),
+  [Photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing),
+  [Security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries),
+  [Evolution stages](../architecture.md#evolution-stages), and
+  [Open decisions](../architecture.md#open-decisions)
+- Related ADRs: [0002](../adr/0002-postgresql-system-of-record.md),
+  [0003](../adr/0003-docker-compose-yandex-cloud.md),
+  [0005](../adr/0005-promote-images-through-staging.md),
+  [0006](../adr/0006-yandex-object-storage-media.md),
+  [0013](../adr/0013-use-direct-private-object-storage-ingestion.md), and
+  [0016 (Proposed)](../adr/0016-allow-deterministic-staging-reference-media.md)
+- ADR impact: Requires accepted ADR 0016 — the deterministic staging reference-media exception is
+  not authoritative while ADR 0016 remains Proposed.
 
 ## Scope
 
@@ -272,7 +287,7 @@ client.put_object(
 - [ ] Run `pytest -q tests/deployment/test_reference_photo_uploader.py -k 'apply or race or forbidden or conditional'`; expected GREEN is all selected safety/race tests passed. Run `pytest -q tests/deployment/test_reference_photo_uploader.py`; expected GREEN is the full uploader module passed.
 - [ ] Commit: `git add deploy/upload_reference_photos.py tests/deployment/test_reference_photo_uploader.py && git commit -m "feat: conditionally upload reference photo media"`.
 
-### Task 8: Verification and non-mutating handoff
+### Task 8: Architecture and ADR reconciliation
 
 **Files:** Modify `README.md`, `docs/architecture.md`.
 
@@ -280,10 +295,15 @@ client.put_object(
 
 - [ ] Run `DB_HOST=127.0.0.1 pytest -q src/backend/picflow/tests/test_reference_photos.py src/backend/picflow/tests/test_seed_reference_photos.py src/backend/ingestion/tests/test_settings.py tests/deployment/test_entrypoint.py tests/deployment/test_reference_photo_uploader.py tests/deployment/test_deployment_scripts.py`; expected GREEN is every selected module passed.
 - [ ] Run `ruff format --check . && ruff check . && mypy`; expected GREEN is three zero exits. Run `python src/backend/manage.py check && python src/backend/manage.py makemigrations --check --dry-run`; expected GREEN is no issue and `No changes detected`.
+- [ ] Compare delivered behavior with the approved specification, accepted ADR 0016, ADR 0013's
+  normal-ingestion boundary, all other applicable ADRs, and `docs/architecture.md`.
 - [ ] Document exact dry-run, explicit DB command, opt-in flag, and `--revert`; warn that `--apply` needs future fresh scope display/confirmation.
 - [ ] Record only implemented mechanisms, not uploaded objects, enabled staging, live gallery, or production rows.
+- [ ] Stop for a new decision rather than contradicting an accepted ADR; supersede rather than
+  edit an accepted decision.
 - [ ] Run `git diff --check && test -z "$(git diff -- src/backend/picflow/migrations)"`; expected GREEN is exit zero and empty migration diff. Run `rg -n 'delete_object|copy_object|create_multipart_upload|put_object' deploy/upload_reference_photos.py`; expected output is exactly the reviewed conditional `put_object` call and no forbidden call.
 - [ ] Run `git status --short`; expected scope contains no asset/credential/.env, fixture deletion, worker/broker, derivative/readiness, or unrelated file.
+- [ ] Record the architecture and ADR reconciliation outcome in the pull request before push.
 - [ ] Commit: `git add README.md docs/architecture.md && git commit -m "docs: describe safe reference photo seeding"`.
 
 ## Verification
@@ -322,4 +342,6 @@ Expected: pinned sources validate and thirteen HEADs report `skip` or `would-cre
 
 ## Open questions
 
-- None.
+- Acceptance gate: ADR 0016 remains Proposed. Before this deferred plan can be resumed, the project
+  maintainer must explicitly accept ADR 0016's exact decision, and the separate future task must
+  confirm whether the approved seed design is still the desired implementation.

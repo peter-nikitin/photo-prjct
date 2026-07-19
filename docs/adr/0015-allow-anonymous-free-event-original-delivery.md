@@ -1,6 +1,6 @@
 # 0015: Allow anonymous free-event original delivery
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-19
 - Deciders: project maintainers
 - Supersedes: none

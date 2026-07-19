@@ -271,6 +271,7 @@ def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     dockerfile = (ROOT / "Dockerfile.visual-tests").read_text(encoding="utf-8")
     compose = yaml.safe_load((ROOT / "docker-compose.visual.yml").read_text(encoding="utf-8"))
+    visual_service = compose["services"]["visual-tests"]
 
     assert package["scripts"]["test:visual"] == "sh tests/visual/run-in-container.sh test"
     assert package["scripts"]["test:visual:update"] == (
@@ -280,7 +281,16 @@ def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
     assert "python:3.12-slim-bookworm@sha256:" in dockerfile
     assert "node:22-bookworm-slim@sha256:" in dockerfile
     assert "npx playwright install --with-deps chromium" in dockerfile
-    assert compose["services"]["visual-tests"]["depends_on"]["postgres"]["condition"] == (
-        "service_healthy"
-    )
-    assert compose["services"]["visual-tests"]["environment"]["CI"] == "${CI:-false}"
+    assert "COPY . ." not in dockerfile
+    assert visual_service["image"] == "${VISUAL_TEST_IMAGE:-photo-prjct-visual-deps:local}"
+    assert set(visual_service["volumes"]) == {
+        "./src:/workspace/src:ro",
+        "./tests:/workspace/tests:ro",
+        "./package.json:/workspace/package.json:ro",
+        "./playwright.config.js:/workspace/playwright.config.js:ro",
+        "./tests/visual/visual.spec.js-snapshots:/workspace/tests/visual/visual.spec.js-snapshots",
+        "./playwright-report:/workspace/playwright-report",
+        "./test-results:/workspace/test-results",
+    }
+    assert visual_service["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert visual_service["environment"]["CI"] == "${CI:-false}"

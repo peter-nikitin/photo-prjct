@@ -17,7 +17,7 @@ from django.test import (
 )
 from django.urls import reverse
 from django.utils import timezone
-from ingestion.storage import ObjectMissing, StorageError
+from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 
 from picflow.gallery import CloseableMediaIterator, ResolvedPublicMedia
 from picflow.models import Event, Photo
@@ -520,6 +520,40 @@ class GalleryMediaViewTests(TransactionTestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.content, b"")
+
+    def test_photo_media_returns_sanitized_503_for_storage_constructor_value_error(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event)
+        private_detail = "invalid endpoint: https://private.example.test"
+
+        with (
+            patch(
+                "config.views.PrivateUploadStorage", side_effect=ValueError(private_detail)
+            ) as storage_class,
+            patch("config.views.PublicMediaResolver") as resolver_class,
+        ):
+            response = self.client.get(self.media_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.content, b"")
+        self.assertNotIn(private_detail, str(response.headers))
+        storage_class.assert_called_once_with()
+        resolver_class.assert_not_called()
+
+    def test_photo_media_returns_sanitized_503_for_invalid_final_key(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event, original_key="private/final-key-detail")
+        s3_client = Mock()
+        storage = PrivateUploadStorage(client=s3_client)
+
+        with patch("config.views.PrivateUploadStorage", return_value=storage) as storage_class:
+            response = self.client.get(self.media_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.content, b"")
+        self.assertNotIn("private/final-key-detail", str(response.headers))
+        storage_class.assert_called_once_with()
+        s3_client.get_object.assert_not_called()
 
     def test_photo_media_closes_body_after_mid_stream_failure(self) -> None:
         event = self.make_event()

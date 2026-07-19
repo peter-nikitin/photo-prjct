@@ -59,7 +59,7 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
         media = _public_media_resolver().resolve(photo=photo, variant=variant)
     except ObjectMissing:
         return HttpResponse(status=404)
-    except StorageError:
+    except (StorageError, ValueError):
         return HttpResponse(status=503)
     stream = CloseableMediaIterator(media=media, event_slug=event.slug, photo_id=photo.pk)
     response = StreamingHttpResponse(stream, content_type=media.content_type)

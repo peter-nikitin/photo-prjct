@@ -1,11 +1,25 @@
 from datetime import date, timedelta
 from html.parser import HTMLParser
+from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
+from uuid import uuid4
 
-from django.test import SimpleTestCase, TestCase, modify_settings, override_settings
+from config import views
+from django.contrib.auth import get_user_model
+from django.test import (
+    RequestFactory,
+    SimpleTestCase,
+    TestCase,
+    TransactionTestCase,
+    modify_settings,
+    override_settings,
+)
 from django.urls import reverse
+from django.utils import timezone
+from ingestion.storage import ObjectMissing, StorageError
 
-from picflow.models import Event
+from picflow.gallery import CloseableMediaIterator, ResolvedPublicMedia
+from picflow.models import Event, Photo
 
 
 class NavigationMarkupParser(HTMLParser):
@@ -197,3 +211,264 @@ class PageTests(TestCase):
 
                 self.assertTrue(unfinished_targets.isdisjoint(navigation_paths))
                 self.assertNotIn("search", markup.input_types)
+
+
+class GalleryPageTests(TestCase):
+    def setUp(self) -> None:
+        Event.objects.update(publication_status=Event.PublicationStatus.DRAFT)
+        self.photographer = get_user_model().objects.create_user(username="gallery-photo")
+
+    def make_event(self, **overrides):
+        values = {
+            "name": "City Run",
+            "slug": "city-run",
+            "start_date": date.today(),
+            "end_date": date.today(),
+            "city": "Moscow",
+            "publication_status": Event.PublicationStatus.PUBLISHED,
+        }
+        values.update(overrides)
+        return Event.objects.create(**values)
+
+    def make_private_photo(self, event: Event, **overrides) -> Photo:
+        values = {
+            "id": uuid4().hex,
+            "event": event,
+            "src": "",
+            "uploaded_by": self.photographer,
+            "original_key": f"originals/{uuid4().hex}",
+            "original_filename": "race.jpg",
+            "original_size": 4,
+            "original_content_type": "image/jpeg",
+            "uploaded_at": timezone.now(),
+        }
+        values.update(overrides)
+        return Photo.objects.create(**values)
+
+    @patch("config.views.PrivateUploadStorage")
+    def test_event_detail_builds_ordered_gallery_without_storage(self, storage_class) -> None:
+        event = self.make_event()
+        later = self.make_private_photo(event, id="photo-2")
+        earlier = self.make_private_photo(event, id="photo-1")
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            tuple(item.photo_id for item in response.context["gallery_photos"]),
+            (earlier.id, later.id),
+        )
+        self.assertEqual(
+            response.context["gallery_photos"][0].preview_media_small.url,
+            reverse(
+                "photo_media",
+                kwargs={"slug": event.slug, "photo_id": earlier.id, "variant": "preview-small"},
+            ),
+        )
+        storage_class.assert_not_called()
+
+    def test_event_detail_excludes_legacy_other_event_and_paid_originals(self) -> None:
+        event = self.make_event()
+        included = self.make_private_photo(event, id="included")
+        Photo.objects.create(id="legacy", event=event, src="photos/legacy.jpg")
+        other_event = self.make_event(name="Other", slug="other")
+        self.make_private_photo(other_event, id="other")
+        paid_event = self.make_event(name="Paid", slug="paid", access_type=Event.AccessType.PAID)
+        self.make_private_photo(paid_event, id="paid")
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+        paid_response = self.client.get(reverse("event_detail", kwargs={"slug": paid_event.slug}))
+
+        self.assertEqual(
+            tuple(item.photo_id for item in response.context["gallery_photos"]), (included.id,)
+        )
+        self.assertEqual(paid_response.context["gallery_photos"], ())
+
+
+class _ReadableBody:
+    def __init__(self, chunks: list[bytes | Exception]) -> None:
+        self._chunks = iter(chunks)
+        self.close_calls = 0
+
+    def read(self, amt: int | None = None) -> bytes:  # noqa: ARG002
+        chunk = next(self._chunks)
+        if isinstance(chunk, Exception):
+            raise chunk
+        return chunk
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class GalleryMediaViewTests(TransactionTestCase):
+    def setUp(self) -> None:
+        Event.objects.update(publication_status=Event.PublicationStatus.DRAFT)
+        self.photographer = get_user_model().objects.create_user(username="gallery-media")
+
+    def make_event(self, **overrides):
+        values = {
+            "name": "City Run",
+            "slug": "city-run",
+            "start_date": date.today(),
+            "end_date": date.today(),
+            "city": "Moscow",
+            "publication_status": Event.PublicationStatus.PUBLISHED,
+        }
+        values.update(overrides)
+        return Event.objects.create(**values)
+
+    def make_private_photo(self, event: Event, **overrides) -> Photo:
+        values = {
+            "id": uuid4().hex,
+            "event": event,
+            "src": "",
+            "uploaded_by": self.photographer,
+            "original_key": f"originals/{uuid4().hex}",
+            "original_filename": "race.jpg",
+            "original_size": 4,
+            "original_content_type": "image/jpeg",
+            "uploaded_at": timezone.now(),
+        }
+        values.update(overrides)
+        return Photo.objects.create(**values)
+
+    def media_url(self, *, event: Event, photo: Photo, variant: str = "preview-small") -> str:
+        return reverse(
+            "photo_media",
+            kwargs={"slug": event.slug, "photo_id": photo.id, "variant": variant},
+        )
+
+    def test_photo_media_success_sets_approved_headers(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event, id="photo-42")
+        body = _ReadableBody([b"photo", b""])
+        resolver = Mock()
+        resolver.resolve.return_value = ResolvedPublicMedia(body, 5, "image/jpeg", "jpg")
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = views.photo_media(
+                RequestFactory().get(self.media_url(event=event, photo=photo)),
+                event.slug,
+                photo.id,
+                "preview-small",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsInstance(response._iterator, CloseableMediaIterator)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        self.assertEqual(response["Content-Length"], "5")
+        self.assertEqual(response["Content-Disposition"], 'inline; filename="photo-photo-42.jpg"')
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(b"".join(response.streaming_content), b"photo")
+        self.assertEqual(body.close_calls, 1)
+        resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
+
+    def test_photo_media_returns_404_for_unknown_variant_before_storage(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event)
+
+        with patch("config.views._public_media_resolver") as resolver_factory:
+            response = self.client.get(self.media_url(event=event, photo=photo, variant="original"))
+
+        self.assertEqual(response.status_code, 404)
+        resolver_factory.assert_not_called()
+
+    def test_photo_media_returns_404_for_unpublished_or_paid_event(self) -> None:
+        for event in (
+            self.make_event(
+                name="Draft", slug="draft", publication_status=Event.PublicationStatus.DRAFT
+            ),
+            self.make_event(name="Paid", slug="paid", access_type=Event.AccessType.PAID),
+        ):
+            with self.subTest(event=event.slug):
+                photo = self.make_private_photo(event)
+                with patch("config.views._public_media_resolver") as resolver_factory:
+                    response = self.client.get(self.media_url(event=event, photo=photo))
+
+                self.assertEqual(response.status_code, 404)
+                resolver_factory.assert_not_called()
+
+    def test_photo_media_returns_404_for_legacy_or_other_event_photo(self) -> None:
+        event = self.make_event()
+        other_event = self.make_event(name="Other", slug="other")
+        other_photo = self.make_private_photo(other_event, id="other")
+        legacy = Photo.objects.create(id="legacy", event=event, src="photos/legacy.jpg")
+
+        for photo in (other_photo, legacy):
+            with self.subTest(photo=photo.id):
+                with patch("config.views._public_media_resolver") as resolver_factory:
+                    response = self.client.get(self.media_url(event=event, photo=photo))
+
+                self.assertEqual(response.status_code, 404)
+                resolver_factory.assert_not_called()
+
+    def test_photo_media_returns_404_when_storage_object_is_missing(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event)
+        resolver = Mock()
+        resolver.resolve.side_effect = ObjectMissing()
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(self.media_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.content, b"")
+
+    def test_photo_media_returns_503_for_storage_error(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event)
+        resolver = Mock()
+        resolver.resolve.side_effect = StorageError()
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(self.media_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.content, b"")
+
+    def test_photo_media_closes_body_after_mid_stream_failure(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event)
+        body = _ReadableBody([b"first", RuntimeError("S3 secret")])
+        resolver = Mock()
+        resolver.resolve.return_value = ResolvedPublicMedia(body, 5, "image/jpeg", "jpg")
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(self.media_url(event=event, photo=photo))
+
+        self.assertEqual(list(response.streaming_content), [b"first"])
+        self.assertEqual(body.close_calls, 1)
+
+    def test_photo_media_response_close_before_iteration_closes_body(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event)
+        body = _ReadableBody([])
+        resolver = Mock()
+        resolver.resolve.return_value = ResolvedPublicMedia(body, 0, "image/jpeg", "jpg")
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(self.media_url(event=event, photo=photo))
+
+        response.close()
+
+        self.assertEqual(body.close_calls, 1)
+        self.assertEqual(list(response.streaming_content), [])
+
+    def test_photo_media_rejects_non_get_methods_before_storage(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event)
+        url = self.media_url(event=event, photo=photo)
+
+        for method in ("head", "post", "put", "patch", "delete", "options"):
+            with (
+                self.subTest(method=method),
+                patch("config.views._public_media_resolver") as resolver_factory,
+                patch("config.views.PrivateUploadStorage") as storage_class,
+            ):
+                response = getattr(self.client, method)(url)
+
+                self.assertEqual(response.status_code, 405)
+                self.assertEqual(response["Allow"], "GET")
+                resolver_factory.assert_not_called()
+                storage_class.assert_not_called()

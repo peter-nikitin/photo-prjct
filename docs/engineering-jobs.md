@@ -55,9 +55,9 @@ contract, so I can reproduce production-relevant behavior locally.
 
 ### EJ-002 — Contributor — Receive complete CI feedback
 
-When I push a change or open a pull request, I want formatting, lint, types, PostgreSQL tests,
+When I update a pull request or `main` advances, I want formatting, lint, types, PostgreSQL tests,
 migrations, Django checks, and visual regression to run automatically, so I can detect regressions
-before merge.
+before merge and validate the integrated branch.
 
 Pull requests run through the `pull_request` trigger, while branch-push validation is limited to
 `main`. Updating a feature branch therefore does not create a duplicate push run alongside its pull
@@ -100,7 +100,7 @@ back to a local build. A separate main-only workflow publishes a new keyed image
 Dockerfile or dependency lock files change; pull requests never receive package write permission.
 
 - Status: Validated
-- Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), [`tests/visual/run-in-container.sh`](../tests/visual/run-in-container.sh), [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
+- Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml), [`tests/visual/run-in-container.sh`](../tests/visual/run-in-container.sh), [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
 - Last updated: 2026-07-19
 
 ### EJ-006 — Maintainer — Promote the staging-verified image

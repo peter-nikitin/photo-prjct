@@ -1,9 +1,9 @@
 # CI visual-test prebuilt image design
 
-**Status:** Approved for planning  
-**Date:** 2026-07-19  
-**Related architecture:** `docs/architecture.md` — Current architecture, Accepted constraints  
-**Related ADRs:** ADR 0003, ADR 0005  
+**Status:** Approved for planning
+**Date:** 2026-07-19
+**Related architecture:** `docs/architecture.md` — Current architecture, Accepted constraints
+**Related ADRs:** ADR 0003, ADR 0005
 **ADR impact:** Conforms to ADR 0003 and ADR 0005
 
 ## Outcome

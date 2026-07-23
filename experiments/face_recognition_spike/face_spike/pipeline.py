@@ -6,7 +6,7 @@ from typing import Literal, Protocol, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from face_spike.domain import LoadedImage
+from face_spike.domain import ErrorCode, LoadedImage
 
 
 @dataclass(frozen=True)
@@ -69,14 +69,17 @@ class FaceEmbedding:
         return isinstance(other, FaceEmbedding) and np.array_equal(self.vector, other.vector)
 
 
-AnalysisStatus = Literal[
-    "ok",
-    "no_detection",
-    "detection_failed",
-    "alignment_failed",
-    "embedding_failed",
-    "invalid_embedding",
-]
+AnalysisStatus = (
+    Literal[
+        "ok",
+        "no_detection",
+        "detection_failed",
+        "alignment_failed",
+        "embedding_failed",
+        "invalid_embedding",
+    ]
+    | ErrorCode
+)
 ProcessingErrorCode = Literal[
     "detection_failed",
     "alignment_failed",

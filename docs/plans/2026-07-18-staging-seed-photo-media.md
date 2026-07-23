@@ -142,6 +142,7 @@ class ReferencePhotoSeed:
   def add_arguments(self, parser: CommandParser) -> None:
       parser.add_argument("--database", default=DEFAULT_DB_ALIAS)
 
+
   def handle(self, *args: object, **options: object) -> None:
       database = cast(str, options["database"])
       with transaction.atomic(using=database):
@@ -167,14 +168,17 @@ class ReferencePhotoSeed:
   ```python
   def _user_has_any_relation(*, user: Model, database: str) -> bool:
       for relation in user._meta.related_objects:
-          if relation.related_model._base_manager.using(database).filter(
-              **{relation.field.name: user}
-          ).exists():
+          if (
+              relation.related_model._base_manager.using(database)
+              .filter(**{relation.field.name: user})
+              .exists()
+          ):
               return True
       for field in user._meta.local_many_to_many:
           if getattr(user, field.name).using(database).exists():
               return True
       return False
+
 
   uploader_deleted = False
   if not _user_has_any_relation(user=uploader, database=database):
@@ -247,6 +251,7 @@ class PreparedReferencePhoto:
   reference_photos = importlib.import_module("picflow.reference_photos")
   ReferencePhotoSeed = reference_photos.ReferencePhotoSeed
   REFERENCE_PHOTOS = reference_photos.REFERENCE_PHOTOS
+
 
   def main(argv: Sequence[str] | None = None) -> int:
       args = parse_args(argv)

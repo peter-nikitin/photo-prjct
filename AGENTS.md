@@ -41,3 +41,14 @@ photographers and operators publish and manage event photos.
   verification may the root controller stage the exact task files and create one task commit.
 - A task must not receive intermediate implementation or review-fix commits; all approved task
   changes are consolidated into that single final commit.
+
+## Subagent model selection
+
+- A subagent whose primary role is writing or modifying code must use a model one capability tier
+  below the root controller's model by default.
+- The root controller selects reviewer models independently according to the size, complexity, and
+  risk of the diff; the lower-tier implementer rule does not automatically apply to reviewers.
+- The root controller may use the same or a higher-capability model for implementation only when
+  the task has exceptional complexity or risk. State the reason before dispatching that implementer.
+- Model selection must be explicit in every implementer and reviewer dispatch; do not rely on
+  inherited defaults.

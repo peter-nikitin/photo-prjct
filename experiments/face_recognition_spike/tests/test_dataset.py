@@ -136,6 +136,25 @@ def test_load_labels_rejects_duplicates_and_missing_files(
     )
 
 
+def test_load_labels_rejects_header_only_file(tmp_path: Path) -> None:
+    assert_error(
+        "invalid_labels",
+        lambda: load_labels(write_labels(tmp_path / "labels.csv", []), tmp_path),
+    )
+
+
+@pytest.mark.parametrize("filename", ["photo.png", "PHOTO.PNG"])
+def test_load_labels_rejects_existing_unsupported_extensions(tmp_path: Path, filename: str) -> None:
+    (tmp_path / filename).write_bytes(b"not an image")
+
+    assert_error(
+        "invalid_labels",
+        lambda: load_labels(
+            write_labels(tmp_path / "labels.csv", [f"{filename},rider-01,yes"]), tmp_path
+        ),
+    )
+
+
 @pytest.mark.parametrize("filename", ["/outside.jpg", "../outside.jpg"])
 def test_load_labels_rejects_absolute_and_parent_traversal_paths(
     tmp_path: Path, filename: str

@@ -155,6 +155,20 @@ def test_load_labels_rejects_existing_unsupported_extensions(tmp_path: Path, fil
     )
 
 
+def test_load_labels_rejects_png_symlink_to_an_in_root_jpeg(
+    tmp_path: Path, make_jpeg: Callable[..., Path]
+) -> None:
+    make_jpeg("photo.jpg")
+    (tmp_path / "alias.png").symlink_to(tmp_path / "photo.jpg")
+
+    assert_error(
+        "invalid_labels",
+        lambda: load_labels(
+            write_labels(tmp_path / "labels.csv", ["alias.png,rider-01,yes"]), tmp_path
+        ),
+    )
+
+
 @pytest.mark.parametrize("filename", ["/outside.jpg", "../outside.jpg"])
 def test_load_labels_rejects_absolute_and_parent_traversal_paths(
     tmp_path: Path, filename: str

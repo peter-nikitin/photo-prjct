@@ -75,7 +75,7 @@ def _parse_row(row: dict[str, str | None], root: Path) -> DatasetItem:
         raise DatasetError("invalid_labels")
 
     candidate = _resolve_candidate(filename, root)
-    if candidate.suffix.lower() not in _JPEG_EXTENSIONS or not candidate.is_file():
+    if Path(filename).suffix.lower() not in _JPEG_EXTENSIONS or not candidate.is_file():
         raise DatasetError("invalid_labels")
     return DatasetItem(
         filename=filename,

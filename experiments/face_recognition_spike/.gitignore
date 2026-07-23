@@ -1,0 +1,7 @@
+/input/
+/models/
+/runs/
+/labels.csv
+*.onnx
+__pycache__/
+.pytest_cache/

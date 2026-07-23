@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,12 +26,8 @@ class ExperimentResult(Protocol):
     unexpected_labelled_image_failures: int
 
 
-class ExperimentUnavailableError(Exception):
-    """Raised until the later orchestration task supplies the experiment runner."""
-
-
 def run_experiment(config: RunConfig) -> ExperimentResult:
-    raise ExperimentUnavailableError("Experiment orchestration is implemented in a later task.")
+    raise NotImplementedError("Experiment orchestration is implemented in a later task.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,13 +63,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_image_dimension=arguments.max_image_dimension,
             max_image_pixels=arguments.max_image_pixels,
         )
-        if config.output.exists():
+        if os.path.lexists(config.output):
             parser.error(f"output path already exists: {config.output}")
     except SystemExit as error:
         return int(error.code)
 
-    try:
-        result = run_experiment(config)
-    except ExperimentUnavailableError:
-        return 2
+    result = run_experiment(config)
     return 3 if result.unexpected_labelled_image_failures else 0

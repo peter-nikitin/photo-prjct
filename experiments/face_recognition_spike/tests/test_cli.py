@@ -55,6 +55,20 @@ def test_existing_output_is_rejected_before_experiment_initialization(
     assert cli.main(valid_run_arguments(output)) == 2
 
 
+def test_dangling_output_symlink_is_rejected_before_experiment_initialization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "dangling-run"
+    output.symlink_to(tmp_path / "missing-run")
+
+    def initialization_must_not_run(config: object) -> object:
+        pytest.fail(f"run_experiment was called with {config!r}")
+
+    monkeypatch.setattr(cli, "run_experiment", initialization_must_not_run)
+
+    assert cli.main(valid_run_arguments(output)) == 2
+
+
 def test_run_uses_documented_default_limits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -83,14 +97,3 @@ def test_run_returns_three_for_unexpected_labelled_image_failures(
     monkeypatch.setattr(cli, "run_experiment", lambda config: result)
 
     assert cli.main(valid_run_arguments(tmp_path / "new-run")) == 3
-
-
-def test_run_returns_two_when_orchestration_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    def raise_unavailable(config: object) -> object:
-        raise cli.ExperimentUnavailableError
-
-    monkeypatch.setattr(cli, "run_experiment", raise_unavailable)
-
-    assert cli.main(valid_run_arguments(tmp_path / "new-run")) == 2

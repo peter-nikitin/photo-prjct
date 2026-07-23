@@ -214,6 +214,15 @@ def test_load_image_rejects_unsupported_extensions(tmp_path: Path) -> None:
     assert_error("unsupported_image", lambda: load_image(item("photo.png"), tmp_path, limits()))
 
 
+def test_load_image_rejects_png_symlink_to_an_in_root_jpeg(
+    tmp_path: Path, make_jpeg: Callable[..., Path]
+) -> None:
+    make_jpeg("photo.jpg")
+    (tmp_path / "alias.png").symlink_to(tmp_path / "photo.jpg")
+
+    assert_error("unsupported_image", lambda: load_image(item("alias.png"), tmp_path, limits()))
+
+
 def test_load_image_applies_exif_orientation_six_and_returns_contiguous_rgb_and_bgr(
     tmp_path: Path, make_jpeg: Callable[..., Path]
 ) -> None:

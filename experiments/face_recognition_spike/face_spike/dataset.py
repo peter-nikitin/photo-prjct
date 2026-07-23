@@ -38,7 +38,7 @@ def load_labels(path: Path, photo_root: Path) -> tuple[DatasetItem, ...]:
 
 def load_image(item: DatasetItem, photo_root: Path, limits: ImageLimits) -> LoadedImage:
     candidate = _resolve_candidate(item.filename, photo_root.resolve())
-    if candidate.suffix.lower() not in _JPEG_EXTENSIONS:
+    if Path(item.filename).suffix.lower() not in _JPEG_EXTENSIONS:
         raise DatasetError("unsupported_image")
     if not candidate.is_file():
         raise DatasetError("invalid_labels")

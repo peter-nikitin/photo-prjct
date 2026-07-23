@@ -34,10 +34,20 @@ class ImageLimits:
 @dataclass(frozen=True)
 class LoadedImage:
     item: DatasetItem
-    rgb: NDArray[np.uint8]
-    bgr: NDArray[np.uint8]
+    rgb: NDArray[np.uint8] | None
+    bgr: NDArray[np.uint8] | None
     width: int
     height: int
+
+    def without_pixels(self) -> LoadedImage:
+        """Retain only evidence metadata after image-derived artifacts are written."""
+        return LoadedImage(
+            item=self.item,
+            rgb=None,
+            bgr=None,
+            width=self.width,
+            height=self.height,
+        )
 
 
 ErrorCode = Literal[

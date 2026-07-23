@@ -54,43 +54,51 @@ class ExperimentConfigurationError(Exception):
 
 def run_experiment(config: RunConfig) -> ExperimentResult:
     """Run one complete local experiment, recording recoverable image failures as evidence."""
-    from face_spike.artifacts import ExperimentResult, write_run
+    from face_spike.artifacts import ExperimentResult, RunArtifactWriter
 
     limits, items = _validate_inputs(config)
     progress = _RunProgress(_ACTIVE_LOG.get())
     detector, recognizer = _initialize_models(config, progress)
+    writer = RunArtifactWriter(config.output)
     started_at = datetime.now(UTC)
     progress.start_processing(len(items))
     durations: dict[str, float] = {"decode": 0.0, "detection": 0.0, "embedding": 0.0}
     timed_detector = _TimedDetector(detector, durations)
     timed_recognizer = _TimedRecognizer(recognizer, durations)
     analyses: list[ImageAnalysis] = []
-    for index, item in enumerate(items, start=1):
-        analysis = _analyze_item(
-            item, config.photos, limits, timed_detector, timed_recognizer, config, durations
+    try:
+        for index, item in enumerate(items, start=1):
+            source_analysis = _analyze_item(
+                item, config.photos, limits, timed_detector, timed_recognizer, config, durations
+            )
+            writer.write_diagnostics(source_analysis)
+            analysis = _without_pixels(source_analysis)
+            del source_analysis
+            analyses.append(analysis)
+            progress.item_processed(index, len(items), analysis)
+        completed_analyses = tuple(analyses)
+        unexpected_failures = sum(
+            analysis.image.item.face_expected.value == "yes"
+            and analysis.status not in {"ok", "no_detection"}
+            for analysis in completed_analyses
         )
-        analyses.append(analysis)
-        progress.item_processed(index, len(items), analysis)
-    completed_analyses = tuple(analyses)
-    unexpected_failures = sum(
-        analysis.image.item.face_expected.value == "yes"
-        and analysis.status not in {"ok", "no_detection"}
-        for analysis in completed_analyses
-    )
-    result = ExperimentResult(
-        config=config,
-        analyses=completed_analyses,
-        retrieval=evaluate_retrieval(completed_analyses, config.top_k),
-        started_at=started_at,
-        finished_at=datetime.now(UTC),
-        durations=durations,
-        unexpected_labelled_image_failures=unexpected_failures,
-        dependency_versions=_dependency_versions(),
-    )
-    progress.writing_artifacts()
-    write_run(config.output, result)
-    progress.completed(config.output)
-    return result
+        result = ExperimentResult(
+            config=config,
+            analyses=completed_analyses,
+            retrieval=evaluate_retrieval(completed_analyses, config.top_k),
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            durations=durations,
+            unexpected_labelled_image_failures=unexpected_failures,
+            dependency_versions=_dependency_versions(),
+        )
+        progress.writing_artifacts()
+        writer.finish(result)
+        progress.completed(config.output)
+        return result
+    except Exception:
+        writer.abort()
+        raise
 
 
 def _validate_inputs(config: RunConfig) -> tuple[ImageLimits, tuple[DatasetItem, ...]]:
@@ -165,6 +173,16 @@ def _failed_image_analysis(item: DatasetItem, status: ErrorCode) -> ImageAnalysi
         primary_detection=None,
         embedding=None,
         status=status,
+    )
+
+
+def _without_pixels(analysis: ImageAnalysis) -> ImageAnalysis:
+    return ImageAnalysis(
+        image=analysis.image.without_pixels(),
+        detections=analysis.detections,
+        primary_detection=analysis.primary_detection,
+        embedding=analysis.embedding,
+        status=analysis.status,
     )
 
 

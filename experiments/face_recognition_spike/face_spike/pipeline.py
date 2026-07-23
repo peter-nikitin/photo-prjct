@@ -126,6 +126,8 @@ def analyze_image(
 ) -> ImageAnalysis:
     if min_face_px < 1:
         raise ValueError("min_face_px must be positive")
+    if image.bgr is None:
+        raise ValueError("loaded image pixels are required for analysis")
 
     try:
         detected = detector.detect(image.bgr)

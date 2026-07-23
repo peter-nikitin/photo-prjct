@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import gc
+import weakref
 from pathlib import Path
 from typing import get_args
 
@@ -183,6 +185,37 @@ def test_run_processes_filename_order_and_writes_complete_evidence_after_partial
     assert all(
         path.read_bytes() not in source_jpeg_bytes for path in output.rglob("*") if path.is_file()
     )
+
+
+def test_run_releases_source_pixel_arrays_after_writing_each_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    photos = tmp_path / "photos"
+    for filename in ("alpha.jpg", "bravo.jpg", "charlie.jpg"):
+        make_jpeg(photos / filename, size=(80, 60))
+    labels = _write_labels(
+        photos,
+        [(filename, "rider-a", "yes") for filename in ("alpha.jpg", "bravo.jpg", "charlie.jpg")],
+    )
+    _install_fakes(monkeypatch)
+    pixel_arrays: list[weakref.ReferenceType[np.ndarray]] = []
+    original_load_image = cli.load_image
+
+    def record_pixel_arrays(*args: object, **kwargs: object) -> object:
+        assert all(reference() is None for reference in pixel_arrays)
+        image = original_load_image(*args, **kwargs)
+        pixel_arrays.extend((weakref.ref(image.rgb), weakref.ref(image.bgr)))
+        return image
+
+    monkeypatch.setattr(cli, "load_image", record_pixel_arrays)
+
+    result = cli.run_experiment(_config(tmp_path, photos, labels, tmp_path / "run"))
+
+    assert all(
+        analysis.image.rgb is None and analysis.image.bgr is None for analysis in result.analyses
+    )
+    gc.collect()
+    assert all(reference() is None for reference in pixel_arrays)
 
 
 def test_main_returns_zero_for_a_valid_no_face_result(

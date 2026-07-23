@@ -62,32 +62,70 @@ class ExperimentResult:
     dependency_versions: Mapping[str, str]
 
 
+class RunArtifactWriter:
+    """Write a run privately, then publish its complete directory atomically."""
+
+    def __init__(self, output: Path) -> None:
+        if os.path.lexists(output):
+            raise FileExistsError(output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        self.output = output
+        self._staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
+        try:
+            self._annotated = self._staging / "annotated"
+            self._crops = self._staging / "crops"
+            self._annotated.mkdir()
+            self._crops.mkdir()
+        except Exception:
+            self.abort()
+            raise
+
+    def write_diagnostics(self, analysis: ImageAnalysis) -> None:
+        try:
+            _write_diagnostic_images(self._annotated, self._crops, analysis)
+        except Exception:
+            self.abort()
+            raise
+
+    def finish(self, result: ExperimentResult) -> None:
+        try:
+            metrics = build_metrics(result)
+            _write_json_atomic(self._staging / "manifest.json", _manifest(result, metrics))
+            _write_csv_atomic(
+                self._staging / "detections.csv",
+                _DETECTION_HEADERS,
+                _detection_rows(result.analyses),
+            )
+            _write_csv_atomic(
+                self._staging / "retrieval.csv",
+                _RETRIEVAL_HEADERS,
+                _retrieval_rows(result.retrieval),
+            )
+            _write_json_atomic(self._staging / "metrics.json", metrics)
+            from face_spike.report import render_report
+
+            _write_text_atomic(self._staging / "report.html", render_report(result, metrics))
+            if os.path.lexists(self.output):
+                raise FileExistsError(self.output)
+            os.replace(self._staging, self.output)
+        except Exception:
+            self.abort()
+            raise
+
+    def abort(self) -> None:
+        if self._staging.exists():
+            shutil.rmtree(self._staging)
+
+
 def write_run(output: Path, result: ExperimentResult) -> None:
     """Publish one immutable run directory beneath a path that did not previously exist."""
-    output.mkdir(parents=True, exist_ok=False)
+    writer = RunArtifactWriter(output)
     try:
-        annotated = output / "annotated"
-        crops = output / "crops"
-        annotated.mkdir()
-        crops.mkdir()
-
-        metrics = build_metrics(result)
-        _write_json_atomic(output / "manifest.json", _manifest(result, metrics))
-        _write_csv_atomic(
-            output / "detections.csv", _DETECTION_HEADERS, _detection_rows(result.analyses)
-        )
-        _write_csv_atomic(
-            output / "retrieval.csv", _RETRIEVAL_HEADERS, _retrieval_rows(result.retrieval)
-        )
-        _write_json_atomic(output / "metrics.json", metrics)
         for analysis in _sorted_analyses(result.analyses):
-            _write_diagnostic_images(annotated, crops, analysis)
-
-        from face_spike.report import render_report
-
-        _write_text_atomic(output / "report.html", render_report(result, metrics))
+            writer.write_diagnostics(analysis)
+        writer.finish(result)
     except Exception:
-        shutil.rmtree(output)
+        writer.abort()
         raise
 
 
@@ -252,6 +290,8 @@ def _face_size_buckets(analyses: Sequence[ImageAnalysis]) -> dict[str, int]:
 def _write_diagnostic_images(annotated: Path, crops: Path, analysis: ImageAnalysis) -> None:
     preview_path = _asset_path(annotated, analysis.image.item.filename, ".jpg")
     preview_path.parent.mkdir(parents=True, exist_ok=True)
+    if analysis.image.rgb is None:
+        raise ValueError("image pixels are required for diagnostic artifacts")
     image = Image.fromarray(analysis.image.rgb, mode="RGB")
     scale = min(1.0, _PREVIEW_LIMIT / max(image.width, image.height))
     if scale < 1.0:
@@ -299,11 +339,24 @@ def _draw_detection(draw: ImageDraw.ImageDraw, detection: FaceDetection, scale: 
 
 
 def _crop_dimensions(analysis: ImageAnalysis) -> tuple[int | None, int | None]:
-    crop = _crop_image(analysis)
-    return (crop.width, crop.height) if crop is not None else (None, None)
+    bounds = _crop_bounds(analysis)
+    if bounds is None:
+        return (None, None)
+    left, top, right, bottom = bounds
+    return (right - left, bottom - top)
 
 
 def _crop_image(analysis: ImageAnalysis) -> Image.Image | None:
+    bounds = _crop_bounds(analysis)
+    if bounds is None:
+        return None
+    if analysis.image.rgb is None:
+        raise ValueError("image pixels are required for crop artifacts")
+    left, top, right, bottom = bounds
+    return Image.fromarray(analysis.image.rgb, mode="RGB").crop((left, top, right, bottom))
+
+
+def _crop_bounds(analysis: ImageAnalysis) -> tuple[int, int, int, int] | None:
     if analysis.primary_detection is None:
         return None
     box = analysis.primary_detection.bounding_box
@@ -313,7 +366,7 @@ def _crop_image(analysis: ImageAnalysis) -> Image.Image | None:
     bottom = min(analysis.image.height, ceil(box.y + box.height))
     if right <= left or bottom <= top:
         return None
-    return Image.fromarray(analysis.image.rgb, mode="RGB").crop((left, top, right, bottom))
+    return (left, top, right, bottom)
 
 
 def _asset_path(root: Path, filename: str, suffix: str) -> Path:

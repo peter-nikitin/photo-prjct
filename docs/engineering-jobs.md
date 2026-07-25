@@ -40,7 +40,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-007 | Operator | Provision a production environment | Candidate | 2026-07-17 |
 | EJ-008 | Operator | Activate trusted HTTPS | Delivered | 2026-07-17 |
 | EJ-009 | Operator | Detect service degradation | Candidate | 2026-07-17 |
-| EJ-010 | Operator | Restore service data | Candidate | 2026-07-17 |
+| EJ-010 | Operator | Restore service data | Candidate | 2026-07-25 |
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 
 ## Job details
@@ -146,8 +146,8 @@ When transactional data or media metadata is lost or corrupted, I want a tested 
 procedure with agreed recovery targets, so I can recover service safely.
 
 - Status: Candidate
-- Evidence: [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions)
-- Last updated: 2026-07-17
+- Evidence: [`scripts/clone-staging-db.sh`](../scripts/clone-staging-db.sh) and [`tests/deployment/test_clone_staging_database.py`](../tests/deployment/test_clone_staging_database.py) provide partial local restore evidence: a developer can create a validated staging logical dump, replace only the current checkout's local Compose database through a serialized local-Docker-only workflow, quiesce the normal web service, retain diagnostic and safety dumps, and validate migration readiness without running the mutating web entrypoint. Separate isolated PostgreSQL 16 integrations verify marker/owner/ACL normalization and the actual project image's `django_migrations`, `showmigrations`, and `makemigrations` readiness against a restored migrated schema without staging network contact. This remains insufficient for service-data recovery: scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill are not established. See also [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions).
+- Last updated: 2026-07-25
 
 ### EJ-011 — Maintainer — Gate private gallery media activation
 
@@ -196,3 +196,4 @@ This log is append-only.
 | 2026-07-19 | EJ-011 | Not recorded | Validated | Behavioral deployment tests verify candidate private-media preflight, ordering, temporary-environment cleanup, and the absence of an IAM mutation path; no live environment activation is claimed. |
 | 2026-07-19 | EJ-011 | Validated | Validated | Clarified boundary: automated tests cover candidate pull failure, no-row skip, successful one-byte read/close, sanitized storage construction/open failures with pre-promotion state preserved, and promotion-fault temporary-file cleanup; empty-read/read-exception/close-exception paths and live activation are not claimed. |
 | 2026-07-19 | EJ-011 | Validated | Validated | Fresh unprovisioned deployments now skip the unavailable ORM gate based on absence of the successful `deployed-image` marker; established deployments retain the fail-closed database/no-row/storage gate, and neither skip is live `GetObject` evidence. |
+| 2026-07-25 | EJ-010 | Candidate | Candidate | Local clone automation now enforces a serialized local-Docker-only replacement, quiesces the normal web service, retains safety/diagnostic artifacts, and has isolated PostgreSQL 16 plus real-Django restored-schema evidence for migration readiness without startup mutations. This is partial local evidence only; scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill remain unestablished. |

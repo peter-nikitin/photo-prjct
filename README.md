@@ -15,8 +15,8 @@ unresolved decisions are documented rather than assumed to be implemented.
 
 ## Local development
 
-Requirements: Git, Docker, Docker Compose, NVM, and Node 22. Python 3.12+ is required only for
-running management commands and quality checks directly on the host.
+Requirements: Git, Docker, Docker Compose, Python 3.12+, NVM, and Node 22. Python is required for
+the clone helper and for running management commands and quality checks directly on the host.
 
 The `main` checkout and a feature worktree use separate source directories and Compose projects, so
 each directory needs its own ignored `.env` file. Both configurations expose PostgreSQL on port
@@ -134,6 +134,81 @@ docker compose down
 ```
 
 This keeps the PostgreSQL volume. Do not add `-v` unless deleting the local database is intentional.
+
+### Clone staging data locally for migration development
+
+This developer workflow replaces only the current checkout's local Compose database with a fresh
+logical dump from staging. It is destructive to that local database; it is not a staging restore,
+service-backup, or disaster-recovery procedure.
+
+Before running it, create the checkout-local `.env`, ensure Docker and Docker Compose are available,
+and confirm that `STAGING_SSH_TARGET` can connect to the staging host. Keep enough local disk space
+for both the incoming staging dump and a safety dump of the current local database. Logical dumps can
+contain personal data: keep them on an encrypted developer disk, do not upload them to shared
+services, and delete them manually when the migration branch no longer needs them.
+
+The helper inspects the effective Docker context and the `DOCKER_CONTEXT`/`DOCKER_HOST` overrides
+before confirmation or SSH. It accepts only local Unix sockets and loopback `tcp://` endpoints
+(`127.0.0.0/8`, `[::1]`, or `localhost`); remote, SSH, HTTP(S), and unknown Docker endpoints are
+rejected without printing the endpoint.
+
+Run the one-command clone interactively so it displays the exact local Compose project and database
+before asking for `yes`:
+
+```bash
+STAGING_SSH_TARGET=<user>@<staging-host> make db-clone-staging
+```
+
+For non-interactive automation, set the explicit confirmation only after independently confirming
+that the current checkout is the intended local target:
+
+```bash
+STAGING_SSH_TARGET=<user>@<staging-host> CONFIRM_REPLACE_LOCAL_DB=yes make db-clone-staging
+```
+
+The command streams and validates a PostgreSQL custom-format dump before changing local data, writes
+the staging dump, checksum, and metadata under `var/backups/staging/`, and first makes a local safety
+dump in the same directory. The artifacts are mode `0600` and ignored by Git. A failed staging restore
+attempts to recover the original local database from its safety dump; all dumps remain available for
+diagnosis.
+
+Only one clone for the resolved Compose project/database may run at a time. The helper holds an
+atomic SHA-256-keyed lock under the selected backup directory's `.locks/` directory before contacting
+staging or replacing from a retained dump. A second process exits before SSH or SQL. If an interrupted
+process leaves a stale lock, first verify that no clone is running, then use only the exact `rmdir`
+command printed by the helper; it never deletes another process's lock automatically.
+
+If the checkout's normal `web` service is running, the helper stops it before the local safety dump
+and database replacement. Failure to stop it aborts before `DROP DATABASE`. Once stopped, the normal
+service remains stopped on success or any later failure; validation uses only entrypoint-overridden
+one-off containers. After the clone reports successful validation, restart normal local development
+explicitly:
+
+```bash
+docker compose up -d web
+```
+
+After a successful restore, read-only, entrypoint-overridden one-off `web` containers verify database
+connectivity and `django_migrations`, inspect `showmigrations --plan`, and run
+`makemigrations --check --dry-run`. The clone stops with an actionable message if there are no applied
+migrations, the database names migrations absent from the checkout (update the branch), or the
+checkout has unapplied migration/model drift. It never starts the normal web entrypoint and never runs
+`migrate`.
+
+To retry from an existing retained dump without contacting staging, keep its matching `.sha256` sidecar
+next to it and run:
+
+```bash
+STAGING_DUMP_FILE=/absolute/path/to/<timestamp>.dump make db-clone-staging
+```
+
+This mode verifies the checksum and PostgreSQL custom archive before any local SQL, then uses the
+same confirmation, safety dump, replacement, recovery, and Django validation path. It never modifies
+the supplied dump or checksum, and it does not require or contact `STAGING_SSH_TARGET`.
+
+The [direct staging database plan](docs/plans/2026-07-22-local-read-only-staging-database.md) is a
+draft plan, not an implemented workflow. Never point normal Django or Compose startup at staging: the
+image entrypoint runs migrations and other mutations.
 
 ## Quality checks
 

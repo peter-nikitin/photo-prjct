@@ -58,6 +58,13 @@ The repository currently contains an early Django application:
   evidence commits were not included. Neither automated result represents a live staging activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
+- Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
+  into the current checkout's isolated local Compose database when preparing a migration. The
+  workflow rejects non-local Docker engines, serializes each Compose project/database, stops the
+  normal local web service before replacement, keeps a local safety dump, and validates migration
+  readiness without starting Django's mutating entrypoint. The web service remains stopped for an
+  explicit restart after successful validation. This is not the service backup, retention, or
+  disaster-recovery strategy.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
 - Staging's normal deployment uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and
   proxy the internal Django service. The canonical apex and `www` names route to that edge, with
@@ -287,7 +294,8 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Payment provider, callback contract, refunds, and download entitlement policy.
 - Paid-event media access and the broader attachment/download policy beyond ADR 0015's narrow
   anonymous inline delivery for eligible free-event originals.
-- Observability stack, backup targets, retention, and recovery objectives.
+- Observability stack; backup targets; retention; RPO/RTO; encryption-at-rest policy; media
+  recovery; and disaster-recovery procedures.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.
 
 ## Change rules

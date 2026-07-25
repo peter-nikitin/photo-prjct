@@ -44,3 +44,6 @@ src/backend/staticfiles/
 node_modules/
 playwright-report/
 test-results/
+
+# === local staging database clone artifacts ===
+var/backups/

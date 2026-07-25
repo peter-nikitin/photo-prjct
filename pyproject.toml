@@ -24,6 +24,9 @@ DJANGO_SETTINGS_MODULE = "config.settings"
 pythonpath = ["src/backend"]
 testpaths = ["src/backend", "tests"]
 addopts = "--strict-config --strict-markers"
+markers = [
+  "face_models: requires locally supplied YuNet and SFace model files",
+]
 
 [tool.coverage.run]
 branch = true

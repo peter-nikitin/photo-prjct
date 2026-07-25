@@ -115,10 +115,12 @@
 ```python
 GalleryVariant = Literal["preview-small", "preview-large"]
 
+
 @dataclass(frozen=True)
 class GalleryMedia:
     url: str
     variant: GalleryVariant
+
 
 @dataclass(frozen=True)
 class GalleryPhoto:
@@ -186,12 +188,14 @@ class GalleryPhoto:
 class FinalObjectStorage(Protocol):
     def open_final(self, *, key: str) -> OpenedObject: ...
 
+
 @dataclass(frozen=True)
 class ResolvedPublicMedia:
     body: ReadableBody
     content_length: int
     content_type: Literal["image/jpeg", "image/png"]
     extension: Literal["jpg", "png"]
+
 
 class PublicMediaResolver:
     def __init__(self, storage: FinalObjectStorage) -> None:
@@ -201,15 +205,14 @@ class PublicMediaResolver:
         if variant not in GALLERY_VARIANTS or not photo.original_key:
             raise ValueError("ineligible gallery media")
         opened = self._storage.open_final(key=photo.original_key)
-        extension: Literal["jpg", "png"] = (
-            "jpg" if opened.content_type == "image/jpeg" else "png"
-        )
+        extension: Literal["jpg", "png"] = "jpg" if opened.content_type == "image/jpeg" else "png"
         return ResolvedPublicMedia(
             body=opened.body,
             content_length=opened.size,
             content_type=opened.content_type,
             extension=extension,
         )
+
 
 class CloseableMediaIterator(Iterator[bytes]):
     def __init__(
@@ -253,6 +256,7 @@ class CloseableMediaIterator(Iterator[bytes]):
           raise StopIteration
       return chunk
 
+
   def close(self) -> None:
       if not self._closed:
           self._closed = True
@@ -284,6 +288,7 @@ path(
   def _public_media_resolver() -> PublicMediaResolver:
       return PublicMediaResolver(storage=PrivateUploadStorage())
 
+
   @require_GET
   def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse:
       if variant not in GALLERY_VARIANTS:
@@ -291,25 +296,17 @@ path(
       event = get_object_or_404(
           Event.objects.published(), slug=slug, access_type=Event.AccessType.FREE
       )
-      photo = get_object_or_404(
-          Photo, pk=photo_id, event=event, src="", original_key__isnull=False
-      )
+      photo = get_object_or_404(Photo, pk=photo_id, event=event, src="", original_key__isnull=False)
       try:
-          media = _public_media_resolver().resolve(
-              photo=photo, variant=cast(GalleryVariant, variant)
-          )
+          media = _public_media_resolver().resolve(photo=photo, variant=cast(GalleryVariant, variant))
       except ObjectMissing:
           return HttpResponse(status=404)
       except StorageError:
           return HttpResponse(status=503)
-      stream = CloseableMediaIterator(
-          media=media, event_slug=event.slug, photo_id=photo.pk
-      )
+      stream = CloseableMediaIterator(media=media, event_slug=event.slug, photo_id=photo.pk)
       response = StreamingHttpResponse(stream, content_type=media.content_type)
       response["Content-Length"] = str(media.content_length)
-      response["Content-Disposition"] = (
-          f'inline; filename="photo-{photo.pk}.{media.extension}"'
-      )
+      response["Content-Disposition"] = f'inline; filename="photo-{photo.pk}.{media.extension}"'
       response["Cache-Control"] = "private, no-store"
       response["X-Content-Type-Options"] = "nosniff"
       return response

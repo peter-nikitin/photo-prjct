@@ -10,21 +10,18 @@
 
 ## Goal
 
-State the user or operational outcome in one sentence.
+Link the approved specification's goal. Add one sentence only when needed to identify the delivery
+milestone covered by this plan.
 
 ## Scope
 
-### In scope
-
-- Required outcome.
-
-### Out of scope
-
-- Explicit boundary that prevents accidental expansion.
+Reference the approved specification's scope. List only task-specific scope deltas; write `None`
+when the plan implements the specification without changing its scope.
 
 ## Acceptance criteria
 
-- Observable, testable result.
+Reference the approved specification's acceptance criteria. Add only observable delivery checks
+that depend on the implementation sequence.
 
 ## Implementation
 
@@ -32,10 +29,14 @@ State the user or operational outcome in one sentence.
 
 **Files:** exact paths to create or modify.
 
+- **Specification:** exact sections implemented by this task.
+- **Depends on:** earlier task outputs or `None`.
+- **Produces:** cross-task interface or independently verifiable result.
+
 - [ ] Add or update the failing test when behavior changes.
 - [ ] Run the targeted test and confirm the expected failure.
 - [ ] Implement the smallest complete change.
-- [ ] Run targeted and regression checks.
+- [ ] Run the exact targeted check and record its expected successful outcome.
 
 ### Final task: Architecture and ADR reconciliation
 

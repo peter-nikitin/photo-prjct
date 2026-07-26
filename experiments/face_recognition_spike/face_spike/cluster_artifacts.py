@@ -177,12 +177,14 @@ class ClusterArtifactWriter:
                 self._staging / "manifest.json",
                 _manifest(result, metrics, materialization),
             )
-            from .cluster_report import render_cluster_report
+            from .cluster_report import render_cluster_detail_pages, render_cluster_report
 
             _write_text_atomic(
                 self._staging / "report.html",
                 render_cluster_report(analyses, clusters, metrics),
             )
+            for cluster_id, page in render_cluster_detail_pages(analyses, clusters).items():
+                _write_text_atomic(self._staging / "people" / cluster_id / "index.html", page)
             if os.path.lexists(self.output):
                 raise FileExistsError(self.output)
             os.replace(self._staging, self.output)

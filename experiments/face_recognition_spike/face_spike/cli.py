@@ -21,6 +21,13 @@ YuNetDetector: Any | None = None
 SFaceRecognizer: Any | None = None
 
 
+def run_review(config: Any) -> Any:
+    """Load the review builder only for the local review command."""
+    from .review import run_review as build_review
+
+    return build_review(config)
+
+
 @dataclass(frozen=True)
 class ClusterConfig:
     photos: Path
@@ -175,6 +182,10 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--run", type=Path, required=True)
     compare.add_argument("--peakshot-export", type=Path, required=True)
     compare.add_argument("--output", type=Path, required=True)
+    review = commands.add_parser("review")
+    review.add_argument("--run", type=Path, required=True)
+    review.add_argument("--comparison", type=Path, required=True)
+    review.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -189,6 +200,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output=arguments.output,
             )
             comparison_config.validate()
+        elif arguments.command == "review":
+            from .review import ReviewConfig
+
+            review_config = ReviewConfig(
+                run=arguments.run,
+                comparison=arguments.comparison,
+                output=arguments.output,
+            )
+            review_config.validate()
         else:
             config = ClusterConfig(
                 photos=arguments.photos,
@@ -209,12 +229,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 parser.error(f"output path already exists: {config.output}")
     except SystemExit as error:
         return error.code if isinstance(error.code, int) else 2
-    except (ClusterConfigurationError, ComparisonError):
+    except (ClusterConfigurationError, ComparisonError, ValueError):
         return 2
 
     try:
         if arguments.command == "compare":
             run_comparison(comparison_config)
+        elif arguments.command == "review":
+            run_review(review_config)
         else:
             run_cluster(config)
     except (ClusterConfigurationError, ComparisonError, FileExistsError, OSError, ValueError):

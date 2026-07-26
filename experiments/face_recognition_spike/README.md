@@ -103,17 +103,50 @@ Each run contains:
 | `annotated/` | Per-image detection previews. |
 | `people/person-NNNN/` | Review crops and the cluster's unique source photos. A group photo can occur in several people directories. |
 | `metrics.json` | Detection, embedding, cluster-size, singleton, and failure counts. |
-| `report.html` | Local visual cluster review with stable `person-NNNN` anchors. |
+| `report.html` | Lightweight local index: one representative crop per cluster. |
+| `people/person-NNNN/index.html` | One cluster's face crops and source photos, loaded only when opened. |
 
 The writer attempts hard links for source photos and copies only when the
 filesystem does not permit that link. A singleton is a valid discovered
 cluster and is preserved.
 
-Open the local review report after completion:
+Open the local cluster index after completion. It is deliberately bounded: it
+does not put every crop and full source photo into one browser page. Select a
+cluster to open its separate detail page.
 
 ```sh
 open /absolute/runs/all-people-run-001/report.html
 ```
+
+## Review fragmented people locally
+
+Build a separate, immutable review bundle from a completed run and its
+completed Peakshot comparison. This command does not rerun models, alter either
+input, copy embeddings, or copy source photos; its pages link to local media in
+the immutable run.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike \
+.venv/bin/python -m face_spike review \
+  --run /absolute/runs/all-people-run-001 \
+  --comparison /absolute/comparisons/all-people-run-001-vs-peakshot \
+  --output /absolute/reviews/all-people-run-001-fragmentation-review-001
+```
+
+The output must be a new path. It contains a bounded `report.html`, one
+`people/person-NNNN/index.html` page per cluster, and
+`fragmentation-review.html`. The latter lists every deterministic pair of our
+clusters for each Peakshot person aligned to two or more clusters. It is review
+evidence: shared source photos, particularly group photos, are not proof that
+two face clusters are the same person.
+
+Choose exactly `same`, `different`, or `uncertain` for each pair. Decisions are
+stored only in this browser's `localStorage`, under a versioned key scoped to
+this review bundle; they are never sent anywhere and do not modify the run,
+comparison, source photos, or Peakshot export. Use **Export CSV** to preserve
+or transfer decisions. Import accepts only CSV produced for the same bundle;
+malformed rows, unknown pairs, duplicate pairs, invalid decisions, or a bundle
+mismatch are rejected before any stored decision is replaced.
 
 ## Compare a completed run with Peakshot
 
@@ -170,6 +203,14 @@ authorizes production use or claims a 100% identity match.
 One immutable full-event run (`all-people-run-001`) and its separate immutable
 Peakshot comparison (`all-people-run-001-vs-peakshot`) were produced outside
 Git using the documented commands and these parameters:
+
+The scalable local review bundle for those immutable inputs is
+`/Users/petrnikitin/Documents/Projects/photo-refs/reviews/all-people-run-001-fragmentation-review-003`.
+Its `report.html` contains 1,092 representative crops and links to 1,092
+separate detail pages; `fragmentation-review.html` contains 3,422 deterministic
+fragmentation pairs and renders at most 25 pair cards at once. The earlier
+`...-001` and `...-002` bundles are retained as immutable evidence of the
+intermediate layouts; use `...-003` for review.
 
 - detection threshold `0.75`, minimum face size `32` px;
 - cluster and representative thresholds `0.363`;

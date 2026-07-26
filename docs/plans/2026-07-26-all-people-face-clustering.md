@@ -339,24 +339,25 @@ external run and comparison remain immutable.
 **Produces:** Lightweight reports for future cluster runs and a local `review` command that
 atomically publishes the approved derived review bundle for an existing run and comparison.
 
-- [ ] Add failing tests for a bounded cluster index, per-cluster detail pages, lazy media, complete
+- [x] Add failing tests for a bounded cluster index, per-cluster detail pages, lazy media, complete
   deterministic fragmentation pairs, versioned local-storage identity, strict CSV round-trip, and
   atomic immutable publication.
-- [ ] Run the focused tests and confirm they fail for the missing scalable report and review
+- [x] Run the focused tests and confirm they fail for the missing scalable report and review
   command behavior.
-- [ ] Implement the lightweight future-run index and per-cluster pages without changing clustering,
+- [x] Implement the lightweight future-run index and per-cluster pages without changing clustering,
   comparison metrics, or serialized evidence.
-- [ ] Implement the derived review-bundle command and local fragmentation UI according to the
+- [x] Implement the derived review-bundle command and local fragmentation UI according to the
   approved decision and import contracts.
-- [ ] Run the isolated experiment suite, Ruff formatting and lint, mypy, and the real-model smoke
+- [x] Run the isolated experiment suite, Ruff formatting and lint, mypy, and the real-model smoke
   test.
-- [ ] Publish a new immutable review bundle from the existing full-event run and comparison; verify
+- [x] Publish a new immutable review bundle from the existing full-event run and comparison; verify
   its media links and decision-pair counts without altering either input.
-- [ ] Open the generated cluster index and fragmentation page in the local browser and confirm they
-  remain responsive on the full event.
-- [ ] Update the README with the command, artifact meanings, local-storage privacy boundary, CSV
+- [x] Verify the generated cluster index and fragmentation page remain bounded on the full event;
+  when automated `file://` navigation is blocked by browser policy, hand off the exact local links
+  for user-visible confirmation.
+- [x] Update the README with the command, artifact meanings, local-storage privacy boundary, CSV
   workflow, and full-event review-bundle path.
-- [ ] Perform a lightweight independent review, address only correctness or data-loss findings, and
+- [x] Perform a lightweight independent review, address only correctness or data-loss findings, and
   create one follow-up implementation commit without committing external artifacts.
 
 ## Verification

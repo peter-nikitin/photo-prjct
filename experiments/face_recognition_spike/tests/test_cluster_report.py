@@ -40,10 +40,11 @@ def test_report_has_stable_person_anchors_relative_assets_and_escaped_text() -> 
     )
 
     assert 'id="person-0001"' in report
-    assert 'href="#person-0001"' in report
+    assert 'href="people/person-0001/index.html"' in report
     assert "group&lt;&quot;&amp;.jpg" in report
     assert "people/person-0001/faces/" in report
-    assert "people/person-0001/photos/group%3C%22%26.jpg" in report
+    assert "photos/group%3C%22%26.jpg" not in report
+    assert 'loading="lazy"' in report
     assert "embedding" not in report.lower()
     assert "PRIMARY" not in report
 

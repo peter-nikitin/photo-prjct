@@ -12,7 +12,8 @@ Approved in conversation on 2026-07-26.
   [`2026-07-26-all-people-face-clustering-design.md`](2026-07-26-all-people-face-clustering-design.md)
 - Related ADRs: none
 - ADR impact: None — reversible implementation detail
-- Implementation plan: pending maintainer review of this specification
+- Implementation plan:
+  [`docs/plans/2026-07-26-local-selfie-search.md`](../../plans/2026-07-26-local-selfie-search.md)
 
 ## Goal
 

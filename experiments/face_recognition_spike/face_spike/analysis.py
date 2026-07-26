@@ -3,14 +3,23 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 
 from .inventory import EventPhoto, EventPhotoInventory
 
-FaceStatus = Literal["ok", "alignment_failed", "embedding_failed", "invalid_embedding"]
+if TYPE_CHECKING:
+    from .quality import FaceQuality, FaceQualityThresholds
+
+FaceStatus = Literal[
+    "ok",
+    "quality_rejected",
+    "alignment_failed",
+    "embedding_failed",
+    "invalid_embedding",
+]
 ImageStatus = Literal[
     "ok",
     "no_detection",
@@ -99,6 +108,7 @@ class FaceInstance:
     crop_path: str
     status: FaceStatus
     embedding: FaceEmbedding | None
+    quality: FaceQuality
 
 
 @dataclass(frozen=True)
@@ -132,11 +142,16 @@ def analyze_event_photo_inventory(
     recognizer: FaceRecognizer,
     *,
     min_face_px: int = 1,
+    quality_thresholds: FaceQualityThresholds | None = None,
     write_diagnostics: DiagnosticWriter | None = None,
 ) -> tuple[EventPhotoAnalysis, ...]:
     """Analyze every accepted face and release decoded pixels before the next photo."""
     if min_face_px < 1:
         raise ValueError("min_face_px must be positive")
+    from .quality import FaceQualityThresholds
+
+    thresholds = quality_thresholds or FaceQualityThresholds(minimum_face_px=min_face_px)
+    thresholds.validate()
 
     analyses: list[EventPhotoAnalysis] = []
     for photo in inventory.photos:
@@ -150,7 +165,7 @@ def analyze_event_photo_inventory(
             continue
 
         try:
-            analysis = _analyze_decoded_image(photo, decoded, detector, recognizer, min_face_px)
+            analysis = _analyze_decoded_image(photo, decoded, detector, recognizer, thresholds)
             if write_diagnostics is not None:
                 write_diagnostics(photo, decoded, analysis)
         finally:
@@ -164,7 +179,7 @@ def _analyze_decoded_image(
     decoded: DecodedImage,
     detector: FaceDetector,
     recognizer: FaceRecognizer,
-    min_face_px: int,
+    quality_thresholds: FaceQualityThresholds,
 ) -> EventPhotoAnalysis:
     try:
         detections = detector.detect(decoded.bgr)
@@ -173,23 +188,20 @@ def _analyze_decoded_image(
             photo.filename, decoded.width, decoded.height, (), "detection_failed"
         )
 
-    accepted = tuple(
-        sorted(
-            (
-                detection
-                for detection in detections
-                if detection.bounding_box.width >= min_face_px
-                and detection.bounding_box.height >= min_face_px
-            ),
-            key=_face_sort_key,
-        )
-    )
-    if not accepted:
+    ordered = tuple(sorted(detections, key=_face_sort_key))
+    if not ordered:
         return EventPhotoAnalysis(photo.filename, decoded.width, decoded.height, (), "no_detection")
 
     faces = tuple(
-        _analyze_face(photo, decoded.bgr, detection, index, recognizer)
-        for index, detection in enumerate(accepted, start=1)
+        _analyze_face(
+            photo,
+            decoded.bgr,
+            detection,
+            index,
+            recognizer,
+            quality_thresholds,
+        )
+        for index, detection in enumerate(ordered, start=1)
     )
     return EventPhotoAnalysis(photo.filename, decoded.width, decoded.height, faces, "ok")
 
@@ -200,14 +212,29 @@ def _analyze_face(
     detection: FaceDetection,
     face_index: int,
     recognizer: FaceRecognizer,
+    quality_thresholds: FaceQualityThresholds,
 ) -> FaceInstance:
+    from .quality import evaluate_face_quality
+
     face_id = f"{photo.filename}#face-{face_index:03d}"
     crop_path = face_crop_path(face_id)
+    quality = evaluate_face_quality(bgr, detection, quality_thresholds)
+    if quality.decision == "rejected":
+        return FaceInstance(
+            face_id,
+            photo.filename,
+            face_index,
+            detection,
+            crop_path,
+            "quality_rejected",
+            None,
+            quality,
+        )
     try:
         embedding = recognizer.extract(bgr, detection)
     except FaceProcessingError as error:
         return FaceInstance(
-            face_id, photo.filename, face_index, detection, crop_path, error.code, None
+            face_id, photo.filename, face_index, detection, crop_path, error.code, None, quality
         )
     except ValueError:
         return FaceInstance(
@@ -218,6 +245,7 @@ def _analyze_face(
             crop_path,
             "invalid_embedding",
             None,
+            quality,
         )
     except Exception:
         return FaceInstance(
@@ -228,8 +256,11 @@ def _analyze_face(
             crop_path,
             "embedding_failed",
             None,
+            quality,
         )
-    return FaceInstance(face_id, photo.filename, face_index, detection, crop_path, "ok", embedding)
+    return FaceInstance(
+        face_id, photo.filename, face_index, detection, crop_path, "ok", embedding, quality
+    )
 
 
 def face_crop_path(face_id: str) -> str:

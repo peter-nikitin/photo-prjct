@@ -69,12 +69,14 @@ def _run(path: Path, clusters: list[tuple[str, list[str]]]) -> Path:
         {"clusters": cluster_records},
     )
     face_headers = (
-        "face_id,filename,face_index,x,y,width,height,confidence,status,error_code,crop_path\n"
+        "face_id,filename,face_index,x,y,width,height,confidence,minimum_side_px,"
+        "relative_area,sharpness,quality_decision,quality_reasons,status,error_code,crop_path\n"
     )
     (path / "faces.csv").write_text(
         face_headers
         + "".join(
-            f"{face['face_id']},{face['filename']},{face['face_index']},0,0,1,1,1,ok,,{face['crop_path']}\n"
+            f"{face['face_id']},{face['filename']},{face['face_index']},"
+            f"0,0,1,1,1,1,0.01,100,accepted,,ok,,{face['crop_path']}\n"
             for face in face_records
         ),
         encoding="utf-8",
@@ -107,6 +109,8 @@ def _run(path: Path, clusters: list[tuple[str, list[str]]]) -> Path:
         "embedding_success": len(face_records),
         "face_instances": len(face_records),
         "images": len(face_index_by_filename),
+        "quality_accepted": len(face_records),
+        "quality_rejected": 0,
         "singleton_clusters": sum(len(filenames) == 1 for _, filenames in clusters),
     }
     _write_json(
@@ -119,6 +123,7 @@ def _run(path: Path, clusters: list[tuple[str, list[str]]]) -> Path:
             "counts": counts,
             "face_error_counts": {},
             "image_error_counts": {},
+            "quality_rejection_reasons": {},
         },
     )
     _write_json(
@@ -139,6 +144,9 @@ def _run(path: Path, clusters: list[tuple[str, list[str]]]) -> Path:
                 "max_image_dimension": 12000,
                 "max_image_pixels": 100_000_000,
                 "min_face_px": 32,
+                "minimum_face_sharpness": 50.0,
+                "minimum_quality_confidence": 0.82,
+                "minimum_relative_face_area": 0.0009,
                 "representative_threshold": 0.363,
                 "sface_model_filename": "sface.onnx",
                 "yunet_model_filename": "yunet.onnx",

@@ -18,6 +18,7 @@ from face_spike.clustering import (
     cluster_successful_faces,
     ordered_face_clusters,
 )
+from face_spike.quality import FaceQuality
 
 
 def _face(
@@ -33,7 +34,16 @@ def _face(
         0.9,
     )
     embedding = None if vector is None else FaceEmbedding(np.asarray(vector, dtype=np.float32))
-    return FaceInstance(face_id, filename, 1, detection, face_crop_path(face_id), status, embedding)
+    return FaceInstance(
+        face_id,
+        filename,
+        1,
+        detection,
+        face_crop_path(face_id),
+        status,
+        embedding,
+        FaceQuality(0.9, 10.0, 1.0, 100.0, "accepted", ()),
+    )
 
 
 def _analyses(*faces: FaceInstance) -> tuple[EventPhotoAnalysis, ...]:

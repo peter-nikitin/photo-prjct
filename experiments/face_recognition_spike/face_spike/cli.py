@@ -42,6 +42,9 @@ class ClusterConfig:
     image_limit: int | None = None
     max_image_dimension: int = 12000
     max_image_pixels: int = 100_000_000
+    minimum_quality_confidence: float = 0.82
+    minimum_relative_face_area: float = 0.0009
+    minimum_face_sharpness: float = 50.0
 
     def validate(self) -> None:
         if (
@@ -56,6 +59,12 @@ class ClusterConfig:
             or (self.image_limit is not None and self.image_limit < 1)
             or self.max_image_dimension < 1
             or self.max_image_pixels < 1
+            or not math.isfinite(self.minimum_quality_confidence)
+            or not 0 <= self.minimum_quality_confidence <= 1
+            or not math.isfinite(self.minimum_relative_face_area)
+            or not 0 <= self.minimum_relative_face_area <= 1
+            or not math.isfinite(self.minimum_face_sharpness)
+            or self.minimum_face_sharpness < 0
         ):
             raise ClusterConfigurationError("invalid cluster configuration")
 
@@ -74,6 +83,7 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
     from .clustering import cluster_successful_faces
     from .image_decoder import ImageLimits, PillowImageDecoder
     from .inventory import InventoryError, load_event_photo_inventory
+    from .quality import FaceQualityThresholds
 
     config.validate()
     if os.path.lexists(config.output):
@@ -116,6 +126,12 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
             detector,
             recognizer,
             min_face_px=config.min_face_px,
+            quality_thresholds=FaceQualityThresholds(
+                minimum_confidence=config.minimum_quality_confidence,
+                minimum_face_px=config.min_face_px,
+                minimum_relative_area=config.minimum_relative_face_area,
+                minimum_sharpness=config.minimum_face_sharpness,
+            ),
             write_diagnostics=writer.write_diagnostics,
         )
         processing_seconds = perf_counter() - processing_start
@@ -139,6 +155,9 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
                 "max_image_dimension": config.max_image_dimension,
                 "max_image_pixels": config.max_image_pixels,
                 "min_face_px": config.min_face_px,
+                "minimum_face_sharpness": config.minimum_face_sharpness,
+                "minimum_quality_confidence": config.minimum_quality_confidence,
+                "minimum_relative_face_area": config.minimum_relative_face_area,
                 "representative_threshold": config.representative_threshold,
             },
             analyses=analyses,
@@ -178,6 +197,9 @@ def build_parser() -> argparse.ArgumentParser:
     cluster.add_argument("--image-limit", type=int)
     cluster.add_argument("--max-image-dimension", type=int, default=12000)
     cluster.add_argument("--max-image-pixels", type=int, default=100_000_000)
+    cluster.add_argument("--minimum-quality-confidence", type=float, default=0.82)
+    cluster.add_argument("--minimum-relative-face-area", type=float, default=0.0009)
+    cluster.add_argument("--minimum-face-sharpness", type=float, default=50.0)
     compare = commands.add_parser("compare")
     compare.add_argument("--run", type=Path, required=True)
     compare.add_argument("--peakshot-export", type=Path, required=True)
@@ -225,6 +247,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 image_limit=arguments.image_limit,
                 max_image_dimension=arguments.max_image_dimension,
                 max_image_pixels=arguments.max_image_pixels,
+                minimum_quality_confidence=arguments.minimum_quality_confidence,
+                minimum_relative_face_area=arguments.minimum_relative_face_area,
+                minimum_face_sharpness=arguments.minimum_face_sharpness,
             )
             config.validate()
             if os.path.lexists(config.output):

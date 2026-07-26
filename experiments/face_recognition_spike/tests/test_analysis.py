@@ -15,6 +15,7 @@ from face_spike.analysis import (
     analyze_event_photo_inventory,
 )
 from face_spike.inventory import EventPhoto, EventPhotoInventory
+from face_spike.quality import FaceQualityThresholds
 
 
 def _inventory(*filenames: str) -> EventPhotoInventory:
@@ -127,3 +128,70 @@ def test_analysis_releases_decoded_arrays_before_loading_the_next_photo() -> Non
     assert [analysis.filename for analysis in analyses] == ["alpha.jpg", "bravo.jpg"]
     gc.collect()
     assert all(reference() is None for reference in references)
+
+
+def test_quality_gate_retains_rejected_detection_and_skips_embedding() -> None:
+    calls: list[float] = []
+    pixels = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    class Decoder:
+        def decode(self, photo: EventPhoto) -> DecodedImage:
+            return DecodedImage(pixels, pixels.copy(), width=100, height=100)
+
+    class Recognizer:
+        def extract(self, bgr: np.ndarray, detection: FaceDetection) -> FaceEmbedding:
+            calls.append(detection.bounding_box.x)
+            return FaceEmbedding(np.asarray([1.0], dtype=np.float32))
+
+    analyses = analyze_event_photo_inventory(
+        _inventory("frame.jpg"),
+        Decoder(),
+        _Detector((_detection(2, 10, confidence=0.80),)),
+        Recognizer(),
+        quality_thresholds=FaceQualityThresholds(
+            minimum_confidence=0.82,
+            minimum_face_px=12,
+            minimum_relative_area=0.021,
+            minimum_sharpness=1.0,
+        ),
+    )
+
+    face = analyses[0].faces[0]
+    assert calls == []
+    assert face.status == "quality_rejected"
+    assert face.embedding is None
+    assert face.quality.decision == "rejected"
+    assert face.quality.reasons == (
+        "low_confidence",
+        "small_face",
+        "small_relative_area",
+        "low_sharpness",
+    )
+    assert face.quality.minimum_side_px == 10
+    assert face.quality.relative_area == 0.02
+    assert face.quality.sharpness == 0
+
+
+def test_quality_gate_accepts_inclusive_boundaries_and_embeds_face() -> None:
+    class Recognizer:
+        def extract(self, bgr: np.ndarray, detection: FaceDetection) -> FaceEmbedding:
+            return FaceEmbedding(np.asarray([1.0], dtype=np.float32))
+
+    analyses = analyze_event_photo_inventory(
+        _inventory("frame.jpg"),
+        _Decoder(),
+        _Detector((_detection(2, 10, confidence=0.82),)),
+        Recognizer(),
+        quality_thresholds=FaceQualityThresholds(
+            minimum_confidence=0.82,
+            minimum_face_px=10,
+            minimum_relative_area=0.25,
+            minimum_sharpness=0.0,
+        ),
+    )
+
+    face = analyses[0].faces[0]
+    assert face.status == "ok"
+    assert face.embedding is not None
+    assert face.quality.decision == "accepted"
+    assert face.quality.reasons == ()

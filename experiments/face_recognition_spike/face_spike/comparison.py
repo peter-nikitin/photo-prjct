@@ -37,6 +37,11 @@ _FACE_HEADERS = (
     "width",
     "height",
     "confidence",
+    "minimum_side_px",
+    "relative_area",
+    "sharpness",
+    "quality_decision",
+    "quality_reasons",
     "status",
     "error_code",
     "crop_path",
@@ -77,6 +82,7 @@ _METRICS_FIELDS = {
     "counts",
     "face_error_counts",
     "image_error_counts",
+    "quality_rejection_reasons",
 }
 _PARAMETER_FIELDS = {
     "cluster_threshold",
@@ -87,6 +93,9 @@ _PARAMETER_FIELDS = {
     "max_image_dimension",
     "max_image_pixels",
     "min_face_px",
+    "minimum_face_sharpness",
+    "minimum_quality_confidence",
+    "minimum_relative_face_area",
     "representative_threshold",
     "sface_model_filename",
     "yunet_model_filename",
@@ -256,7 +265,14 @@ def _load_faces(
             not face_id
             or not _valid_filename(filename)
             or face_index is None
-            or status not in {"ok", "alignment_failed", "embedding_failed", "invalid_embedding"}
+            or status
+            not in {
+                "ok",
+                "quality_rejected",
+                "alignment_failed",
+                "embedding_failed",
+                "invalid_embedding",
+            }
             or not _valid_crop_path(crop_path)
             or face_id in faces
             or not (run / crop_path).is_file()
@@ -437,6 +453,7 @@ def _validate_run_counts(
                 metrics["cluster_size_distribution"],
                 metrics["face_error_counts"],
                 metrics["image_error_counts"],
+                metrics["quality_rejection_reasons"],
             )
         )
     ):
@@ -446,6 +463,8 @@ def _validate_run_counts(
         "embedding_success": sum(face["status"] == "ok" for face in faces.values()),
         "face_instances": len(face_rows),
         "images": len(image_statuses),
+        "quality_accepted": sum(face["status"] != "quality_rejected" for face in faces.values()),
+        "quality_rejected": sum(face["status"] == "quality_rejected" for face in faces.values()),
         "singleton_clusters": sum(cluster.member_count == 1 for cluster in clusters),
     }
     if manifest.get("counts") != expected or metrics.get("counts") != expected:

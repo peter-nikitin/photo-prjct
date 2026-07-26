@@ -418,3 +418,49 @@ Automated evidence demonstrates that:
 - combined and cluster-only CSV exports are deterministic;
 - valid combined CSV round-trips both maps; and
 - malformed or inconsistent CSV import changes neither map.
+
+## Measured Automatic Face-Quality Gate
+
+The next experiment changes only which YuNet detections are eligible for SFace embedding and
+clustering. Detection and clustering thresholds remain unchanged so the effect of input quality is
+measured independently from identity grouping.
+
+Every YuNet detection remains present in `faces.csv`, `faces.json`, and the review crops. Before
+embedding, the pipeline records these deterministic quality signals:
+
+- YuNet confidence;
+- minimum bounding-box side in pixels;
+- bounding-box area divided by oriented image area; and
+- variance of the grayscale Laplacian inside the clipped bounding box.
+
+A detection is accepted only when all four signals meet the configured inclusive thresholds.
+Rejected detections receive `quality_rejected`, have no embedding, do not enter a cluster, and
+record every failed reason from `low_confidence`, `small_face`, `small_relative_area`, and
+`low_sharpness`. Signal values, the decision, and reasons are published in both face tables.
+Run parameters record every threshold.
+
+The first calibrated configuration keeps the existing YuNet detector threshold `0.75` and minimum
+side `32`, then applies confidence `0.82`, relative area `0.0009`, and Laplacian variance `50`.
+Those values are intentionally fitted to the small, biased manual sample. Against the existing
+23 reviewed clusters they retain at least one face in all four `usable` clusters, reject both
+`not_face` singleton clusters, and reject every face in at least 13 of 17 `low_quality` clusters.
+This is a calibration result, not an estimate of full-event error prevalence.
+
+The completed `all-people-run-001` and its manual CSV exports remain immutable. The quality-gated
+full-event run, Peakshot comparison, and review bundle use new output directories. The comparison
+reports the same metrics as before, while an additional calibration artifact maps old reviewed
+cluster IDs to label, total faces, accepted faces, and observed outcome so cluster identifiers
+remain visually traceable across the experiment boundary.
+
+### Automatic Quality-Gate Acceptance Criteria
+
+Automated evidence demonstrates that:
+
+- boundary values are accepted and every failed reason is recorded deterministically;
+- rejected detections remain inspectable but are never embedded or clustered;
+- accepted detections preserve the existing stable face indexing;
+- face artifacts and the manifest contain signals, decisions, reasons, and configured thresholds;
+- the immutable original run and manual CSV files are not modified;
+- calibration reports retention for 4/4 `usable`, rejection for 2/2 `not_face`, and complete
+  rejection for at least 13/17 `low_quality` reviewed clusters; and
+- the new full-event run, comparison, and review bundle are published only to unused paths.

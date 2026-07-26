@@ -72,13 +72,20 @@ PYTHONPATH=experiments/face_recognition_spike \
   --output /absolute/runs/all-people-run-001 \
   --detection-threshold 0.75 \
   --min-face-px 32 \
+  --minimum-quality-confidence 0.82 \
+  --minimum-relative-face-area 0.0009 \
+  --minimum-face-sharpness 50 \
   --cluster-threshold 0.363 \
   --representative-threshold 0.363 \
   --distance-block-size 512
 ```
 
-`--detection-threshold` controls accepted YuNet detections and
-`--min-face-px` rejects small boxes. `--cluster-threshold` creates candidate
+`--detection-threshold` controls which YuNet detections enter the measured
+quality gate. The minimum side, confidence, relative bounding-box area, and
+Laplacian-variance thresholds then decide whether a detection is eligible for
+embedding and clustering. Rejected detections remain in `faces.csv`,
+`faces.json`, and `faces/`, with `quality_rejected`, measured signal values,
+and every rejection reason. `--cluster-threshold` creates candidate
 edges and `--representative-threshold` guards each merge against chaining; the
 initial values are experimental parameters, not production-calibrated values.
 `--distance-block-size` bounds pairwise-distance working memory. For an
@@ -103,6 +110,44 @@ Each run contains:
 | `annotated/` | Per-image detection previews. |
 | `people/person-NNNN/` | Review crops and the cluster's unique source photos. A group photo can occur in several people directories. |
 | `metrics.json` | Detection, embedding, cluster-size, singleton, and failure counts. |
+
+## Quality-gate calibration and first result
+
+Calibrate the configured gate against an immutable run and the exported manual
+cluster labels without changing either input:
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike \
+.venv/bin/python -m face_spike.quality_calibration \
+  --run /absolute/runs/all-people-run-001 \
+  --cluster-quality-csv /absolute/comparisons/cluster-quality-session-001.csv.csv \
+  --output /absolute/comparisons/quality-gate-calibration-001.json
+```
+
+The calibration is intentionally fitted to a small, problem-biased sample. On
+the 23 reviewed old cluster IDs it retained all 4 `usable` clusters, rejected
+both `not_face` singleton clusters, and fully rejected 13 of 17 `low_quality`
+clusters. It must not be interpreted as a full-event false-detection estimate.
+
+The first full quality-gated evidence is:
+
+- run:
+  `/Users/petrnikitin/Documents/Projects/photo-refs/runs/all-people-run-002-quality-gated`;
+- comparison:
+  `/Users/petrnikitin/Documents/Projects/photo-refs/comparisons/all-people-run-002-quality-gated-vs-peakshot`;
+- review:
+  `/Users/petrnikitin/Documents/Projects/photo-refs/reviews/all-people-run-002-quality-gated-fragmentation-review-001`;
+- calibration:
+  `/Users/petrnikitin/Documents/Projects/photo-refs/comparisons/quality-gate-calibration-001.json`.
+
+The gate retained 2,223 of 3,352 detections and rejected 1,129. Relative area
+was the most frequent rejection reason (883 detections); reasons overlap.
+Compared with `all-people-run-001`, clusters fell from 1,092 to 614,
+relationship precision rose from `0.6932` to `0.8060`, recall fell from
+`0.8997` to `0.8647`, F1 rose from `0.7830` to `0.8343`, and purity rose from
+`0.7057` to `0.7897`. Matched Peakshot people fell from 165 to 163, so the
+quality improvement has a measurable coverage cost and is not a final
+production threshold.
 | `report.html` | Lightweight local index: one representative crop per cluster. |
 | `people/person-NNNN/index.html` | One cluster's face crops and source photos, loaded only when opened. |
 

@@ -393,6 +393,44 @@ virtual `same` unions, review coverage, and strict combined/cluster CSV workflow
 - [x] Update the README, perform the requested lightweight review, and create one follow-up
   implementation commit without committing external artifacts.
 
+### Task 9: Add and Evaluate the Automatic Face-Quality Gate
+
+**Specification:**
+[Measured Automatic Face-Quality Gate](../superpowers/specs/2026-07-26-all-people-face-clustering-design.md#measured-automatic-face-quality-gate).
+
+**Files:**
+
+- Create `experiments/face_recognition_spike/face_spike/quality.py`.
+- Create `experiments/face_recognition_spike/face_spike/quality_calibration.py`.
+- Modify `experiments/face_recognition_spike/face_spike/analysis.py`,
+  `face_spike/cluster_artifacts.py`, `face_spike/comparison.py`, and `face_spike/cli.py`.
+- Extend `experiments/face_recognition_spike/tests/test_analysis.py`,
+  `test_cluster_artifacts.py`, `test_cluster_cli.py`, `test_comparison.py`, and
+  `test_quality_calibration.py`.
+- Update `experiments/face_recognition_spike/README.md`.
+
+**Depends on:** Task 8's immutable manual cluster-quality CSV and completed full-event artifacts.
+
+**Produces:** Inspectable per-detection quality decisions, a quality-gated immutable run, its
+Peakshot comparison and review bundle, and a calibration summary tied to the original cluster IDs.
+
+- [x] Add focused failing tests for inclusive signal boundaries, multiple rejection reasons,
+  retained rejected detections, embedding exclusion, artifact fields, parameter validation, and
+  manifest metrics.
+- [x] Confirm the focused tests fail because the quality gate and artifact contract are absent.
+- [x] Implement deterministic signal extraction and apply the configured gate before embedding
+  without changing detector or clustering thresholds.
+- [x] Publish all quality signals, decisions, reasons, thresholds, and rejection counts while
+  preserving atomic output and stable face IDs.
+- [x] Run focused tests, the complete isolated experiment suite, Ruff formatting and lint, mypy,
+  and the real-model smoke test.
+- [x] Evaluate the configured gate against the immutable manual CSV and write a calibration summary
+  that retains the original cluster IDs.
+- [x] Publish a new immutable full-event run, comparison, and review bundle; verify inputs are
+  unchanged and compare the original and gated metrics.
+- [x] Update the README with the measured thresholds, commands, artifact semantics, limitations,
+  output paths, and honest comparison results.
+
 ## Verification
 
 Task-level commands appear once with the task they verify. Final verification uses the complete

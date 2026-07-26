@@ -26,6 +26,7 @@ from face_spike.cluster_artifacts import (
 )
 from face_spike.clustering import ClusterMember, FaceCluster
 from face_spike.inventory import EventPhoto
+from face_spike.quality import FaceQuality
 from fixtures import make_jpeg
 
 
@@ -54,6 +55,7 @@ def _face(
         crop_path=f"faces/{hashlib.sha256(face_id.encode()).hexdigest()}.png",
         status=status,
         embedding=(None if vector is None else FaceEmbedding(np.asarray(vector, dtype=np.float32))),
+        quality=FaceQuality(0.875, 8.0, 1 / 12, 100.0, "accepted", ()),
     )
 
 
@@ -164,6 +166,11 @@ def test_cluster_run_publishes_complete_deterministic_artifact_contract(tmp_path
         "width",
         "height",
         "confidence",
+        "minimum_side_px",
+        "relative_area",
+        "sharpness",
+        "quality_decision",
+        "quality_reasons",
         "status",
         "error_code",
         "crop_path",
@@ -183,12 +190,16 @@ def test_cluster_run_publishes_complete_deterministic_artifact_contract(tmp_path
     clusters_payload = json.loads((output / "clusters.json").read_text())
     assert faces_payload["images"][0]["faces"][0]["x"] == 2.0
     assert faces_payload["images"][0]["faces"][0]["confidence"] == 0.875
+    assert faces_payload["images"][0]["faces"][0]["quality"]["decision"] == "accepted"
+    assert faces_payload["images"][0]["faces"][0]["quality"]["reasons"] == []
     assert faces_payload["images"][1]["faces"][0]["status"] == "alignment_failed"
     assert clusters_payload["clusters"][0]["members"][0]["distance_to_representative"] == 0.0
     assert len(clusters_payload["clusters"]) == 2
     metrics = json.loads((output / "metrics.json").read_text())
     assert metrics["counts"]["face_instances"] == 3
     assert metrics["counts"]["embedding_success"] == 2
+    assert metrics["counts"]["quality_accepted"] == 3
+    assert metrics["counts"]["quality_rejected"] == 0
     assert metrics["counts"]["clusters"] == 2
     assert metrics["counts"]["singleton_clusters"] == 2
     manifest = json.loads((output / "manifest.json").read_text())
@@ -319,6 +330,7 @@ def test_publisher_rejects_unsafe_filenames_and_inconsistent_crop_paths(
             crop_path,
             face.status,
             face.embedding,
+            face.quality,
         )
     analysis = _analysis(filename, face)
     cluster = FaceCluster("person-0001", face.face_id, (ClusterMember(face.face_id, 0.0),))

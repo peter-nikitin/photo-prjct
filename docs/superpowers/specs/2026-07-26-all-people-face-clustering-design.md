@@ -339,3 +339,76 @@ Automated evidence demonstrates that:
 - review publication is atomic and rejects an existing output path; and
 - the derived review bundle can be built from the existing completed `run-001` and comparison
   without rerunning face detection, embedding, or clustering.
+
+## Manual Quality Labels and Provisional Filtered Metrics
+
+The review bundle distinguishes detector quality, identity-pair judgment, and ambiguous
+photo-level evidence. These annotations are evaluation-only and never mutate a completed run,
+comparison, or original metric.
+
+Every result cluster has exactly one manual quality state:
+
+- `unreviewed`;
+- `usable`;
+- `not_face`;
+- `low_quality`; or
+- `mixed`.
+
+`not_face` covers false detections such as hands, shoes, and other non-face crops.
+`low_quality` covers real faces that are too blurred, too small, too occluded, or too far in the
+background to support identity review. `mixed` covers a cluster containing both usable and
+unusable members.
+
+Every fragmentation pair retains its identity decision (`same`, `different`, or `uncertain`) and
+adds one evidence-quality state:
+
+- `direct`; or
+- `group_photo_ambiguous`.
+
+When either cluster is `not_face`, `low_quality`, or `mixed`, the UI displays the pair as
+`not_applicable` for identity analysis without deleting a previously recorded identity decision.
+Group-photo ambiguity is explanatory and does not automatically change identity or quality states.
+
+The page always shows the immutable original comparison metrics. Beside them it calculates
+provisional filtered metrics after excluding clusters explicitly marked `not_face`, `low_quality`,
+or `mixed`. `usable` and `unreviewed` clusters remain included, and the UI prominently reports
+review coverage so partially reviewed values cannot be mistaken for final corrected metrics.
+Precision, recall, F1, purity, unmatched-cluster count, singleton statistics, and fragmentation are
+recomputed from the remaining cluster-photo relationships using the existing deterministic primary
+assignments. Original published files and metrics remain unchanged.
+
+For each Peakshot person, `same` decisions form connected components among its remaining clusters.
+The UI reports:
+
+- original algorithmic cluster count;
+- confirmed distinct components after virtual `same` unions; and
+- unresolved clusters or pairs.
+
+Virtual unions affect only the manual fragmentation summary. They do not rewrite cluster IDs or
+silently change relationship precision, recall, F1, or purity.
+
+Cluster quality and pair decisions use versioned, bundle-scoped `localStorage`. The combined
+deterministic CSV contains:
+
+```text
+peakshot_person_id,left_cluster_id,right_cluster_id,identity_decision,evidence_quality,left_cluster_quality,right_cluster_quality
+```
+
+Repeated cluster-quality values must agree across all rows. A separate deterministic cluster CSV
+contains one row per cluster for convenient audit. Import validates bundle identity, headers,
+states, pair keys, cluster IDs, duplicate pair keys, and repeated-quality consistency before one
+atomic replacement of both stored maps. Any invalid row leaves all existing annotations unchanged.
+
+### Manual Quality Acceptance Criteria
+
+Automated evidence demonstrates that:
+
+- all five cluster-quality states and both evidence-quality states persist across reload;
+- unusable cluster states make affected pairs visibly `not_applicable` without erasing decisions;
+- original metrics remain byte-for-byte identical to the completed comparison;
+- provisional filtered metrics exclude only explicitly unusable clusters and report review
+  coverage;
+- virtual `same` unions deterministically reduce only the manual fragmentation summary;
+- combined and cluster-only CSV exports are deterministic;
+- valid combined CSV round-trips both maps; and
+- malformed or inconsistent CSV import changes neither map.

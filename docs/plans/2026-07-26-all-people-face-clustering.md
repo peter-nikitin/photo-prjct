@@ -360,6 +360,38 @@ atomically publishes the approved derived review bundle for an existing run and 
 - [x] Perform a lightweight independent review, address only correctness or data-loss findings, and
   create one follow-up implementation commit without committing external artifacts.
 
+### Task 8: Add Quality Labels and Provisional Filtered Metrics
+
+**Specification:**
+[Manual Quality Labels and Provisional Filtered Metrics](../superpowers/specs/2026-07-26-all-people-face-clustering-design.md#manual-quality-labels-and-provisional-filtered-metrics).
+
+**Files:**
+
+- Modify `experiments/face_recognition_spike/face_spike/review.py`.
+- Extend `experiments/face_recognition_spike/tests/test_review.py`.
+- Update `experiments/face_recognition_spike/README.md`.
+
+**Depends on:** Task 7's immutable review-bundle schema and local decision UI.
+
+**Produces:** Cluster-quality and evidence-quality annotation, original-versus-filtered metrics,
+virtual `same` unions, review coverage, and strict combined/cluster CSV workflows.
+
+- [ ] Add failing tests for cluster and evidence states, `not_applicable` presentation, review
+  coverage, exact original metrics, filtered metric recomputation, deterministic virtual unions,
+  CSV round-trips, and atomic rejection.
+- [ ] Confirm the focused tests fail for the missing quality and filtered-metric behavior.
+- [ ] Implement the two annotation maps and derived calculations without changing the completed run
+  or comparison.
+- [ ] Implement the UI controls, original-versus-provisional presentation, coverage, filters, and
+  strict CSV workflows.
+- [ ] Run the focused and full isolated suites, Ruff formatting and lint, mypy, and the real-model
+  smoke test.
+- [ ] Publish the next unused immutable review-bundle suffix from the existing run and comparison.
+- [ ] Verify the supplied shoe, hand, blurred-face, and group-photo examples can be represented by
+  the approved states and that the displayed provisional metrics update deterministically.
+- [ ] Update the README, perform the requested lightweight review, and create one follow-up
+  implementation commit without committing external artifacts.
+
 ## Verification
 
 Task-level commands appear once with the task they verify. Final verification uses the complete

@@ -284,3 +284,58 @@ model hashes, runtime counts, measured comparison metrics, representative failur
 limitations. Manual review must be possible for clean clusters, singletons, split people, merged
 clusters, group photos, and unmatched clusters. No artifact may describe the result as
 production-ready or as a 100% identity match.
+
+## Scalable Cluster Review and Fragmentation Decisions
+
+The all-clusters review surface must remain usable for a full event without asking a browser to
+decode every crop and source photo at once.
+
+For future cluster runs, `report.html` is a lightweight index. It shows aggregate counts and one
+representative crop, cluster identifier, face count, and unique-photo count per cluster. Every
+cluster links to `people/<cluster_id>/index.html`, which shows that cluster's member crops and
+source photos. Images use lazy loading and bounded display dimensions. The index must not embed all
+member crops or source photos.
+
+Completed immutable runs are never rewritten to retrofit the new layout. A review builder consumes
+a completed run and its completed Peakshot comparison and atomically publishes a separate immutable
+review bundle. The bundle contains:
+
+- a lightweight cluster index;
+- one detail page per cluster;
+- `fragmentation-review.html`; and
+- the static data required by that page without copying embeddings or source photos.
+
+The fragmentation page includes every Peakshot person aligned to two or more result clusters. It
+presents deterministic cluster pairs with representative crops, cluster sizes, a bounded sample of
+member crops, and links to complete cluster detail pages. Photo-level overlap is supporting context,
+not proof that two face clusters are the same identity.
+
+The reviewer assigns exactly one decision to a pair:
+
+- `same`;
+- `different`; or
+- `uncertain`.
+
+Decisions are keyed by the Peakshot person ID and the numerically ordered pair of cluster IDs.
+They are saved in browser `localStorage` under a versioned key scoped to the review bundle's run
+and comparison identities. The page supports filtering by decision state, displays reviewed and
+total counts, exports deterministic CSV, and imports CSV produced by the same schema. Import
+rejects malformed rows, unknown pair keys, invalid decisions, duplicate keys, and bundle identity
+mismatches without partially replacing the stored review.
+
+The review UI is entirely local. It does not transmit images, identifiers, or decisions and does
+not modify the run, comparison, source photos, or Peakshot export.
+
+### Review Acceptance Criteria
+
+Automated evidence demonstrates that:
+
+- the full-event index contains no eager full-size source-photo gallery;
+- cluster detail pages contain only one cluster and resolve all local media links;
+- every fragmented Peakshot person and deterministic cluster pair is represented;
+- `same`, `different`, and `uncertain` decisions survive reload through `localStorage`;
+- CSV export is deterministic and round-trips through strict import;
+- malformed import leaves existing decisions unchanged;
+- review publication is atomic and rejects an existing output path; and
+- the derived review bundle can be built from the existing completed `run-001` and comparison
+  without rerunning face detection, embedding, or clustering.

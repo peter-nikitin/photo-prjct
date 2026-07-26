@@ -1,210 +1,220 @@
-# Local face-recognition spike
+# Local all-people face-clustering spike
 
-This isolated experiment evaluates whether OpenCV YuNet can detect usable faces in event photos and
-whether OpenCV SFace can retrieve other event photos from the same pseudonymous participant series.
-It is directional technical evidence, not a production model selection, identity claim, biometric
-governance approval, or customer-facing search implementation.
+This is a macOS-only, offline experiment. It uses OpenCV YuNet to find every
+accepted face in each event photo and OpenCV SFace to group successful face
+embeddings into anonymous `person-NNNN` clusters. It is directional evidence,
+not a production feature, an identity claim, a biometric-governance approval,
+or customer-facing search.
 
-## Privacy and authorization
+Peakshot data is used only after clustering as an algorithmic silver-label
+reference. It is never an input to detection, embedding, or clustering.
 
-Run the experiment only on photos the maintainer is authorized to process. Source photos, labels,
-model files, crops, embeddings, and generated runs stay outside Git and must not be uploaded as CI
-artifacts. Confirm the licenses of separately obtained model files before use.
+## Privacy and scope
 
-## Local setup
+Run it only on photos the maintainer is authorized to process. Keep source
+photos, ONNX models, face crops, immutable runs, and comparisons outside Git;
+do not upload them as CI artifacts. Raw embeddings are intentionally retained
+only in memory and are never written to the artifacts.
 
-The repository targets Python 3.12. Create an ignored virtual environment and install the isolated
-runtime:
+This spike is maintained for the current macOS environment. Production
+containerization and any production recognition design are separate future
+work; this README deliberately provides no Docker setup or run path.
+
+## Local setup and verification
+
+The repository uses Python 3.12. Create an ignored virtual environment and
+install the isolated runtime:
 
 ```sh
 python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.txt \
+.venv/bin/python -m pip install -r requirements-dev.txt \
   -r experiments/face_recognition_spike/requirements.txt
 ```
 
-Fast tests use generated images and fake adapters; they read no model or event-photo file:
+Model-independent tests use generated images and adapters; they do not read
+event photos or model files:
 
 ```sh
 PYTHONPATH=experiments/face_recognition_spike \
-python -m pytest -q experiments/face_recognition_spike/tests -m "not face_models"
+.venv/bin/pytest -q experiments/face_recognition_spike/tests -m "not face_models"
 ```
 
-The opt-in compatibility smoke test requires maintainer-owned model and photo paths:
+The opt-in smoke test exercises the public `cluster` command with real local
+models and one photo. It is skipped unless all three paths are provided:
 
 ```sh
+DB_NAME=test DB_USER=test DB_PASSWORD=test DB_HOST=127.0.0.1 DB_PORT=5432 \
+SECRET_KEY=test \
 FACE_SPIKE_YUNET_MODEL=/absolute/models/yunet.onnx \
 FACE_SPIKE_SFACE_MODEL=/absolute/models/sface.onnx \
 FACE_SPIKE_SMOKE_PHOTOS=/absolute/smoke-photos \
 PYTHONPATH=experiments/face_recognition_spike \
-python -m pytest -q \
-  experiments/face_recognition_spike/tests/test_model_smoke.py \
-  -m face_models
+.venv/bin/pytest -q \
+  experiments/face_recognition_spike/tests/test_model_smoke.py -m face_models
 ```
 
-## Labels
+The database variables only satisfy the repository's pytest bootstrap; this
+isolated test does not access Django or a database.
 
-The CSV schema is exact:
+## Create an immutable cluster run
 
-```csv
-filename,participant_group,face_expected
-event-0001.jpg,participant-001,yes
-event-0002.jpg,participant-001,yes
-event-0003.jpg,,uncertain
-event-0004.jpg,,no
-```
-
-`participant_group` is an experiment-local pseudonym, not a name or confirmed identity.
-`face_expected` is one of `yes`, `no`, or `uncertain`. Every filename is relative to the supplied
-photo root. A `yes` row requires a nonblank group.
-
-For the current folder convention, the one-off label builder maps sorted `Person ...` directories
-to `person-001`, `person-002`, and so on, marks unmatched event photos `uncertain`, and omits files
-that occur in more than one person directory:
+The output directory must not already exist. The input photo directory is a
+flat inventory of immediate regular `.jpg` or `.jpeg` files: nested
+directories, symlinked images, case-folded filename collisions, and an empty
+inventory are rejected. A run never modifies the sources.
 
 ```sh
-python experiments/face_recognition_spike/scripts/build_labels.py \
-  /absolute/dataset-root \
-  --output /absolute/labels.csv
-```
-
-For a broader directional benchmark, prepare 5–10 independently reviewed participant groups with
-at least three unambiguous photos per group and 30–50 explicit negative examples. Group photos whose
-label cannot be bound to the selected primary face remain `uncertain`.
-
-## Run
-
-The output directory must not exist. Every invocation creates one immutable evidence directory:
-
-```sh
-shasum -a 256 /absolute/models/yunet.onnx /absolute/models/sface.onnx
-
 PYTHONPATH=experiments/face_recognition_spike \
-python -m face_spike run \
+.venv/bin/python -m face_spike cluster \
   --photos /absolute/photos \
-  --labels /absolute/labels.csv \
   --yunet-model /absolute/models/yunet.onnx \
   --sface-model /absolute/models/sface.onnx \
-  --output /absolute/runs/run-001 \
+  --output /absolute/runs/all-people-run-001 \
   --detection-threshold 0.75 \
   --min-face-px 32 \
-  --top-k 10
+  --cluster-threshold 0.363 \
+  --representative-threshold 0.363 \
+  --distance-block-size 512
 ```
 
-The equivalent network-disabled container run is:
+`--detection-threshold` controls accepted YuNet detections and
+`--min-face-px` rejects small boxes. `--cluster-threshold` creates candidate
+edges and `--representative-threshold` guards each merge against chaining; the
+initial values are experimental parameters, not production-calibrated values.
+`--distance-block-size` bounds pairwise-distance working memory. For an
+opt-in short smoke run, `--image-limit 1` limits the already validated photo
+inventory. `--max-image-dimension` (default `12000`) and
+`--max-image-pixels` (default `100000000`) reject oversized images before
+decoding.
+
+The command writes through a hidden sibling staging directory and atomically
+publishes only a completed run. Fatal inventory, model, configuration, or
+publication errors return nonzero without a completed output. Per-image
+decode/detection and per-face alignment/embedding failures remain in the
+completed evidence when other work can continue.
+
+Each run contains:
+
+| Artifact | Meaning |
+| --- | --- |
+| `manifest.json` | Input/model basenames and hashes, parameters, versions, timings, and materialization counts. |
+| `faces.csv`, `faces.json`, `faces/` | Every face instance, status, metadata, and review crop; no raw embeddings. |
+| `clusters.csv`, `clusters.json` | Anonymous cluster membership, representatives, and representative distances. |
+| `annotated/` | Per-image detection previews. |
+| `people/person-NNNN/` | Review crops and the cluster's unique source photos. A group photo can occur in several people directories. |
+| `metrics.json` | Detection, embedding, cluster-size, singleton, and failure counts. |
+| `report.html` | Local visual cluster review with stable `person-NNNN` anchors. |
+
+The writer attempts hard links for source photos and copies only when the
+filesystem does not permit that link. A singleton is a valid discovered
+cluster and is preserved.
+
+Open the local review report after completion:
 
 ```sh
-docker build -t findme-photo-face-spike:local experiments/face_recognition_spike
-docker run --rm --network none \
-  --mount type=bind,src=/absolute/photos,dst=/input/photos,readonly \
-  --mount type=bind,src=/absolute/labels.csv,dst=/input/labels.csv,readonly \
-  --mount type=bind,src=/absolute/models,dst=/models,readonly \
-  --mount type=bind,src=/absolute/runs,dst=/output \
-  findme-photo-face-spike:local run \
-  --photos /input/photos \
-  --labels /input/labels.csv \
-  --yunet-model /models/yunet.onnx \
-  --sface-model /models/sface.onnx \
-  --output /output/run-001 \
-  --detection-threshold 0.75 \
-  --min-face-px 32 \
-  --top-k 10
+open /absolute/runs/all-people-run-001/report.html
 ```
 
-Exit codes are `0` for a completed run without unexpected labelled-image failures, `2` for fatal
-input/configuration/model setup failure, and `3` for a completed evidence run in which at least one
-`face_expected=yes` image failed unexpectedly. An exit code of `3` still produces review artifacts.
+## Compare a completed run with Peakshot
 
-Open `report.html` from the new run directory. CSV and JSON files are authoritative; the report is
-the visual review surface:
+Comparison is a separate, evaluation-only command. It requires an immutable
+completed cluster run and a Peakshot export containing
+`peakshot-person-photo-map.csv`, `peakshot-people.json`,
+`peakshot-photos.json`, and `metadata.json`. The comparison output must not
+exist and must not be inside either input directory.
 
 ```sh
-open /absolute/runs/run-001/report.html
+PYTHONPATH=experiments/face_recognition_spike \
+.venv/bin/python -m face_spike compare \
+  --run /absolute/runs/all-people-run-001 \
+  --peakshot-export /absolute/peakshot-reference-export \
+  --output /absolute/comparisons/all-people-run-001-vs-peakshot
 ```
 
-Delete the external input, model, and run directories when the local evaluation no longer needs
-them. Never modify an existing run; correct labels and create a new run.
+The evaluator aligns a result cluster to the Peakshot person with the greatest
+photo intersection, then Jaccard similarity, then smallest `person_id`; it
+does not alter the run and does not feed any reference data back into
+clustering. It retains unmatched people and clusters, one-to-many splits, and
+many-to-one merge evidence rather than silently discarding them.
 
-## Directional evidence — 2026-07-24
+The immutable comparison includes `comparison.json`, `metrics.json`,
+`manifest.json`, `people-comparison.csv`, and `people-comparison.html`.
+The required table makes visual reconciliation possible:
 
-The first host-native full-event experiment used separately supplied YuNet and SFace ONNX files,
-Python 3.12.13, OpenCV 4.12.0, NumPy 2.2.6, and Pillow 12.0.0.
+| Column | Meaning |
+| --- | --- |
+| `peakshot_person_id` | Person identifier from the Peakshot export. |
+| `peakshot_photo_count` | Unique photos assigned by Peakshot. |
+| `matched_cluster_ids` | All anonymous cluster IDs primarily aligned to that person. |
+| `our_photo_count` | Unique photos across those clusters, without double-counting. |
 
-Model SHA-256:
+It also reports intersection, missing, extra, precision, and recall counts;
+the HTML links each cluster ID back to its cluster report section. Unmatched
+clusters are listed separately with their review links.
 
-- YuNet: `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`
-- SFace: `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`
+## Honest interpretation
 
-Dataset and processing aggregates:
+Peakshot is a useful silver-label reference, not ground truth. Differences in
+the comparison are review evidence, not automatically recognition errors.
+Group photos can be assigned to several Peakshot people and can contain
+several detected faces, so photo-level disagreement alone cannot establish an
+identity mistake. Review clean clusters, singletons, fragmented people,
+merged clusters, group photos, and unmatched clusters before choosing at most
+one narrowly scoped follow-up experiment.
 
-| Metric | Result |
-| --- | ---: |
-| Event photos | 1,411 |
-| Accepted detections | 3,231 |
-| Photos with a primary detection and embedding | 1,370 |
-| Photos without a detected face | 41 |
-| Unexpected processing failures | 0 |
-| Decode time | 66.20 s |
-| Detection time | 79.70 s |
-| Embedding time | 10.08 s |
-| Total run duration | 242.29 s |
+No count, metric, alignment, or visually convincing cluster produced here
+authorizes production use or claims a 100% identity match.
 
-The initial image-level evaluation contained 20 labelled queries. It reported 100% expected-face
-detection coverage, Recall@1 of 80%, and Recall@5/10 of 85%. Manual review found that the four
-queries responsible for the retrieval misses were group photos with multiple clearly visible
-faces. The current single-primary-face rule could not establish that the embedded primary face was
-the face associated with the image-level label.
+## Full-event evidence: 2026-07-26
 
-Those four ambiguous images were reclassified as `uncertain`, retained in the candidate gallery,
-and evaluated in a new immutable run:
+One immutable full-event run (`all-people-run-001`) and its separate immutable
+Peakshot comparison (`all-people-run-001-vs-peakshot`) were produced outside
+Git using the documented commands and these parameters:
 
-| Metric | Reviewed result |
-| --- | ---: |
-| Unambiguous evaluable queries | 16 |
-| Expected-face detection coverage | 100% (16/16) |
-| Recall@1 | 100% |
-| Recall@5 | 100% |
-| Recall@10 | 100% |
+- detection threshold `0.75`, minimum face size `32` px;
+- cluster and representative thresholds `0.363`;
+- distance block size `512`; and
+- no image limit.
 
-This passes the spike's directional continuation gate, but the reviewed result is post-review,
-contains only one known participant series, and is selected from photos already recognized by
-another service. It does not estimate production recall, precision, an open-set verification
-threshold, or performance on every photo of that participant. No `face_expected=no` rows were
-included, so this run provides no false-detection estimate.
+The 1,420-photo run found 3,301 face instances with successful embeddings and
+no recorded recoverable image or face-processing failures. It produced 1,092
+clusters, including 615 singletons, in 297.33 seconds (297.06 seconds for
+decode/detection/embedding and 0.27 seconds for clustering). Source-photo
+review materialization used 3,296 hard links and no copies. The model hashes
+recorded in the immutable manifest are YuNet
+`8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` and
+SFace `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`.
 
-The opt-in real-model smoke test passed locally (`1 passed`). The fast model-independent suite
-passed with `89 passed, 1 deselected`. The isolated Docker image built successfully on Apple
-silicon from its Python 3.12 base and pinned dependencies.
+The comparison reconciled every successful face to exactly one cluster and
+published rows for all 171 Peakshot people; every linked cluster ID exists.
+The evaluation-only relationship metrics were precision `0.6932`, recall
+`0.8997`, and F1 `0.7830`; cluster purity was `0.7057`. It aligned 165 people
+and missed 6, aligned 902 clusters and left 190 unmatched, reported 142
+fragmented reference people and 566 clusters with multi-person photo overlap.
+There were 41 Peakshot-only inventory filenames and no run-only filenames.
 
-## Required change for group photos
+Manual review covered a large cluster, a singleton, one component of a heavily
+fragmented reference person, a cluster with many reference-photo overlaps, a
+group photo, and an unmatched cluster. The reviewed large and unmatched
+clusters were internally visually coherent; the singleton was retained as
+intended. The group photo contained several detected faces and was represented
+in several anonymous clusters. A visually coherent cluster can still have many
+reference-photo overlaps when people co-occur in group photos, so the merge
+metric is evidence for review rather than proof that identities were merged.
+Likewise, the high fragmentation count is a discrepancy to investigate, not a
+ground-truth error claim.
 
-The current spike retains all YuNet detections for diagnostics but embeds only the largest accepted
-face (`PRIMARY`). Proper group-photo support requires changing the evaluation and retrieval unit
-from an image to a face instance:
+On this macOS/NumPy environment, blockwise matrix multiplication reproducibly
+emitted divide-by-zero, overflow, and invalid-operation `RuntimeWarning`s.
+A full read-only replay found zero non-finite matrix-product values and
+reproduced all 1,092 cluster IDs, members, representatives, and distances
+exactly from the immutable artifact. The warnings are therefore a documented
+environment caveat, not evidence that this completed run was numerically
+corrupt; they should be rechecked on any future environment or dependency
+change.
 
-1. Assign every accepted detection a stable per-image face-instance identifier and persist its
-   bounding box, landmarks, crop, and SFace embedding.
-2. Allow zero or more labelled face instances per image. Ground truth must bind a pseudonymous
-   participant group to a specific bounding box or reviewed face-instance identifier rather than
-   to the whole image.
-3. Rank face instances by cosine distance, then aggregate results back to unique photos using the
-   best matching face so one photo is returned once.
-4. Report instance-level detection/retrieval metrics and photo-level retrieval metrics separately.
-   A known face found anywhere in a group photo counts as a hit; another face selected as primary
-   is no longer treated as a recognition error.
-5. Show every face crop and its matches in the local report, preserving the immutable artifact,
-   bounded-memory streaming, and no-raw-embedding-export boundaries.
-
-The next experiment should implement this offline multi-face representation and repeat the
-benchmark with several independently reviewed participant series and explicit negative examples.
-It must remain isolated from Django and production infrastructure until biometric-governance and
-production-model decisions are made separately.
-
-## Interpretation
-
-- Detection coverage below 50%: evaluate a different detector before interpreting retrieval.
-- Detection coverage at least 50% with Recall@5 below 60%: reject this model configuration.
-- Detection coverage and Recall@5 both at least 80%: proceed only to a larger offline benchmark.
-- Other outcomes: inspect diagnostic categories before choosing one narrow follow-up experiment.
-
-No result from this spike authorizes production use.
+The next narrow experiment is one repeat on the same event with only both
+clustering thresholds changed from `0.363` to `0.390`, followed by the same
+comparison and targeted review of the existing fragmented and multi-overlap
+examples. It will measure the precision/recall, fragmentation, singleton, and
+purity trade-off without changing detection, models, or reference handling.

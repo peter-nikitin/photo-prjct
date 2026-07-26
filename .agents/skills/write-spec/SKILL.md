@@ -13,6 +13,27 @@ specification whose architectural impact is explicit before `$write-plan` begins
 **REQUIRED SUB-SKILL:** Use `superpowers:brainstorming` for intent, alternatives, incremental design
 approval, written review, and transition to planning.
 
+## Document contract
+
+A specification answers **what we are building and why**. It is the authoritative source for:
+
+- intended outcome and observable behavior;
+- scope and explicit boundaries;
+- selected design and rejected alternatives;
+- components and data flow at the design level;
+- durable constraints, invariants, compatibility, privacy, and failure semantics;
+- acceptance criteria; and
+- architecture and ADR impact.
+
+Record enough technical detail to make the selected behavior unambiguous. Include an interface,
+schema, algorithm rule, or short pseudocode fragment only when it is part of the approved design
+contract.
+
+The specification does not schedule the work. Implementation order, file-by-file edits, TDD
+cycles, command checklists, reviewer gates, rollout steps, and ordinary implementation examples
+belong in the implementation plan. A plan may link back to a specification section; therefore the
+specification must not anticipate the plan by duplicating those mechanics.
+
 ## Workflow
 
 1. Before proposing approaches, read the relevant current, accepted, proposed, and open-decision
@@ -23,7 +44,8 @@ approval, written review, and transition to planning.
 3. Save the design under `docs/superpowers/specs/YYYY-MM-DD-topic-design.md` with exact `Related
    architecture`, `Related ADRs`, and `ADR impact` metadata.
 4. During self-review, verify scope, internal consistency, ambiguity, applicable ADR boundaries,
-   and separation of accepted architecture from unimplemented design.
+   separation of accepted architecture from unimplemented design, and compliance with the document
+   contract above.
 5. Obtain user review of the written specification. Approval selects the design but does not
    silently accept a new or superseding ADR.
 6. Invoke `$write-plan` after approval. Pass the approved specification and its ADR-impact

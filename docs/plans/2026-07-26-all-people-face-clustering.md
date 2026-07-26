@@ -367,8 +367,8 @@ atomically publishes the approved derived review bundle for an existing run and 
 
 **Files:**
 
-- Modify `experiments/face_recognition_spike/face_spike/review.py`.
-- Extend `experiments/face_recognition_spike/tests/test_review.py`.
+- Modify `experiments/face_recognition_spike/face_spike/review.py` and `face_spike/cli.py`.
+- Extend `experiments/face_recognition_spike/tests/test_review.py` and `test_cluster_cli.py`.
 - Update `experiments/face_recognition_spike/README.md`.
 
 **Depends on:** Task 7's immutable review-bundle schema and local decision UI.
@@ -376,20 +376,21 @@ atomically publishes the approved derived review bundle for an existing run and 
 **Produces:** Cluster-quality and evidence-quality annotation, original-versus-filtered metrics,
 virtual `same` unions, review coverage, and strict combined/cluster CSV workflows.
 
-- [ ] Add failing tests for cluster and evidence states, `not_applicable` presentation, review
+- [x] Add failing tests for cluster and evidence states, `not_applicable` presentation, review
   coverage, exact original metrics, filtered metric recomputation, deterministic virtual unions,
   CSV round-trips, and atomic rejection.
-- [ ] Confirm the focused tests fail for the missing quality and filtered-metric behavior.
-- [ ] Implement the two annotation maps and derived calculations without changing the completed run
-  or comparison.
-- [ ] Implement the UI controls, original-versus-provisional presentation, coverage, filters, and
+- [x] Confirm the focused tests fail for the missing quality and filtered-metric behavior.
+- [x] Require the same strictly validated Peakshot export as the comparison, publish a byte-identical
+  original-metrics copy, and implement the two annotation maps and unique-union derived calculations
+  without changing the completed run or comparison.
+- [x] Implement the UI controls, original-versus-provisional presentation, coverage, filters, and
   strict CSV workflows.
-- [ ] Run the focused and full isolated suites, Ruff formatting and lint, mypy, and the real-model
+- [x] Run the focused and full isolated suites, Ruff formatting and lint, mypy, and the real-model
   smoke test.
-- [ ] Publish the next unused immutable review-bundle suffix from the existing run and comparison.
-- [ ] Verify the supplied shoe, hand, blurred-face, and group-photo examples can be represented by
+- [x] Publish the next unused immutable review-bundle suffix from the existing run and comparison.
+- [x] Verify the supplied shoe, hand, blurred-face, and group-photo examples can be represented by
   the approved states and that the displayed provisional metrics update deterministically.
-- [ ] Update the README, perform the requested lightweight review, and create one follow-up
+- [x] Update the README, perform the requested lightweight review, and create one follow-up
   implementation commit without committing external artifacts.
 
 ## Verification

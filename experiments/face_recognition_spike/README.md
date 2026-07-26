@@ -130,6 +130,7 @@ PYTHONPATH=experiments/face_recognition_spike \
 .venv/bin/python -m face_spike review \
   --run /absolute/runs/all-people-run-001 \
   --comparison /absolute/comparisons/all-people-run-001-vs-peakshot \
+  --peakshot-export /absolute/peakshot-reference-export \
   --output /absolute/reviews/all-people-run-001-fragmentation-review-001
 ```
 
@@ -140,13 +141,39 @@ clusters for each Peakshot person aligned to two or more clusters. It is review
 evidence: shared source photos, particularly group photos, are not proof that
 two face clusters are the same person.
 
-Choose exactly `same`, `different`, or `uncertain` for each pair. Decisions are
-stored only in this browser's `localStorage`, under a versioned key scoped to
-this review bundle; they are never sent anywhere and do not modify the run,
-comparison, source photos, or Peakshot export. Use **Export CSV** to preserve
-or transfer decisions. Import accepts only CSV produced for the same bundle;
-malformed rows, unknown pairs, duplicate pairs, invalid decisions, or a bundle
-mismatch are rejected before any stored decision is replaced.
+The review command validates the supplied Peakshot export with the same strict
+rules as `compare`. It needs the validated person-to-filename sets to calculate
+filtered relationship metrics by unique photo union: the same source photo in
+two remaining clusters is counted once for that Peakshot person. The bundle
+also contains `original-metrics.json`, a byte-for-byte copy of the comparison's
+`metrics.json`. The displayed immutable metrics use embedded semantic values
+validated while the bundle is built; the page links to `original-metrics.json`
+as the byte-preserved source artifact for local audit.
+
+For each cluster, choose one quality state: `usable`, `not_face` (for example a
+shoe or hand), `low_quality` (a real but unusably small, blurred, or background
+face), `mixed`, or leave it `unreviewed`. For each pair choose `same`,
+`different`, or `uncertain`, and mark the evidence `direct` or
+`group_photo_ambiguous`. A pair that touches `not_face`, `low_quality`, or
+`mixed` is visibly `not_applicable` for identity review; its saved identity
+decision remains available and is not erased.
+
+The page always keeps the original immutable comparison metrics visible. Its
+neighbouring **Provisional filtered metrics** exclude only explicitly unusable
+clusters; `usable` and `unreviewed` remain included. Review coverage is shown
+with these provisional numbers. A separate manual-fragmentation summary applies
+saved `same` decisions as virtual connected components; it never rewrites
+cluster IDs or relationship metrics.
+
+Pair annotations and cluster qualities are stored only in this browser's
+`localStorage`, under separate versioned keys scoped to this review bundle; they
+are never sent anywhere and do not modify the run, comparison, source photos,
+or Peakshot export. Use **Export combined CSV** for pairs and their repeated
+cluster-quality values, and **Export cluster CSV** for a one-row-per-cluster
+quality audit. Each matching import validates the exact bundle, headers, known
+IDs, states, duplicates, and repeated-quality consistency before atomically
+replacing its stored map. A malformed import leaves existing annotations
+unchanged.
 
 ## Compare a completed run with Peakshot
 

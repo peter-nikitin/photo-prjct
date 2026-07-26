@@ -185,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     review = commands.add_parser("review")
     review.add_argument("--run", type=Path, required=True)
     review.add_argument("--comparison", type=Path, required=True)
+    review.add_argument("--peakshot-export", type=Path, required=True)
     review.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -206,6 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             review_config = ReviewConfig(
                 run=arguments.run,
                 comparison=arguments.comparison,
+                peakshot_export=arguments.peakshot_export,
                 output=arguments.output,
             )
             review_config.validate()

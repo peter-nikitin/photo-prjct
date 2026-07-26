@@ -52,6 +52,8 @@ def valid_review_arguments(output: Path) -> list[str]:
         "/input/run",
         "--comparison",
         "/input/comparison",
+        "--peakshot-export",
+        "/input/peakshot",
         "--output",
         str(output),
     ]
@@ -83,6 +85,17 @@ def test_compare_requires_each_required_argument(tmp_path: Path, missing_argumen
     assert cli.main(arguments) == 2
 
 
+@pytest.mark.parametrize(
+    "missing_argument", ["--run", "--comparison", "--peakshot-export", "--output"]
+)
+def test_review_requires_each_required_argument(tmp_path: Path, missing_argument: str) -> None:
+    arguments = valid_review_arguments(tmp_path / "review")
+    index = arguments.index(missing_argument)
+    del arguments[index : index + 2]
+
+    assert cli.main(arguments) == 2
+
+
 def test_compare_dispatches_evaluation_only_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -103,6 +116,7 @@ def test_review_dispatches_immutable_review_config(
     assert cli.main(valid_review_arguments(tmp_path / "review")) == 0
     assert received[0].run == Path("/input/run")
     assert received[0].comparison == Path("/input/comparison")
+    assert received[0].peakshot_export == Path("/input/peakshot")
 
 
 def test_importing_compare_command_does_not_load_model_or_clustering_modules() -> None:

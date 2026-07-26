@@ -369,13 +369,19 @@ When either cluster is `not_face`, `low_quality`, or `mixed`, the UI displays th
 `not_applicable` for identity analysis without deleting a previously recorded identity decision.
 Group-photo ambiguity is explanatory and does not automatically change identity or quality states.
 
-The page always shows the immutable original comparison metrics. Beside them it calculates
+The review command receives the completed run, comparison, and the original Peakshot export. It
+reuses the comparison's strict export validation to retain verified person-to-filename sets in
+review-only data; this does not influence detection, embedding, or clustering. The bundle writes
+`original-metrics.json` as a byte-for-byte copy of the completed comparison's `metrics.json`.
+The page displays embedded semantic values validated while the bundle is built and links to that
+copy as the local source artifact. Beside them it calculates
 provisional filtered metrics after excluding clusters explicitly marked `not_face`, `low_quality`,
 or `mixed`. `usable` and `unreviewed` clusters remain included, and the UI prominently reports
 review coverage so partially reviewed values cannot be mistaken for final corrected metrics.
 Precision, recall, F1, purity, unmatched-cluster count, singleton statistics, and fragmentation are
 recomputed from the remaining cluster-photo relationships using the existing deterministic primary
-assignments. Original published files and metrics remain unchanged.
+assignments and unique filename unions per Peakshot person. Original published files and metrics
+remain unchanged.
 
 For each Peakshot person, `same` decisions form connected components among its remaining clusters.
 The UI reports:

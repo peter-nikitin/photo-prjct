@@ -137,6 +137,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Keep Stage 2 ingestion control and confirmation request-driven, with bounded browser transfer
   concurrency and no worker or broker, as defined by
   [ADR 0014](adr/0014-keep-stage-2-ingestion-request-driven.md).
+- Run the first Stage 3 photo processor as a separately runnable worker that polls a private Django
+  API backed by PostgreSQL jobs and leases. Give it no database or permanent Object Storage
+  credentials; issue only short-lived exact-object media grants, as defined by
+  [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md).
 - Allow anonymous inline delivery of a complete private original only for an eligible completed
   upload in a currently published free event, within the narrow boundary of
   [ADR 0015](adr/0015-allow-anonymous-free-event-original-delivery.md). Paid-event media and
@@ -287,7 +291,7 @@ broker, vector engine, and ML implementations shown for later processing require
 
 Each item needs evidence and an ADR before implementation commits the architecture:
 
-- Stage 3 background-processing worker, broker, retry contract, and processing SLA.
+- Stage 3 processing SLA and the measured threshold for replacing ADR 0017 polling with a broker.
 - `pgvector` versus a dedicated vector database and migration thresholds.
 - Face detection/embedding implementation and biometric governance.
 - Bib-region detection/OCR implementation and model licensing.

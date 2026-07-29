@@ -1,6 +1,6 @@
 # 0017: Use Django-polled photo-processing jobs
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-29
 - Deciders: project maintainer
 - Supersedes: none

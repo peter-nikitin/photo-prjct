@@ -26,14 +26,15 @@ def test_adr_index_lists_all_accepted_decisions() -> None:
     architecture = (ROOT / "docs/architecture.md").read_text(encoding="utf-8")
     open_decisions = architecture.partition("## Open decisions")[2].partition("## Change rules")[0]
 
-    for number in (*range(1, 8), 11, 12, 13, 14):
+    for number in (*range(1, 8), 11, 12, 13, 14, 17):
         assert re.search(rf"\| {number:04d} \|.*\| Accepted \|", index)
     for number in (8, 9, 10):
         assert re.search(rf"\| {number:04d} \|.*\| Superseded \|", index)
     assert "Authentication model and photographer/operator permissions" not in open_decisions
     assert "Private media lifecycle and retention policy" not in open_decisions
     assert "Background task framework, broker, retry semantics" not in open_decisions
-    assert "Stage 3 background-processing worker, broker, retry contract" in open_decisions
+    assert "Stage 3 background-processing worker, broker, retry contract" not in open_decisions
+    assert "Stage 3 processing SLA" in open_decisions
 
 
 def _envs(step: dict[str, Any]) -> set[str]:

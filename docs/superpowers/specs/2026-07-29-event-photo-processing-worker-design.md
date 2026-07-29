@@ -14,14 +14,11 @@ binary-derivative boundary.
   [ADR 0006](../../adr/0006-yandex-object-storage-media.md),
   [ADR 0013](../../adr/0013-use-direct-private-object-storage-ingestion.md), and
   [ADR 0014](../../adr/0014-keep-stage-2-ingestion-request-driven.md)
-- Proposed ADR:
+- Governing ADR:
   [ADR 0017](../../adr/0017-use-django-polled-photo-processing-jobs.md)
-- ADR impact: Requires new ADR — proposed ADR 0017 records the first Stage 3 worker boundary,
-  Django polling API, PostgreSQL-backed job dispatch, lease/retry semantics, and per-object
-  temporary download access; implementation planning remains blocked until the maintainer
-  explicitly accepts it
-- Implementation plan: not written; planning starts only after final specification approval and
-  ADR resolution is included in the planning input
+- ADR impact: Conforms to ADR 0017
+- Implementation plan:
+  [`docs/plans/2026-07-29-event-photo-processing-worker.md`](../../plans/2026-07-29-event-photo-processing-worker.md)
 
 ## Goal
 

@@ -15,6 +15,27 @@ photographers and operators publish and manage event photos.
 - [Implementation plans](docs/plans/) contain decision-complete plans for multi-step work.
 - [Agent skills](.agents/skills/) contain reusable project-specific guidance.
 
+## Delivery focus and test scope
+
+- Optimize for the shortest safe delivery of the requested critical path. A finding blocks the
+  current task only when it affects an accepted requirement, the critical path, an existing
+  production path, a regression in existing behavior, security, privacy, irreversible data loss, or
+  a failure scenario that is realistic in the current system.
+- Do not expand the current task to defend against a merely technically possible scenario when the
+  repository has no production path that can trigger it. Do not add speculative infrastructure,
+  concurrency handling, compatibility behavior, or exhaustive state coverage without current
+  evidence or an accepted requirement.
+- Record a useful non-blocking finding as a separate Markdown artifact under `docs/future-work/`
+  instead of implementing it in the current task. The artifact must state the observed gap, why it
+  is non-blocking now, and the concrete trigger that should bring it back into scope. Do not create
+  an artifact for a vague idea without an actionable trigger.
+- Tests must cover the critical path and the realistic failure and regression paths changed by the
+  task. Additional tests need a concrete risk or contract they protect; coverage percentage alone
+  is not sufficient justification.
+- Repository-wide branch coverage is a regression guard, not a per-task completeness target.
+  Reviewers must classify findings as `blocking` or `future` using the criteria above. A `future`
+  finding does not prevent approval or delivery.
+
 ## Subagent delegation
 
 - An implementer subagent must perform its assigned task itself and must not spawn, dispatch, or

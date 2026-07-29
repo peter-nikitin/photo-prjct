@@ -644,8 +644,7 @@ def test_processing_activation_requires_exact_valid_configuration(
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
-    expected_status = 2 if message.startswith("PHOTO_PROCESSING") else 1
-    assert result.returncode == expected_status
+    assert result.returncode == 2
     assert message in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert not (tmp_path / "apply.log").exists()

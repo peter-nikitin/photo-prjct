@@ -51,8 +51,14 @@ esac
 
 case "$requested_processing_enabled" in
     True)
-        : "${WORKER_IMAGE:?Set WORKER_IMAGE}"
-        : "${PHOTO_PROCESSING_WORKER_TOKEN:?Set PHOTO_PROCESSING_WORKER_TOKEN}"
+        if [ -z "${WORKER_IMAGE:-}" ]; then
+            echo "Set WORKER_IMAGE" >&2
+            exit 2
+        fi
+        if [ -z "${PHOTO_PROCESSING_WORKER_TOKEN:-}" ]; then
+            echo "Set PHOTO_PROCESSING_WORKER_TOKEN" >&2
+            exit 2
+        fi
         ;;
     False)
         ;;

@@ -164,6 +164,45 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
     assert "healthcheck" in compose["services"]["web"]
 
 
+def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
+    """Staging may activate the worker, while production receives no activation inputs."""
+    staging = _load_workflow("deploy.yml")
+    production = _load_workflow("promote-production.yml")
+    build = staging["jobs"]["build"]
+    staging_apply = _workflow_step(staging, "deploy", "Apply staging deployment")
+    production_apply = _workflow_step(production, "promote", "Apply production deployment")
+
+    assert build["outputs"]["worker_image"] == "${{ steps.image.outputs.worker_image }}"
+    image_step = _workflow_step(staging, "build", "Select image references")
+    assert "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${GITHUB_SHA}" in image_step["run"]
+    worker_build = _workflow_step(staging, "build", "Build and push worker image")
+    assert worker_build["with"] == {
+        "context": ".",
+        "file": "./Dockerfile.worker",
+        "push": True,
+        "tags": "${{ steps.image.outputs.worker_image }}",
+    }
+
+    expected = {
+        "WORKER_IMAGE": "${{ needs.build.outputs.worker_image }}",
+        "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_WORKER_TOKEN": "${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}",
+        "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
+            "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
+        ),
+        "PHOTO_PROCESSING_MAX_REQUEST_BYTES": (
+            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '16384' }}"
+        ),
+        "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
+        "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
+    }
+    for name, value in expected.items():
+        assert staging_apply["env"][name] == value
+        assert name in _envs(staging_apply)
+        assert name not in production_apply["env"]
+        assert name not in _envs(production_apply)
+
+
 def test_public_environments_share_one_https_edge_overlay() -> None:
     app_compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
     shared_path = ROOT / "docker-compose.https.yml"

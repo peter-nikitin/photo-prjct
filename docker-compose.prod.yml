@@ -37,5 +37,22 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  worker:
+    image: ${WORKER_IMAGE:-}
+    profiles:
+      - worker
+    environment:
+      PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
+      PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
+      PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
+      PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: "1.0"
+    mem_limit: 768m
+    pids_limit: 64
+
 volumes:
   pgdata:

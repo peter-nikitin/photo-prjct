@@ -59,6 +59,29 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
     assert "PHOTO_WORKER_CONCURRENCY" not in environment
 
 
+def test_production_worker_profile_is_bounded_and_isolated_from_web_configuration() -> None:
+    """The deployed worker has only its private API contract and declared resource bounds."""
+    compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
+    worker = compose["services"]["worker"]
+
+    assert worker["image"] == "${WORKER_IMAGE:-}"
+    assert worker["profiles"] == ["worker"]
+    assert worker.get("ports") is None
+    assert worker.get("env_file") is None
+    assert worker["depends_on"] == {"web": {"condition": "service_healthy"}}
+    assert worker["restart"] == "unless-stopped"
+    assert worker["cpus"] == "1.0"
+    assert worker["mem_limit"] == "768m"
+    assert worker["pids_limit"] == 64
+    assert worker["environment"] == {
+        "PHOTO_WORKER_API_URL": "http://web:8000/internal/photo-processing/v1",
+        "PHOTO_WORKER_TOKEN": "${PHOTO_PROCESSING_WORKER_TOKEN:-}",
+        "PHOTO_WORKER_BUILD": "${PHOTO_WORKER_BUILD:-capture-metadata-v1}",
+        "PHOTO_WORKER_LEASE_SECONDS": "${PHOTO_WORKER_LEASE_SECONDS:-120}",
+    }
+    assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
+
+
 def test_default_compose_config_interpolates_example_without_enabling_the_worker() -> None:
     """An inactive profile must not make the normal local Compose configuration unusable."""
     with TemporaryDirectory() as temporary:

@@ -15,6 +15,7 @@ set -eu
 : "${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN}"
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 requested_image="$APP_IMAGE"
+requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
 
 case "${PHOTO_UPLOAD_ENABLED:-False}" in
     True)
@@ -48,6 +49,19 @@ case "$DEPLOYMENT_TARGET" in
         ;;
 esac
 
+case "$requested_processing_enabled" in
+    True)
+        : "${WORKER_IMAGE:?Set WORKER_IMAGE}"
+        : "${PHOTO_PROCESSING_WORKER_TOKEN:?Set PHOTO_PROCESSING_WORKER_TOKEN}"
+        ;;
+    False)
+        ;;
+    *)
+        echo "PHOTO_PROCESSING_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
 : "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL}"
 overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
 health_port=443
@@ -67,6 +81,22 @@ compose() {
     compose_with_env_file "$DEPLOY_ROOT/.env" "$@"
 }
 
+compose_with_processing_profile() {
+    processing_enabled="$1"
+    compose_env_file="$2"
+    shift 2
+
+    if [ "$processing_enabled" = True ]; then
+        compose_with_env_file "$compose_env_file" --profile worker "$@"
+    else
+        compose_with_env_file "$compose_env_file" "$@"
+    fi
+}
+
+compose_with_requested_processing_profile() {
+    compose_with_processing_profile "$requested_processing_enabled" "$DEPLOY_ROOT/.env" "$@"
+}
+
 diagnostics() {
     compose ps || true
     compose logs --tail=100 web nginx || true
@@ -74,6 +104,9 @@ diagnostics() {
 
 requested_env_tmp=""
 recovery_env_tmp=""
+previous_env_tmp=""
+previous_deployment_target_tmp=""
+previous_compose_project_name_tmp=""
 marker_tmp=""
 mutation_started=0
 deployment_committed=0
@@ -83,34 +116,84 @@ cleanup() {
     rm -f \
         ${requested_env_tmp:+"$requested_env_tmp"} \
         ${recovery_env_tmp:+"$recovery_env_tmp"} \
+        ${previous_env_tmp:+"$previous_env_tmp"} \
+        ${previous_deployment_target_tmp:+"$previous_deployment_target_tmp"} \
+        ${previous_compose_project_name_tmp:+"$previous_compose_project_name_tmp"} \
         ${marker_tmp:+"$marker_tmp"}
 }
 
-replace_env_image() {
-    image="$1"
-    recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.restore.XXXXXX")" || return 1
-    if ! awk -v image="$image" '
-        BEGIN { replaced = 0 }
-        /^APP_IMAGE=/ && !replaced { print "APP_IMAGE=" image; replaced = 1; next }
-        { print }
-        END { if (!replaced) print "APP_IMAGE=" image }
-    ' "$DEPLOY_ROOT/.env" > "$recovery_env_tmp"; then
-        return 1
+restore_previous_deployment_markers() {
+    if [ "$previous_deployment_target_exists" -eq 1 ]; then
+        mv "$previous_deployment_target_tmp" "$DEPLOY_ROOT/deployment-target" || return 1
+        previous_deployment_target_tmp=""
+    else
+        rm -f "$DEPLOY_ROOT/deployment-target" || return 1
     fi
-    chmod 600 "$recovery_env_tmp" || return 1
-    mv "$recovery_env_tmp" "$DEPLOY_ROOT/.env" || return 1
-    recovery_env_tmp=""
+
+    if [ "$previous_compose_project_name_exists" -eq 1 ]; then
+        mv "$previous_compose_project_name_tmp" "$DEPLOY_ROOT/compose-project-name" || return 1
+        previous_compose_project_name_tmp=""
+    else
+        rm -f "$DEPLOY_ROOT/compose-project-name" || return 1
+    fi
+}
+
+clear_candidate_compose_interpolation() {
+    unset \
+        APP_IMAGE \
+        SECRET_KEY \
+        DEBUG \
+        ALLOWED_HOSTS \
+        DB_NAME \
+        DB_USER \
+        DB_PASSWORD \
+        DB_HOST \
+        DB_PORT \
+        PUBLIC_DOMAIN \
+        PUBLIC_DOMAIN_ALIAS \
+        LETSENCRYPT_EMAIL \
+        MEDIA_STORAGE_BACKEND \
+        MEDIA_S3_ENDPOINT_URL \
+        MEDIA_S3_REGION \
+        MEDIA_S3_PUBLIC_BUCKET \
+        MEDIA_S3_ACCESS_KEY_ID \
+        MEDIA_S3_SECRET_ACCESS_KEY \
+        PHOTO_UPLOAD_ENABLED \
+        PRIVATE_MEDIA_S3_BUCKET \
+        PRIVATE_MEDIA_S3_ACCESS_KEY_ID \
+        PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY \
+        PRIVATE_MEDIA_ALLOWED_ORIGINS \
+        WORKER_IMAGE \
+        PHOTO_PROCESSING_ENABLED \
+        PHOTO_PROCESSING_WORKER_TOKEN \
+        PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS \
+        PHOTO_PROCESSING_MAX_REQUEST_BYTES \
+        PHOTO_WORKER_BUILD \
+        PHOTO_WORKER_LEASE_SECONDS
 }
 
 recover_previous_deployment() {
-    if [ -z "$previous_image" ]; then
-        echo "No previous APP_IMAGE is available for recovery" >&2
-        return 1
+    restore_previous_deployment_markers || return 1
+
+    if [ "$previous_env_exists" -eq 0 ]; then
+        recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.recovery.XXXXXX")" || return 1
+        cp "$DEPLOY_ROOT/.env" "$recovery_env_tmp" || return 1
+        if ! compose_with_processing_profile "$requested_processing_enabled" "$recovery_env_tmp" \
+            down --remove-orphans; then
+            return 1
+        fi
+        rm -f "$DEPLOY_ROOT/.env"
+        echo "No previous deployment environment was present; restored no-env state" >&2
+        return 0
     fi
-    replace_env_image "$previous_image" || return 1
-    unset APP_IMAGE
-    compose up -d --remove-orphans || return 1
-    echo "Previous application image and edge reconciled" >&2
+
+    [ -n "$previous_env_tmp" ] || return 1
+    mv "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
+    previous_env_tmp=""
+    clear_candidate_compose_interpolation
+    compose_with_processing_profile "$previous_processing_enabled" "$DEPLOY_ROOT/.env" \
+        up -d --remove-orphans || return 1
+    echo "Previous application and worker profile reconciled" >&2
 }
 
 on_exit() {
@@ -148,20 +231,45 @@ fail() {
 }
 
 install -d -m 0755 "$DEPLOY_ROOT"
-previous_image=""
 previous_upload_enabled="False"
+previous_processing_enabled="False"
+previous_env_exists=0
+previous_deployment_target_exists=0
+previous_compose_project_name_exists=0
 has_successful_deployment=0
 if [ -f "$DEPLOY_ROOT/.env" ]; then
-    previous_image="$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    previous_env_exists=1
+    previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not snapshot previous deployment environment"
+    cp -p "$DEPLOY_ROOT/.env" "$previous_env_tmp" || fail "Could not snapshot previous deployment environment"
     previous_upload_enabled="$(
         sed -n 's/^PHOTO_UPLOAD_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
+    previous_processing_enabled="$(
+        sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
+    )"
+    case "$previous_processing_enabled" in
+        True|False)
+            ;;
+        *)
+            previous_processing_enabled="False"
+            ;;
+    esac
+fi
+if [ -f "$DEPLOY_ROOT/deployment-target" ]; then
+    previous_deployment_target_exists=1
+    previous_deployment_target_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.previous.XXXXXX")" || fail "Could not snapshot deployment target marker"
+    cp -p "$DEPLOY_ROOT/deployment-target" "$previous_deployment_target_tmp" || fail "Could not snapshot deployment target marker"
+fi
+if [ -f "$DEPLOY_ROOT/compose-project-name" ]; then
+    previous_compose_project_name_exists=1
+    previous_compose_project_name_tmp="$(mktemp "$DEPLOY_ROOT/.compose-project-name.previous.XXXXXX")" || fail "Could not snapshot compose project marker"
+    cp -p "$DEPLOY_ROOT/compose-project-name" "$previous_compose_project_name_tmp" || fail "Could not snapshot compose project marker"
 fi
 if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
     has_successful_deployment=1
 fi
 
-ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}$PUBLIC_DOMAIN"
+ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}web,$PUBLIC_DOMAIN"
 if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
     ALLOWED_HOSTS="$ALLOWED_HOSTS,$PUBLIC_DOMAIN_ALIAS"
 fi
@@ -191,6 +299,13 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PRIVATE_MEDIA_S3_ACCESS_KEY_ID=%s\n' "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}"
     printf 'PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:-}"
     printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
+    printf 'WORKER_IMAGE=%s\n' "${WORKER_IMAGE:-}"
+    printf 'PHOTO_PROCESSING_ENABLED=%s\n' "$requested_processing_enabled"
+    printf 'PHOTO_PROCESSING_WORKER_TOKEN=%s\n' "${PHOTO_PROCESSING_WORKER_TOKEN:-}"
+    printf 'PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=%s\n' "${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}"
+    printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-16384}"
+    printf 'PHOTO_WORKER_BUILD=%s\n' "${PHOTO_WORKER_BUILD:-capture-metadata-v1}"
+    printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
 } > "$requested_env_tmp"
 chmod 600 "$requested_env_tmp"
 
@@ -201,7 +316,11 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     fi
 fi
 
-if ! compose_with_env_file "$requested_env_tmp" pull web; then
+if [ "$requested_processing_enabled" = True ]; then
+    if ! compose_with_env_file "$requested_env_tmp" --profile worker pull web worker; then
+        fail "Candidate application image pull failed"
+    fi
+elif ! compose_with_env_file "$requested_env_tmp" pull web; then
     fail "Candidate application image pull failed"
 fi
 
@@ -248,12 +367,12 @@ if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
     fail "Certificate bootstrap failed"
 fi
 
-if ! compose pull; then
+if ! compose_with_requested_processing_profile pull; then
     fail "Deployment image pull failed"
 fi
 
 compose_up_status=0
-compose up -d --remove-orphans || compose_up_status=$?
+compose_with_requested_processing_profile up -d --remove-orphans || compose_up_status=$?
 echo "docker compose up exit status: $compose_up_status" >&2
 if [ "$compose_up_status" -ne 0 ]; then
     fail "Deployment Compose reconciliation failed"

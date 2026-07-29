@@ -231,7 +231,9 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
     _write_executable(
         deploy_dir / "verify-public-edge.sh",
         """
-if [ "$APPLY_SCENARIO" = fresh-first-deployment ]; then
+if [ "$APPLY_SCENARIO" = fresh-first-deployment ] || \
+   [ "$APPLY_SCENARIO" = fresh-first-health-failure ] || \
+   [ "$APPLY_SCENARIO" = fresh-first-marker-failure ]; then
   [ ! -e "$DEPLOY_ROOT/deployed-image" ]
 else
   [ "$(cat "$DEPLOY_ROOT/deployed-image")" = old-image ]
@@ -368,7 +370,9 @@ validate_candidate_env() {
   [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
   [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
   [ "$candidate_secret_key" = "$PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" ]
-  if [ "$APPLY_SCENARIO" = fresh-first-deployment ]; then
+  if [ "$APPLY_SCENARIO" = fresh-first-deployment ] || \
+     [ "$APPLY_SCENARIO" = fresh-first-health-failure ] || \
+     [ "$APPLY_SCENARIO" = fresh-first-marker-failure ]; then
     [ ! -e "$DEPLOY_ROOT/.env" ]
   else
     cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
@@ -413,6 +417,21 @@ case " $* " in
     ;;
 esac
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
+if [ "$APPLY_SCENARIO" = worker-recovery ] && \
+   [ "${APP_IMAGE-unset}" = unset ] && \
+   case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
+  [ "${PHOTO_PROCESSING_WORKER_TOKEN-unset}" = unset ]
+  [ "${PHOTO_WORKER_BUILD-unset}" = unset ]
+  [ "${PHOTO_WORKER_LEASE_SECONDS-unset}" = unset ]
+  [ "${DB_NAME-unset}" = unset ]
+  [ "${PUBLIC_DOMAIN-unset}" = unset ]
+  [ "$(sed -n 's/^PHOTO_PROCESSING_WORKER_TOKEN=//p' "$compose_env_file")" = old-worker-token ]
+  [ "$(sed -n 's/^PHOTO_WORKER_BUILD=//p' "$compose_env_file")" = old-capture-metadata ]
+  [ "$(sed -n 's/^PHOTO_WORKER_LEASE_SECONDS=//p' "$compose_env_file")" = 90 ]
+  [ "$(sed -n 's/^DB_NAME=//p' "$compose_env_file")" = old-app ]
+  [ "$(sed -n 's/^PUBLIC_DOMAIN=//p' "$compose_env_file")" = old.example ]
+  printf 'recovery-compose-uses-restored-environment\n' >> "$COMMAND_LOG"
+fi
 case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
   *" compose "*" ps -q web "*) printf 'web-id\n' ;;
@@ -424,7 +443,9 @@ esac
         fake_bin / "curl",
         """
 printf 'curl %s\n' "$*" >> "$COMMAND_LOG"
-if [ "$APPLY_SCENARIO" = health-failure ]; then
+if [ "$APPLY_SCENARIO" = health-failure ] || \
+   [ "$APPLY_SCENARIO" = worker-recovery ] || \
+   [ "$APPLY_SCENARIO" = fresh-first-health-failure ]; then
   [ "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" = old-image ]
 fi
 """,
@@ -464,7 +485,10 @@ case "$source_path:$target_path" in
     ;;
 esac
 case "$*" in
-  *"/deployed-image") [ "$APPLY_SCENARIO" != marker-failure ] || exit 1 ;;
+  *"/deployed-image")
+    [ "$APPLY_SCENARIO" != marker-failure ] && \
+      [ "$APPLY_SCENARIO" != fresh-first-marker-failure ] || exit 1
+    ;;
 esac
 /bin/mv "$@"
 """,
@@ -533,6 +557,140 @@ def test_apply_propagates_private_media_read_settings(tmp_path: Path, fake_bin: 
     assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=gallery-secret" in deployed_env
 
 
+def test_disabled_processing_persists_defaults_without_the_worker_profile(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """A normal deployment must remove a stale worker without trying to start one."""
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert "PHOTO_PROCESSING_ENABLED=False" in deployed_env
+    assert "WORKER_IMAGE=" in deployed_env
+    assert "PHOTO_PROCESSING_WORKER_TOKEN=" in deployed_env
+    assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120" in deployed_env
+    assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=16384" in deployed_env
+    assert "PHOTO_WORKER_BUILD=capture-metadata-v1" in deployed_env
+    assert "PHOTO_WORKER_LEASE_SECONDS=120" in deployed_env
+    assert "ALLOWED_HOSTS=localhost,web,findme-photo.ru" in deployed_env
+    assert not any("--profile worker" in command for command in _apply_log(tmp_path))
+
+
+def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """Enabling processing must deploy the immutable worker beside the web service."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token-must-not-be-logged",
+            "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": "240",
+            "PHOTO_PROCESSING_MAX_REQUEST_BYTES": "32768",
+            "PHOTO_WORKER_BUILD": "capture-metadata-v2",
+            "PHOTO_WORKER_LEASE_SECONDS": "180",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert "WORKER_IMAGE=worker-image" in deployed_env
+    assert "PHOTO_PROCESSING_ENABLED=True" in deployed_env
+    assert "PHOTO_PROCESSING_WORKER_TOKEN=worker-token-must-not-be-logged" in deployed_env
+    assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=240" in deployed_env
+    assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=32768" in deployed_env
+    assert "PHOTO_WORKER_BUILD=capture-metadata-v2" in deployed_env
+    assert "PHOTO_WORKER_LEASE_SECONDS=180" in deployed_env
+    commands = _apply_log(tmp_path)
+    assert any("--profile worker pull" in command for command in commands)
+    assert any("--profile worker up -d --remove-orphans" in command for command in commands)
+    assert "worker-token-must-not-be-logged" not in result.stdout
+    assert "worker-token-must-not-be-logged" not in result.stderr
+    assert "worker-token-must-not-be-logged" not in "\n".join(commands)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"PHOTO_PROCESSING_ENABLED": "true"}, "PHOTO_PROCESSING_ENABLED must be True or False"),
+        (
+            {"PHOTO_PROCESSING_ENABLED": "True"},
+            "Set WORKER_IMAGE",
+        ),
+        (
+            {
+                "PHOTO_PROCESSING_ENABLED": "True",
+                "WORKER_IMAGE": "worker-image",
+            },
+            "Set PHOTO_PROCESSING_WORKER_TOKEN",
+        ),
+    ],
+)
+def test_processing_activation_requires_exact_valid_configuration(
+    tmp_path: Path,
+    fake_bin: Path,
+    overrides: dict[str, str],
+    message: str,
+) -> None:
+    """Invalid activation never changes the live deployment environment."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(overrides)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    expected_status = 2 if message.startswith("PHOTO_PROCESSING") else 1
+    assert result.returncode == expected_status
+    assert message in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
+
+
+def test_failed_worker_deployment_restores_the_complete_previous_environment_and_profile(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """Recovery must restore all old settings and the old worker-enabled service pair."""
+    previous_env = PREVIOUS_ENV + (
+        b"WORKER_IMAGE=old-worker-image\n"
+        b"PHOTO_PROCESSING_ENABLED=True\n"
+        b"PHOTO_PROCESSING_WORKER_TOKEN=old-worker-token\n"
+        b"PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120\n"
+        b"PHOTO_PROCESSING_MAX_REQUEST_BYTES=16384\n"
+        b"PHOTO_WORKER_BUILD=old-capture-metadata\n"
+        b"PHOTO_WORKER_LEASE_SECONDS=90\n"
+    )
+    env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery")
+    (tmp_path / ".env").write_bytes(previous_env)
+    (tmp_path / "previous-env.expected").write_bytes(previous_env)
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token-must-not-be-logged",
+            "PHOTO_WORKER_BUILD": "candidate-capture-metadata",
+            "PHOTO_WORKER_LEASE_SECONDS": "180",
+            "DB_NAME": "candidate-app",
+            "PUBLIC_DOMAIN": "candidate.example",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert (tmp_path / ".env").read_bytes() == previous_env
+    commands = _apply_log(tmp_path)
+    assert sum("--profile worker up -d --remove-orphans" in command for command in commands) == 2
+    assert "recovery-compose-uses-restored-environment" in commands
+    assert "worker-token-must-not-be-logged" not in result.stdout
+    assert "worker-token-must-not-be-logged" not in result.stderr
+    assert "worker-token-must-not-be-logged" not in "\n".join(commands)
+
+
 def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     tmp_path: Path, fake_bin: Path
 ) -> None:
@@ -587,6 +745,41 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
     assert candidate_pull < promotion < stop_nginx
     assert not any(" run --rm --no-deps" in command for command in commands)
     assert not any(command.startswith("preflight-") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_failed_first_deployment_restores_the_no_env_state(tmp_path: Path, fake_bin: Path) -> None:
+    """A failed initial rollout leaves neither a candidate environment nor worker service."""
+    env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-health-failure")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert not (tmp_path / ".env").exists()
+    assert not (tmp_path / "deployed-image").exists()
+    assert not (tmp_path / "deployment-target").exists()
+    assert not (tmp_path / "compose-project-name").exists()
+    commands = _apply_log(tmp_path)
+    assert any(" down --remove-orphans" in command for command in commands)
+    assert not any("--profile worker" in command for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_failed_first_deployment_after_metadata_markers_restores_no_env_state(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """A late failed initial rollout removes the metadata that it created before failing."""
+    env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-marker-failure")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        assert not (tmp_path / name).exists()
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -804,9 +997,9 @@ def test_apply_failure_restores_previous_image_and_overlay_without_marker_change
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert deployed_env.startswith("APP_IMAGE=old-image\n")
-    assert "SECRET_KEY=new-secret\n" in deployed_env
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
+    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") >= 2
 
@@ -821,9 +1014,7 @@ def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert deployed_env.startswith("APP_IMAGE=old-image\n")
-    assert "SECRET_KEY=new-secret\n" in deployed_env
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.index("stop nginx") < commands.index("up -d --remove-orphans")
     assert "docker-compose.https.yml" in commands
@@ -845,12 +1036,8 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     )
 
     assert result.returncode == expected_status
-    assert "Previous application image and edge reconciled" in result.stderr
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert deployed_env.startswith("APP_IMAGE=old-image\n")
-    assert "SECRET_KEY=new-secret\n" in deployed_env
-    assert "DEBUG=False\n" in deployed_env
-    assert "KEEP_EXACTLY=old-only-setting\n" not in deployed_env
+    assert "Previous application and worker profile reconciled" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
     assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
     assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
@@ -907,9 +1094,7 @@ def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert deployed_env.startswith("APP_IMAGE=old-image\n")
-    assert "SECRET_KEY=new-secret\n" in deployed_env
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") == expected_reconciliations
 

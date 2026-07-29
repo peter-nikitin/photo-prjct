@@ -65,7 +65,10 @@ The repository currently contains an early Django application:
   receives a short-lived grant for one exact original, and has no Django/database or permanent
   Object Storage credentials. Repository tests prove one real JPEG through claim, download, EXIF
   extraction, completion, final state, and event report. The local worker image has been built and
-  its no-credential startup path verified; no staging or production worker is enabled.
+  its no-credential startup path verified. Staging deployment configuration builds an immutable
+  worker image and keeps its resource-bounded Compose profile disabled unless explicitly enabled;
+  the production workflow does not pass worker-activation inputs. No staging or production worker
+  is currently enabled.
 - Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the

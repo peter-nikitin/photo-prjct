@@ -20,6 +20,7 @@ jobs:
       packages: write
     outputs:
       app_image: ${{ steps.image.outputs.app_image }}
+      worker_image: ${{ steps.image.outputs.worker_image }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,9 +30,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Select image reference
+      - name: Select image references
         id: image
-        run: echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -39,6 +42,13 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ${{ steps.image.outputs.app_image }}
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.worker
+          push: true
+          tags: ${{ steps.image.outputs.worker_image }}
 
   deploy:
     name: Deploy staging
@@ -83,6 +93,13 @@ jobs:
           PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}
           PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: ${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}
           PRIVATE_MEDIA_ALLOWED_ORIGINS: ${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}
+          WORKER_IMAGE: ${{ needs.build.outputs.worker_image }}
+          PHOTO_PROCESSING_ENABLED: ${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}
+          PHOTO_PROCESSING_WORKER_TOKEN: ${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}
+          PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS: ${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}
+          PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '16384' }}
+          PHOTO_WORKER_BUILD: ${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}
+          PHOTO_WORKER_LEASE_SECONDS: ${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         with:
@@ -90,7 +107,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script_stop: true
-          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,PUBLIC_DOMAIN_ALIAS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,PHOTO_UPLOAD_ENABLED,PRIVATE_MEDIA_S3_BUCKET,PRIVATE_MEDIA_S3_ACCESS_KEY_ID,PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY,PRIVATE_MEDIA_ALLOWED_ORIGINS,GHCR_USERNAME,GHCR_READ_TOKEN
+          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,PUBLIC_DOMAIN_ALIAS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,PHOTO_UPLOAD_ENABLED,PRIVATE_MEDIA_S3_BUCKET,PRIVATE_MEDIA_S3_ACCESS_KEY_ID,PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY,PRIVATE_MEDIA_ALLOWED_ORIGINS,WORKER_IMAGE,PHOTO_PROCESSING_ENABLED,PHOTO_PROCESSING_WORKER_TOKEN,PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS,PHOTO_PROCESSING_MAX_REQUEST_BYTES,PHOTO_WORKER_BUILD,PHOTO_WORKER_LEASE_SECONDS,GHCR_USERNAME,GHCR_READ_TOKEN
           script: DEPLOYMENT_TARGET=staging DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging sh /opt/photo-prjct/deploy/apply-deployment.sh
       - name: Verify private upload storage contract
         if: ${{ inputs.verify_private_storage }}

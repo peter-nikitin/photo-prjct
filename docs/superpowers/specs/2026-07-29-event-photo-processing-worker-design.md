@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved section by section in conversation on 2026-07-29 and extended during written review to
-define the future binary-derivative boundary. Revised specification awaiting final user approval.
+Approved in conversation on 2026-07-29, including the written-review extension for the future
+binary-derivative boundary.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), proposed Media,
   Recognition, and Operations modules; photo ingestion and indexing flow; evolution stage 4; and
@@ -14,9 +14,12 @@ define the future binary-derivative boundary. Revised specification awaiting fin
   [ADR 0006](../../adr/0006-yandex-object-storage-media.md),
   [ADR 0013](../../adr/0013-use-direct-private-object-storage-ingestion.md), and
   [ADR 0014](../../adr/0014-keep-stage-2-ingestion-request-driven.md)
-- ADR impact: Requires new ADR — the first Stage 3 worker boundary, Django polling API,
-  PostgreSQL-backed job dispatch, lease/retry semantics, and per-object temporary download access
-  are durable architecture choices not governed by an accepted ADR
+- Proposed ADR:
+  [ADR 0017](../../adr/0017-use-django-polled-photo-processing-jobs.md)
+- ADR impact: Requires new ADR — proposed ADR 0017 records the first Stage 3 worker boundary,
+  Django polling API, PostgreSQL-backed job dispatch, lease/retry semantics, and per-object
+  temporary download access; implementation planning remains blocked until the maintainer
+  explicitly accepts it
 - Implementation plan: not written; planning starts only after final specification approval and
   ADR resolution is included in the planning input
 

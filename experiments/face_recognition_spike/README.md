@@ -257,6 +257,35 @@ It also reports intersection, missing, extra, precision, and recall counts;
 the HTML links each cluster ID back to its cluster report section. Unmatched
 clusters are listed separately with their review links.
 
+## Local selfie-search smoke check
+
+After a completed run, build its private face index and a trusted local benchmark proposal, then
+run the short smoke check in this order: `build-index`, `build-benchmark`, `smoke-search`. The
+five query crops come from the proposal; the command recomputes each crop through YuNet and SFace
+instead of reusing its gallery vector.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike \
+.venv/bin/python -m face_spike smoke-search \
+  --proposal /absolute/benchmarks/proposal \
+  --index /absolute/indexes/event-index \
+  --run /absolute/runs/all-people-run-001 \
+  --photos /absolute/photos \
+  --yunet-model /absolute/models/yunet.onnx \
+  --sface-model /absolute/models/sface.onnx \
+  --output /absolute/smoke-searches/run-001
+```
+
+`--run` resolves the proposal's crop paths and `--photos` resolves the original photo links in
+the report. All inputs are trusted, local artifacts and must remain outside Git. The new output
+contains `results.json` and `report.html`; the latter is for a reviewer to visually decide whether
+the same person appears among useful top results. The held-out source photo never appears for its
+query, and each result photo is represented by its best matching face.
+
+This is a bounded qualitative smoke test, not an accuracy measurement. Do not interpret it as
+precision, recall, F1, calibration, a production identity claim, or approval for public-selfie
+processing.
+
 ## Honest interpretation
 
 Peakshot is a useful silver-label reference, not ground truth. Differences in

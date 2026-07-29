@@ -165,7 +165,13 @@ def analyze_event_photo_inventory(
             continue
 
         try:
-            analysis = _analyze_decoded_image(photo, decoded, detector, recognizer, thresholds)
+            analysis = analyze_decoded_event_photo(
+                photo,
+                decoded,
+                detector,
+                recognizer,
+                quality_thresholds=thresholds,
+            )
             if write_diagnostics is not None:
                 write_diagnostics(photo, decoded, analysis)
         finally:
@@ -174,11 +180,12 @@ def analyze_event_photo_inventory(
     return tuple(analyses)
 
 
-def _analyze_decoded_image(
+def analyze_decoded_event_photo(
     photo: EventPhoto,
     decoded: DecodedImage,
     detector: FaceDetector,
     recognizer: FaceRecognizer,
+    *,
     quality_thresholds: FaceQualityThresholds,
 ) -> EventPhotoAnalysis:
     try:

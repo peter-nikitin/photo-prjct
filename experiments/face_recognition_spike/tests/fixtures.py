@@ -5,6 +5,15 @@ from pathlib import Path
 from PIL import Image
 
 
+def write_json(path: Path, value: object) -> Path:
+    """Write a UTF-8 JSON fixture with deterministic formatting."""
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
 def make_jpeg(
     path: Path,
     *,

@@ -12,6 +12,7 @@ from face_spike.analysis import (
     FaceEmbedding,
     FaceLandmarks,
     FaceProcessingError,
+    analyze_decoded_event_photo,
     analyze_event_photo_inventory,
 )
 from face_spike.inventory import EventPhoto, EventPhotoInventory
@@ -45,6 +46,45 @@ class _Detector:
 
     def detect(self, bgr: np.ndarray) -> tuple[FaceDetection, ...]:
         return self.detections
+
+
+def test_decoded_photo_analysis_matches_inventory_analysis_contract() -> None:
+    photo = EventPhoto("frame.jpg", Path("event/frame.jpg"))
+    decoded = _Decoder().decode(photo)
+    detector = _Detector((_detection(20, 20), _detection(2, 10)))
+    thresholds = FaceQualityThresholds()
+
+    class Recognizer:
+        def extract(self, bgr: np.ndarray, detection: FaceDetection) -> FaceEmbedding:
+            return FaceEmbedding(np.asarray([detection.bounding_box.x, 1.0], dtype=np.float32))
+
+    decoded_analysis = analyze_decoded_event_photo(
+        photo,
+        decoded,
+        detector,
+        Recognizer(),
+        quality_thresholds=thresholds,
+    )
+    inventory_analysis = analyze_event_photo_inventory(
+        EventPhotoInventory((photo,)),
+        _Decoder(),
+        detector,
+        Recognizer(),
+        quality_thresholds=thresholds,
+    )[0]
+
+    assert [face.face_id for face in decoded_analysis.faces] == [
+        face.face_id for face in inventory_analysis.faces
+    ]
+    assert [face.quality for face in decoded_analysis.faces] == [
+        face.quality for face in inventory_analysis.faces
+    ]
+    assert [face.status for face in decoded_analysis.faces] == [
+        face.status for face in inventory_analysis.faces
+    ]
+    assert [face.embedding for face in decoded_analysis.faces] == [
+        face.embedding for face in inventory_analysis.faces
+    ]
 
 
 def test_analysis_embeds_all_faces_with_stable_ids_in_normalized_order() -> None:

@@ -22,7 +22,23 @@ services:
     depends_on:
       - db
     env_file:
-      - .env
+      - path: .env
+        required: false
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    profiles:
+      - worker
+    environment:
+      PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
+      PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
+      PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
+      PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
+    depends_on:
+      - web
     restart: unless-stopped
 
 volumes:

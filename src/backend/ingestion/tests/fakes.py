@@ -51,6 +51,7 @@ class FakeS3Client:
             "url": "https://upload.example.test/private",
             "fields": {"key": "signed-key", "policy": "signed-policy"},
         }
+        self.presigned_get_url = "https://download.example.test/private?signature=secret"
 
     def put_object(
         self,
@@ -69,6 +70,12 @@ class FakeS3Client:
         self.calls.append(("generate_presigned_post", kwargs))
         self._raise("generate_presigned_post")
         return self.presigned_response
+
+    def generate_presigned_url(self, **kwargs: Any) -> str:
+        self._before("generate_presigned_url")
+        self.calls.append(("generate_presigned_url", kwargs))
+        self._raise("generate_presigned_url")
+        return self.presigned_get_url
 
     def head_object(self, **kwargs: Any) -> dict[str, Any]:
         self._before("head_object", kwargs["Key"])

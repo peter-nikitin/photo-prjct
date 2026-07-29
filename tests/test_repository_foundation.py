@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +98,28 @@ def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
     assert "PUSH_VISUAL_TEST_IMAGE" not in visual["env"]
 
 
+def test_root_quality_contract_includes_processing_and_standalone_worker() -> None:
+    """Delivered processing code must be collected, typed, and counted by the root CI commands."""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]
+    pytest_config = pyproject["pytest"]["ini_options"]
+    ci = _load_workflow("ci.yml")
+
+    assert pyproject["mypy"]["files"] == ["src/backend", "src/worker/photo_worker"]
+    assert pytest_config["pythonpath"] == [".", "src/backend", "src/worker"]
+    assert pytest_config["testpaths"] == ["src/backend", "src/worker/tests", "tests"]
+    assert pyproject["coverage"]["run"]["source"] == [
+        "src/backend/config",
+        "src/backend/ingestion",
+        "src/backend/picflow",
+        "src/backend/processing",
+        "src/worker/photo_worker",
+    ]
+    assert _workflow_step(ci, "quality", "Type check")["run"] == "mypy"
+    assert _workflow_step(ci, "quality", "Test with coverage")["run"] == (
+        "pytest --cov --cov-report=term-missing"
+    )
+
+
 def test_visual_image_publisher_is_main_only_and_dependency_keyed() -> None:
     publisher = _load_workflow("visual-test-image.yml")
     build = publisher["jobs"]["build"]
@@ -186,6 +209,14 @@ def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None
     assert production_apply["env"]["LETSENCRYPT_EMAIL"] == ("${{ secrets.LETSENCRYPT_EMAIL }}")
     assert "LETSENCRYPT_EMAIL" in _envs(staging_apply)
     assert "LETSENCRYPT_EMAIL" in _envs(production_apply)
+
+
+def test_public_edges_deny_the_private_processing_prefix_before_the_proxy_catchall() -> None:
+    for relative_path in ("deploy/nginx/https.conf.template", "deploy/nginx/staging.conf"):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+        deny = "location ^~ /internal/photo-processing/ {\n        return 404;\n    }"
+        assert deny in source
+        assert source.index(deny) < source.rindex("location / {")
 
 
 def test_private_upload_configuration_is_wired_to_deployments() -> None:

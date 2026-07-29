@@ -1,0 +1,467 @@
+import importlib
+from datetime import date
+from typing import Any
+
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, connection, transaction
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase
+from django.utils import timezone
+from picflow.models import Event, Photo
+
+from processing.models import (
+    EventProcessingRun,
+    PhotoProcessingState,
+    ProcessingAttempt,
+    ProcessingJob,
+)
+
+
+class ProcessingModelTests(TestCase):
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="processor-owner")
+        self.event = self.make_event("one")
+        self.photo = self.make_private_photo("one", self.event)
+
+    def make_event(self, suffix: str) -> Event:
+        return Event.objects.create(
+            name=f"Event {suffix}",
+            slug=f"event-{suffix}",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+
+    def make_private_photo(self, suffix: str, event: Event) -> Photo:
+        return Photo.objects.create(
+            id=f"private-{suffix}",
+            event=event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/{suffix}",
+            original_filename=f"{suffix}.jpg",
+            original_size=10,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+    def make_run(self, *, event: Event | None = None, **overrides) -> EventProcessingRun:
+        values = {
+            "event": event or self.event,
+            "contract_version": 1,
+            "processor_type": "capture_metadata",
+            "processor_version": 1,
+            "configuration": {},
+            "configuration_hash": "0" * 64,
+        }
+        values.update(overrides)
+        return EventProcessingRun.objects.create(**values)
+
+    def make_job(
+        self,
+        *,
+        run: EventProcessingRun,
+        photo: Photo | None = None,
+        event: Event | None = None,
+        **overrides,
+    ) -> ProcessingJob:
+        values = {
+            "event": event or self.event,
+            "run": run,
+            "photo": photo or self.photo,
+            "contract_version": 1,
+            "processor_type": "capture_metadata",
+            "processor_version": 1,
+            "configuration": {},
+            "configuration_hash": "0" * 64,
+            "input_fingerprint": {},
+        }
+        values.update(overrides)
+        return ProcessingJob.objects.create(**values)
+
+    def test_status_vocabularies_are_explicit(self) -> None:
+        self.assertEqual(
+            {value for value, _ in PhotoProcessingState.Status.choices},
+            {
+                "not_requested",
+                "queued",
+                "processing",
+                "retry_wait",
+                "succeeded",
+                "failed",
+                "cancelled",
+            },
+        )
+        self.assertEqual(
+            {value for value, _ in EventProcessingRun.Status.choices},
+            {"collecting", "sealed", "closed"},
+        )
+        self.assertEqual(
+            {value for value, _ in ProcessingJob.Status.choices},
+            {"queued", "processing", "retry_wait", "succeeded", "failed", "cancelled"},
+        )
+        self.assertEqual(
+            {value for value, _ in ProcessingAttempt.Status.choices},
+            {"in_progress", "succeeded", "failed", "expired", "stale"},
+        )
+
+    def test_database_checks_reject_unknown_statuses(self) -> None:
+        state = PhotoProcessingState.objects.get(
+            photo=self.photo, processor_type="capture_metadata"
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                PhotoProcessingState.objects.filter(pk=state.pk).update(status="unknown")
+
+    def test_photo_has_one_current_capture_metadata_state(self) -> None:
+        state = PhotoProcessingState.objects.get(
+            photo=self.photo, processor_type="capture_metadata"
+        )
+        self.assertEqual(state.status, PhotoProcessingState.Status.NOT_REQUESTED)
+        with self.assertRaises(IntegrityError):
+            PhotoProcessingState.objects.create(
+                photo=self.photo,
+                processor_type="capture_metadata",
+                status=PhotoProcessingState.Status.NOT_REQUESTED,
+            )
+
+    def test_exact_job_identity_is_unique(self) -> None:
+        run = self.make_run()
+        self.make_job(run=run)
+        with self.assertRaises(IntegrityError):
+            self.make_job(run=run)
+
+    def test_job_configurations_belong_to_separate_compatible_runs(self) -> None:
+        default_run = self.make_run()
+        configured_run = self.make_run(
+            configuration={"timezone": "UTC"},
+            configuration_hash="1" * 64,
+        )
+        default_job = self.make_job(run=default_run)
+        configured_job = self.make_job(
+            run=configured_run,
+            configuration={"timezone": "UTC"},
+            configuration_hash="1" * 64,
+        )
+        self.assertNotEqual(default_job.run_id, configured_job.run_id)
+
+    def test_job_must_match_its_run_processor_identity_at_database_boundary(self) -> None:
+        run = self.make_run()
+        mismatches: dict[str, Any] = {
+            "contract_version": 2,
+            "processor_type": "another_processor",
+            "processor_version": 2,
+            "configuration": {"timezone": "UTC"},
+            "configuration_hash": "1" * 64,
+        }
+        for field_name, value in mismatches.items():
+            with self.subTest(field_name=field_name), transaction.atomic():
+                with self.assertRaises(IntegrityError):
+                    self.make_job(run=run, **{field_name: value})
+
+    def test_run_identity_cannot_change_after_a_job_exists(self) -> None:
+        run = self.make_run()
+        self.make_job(run=run)
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                EventProcessingRun.objects.filter(pk=run.pk).update(processor_version=2)
+
+    def test_job_identity_cannot_change_after_an_attempt_exists(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                ProcessingJob.objects.filter(pk=job.pk).update(processor_version=2)
+
+    def test_photo_event_cannot_change_after_a_processing_job_exists(self) -> None:
+        run = self.make_run()
+        self.make_job(run=run)
+        other_event = self.make_event("two")
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                Photo.objects.filter(pk=self.photo.pk).update(event=other_event)
+
+    def test_sealed_run_retains_unclaimed_job_after_its_state_is_deleted(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        state = PhotoProcessingState.objects.get(
+            photo=self.photo, processor_type="capture_metadata"
+        )
+        state.status = PhotoProcessingState.Status.QUEUED
+        state.current_run = run
+        state.current_job = job
+        state.save(update_fields=["status", "current_run", "current_job", "updated_at"])
+        state.delete()
+        EventProcessingRun.objects.filter(pk=run.pk).update(
+            status=EventProcessingRun.Status.SEALED,
+            sealed_at=timezone.now(),
+        )
+
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                job.delete()
+
+        self.assertTrue(ProcessingJob.objects.filter(pk=job.pk).exists())
+        self.assertEqual(run.jobs.count(), 1)
+
+    def test_collecting_run_allows_unclaimed_job_deletion(self) -> None:
+        job = self.make_job(run=self.make_run())
+
+        job.delete()
+
+        self.assertFalse(ProcessingJob.objects.filter(pk=job.pk).exists())
+
+    def test_terminal_attempt_evidence_cannot_be_mutated(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at="2026-07-29T00:00:00Z",
+            result={"capture_time": None},
+        )
+        attempt.result = {"capture_time": "2026-07-29T10:00:00Z"}
+        with self.assertRaises(ValidationError):
+            attempt.save()
+
+    def test_job_rejects_foreign_event_ownership_at_database_boundary(self) -> None:
+        other_event = self.make_event("two")
+        foreign_photo = self.make_private_photo("two", other_event)
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                self.make_job(run=self.make_run(), photo=foreign_photo)
+
+    def test_attempt_rejects_same_event_job_for_another_photo_at_database_boundary(self) -> None:
+        other_photo = self.make_private_photo("two", self.event)
+        run = self.make_run()
+        job = self.make_job(run=run)
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                ProcessingAttempt.objects.create(
+                    event=self.event,
+                    run=run,
+                    job=job,
+                    photo=other_photo,
+                    contract_version=1,
+                    processor_type="capture_metadata",
+                    processor_version=1,
+                    configuration={},
+                    input_fingerprint={},
+                )
+
+    def test_state_rejects_same_event_job_for_another_photo_at_database_boundary(self) -> None:
+        other_photo = self.make_private_photo("two", self.event)
+        run = self.make_run()
+        other_job = self.make_job(run=run, photo=other_photo)
+        state = PhotoProcessingState.objects.get(
+            photo=self.photo, processor_type="capture_metadata"
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                PhotoProcessingState.objects.filter(pk=state.pk).update(
+                    current_run=run,
+                    current_job=other_job,
+                )
+
+    def test_state_rejects_same_event_attempt_for_another_photo_at_database_boundary(self) -> None:
+        other_photo = self.make_private_photo("two", self.event)
+        run = self.make_run()
+        other_job = self.make_job(run=run, photo=other_photo)
+        other_attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=other_job,
+            photo=other_photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=self.photo, processor_type="capture_metadata"
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                PhotoProcessingState.objects.filter(pk=state.pk).update(
+                    current_attempt=other_attempt,
+                )
+
+    def test_terminal_status_and_timestamp_must_agree(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        base = {
+            "event": self.event,
+            "run": run,
+            "job": job,
+            "photo": self.photo,
+            "contract_version": 1,
+            "processor_type": "capture_metadata",
+            "processor_version": 1,
+            "configuration": {},
+            "input_fingerprint": {},
+        }
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                ProcessingAttempt.objects.create(
+                    **base,
+                    status=ProcessingAttempt.Status.SUCCEEDED,
+                )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                ProcessingAttempt.objects.create(
+                    **base,
+                    status=ProcessingAttempt.Status.IN_PROGRESS,
+                    terminal_at="2026-07-29T00:00:00Z",
+                )
+
+    def test_terminal_attempt_rejects_queryset_bulk_update_and_delete(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at="2026-07-29T00:00:00Z",
+            result={"capture_time": None},
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                ProcessingAttempt.objects.filter(pk=attempt.pk).update(result={"capture_time": "x"})
+        attempt.result = {"capture_time": "x"}
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                ProcessingAttempt.objects.bulk_update([attempt], ["result"])
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                ProcessingAttempt.objects.filter(pk=attempt.pk).delete()
+
+    def test_configuration_and_result_payloads_are_bounded(self) -> None:
+        run = self.make_run()
+        run.configuration = {"payload": "x" * 16_385}
+        with self.assertRaises(ValidationError):
+            run.full_clean()
+
+        job = self.make_job(run=run)
+        attempt = ProcessingAttempt(
+            event=self.event,
+            run=job.run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            result={"payload": "x" * 16_385},
+        )
+        with self.assertRaises(ValidationError):
+            attempt.full_clean()
+
+
+class ProcessingInitialMigrationTests(TransactionTestCase):
+    migrate_from = [("picflow", "0005_validate_photo_private_original_constraints")]
+    migrate_to = [("processing", "0001_initial")]
+    unapply_processing = [("processing", None)]
+
+    def test_existing_photo_gets_not_requested_state_and_reversal_preserves_photo(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.unapply_processing)
+        old_apps = executor.loader.project_state(self.migrate_from).apps
+        Event = old_apps.get_model("picflow", "Event")
+        Photo = old_apps.get_model("picflow", "Photo")
+        event = Event.objects.create(
+            name="Migrated event",
+            slug="migrated-event",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        Photo.objects.create(id="legacy", event=event, src="photos/legacy.jpg")
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        new_apps = executor.loader.project_state(self.migrate_to).apps
+        PhotoProcessingState = new_apps.get_model("processing", "PhotoProcessingState")
+        self.assertEqual(
+            PhotoProcessingState.objects.filter(photo_id="legacy")
+            .values_list("processor_type", "status")
+            .get(),
+            ("capture_metadata", "not_requested"),
+        )
+
+        executor.migrate(self.unapply_processing)
+        reverse_apps = executor.loader.project_state(self.migrate_from).apps
+        ReversePhoto = reverse_apps.get_model("picflow", "Photo")
+        self.assertTrue(ReversePhoto.objects.filter(pk="legacy").exists())
+
+        MigrationExecutor(connection).migrate(self.migrate_to)
+
+
+class ProcessingMigrationFunctionTests(TestCase):
+    def test_legacy_backfill_consumes_photos_in_bounded_batches(self) -> None:
+        migration = importlib.import_module("processing.migrations.0001_initial")
+        batches: list[int] = []
+
+        class FakePhotoManager:
+            def values_list(self, field_name: str, flat: bool):
+                self.field_name = field_name
+                self.flat = flat
+                return self
+
+            def iterator(self):
+                return iter(range(501))
+
+        class FakePhoto:
+            objects = FakePhotoManager()
+
+        class FakeStateManager:
+            def bulk_create(self, states, **kwargs) -> None:
+                batches.append(len(states))
+                self.kwargs = kwargs
+
+        class FakeState:
+            objects = FakeStateManager()
+
+            def __init__(self, *, photo_id: int, processor_type: str) -> None:
+                self.photo_id = photo_id
+                self.processor_type = processor_type
+
+        class FakeApps:
+            def get_model(self, app_label: str, model_name: str):
+                models = {
+                    ("picflow", "Photo"): FakePhoto,
+                    ("processing", "PhotoProcessingState"): FakeState,
+                }
+                return models[(app_label, model_name)]
+
+        migration.create_legacy_capture_metadata_states(FakeApps(), schema_editor=None)
+
+        self.assertEqual(batches, [500, 1])

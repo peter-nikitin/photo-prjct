@@ -29,6 +29,12 @@ from ingestion.storage import (
     UploadGrant,
 )
 from picflow.models import Event, Photo
+from processing.models import (
+    EventProcessingRun,
+    PhotoProcessingState,
+    ProcessingAttempt,
+    ProcessingJob,
+)
 
 
 class SimulatedCrash(RuntimeError):
@@ -167,6 +173,25 @@ class ConfirmationTests(TransactionTestCase):
         self.assertEqual(item.verified_source_etag, "source-etag")
         self.assertEqual(self.storage.promote_etags, ['"source-etag"'])
         self.assertEqual(self.storage.objects[item.final_key][0], self.jpeg)
+
+    def test_successful_confirmation_enrolls_the_new_private_photo(self) -> None:
+        photo = self.confirm_success()
+
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
+        self.assertEqual(state.status, PhotoProcessingState.Status.QUEUED)
+        self.assertEqual(state.current_run.event, self.event)
+        self.assertEqual(state.current_run.status, EventProcessingRun.Status.COLLECTING)
+        self.assertEqual(state.current_job.status, ProcessingJob.Status.QUEUED)
+        self.assertEqual(
+            state.current_job.input_fingerprint,
+            {
+                "original_key": self.item.final_key,
+                "original_size": len(self.jpeg),
+                "original_content_type": "image/jpeg",
+                "verified_source_etag": "source-etag",
+                "version_evidence": "verified_source_etag",
+            },
+        )
 
     def test_jpeg_signatures_metadata_and_final_identity_are_required(self) -> None:
         cases = [
@@ -396,6 +421,10 @@ class ConfirmationTests(TransactionTestCase):
                     completed_at=None,
                     verified_source_etag=None,
                 )
+                PhotoProcessingState.objects.all().delete()
+                ProcessingAttempt.objects.all().delete()
+                ProcessingJob.objects.all().delete()
+                EventProcessingRun.objects.all().delete()
                 Photo.objects.all().delete()
                 UploadBatch.objects.filter(id=self.batch_id).update(
                     status=UploadBatch.Status.UPLOADING, completed_at=None

@@ -11,9 +11,10 @@ file and decoded image before claiming the next job. It downloads originals dire
 Storage; Django and PostgreSQL hold only short queue transactions.
 
 The deployed Compose stack contains Nginx, Django/Gunicorn, and PostgreSQL. The worker is opt-in
-locally and absent from the real-environment Compose overlays. The inventory historically describes
-the current staging host as the weakest, preemptible VM, but its exact CPU, RAM, disk, platform,
-and stable resource IDs are unverified.
+locally and has a disabled-by-default, resource-bounded profile in staging deployment
+configuration; the production workflow does not forward worker activation inputs. The inventory
+historically describes the current staging host as the weakest, preemptible VM, but its exact CPU,
+RAM, disk, platform, and stable resource IDs are unverified.
 
 Live discovery was unavailable for this assessment because the `yc` CLI is not installed in the
 execution environment. Do not infer actual VM configuration from this document. Before a later
@@ -44,8 +45,8 @@ capacity or a promise of performance.
 The limit values are deliberately below the VM total so that a worker fault is constrained and
 memory/CPU remain for the existing stack. The 50 MiB temporary input limit does not by itself set
 disk size: the disk must also accommodate Docker images, PostgreSQL's volume, logs, and deployment
-headroom. Add these limits only in a separately reviewed activation change; they are not currently
-set in the production overlay.
+headroom. The disabled-by-default staging profile declares these limits, but an operator must not
+enable it before the measurements and gates below are satisfied.
 
 ## Manual-check measurements and acceptance gates
 

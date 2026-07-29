@@ -8,6 +8,7 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
 from django.utils import timezone
 from picflow.models import Photo
+from processing.services.enrollment import request_capture_metadata
 
 from ingestion.models import UploadItem
 from ingestion.services.batches import (
@@ -154,6 +155,10 @@ def confirm_upload_item(
                     original_size=item.expected_size,
                     original_content_type=item.declared_content_type,
                     uploaded_at=now,
+                )
+                request_capture_metadata(
+                    photo,
+                    verified_source_etag=item.verified_source_etag,
                 )
                 item.photo = photo
                 item.status = UploadItem.Status.UPLOADED

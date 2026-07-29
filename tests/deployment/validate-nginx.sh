@@ -35,6 +35,8 @@ validate_variant() {
         exit 1
     fi
     grep -Fq 'return 308 https://findme-photo.ru$request_uri;' "$rendered"
+    grep -Fq 'location ^~ /internal/photo-processing/ {' "$rendered"
+    grep -Fq 'return 404;' "$rendered"
     if [ -n "$alias" ]; then
         grep -Fq "server_name $alias;" "$rendered"
     elif grep -Fq 'server_name www.findme-photo.ru;' "$rendered"; then

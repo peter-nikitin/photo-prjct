@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+WORKDIR /worker
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY src/worker/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN useradd --create-home --uid 10001 worker
+COPY src/worker/photo_worker ./photo_worker
+RUN chown -R worker:worker /worker
+
+USER worker
+
+CMD ["python", "-m", "photo_worker"]

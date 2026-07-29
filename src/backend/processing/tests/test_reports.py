@@ -1,0 +1,305 @@
+import json
+from datetime import date
+
+from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
+from django.test import TestCase
+from django.utils import timezone
+from picflow.models import Event, Photo
+
+from processing.contracts import ClaimedJob
+from processing.models import EventProcessingRun, ProcessingAttempt, ProcessingJob
+from processing.services.enrollment import CAPTURE_METADATA_CONFIGURATION, request_capture_metadata
+from processing.services.jobs import claim_job, complete_attempt, fail_attempt
+from processing.services.reports import close_run_report, report_upper_bound_bytes
+
+
+class ProcessingRunReportTests(TestCase):
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="reports-owner")
+        self.event = Event.objects.create(
+            name="Reports event",
+            slug="reports-event",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+
+    def private_photo(self, suffix: str) -> Photo:
+        return Photo.objects.create(
+            id=f"report-{suffix}",
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/{suffix}.jpg",
+            original_filename=f"{suffix}.jpg",
+            original_size=10,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+    def claim(self):
+        return claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            worker_build="worker-report",
+        )
+
+    def close_one_successful_run(self) -> EventProcessingRun:
+        photo = self.private_photo("one")
+        request_capture_metadata(photo)
+        claimed = self.claim()
+        complete_attempt(
+            claimed.attempt.id,
+            result={"capture_time": None, "warnings": ["capture_time_missing"]},
+            total_duration_ms=20,
+        )
+        run = close_run_report(claimed.job.run_id)
+        assert run is not None
+        return run
+
+    def test_report_does_not_close_a_sealed_run_until_every_member_is_terminal(self) -> None:
+        first = self.private_photo("first")
+        second = self.private_photo("second")
+        request_capture_metadata(first)
+        request_capture_metadata(second)
+        first_claim = self.claim()
+
+        self.assertIsNone(close_run_report(first_claim.job.run_id))
+
+        run = EventProcessingRun.objects.get(pk=first_claim.job.run_id)
+        self.assertEqual(run.status, EventProcessingRun.Status.SEALED)
+
+    def test_report_uses_only_the_exact_sealed_cohort_not_later_photos(self) -> None:
+        first = self.private_photo("sealed")
+        request_capture_metadata(first)
+        claimed = self.claim()
+        later = self.private_photo("later")
+        request_capture_metadata(later)
+        complete_attempt(claimed.attempt.id, result={"capture_time": None}, total_duration_ms=12)
+
+        run = close_run_report(claimed.job.run_id)
+        assert run is not None
+
+        self.assertEqual(run.report["cohort_size"], 1)
+        self.assertEqual([row["photo_id"] for row in run.report["photos"]], [first.id])
+        self.assertEqual(
+            EventProcessingRun.objects.get(event=self.event, status="collecting").jobs.count(), 1
+        )
+
+    def test_report_has_agreed_counts_duration_summary_and_bounded_photo_rows(self) -> None:
+        photos = [self.private_photo("one"), self.private_photo("two"), self.private_photo("three")]
+        for photo in photos:
+            request_capture_metadata(photo)
+        run_id = None
+        while True:
+            claimed = self.claim()
+            if claimed.empty:
+                break
+            run_id = claimed.job.run_id
+            if claimed.job.photo_id == photos[0].id:
+                complete_attempt(
+                    claimed.attempt.id,
+                    result={"capture_time": "2026-07-29T10:00:00Z", "warnings": []},
+                    total_duration_ms=30,
+                )
+            elif claimed.job.photo_id == photos[1].id:
+                complete_attempt(
+                    claimed.attempt.id,
+                    result={"capture_time": None, "warnings": ["capture_time_missing"]},
+                    total_duration_ms=10,
+                )
+            else:
+                fail_attempt(
+                    claimed.attempt.id,
+                    error_code="unsupported_input",
+                    error_detail="a deliberately long private implementation detail",
+                    retryable=False,
+                )
+
+        assert run_id is not None
+        run = close_run_report(run_id)
+        assert run is not None
+
+        self.assertEqual(run.report["cohort_size"], 3)
+        self.assertEqual(
+            run.report["counts"],
+            {"denominator": 3, "succeeded": 2, "failed": 1, "cancelled": 0},
+        )
+        self.assertEqual(
+            run.report["capture_time"],
+            {"denominator": 2, "with_capture_time": 1, "without_capture_time": 1},
+        )
+        self.assertEqual(
+            run.report["durations_ms"], {"denominator": 2, "min": 10, "median": 20, "max": 30}
+        )
+        self.assertEqual(len(run.report["photos"]), 3)
+        for row in run.report["photos"]:
+            self.assertLessEqual(
+                set(row),
+                {
+                    "photo_id",
+                    "status",
+                    "accepted_attempt_id",
+                    "capture_time_present",
+                    "attempt_count",
+                    "duration_ms",
+                    "warnings",
+                    "error_code",
+                },
+            )
+            self.assertNotIn("error_detail", row)
+            self.assertNotIn("signed_url", row)
+
+    def test_closed_report_is_immutable_at_the_database_boundary(self) -> None:
+        run = self.close_one_successful_run()
+
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                EventProcessingRun.objects.filter(pk=run.pk).update(report={"changed": True})
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, EventProcessingRun.Status.CLOSED)
+        self.assertEqual(run.report["cohort_size"], 1)
+
+    def test_final_terminal_transition_automatically_closes_the_run(self) -> None:
+        photo = self.private_photo("automatic-close")
+        request_capture_metadata(photo)
+        claimed = self.claim()
+
+        complete_attempt(claimed.attempt.id, result={"capture_time": None}, total_duration_ms=5)
+
+        run = EventProcessingRun.objects.get(pk=claimed.job.run_id)
+        self.assertEqual(run.status, EventProcessingRun.Status.CLOSED)
+
+    def test_report_preserves_half_millisecond_median(self) -> None:
+        first = self.private_photo("median-one")
+        second = self.private_photo("median-two")
+        request_capture_metadata(first)
+        request_capture_metadata(second)
+        first_claim = self.claim()
+        complete_attempt(
+            first_claim.attempt.id, result={"capture_time": None}, total_duration_ms=10
+        )
+        second_claim = self.claim()
+        complete_attempt(
+            second_claim.attempt.id, result={"capture_time": None}, total_duration_ms=11
+        )
+
+        run = EventProcessingRun.objects.get(pk=first_claim.job.run_id)
+
+        self.assertEqual(run.report["durations_ms"]["median"], 10.5)
+
+    def test_report_counts_retry_when_another_member_is_cancelled_without_attempt(self) -> None:
+        retried = self.private_photo("retried")
+        cancelled = self.private_photo("cancelled")
+        request_capture_metadata(retried)
+        request_capture_metadata(cancelled)
+        first_claim = self.claim()
+        fail_attempt(first_claim.attempt.id, error_code="network_interruption", retryable=True)
+        other_job = ProcessingJob.objects.exclude(pk=first_claim.job.pk).get()
+        other_job.status = ProcessingJob.Status.CANCELLED
+        other_job.completed_at = timezone.now()
+        other_job.save(update_fields=["status", "completed_at"])
+        other_state = other_job.photo.processing_states.get(processor_type="capture_metadata")
+        other_state.status = "cancelled"
+        other_state.cancelled_at = timezone.now()
+        other_state.save(update_fields=["status", "cancelled_at", "updated_at"])
+        first_claim.job.refresh_from_db()
+        retry = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            worker_build="worker-report",
+            now=first_claim.job.available_at,
+        )
+        assert isinstance(retry, ClaimedJob)
+        complete_attempt(retry.attempt.id, result={"capture_time": None}, total_duration_ms=10)
+
+        run = EventProcessingRun.objects.get(pk=first_claim.job.run_id)
+
+        self.assertEqual(run.report["attempts"]["retries"], 1)
+
+    def test_capped_cohort_report_preserves_every_row_within_recorded_byte_limit(self) -> None:
+        configured_limit = CAPTURE_METADATA_CONFIGURATION["max_cohort_size"]
+        assert isinstance(configured_limit, int)
+        for number in range(configured_limit):
+            request_capture_metadata(self.private_photo(f"bounded-{number}"))
+        while True:
+            claimed = self.claim()
+            if claimed.empty:
+                break
+            complete_attempt(
+                claimed.attempt.id,
+                result={"capture_time": None, "warnings": ["capture_time_missing"]},
+                total_duration_ms=1,
+            )
+
+        run = EventProcessingRun.objects.get(event=self.event)
+        serialized = json.dumps(run.report, ensure_ascii=False, separators=(",", ":")).encode()
+        configured_bytes = CAPTURE_METADATA_CONFIGURATION["report_max_bytes"]
+        assert isinstance(configured_bytes, int)
+        self.assertEqual(run.report["cohort_size"], configured_limit)
+        self.assertEqual(len(run.report["photos"]), configured_limit)
+        self.assertLessEqual(len(serialized), configured_bytes)
+
+    def test_worst_case_configured_cohort_always_fits_the_report_limit(self) -> None:
+        configured_limit = CAPTURE_METADATA_CONFIGURATION["max_cohort_size"]
+        assert isinstance(configured_limit, int)
+        for number in range(configured_limit):
+            request_capture_metadata(self.private_photo(f"worst-{number}"))
+        run = EventProcessingRun.objects.get(event=self.event)
+        now = timezone.now()
+        control_character = "\x1f"
+        for job_number, job in enumerate(run.jobs.order_by("photo_id")):
+            for attempt_number, status in enumerate(
+                [
+                    ProcessingAttempt.Status.FAILED,
+                    ProcessingAttempt.Status.SUCCEEDED,
+                    ProcessingAttempt.Status.STALE,
+                ]
+            ):
+                accepted = status == ProcessingAttempt.Status.SUCCEEDED
+                ProcessingAttempt.objects.create(
+                    event=self.event,
+                    run=run,
+                    job=job,
+                    photo=job.photo,
+                    contract_version=job.contract_version,
+                    processor_type=job.processor_type,
+                    processor_version=job.processor_version,
+                    configuration=job.configuration,
+                    input_fingerprint=job.input_fingerprint,
+                    worker_build=(f"{job_number:03d}-{attempt_number}" + control_character * 128)[
+                        :128
+                    ],
+                    status=status,
+                    terminal_at=now,
+                    result={
+                        "capture_time": None,
+                        "warnings": [control_character * 32] * 8,
+                        "retryable": True,
+                    },
+                    result_hash=f"{job_number:02d}{attempt_number}".ljust(64, "h"),
+                    error_code=control_character * 64,
+                    error_detail=control_character * 512,
+                    total_duration_ms=1,
+                    accepted=accepted,
+                )
+            job.status = ProcessingJob.Status.SUCCEEDED
+            job.completed_at = now
+            job.save(update_fields=["status", "completed_at"])
+        run.status = EventProcessingRun.Status.SEALED
+        run.sealed_at = now
+        run.save(update_fields=["status", "sealed_at"])
+
+        closed = close_run_report(run.id)
+
+        assert closed is not None
+        configured_bytes = CAPTURE_METADATA_CONFIGURATION["report_max_bytes"]
+        assert isinstance(configured_bytes, int)
+        serialized = json.dumps(closed.report, ensure_ascii=False, separators=(",", ":")).encode()
+        self.assertEqual(len(closed.report["photos"]), configured_limit)
+        self.assertLessEqual(report_upper_bound_bytes(closed.configuration), configured_bytes)
+        self.assertLessEqual(len(serialized), configured_bytes)

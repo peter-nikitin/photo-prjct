@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "ingestion.apps.IngestionConfig",
     "picflow.apps.PicflowConfig",
+    "processing.apps.ProcessingConfig",
 ]
 
 MIDDLEWARE = [
@@ -98,6 +99,16 @@ PHOTO_UPLOAD_REGISTRATION_CHUNK = env.int("PHOTO_UPLOAD_REGISTRATION_CHUNK", def
 PHOTO_UPLOAD_CONCURRENCY = env.int("PHOTO_UPLOAD_CONCURRENCY", default=4)
 PHOTO_UPLOAD_GRANT_TTL_SECONDS = env.int("PHOTO_UPLOAD_GRANT_TTL_SECONDS", default=600)
 PHOTO_UPLOAD_STALE_AFTER_SECONDS = env.int("PHOTO_UPLOAD_STALE_AFTER_SECONDS", default=86_400)
+
+# Disabled by default: the private worker API also denies every request unless its separate
+# environment-provided bearer token is present.  This token is never shared with Django, users,
+# or object storage and must never be logged or persisted.
+PHOTO_PROCESSING_ENABLED = env.bool("PHOTO_PROCESSING_ENABLED", default=False)
+PHOTO_PROCESSING_WORKER_TOKEN = env("PHOTO_PROCESSING_WORKER_TOKEN", default="")
+PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS = env.int(
+    "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS", default=120
+)
+PHOTO_PROCESSING_MAX_REQUEST_BYTES = env.int("PHOTO_PROCESSING_MAX_REQUEST_BYTES", default=16_384)
 
 LOGIN_URL = "photographer_login"
 

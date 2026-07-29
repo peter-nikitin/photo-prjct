@@ -59,6 +59,11 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
 
+    # The worker reaches Django through the private Compose network, never the public edge.
+    location ^~ /internal/photo-processing/ {
+        return 404;
+    }
+
     location / {
         proxy_pass http://django_upstream;
         proxy_http_version 1.1;

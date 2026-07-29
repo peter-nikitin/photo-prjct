@@ -58,6 +58,14 @@ The repository currently contains an early Django application:
   evidence commits were not included. Neither automated result represents a live staging activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
+- Confirmed private JPEGs are transactionally enrolled in an explicit `capture_metadata`
+  processing state. Django/PostgreSQL own the queued job, lease, retry, accepted result, immutable
+  attempt evidence, and immutable event-scoped report. A separate worker Dockerfile and opt-in
+  local Compose `worker` profile are contract-tested; the worker polls the private Django API,
+  receives a short-lived grant for one exact original, and has no Django/database or permanent
+  Object Storage credentials. Repository tests prove one real JPEG through claim, download, EXIF
+  extraction, completion, final state, and event report. The local worker image has been built and
+  its no-credential startup path verified; no staging or production worker is enabled.
 - Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the
@@ -137,6 +145,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Keep Stage 2 ingestion control and confirmation request-driven, with bounded browser transfer
   concurrency and no worker or broker, as defined by
   [ADR 0014](adr/0014-keep-stage-2-ingestion-request-driven.md).
+- Run the first Stage 3 photo processor as a separately runnable worker that polls a private Django
+  API backed by PostgreSQL jobs and leases. Give it no database or permanent Object Storage
+  credentials; issue only short-lived exact-object media grants, as defined by
+  [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md).
 - Allow anonymous inline delivery of a complete private original only for an eligible completed
   upload in a currently published free event, within the narrow boundary of
   [ADR 0015](adr/0015-allow-anonymous-free-event-original-delivery.md). Paid-event media and
@@ -205,8 +217,11 @@ broker, vector engine, and ML implementations shown for later processing require
 4. Django records the confirmed original and upload state in PostgreSQL. Confirmed originals have no
    automatic deletion in this stage; unconfirmed objects become stale after 24 hours without
    activity.
-5. Later background work extracts EXIF metadata and generates thumbnail, preview, and watermarked
-   assets. Worker and broker technology remains undecided for that later stage.
+5. The first Stage 3 worker extracts bounded JPEG EXIF capture metadata through a Django-polled
+   private API with one-at-a-time local worker concurrency, explicit per-photo states, immutable
+   attempts, and immutable event-run reports. Its Docker profile is locally opt-in and its image
+   build/no-credential startup contract is locally verified; no deployed worker is enabled.
+   Thumbnail, preview, watermarked-asset, and broker work remains later-stage design.
 6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
    embeddings. Each result records model version, confidence, geometry, and processing status.
 7. Search indexes are updated only within the photo's event scope.
@@ -287,7 +302,7 @@ broker, vector engine, and ML implementations shown for later processing require
 
 Each item needs evidence and an ADR before implementation commits the architecture:
 
-- Stage 3 background-processing worker, broker, retry contract, and processing SLA.
+- Stage 3 processing SLA and the measured threshold for replacing ADR 0017 polling with a broker.
 - `pgvector` versus a dedicated vector database and migration thresholds.
 - Face detection/embedding implementation and biometric governance.
 - Bib-region detection/OCR implementation and model licensing.

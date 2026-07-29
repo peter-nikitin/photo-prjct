@@ -10,6 +10,8 @@ unresolved decisions are documented rather than assumed to be implemented.
   open decisions.
 - [Architecture decisions](docs/adr/README.md) — durable decisions and the ADR template.
 - [Implementation plans](docs/plans/README.md) — delivery-plan conventions and template.
+- [Local photo-processing worker check](docs/local-photo-processing-check.md) — manual real-Object-
+  Storage verification before any deployment decision.
 - [Project skills](.agents/skills) — repository-scoped workflows for writing ADRs and plans and for
   safely operating Yandex Cloud resources.
 
@@ -17,6 +19,10 @@ unresolved decisions are documented rather than assumed to be implemented.
 
 Requirements: Git, Docker, Docker Compose, Python 3.12+, NVM, and Node 22. Python is required for
 the clone helper and for running management commands and quality checks directly on the host.
+
+For the opt-in worker's local, real-Object-Storage verification, follow
+[Local photo-processing worker check](docs/local-photo-processing-check.md). It leaves the worker
+disabled until explicitly started with its Compose profile.
 
 The `main` checkout and a feature worktree use separate source directories and Compose projects, so
 each directory needs its own ignored `.env` file. Both configurations expose PostgreSQL on port

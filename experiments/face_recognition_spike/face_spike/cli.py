@@ -1103,7 +1103,10 @@ def _validate_benchmark_clusters(
                 or member["filename"] != source.filename
                 or member["face_index"] != source.face_index
                 or distance < 0
-                or (face_id == representative and distance != 0.0)
+                or (
+                    face_id == representative
+                    and not math.isclose(distance, 0.0, rel_tol=0.0, abs_tol=1e-12)
+                )
                 or (face_id != representative and distance == 0.0)
             ):
                 raise BenchmarkConfigurationError("benchmark cluster membership is invalid")

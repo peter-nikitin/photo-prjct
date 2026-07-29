@@ -594,6 +594,19 @@ def test_build_benchmark_rejects_noncanonical_cluster_representative_contract(
         cli._load_benchmark_run(run)
 
 
+def test_build_benchmark_accepts_representative_distance_roundoff(tmp_path: Path) -> None:
+    run, _, _, _, _ = _ready_inputs(tmp_path)
+    _write_singleton_clusters(run)
+    clusters_path = run / "clusters.json"
+    payload = json.loads(clusters_path.read_text(encoding="utf-8"))
+    payload["clusters"][0]["members"][0]["distance_to_representative"] = 1.1102230246251565e-16
+    clusters_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    benchmark_run, _, _ = cli._load_benchmark_run(run)
+
+    assert benchmark_run.faces[0].cluster_id == "person-0001"
+
+
 @pytest.mark.parametrize("query_count", [0, -1, True])
 def test_build_benchmark_rejects_nonpositive_or_boolean_query_count_before_inputs(
     tmp_path: Path, query_count: object

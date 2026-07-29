@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved section by section in conversation on 2026-07-29. Written specification awaiting final
-user review.
+Approved section by section in conversation on 2026-07-29 and extended during written review to
+define the future binary-derivative boundary. Revised specification awaiting final user approval.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), proposed Media,
   Recognition, and Operations modules; photo ingestion and indexing flow; evolution stage 4; and
@@ -81,6 +81,10 @@ The completed increment provides observable evidence that:
 - Arbitrary image formats, metadata correction, derivative generation, or rewriting originals.
 - Deletion or retention policy for future biometric results. Those require face-governance design
   before ML integration.
+
+Preview generation remains excluded from the first implementation, but the
+[Future Binary Derivatives](#future-binary-derivatives) section defines how it can be added without
+giving the worker permanent Object Storage credentials or database access.
 
 ## Selected Architecture
 
@@ -201,6 +205,46 @@ A valid supported JPEG with no capture time completes successfully with `capture
 a `capture_time_missing` warning. Missing metadata is a domain result, not an infrastructure
 failure. An unsupported file, a file exceeding declared limits, a fingerprint mismatch, or an
 undecodable JPEG produces a stable permanent failure.
+
+## Future Binary Derivatives
+
+The same worker boundary must support later processors that produce binary artifacts, beginning
+with reduced preview images. Binary output is not part of the first `capture_metadata` contract and
+must not be implemented speculatively in this increment.
+
+A future `generate_preview` processor will use a versioned extension of the processor contract:
+
+1. Django selects the exact derivative variants required for the photo and owns their immutable
+   final keys plus unique attempt-scoped staging keys.
+2. The claimed job describes each bounded output slot, including variant name, allowed content
+   type, byte limit, dimension limits, and required checksum algorithm.
+3. Django issues short-lived write authorization scoped to one exact attempt-staging key. The
+   random key is unused before the attempt; the grant permits neither list, read-other-object,
+   copy, delete, nor final-key write access.
+4. The worker downloads the original through its existing exact-object read grant, generates the
+   derivative in bounded memory, uploads it directly to the authorized output slot, and returns
+   bounded metadata: variant, content type, byte size, pixel dimensions, checksum, and processing
+   warnings.
+5. Django verifies the expected object and returned metadata through its permanent storage access
+   before promoting it to the immutable final key, accepting the result, and making the derivative
+   current in PostgreSQL. Promotion must not overwrite an existing final object.
+6. A failed or stale attempt cannot publish a database-visible derivative. An object uploaded by
+   such an attempt remains unreferenced and is handled by a separately defined cleanup policy.
+
+The worker never chooses a bucket, staging key, or permanent key and never receives reusable write
+credentials. Signed upload URLs and fields follow the same redaction rules as signed download URLs.
+A successful worker response alone is insufficient to publish a derivative; Django-owned
+verification, promotion, and an accepted current attempt are required.
+
+Every derivative attempt belongs to an event-scoped immutable run with its processor version,
+configuration, exact photo cohort, output variant, durations, warnings, and stable failures.
+Generated image bytes are not stored in the report. A later preview specification must decide
+format, dimensions, quality, metadata stripping, orientation, color handling, cleanup, and media
+publication rules before implementation.
+
+Adding binary outputs requires a new processor-contract version and reconciliation with the Stage 3
+ADR. It does not require changing the worker's fundamental trust boundary, polling model, job and
+attempt identity, lease semantics, event-run reporting, or lack of database credentials.
 
 ## Processing Flow
 
@@ -393,6 +437,9 @@ works and the ML processor is integrated.
   semantics.
 - A future ML runtime may implement the same worker-side processor interface without receiving
   database or permanent Object Storage credentials.
+- A future derivative processor may receive exact attempt-staging-key, short-lived upload grants;
+  Django still owns final-key selection, verification, non-overwriting promotion, publication
+  state, and cleanup policy.
 - A vector index remains derived state. PostgreSQL continues to own processing truth and accepted
   result metadata.
 - Existing Stage 2 request-driven ingestion remains unchanged; no upload confirmation waits for

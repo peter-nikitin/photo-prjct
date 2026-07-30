@@ -19,7 +19,10 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
-from processing.services.enrollment import request_capture_metadata
+from processing.services.enrollment import (
+    request_capture_metadata,
+    request_face_embedding_enqueue,
+)
 from processing.services.jobs import recover_expired_attempts
 from processing.tests.test_views import WorkerApiTests
 
@@ -39,6 +42,14 @@ class WorkerApiEdgeCases(WorkerApiTests):
         self._grant(grant)
         request_capture_metadata(self.photo())
         response = self.post("/internal/photo-processing/v1/claim", self.claim_body())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["empty"])
+        return response.json()["job"]
+
+    def _claim_face_one(self, grant) -> dict[str, object]:
+        self._grant(grant)
+        request_face_embedding_enqueue(self.photo())
+        response = self.post("/internal/photo-processing/v1/claim", self.face_claim_body())
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["empty"])
         return response.json()["job"]
@@ -65,6 +76,26 @@ class WorkerApiEdgeCases(WorkerApiTests):
         attempt_id = job["attempt_id"]
         PhotoProcessingState.objects.filter(photo_id="api-photo").update(current_attempt=None)
         body = self.terminal_body(job)
+
+        first = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)
+        second = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)
+        attempt = ProcessingAttempt.objects.get(pk=attempt_id)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["attempt"]["status"], ProcessingAttempt.Status.STALE)
+        self.assertTrue(first.json()["stale"])
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(second.json()["idempotent"])
+        self.assertTrue(second.json()["stale"])
+        self.assertEqual(attempt.status, ProcessingAttempt.Status.STALE)
+        self.assertEqual(ProcessingLateReceipt.objects.count(), 0)
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_stale_face_completion_returns_stale_and_replay_is_idempotent(self, grant) -> None:
+        job = self._claim_face_one(grant)
+        attempt_id = job["attempt_id"]
+        PhotoProcessingState.objects.filter(photo_id="api-photo").update(current_attempt=None)
+        body = self.terminal_body(job, processor_type="face_embedding", result=self.face_result_body())
 
         first = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)
         second = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)

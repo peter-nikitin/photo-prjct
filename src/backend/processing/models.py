@@ -11,6 +11,8 @@ JSON_MAX_BYTES = 16_384
 # report-only ceiling leaves a safety margin over the configured cohort upper-bound calculation.
 REPORT_JSON_MAX_BYTES = 262_144
 CAPTURE_METADATA_PROCESSOR = "capture_metadata"
+FACE_EMBEDDING_PROCESSOR = "face_embedding"
+_TERMINAL_ATTEMPT_STATUSES = ("succeeded", "failed", "expired", "stale")
 
 
 def validate_bounded_json(value: object) -> None:
@@ -222,6 +224,155 @@ class ProcessingAttempt(models.Model):  # noqa: DJ008
             or self.job.input_fingerprint != self.input_fingerprint
         ):
             errors["job"] = "The attempt processor identity must match the job."
+        if errors:
+            raise ValidationError(errors)
+
+
+class FaceProcessingAttemptArtifact(models.Model):  # noqa: DJ008
+    class Status(models.TextChoices):
+        COMPLETE = "complete", "Complete"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    attempt = models.ForeignKey(
+        ProcessingAttempt,
+        on_delete=models.PROTECT,
+        related_name="face_artifacts",
+    )
+    status = models.CharField(max_length=16, choices=Status, default=Status.COMPLETE)
+    feature_payload = models.JSONField(default=dict, validators=[validate_bounded_json])
+    quality_payload = models.JSONField(default=dict, validators=[validate_bounded_json])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    status__in=("complete", "failed"),
+                ),
+                name="proc_face_artifact_status_chk",
+            ),
+            models.UniqueConstraint(fields=("attempt",), name="proc_face_artifact_attempt_uniq"),
+        ]
+        indexes = [
+            models.Index(fields=["attempt"], name="proc_face_artifact_attempt_idx"),
+            models.Index(fields=["status"], name="proc_face_artifact_status_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).filter(
+            attempt__status__in=_TERMINAL_ATTEMPT_STATUSES
+        ).exists():
+            raise ValidationError("Face attempt artifacts are immutable.")
+        super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.attempt_id and self.attempt.status not in _TERMINAL_ATTEMPT_STATUSES:
+            errors["attempt"] = "Face attempt artifacts are only recorded for terminal attempts."
+        if self.pk and self.attempt_id:
+            previous = (
+                self.__class__.objects.filter(pk=self.pk).values_list("attempt_id", flat=True).first()
+            )
+            if previous and previous != self.attempt_id:
+                errors["attempt"] = "Face attempt identity is immutable."
+        if errors:
+            raise ValidationError(errors)
+
+
+class PhotoFaceDetection(models.Model):  # noqa: DJ008
+    class Status(models.TextChoices):
+        DETECTED = "detected", "Detected"
+        KEPT = "kept", "Kept"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    artifact = models.ForeignKey(
+        FaceProcessingAttemptArtifact,
+        on_delete=models.PROTECT,
+        related_name="detections",
+    )
+    attempt = models.ForeignKey(
+        ProcessingAttempt,
+        on_delete=models.PROTECT,
+        related_name="face_detections",
+    )
+    face_index = models.PositiveSmallIntegerField()
+    status = models.CharField(max_length=16, choices=Status, default=Status.DETECTED)
+    geometry = models.JSONField(default=dict, validators=[validate_bounded_json])
+    features = models.JSONField(default=dict, validators=[validate_bounded_json])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(status__in=("detected", "kept", "failed")),
+                name="proc_photo_face_detection_status_chk",
+            ),
+            models.UniqueConstraint(
+                fields=("attempt", "face_index"),
+                name="proc_photo_face_detection_attempt_face_idx_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["attempt", "face_index"], name="proc_face_detection_attempt_idx"),
+            models.Index(fields=["status"], name="proc_face_detection_status_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).filter(
+            attempt__status__in=_TERMINAL_ATTEMPT_STATUSES
+        ).exists():
+            raise ValidationError("Face detections are immutable after terminal attempts.")
+        super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.artifact_id and self.attempt_id and self.artifact.attempt_id != self.attempt_id:
+            errors["artifact"] = "Face detection must belong to the same attempt artifact."
+        if self.attempt_id and self.attempt.status not in _TERMINAL_ATTEMPT_STATUSES:
+            errors["attempt"] = "Face detections are only allowed for terminal attempts."
+        if self.pk and self.attempt_id:
+            previous_attempt = self.__class__.objects.filter(pk=self.pk).values_list(
+                "attempt_id", flat=True
+            ).first()
+            if previous_attempt and previous_attempt != self.attempt_id:
+                errors["attempt"] = "Face detection identity is immutable."
+        if errors:
+            raise ValidationError(errors)
+
+
+class FaceEmbedding(models.Model):  # noqa: DJ008
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    detection = models.OneToOneField(
+        PhotoFaceDetection,
+        on_delete=models.PROTECT,
+        related_name="embedding",
+    )
+    model_version = models.CharField(max_length=64, blank=True, default="")
+    vector = models.JSONField(default=list, validators=[validate_bounded_json])
+    metadata = models.JSONField(default=dict, validators=[validate_bounded_json])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["detection"], name="proc_face_embedding_detection_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).filter(
+            detection__attempt__status__in=_TERMINAL_ATTEMPT_STATUSES
+        ).exists():
+            raise ValidationError("Face embeddings are immutable after terminal attempts.")
+        super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.detection_id and self.detection.attempt.status not in _TERMINAL_ATTEMPT_STATUSES:
+            errors["detection"] = "Face embeddings are only allowed for terminal attempts."
         if errors:
             raise ValidationError(errors)
 

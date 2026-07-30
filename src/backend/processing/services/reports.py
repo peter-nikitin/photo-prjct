@@ -15,6 +15,7 @@ from processing.models import (
     EventProcessingRun,
     ProcessingAttempt,
     ProcessingJob,
+    PhotoFaceDetection,
 )
 
 
@@ -86,6 +87,7 @@ def _report_payload(
             "total": ProcessingAttempt.objects.filter(run=run).count(),
             "retries": sum(max(row["attempt_count"] - 1, 0) for row in rows),
         },
+        "faces": _faces_report_summary(rows),
         "started_at": run.created_at.isoformat(),
         "finished_at": now.isoformat(),
         "total_duration_ms": max(0, round((now - run.created_at).total_seconds() * 1000)),
@@ -105,18 +107,42 @@ def _photo_row(job: ProcessingJob) -> dict[str, Any]:
     capture_time_present: bool | None = None
     if accepted is not None and "capture_time" in result:
         capture_time_present = result["capture_time"] is not None
+    faces = _face_embedding_counts(accepted)
     return {
         "photo_id": job.photo_id,
         "status": job.status,
         "accepted_attempt_id": str(accepted.id) if accepted else None,
         "capture_time_present": capture_time_present,
         "attempt_count": len(attempts),
+        "faces_detected": faces["detected"],
+        "faces_kept": faces["kept"],
+        "faces_failed": faces["failed"],
         "duration_ms": accepted.total_duration_ms if accepted else None,
         "warnings": [
             str(code)[: _row_limits(job.configuration)["max_warning_chars"]]
             for code in warnings[: _row_limits(job.configuration)["max_warnings"]]
         ],
         "error_code": (terminal.error_code if terminal else "")[:64],
+    }
+
+
+def _faces_report_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "denominator": len(rows),
+        "detected": sum(row["faces_detected"] for row in rows),
+        "kept": sum(row["faces_kept"] for row in rows),
+        "failed": sum(row["faces_failed"] for row in rows),
+    }
+
+
+def _face_embedding_counts(attempt: ProcessingAttempt | None) -> dict[str, int]:
+    if attempt is None:
+        return {"detected": 0, "kept": 0, "failed": 0}
+    detections = PhotoFaceDetection.objects.filter(attempt=attempt).order_by("face_index")
+    return {
+        "detected": detections.count(),
+        "kept": detections.filter(status=PhotoFaceDetection.Status.KEPT).count(),
+        "failed": detections.filter(status=PhotoFaceDetection.Status.FAILED).count(),
     }
 
 

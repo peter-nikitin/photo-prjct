@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import json
 import random
 from collections.abc import Callable
@@ -15,7 +16,11 @@ from django.utils import timezone
 
 from processing.contracts import AttemptCompletion, ClaimedJob, CompletionConflict, EmptyClaim
 from processing.models import (
+    FACE_EMBEDDING_PROCESSOR,
+    FaceEmbedding,
+    FaceProcessingAttemptArtifact,
     EventProcessingRun,
+    PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -460,6 +465,8 @@ def _terminal_success(
             "accepted",
         ]
     )
+    if attempt.processor_type == FACE_EMBEDDING_PROCESSOR:
+        _persist_face_embedding_result(attempt, payload["result"])
 
 
 def _terminal_failure(
@@ -493,6 +500,210 @@ def _terminal_failure(
             "accepted",
         ]
     )
+
+
+def _persist_face_embedding_result(
+    attempt: ProcessingAttempt, result: dict[str, Any]
+) -> None:
+    if not isinstance(result, dict):
+        return
+    model = _coerce_face_model(result, attempt.configuration)
+    faces = result.get("faces")
+    if not isinstance(faces, list):
+        return
+    artifact = FaceProcessingAttemptArtifact.objects.create(
+        attempt=attempt,
+        status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+        feature_payload={
+            "model": model,
+            "warnings": _safe_json_list(result.get("warnings"), maximum=8),
+            "timings": _safe_json_dict(result.get("timings")),
+            "face_count": len(faces),
+            "has_single_query_face_usable": bool(result.get("has_single_query_face_usable", False)),
+        },
+        quality_payload={
+            "quality": result.get("quality"),
+            "model": model,
+        },
+    )
+    for face in _iter_face_records(result):
+        index, record = face
+        if index is None:
+            continue
+        detection = PhotoFaceDetection.objects.create(
+            attempt=attempt,
+            artifact=artifact,
+            face_index=index,
+            status=PhotoFaceDetection.Status.KEPT,
+            geometry={
+                "bbox": _safe_face_bbox(record.get("bbox")),
+                "landmarks": record.get("landmarks", []),
+                "model": model,
+            },
+            features={
+                "confidence": record.get("quality"),
+                "quality": record.get("quality"),
+                "warnings": _safe_json_list(record.get("quality_flags"), maximum=8),
+                "source": record.get("source", "model"),
+            },
+        )
+        embedding = record.get("embedding")
+        if embedding is not None:
+            FaceEmbedding.objects.create(
+                detection=detection,
+                model_version=model,
+                vector=embedding,
+                metadata=_safe_dict(record),
+            )
+
+
+def _iter_face_records(result: dict[str, Any]) -> list[tuple[int | None, dict[str, Any]]]:
+    faces = result.get("faces")
+    if not isinstance(faces, list):
+        return []
+    records: list[tuple[int | None, dict[str, Any]]] = []
+    for index, raw in enumerate(faces):
+        if not isinstance(raw, dict):
+            continue
+        if {"face_id", "bbox", "quality", "embedding_sha256"}.issubset(raw):
+            quality = raw.get("quality")
+            bbox = _safe_face_bbox(raw.get("bbox"))
+            if bbox is None:
+                continue
+            vector = _coerce_embedding(raw.get("embedding"))
+            if vector is None:
+                vector = _maybe_embedding_from_sha256(raw.get("embedding_sha256"))
+            if quality is None or not isinstance(quality, (int, float)) or not (0 <= quality <= 1):
+                continue
+            records.append(
+                (
+                    index,
+                    {
+                        "index": index,
+                        "bbox": bbox,
+                        "quality": quality,
+                        "embedding": vector,
+                        "landmarks": [],
+                        "confidence": quality,
+                        "source": "legacy",
+                    },
+                )
+            )
+            continue
+        if {
+            "index",
+            "bbox",
+            "confidence",
+            "embedding",
+            "landmarks",
+        }.issubset(raw):
+            raw_bbox = _safe_face_bbox(raw.get("bbox"))
+            if raw_bbox is None:
+                continue
+            quality = raw.get("confidence")
+            quality = quality if isinstance(quality, (int, float)) and 0 <= quality <= 1 else None
+            if quality is None:
+                continue
+            embedding = _coerce_embedding(raw.get("embedding"))
+            if embedding is None:
+                continue
+            landmarks = raw.get("landmarks")
+            if not (
+                isinstance(landmarks, (list, tuple))
+                and len(landmarks) == 5
+                and all(
+                    isinstance(point, (list, tuple))
+                    and len(point) == 2
+                    and all(_safe_face_coordinate(item) for item in point)
+                    for point in landmarks
+                )
+            ):
+                continue
+            records.append(
+                (
+                    _coerce_int(raw.get("index")),
+                    {
+                        "index": raw.get("index"),
+                        "bbox": raw_bbox,
+                        "quality": quality,
+                        "embedding": embedding,
+                        "landmarks": list(map(list, landmarks)),
+                        "quality_flags": raw.get("quality_flags", []),
+                        "source": "face_embedding",
+                        "confidence": quality,
+                    },
+                )
+            )
+    return records
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _safe_face_coordinate(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
+def _safe_face_bbox(value: Any) -> list[float] | None:
+    if not isinstance(value, (list, tuple)):
+        return None
+    if len(value) != 4:
+        return None
+    if not all(_safe_face_coordinate(item) for item in value):
+        return None
+    return [float(item) for item in value]
+
+
+def _coerce_face_model(result: dict[str, Any], configuration: dict[str, Any]) -> str:
+    candidate = result.get("model")
+    if isinstance(candidate, str) and candidate:
+        return candidate
+    face_config = configuration.get("face_embedding")
+    if isinstance(face_config, dict):
+        configured = face_config.get("model")
+        if isinstance(configured, str) and configured:
+            return configured
+    return "sface"
+
+
+def _coerce_embedding(value: Any) -> list[float] | None:
+    if not isinstance(value, (list, tuple)):
+        return None
+    if len(value) > 512:
+        return None
+    output: list[float] = []
+    for item in value:
+        if not isinstance(item, (int, float)) or isinstance(item, bool):
+            return None
+        output.append(float(item))
+    return output
+
+
+def _maybe_embedding_from_sha256(value: Any) -> list[float] | None:
+    if not isinstance(value, str) or len(value) != 64:
+        return None
+    return None
+
+
+def _safe_json_list(value: Any, *, maximum: int) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    return value[:maximum]
+
+
+def _safe_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _safe_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _terminal_stale(

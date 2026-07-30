@@ -15,11 +15,15 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
-from processing.services.enrollment import request_capture_metadata
+from processing.services.enrollment import (
+    request_capture_metadata,
+    request_face_embedding_enqueue,
+)
 
 
 @override_settings(
     PHOTO_PROCESSING_ENABLED=True,
+    PHOTO_PROCESSING_FACE_ENABLED=True,
     PHOTO_PROCESSING_WORKER_TOKEN="worker-secret",
 )
 class WorkerApiTests(TestCase):
@@ -66,7 +70,32 @@ class WorkerApiTests(TestCase):
             "lease_seconds": 120,
         } | overrides
 
+    def face_claim_body(self, **overrides: object) -> dict[str, object]:
+        return self.claim_body(processor_type="face_embedding", **overrides)
+
     def terminal_body(self, job: dict[str, object], **overrides: object) -> dict[str, object]:
+        failure_retryable = {
+            "capture_metadata": {
+                "decode_failed": False,
+                "download_authorization_expired": True,
+                "fingerprint_mismatch": False,
+                "input_too_large": False,
+                "network_interruption": True,
+                "storage_unavailable": True,
+                "unsupported_input": False,
+            },
+            "face_embedding": {
+                "decode_failed": False,
+                "input_too_large": False,
+                "model_inference_error": True,
+                "model_inference_timeout": True,
+                "network_interruption": True,
+                "no_face_detected": False,
+                "storage_unavailable": True,
+                "timeout": True,
+                "all_faces_filtered": False,
+            },
+        }
         body = {
             "job_id": job["id"],
             "attempt_id": job["attempt_id"],
@@ -90,11 +119,28 @@ class WorkerApiTests(TestCase):
         } | overrides
         if body["outcome"] == "failure":
             body.pop("result")
-            body |= {
-                "retryable": body["error_code"] == "network_interruption",
-                "error_detail": "safe",
-            }
+            body["error_detail"] = "safe"
+            if "retryable" not in body:
+                body["retryable"] = failure_retryable.get(
+                    str(body["processor_type"]),
+                    {},
+                ).get(str(body["error_code"]), False)
         return body
+
+    def face_result_body(self, **overrides: object) -> dict[str, object]:
+        return {
+            "face_count": 1,
+            "model": "sface",
+            "faces": [
+                {
+                    "face_id": "face-1",
+                    "bbox": [10, 10, 110, 110],
+                    "quality": 0.93,
+                    "embedding_sha256": "f" * 64,
+                },
+            ],
+            "warnings": [],
+        } | overrides
 
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_claim_grants_only_the_queued_job_and_unsupported_contract_polls_empty(
@@ -125,6 +171,110 @@ class WorkerApiTests(TestCase):
         self.assertEqual(grant.call_args.kwargs["final_key"], photo.original_key)
         self.assertGreaterEqual(grant.call_args.kwargs["max_ttl_seconds"], 1)
         self.assertLessEqual(grant.call_args.kwargs["max_ttl_seconds"], 119)
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_completion_rejects_unknown_processor_type_or_version(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        request_capture_metadata(self.photo())
+        job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+        attempt = job["attempt_id"]
+
+        by_type = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/complete",
+            self.terminal_body(job, processor_type="face_embedding"),
+        )
+        by_version = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/complete",
+            self.terminal_body(job, processor_version=2),
+        )
+
+        self.assertEqual(by_type.status_code, 400)
+        self.assertEqual(by_type.json()["error"]["code"], "invalid_result")
+        self.assertEqual(by_version.status_code, 400)
+        self.assertEqual(by_version.json()["error"]["code"], "invalid_result")
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_face_completion_payload_is_schema_validated(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        request_face_embedding_enqueue(self.photo())
+
+        face_job = self.post(
+            "/internal/photo-processing/v1/claim", self.face_claim_body()
+        ).json()["job"]
+        attempt = face_job["attempt_id"]
+        invalid_face = self.terminal_body(
+            face_job,
+            processor_type="face_embedding",
+            result={"face_count": 1, "model": "sface", "faces": [], "warnings": []},
+        )
+
+        invalid_complete = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/complete", invalid_face
+        )
+        valid_complete = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/complete",
+            self.terminal_body(
+                face_job, processor_type="face_embedding", result=self.face_result_body()
+            ),
+        )
+
+        self.assertEqual(valid_complete.status_code, 200)
+        self.assertEqual(invalid_complete.status_code, 400)
+        self.assertEqual(invalid_complete.json()["error"]["code"], "invalid_result")
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_fail_rejects_unknown_processor_contract(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        request_capture_metadata(self.photo())
+        job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+        attempt = job["attempt_id"]
+
+        unsupported = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/fail",
+            self.terminal_body(
+                job,
+                outcome="failure",
+                processor_type="face_embedding",
+                error_code="model_inference_error",
+            ),
+        )
+        self.assertEqual(unsupported.status_code, 400)
+        self.assertEqual(unsupported.json()["error"]["code"], "invalid_result")
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_face_fail_rejects_unknown_error_code(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        request_face_embedding_enqueue(self.photo())
+        face_job = self.post(
+            "/internal/photo-processing/v1/claim", self.face_claim_body()
+        ).json()["job"]
+        attempt = face_job["attempt_id"]
+        unsupported = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/fail",
+            self.terminal_body(
+                face_job,
+                outcome="failure",
+                processor_type="face_embedding",
+                error_code="not_a_valid_code",
+            ),
+        )
+        supported = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/fail",
+            self.terminal_body(
+                face_job,
+                outcome="failure",
+                processor_type="face_embedding",
+                error_code="model_inference_error",
+            ),
+        )
+
+        self.assertEqual(unsupported.status_code, 400)
+        self.assertEqual(unsupported.json()["error"]["code"], "invalid_result")
+        self.assertEqual(supported.status_code, 200)
 
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_claim_uses_immutable_fingerprint_when_live_photo_source_drifts(self, grant) -> None:

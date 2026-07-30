@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,6 +12,11 @@ from uuid import UUID
 CONTRACT_VERSION = 1
 PROCESSOR_TYPE = "capture_metadata"
 PROCESSOR_VERSION = 1
+PROCESSOR_TYPE_FACE_EMBEDDING = "face_embedding"
+PROCESSOR_VERSION_FACE_EMBEDDING = 1
+MAX_FACE_EMBEDDINGS_PER_JOB = 64
+MAX_FACE_EMBEDDING_DIMENSIONS = 128
+DEFAULT_FACE_DETECTION_THRESHOLD = 0.75
 MAX_JSON_FIELD_BYTES = 16_384
 MAX_INPUT_BYTES_CAP = 50 * 1024 * 1024
 MAX_PIXELS_CAP = 100_000_000
@@ -21,6 +27,8 @@ FAILURE_RETRYABLE = {
     "download_authorization_expired": True,
     "fingerprint_mismatch": False,
     "input_too_large": False,
+    "model_inference_error": False,
+    "model_inference_timeout": True,
     "network_interruption": True,
     "storage_unavailable": True,
     "unsupported_input": False,
@@ -93,10 +101,13 @@ class ProcessorConfiguration:
     poll_min_delay_seconds: int
     api_response_max_bytes: int
     terminal_result_max_bytes: int
+    max_faces: int = 1
+    face_detection_threshold: float = DEFAULT_FACE_DETECTION_THRESHOLD
+    model: str = "sface"
 
     @classmethod
     def from_value(cls, value: object) -> ProcessorConfiguration:
-        expected = {
+        expected_capture = {
             "retry_policy",
             "max_cohort_size",
             "report_max_bytes",
@@ -104,12 +115,29 @@ class ProcessorConfiguration:
             "capture_metadata",
             "worker",
         }
-        if not isinstance(value, dict) or set(value) != expected or not _bounded_json(value):
+        expected_face = {
+            "retry_policy",
+            "max_cohort_size",
+            "report_max_bytes",
+            "report_row_limits",
+            "face_embedding",
+            "worker",
+        }
+        if not isinstance(value, dict) or not _bounded_json(value):
             raise ContractError("invalid processor configuration")
+        if set(value) == expected_capture:
+            capture = value["capture_metadata"]
+            face_config = None
+        elif set(value) == expected_face:
+            capture = None
+            face_config = value["face_embedding"]
+        else:
+            raise ContractError("invalid processor configuration")
+
         retry = value["retry_policy"]
         rows = value["report_row_limits"]
-        metadata = value["capture_metadata"]
         worker = value["worker"]
+
         if not (
             isinstance(retry, dict)
             and set(retry)
@@ -126,11 +154,6 @@ class ProcessorConfiguration:
             and all(_positive_int(item) for item in rows.values())
             and _positive_int(value["max_cohort_size"])
             and _positive_int(value["report_max_bytes"])
-            and isinstance(metadata, dict)
-            and set(metadata) == {"date_field_precedence", "normalization"}
-            and isinstance(metadata["date_field_precedence"], list)
-            and tuple(metadata["date_field_precedence"]) == _EXIF_FIELDS
-            and metadata["normalization"] == "utc_assume_utc_if_missing"
             and isinstance(worker, dict)
             and set(worker)
             == {
@@ -158,6 +181,53 @@ class ProcessorConfiguration:
             and worker["terminal_result_max_bytes"] <= worker["api_response_max_bytes"]
         ):
             raise ContractError("invalid processor configuration")
+
+        if capture is not None:
+            if not (
+                isinstance(capture, dict)
+                and set(capture) == {"date_field_precedence", "normalization"}
+                and isinstance(capture["date_field_precedence"], list)
+                and tuple(capture["date_field_precedence"]) == _EXIF_FIELDS
+                and capture["normalization"] == "utc_assume_utc_if_missing"
+            ):
+                raise ContractError("invalid processor configuration")
+            max_faces = 1
+            face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
+            model = "sface"
+        else:
+            if not isinstance(face_config, dict):
+                raise ContractError("invalid processor configuration")
+            if set(face_config) - {
+                "max_faces",
+                "detection_threshold",
+                "model",
+                "max_faces_per_photo",
+                "min_face_px",
+                "normalize_embeddings",
+            }:
+                raise ContractError("invalid processor configuration")
+            max_faces = face_config.get("max_faces", face_config.get("max_faces_per_photo", 1))
+            face_threshold = face_config.get(
+                "detection_threshold",
+                face_config.get("detection_confidence_threshold", DEFAULT_FACE_DETECTION_THRESHOLD),
+            )
+            if "min_face_px" in face_config and not _positive_int(face_config["min_face_px"]):
+                raise ContractError("invalid processor configuration")
+            if "normalize_embeddings" in face_config and not isinstance(
+                face_config["normalize_embeddings"], bool
+            ):
+                raise ContractError("invalid processor configuration")
+            if "model" in face_config:
+                model = str(face_config["model"])
+            else:
+                model = "sface"
+            if not _positive_int(max_faces) or max_faces > MAX_FACE_EMBEDDINGS_PER_JOB:
+                raise ContractError("invalid processor configuration")
+            if not _bounded_probability(face_threshold):
+                raise ContractError("invalid processor configuration")
+            if not isinstance(model, str) or model not in {"sface", "sface-v1", "sface_v1"}:
+                raise ContractError("invalid processor configuration")
+
         return cls(
             date_field_precedence=_EXIF_FIELDS,
             normalization="utc_assume_utc_if_missing",
@@ -168,6 +238,9 @@ class ProcessorConfiguration:
             poll_min_delay_seconds=worker["poll_min_delay_seconds"],
             api_response_max_bytes=worker["api_response_max_bytes"],
             terminal_result_max_bytes=worker["terminal_result_max_bytes"],
+            max_faces=max_faces,
+            face_detection_threshold=face_threshold,
+            model=model,
         )
 
 
@@ -213,8 +286,8 @@ class ClaimedJob:
         limits = _input_limits(value["input_limits"])
         if not (
             value["contract_version"] == CONTRACT_VERSION
-            and value["processor_type"] == PROCESSOR_TYPE
-            and value["processor_version"] == PROCESSOR_VERSION
+            and value["processor_type"] in {PROCESSOR_TYPE, PROCESSOR_TYPE_FACE_EMBEDDING}
+            and value["processor_version"] == _processor_version(value["processor_type"])
             and all(_uuid_string(value[name]) for name in ("id", "attempt_id", "run_id"))
             # Events predate the processing app and currently use Django's numeric primary key.
             # Keep the untrusted transport value bounded, but do not invent a UUID-only event API.
@@ -232,8 +305,8 @@ class ClaimedJob:
             id=value["id"],
             attempt_id=value["attempt_id"],
             contract_version=CONTRACT_VERSION,
-            processor_type=PROCESSOR_TYPE,
-            processor_version=PROCESSOR_VERSION,
+            processor_type=value["processor_type"],
+            processor_version=value["processor_version"],
             configuration=configuration,
             photo_id=value["photo_id"],
             event_id=value["event_id"],
@@ -294,6 +367,42 @@ class CaptureMetadataResult:
         }
 
 
+@dataclass(frozen=True)
+class FaceEmbeddingFace:
+    index: int
+    bbox: tuple[float, float, float, float]
+    confidence: float
+    landmarks: tuple[tuple[float, float], ...]
+    embedding: tuple[float, ...]
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "index": self.index,
+            "bbox": list(self.bbox),
+            "confidence": self.confidence,
+            "landmarks": [list(point) for point in self.landmarks],
+            "embedding": list(self.embedding),
+        }
+
+
+@dataclass(frozen=True)
+class FaceEmbeddingResult:
+    model: str
+    faces: tuple[FaceEmbeddingFace, ...]
+    has_single_query_face_usable: bool
+    warnings: tuple[str, ...]
+    timings: dict[str, int]
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "model": self.model,
+            "faces": [face.as_payload() for face in self.faces],
+            "has_single_query_face_usable": self.has_single_query_face_usable,
+            "warnings": list(self.warnings),
+            "timings": dict(self.timings),
+        }
+
+
 def _input_limits(value: object) -> InputLimits:
     if (
         not isinstance(value, dict)
@@ -335,6 +444,23 @@ def _bounded_json(value: object) -> bool:
         len(json.dumps(value, separators=(",", ":"), sort_keys=True).encode())
         <= MAX_JSON_FIELD_BYTES
     )
+
+
+def _bounded_probability(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0.0 <= value <= 1.0
+    )
+
+
+def _processor_version(processor_type: str) -> int:
+    if processor_type == PROCESSOR_TYPE:
+        return PROCESSOR_VERSION
+    if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
+        return PROCESSOR_VERSION_FACE_EMBEDDING
+    raise ContractError("unsupported processor type")
 
 
 def _utc_timestamp(value: object) -> bool:

@@ -6,7 +6,7 @@ from threading import Barrier, Thread
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, close_old_connections, transaction
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -18,7 +18,11 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
-from processing.services.enrollment import CAPTURE_METADATA_CONFIGURATION, request_capture_metadata
+from processing.services.enrollment import (
+    CAPTURE_METADATA_CONFIGURATION,
+    request_capture_metadata,
+    request_face_embedding_enqueue,
+)
 from processing.services.jobs import (
     MAX_ATTEMPTS,
     claim_job,
@@ -92,6 +96,29 @@ class ProcessingJobServiceTests(TestCase):
 
         self.assertTrue(empty.empty)
         self.assertEqual(ProcessingJob.objects.get().status, ProcessingJob.Status.QUEUED)
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_face_claim_only_selects_an_exactly_compatible_processor(self) -> None:
+        photo = self.private_photo("face-compatible")
+        request_face_embedding_enqueue(photo)
+
+        claim = claim_job(
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            worker_build="worker-1",
+        )
+        mismatch_version = claim_job(
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=2,
+            worker_build="worker-1",
+        )
+
+        self.assertFalse(claim.empty)
+        self.assertEqual(claim.job.processor_type, "face_embedding")
+        self.assertEqual(claim.job.processor_version, 1)
+        self.assertTrue(mismatch_version.empty)
 
     def test_empty_queue_returns_an_explicit_backoff_response(self) -> None:
         empty = claim_job(

@@ -8,7 +8,14 @@ from django.utils import timezone
 from picflow.models import Event, Photo
 
 from processing.contracts import ClaimedJob
-from processing.models import EventProcessingRun, ProcessingAttempt, ProcessingJob
+from processing.models import (
+    EventProcessingRun,
+    FaceEmbedding,
+    FaceProcessingAttemptArtifact,
+    PhotoFaceDetection,
+    ProcessingAttempt,
+    ProcessingJob,
+)
 from processing.services.enrollment import CAPTURE_METADATA_CONFIGURATION, request_capture_metadata
 from processing.services.jobs import claim_job, complete_attempt, fail_attempt
 from processing.services.reports import close_run_report, report_upper_bound_bytes
@@ -144,6 +151,9 @@ class ProcessingRunReportTests(TestCase):
                     "accepted_attempt_id",
                     "capture_time_present",
                     "attempt_count",
+                    "faces_detected",
+                    "faces_kept",
+                    "faces_failed",
                     "duration_ms",
                     "warnings",
                     "error_code",
@@ -190,6 +200,74 @@ class ProcessingRunReportTests(TestCase):
         run = EventProcessingRun.objects.get(pk=first_claim.job.run_id)
 
         self.assertEqual(run.report["durations_ms"]["median"], 10.5)
+
+    def test_report_exposes_face_embedding_counters_per_photo(self) -> None:
+        photo = self.private_photo("faces")
+        request_capture_metadata(photo)
+        claimed = self.claim()
+        now = timezone.now()
+        ProcessingAttempt.objects.filter(pk=claimed.attempt.id).update(
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=now,
+            accepted=True,
+            result={"capture_time": None},
+        )
+        claimed.job.status = ProcessingJob.Status.SUCCEEDED
+        claimed.job.completed_at = now
+        claimed.job.save(update_fields=["status", "completed_at"])
+        EventProcessingRun.objects.filter(pk=claimed.job.run_id).update(
+            status=EventProcessingRun.Status.SEALED,
+            sealed_at=now,
+        )
+
+        artifact = FaceProcessingAttemptArtifact.objects.create(
+            attempt_id=claimed.attempt.id,
+            status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+            feature_payload={"detector": "unit"},
+            quality_payload={"accepted": True},
+        )
+        PhotoFaceDetection.objects.create(
+            attempt_id=claimed.attempt.id,
+            artifact=artifact,
+            face_index=0,
+            status=PhotoFaceDetection.Status.KEPT,
+            geometry={"x": 0, "y": 0, "w": 1, "h": 1},
+            features={"score": 0.9},
+        )
+        PhotoFaceDetection.objects.create(
+            attempt_id=claimed.attempt.id,
+            artifact=artifact,
+            face_index=1,
+            status=PhotoFaceDetection.Status.FAILED,
+            geometry={"x": 0, "y": 0, "w": 1, "h": 1},
+            features={"reason": "low_quality"},
+        )
+        hidden = PhotoFaceDetection.objects.create(
+            attempt_id=claimed.attempt.id,
+            artifact=artifact,
+            face_index=2,
+            status=PhotoFaceDetection.Status.DETECTED,
+            geometry={"x": 2, "y": 2, "w": 1, "h": 1},
+            features={"score": 0.5},
+        )
+        FaceEmbedding.objects.create(
+            detection=hidden,
+            model_version="sface-v1",
+            vector=[0.1, 0.2, 0.3],
+            metadata={"source": "unit"},
+        )
+
+        run = close_run_report(claimed.job.run_id)
+        assert run is not None
+
+        row = run.report["photos"][0]
+        self.assertEqual(row["faces_detected"], 3)
+        self.assertEqual(row["faces_kept"], 1)
+        self.assertEqual(row["faces_failed"], 1)
+        self.assertEqual(
+            run.report["faces"],
+            {"denominator": 1, "detected": 3, "kept": 1, "failed": 1},
+        )
 
     def test_report_counts_retry_when_another_member_is_cancelled_without_attempt(self) -> None:
         retried = self.private_photo("retried")

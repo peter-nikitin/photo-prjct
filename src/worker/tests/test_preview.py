@@ -70,6 +70,29 @@ def test_generate_preview_does_not_enlarge_small_image(tmp_path: Path) -> None:
     assert (result.width, result.height) == (640, 400)
 
 
+def test_generate_preview_accepts_jpeg_with_mpf_metadata_reported_as_mpo(tmp_path: Path) -> None:
+    source = tmp_path / "canon-eos-r6m2.jpg"
+    output = tmp_path / "preview.jpg"
+    first = Image.new("RGB", (640, 400), "red")
+    second = Image.new("RGB", (640, 400), "blue")
+    try:
+        first.save(source, format="MPO", save_all=True, append_images=[second])
+    finally:
+        first.close()
+        second.close()
+
+    with Image.open(source) as opened:
+        assert opened.format == "MPO"
+
+    result = generate_preview(
+        source, output, max_input_bytes=10_000_000, max_pixels=1_000_000, slot=slot()
+    )
+
+    assert (result.width, result.height) == (640, 400)
+    with Image.open(output) as preview:
+        assert preview.format == "JPEG"
+
+
 @pytest.mark.parametrize(
     ("orientation", "expected"),
     [

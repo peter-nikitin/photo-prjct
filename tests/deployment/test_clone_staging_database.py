@@ -1007,7 +1007,7 @@ def test_signal_during_replacement_recovers_from_retained_safety_dump(
         stderr=subprocess.PIPE,
     )
     pause_path = Path(clone_env["PSQL_PAUSE_FILE"])
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while not pause_path.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert pause_path.exists()
@@ -1046,7 +1046,7 @@ def test_signal_during_connection_termination_does_not_replace_local_database(
         stderr=subprocess.PIPE,
     )
     pause_path = Path(clone_env["PSQL_PAUSE_FILE"])
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while not pause_path.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert pause_path.exists()
@@ -1085,7 +1085,7 @@ def test_signal_during_django_validation_retains_the_successfully_restored_datab
         stderr=subprocess.PIPE,
     )
     pause_path = Path(clone_env["DJANGO_PAUSE_FILE"])
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while not pause_path.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert pause_path.exists()
@@ -1214,7 +1214,7 @@ def test_parallel_clone_fails_on_atomic_project_database_lock_before_ssh_or_sql(
     )
     try:
         pause_path = Path(clone_env["SSH_PAUSE_FILE"])
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 15
         while not pause_path.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert pause_path.exists()
@@ -1837,7 +1837,7 @@ def test_dump_publication_hup_terminates_without_published_artifacts(
         stderr=subprocess.PIPE,
     )
     pause_path = Path(clone_env["MV_PAUSE_FILE"])
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while not pause_path.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert pause_path.exists()

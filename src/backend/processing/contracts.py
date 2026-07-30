@@ -24,6 +24,16 @@ FACE_EMBEDDING_CONTRACT = ProcessorContract(
     contract_version=1,
     processor_version=1,
 )
+GENERATE_PREVIEW_CONTRACT = ProcessorContract(
+    processor_type="generate_preview",
+    contract_version=2,
+    processor_version=1,
+)
+PREVIEW_FACE_EMBEDDING_CONTRACT = ProcessorContract(
+    processor_type="face_embedding",
+    contract_version=2,
+    processor_version=2,
+)
 
 
 @dataclass(frozen=True)

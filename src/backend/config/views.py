@@ -15,8 +15,9 @@ from picflow.gallery import (
     GalleryPhoto,
     GalleryPhotoFactory,
     PublicMediaResolver,
+    gallery_photo_queryset,
 )
-from picflow.models import Event, Photo
+from picflow.models import Event
 
 
 def health(request):  # noqa: ARG001
@@ -37,9 +38,7 @@ def event_detail(request, slug: str):
     if event.access_type == Event.AccessType.FREE:
         gallery_photos = tuple(
             GalleryPhotoFactory.from_photo(photo=photo, event_slug=event.slug)
-            for photo in Photo.objects.filter(event=event, src="", original_key__isnull=False)
-            .select_related("event")
-            .order_by("id")
+            for photo in gallery_photo_queryset(event=event)
         )
     return render(
         request,
@@ -63,7 +62,7 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
     event = get_object_or_404(
         Event.objects.published(), slug=slug, access_type=Event.AccessType.FREE
     )
-    photo = get_object_or_404(Photo, pk=photo_id, event=event, src="", original_key__isnull=False)
+    photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
     try:
         media = _public_media_resolver().resolve(photo=photo, variant=variant)
     except ObjectMissing:

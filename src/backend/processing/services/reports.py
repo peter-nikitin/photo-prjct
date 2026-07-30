@@ -10,12 +10,29 @@ from django.db import transaction
 from django.utils import timezone
 
 from processing.models import (
+    GENERATE_PREVIEW_PROCESSOR,
     JSON_MAX_BYTES,
     REPORT_JSON_MAX_BYTES,
     EventProcessingRun,
+    PhotoFaceDetection,
     ProcessingAttempt,
     ProcessingJob,
-    PhotoFaceDetection,
+)
+
+_PREVIEW_WARNING_CODES = frozenset({"color_profile_missing"})
+_PREVIEW_FAILURE_CODES = frozenset(
+    {
+        "decode_failed",
+        "download_authorization_expired",
+        "fingerprint_mismatch",
+        "input_too_large",
+        "invalid_dimensions",
+        "network_interruption",
+        "normalization_failed",
+        "output_contract_violation",
+        "storage_unavailable",
+        "unsupported_input",
+    }
 )
 
 
@@ -55,7 +72,11 @@ def _report_payload(
     statuses = [job.status for job in jobs]
     successful = [row for row in rows if row["status"] == ProcessingJob.Status.SUCCEEDED]
     durations = [row["duration_ms"] for row in successful if row["duration_ms"] is not None]
-    return {
+    attempts: dict[str, int] = {
+        "total": ProcessingAttempt.objects.filter(run=run).count(),
+        "retries": sum(max(row["attempt_count"] - 1, 0) for row in rows),
+    }
+    report: dict[str, Any] = {
         "event_id": str(run.event_id),
         "run_id": str(run.id),
         "processor": {
@@ -83,10 +104,7 @@ def _report_payload(
             "with_capture_time": sum(row["capture_time_present"] is True for row in successful),
             "without_capture_time": sum(row["capture_time_present"] is False for row in successful),
         },
-        "attempts": {
-            "total": ProcessingAttempt.objects.filter(run=run).count(),
-            "retries": sum(max(row["attempt_count"] - 1, 0) for row in rows),
-        },
+        "attempts": attempts,
         "faces": _faces_report_summary(rows),
         "started_at": run.created_at.isoformat(),
         "finished_at": now.isoformat(),
@@ -94,6 +112,12 @@ def _report_payload(
         "durations_ms": _duration_summary(durations),
         "photos": rows,
     }
+    if run.processor_type == GENERATE_PREVIEW_PROCESSOR:
+        attempts["stale"] = ProcessingAttempt.objects.filter(
+            run=run, status=ProcessingAttempt.Status.STALE
+        ).count()
+        report["preview"] = _preview_report(rows)
+    return report
 
 
 def _photo_row(job: ProcessingJob) -> dict[str, Any]:
@@ -108,7 +132,7 @@ def _photo_row(job: ProcessingJob) -> dict[str, Any]:
     if accepted is not None and "capture_time" in result:
         capture_time_present = result["capture_time"] is not None
     faces = _face_embedding_counts(accepted)
-    return {
+    row: dict[str, Any] = {
         "photo_id": job.photo_id,
         "status": job.status,
         "accepted_attempt_id": str(accepted.id) if accepted else None,
@@ -124,6 +148,61 @@ def _photo_row(job: ProcessingJob) -> dict[str, Any]:
         ],
         "error_code": (terminal.error_code if terminal else "")[:64],
     }
+    if job.processor_type == GENERATE_PREVIEW_PROCESSOR:
+        row["preview"] = _preview_row(result, accepted=accepted)
+    return row
+
+
+def _preview_row(
+    result: dict[str, Any], *, accepted: ProcessingAttempt | None
+) -> dict[str, int | None] | None:
+    """Return only verified numeric output facts; never relay worker result payloads."""
+    fields = ("byte_size", "width", "height", "upload_ms")
+    if accepted is None or not all(
+        isinstance(result.get(field), int)
+        and not isinstance(result[field], bool)
+        and result[field] >= 0
+        for field in fields
+    ):
+        return None
+    return {
+        **{field: result[field] for field in fields},
+        "download_ms": _bounded_duration(accepted.download_duration_ms),
+        "compute_ms": _bounded_duration(accepted.compute_duration_ms),
+    }
+
+
+def _preview_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    previews = [row["preview"] for row in rows if isinstance(row.get("preview"), dict)]
+    warnings = {
+        code: sum(code in row["warnings"] for row in rows)
+        for code in sorted(_PREVIEW_WARNING_CODES)
+    }
+    failures = {
+        code: sum(row["error_code"] == code for row in rows)
+        for code in sorted(_PREVIEW_FAILURE_CODES)
+    }
+    return {
+        "accepted_outputs": len(previews),
+        "output_bytes": _duration_summary([preview["byte_size"] for preview in previews]),
+        "output_width": _duration_summary([preview["width"] for preview in previews]),
+        "output_height": _duration_summary([preview["height"] for preview in previews]),
+        "upload_durations_ms": _duration_summary([preview["upload_ms"] for preview in previews]),
+        "download_durations_ms": _duration_summary(
+            [preview["download_ms"] for preview in previews if preview["download_ms"] is not None]
+        ),
+        "compute_durations_ms": _duration_summary(
+            [preview["compute_ms"] for preview in previews if preview["compute_ms"] is not None]
+        ),
+        "warnings": {code: count for code, count in warnings.items() if count},
+        "failure_codes": {code: count for code, count in failures.items() if count},
+    }
+
+
+def _bounded_duration(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def _faces_report_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -179,7 +258,14 @@ def report_upper_bound_bytes(configuration: dict[str, Any]) -> int:
     worker_build_json = 2 + 128 * escaped + 1
     warning_json = 2 + row_limits["max_warning_chars"] * escaped + 1
     row_json = 512 + 32 * escaped + 36 + 64 * escaped + row_limits["max_warnings"] * warning_json
-    return 2 * (JSON_MAX_BYTES + cohort * attempts * worker_build_json + cohort * row_json + 4_096)
+    preview_summary_json = 4_096 if isinstance(configuration.get("generate_preview"), dict) else 0
+    return 2 * (
+        JSON_MAX_BYTES
+        + cohort * attempts * worker_build_json
+        + cohort * row_json
+        + preview_summary_json
+        + 4_096
+    )
 
 
 def _cohort_limit(run: EventProcessingRun) -> int:

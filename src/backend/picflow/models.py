@@ -66,6 +66,14 @@ class Event(models.Model):
 
 
 class Photo(models.Model):
+    class ProcessingGeneration(models.TextChoices):
+        LEGACY_ORIGINAL_V1 = "legacy_original_v1", "Legacy original v1"
+        PREVIEW_FIRST_V1 = "preview_first_v1", "Preview first v1"
+
+    class GalleryMediaPolicy(models.TextChoices):
+        LEGACY_ORIGINAL_ALLOWED = "legacy_original_allowed", "Legacy original allowed"
+        PREVIEW_REQUIRED = "preview_required", "Preview required"
+
     id = models.CharField(max_length=32, primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="photos")
     src = models.FileField(upload_to="photos/", blank=True, default="")
@@ -86,6 +94,18 @@ class Photo(models.Model):
         max_length=100, null=True, blank=True
     )
     uploaded_at = models.DateTimeField(null=True, blank=True)
+    processing_generation = models.CharField(
+        max_length=32,
+        choices=ProcessingGeneration,
+        default=ProcessingGeneration.LEGACY_ORIGINAL_V1,
+        db_default=ProcessingGeneration.LEGACY_ORIGINAL_V1,
+    )
+    gallery_media_policy = models.CharField(
+        max_length=32,
+        choices=GalleryMediaPolicy,
+        default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
+        db_default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
+    )
 
     class Meta:
         ordering = ["id"]
@@ -115,8 +135,42 @@ class Photo(models.Model):
                     )
                 ),
                 name="picflow_photo_legacy_or_private_chk",
-            )
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        processing_generation="legacy_original_v1",
+                        gallery_media_policy="legacy_original_allowed",
+                    )
+                    | models.Q(
+                        processing_generation="preview_first_v1",
+                        gallery_media_policy="preview_required",
+                    )
+                ),
+                name="picflow_photo_processing_policy_pair_chk",
+            ),
         ]
 
     def __str__(self) -> str:
         return self.id
+
+    def clean(self) -> None:
+        super().clean()
+        valid_pairs = {
+            (
+                self.ProcessingGeneration.LEGACY_ORIGINAL_V1,
+                self.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
+            ),
+            (
+                self.ProcessingGeneration.PREVIEW_FIRST_V1,
+                self.GalleryMediaPolicy.PREVIEW_REQUIRED,
+            ),
+        }
+        if (self.processing_generation, self.gallery_media_policy) not in valid_pairs:
+            raise ValidationError(
+                {
+                    "gallery_media_policy": (
+                        "The gallery media policy must match the processing generation."
+                    )
+                }
+            )

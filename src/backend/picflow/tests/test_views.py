@@ -18,6 +18,14 @@ from django.test import (
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
+from processing.models import (
+    GENERATE_PREVIEW_PROCESSOR,
+    EventProcessingRun,
+    PhotoDerivative,
+    PhotoProcessingState,
+    ProcessingAttempt,
+    ProcessingJob,
+)
 
 from picflow.gallery import CloseableMediaIterator, ResolvedPublicMedia
 from picflow.models import Event, Photo
@@ -287,6 +295,67 @@ class GalleryPageTests(TestCase):
         values.update(overrides)
         return Photo.objects.create(**values)
 
+    def publish_preview(self, photo: Photo, *, final_key: str) -> PhotoDerivative:
+        configuration = {"generate_preview": {"variant": "preview-small-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save()
+        return PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=final_key,
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+
     @patch("config.views.PrivateUploadStorage")
     def test_event_detail_builds_ordered_gallery_without_storage(self, storage_class) -> None:
         event = self.make_event()
@@ -325,6 +394,61 @@ class GalleryPageTests(TestCase):
             tuple(item.photo_id for item in response.context["gallery_photos"]), (included.id,)
         )
         self.assertEqual(paid_response.context["gallery_photos"], ())
+
+    @patch("config.views.PrivateUploadStorage")
+    def test_event_detail_keeps_legacy_and_requires_accepted_preview_for_new_photos(
+        self, storage_class
+    ) -> None:
+        event = self.make_event()
+        legacy = self.make_private_photo(event, id="gallery-1")
+        preview_states = (
+            PhotoProcessingState.Status.NOT_REQUESTED,
+            PhotoProcessingState.Status.QUEUED,
+            PhotoProcessingState.Status.PROCESSING,
+            PhotoProcessingState.Status.RETRY_WAIT,
+            PhotoProcessingState.Status.FAILED,
+            PhotoProcessingState.Status.CANCELLED,
+            PhotoProcessingState.Status.SUCCEEDED,
+        )
+        for index, status in enumerate(preview_states, start=2):
+            photo = self.make_private_photo(
+                event,
+                id=f"gallery-{index}",
+                processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+                gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+            )
+            state = PhotoProcessingState.objects.get(
+                photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+            )
+            state.status = status
+            state.save(update_fields=["status"])
+        published = self.make_private_photo(
+            event,
+            id="gallery-9",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        derivative = self.publish_preview(
+            published,
+            final_key="derivatives/previews/gallery-9/preview-small-v1/private-preview.jpg",
+        )
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            tuple(item.photo_id for item in response.context["gallery_photos"]),
+            (legacy.id, published.id),
+        )
+        markup = response.content.decode(response.charset)
+        for secret in (
+            legacy.original_key,
+            published.original_key,
+            derivative.final_key,
+            derivative.sha256,
+        ):
+            self.assertNotIn(secret, markup)
+        storage_class.assert_not_called()
 
     def test_event_detail_gallery_markup_and_loading_policy(self) -> None:
         event = self.make_event()
@@ -426,6 +550,67 @@ class GalleryMediaViewTests(TransactionTestCase):
         values.update(overrides)
         return Photo.objects.create(**values)
 
+    def publish_preview(self, photo: Photo, *, final_key: str) -> PhotoDerivative:
+        configuration = {"generate_preview": {"variant": "preview-small-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save()
+        return PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=final_key,
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+
     def media_url(self, *, event: Event, photo: Photo, variant: str = "preview-small") -> str:
         return reverse(
             "photo_media",
@@ -482,6 +667,49 @@ class GalleryMediaViewTests(TransactionTestCase):
 
                 self.assertEqual(response.status_code, 404)
                 resolver_factory.assert_not_called()
+
+    def test_photo_media_hides_new_photo_until_its_preview_is_accepted(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(
+            event,
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+
+        for variant in ("preview-small", "preview-large"):
+            with (
+                self.subTest(variant=variant),
+                patch("config.views._public_media_resolver") as resolver_factory,
+            ):
+                response = self.client.get(
+                    self.media_url(event=event, photo=photo, variant=variant)
+                )
+
+            self.assertEqual(response.status_code, 404)
+            resolver_factory.assert_not_called()
+
+    def test_photo_media_serves_accepted_new_preview_through_existing_routes(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(
+            event,
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        self.publish_preview(
+            photo,
+            final_key=f"derivatives/previews/{photo.id}/preview-small-v1/accepted.jpg",
+        )
+        resolver = Mock()
+        resolver.resolve.return_value = ResolvedPublicMedia(
+            _ReadableBody([b"preview", b""]), 7, "image/jpeg", "jpg"
+        )
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(self.media_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b"".join(response.streaming_content), b"preview")
+        resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
 
     def test_photo_media_returns_404_for_legacy_or_other_event_photo(self) -> None:
         event = self.make_event()

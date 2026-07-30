@@ -22,11 +22,13 @@ from processing.auth import has_worker_token
 from processing.contracts import (
     CAPTURE_METADATA_CONTRACT,
     FACE_EMBEDDING_CONTRACT,
+    GENERATE_PREVIEW_CONTRACT,
+    PREVIEW_FACE_EMBEDDING_CONTRACT,
     ClaimedJob,
     CompletionConflict,
     EmptyClaim,
 )
-from processing.models import ProcessingAttempt, ProcessingConflictAudit
+from processing.models import PhotoDerivative, ProcessingAttempt, ProcessingConflictAudit
 from processing.services.jobs import (
     complete_attempt,
     fail_attempt,
@@ -36,7 +38,8 @@ from processing.services.jobs import (
 from processing.services.jobs import (
     refresh_download as refresh_download_attempt,
 )
-from processing.storage import ExactObjectDownloadStorage
+from processing.services.previews import complete_preview_attempt
+from processing.storage import ExactObjectDownloadStorage, ExactPreviewStorage, PreviewUploadGrant
 
 _WORKER_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _NORMALIZED_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
@@ -79,13 +82,28 @@ _FACE_EMBEDDING_FAILURES = {
     "timeout": (True, "The face model processing timed out."),
     "all_faces_filtered": (False, "All detected faces were filtered before embedding."),
 }
+_GENERATE_PREVIEW_FAILURES = {
+    "decode_failed": (False, "The image could not be decoded."),
+    "download_authorization_expired": (True, "Download authorization expired."),
+    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "input_too_large": (False, "The input exceeded its declared limit."),
+    "invalid_dimensions": (False, "The image dimensions are invalid."),
+    "network_interruption": (True, "A temporary network interruption occurred."),
+    "normalization_failed": (False, "The preview could not be normalized."),
+    "output_contract_violation": (False, "The preview output violated its contract."),
+    "storage_unavailable": (True, "Object storage is temporarily unavailable."),
+    "unsupported_input": (False, "The input is unsupported."),
+}
+_GENERATE_PREVIEW_WARNING_CODES = {"color_profile_missing"}
 _PROCESSOR_FAILURES = {
     "capture_metadata": _CAPTURE_METADATA_FAILURES,
     "face_embedding": _FACE_EMBEDDING_FAILURES,
+    "generate_preview": _GENERATE_PREVIEW_FAILURES,
 }
 _PROCESSOR_RESULT_WARNINGS = {
     "capture_metadata": _CAPTURE_METADATA_WARNINGS,
     "face_embedding": _FACE_RESULT_WARNING_CODES,
+    "generate_preview": _GENERATE_PREVIEW_WARNING_CODES,
 }
 
 
@@ -214,17 +232,25 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
     if not _valid_envelope(data, parsed_attempt_id, outcome="success"):
         return _invalid_result()
     try:
-        completion = complete_attempt(
-            parsed_attempt_id,
-            result=data["result"],
-            download_duration_ms=data["download_ms"],
-            compute_duration_ms=data["compute_ms"],
-            total_duration_ms=data["total_ms"],
-            worker_started_at=data["started_at"],
-            worker_finished_at=data["finished_at"],
-        )
+        attempt = ProcessingAttempt.objects.only("processor_type").get(pk=parsed_attempt_id)
+        completion_kwargs = {
+            "result": data["result"],
+            "download_duration_ms": data["download_ms"],
+            "compute_duration_ms": data["compute_ms"],
+            "total_duration_ms": data["total_ms"],
+            "worker_started_at": data["started_at"],
+            "worker_finished_at": data["finished_at"],
+        }
+        if attempt.processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+            completion = complete_preview_attempt(parsed_attempt_id, **completion_kwargs)
+        else:
+            completion = complete_attempt(parsed_attempt_id, **completion_kwargs)
     except ProcessingAttempt.DoesNotExist:
         return _not_found()
+    except StorageUnavailable:
+        return _error(
+            "storage_unavailable", "Object storage is temporarily unavailable.", status=503
+        )
     except CompletionConflict as conflict:
         _audit_conflict(conflict)
         return _completion_conflict()
@@ -288,13 +314,28 @@ def _claim_with_grant(data: dict[str, Any]) -> dict[str, object]:
         claimed = _claim(data)
         if isinstance(claimed, EmptyClaim):
             return {"empty": True, "suggested_delay_seconds": claimed.suggested_delay_seconds}
-        fingerprint = _input_fingerprint(claimed.job.input_fingerprint)
+        fingerprint = _input_fingerprint(
+            claimed.job.input_fingerprint, contract_version=claimed.job.contract_version
+        )
         grant = ExactObjectDownloadStorage().create_download_grant(
-            final_key=cast(str, fingerprint["original_key"]),
+            final_key=_fingerprint_key(fingerprint),
             max_ttl_seconds=_remaining_lease(claimed.attempt),
         )
         _validate_grant_lease(claimed.attempt, grant.expires_at)
-        return _claimed_payload(claimed, grant.url, grant.expires_at, fingerprint)
+        preview_upload_grant = None
+        if claimed.job.processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+            preview_upload_grant = ExactPreviewStorage().create_upload_grant(
+                staging_key=_preview_staging_key(str(claimed.attempt.id)),
+                max_ttl_seconds=_remaining_lease(claimed.attempt),
+            )
+            _validate_grant_lease(claimed.attempt, preview_upload_grant.expires_at)
+        return _claimed_payload(
+            claimed,
+            grant.url,
+            grant.expires_at,
+            fingerprint,
+            preview_upload_grant=preview_upload_grant,
+        )
 
 
 def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:
@@ -303,9 +344,11 @@ def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:
         attempt = refresh_download_attempt(attempt_id)
         if attempt is None:
             return None
-        fingerprint = _input_fingerprint(attempt.input_fingerprint)
+        fingerprint = _input_fingerprint(
+            attempt.input_fingerprint, contract_version=attempt.contract_version
+        )
         grant = ExactObjectDownloadStorage().create_download_grant(
-            final_key=cast(str, fingerprint["original_key"]),
+            final_key=_fingerprint_key(fingerprint),
             max_ttl_seconds=_remaining_lease(attempt),
         )
         _validate_grant_lease(attempt, grant.expires_at)
@@ -316,8 +359,47 @@ def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:
         }
 
 
-def _input_fingerprint(value: object) -> dict[str, int | str | None]:
+def _input_fingerprint(value: object, *, contract_version: int) -> dict[str, int | str | None]:
     if not isinstance(value, dict):
+        raise FingerprintInvariant()
+    if contract_version == 2:
+        fields = {
+            "object_key",
+            "object_size",
+            "object_content_type",
+            "object_etag",
+            "media_kind",
+            "pixel_width",
+            "pixel_height",
+        }
+        if set(value) != fields:
+            raise FingerprintInvariant()
+        key = value["object_key"]
+        size = value["object_size"]
+        content_type = value["object_content_type"]
+        etag = value["object_etag"]
+        if not (
+            isinstance(key, str)
+            and (
+                re.fullmatch(r"originals/[0-9a-f]{32}", key)
+                or re.fullmatch(
+                    r"derivatives/previews/[A-Za-z0-9_-]{1,32}/preview-small-v1/"
+                    r"[0-9a-f-]{36}-[0-9a-f]{64}\.jpg",
+                    key,
+                )
+            )
+            and isinstance(size, int)
+            and not isinstance(size, bool)
+            and size >= 1
+            and content_type == "image/jpeg"
+            and (etag is None or isinstance(etag, str))
+            and value["media_kind"] in {"original", "preview-small-v1"}
+            and _positive_int(value["pixel_width"])
+            and _positive_int(value["pixel_height"])
+        ):
+            raise FingerprintInvariant()
+        return cast(dict[str, int | str | None], value)
+    if contract_version != 1:
         raise FingerprintInvariant()
     key = value.get("original_key")
     size = value.get("original_size")
@@ -349,6 +431,10 @@ def _remaining_lease(attempt: ProcessingAttempt) -> int:
     if seconds < 1:
         raise LeaseExpired()
     return seconds
+
+
+def _fingerprint_key(fingerprint: dict[str, int | str | None]) -> str:
+    return cast(str, fingerprint.get("object_key", fingerprint.get("original_key")))
 
 
 def _validate_grant_lease(attempt: ProcessingAttempt, expires_at: datetime) -> None:
@@ -383,11 +469,15 @@ def _json_object(
 
 
 def _claimed_payload(
-    claimed: ClaimedJob, url: str, expires_at: datetime, fingerprint: dict[str, int | str | None]
+    claimed: ClaimedJob,
+    url: str,
+    expires_at: datetime,
+    fingerprint: dict[str, int | str | None],
+    preview_upload_grant: PreviewUploadGrant | None = None,
 ) -> dict[str, object]:
     job = claimed.job
     attempt = claimed.attempt
-    return {
+    payload: dict[str, object] = {
         "empty": False,
         "job": {
             "id": str(job.id),
@@ -401,14 +491,38 @@ def _claimed_payload(
             "run_id": str(job.run_id),
             "input_fingerprint": job.input_fingerprint,
             "input_limits": {
-                "max_bytes": fingerprint["original_size"],
-                "content_type": fingerprint["original_content_type"],
+                "max_bytes": fingerprint.get("object_size", fingerprint.get("original_size")),
+                "content_type": fingerprint.get(
+                    "object_content_type", fingerprint.get("original_content_type")
+                ),
             },
             "lease_expires_at": attempt.lease_expires_at.isoformat(),
             "download_url": url,
             "download_expires_at": expires_at.isoformat(),
         },
     }
+    if job.processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+        if preview_upload_grant is None:
+            raise FingerprintInvariant()
+        payload["job"] = cast(dict[str, object], payload["job"]) | {
+            "output_slots": [_preview_output_slot(str(attempt.id), preview_upload_grant)]
+        }
+    elif (
+        job.contract_version == PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version
+        and job.processor_type == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_type
+        and job.processor_version == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_version
+    ):
+        derivative = PhotoDerivative.objects.get(photo_id=job.photo_id, variant="preview-small-v1")
+        payload["job"] = cast(dict[str, object], payload["job"]) | {
+            "input_geometry": {
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": derivative.width,
+                "pixel_height": derivative.height,
+                "oriented_source_width": derivative.oriented_source_width,
+                "oriented_source_height": derivative.oriented_source_height,
+            }
+        }
+    return payload
 
 
 def _attempt_payload(attempt: ProcessingAttempt) -> dict[str, object]:
@@ -471,18 +585,29 @@ def _attempt_id(value: str) -> tuple[UUID | None, JsonResponse | None]:
         return None, _error("invalid_attempt_id", "The attempt identifier is invalid.", status=404)
 
 
-def _processor_contract(processor_type: str) -> tuple[int, int] | None:
-    if processor_type == CAPTURE_METADATA_CONTRACT.processor_type:
-        return (
+def _processor_contract(processor_type: str, contract_version: int, processor_version: int) -> bool:
+    return (contract_version, processor_type, processor_version) in {
+        (
             CAPTURE_METADATA_CONTRACT.contract_version,
+            CAPTURE_METADATA_CONTRACT.processor_type,
             CAPTURE_METADATA_CONTRACT.processor_version,
-        )
-    if processor_type == FACE_EMBEDDING_CONTRACT.processor_type:
-        return (
+        ),
+        (
             FACE_EMBEDDING_CONTRACT.contract_version,
+            FACE_EMBEDDING_CONTRACT.processor_type,
             FACE_EMBEDDING_CONTRACT.processor_version,
-        )
-    return None
+        ),
+        (
+            GENERATE_PREVIEW_CONTRACT.contract_version,
+            GENERATE_PREVIEW_CONTRACT.processor_type,
+            GENERATE_PREVIEW_CONTRACT.processor_version,
+        ),
+        (
+            PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version,
+            PREVIEW_FACE_EMBEDDING_CONTRACT.processor_type,
+            PREVIEW_FACE_EMBEDDING_CONTRACT.processor_version,
+        ),
+    }
 
 
 def _processor_failures(processor_type: str) -> dict[str, tuple[bool, str]] | None:
@@ -502,7 +627,8 @@ def _processor_retryable(processor_type: str, error_code: str) -> bool:
 
 
 def _valid_failure_code(processor_type: str, value: object) -> bool:
-    return value in _processor_failures(processor_type) if isinstance(value, str) else False
+    failures = _processor_failures(processor_type)
+    return isinstance(value, str) and failures is not None and value in failures
 
 
 def _valid_warning_code(processor_type: str, value: object) -> bool:
@@ -517,10 +643,10 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
         attempt = ProcessingAttempt.objects.select_related("job").get(pk=attempt_id)
     except ProcessingAttempt.DoesNotExist:
         return False
-    contract = _processor_contract(attempt.processor_type)
-    if contract is None:
+    if not _processor_contract(
+        attempt.processor_type, attempt.contract_version, attempt.processor_version
+    ):
         return False
-    contract_version, processor_version = contract
     failures = _processor_failures(attempt.processor_type)
     if failures is None:
         return False
@@ -531,11 +657,11 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
         and data["attempt_id"] == str(attempt.id)
         and data["job_id"] == str(attempt.job_id)
         and type(data["contract_version"]) is int
-        and data["contract_version"] == attempt.contract_version == contract_version
+        and data["contract_version"] == attempt.contract_version
         and type(data["processor_type"]) is str
         and data["processor_type"] == attempt.processor_type
         and type(data["processor_version"]) is int
-        and data["processor_version"] == attempt.processor_version == processor_version
+        and data["processor_version"] == attempt.processor_version
         and _safe_worker_build(data["worker_build"])
         and data["worker_build"] == attempt.worker_build
         and started_at is not None
@@ -546,7 +672,13 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
     ):
         return False
     if outcome == "success":
-        return _valid_result(data["result"], attempt.processor_type)
+        if not _valid_result(data["result"], attempt.processor_type, attempt.contract_version):
+            return False
+        return not (
+            attempt.contract_version == PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version
+            and attempt.processor_type == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_type
+            and attempt.processor_version == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_version
+        ) or _matches_accepted_preview_geometry(attempt, data["result"])
     return (
         _valid_failure_code(attempt.processor_type, data["error_code"])
         and type(data["retryable"]) is bool
@@ -557,11 +689,13 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
     )
 
 
-def _valid_result(value: object, processor_type: str) -> bool:
+def _valid_result(value: object, processor_type: str, contract_version: int) -> bool:
     if processor_type == CAPTURE_METADATA_CONTRACT.processor_type:
         return _valid_capture_metadata_result(value)
     if processor_type == FACE_EMBEDDING_CONTRACT.processor_type:
-        return _valid_face_embedding_result(value)
+        return _valid_face_embedding_result(value, contract_version=contract_version)
+    if processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+        return _valid_preview_result(value)
     return False
 
 
@@ -609,14 +743,10 @@ def _valid_capture_metadata_result(value: object) -> bool:
     )
 
 
-def _valid_face_embedding_result(value: object) -> bool:
+def _valid_face_embedding_result(value: object, *, contract_version: int = 1) -> bool:
     if not isinstance(value, dict):
         return False
-    if not (
-        "face_count" in value
-        and "faces" in value
-        and "warnings" in value
-    ):
+    if not ("face_count" in value and "faces" in value and "warnings" in value):
         return False
     if value.get("timings") is not None and not isinstance(value["timings"], dict):
         return False
@@ -629,11 +759,7 @@ def _valid_face_embedding_result(value: object) -> bool:
     if not _safe_face_model(value.get("model", "sface")):
         return False
     faces = value["faces"]
-    if not (
-        isinstance(faces, list)
-        and len(faces) <= 1_024
-        and len(faces) == value["face_count"]
-    ):
+    if not (isinstance(faces, list) and len(faces) <= 1_024 and len(faces) == value["face_count"]):
         return False
     warnings = value["warnings"]
     if not (
@@ -647,7 +773,93 @@ def _valid_face_embedding_result(value: object) -> bool:
         has_single_query_face_usable, bool
     ):
         return False
+    if contract_version == 2:
+        geometry = value.get("input_geometry")
+        if not (
+            isinstance(geometry, dict)
+            and set(geometry)
+            == {
+                "coordinate_space",
+                "pixel_width",
+                "pixel_height",
+                "oriented_source_width",
+                "oriented_source_height",
+            }
+            and geometry["coordinate_space"] == "preview-small-v1"
+            and all(_positive_int(geometry[name]) for name in set(geometry) - {"coordinate_space"})
+        ):
+            return False
     return all(_valid_face_embedding_record(face) for face in faces)
+
+
+def _matches_accepted_preview_geometry(attempt: ProcessingAttempt, result: object) -> bool:
+    if not isinstance(result, dict):
+        return False
+    derivative = PhotoDerivative.objects.filter(
+        photo_id=attempt.photo_id, variant="preview-small-v1", accepted_attempt_id__isnull=False
+    ).first()
+    if derivative is None:
+        return False
+    return result.get("input_geometry") == {
+        "coordinate_space": "preview-small-v1",
+        "pixel_width": derivative.width,
+        "pixel_height": derivative.height,
+        "oriented_source_width": derivative.oriented_source_width,
+        "oriented_source_height": derivative.oriented_source_height,
+    }
+
+
+def _valid_preview_result(value: object) -> bool:
+    fields = {
+        "variant",
+        "content_type",
+        "byte_size",
+        "width",
+        "height",
+        "oriented_source_width",
+        "oriented_source_height",
+        "sha256",
+        "upload_ms",
+        "warnings",
+    }
+    return (
+        isinstance(value, dict)
+        and set(value) == fields
+        and value["variant"] == "preview-small-v1"
+        and value["content_type"] == "image/jpeg"
+        and _positive_int(value["byte_size"])
+        and value["byte_size"] <= 10_485_760
+        and _positive_int(value["width"])
+        and _positive_int(value["height"])
+        and max(value["width"], value["height"]) <= 1600
+        and _positive_int(value["oriented_source_width"])
+        and _positive_int(value["oriented_source_height"])
+        and isinstance(value["sha256"], str)
+        and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
+        and _duration(value["upload_ms"])
+        and isinstance(value["warnings"], list)
+        and len(value["warnings"]) <= 8
+        and all(_valid_warning_code("generate_preview", item) for item in value["warnings"])
+    )
+
+
+def _preview_staging_key(attempt_id: str) -> str:
+    return f"processing-staging/previews/{attempt_id}/preview-small-v1.jpg"
+
+
+def _preview_output_slot(attempt_id: str, grant: PreviewUploadGrant) -> dict[str, object]:
+    """One short-lived PUT grant for the current preview attempt's exact staging key."""
+    return {
+        "variant": "preview-small-v1",
+        "upload_url": grant.url,
+        "upload_expires_at": grant.expires_at.isoformat(),
+        "content_type": "image/jpeg",
+        "staging_key": _preview_staging_key(attempt_id),
+        "max_bytes": 10_485_760,
+        "max_width": 1600,
+        "max_height": 1600,
+        "checksum_algorithm": "sha256",
+    }
 
 
 def _safe_face_model(value: object) -> bool:
@@ -694,10 +906,7 @@ def _valid_face_embedding_record(value: object) -> bool:
         and _valid_face_bbox(value["bbox"])
     ):
         return False
-    if not (
-        isinstance(value["confidence"], (int, float))
-        and 0.0 <= value["confidence"] <= 1.0
-    ):
+    if not (isinstance(value["confidence"], (int, float)) and 0.0 <= value["confidence"] <= 1.0):
         return False
     landmarks = value["landmarks"]
     if not (
@@ -730,11 +939,7 @@ def _valid_face_bbox(value: object) -> bool:
 
 
 def _safe_face_coordinate(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and 0 <= value <= 10_000
-    )
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 10_000
 
 
 def _parse_timestamp(value: object) -> datetime | None:

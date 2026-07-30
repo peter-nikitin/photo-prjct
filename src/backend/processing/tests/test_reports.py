@@ -1,10 +1,13 @@
+import hashlib
 import json
 from datetime import date
+from typing import cast
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
+from ingestion.storage import ObjectMissing
 from picflow.models import Event, Photo
 
 from processing.contracts import ClaimedJob
@@ -13,12 +16,19 @@ from processing.models import (
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
+    PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
 )
-from processing.services.enrollment import CAPTURE_METADATA_CONFIGURATION, request_capture_metadata
+from processing.services.enrollment import (
+    CAPTURE_METADATA_CONFIGURATION,
+    request_capture_metadata,
+    request_generate_preview,
+)
 from processing.services.jobs import claim_job, complete_attempt, fail_attempt
+from processing.services.previews import complete_preview_attempt
 from processing.services.reports import close_run_report, report_upper_bound_bytes
+from processing.storage import ExactPreviewStorage, PreviewObject
 
 
 class ProcessingRunReportTests(TestCase):
@@ -51,6 +61,21 @@ class ProcessingRunReportTests(TestCase):
             processor_type="capture_metadata",
             processor_version=1,
             worker_build="worker-report",
+        )
+
+    def preview_photo(self, suffix: str) -> Photo:
+        photo = self.private_photo(f"preview-{suffix}")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        return photo
+
+    def claim_preview(self):
+        return claim_job(
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            worker_build="preview-report-worker",
         )
 
     def close_one_successful_run(self) -> EventProcessingRun:
@@ -298,6 +323,149 @@ class ProcessingRunReportTests(TestCase):
         run = EventProcessingRun.objects.get(pk=first_claim.job.run_id)
 
         self.assertEqual(run.report["attempts"]["retries"], 1)
+
+    def test_preview_report_exposes_only_bounded_output_evidence_and_stable_failures(self) -> None:
+        """Catch a preview report that loses evidence or serializes media secrets."""
+        accepted_photo = self.preview_photo("a-accepted")
+        failed_photo = self.preview_photo("b-failed")
+        cancelled_photo = self.preview_photo("c-cancelled")
+        for photo in (accepted_photo, failed_photo, cancelled_photo):
+            request_generate_preview(photo, pixel_width=3200, pixel_height=2000)
+
+        first = self.claim_preview()
+        self.assertEqual(first.job.photo_id, accepted_photo.id)
+        content = b"preview-report-output"
+        object = PreviewObject(
+            etag_wire='"report-preview"',
+            etag_value="report-preview",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=1600,
+            height=1000,
+        )
+
+        class ReportPreviewStorage:
+            final: PreviewObject | None = None
+
+            def verify(self, *, key: str, max_bytes: int) -> PreviewObject:
+                if key.startswith("derivatives/"):
+                    if self.final is None:
+                        raise ObjectMissing()
+                    return self.final
+                return object
+
+            def promote(
+                self, *, staging_key: str, final_key: str, source_etag: str
+            ) -> PreviewObject:
+                self.final = object
+                return object
+
+        complete_preview_attempt(
+            first.attempt.id,
+            result={
+                "variant": "preview-small-v1",
+                "content_type": "image/jpeg",
+                "byte_size": object.byte_size,
+                "width": 1600,
+                "height": 1000,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+                "sha256": object.sha256,
+                "upload_ms": 17,
+                "warnings": ["color_profile_missing"],
+            },
+            storage=cast(ExactPreviewStorage, ReportPreviewStorage()),
+            download_duration_ms=7,
+            compute_duration_ms=11,
+            total_duration_ms=29,
+        )
+        ProcessingAttempt.objects.create(
+            event=self.event,
+            run=first.job.run,
+            job=first.job,
+            photo=accepted_photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=first.job.configuration,
+            input_fingerprint=first.job.input_fingerprint,
+            worker_build="stale-preview-worker",
+            status=ProcessingAttempt.Status.STALE,
+            terminal_at=timezone.now(),
+            result={"signed_url": "https://must-not-escape.test/stale"},
+            result_hash="b" * 64,
+        )
+        second = self.claim_preview()
+        self.assertEqual(second.job.photo_id, failed_photo.id)
+        fail_attempt(
+            second.attempt.id,
+            error_code="output_contract_violation",
+            error_detail="processing-staging/previews/private-secret.jpg",
+            retryable=False,
+        )
+        cancelled = cancelled_photo.processing_jobs.get(processor_type="generate_preview")
+        cancelled.status = ProcessingJob.Status.CANCELLED
+        cancelled.completed_at = timezone.now()
+        cancelled.save(update_fields=["status", "completed_at"])
+        cancelled_state = cancelled_photo.processing_states.get(processor_type="generate_preview")
+        cancelled_state.status = PhotoProcessingState.Status.CANCELLED
+        cancelled_state.cancelled_at = timezone.now()
+        cancelled_state.save(update_fields=["status", "cancelled_at", "updated_at"])
+
+        run = close_run_report(first.job.run_id)
+
+        assert run is not None
+        self.assertEqual(
+            run.report["counts"],
+            {"denominator": 3, "succeeded": 1, "failed": 1, "cancelled": 1},
+        )
+        self.assertEqual(run.report["attempts"], {"total": 3, "retries": 1, "stale": 1})
+        self.assertEqual(
+            run.report["preview"],
+            {
+                "accepted_outputs": 1,
+                "output_bytes": {
+                    "denominator": 1,
+                    "min": object.byte_size,
+                    "median": object.byte_size,
+                    "max": object.byte_size,
+                },
+                "output_width": {"denominator": 1, "min": 1600, "median": 1600, "max": 1600},
+                "output_height": {"denominator": 1, "min": 1000, "median": 1000, "max": 1000},
+                "upload_durations_ms": {"denominator": 1, "min": 17, "median": 17, "max": 17},
+                "download_durations_ms": {"denominator": 1, "min": 7, "median": 7, "max": 7},
+                "compute_durations_ms": {"denominator": 1, "min": 11, "median": 11, "max": 11},
+                "warnings": {"color_profile_missing": 1},
+                "failure_codes": {"output_contract_violation": 1},
+            },
+        )
+        accepted_row = next(
+            row for row in run.report["photos"] if row["photo_id"] == accepted_photo.id
+        )
+        self.assertEqual(
+            accepted_row["preview"],
+            {
+                "byte_size": object.byte_size,
+                "width": 1600,
+                "height": 1000,
+                "download_ms": 7,
+                "compute_ms": 11,
+                "upload_ms": 17,
+            },
+        )
+        serialized = json.dumps(run.report, sort_keys=True)
+        for forbidden in (
+            "originals/",
+            "derivatives/",
+            "processing-staging/",
+            "must-not-escape",
+            "https://",
+            "image_bytes",
+            '"exif"',
+            object.sha256,
+        ):
+            self.assertNotIn(forbidden, serialized)
 
     def test_capped_cohort_report_preserves_every_row_within_recorded_byte_limit(self) -> None:
         configured_limit = CAPTURE_METADATA_CONFIGURATION["max_cohort_size"]

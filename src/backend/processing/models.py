@@ -12,6 +12,7 @@ JSON_MAX_BYTES = 16_384
 REPORT_JSON_MAX_BYTES = 262_144
 CAPTURE_METADATA_PROCESSOR = "capture_metadata"
 FACE_EMBEDDING_PROCESSOR = "face_embedding"
+GENERATE_PREVIEW_PROCESSOR = "generate_preview"
 _TERMINAL_ATTEMPT_STATUSES = ("succeeded", "failed", "expired", "stale")
 
 
@@ -228,6 +229,67 @@ class ProcessingAttempt(models.Model):  # noqa: DJ008
             raise ValidationError(errors)
 
 
+class PhotoDerivative(models.Model):  # noqa: DJ008
+    photo = models.ForeignKey(Photo, on_delete=models.PROTECT, related_name="derivatives")
+    variant = models.CharField(max_length=64)
+    final_key = models.CharField(max_length=255, unique=True)
+    byte_size = models.PositiveBigIntegerField()
+    content_type = models.CharField(max_length=100)
+    width = models.PositiveIntegerField()
+    height = models.PositiveIntegerField()
+    oriented_source_width = models.PositiveIntegerField()
+    oriented_source_height = models.PositiveIntegerField()
+    sha256 = models.CharField(max_length=64)
+    accepted_attempt = models.ForeignKey(
+        ProcessingAttempt,
+        on_delete=models.PROTECT,
+        related_name="published_derivatives",
+    )
+    published_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(content_type="image/jpeg"),
+                name="proc_photo_derivative_jpeg_chk",
+            ),
+            models.UniqueConstraint(
+                fields=("photo", "variant"),
+                name="proc_photo_derivative_photo_variant_uniq",
+            ),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Published photo derivatives are immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Published photo derivatives are immutable.")
+        super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.accepted_attempt_id:
+            return
+        attempt = self.accepted_attempt
+        if (
+            attempt.photo_id != self.photo_id
+            or attempt.processor_type != GENERATE_PREVIEW_PROCESSOR
+            or attempt.status != ProcessingAttempt.Status.SUCCEEDED
+            or not attempt.accepted
+        ):
+            raise ValidationError(
+                {
+                    "accepted_attempt": (
+                        "The accepted attempt must be an accepted successful "
+                        "preview for this photo."
+                    )
+                }
+            )
+
+
 class FaceProcessingAttemptArtifact(models.Model):  # noqa: DJ008
     class Status(models.TextChoices):
         COMPLETE = "complete", "Complete"
@@ -260,9 +322,12 @@ class FaceProcessingAttemptArtifact(models.Model):  # noqa: DJ008
         ]
 
     def save(self, *args, **kwargs) -> None:
-        if self.pk and self.__class__.objects.filter(pk=self.pk).filter(
-            attempt__status__in=_TERMINAL_ATTEMPT_STATUSES
-        ).exists():
+        if (
+            self.pk
+            and self.__class__.objects.filter(pk=self.pk)
+            .filter(attempt__status__in=_TERMINAL_ATTEMPT_STATUSES)
+            .exists()
+        ):
             raise ValidationError("Face attempt artifacts are immutable.")
         super().save(*args, **kwargs)
 
@@ -273,7 +338,9 @@ class FaceProcessingAttemptArtifact(models.Model):  # noqa: DJ008
             errors["attempt"] = "Face attempt artifacts are only recorded for terminal attempts."
         if self.pk and self.attempt_id:
             previous = (
-                self.__class__.objects.filter(pk=self.pk).values_list("attempt_id", flat=True).first()
+                self.__class__.objects.filter(pk=self.pk)
+                .values_list("attempt_id", flat=True)
+                .first()
             )
             if previous and previous != self.attempt_id:
                 errors["attempt"] = "Face attempt identity is immutable."
@@ -316,14 +383,17 @@ class PhotoFaceDetection(models.Model):  # noqa: DJ008
             ),
         ]
         indexes = [
-            models.Index(fields=["attempt", "face_index"], name="proc_face_detection_attempt_idx"),
+            models.Index(fields=["attempt", "face_index"], name="proc_face_det_attempt_idx"),
             models.Index(fields=["status"], name="proc_face_detection_status_idx"),
         ]
 
     def save(self, *args, **kwargs) -> None:
-        if self.pk and self.__class__.objects.filter(pk=self.pk).filter(
-            attempt__status__in=_TERMINAL_ATTEMPT_STATUSES
-        ).exists():
+        if (
+            self.pk
+            and self.__class__.objects.filter(pk=self.pk)
+            .filter(attempt__status__in=_TERMINAL_ATTEMPT_STATUSES)
+            .exists()
+        ):
             raise ValidationError("Face detections are immutable after terminal attempts.")
         super().save(*args, **kwargs)
 
@@ -335,9 +405,11 @@ class PhotoFaceDetection(models.Model):  # noqa: DJ008
         if self.attempt_id and self.attempt.status not in _TERMINAL_ATTEMPT_STATUSES:
             errors["attempt"] = "Face detections are only allowed for terminal attempts."
         if self.pk and self.attempt_id:
-            previous_attempt = self.__class__.objects.filter(pk=self.pk).values_list(
-                "attempt_id", flat=True
-            ).first()
+            previous_attempt = (
+                self.__class__.objects.filter(pk=self.pk)
+                .values_list("attempt_id", flat=True)
+                .first()
+            )
             if previous_attempt and previous_attempt != self.attempt_id:
                 errors["attempt"] = "Face detection identity is immutable."
         if errors:
@@ -358,13 +430,16 @@ class FaceEmbedding(models.Model):  # noqa: DJ008
 
     class Meta:
         indexes = [
-            models.Index(fields=["detection"], name="proc_face_embedding_detection_idx"),
+            models.Index(fields=["detection"], name="proc_face_embed_det_idx"),
         ]
 
     def save(self, *args, **kwargs) -> None:
-        if self.pk and self.__class__.objects.filter(pk=self.pk).filter(
-            detection__attempt__status__in=_TERMINAL_ATTEMPT_STATUSES
-        ).exists():
+        if (
+            self.pk
+            and self.__class__.objects.filter(pk=self.pk)
+            .filter(detection__attempt__status__in=_TERMINAL_ATTEMPT_STATUSES)
+            .exists()
+        ):
             raise ValidationError("Face embeddings are immutable after terminal attempts.")
         super().save(*args, **kwargs)
 

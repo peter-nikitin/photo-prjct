@@ -14,6 +14,11 @@ from django.utils import timezone
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _INCOMING_KEY = re.compile(rf"incoming/{_UUID}/{_UUID}")
 _FINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
+_PREVIEW_FINAL_KEY = re.compile(
+    r"derivatives/previews/[A-Za-z0-9_-]{1,32}/preview-small-v1/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+    r"[0-9a-f]{64}\.jpg"
+)
 _ETAG = re.compile(r'"([^"\r\n]+)"')
 
 
@@ -144,7 +149,7 @@ class PrivateUploadStorage:
         return self._inspect(key)
 
     def open_final(self, *, key: str) -> OpenedObject:
-        _validate_final_key(key)
+        _validate_public_final_key(key)
         try:
             response = self._client.get_object(Bucket=self._bucket, Key=key)
         except ClientError as error:
@@ -291,6 +296,13 @@ def _validate_incoming_key(key: str) -> None:
 
 def _validate_final_key(key: str) -> None:
     if not isinstance(key, str) or _FINAL_KEY.fullmatch(key) is None:
+        raise ValueError("invalid final object key")
+
+
+def _validate_public_final_key(key: str) -> None:
+    if not isinstance(key, str) or (
+        _FINAL_KEY.fullmatch(key) is None and _PREVIEW_FINAL_KEY.fullmatch(key) is None
+    ):
         raise ValueError("invalid final object key")
 
 

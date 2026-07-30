@@ -37,16 +37,19 @@ The repository currently contains an early Django application:
   and SVG assets under `src/backend`.
 - The `picflow` application owns the first target `Event` catalog model and a preliminary `Photo`
   model. Published events are managed through Django Admin and rendered by server-side templates.
-- Published free-event detail pages select only completed uploaded `Photo` rows with a private
-  original key and no legacy `src`, in stable ID order. A database-only factory converts them to
-  immutable `GalleryPhoto` presentation values, so templates consume separate small- and
-  large-preview application URLs without inspecting storage fields or selecting media variants.
-- The current small- and large-preview resolver deliberately opens the same private original for
-  both variants. The event-scoped GET endpoint rechecks publication, free access, and photo
-  eligibility on every request, then streams the object inline with `private, no-store` caching and
-  sanitized 404/503 outcomes. It exposes no permanent key, credential, S3 redirect, ETag, Range, or
-  attachment behavior, and its owning iterator closes the storage body before iteration, at EOF,
-  or after a read failure.
+- Published free-event detail pages select completed uploaded `Photo` rows in stable ID order
+  through explicit persisted gallery-media policy. Legacy photos remain eligible under the existing
+  rules; a `preview_required` photo becomes eligible only after an accepted `generate_preview`
+  state and its published `preview-small-v1` derivative. The database-only factory converts rows to
+  immutable `GalleryPhoto` presentation values, so templates consume separate small- and large-
+  preview application URLs without inspecting storage fields or selecting media variants.
+- The small-media resolver serves the original for an explicit legacy policy and the published
+  derivative for `preview_required`; it never falls back to the original for a missing preview. The
+  large-media resolver continues to serve the private original only under the existing free-event
+  eligibility rules in ADR 0015. Both routes recheck publication and photo eligibility on every
+  request, stream inline with `private, no-store` caching and sanitized 404/503 outcomes, and expose
+  no permanent key, credential, S3 redirect, ETag, Range, or attachment behavior. The owning
+  iterator closes its storage body before iteration, at EOF, or after a read failure.
 - Event galleries use locally packaged GLightbox 3.3.1 assets with normal anchor fallback.
   Task 6's browser run and inspected snapshots verified responsive populated and empty layouts,
   keyboard and pointer operation, mobile swipe, Escape/control close, focus restoration, and
@@ -58,17 +61,20 @@ The repository currently contains an early Django application:
   evidence commits were not included. Neither automated result represents a live staging activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
-- Confirmed private JPEGs are transactionally enrolled in an explicit `capture_metadata`
-  processing state. Django/PostgreSQL own the queued job, lease, retry, accepted result, immutable
-  attempt evidence, and immutable event-scoped report. A separate worker Dockerfile and opt-in
-  local Compose `worker` profile are contract-tested; the worker polls the private Django API,
-  receives a short-lived grant for one exact original, and has no Django/database or permanent
-  Object Storage credentials. Repository tests prove one real JPEG through claim, download, EXIF
-  extraction, completion, final state, and event report. The local worker image has been built and
-  its no-credential startup path verified. Staging deployment configuration builds an immutable
-  worker image and keeps its resource-bounded Compose profile disabled unless explicitly enabled;
-  the production workflow does not pass worker-activation inputs. No staging or production worker
-  is currently enabled.
+- Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
+  PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
+  event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first
+  policy; when the separate `PHOTO_PROCESSING_PREVIEW_ENABLED` gate is enabled it queues
+  `2/generate_preview/1`, publishes a verified immutable preview, and only then queues preview-
+  backed `2/face_embedding/2`. The standalone worker polls the private Django API with one-at-a-
+  time round-robin identity scheduling, has no Django/database or permanent Object Storage
+  credentials, and receives only short-lived grants for exact input/output objects. Local targeted
+  tests exercise real-JPEG preview generation, publication, gallery selection, preview-backed face
+  enrollment, reporting, and the no-credential container contract. The feature is shipped and
+  locally verified, but tracked defaults leave preview activation false; it is neither
+  staging-configured nor live-activated. A seven-day staging-prefix lifecycle rule, representative
+  original-versus-preview ML comparison, and concurrency-one capacity measurement remain activation
+  blockers. No staging or production preview worker is enabled.
 - Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the
@@ -176,8 +182,8 @@ The MVP remains one product with modules that have explicit responsibilities:
 | --- | --- | --- |
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, upload state | Proposed |
-| Media | Originals, thumbnails, previews, watermarks, purchased exports | Proposed |
-| Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed |
+| Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals and preview-first slice; remaining scope proposed |
+| Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed; preview-backed worker input/persistence contract is implemented but not activated |
 | Search | Event-scoped face/bib/time/location queries | Proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
 | Commerce | Cart, promotions, orders, payment state, download entitlement | Proposed |
@@ -220,13 +226,19 @@ broker, vector engine, and ML implementations shown for later processing require
 4. Django records the confirmed original and upload state in PostgreSQL. Confirmed originals have no
    automatic deletion in this stage; unconfirmed objects become stale after 24 hours without
    activity.
-5. The first Stage 3 worker extracts bounded JPEG EXIF capture metadata through a Django-polled
-   private API with one-at-a-time local worker concurrency, explicit per-photo states, immutable
-   attempts, and immutable event-run reports. Its Docker profile is locally opt-in and its image
-   build/no-credential startup contract is locally verified; no deployed worker is enabled.
-   Thumbnail, preview, watermarked-asset, and broker work remains later-stage design.
+5. The Stage 3 worker extracts bounded JPEG EXIF capture metadata through a Django-polled private
+   API with one-at-a-time local worker concurrency, explicit per-photo states, immutable attempts,
+   and immutable event-run reports. The preview-first implementation adds the versioned
+   `generate_preview` processor: after explicit activation it normalizes one JPEG through an
+   attempt-scoped staging upload, Django verifies and publishes an immutable derivative, and only
+   then makes the photo tile-eligible and queues preview-backed face work. Its Docker profile is
+   locally opt-in and the API-only/no-credential container contract is locally verified. Tracked
+   defaults remain disabled; lifecycle, ML-comparison, and capacity gates prevent staging or live
+   activation. Watermarked assets and a broker remain later-stage design.
 6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
-   embeddings. Each result records model version, confidence, geometry, and processing status.
+   embeddings. The implemented preview-first contract records preview coordinate space and source
+   dimensions for face results, but no face-recognition quality result or environment activation is
+   claimed. Each result records model version, confidence, geometry, and processing status.
 7. Search indexes are updated only within the photo's event scope.
 8. Operators can correct or suppress candidates. Manual decisions outrank automated results.
 9. Failures remain visible and retryable without re-uploading the original.
@@ -250,12 +262,14 @@ broker, vector engine, and ML implementations shown for later processing require
 
 ## Security, privacy, and legal boundaries
 
-- Originals remain private storage objects. The target policy is for public pages to receive derived
-  media: watermarked previews for paid events and unwatermarked reduced copies for free events.
-  During the current ADR 0015 transition, only eligible completed uploads for published free events
-  use a controlled inline Django response backed by the original; paid-event media remains
-  unavailable. The response does not expose the permanent storage key, but it delivers the complete
-  unsanitized original and therefore cannot prevent recipients from saving or redistributing it.
+- Originals remain private storage objects. The implemented preview-first slice creates an
+  unwatermarked, metadata-stripped reduced JPEG for a newly confirmed photo only after explicit
+  activation; the free-event tile route uses the published derivative while the large route remains
+  under ADR 0015's controlled-original policy. Until activation, explicit legacy photos use the
+  original for both variants. Paid-event media remains unavailable, and watermarks, purchases, and
+  exports remain unresolved. Neither the derivative route nor the original route exposes a
+  permanent storage key, but ADR 0015 original delivery still gives an eligible recipient complete
+  unsanitized bytes that can be saved or redistributed.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
 - Photographer routes require the additive upload permission, and non-superuser batch access is

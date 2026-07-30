@@ -1,0 +1,57 @@
+status:
+  port: 16241
+
+storages:
+  - name: metrics_buffer
+    plugin: fs
+    config:
+      directory: /var/lib/yandex/unified_agent/metrics_buffer
+      max_partition_size: 128mb
+      max_segment_size: 16mb
+
+channels:
+  - name: cloud_monitoring
+    channel:
+      pipe:
+        - storage_ref:
+            name: metrics_buffer
+      output:
+        plugin: yc_metrics
+        config:
+          folder_id: __YANDEX_CLOUD_FOLDER_ID__
+          iam:
+            cloud_meta: {}
+
+routes:
+  - input:
+      plugin: linux_metrics
+      config:
+        poll_period: 60s
+        namespace: sys
+    channel:
+      channel_ref:
+        name: cloud_monitoring
+  - input:
+      plugin: agent_metrics
+      config:
+        poll_period: 60s
+        namespace: ua
+    channel:
+      pipe:
+        - filter:
+            plugin: filter_metrics
+            config:
+              match: "{scope=health}"
+      channel_ref:
+        name: cloud_monitoring
+  - input:
+      plugin: metrics_pull
+      config:
+        url: http://127.0.0.1:8080/metrics/
+        format:
+          prometheus: {}
+        poll_period: 60s
+        namespace: app
+    channel:
+      channel_ref:
+        name: cloud_monitoring

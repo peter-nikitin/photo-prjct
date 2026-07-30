@@ -345,6 +345,42 @@ def test_staging_storage_probe_is_manual_explicit_and_uses_the_deployed_containe
     assert "--confirm-real-storage" in probe["with"]["script"]
 
 
+def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deploy_rollback() -> (
+    None
+):
+    staging = _load_workflow("deploy.yml")
+    production = _load_workflow("promote-production.yml")
+    dispatch = staging[True]["workflow_dispatch"]
+    agent = staging["jobs"]["configure-monitoring-agent"]
+    staging_deploy = staging["jobs"]["deploy"]
+
+    assert dispatch["inputs"]["configure_monitoring_agent"] == {
+        "description": (
+            "Configure the staging Yandex Unified Agent without deploying the application"
+        ),
+        "required": True,
+        "default": False,
+        "type": "boolean",
+    }
+    assert agent["environment"] == "staging"
+    assert (
+        agent["if"]
+        == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent }}"
+    )
+    assert "needs" not in agent
+    assert (
+        staging_deploy["if"]
+        == "${{ github.event_name == 'push' || !inputs.configure_monitoring_agent }}"
+    )
+    assert "configure-monitoring-agent" not in json.dumps(staging_deploy)
+    assert "configure-monitoring-agent" not in json.dumps(production)
+    run = _workflow_step(staging, "configure-monitoring-agent", "Configure staging Unified Agent")
+    assert run["env"] == {"YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}"}
+    assert run["with"]["envs"] == "YANDEX_CLOUD_FOLDER_ID"
+    assert "YANDEX_MONITORING_API_KEY" not in json.dumps(agent)
+    assert "sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh" in run["with"]["script"]
+
+
 def test_focused_deployment_scripts_are_versioned() -> None:
     for relative_path in (
         "deploy/certbot/reconcile-certificate.sh",

@@ -2,7 +2,7 @@
 
 ## Status
 
-Design approved in conversation on 2026-07-30. Written specification pending maintainer review.
+Approved by the project maintainer on 2026-07-30.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), current event-gallery and
   photo-processing boundaries; proposed Media and Recognition modules; photo ingestion and

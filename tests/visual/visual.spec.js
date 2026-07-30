@@ -10,6 +10,11 @@ const desktopPages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
+  ['event-selfie-search', '/__visual__/event/selfie-search/'],
+  ['selfie-search-processing', '/__visual__/event/selfie-search/processing/'],
+  ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
+  ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
+  ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
   ['reference-dashboard', '/__visual__/reference/dashboard/'],
@@ -30,6 +35,11 @@ const mobilePages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
+  ['event-selfie-search', '/__visual__/event/selfie-search/'],
+  ['selfie-search-processing', '/__visual__/event/selfie-search/processing/'],
+  ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
+  ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
+  ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
   ['upload-empty', '/__visual__/upload/empty/'],
@@ -327,6 +337,31 @@ test('gallery fallback link works without JavaScript', async ({ browser }) => {
   } finally {
     await context.close();
   }
+});
+
+test('selfie search form keeps its native multipart fallback without JavaScript', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    await page.goto('/__visual__/event/selfie-search/');
+    const form = page.locator('[data-selfie-search-form]');
+    await expect(form).toHaveAttribute('method', 'post');
+    await expect(form).toHaveAttribute('enctype', 'multipart/form-data');
+    await expect(form.locator('input[type="file"]')).toHaveAttribute('accept', 'image/jpeg,image/png');
+    await expect(form.getByRole('button', { name: 'Найти мои фото' })).toBeEnabled();
+  } finally {
+    await context.close();
+  }
+});
+
+test('ready selfie result reuses keyboard-accessible gallery lightbox', async ({ page }) => {
+  await page.goto('/__visual__/event/selfie-search/ready/');
+  const firstCard = page.locator('.selfie-search-results .gallery-card-link').first();
+  await firstCard.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.glightbox-container')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(firstCard).toBeFocused();
 });
 
 test('browser coordinator completes a successful upload and announces progress', async ({ page }) => {

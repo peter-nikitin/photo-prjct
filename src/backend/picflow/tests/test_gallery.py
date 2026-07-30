@@ -112,6 +112,34 @@ class GalleryPresentationContractTests(SimpleTestCase):
         )
         boto3_client.assert_not_called()
 
+    def test_factory_uses_a_scoped_media_url_builder_without_storage(self) -> None:
+        event = Event(name="City Run", slug="city-run")
+        photo = Photo(id="photo-42", event=event)
+        calls: list[tuple[str, str]] = []
+
+        def result_media_url(photo: Photo, variant: str) -> str:
+            calls.append((photo.id, variant))
+            return f"/events/city-run/selfie-search/bearer-token/photos/{photo.id}/media/{variant}/"
+
+        gallery_photo = GalleryPhotoFactory.from_photo(
+            photo=photo,
+            event_slug=event.slug,
+            media_url_builder=result_media_url,
+        )
+
+        self.assertEqual(
+            gallery_photo.preview_media_small.url,
+            "/events/city-run/selfie-search/bearer-token/photos/photo-42/media/preview-small/",
+        )
+        self.assertEqual(
+            gallery_photo.preview_media_large.url,
+            "/events/city-run/selfie-search/bearer-token/photos/photo-42/media/preview-large/",
+        )
+        self.assertEqual(
+            calls,
+            [("photo-42", "preview-small"), ("photo-42", "preview-large")],
+        )
+
 
 class _ReadableBody:
     def __init__(self, reads: list[bytes | Exception]) -> None:

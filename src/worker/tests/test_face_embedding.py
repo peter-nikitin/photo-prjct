@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 from photo_worker.contracts import FaceEmbeddingFace
-from photo_worker.face_embedding import FaceEmbeddingError, extract_face_embeddings
+from photo_worker.face_embedding import (
+    FaceEmbeddingError,
+    extract_face_embeddings,
+    extract_selfie_embedding,
+)
 from PIL import Image
 
 
@@ -194,3 +198,102 @@ def test_extract_face_embeddings_rejects_size_mismatch_without_inflating_arrays(
         extract_face_embeddings(source, max_bytes=1024)
 
     assert raised.value.code == "input_too_large"
+
+
+def _selfie_model_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+    image: DummyImage | None,
+    detections: list[dict[str, object]],
+) -> None:
+    monkeypatch.setattr("photo_worker.face_embedding._load_numpy", lambda: FakeNumpy((0, 0, 0)))
+    monkeypatch.setattr("photo_worker.face_embedding._load_cv2", lambda: object())
+    if image is not None:
+        monkeypatch.setattr(
+            "photo_worker.face_embedding._decode_image", lambda *_args, **_kwargs: image
+        )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._model_path", lambda *_args, **_kwargs: Path("/tmp/model.bin")
+    )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._load_models", lambda *_args, **_kwargs: (None, None)
+    )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._detect_faces", lambda *_args, **_kwargs: detections
+    )
+
+
+def _detection(*, size: float = 32.0) -> dict[str, object]:
+    return {
+        "bbox": (1.0, 2.0, size, size),
+        "confidence": 0.99,
+        "landmarks": ((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
+        "score": 0.99,
+    }
+
+
+def test_extract_selfie_embedding_requires_exactly_one_face_and_normalizes_vector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "selfie.png"
+    write_jpeg(source)
+    _selfie_model_mocks(monkeypatch, DummyImage(64, 64), [_detection()])
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._extract_embedding",
+        lambda *_args, **_kwargs: tuple(2.0 for _ in range(128)),
+    )
+
+    result = extract_selfie_embedding(source, max_bytes=1024, content_type="image/png")
+
+    assert len(result.embedding) == 128
+    assert sum(value * value for value in result.embedding) == pytest.approx(1.0)
+    assert result.model == "sface"
+
+
+@pytest.mark.parametrize(
+    ("detections", "code"),
+    [
+        ([], "no_face_detected"),
+        ([_detection(), _detection()], "multiple_faces_detected"),
+        ([_detection(size=31)], "quality_rejected"),
+    ],
+)
+def test_extract_selfie_embedding_maps_face_count_and_quality_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    detections: list[dict[str, object]],
+    code: str,
+) -> None:
+    source = tmp_path / "selfie.jpg"
+    write_jpeg(source)
+    _selfie_model_mocks(monkeypatch, DummyImage(64, 64), detections)
+
+    with pytest.raises(FaceEmbeddingError, match=code):
+        extract_selfie_embedding(source, max_bytes=1024, content_type="image/jpeg")
+
+
+def test_extract_selfie_embedding_rejects_non_finite_vector_and_releases_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "selfie.jpg"
+    write_jpeg(source)
+    released: list[bool] = []
+
+    class ReleasableImage(DummyImage):
+        def __del__(self) -> None:
+            released.append(True)
+
+    image_holder = [ReleasableImage(64, 64)]
+    _selfie_model_mocks(monkeypatch, None, [_detection()])
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._decode_image", lambda *_args, **_kwargs: image_holder.pop()
+    )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._extract_embedding",
+        lambda *_args, **_kwargs: (float("nan"),) * 128,
+    )
+
+    with pytest.raises(FaceEmbeddingError, match="quality_rejected"):
+        extract_selfie_embedding(source, max_bytes=1024, content_type="image/jpeg")
+
+    # The worker must not retain decoded pixels after the failed one-shot query.
+    assert released == [True]

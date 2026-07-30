@@ -9,6 +9,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.test import RequestFactory
 from django.utils import timezone
+from selfie_search.models import SelfieSearch
 
 from processing import views
 from processing.models import (
@@ -24,7 +25,7 @@ from processing.services.enrollment import (
     request_face_embedding_enqueue,
 )
 from processing.services.jobs import recover_expired_attempts
-from processing.tests.test_views import WorkerApiTests
+from processing.tests.test_views import SelfieWorkerApiTests, WorkerApiTests
 
 
 class WorkerApiEdgeCases(WorkerApiTests):
@@ -96,7 +97,9 @@ class WorkerApiEdgeCases(WorkerApiTests):
         attempt_id = job["attempt_id"]
         PhotoProcessingState.objects.filter(photo_id="api-photo").update(current_attempt=None)
         body = self.terminal_body(
-            job, processor_type="face_embedding", result=self.face_result_body()
+            job,
+            processor_type="face_embedding",
+            result=self.face_result_body(),
         )
 
         first = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)
@@ -333,3 +336,43 @@ class WorkerApiEdgeCases(WorkerApiTests):
         self.assertNotIn("signature=secret", durable)
         self.assertNotIn("https://storage.example.test", durable)
         self.assertNotIn("worker-secret", durable)
+
+
+class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
+    """The production break caught here is terminal publication before exact selfie deletion."""
+
+    @patch("processing.views.TemporarySelfieStorage")
+    def test_cleanup_storage_failure_is_retryable_and_an_identical_callback_finalizes_once(
+        self, storage
+    ) -> None:
+        storage.return_value = self.storage
+        job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+        body = self.success_body(job)
+        self.storage.fail_delete = True
+
+        pending = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body
+        )
+        self.search.refresh_from_db()
+
+        self.assertEqual(
+            (pending.status_code, pending.json()["error"]["code"]),
+            (503, "storage_unavailable"),
+        )
+        self.assertEqual(self.search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(
+            self.search.temporary_object_key,
+            "selfie-search/0123456789abcdef0123456789abcdef",
+        )
+
+        self.storage.fail_delete = False
+        replay = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body
+        )
+        self.search.refresh_from_db()
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json()["idempotent"])
+        self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual(self.search.temporary_object_key, "")
+        self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])

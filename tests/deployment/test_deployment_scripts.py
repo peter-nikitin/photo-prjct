@@ -588,9 +588,41 @@ def test_disabled_processing_persists_defaults_without_the_worker_profile(
     assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=16384" in deployed_env
     assert "PHOTO_WORKER_BUILD=capture-metadata-v1" in deployed_env
     assert "PHOTO_WORKER_LEASE_SECONDS=120" in deployed_env
-    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1" in deployed_env
+    assert (
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1,1/face_embedding/1,"
+        "2/generate_preview/1,2/face_embedding/2" in deployed_env
+    )
+    assert (
+        "PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,"
+        "generate_preview" in deployed_env
+    )
     assert "ALLOWED_HOSTS=localhost,web,findme-photo.ru" in deployed_env
     assert not any("--profile worker" in command for command in _apply_log(tmp_path))
+
+
+def test_disabled_selfie_rollback_replaces_malformed_dormant_overrides_with_safe_values(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "SELFIE_SEARCH_ENABLED": "False",
+            "SELFIE_SEARCH_MAX_UPLOAD_BYTES": "not-a-number",
+            "SELFIE_SEARCH_MAX_PIXELS": "also-not-a-number",
+            "SELFIE_SEARCH_EMBEDDING_MODEL": "different-model",
+            "SELFIE_SEARCH_TEMPORARY_PREFIX": "originals/",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "SELFIE_SEARCH_ENABLED=False" in deployed_env
+    assert "SELFIE_SEARCH_MAX_UPLOAD_BYTES=20971520" in deployed_env
+    assert "SELFIE_SEARCH_MAX_PIXELS=25000000" in deployed_env
+    assert "SELFIE_SEARCH_EMBEDDING_MODEL=sface" in deployed_env
+    assert "SELFIE_SEARCH_TEMPORARY_PREFIX=selfie-search/" in deployed_env
 
 
 def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
@@ -643,6 +675,9 @@ def test_preview_first_activation_requires_explicit_pipeline_settings(
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
                 "1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2"
+            ),
+            "PHOTO_WORKER_PROCESSOR_TYPES": (
+                "selfie_query,face_embedding,capture_metadata,generate_preview"
             ),
         }
     )
@@ -717,16 +752,6 @@ def test_enabled_processing_rejects_a_worker_that_is_crash_looping_after_compose
             {"PHOTO_PROCESSING_PREVIEW_ENABLED": "True"},
             "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_ENABLED=True",
         ),
-        (
-            {
-                "PHOTO_PROCESSING_ENABLED": "True",
-                "WORKER_IMAGE": "worker-image",
-                "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-                "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
-                "PHOTO_PROCESSING_FACE_ENABLED": "True",
-            },
-            "PHOTO_WORKER_PROCESSOR_IDENTITIES must include 2/generate_preview/1",
-        ),
     ],
 )
 def test_preview_first_activation_rejects_partial_or_implicit_configuration(
@@ -744,9 +769,64 @@ def test_preview_first_activation_rejects_partial_or_implicit_configuration(
 
 
 @pytest.mark.parametrize(
+    "missing_identity",
+    (
+        "1/capture_metadata/1",
+        "1/face_embedding/1",
+        "2/generate_preview/1",
+        "2/face_embedding/2",
+    ),
+)
+def test_preview_activation_requires_every_approved_photo_identity_before_mutation(
+    tmp_path: Path, fake_bin: Path, missing_identity: str
+) -> None:
+    required_identities = (
+        "1/capture_metadata/1",
+        "1/face_embedding/1",
+        "2/generate_preview/1",
+        "2/face_embedding/2",
+    )
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
+            "PHOTO_PROCESSING_FACE_ENABLED": "True",
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES": ",".join(
+                identity for identity in required_identities if identity != missing_identity
+            ),
+            "PHOTO_WORKER_PROCESSOR_TYPES": (
+                "selfie_query,face_embedding,capture_metadata,generate_preview"
+            ),
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert f"PHOTO_WORKER_PROCESSOR_IDENTITIES must include {missing_identity}" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
+
+
+@pytest.mark.parametrize(
     ("overrides", "message"),
     [
         ({"PHOTO_PROCESSING_ENABLED": "true"}, "PHOTO_PROCESSING_ENABLED must be True or False"),
+        (
+            {"PHOTO_PROCESSING_FACE_ENABLED": "true"},
+            "PHOTO_PROCESSING_FACE_ENABLED must be True or False",
+        ),
+        ({"SELFIE_SEARCH_ENABLED": "true"}, "SELFIE_SEARCH_ENABLED must be True or False"),
+        (
+            {"PHOTO_WORKER_PROCESSOR_TYPES": "capture_metadata,selfie_query"},
+            (
+                "PHOTO_WORKER_PROCESSOR_TYPES must be "
+                "selfie_query,face_embedding,capture_metadata,generate_preview"
+            ),
+        ),
         (
             {"PHOTO_PROCESSING_ENABLED": "True"},
             "Set WORKER_IMAGE",

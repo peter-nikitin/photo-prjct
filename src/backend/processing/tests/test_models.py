@@ -2,6 +2,7 @@ import importlib
 from datetime import date
 from typing import Any
 
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
@@ -39,7 +40,21 @@ class ProcessingModelTests(TestCase):
             city="Moscow",
         )
 
-    def make_private_photo(self, suffix: str, event: Event, **overrides) -> Photo:
+    def test_explicit_index_names_fit_postgresql_limit(self) -> None:
+        index_names = [
+            index.name
+            for model in apps.get_app_config("processing").get_models()
+            for index in model._meta.indexes
+            if index.name
+        ]
+
+        self.assertTrue(index_names)
+        self.assertTrue(
+            all(len(name) <= 30 for name in index_names),
+            f"Processing index names must be at most 30 characters: {index_names}",
+        )
+
+    def make_private_photo(self, suffix: str, event: Event, **overrides: Any) -> Photo:
         values = {
             "id": f"private-{suffix}",
             "event": event,
@@ -922,3 +937,47 @@ class ProcessingPreviewDerivativeMigrationTests(TransactionTestCase):
         executor.migrate(self.migrate_from)
         reverted_apps = executor.loader.project_state(self.migrate_from).apps
         self.assertNotIn("photoderivative", reverted_apps.all_models.get("processing", {}))
+
+
+class ProcessingFaceIndexRenameMigrationTests(TransactionTestCase):
+    migrate_from = [("processing", "0003_add_preview_derivative_schema")]
+    migrate_to = [("processing", "0004_shorten_face_index_names")]
+
+    def index_names_for(self, table_name: str) -> set[str]:
+        with connection.cursor() as cursor:
+            constraints = connection.introspection.get_constraints(cursor, table_name)
+        return {name for name, details in constraints.items() if details["index"]}
+
+    def test_face_index_names_migrate_forward_and_back(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+        self.assertIn(
+            "proc_face_detection_attempt_idx",
+            self.index_names_for("processing_photofacedetection"),
+        )
+        self.assertIn(
+            "proc_face_embedding_detection_idx",
+            self.index_names_for("processing_faceembedding"),
+        )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        self.assertIn(
+            "proc_face_det_attempt_idx",
+            self.index_names_for("processing_photofacedetection"),
+        )
+        self.assertIn(
+            "proc_face_embed_det_idx",
+            self.index_names_for("processing_faceembedding"),
+        )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+        self.assertIn(
+            "proc_face_detection_attempt_idx",
+            self.index_names_for("processing_photofacedetection"),
+        )
+        self.assertIn(
+            "proc_face_embedding_detection_idx",
+            self.index_names_for("processing_faceembedding"),
+        )

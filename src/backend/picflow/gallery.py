@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, Self
 
@@ -17,6 +17,7 @@ from picflow.models import Event, Photo
 
 GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
+MediaUrlBuilder = Callable[[Photo, GalleryVariant], str]
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,18 @@ class GalleryPhoto:
 
 class GalleryPhotoFactory:
     @staticmethod
-    def from_photo(*, photo: Photo, event_slug: str) -> GalleryPhoto:
+    def from_photo(
+        *, photo: Photo, event_slug: str, media_url_builder: MediaUrlBuilder | None = None
+    ) -> GalleryPhoto:
         def media(variant: GalleryVariant) -> GalleryMedia:
             return GalleryMedia(
-                url=reverse(
-                    "photo_media",
-                    kwargs={"slug": event_slug, "photo_id": photo.pk, "variant": variant},
+                url=(
+                    media_url_builder(photo, variant)
+                    if media_url_builder is not None
+                    else reverse(
+                        "photo_media",
+                        kwargs={"slug": event_slug, "photo_id": photo.pk, "variant": variant},
+                    )
                 ),
                 variant=variant,
             )

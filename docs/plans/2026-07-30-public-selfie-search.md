@@ -5,7 +5,7 @@
 > implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 - Date: 2026-07-30
-- Status: Draft
+- Status: Approved
 - Owner: project maintainer
 - Related specification:
   [`Public Selfie Search Design`](../superpowers/specs/2026-07-30-public-selfie-search-design.md)
@@ -406,8 +406,8 @@ Delivery additionally requires:
 
 - [ ] Write failing settings/deployment tests for all global constants, boolean validation,
   `PHOTO_PROCESSING_FACE_ENABLED`, `SELFIE_SEARCH_ENABLED`, and ordered
-  `PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata` propagation without
-  credentials entering the worker environment.
+  `PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview`
+  propagation without credentials entering the worker environment.
 - [ ] Write a failing contract-command test proving the preflight uses a generated exact temporary
   key, verifies private put/head/grant/delete, reports only sanitized markers, and fails if the
   configured `selfie-search/` lifecycle does not bound retention to 24 hours.
@@ -520,7 +520,10 @@ temporary selfie fake/storage object is absent.
 ## Operational impact and rollout
 
 1. Build one immutable application image and one immutable worker image containing the migration
-   and all three processors.
+   and all four processor types: `selfie_query`, `face_embedding`, `capture_metadata`, and
+   `generate_preview`. The worker polls five exact identities: `1/selfie_query/1`,
+   `1/capture_metadata/1`, `1/face_embedding/1`, `2/generate_preview/1`, and
+   `2/face_embedding/2`.
 2. Keep `SELFIE_SEARCH_ENABLED=False`. Apply the database migration; it is additive and does not
    rewrite existing photo or processing rows.
 3. Verify current accepted photo embeddings exist for representative published free and paid

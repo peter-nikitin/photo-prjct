@@ -112,6 +112,7 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
         "src/backend/ingestion",
         "src/backend/picflow",
         "src/backend/processing",
+        "src/backend/selfie_search",
         "src/worker/photo_worker",
     ]
     assert _workflow_step(ci, "quality", "Type check")["run"] == "mypy"
@@ -186,6 +187,9 @@ def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
     expected = {
         "WORKER_IMAGE": "${{ needs.build.outputs.worker_image }}",
         "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_PREVIEW_ENABLED": (
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+        ),
         "PHOTO_PROCESSING_WORKER_TOKEN": "${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}",
         "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
             "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
@@ -195,12 +199,58 @@ def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
         ),
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || "
+            "'1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,"
+            "2/face_embedding/2' }}"
+        ),
+        "PHOTO_WORKER_PROCESSOR_TYPES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
+            "'selfie_query,face_embedding,capture_metadata,generate_preview' }}"
+        ),
     }
     for name, value in expected.items():
         assert staging_apply["env"][name] == value
         assert name in _envs(staging_apply)
         assert name not in production_apply["env"]
         assert name not in _envs(production_apply)
+
+    for name, value in {
+        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
+        "SELFIE_SEARCH_ENABLED": "${{ vars.SELFIE_SEARCH_ENABLED || 'False' }}",
+        "SELFIE_SEARCH_MAX_UPLOAD_BYTES": (
+            "${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}"
+        ),
+        "SELFIE_SEARCH_MAX_PIXELS": "${{ vars.SELFIE_SEARCH_MAX_PIXELS || '25000000' }}",
+        "SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS": (
+            "${{ vars.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS || '120' }}"
+        ),
+        "SELFIE_SEARCH_EMBEDDING_MODEL": "${{ vars.SELFIE_SEARCH_EMBEDDING_MODEL || 'sface' }}",
+        "SELFIE_SEARCH_EMBEDDING_DIMENSIONS": (
+            "${{ vars.SELFIE_SEARCH_EMBEDDING_DIMENSIONS || '128' }}"
+        ),
+        "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD": (
+            "${{ vars.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD || '0.363' }}"
+        ),
+        "SELFIE_SEARCH_TEMPORARY_PREFIX": (
+            "${{ vars.SELFIE_SEARCH_TEMPORARY_PREFIX || 'selfie-search/' }}"
+        ),
+        "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS": (
+            "${{ vars.SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS || '24' }}"
+        ),
+    }.items():
+        assert staging_apply["env"][name] == value
+        assert production_apply["env"][name] == value
+        assert name in _envs(staging_apply)
+        assert name in _envs(production_apply)
+
+    storage_preflight = _workflow_step(
+        staging, "deploy", "Verify selfie-search temporary storage contract"
+    )
+    assert (
+        "test \"$(sed -n 's/^SELFIE_SEARCH_ENABLED=//p' .env | head -n 1)\" = False"
+        in (storage_preflight["with"]["script"])
+    )
 
 
 def test_public_environments_share_one_https_edge_overlay() -> None:
@@ -256,6 +306,77 @@ def test_public_edges_deny_the_private_processing_prefix_before_the_proxy_catcha
         deny = "location ^~ /internal/photo-processing/ {\n        return 404;\n    }"
         assert deny in source
         assert source.index(deny) < source.rindex("location / {")
+
+
+def test_public_edges_sanitize_bearer_access_logs_and_do_not_override_no_referrer() -> None:
+    for relative_path in ("deploy/nginx/https.conf.template", "deploy/nginx/staging.conf"):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+
+        assert "map $uri $selfie_search_access_request {" in source
+        assert "map $uri $selfie_search_access_referrer {" in source
+        assert "map $uri $selfie_search_access_user_agent {" in source
+        assert (
+            '~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "$request_method <selfie-search>";'
+            in source
+        )
+        assert '"$selfie_search_access_referrer"' in source
+        assert '"$selfie_search_access_user_agent"' in source
+        assert "access_log /var/log/nginx/access.log selfie_search_safe;" in source
+
+    https = (ROOT / "deploy/nginx/https.conf.template").read_text(encoding="utf-8")
+    assert 'add_header Referrer-Policy "no-referrer" always;' in https
+    assert 'add_header Referrer-Policy "same-origin" always;' not in https
+    assert "proxy_hide_header Referrer-Policy;" in https
+    assert "access_log /var/log/nginx/access.log selfie_search_safe;" in (
+        ROOT / "deploy/nginx/reload-nginx.sh"
+    ).read_text(encoding="utf-8")
+
+
+def test_public_edges_isolate_bearer_upstream_errors_without_changing_proxy_routing() -> None:
+    bearer_location = (
+        "location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {\n        error_log /dev/null emerg;"
+    )
+
+    for relative_path in ("deploy/nginx/https.conf.template", "deploy/nginx/staging.conf"):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+
+        assert bearer_location in source
+        assert source.count("error_log /dev/null emerg;") == 1
+        bearer_start = source.index(bearer_location)
+        internal_start = source.index("location ^~ /internal/photo-processing/ {")
+        catchall_start = source.index("location / {", bearer_start)
+        assert internal_start < bearer_start < catchall_start
+
+        bearer_block = source[bearer_start : source.index("\n    }", bearer_start)]
+        catchall_block = source[catchall_start : source.index("\n    }", catchall_start)]
+        bearer_proxy_lines = [
+            line.strip() for line in bearer_block.splitlines() if line.strip().startswith("proxy_")
+        ]
+        catchall_proxy_lines = [
+            line.strip()
+            for line in catchall_block.splitlines()
+            if line.strip().startswith("proxy_")
+        ]
+        assert bearer_proxy_lines == catchall_proxy_lines
+
+    alias = (ROOT / "deploy/nginx/reload-nginx.sh").read_text(encoding="utf-8")
+    assert bearer_location in alias
+    assert alias.count("error_log /dev/null emerg;") == 1
+    alias_bearer_start = alias.index(bearer_location)
+    alias_catchall_start = alias.index("location / {", alias_bearer_start)
+    assert alias_bearer_start < alias_catchall_start
+    alias_bearer_block = alias[alias_bearer_start : alias.index("\n    }", alias_bearer_start)]
+    alias_catchall_block = alias[
+        alias_catchall_start : alias.index("\n    }", alias_catchall_start)
+    ]
+    assert "return 308 https://${PUBLIC_DOMAIN}\\$request_uri;" in alias_bearer_block
+    assert "return 308 https://${PUBLIC_DOMAIN}\\$request_uri;" in alias_catchall_block
+    assert 'add_header Referrer-Policy "no-referrer" always;' in alias
+
+    validator = (ROOT / "tests/deployment/validate-nginx.sh").read_text(encoding="utf-8")
+    assert 'exercise_bearer_error_logging "$name" "$rendered" "$alias"' in validator
+    assert 'bearer_token="bearer-log-token-$name-$$"' in validator
+    assert "--add-host web:127.0.0.1" in validator
 
 
 def test_private_upload_configuration_is_wired_to_deployments() -> None:

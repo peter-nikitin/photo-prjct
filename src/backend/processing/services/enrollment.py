@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import cast
+from typing import TypedDict
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
@@ -126,6 +126,13 @@ GENERATE_PREVIEW_CONFIGURATION: dict[str, object] = {
 
 DEFAULT_RECONCILIATION_LIMIT = 100
 MAX_RECONCILIATION_LIMIT = 1_000
+
+
+class _ReconciliationProcessorConfig(TypedDict):
+    contract_version: int
+    processor_version: int
+    configuration: dict[str, object]
+    verified_source_etag: str | None
 
 
 def request_capture_metadata(
@@ -320,10 +327,10 @@ def _reconcile(
         request_processor(
             Photo.objects.get(pk=photo_id),
             processor_type=processor_type,
-            contract_version=cast(int, config["contract_version"]),
-            processor_version=cast(int, config["processor_version"]),
-            configuration=cast(dict[str, object], config["configuration"]),
-            verified_source_etag=cast(str | None, config["verified_source_etag"]),
+            contract_version=config["contract_version"],
+            processor_version=config["processor_version"],
+            configuration=config["configuration"],
+            verified_source_etag=config["verified_source_etag"],
         )
         for photo_id in photo_ids
     ]
@@ -366,7 +373,7 @@ def _reconcilable_photo_ids(*, processor_type: str, limit: int) -> list[str]:
     return []
 
 
-def _reconcile_config(processor_type: str) -> dict[str, object]:
+def _reconcile_config(processor_type: str) -> _ReconciliationProcessorConfig:
     if processor_type == CAPTURE_METADATA_PROCESSOR:
         return {
             "contract_version": CONTRACT_VERSION,

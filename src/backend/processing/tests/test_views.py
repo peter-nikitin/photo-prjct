@@ -3,10 +3,13 @@ from datetime import date, timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.http import HttpResponse
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
+from selfie_search.models import SelfieSearch, SelfieSearchJob
+from selfie_search.storage import DownloadGrant, StoredTemporarySelfie
 
 from processing.contracts import AttemptCompletion
 from processing.models import (
@@ -97,14 +100,17 @@ class WorkerApiTests(TestCase):
             },
             "face_embedding": {
                 "decode_failed": False,
+                "download_authorization_expired": True,
+                "fingerprint_mismatch": False,
                 "input_too_large": False,
-                "model_inference_error": True,
+                "model_inference_error": False,
                 "model_inference_timeout": True,
                 "network_interruption": True,
                 "no_face_detected": False,
                 "storage_unavailable": True,
                 "timeout": True,
                 "all_faces_filtered": False,
+                "unsupported_input": False,
             },
         }
         body = {
@@ -474,6 +480,34 @@ class WorkerApiTests(TestCase):
         self.assertEqual(supported.status_code, 200)
 
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_face_fail_rejects_retryability_not_produced_by_worker(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        request_face_embedding_enqueue(self.photo())
+        face_job = self.post("/internal/photo-processing/v1/claim", self.face_claim_body()).json()[
+            "job"
+        ]
+        attempt = face_job["attempt_id"]
+
+        mismatched = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/fail",
+            self.terminal_body(
+                face_job,
+                outcome="failure",
+                processor_type="face_embedding",
+                error_code="model_inference_error",
+                retryable=True,
+            ),
+        )
+
+        self.assertEqual(mismatched.status_code, 400)
+        self.assertEqual(mismatched.json()["error"]["code"], "invalid_result")
+        self.assertEqual(
+            ProcessingAttempt.objects.get(pk=attempt).status,
+            ProcessingAttempt.Status.IN_PROGRESS,
+        )
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_claim_uses_immutable_fingerprint_when_live_photo_source_drifts(self, grant) -> None:
         grant.return_value.url = "https://storage.example.test/object?secret"
         grant.return_value.expires_at = timezone.now() + timedelta(seconds=60)
@@ -745,3 +779,209 @@ class WorkerApiTests(TestCase):
             **self.headers,
         )
         self.assertEqual(response.status_code, 400)
+
+
+class SelfieWorkerStorage:
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+        self.fail_delete = False
+
+    def inspect(self, *, key: str) -> StoredTemporarySelfie:
+        return StoredTemporarySelfie(key=key, size=1024, content_type="image/jpeg")
+
+    def create_download_grant(self, *, key: str, max_ttl_seconds: int) -> DownloadGrant:
+        assert key == "selfie-search/0123456789abcdef0123456789abcdef"
+        assert max_ttl_seconds >= 1
+        return DownloadGrant(
+            url="https://storage.example.test/selfie?signature=secret",
+            expires_at=timezone.now() + timedelta(seconds=30),
+        )
+
+    def delete(self, *, key: str) -> None:
+        if self.fail_delete:
+            raise StorageUnavailable()
+        self.deleted.append(key)
+
+
+@override_settings(
+    PHOTO_PROCESSING_ENABLED=True,
+    PHOTO_PROCESSING_WORKER_TOKEN="worker-secret",
+)
+class SelfieWorkerApiTests(TestCase):
+    """The production break caught here is a selfie attempt changing the photo worker wire shape."""
+
+    def setUp(self) -> None:
+        self.event = Event.objects.create(
+            name="Selfie worker API",
+            slug="selfie-worker-api",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        self.search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="b" * 64,
+            temporary_object_key="selfie-search/0123456789abcdef0123456789abcdef",
+            configuration={
+                "embedding_model": "sface",
+                "embedding_dimensions": 128,
+                "cosine_distance_threshold": 0.363,
+                "content_type": "image/jpeg",
+                "content_size": 1024,
+            },
+        )
+        SelfieSearchJob.objects.create(search=self.search, configuration=self.search.configuration)
+        self.headers = {"HTTP_AUTHORIZATION": "Bearer worker-secret"}
+        self.storage = SelfieWorkerStorage()
+
+    def post(self, path: str, body: dict) -> HttpResponse:
+        return self.client.post(
+            path,
+            data=json.dumps(body),
+            content_type="application/json",
+            **self.headers,
+        )
+
+    def claim_body(self) -> dict[str, object]:
+        return {
+            "contract_version": 1,
+            "processor_type": "selfie_query",
+            "processor_version": 1,
+            "worker_build": "worker-test",
+            "lease_seconds": 120,
+        }
+
+    def success_body(self, job: dict[str, object]) -> dict[str, object]:
+        return {
+            "job_id": job["id"],
+            "attempt_id": job["attempt_id"],
+            "contract_version": 1,
+            "processor_type": "selfie_query",
+            "processor_version": 1,
+            "worker_build": "worker-test",
+            "started_at": "2026-07-30T10:00:00Z",
+            "finished_at": "2026-07-30T10:00:03Z",
+            "download_ms": 1,
+            "compute_ms": 2,
+            "total_ms": 3,
+            "outcome": "success",
+            "result": {
+                "model": "sface",
+                "embedding": [1.0] + [0.0] * 127,
+                "bbox": [1.0, 2.0, 32.0, 32.0],
+                "confidence": 0.96,
+                "landmarks": [[1.0, 2.0]] * 5,
+                "timings": {
+                    "decode_ms": 1,
+                    "model_load_ms": 1,
+                    "detect_ms": 1,
+                    "embed_ms": 1,
+                    "total_ms": 4,
+                },
+            },
+        }
+
+    @patch("processing.views.TemporarySelfieStorage")
+    def test_selfie_claim_keeps_the_strict_worker_union_and_raw_uuid_callbacks(
+        self, storage
+    ) -> None:
+        storage.return_value = self.storage
+
+        claim = self.post("/internal/photo-processing/v1/claim", self.claim_body())
+        self.assertEqual(claim.status_code, 200)
+        job = claim.json()["job"]
+        self.assertEqual(
+            set(job),
+            {
+                "id",
+                "attempt_id",
+                "contract_version",
+                "processor_type",
+                "processor_version",
+                "configuration",
+                "search_id",
+                "input_fingerprint",
+                "input_limits",
+                "lease_expires_at",
+                "download_url",
+                "download_expires_at",
+            },
+        )
+        self.assertEqual(job["search_id"], str(self.search.id))
+        self.assertNotIn("photo_id", job)
+        self.assertEqual(
+            job["input_fingerprint"]["temporary_key"],
+            "selfie-search/0123456789abcdef0123456789abcdef",
+        )
+        self.assertNotIn("public_token", json.dumps(job))
+
+        heartbeat = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/heartbeat",
+            {"lease_seconds": 120},
+        )
+        refresh = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/download",
+            {},
+        )
+        complete = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+            self.success_body(job),
+        )
+
+        self.assertEqual(
+            (heartbeat.status_code, refresh.status_code, complete.status_code),
+            (200, 200, 200),
+        )
+        self.assertEqual(complete.json()["attempt"]["status"], "succeeded")
+        self.search.refresh_from_db()
+        self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual(self.search.temporary_object_key, "")
+        self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])
+
+    @patch("processing.views.TemporarySelfieStorage")
+    def test_namespaced_selfie_reference_is_accepted_and_a_mixed_reference_fails_closed(
+        self, storage
+    ) -> None:
+        storage.return_value = self.storage
+        job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+
+        namespaced = self.post(
+            f"/internal/photo-processing/v1/attempts/selfie_{job['attempt_id']}/heartbeat",
+            {"lease_seconds": 120},
+        )
+        mixed = self.post(
+            f"/internal/photo-processing/v1/attempts/photo_{job['attempt_id']}/heartbeat",
+            {"lease_seconds": 120},
+        )
+
+        self.assertEqual(namespaced.status_code, 200)
+        self.assertEqual(
+            (mixed.status_code, mixed.json()["error"]["code"]),
+            (404, "invalid_attempt_id"),
+        )
+
+    @patch("processing.views.TemporarySelfieStorage")
+    def test_selfie_callback_rejects_a_non_normalized_query_without_state_change(
+        self, storage
+    ) -> None:
+        storage.return_value = self.storage
+        job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+        body = self.success_body(job)
+        result = body["result"]
+        assert isinstance(result, dict)
+        result["embedding"] = [1.0] * 128
+
+        response = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+            body,
+        )
+        self.search.refresh_from_db()
+
+        self.assertEqual(
+            (response.status_code, response.json()["error"]["code"]), (400, "invalid_result")
+        )
+        self.assertEqual(self.search.status, SelfieSearch.Status.PROCESSING)
+        self.assertEqual(
+            self.search.temporary_object_key,
+            "selfie-search/0123456789abcdef0123456789abcdef",
+        )

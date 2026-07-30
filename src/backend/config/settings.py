@@ -1,12 +1,26 @@
+import os
 from pathlib import Path
 from typing import Any
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env()
 environ.Env.read_env(BASE_DIR / ".env")
+
+
+def _exact_environment_boolean(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    if value == "True":
+        return True
+    if value == "False":
+        return False
+    raise ImproperlyConfigured(f"{name} must be True or False")
+
 
 DATABASES = {
     "default": {
@@ -33,6 +47,7 @@ INSTALLED_APPS = [
     "ingestion.apps.IngestionConfig",
     "picflow.apps.PicflowConfig",
     "processing.apps.ProcessingConfig",
+    "selfie_search.apps.SelfieSearchConfig",
 ]
 
 MIDDLEWARE = [
@@ -40,6 +55,7 @@ MIDDLEWARE = [
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "selfie_search.middleware.PublicSelfieBearerProtectionMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -103,14 +119,51 @@ PHOTO_UPLOAD_STALE_AFTER_SECONDS = env.int("PHOTO_UPLOAD_STALE_AFTER_SECONDS", d
 # Disabled by default: the private worker API also denies every request unless its separate
 # environment-provided bearer token is present.  This token is never shared with Django, users,
 # or object storage and must never be logged or persisted.
-PHOTO_PROCESSING_ENABLED = env.bool("PHOTO_PROCESSING_ENABLED", default=False)
-PHOTO_PROCESSING_FACE_ENABLED = env.bool("PHOTO_PROCESSING_FACE_ENABLED", default=False)
-PHOTO_PROCESSING_PREVIEW_ENABLED = env.bool("PHOTO_PROCESSING_PREVIEW_ENABLED", default=False)
+PHOTO_PROCESSING_ENABLED = _exact_environment_boolean("PHOTO_PROCESSING_ENABLED")
+PHOTO_PROCESSING_FACE_ENABLED = _exact_environment_boolean("PHOTO_PROCESSING_FACE_ENABLED")
+PHOTO_PROCESSING_PREVIEW_ENABLED = _exact_environment_boolean("PHOTO_PROCESSING_PREVIEW_ENABLED")
 PHOTO_PROCESSING_WORKER_TOKEN = env("PHOTO_PROCESSING_WORKER_TOKEN", default="")
 PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS = env.int(
     "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS", default=120
 )
 PHOTO_PROCESSING_MAX_REQUEST_BYTES = env.int("PHOTO_PROCESSING_MAX_REQUEST_BYTES", default=16_384)
+
+SELFIE_SEARCH_ENABLED = _exact_environment_boolean("SELFIE_SEARCH_ENABLED")
+if SELFIE_SEARCH_ENABLED:
+    SELFIE_SEARCH_MAX_UPLOAD_BYTES = env.int(
+        "SELFIE_SEARCH_MAX_UPLOAD_BYTES", default=20 * 1024 * 1024
+    )
+    SELFIE_SEARCH_MAX_PIXELS = env.int("SELFIE_SEARCH_MAX_PIXELS", default=25_000_000)
+    SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS = env.int("SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS", default=120)
+    SELFIE_SEARCH_EMBEDDING_MODEL = env("SELFIE_SEARCH_EMBEDDING_MODEL", default="sface")
+    SELFIE_SEARCH_EMBEDDING_DIMENSIONS = env.int("SELFIE_SEARCH_EMBEDDING_DIMENSIONS", default=128)
+    SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD = env.float(
+        "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD", default=0.363
+    )
+    SELFIE_SEARCH_TEMPORARY_PREFIX = env("SELFIE_SEARCH_TEMPORARY_PREFIX", default="selfie-search/")
+    SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS = env.int(
+        "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS", default=24
+    )
+    if (
+        SELFIE_SEARCH_MAX_UPLOAD_BYTES != 20 * 1024 * 1024
+        or SELFIE_SEARCH_MAX_PIXELS != 25_000_000
+        or SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS != 120
+        or SELFIE_SEARCH_EMBEDDING_MODEL != "sface"
+        or SELFIE_SEARCH_EMBEDDING_DIMENSIONS != 128
+        or SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD != 0.363
+        or SELFIE_SEARCH_TEMPORARY_PREFIX != "selfie-search/"
+        or SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS != 24
+    ):
+        raise ImproperlyConfigured("Selfie-search settings do not match the approved contract")
+else:
+    SELFIE_SEARCH_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+    SELFIE_SEARCH_MAX_PIXELS = 25_000_000
+    SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS = 120
+    SELFIE_SEARCH_EMBEDDING_MODEL = "sface"
+    SELFIE_SEARCH_EMBEDDING_DIMENSIONS = 128
+    SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD = 0.363
+    SELFIE_SEARCH_TEMPORARY_PREFIX = "selfie-search/"
+    SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS = 24
 
 LOGIN_URL = "photographer_login"
 

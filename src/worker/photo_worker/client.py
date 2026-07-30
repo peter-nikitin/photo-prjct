@@ -196,11 +196,14 @@ class HttpClient:
         *,
         max_bytes: int,
         expected_size: int,
+        expected_content_type: str = "image/jpeg",
         expected_etag: str | None = None,
     ) -> int:
         if expected_size < 1 or expected_size > max_bytes:
             raise DownloadError("input_too_large", retryable=False)
-        request = Request(url, method="GET", headers={"Accept": "image/jpeg"})
+        if expected_content_type not in {"image/jpeg", "image/png"}:
+            raise DownloadError("unsupported_input", retryable=False)
+        request = Request(url, method="GET", headers={"Accept": expected_content_type})
         written = 0
         completed = False
         try:
@@ -208,7 +211,7 @@ class HttpClient:
                 content_type = _header(response.headers, "Content-Type").split(";", 1)[0].lower()
                 content_length = _header(response.headers, "Content-Length")
                 response_etag = _header(response.headers, "ETag").strip('"')
-                if content_type != "image/jpeg":
+                if content_type != expected_content_type:
                     raise DownloadError("unsupported_input", retryable=False)
                 if content_length:
                     if not content_length.isdecimal() or int(content_length) > max_bytes:

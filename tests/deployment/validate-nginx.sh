@@ -4,7 +4,16 @@ set -eu
 
 root_dir="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT INT TERM
+runtime_container=""
+
+cleanup() {
+    if [ -n "$runtime_container" ]; then
+        docker rm -f "$runtime_container" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$tmp_dir"
+}
+
+trap cleanup EXIT INT TERM
 
 certificate_dir="$tmp_dir/letsencrypt/live/photo-prjct"
 mkdir -p "$certificate_dir" "$tmp_dir/rendered"
@@ -16,6 +25,131 @@ docker run --rm --entrypoint openssl \
     -keyout /certificates/privkey.pem \
     -out /certificates/fullchain.pem \
     -subj /CN=findme-photo.ru >/dev/null 2>&1
+
+assert_no_referrer_header() {
+    header_file="$1"
+
+    if ! tr -d '\r' < "$header_file" | grep -Eiq '^Referrer-Policy:[[:space:]]*no-referrer$'; then
+        echo "response did not retain Referrer-Policy: no-referrer" >&2
+        exit 1
+    fi
+    if tr -d '\r' < "$header_file" | grep -Eiq '^Referrer-Policy:.*same-origin'; then
+        echo "response retained a conflicting Referrer-Policy" >&2
+        exit 1
+    fi
+}
+
+request_status() {
+    header_file="$1"
+    request_host="$2"
+    request_port="$3"
+    request_path="$4"
+
+    curl --silent --insecure --max-time 5 --noproxy '*' \
+        --resolve "$request_host:$request_port:127.0.0.1" \
+        --dump-header "$header_file" \
+        --output /dev/null \
+        --write-out '%{http_code}' \
+        "https://$request_host:$request_port$request_path" || true
+}
+
+exercise_bearer_error_logging() {
+    name="$1"
+    rendered="$2"
+    alias="$3"
+    runtime_log_dir="$tmp_dir/runtime-$name"
+    access_log="$runtime_log_dir/access.log"
+    error_log="$runtime_log_dir/error.log"
+    container_log="$runtime_log_dir/container.log"
+    bearer_headers="$runtime_log_dir/bearer.headers"
+    non_bearer_headers="$runtime_log_dir/non-bearer.headers"
+    bearer_token="bearer-log-token-$name-$$"
+    bearer_path="/events/runtime/selfie-search/$bearer_token/"
+    non_bearer_path="/runtime-proxy-check-$name"
+
+    mkdir -p "$runtime_log_dir"
+    : > "$access_log"
+    : > "$error_log"
+    runtime_container="nginx-bearer-privacy-$name-$$"
+
+    docker run --detach \
+        --name "$runtime_container" \
+        --add-host web:127.0.0.1 \
+        --publish 127.0.0.1::443 \
+        --volume "$rendered:/etc/nginx/conf.d/default.conf:ro" \
+        --volume "$tmp_dir/letsencrypt:/etc/letsencrypt:ro" \
+        --volume "$runtime_log_dir:/var/log/nginx" \
+        --entrypoint nginx \
+        nginx:1.27-alpine \
+        -g 'daemon off;' >/dev/null
+
+    runtime_binding="$(docker port "$runtime_container" 443/tcp)"
+    runtime_port="${runtime_binding##*:}"
+    case "$runtime_port" in
+        ''|*[!0-9]*)
+            echo "$name did not publish an HTTPS port" >&2
+            exit 1
+            ;;
+    esac
+
+    bearer_status=""
+    attempt=1
+    while [ "$attempt" -le 10 ]; do
+        bearer_status="$(request_status "$bearer_headers" findme-photo.ru "$runtime_port" "$bearer_path")"
+        if [ "$bearer_status" = 502 ]; then
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    if [ "$bearer_status" != 502 ]; then
+        echo "$name bearer proxy returned $bearer_status instead of 502" >&2
+        docker logs "$runtime_container" >&2 || true
+        exit 1
+    fi
+    assert_no_referrer_header "$bearer_headers"
+
+    non_bearer_status="$(request_status "$non_bearer_headers" findme-photo.ru "$runtime_port" "$non_bearer_path")"
+    if [ "$non_bearer_status" != 502 ]; then
+        echo "$name non-bearer proxy returned $non_bearer_status instead of 502" >&2
+        docker logs "$runtime_container" >&2 || true
+        exit 1
+    fi
+
+    if [ -n "$alias" ]; then
+        alias_headers="$runtime_log_dir/alias.headers"
+        alias_status="$(request_status "$alias_headers" "$alias" "$runtime_port" "$bearer_path")"
+        if [ "$alias_status" != 308 ]; then
+            echo "$name alias bearer redirect returned $alias_status instead of 308" >&2
+            exit 1
+        fi
+        if ! tr -d '\r' < "$alias_headers" | grep -Fqx "Location: https://findme-photo.ru$bearer_path"; then
+            echo "$name alias bearer redirect changed its canonical target" >&2
+            exit 1
+        fi
+        assert_no_referrer_header "$alias_headers"
+    fi
+
+    docker logs "$runtime_container" > "$container_log" 2>&1 || true
+
+    if ! grep -Fq "$non_bearer_path" "$access_log"; then
+        echo "$name non-bearer request did not use the normal access log" >&2
+        exit 1
+    fi
+    if ! grep -Fq "$non_bearer_path" "$error_log"; then
+        echo "$name non-bearer upstream failure did not use the normal error log" >&2
+        exit 1
+    fi
+    for log_file in "$access_log" "$error_log" "$container_log"; do
+        if grep -Fq "$bearer_token" "$log_file"; then
+            echo "$name persisted a bearer token in $(basename "$log_file")" >&2
+            exit 1
+        fi
+    done
+
+    docker rm -f "$runtime_container" >/dev/null
+    runtime_container=""
+}
 
 validate_variant() {
     name="$1"
@@ -37,17 +171,48 @@ validate_variant() {
     grep -Fq 'return 308 https://findme-photo.ru$request_uri;' "$rendered"
     grep -Fq 'location ^~ /internal/photo-processing/ {' "$rendered"
     grep -Fq 'return 404;' "$rendered"
+    grep -Fq 'map $uri $selfie_search_access_request {' "$rendered"
+    grep -Fq 'map $uri $selfie_search_access_referrer {' "$rendered"
+    grep -Fq 'map $uri $selfie_search_access_user_agent {' "$rendered"
+    grep -Fq '"$request_method <selfie-search>"' "$rendered"
+    grep -Fq 'log_format selfie_search_safe' "$rendered"
+    grep -Fq 'proxy_hide_header Referrer-Policy;' "$rendered"
+    grep -Fq 'add_header Referrer-Policy "no-referrer" always;' "$rendered"
+    grep -Fq 'location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {' "$rendered"
+    grep -Fq 'error_log /dev/null emerg;' "$rendered"
+    if grep -Fq 'add_header Referrer-Policy "same-origin" always;' "$rendered"; then
+        echo "$name retained a conflicting Referrer-Policy" >&2
+        exit 1
+    fi
+
+    expected_access_logs=5
+    expected_bearer_error_logs=1
     if [ -n "$alias" ]; then
         grep -Fq "server_name $alias;" "$rendered"
+        expected_access_logs=6
+        expected_bearer_error_logs=2
     elif grep -Fq 'server_name www.findme-photo.ru;' "$rendered"; then
         echo "$name retained the optional alias server" >&2
         exit 1
     fi
+    actual_access_logs="$(grep -Fc 'access_log /var/log/nginx/access.log selfie_search_safe;' "$rendered")"
+    if [ "$actual_access_logs" -ne "$expected_access_logs" ]; then
+        echo "$name does not sanitize every public server access log" >&2
+        exit 1
+    fi
+    actual_bearer_error_logs="$(grep -Fc 'error_log /dev/null emerg;' "$rendered")"
+    if [ "$actual_bearer_error_logs" -ne "$expected_bearer_error_logs" ]; then
+        echo "$name does not isolate bearer upstream errors exactly once per bearer server" >&2
+        exit 1
+    fi
 
     docker run --rm \
+        --add-host web:127.0.0.1 \
         -v "$rendered:/etc/nginx/conf.d/default.conf:ro" \
         -v "$tmp_dir/letsencrypt:/etc/letsencrypt:ro" \
         nginx:1.27-alpine nginx -t
+
+    exercise_bearer_error_logging "$name" "$rendered" "$alias"
 }
 
 validate_variant alias www.findme-photo.ru

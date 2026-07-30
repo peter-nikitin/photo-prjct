@@ -40,13 +40,14 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingAttempt,
 )
-from processing.services.enrollment import request_capture_metadata
+from processing.services.enrollment import request_capture_metadata, request_face_embedding_enqueue
 from processing.storage import DownloadGrant, PreviewObject, PreviewUploadGrant
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src" / "worker"))
 
-from photo_worker.client import HttpClient  # noqa: E402
+from photo_worker.client import DownloadError, HttpClient  # noqa: E402
+from photo_worker.face_embedding import FaceEmbeddingError  # noqa: E402
 from photo_worker.runner import Worker, WorkerConfig  # noqa: E402
 
 _OBJECT_URL = "https://object.test/original.jpg?one-time-grant"
@@ -359,6 +360,80 @@ class PipelineEndToEndTests(TestCase):
                 "warnings": ["capture_time_malformed", "capture_time_missing"],
             },
         )
+
+    def test_worker_face_failure_envelopes_are_accepted_by_django(self) -> None:
+        """Catch drift between worker-produced face failures and Django's exact
+        envelope contract."""
+        cases = (
+            ("model_inference_error", False, "processor"),
+            ("download_authorization_expired", True, "download"),
+            ("fingerprint_mismatch", False, "download"),
+            ("unsupported_input", False, "processor"),
+        )
+
+        for index, (error_code, retryable, failure_phase) in enumerate(cases, start=1):
+            with self.subTest(error_code=error_code):
+                photo_id = f"{index:032x}"
+                photo = Photo.objects.create(
+                    id=photo_id,
+                    event=self.event,
+                    src="",
+                    uploaded_by=self.user,
+                    original_key=f"originals/{photo_id}",
+                    original_filename="face-failure.jpg",
+                    original_size=len(self.jpeg),
+                    original_content_type="image/jpeg",
+                    uploaded_at=timezone.now(),
+                )
+                request_face_embedding_enqueue(photo)
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    client = HttpClient(
+                        "http://django.test/internal/photo-processing/v1",
+                        "e2e-worker-token",
+                        opener=self._open,
+                    )
+                    worker = Worker(
+                        client,
+                        WorkerConfig(
+                            worker_build="pipeline-face-failure-e2e",
+                            lease_seconds=120,
+                            processor_identities=("1/face_embedding/1",),
+                            temp_dir=Path(temp_dir),
+                        ),
+                    )
+                    if failure_phase == "download":
+                        failure = patch.object(
+                            client,
+                            "download",
+                            side_effect=DownloadError(error_code, retryable=retryable),
+                        )
+                    else:
+                        failure = patch(
+                            "photo_worker.runner.extract_face_embeddings",
+                            side_effect=FaceEmbeddingError(error_code),
+                        )
+                    with (
+                        patch(
+                            "processing.views.ExactObjectDownloadStorage.create_download_grant",
+                            return_value=DownloadGrant(
+                                url=_OBJECT_URL,
+                                expires_at=timezone.now() + timedelta(seconds=30),
+                            ),
+                        ),
+                        failure,
+                    ):
+                        self.assertIsNone(worker.run_once())
+
+                attempt = ProcessingAttempt.objects.get(
+                    photo=photo,
+                    processor_type="face_embedding",
+                )
+                self.assertEqual(attempt.status, ProcessingAttempt.Status.FAILED)
+                self.assertEqual(
+                    (attempt.error_code, attempt.result["retryable"]),
+                    (error_code, retryable),
+                )
 
     def _open(self, request: Request, *, timeout: float) -> _Response:
         parsed = urlsplit(request.full_url)

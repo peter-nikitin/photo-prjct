@@ -185,7 +185,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, upload state | Proposed |
 | Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals and preview-first slice; remaining scope proposed |
 | Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed; preview-backed worker input/persistence contract is implemented but not activated |
-| Search | Event-scoped face/bib/time/location queries | Proposed |
+| Search | Event-scoped face/bib/time/location queries | Public face search implemented locally with activation pending; remaining modes proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
 | Commerce | Cart, promotions, orders, payment state, download entitlement | Proposed |
 | Operations | Processing visibility, structured logs, health and backups | Proposed |
@@ -255,6 +255,17 @@ broker, vector engine, and ML implementations shown for later processing require
    exposed through the non-expiring public bearer link accepted by ADR 0019. Results from other
    events never enter the snapshot.
 
+The public face-search path is implemented in the repository and locally verified with real
+YuNet/SFace inference for the submitted selfie query. The gallery side of that E2E uses deterministic
+accepted embedding fixtures for both face generations (`1/face_embedding/1` and
+`2/face_embedding/2`); its preview-first member is production-reachable through an accepted,
+verified `2/generate_preview/1` derivative and the resulting enrollment into `2/face_embedding/2`.
+The evidence covers a published paid event, frozen event-only candidates, stable ranked results,
+selfie deletion before `ready`, and ready-result media for both generations without opening the
+normal paid gallery. `SELFIE_SEARCH_ENABLED` remains `False` by default. No staging lifecycle
+mutation, real-bucket preflight, worker model delivery, VM capacity smoke, or environment activation
+is claimed.
+
 ### Purchase and download
 
 1. The cart contains event photos, prices, and any validated promotion.
@@ -268,11 +279,12 @@ broker, vector engine, and ML implementations shown for later processing require
 
 - Originals remain private storage objects. The implemented preview-first slice creates an
   unwatermarked, metadata-stripped reduced JPEG for a newly confirmed photo only after explicit
-  activation; the free-event tile route uses the published derivative while the large route remains
-  under ADR 0015's controlled-original policy. Until activation, explicit legacy photos use the
-  original for both variants. Paid-event media remains unavailable, and watermarks, purchases, and
-  exports remain unresolved. Neither the derivative route nor the original route exposes a
-  permanent storage key, but ADR 0015 original delivery still gives an eligible recipient complete
+  activation; the free-event tile route uses the published derivative while the large route retains
+  controlled inline original delivery under the policy now governed by ADR 0019. Until activation,
+  explicit legacy photos use the original for both variants. The normal paid gallery remains
+  unavailable; ADR 0019 permits only a valid ready selfie-result bearer link to deliver a saved
+  free- or paid-event member. Watermarks, purchases, and exports remain unresolved. Neither route
+  exposes a permanent storage key, but original delivery still gives an eligible recipient complete
   unsanitized bytes that can be saved or redistributed.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.

@@ -4,6 +4,7 @@ import pytest
 from photo_worker.contracts import (
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
+    PROCESSOR_TYPE_SELFIE_QUERY,
     V2_GENERATE_PREVIEW_CONFIGURATION,
     Claim,
     ContractError,
@@ -456,6 +457,11 @@ def test_claim_rejects_hostile_wire_identifiers() -> None:
         Claim.from_response(claim_payload(run_id="not-a-uuid"))
 
 
+def test_claim_rejects_a_missing_job_shape_as_a_contract_error() -> None:
+    with pytest.raises(ContractError):
+        Claim.from_response({"empty": False, "job": {}})
+
+
 def test_redaction_removes_urls_and_bearer_secrets_from_log_values() -> None:
     value = "GET https://storage.example.test/x?X-Amz-Signature=secret token worker-secret"
 
@@ -464,3 +470,100 @@ def test_redaction_removes_urls_and_bearer_secrets_from_log_values() -> None:
     assert "storage.example" not in redacted
     assert "worker-secret" not in redacted
     assert "<redacted>" in redacted
+
+
+def selfie_claim_payload(
+    *, content_type: str = "image/png", **overrides: object
+) -> dict[str, object]:
+    configuration = processor_configuration(PROCESSOR_TYPE_SELFIE_QUERY)
+    configuration.pop("face_embedding")
+    configuration["worker"] = {
+        **configuration["worker"],
+        "max_input_bytes": 20 * 1024 * 1024,
+        "max_pixels": 25_000_000,
+    }
+    configuration["selfie_query"] = {
+        "detection_threshold": 0.75,
+        "embedding_dimensions": 128,
+        "min_face_px": 32,
+        "model": "sface",
+    }
+    job: dict[str, object] = {
+        "id": "00000000-0000-0000-0000-000000000011",
+        "attempt_id": "00000000-0000-0000-0000-000000000012",
+        "contract_version": 1,
+        "processor_type": PROCESSOR_TYPE_SELFIE_QUERY,
+        "processor_version": 1,
+        "configuration": configuration,
+        "search_id": "00000000-0000-0000-0000-000000000013",
+        "input_fingerprint": {
+            "temporary_key": "selfie-search/0123456789abcdef0123456789abcdef",
+            "temporary_size": 1024,
+            "temporary_content_type": content_type,
+        },
+        "input_limits": {"max_bytes": 1024, "content_type": content_type},
+        "lease_expires_at": "2026-07-29T10:03:00+00:00",
+        "download_url": "https://storage.example.test/selfie?X-Amz-Signature=secret",
+        "download_expires_at": "2026-07-29T10:01:00+00:00",
+    }
+    return {"empty": False, "job": job | overrides}
+
+
+def test_claim_accepts_only_the_exact_selfie_query_union_variant() -> None:
+    claim = Claim.from_response(selfie_claim_payload())
+
+    assert claim.job is not None
+    assert claim.job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY
+    assert claim.job.search_id == "00000000-0000-0000-0000-000000000013"
+    assert claim.job.input_fingerprint.temporary_content_type == "image/png"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_input_bytes", 20 * 1024 * 1024 - 1),
+        ("max_pixels", 25_000_000 - 1),
+    ],
+)
+def test_selfie_claim_rejects_limits_that_do_not_exactly_match_the_approved_contract(
+    field: str, value: int
+) -> None:
+    payload = selfie_claim_payload()
+    job = payload["job"]
+    assert isinstance(job, dict)
+    configuration = job["configuration"]
+    assert isinstance(configuration, dict)
+    worker = configuration["worker"]
+    assert isinstance(worker, dict)
+    worker[field] = value
+
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        selfie_claim_payload(photo_id="photo-1"),
+        selfie_claim_payload(
+            input_fingerprint={"temporary_key": "selfie-search/0123456789abcdef0123456789abcdef"}
+        ),
+        selfie_claim_payload(
+            input_fingerprint={
+                "temporary_key": "originals/0123456789abcdef0123456789abcdef",
+                "temporary_size": 1024,
+                "temporary_content_type": "image/jpeg",
+            }
+        ),
+        selfie_claim_payload(content_type="image/gif"),
+        selfie_claim_payload(
+            input_limits={"max_bytes": 20 * 1024 * 1024 + 1, "content_type": "image/jpeg"}
+        ),
+        selfie_claim_payload(configuration={}),
+    ],
+)
+def test_selfie_claim_rejects_mixed_or_unbounded_temporary_payloads(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)

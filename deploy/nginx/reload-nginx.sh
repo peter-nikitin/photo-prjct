@@ -42,12 +42,23 @@ server {
     listen [::]:443 ssl;
     http2 on;
     server_name ${PUBLIC_DOMAIN_ALIAS};
+    access_log /var/log/nginx/access.log selfie_search_safe;
 
     ssl_certificate /etc/letsencrypt/live/photo-prjct/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/photo-prjct/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    return 308 https://${PUBLIC_DOMAIN}\$request_uri;
+    add_header Referrer-Policy "no-referrer" always;
+
+    # Bearer URLs are secrets. Keep any location-level failure out of persisted logs.
+    location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {
+        error_log /dev/null emerg;
+        return 308 https://${PUBLIC_DOMAIN}\$request_uri;
+    }
+
+    location / {
+        return 308 https://${PUBLIC_DOMAIN}\$request_uri;
+    }
 }
 EOF
 )"

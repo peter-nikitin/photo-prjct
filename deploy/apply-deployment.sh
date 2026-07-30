@@ -422,19 +422,19 @@ from contextlib import closing
 from ingestion.storage import PrivateUploadStorage
 from picflow.models import Event, Photo
 try:
-    photo = Photo.objects.filter(
+    original_key = Photo.objects.filter(
         event__publication_status=Event.PublicationStatus.PUBLISHED,
         event__access_type=Event.AccessType.FREE,
         src="",
         original_key__isnull=False,
-    ).order_by("id").first()
+    ).order_by("id").values_list("original_key", flat=True).first()
 except Exception:
     raise SystemExit("Gallery private-media read prerequisite failed") from None
-if photo is None:
+if original_key is None:
     print("gallery-private-media-preflight-skipped:no-eligible-photo")
 else:
     try:
-        opened = PrivateUploadStorage().open_final(key=photo.original_key)
+        opened = PrivateUploadStorage().open_final(key=original_key)
         with closing(opened.body) as body:
             if not body.read(1):
                 raise RuntimeError

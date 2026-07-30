@@ -269,10 +269,19 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
 
 
         class QuerySet:
+            def __init__(self):
+                self.selects_original_key = False
+
             def order_by(self, field):
                 if field != "id":
                     raise RuntimeError("candidate query must use stable id ordering")
                 record("preflight-order-by id")
+                return self
+
+            def values_list(self, field, *, flat):
+                if field != "original_key" or not flat:
+                    raise RuntimeError("candidate query must select the private object key")
+                self.selects_original_key = True
                 return self
 
             def first(self):
@@ -282,6 +291,8 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
                     "private-media-failure",
                     "private-media-config-failure",
                 }:
+                    if self.selects_original_key:
+                        return "originals/eligible-photo"
                     return types.SimpleNamespace(original_key="originals/eligible-photo")
                 return None
 

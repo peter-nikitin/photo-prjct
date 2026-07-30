@@ -154,6 +154,14 @@ def test_extract_face_embeddings_decode_failure_is_mapped(
     source = tmp_path / "photo.jpg"
     source.write_bytes(b"not-an-image")
     monkeypatch.setattr(
+        "photo_worker.face_embedding._load_numpy",
+        lambda: FakeNumpy((0, 0, 0)),
+    )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._load_cv2",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
         "photo_worker.face_embedding._decode_image",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FaceEmbeddingError("decode_failed")),
     )
@@ -169,6 +177,14 @@ def test_extract_face_embeddings_rejects_size_mismatch_without_inflating_arrays(
 ) -> None:
     source = tmp_path / "photo.jpg"
     source.write_bytes(b"x" * 2048)
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._load_numpy",
+        lambda: FakeNumpy((0, 0, 0)),
+    )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._load_cv2",
+        lambda: object(),
+    )
     monkeypatch.setattr(
         "photo_worker.face_embedding._decode_image",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FaceEmbeddingError("input_too_large")),

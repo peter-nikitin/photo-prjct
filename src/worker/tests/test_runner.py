@@ -7,12 +7,22 @@ from pathlib import Path
 
 import pytest
 from photo_worker.client import ApiError, DownloadError
-from photo_worker.contracts import CaptureMetadataResult, Claim
+from photo_worker.contracts import (
+    CaptureMetadataResult,
+    Claim,
+    FaceEmbeddingFace,
+    FaceEmbeddingResult,
+    PROCESSOR_TYPE,
+    PROCESSOR_TYPE_FACE_EMBEDDING,
+)
+from photo_worker.face_embedding import FaceEmbeddingError
 from photo_worker.runner import Worker, WorkerConfig, _LeaseKeeper, _lifecycle
 from PIL import Image
 
 
-def configuration(*, heartbeat_interval_seconds: int = 30) -> dict[str, object]:
+def configuration(
+    *, processor_type: str = PROCESSOR_TYPE, heartbeat_interval_seconds: int = 30
+) -> dict[str, object]:
     return {
         "retry_policy": {
             "max_attempts": 3,
@@ -24,10 +34,16 @@ def configuration(*, heartbeat_interval_seconds: int = 30) -> dict[str, object]:
         "max_cohort_size": 20,
         "report_max_bytes": 262_144,
         "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
-        "capture_metadata": {
-            "date_field_precedence": ["DateTimeOriginal", "DateTimeDigitized", "DateTime"],
-            "normalization": "utc_assume_utc_if_missing",
-        },
+        **(
+            {
+                "capture_metadata": {
+                    "date_field_precedence": ["DateTimeOriginal", "DateTimeDigitized", "DateTime"],
+                    "normalization": "utc_assume_utc_if_missing",
+                }
+            }
+            if processor_type == PROCESSOR_TYPE
+            else {"face_embedding": {"max_faces": 2, "detection_threshold": 0.75}}
+        ),
         "worker": {
             "concurrency": 1,
             "api_response_max_bytes": 16_384,
@@ -41,7 +57,9 @@ def configuration(*, heartbeat_interval_seconds: int = 30) -> dict[str, object]:
     }
 
 
-def make_claim(*, heartbeat_interval_seconds: int = 30) -> Claim:
+def make_claim(
+    *, processor_type: str = PROCESSOR_TYPE, heartbeat_interval_seconds: int = 30
+) -> Claim:
     return Claim.from_response(
         {
             "empty": False,
@@ -49,9 +67,10 @@ def make_claim(*, heartbeat_interval_seconds: int = 30) -> Claim:
                 "id": "00000000-0000-0000-0000-000000000011",
                 "attempt_id": "00000000-0000-0000-0000-000000000012",
                 "contract_version": 1,
-                "processor_type": "capture_metadata",
+                "processor_type": processor_type,
                 "processor_version": 1,
                 "configuration": configuration(
+                    processor_type=processor_type,
                     heartbeat_interval_seconds=heartbeat_interval_seconds
                 ),
                 "photo_id": "photo-1",
@@ -113,6 +132,24 @@ class Client:
         self.failed.append(payload)
 
 
+def make_face_embedding_result() -> FaceEmbeddingResult:
+    return FaceEmbeddingResult(
+        model="sface",
+        faces=(
+            FaceEmbeddingFace(
+                index=0,
+                bbox=(1.0, 2.0, 32.0, 32.0),
+                confidence=0.96,
+                landmarks=((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)),
+                embedding=tuple(float(i) / 128 for i in range(128)),
+            ),
+        ),
+        has_single_query_face_usable=True,
+        warnings=(),
+        timings={"decode_ms": 1, "model_load_ms": 2, "detect_ms": 3, "embed_ms": 4, "total_ms": 10},
+    )
+
+
 def test_worker_processes_one_claim_then_submits_typed_result_and_removes_temp_file(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -153,6 +190,71 @@ def test_worker_processes_one_claim_then_submits_typed_result_and_removes_temp_f
     assert list(tmp_path.iterdir()) == []
     assert "phase=succeeded" in caplog.text
     assert "signature=secret" not in caplog.text
+
+
+def test_worker_processes_face_embedding_claim_and_submits_typed_result(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caplog.set_level("INFO")
+    client = Client(make_claim(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING))
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_face_embeddings",
+        lambda *_args, **_kwargs: make_face_embedding_result(),
+    )
+    worker = Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_type=PROCESSOR_TYPE_FACE_EMBEDDING,
+        ),
+    )
+
+    delay = worker.run_once()
+
+    assert delay is None
+    assert client.completed[0]["outcome"] == "success"
+    assert client.completed[0]["processor_type"] == PROCESSOR_TYPE_FACE_EMBEDDING
+    assert client.completed[0]["result"]["faces"][0]["index"] == 0
+    assert client.completed[0]["result"]["has_single_query_face_usable"] is True
+    assert len(json.dumps(client.completed[0], separators=(",", ":")).encode()) <= 8_192
+    assert list(tmp_path.iterdir()) == []
+    assert "phase=succeeded" in caplog.text
+
+
+def test_worker_maps_model_inference_timeout_to_retryable_failure_for_face_embedding(
+    tmp_path: Path,
+) -> None:
+    client = Client(make_claim(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING))
+    worker = Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_type=PROCESSOR_TYPE_FACE_EMBEDDING,
+        ),
+    )
+
+    import photo_worker.runner as runner_module
+
+    original = runner_module.extract_face_embeddings
+    runner_module.extract_face_embeddings = (  # type: ignore[assignment]
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FaceEmbeddingError("model_inference_timeout")
+        )
+    )
+    try:
+        worker.run_once()
+    finally:
+        runner_module.extract_face_embeddings = original  # type: ignore[assignment]
+
+    assert client.failed[0]["error_code"] == "model_inference_timeout"
+    assert client.failed[0]["retryable"] is True
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_worker_returns_server_delay_for_an_empty_claim() -> None:

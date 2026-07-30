@@ -8,6 +8,25 @@ from processing.models import ProcessingAttempt, ProcessingJob
 
 
 @dataclass(frozen=True)
+class ProcessorContract:
+    processor_type: str
+    contract_version: int
+    processor_version: int
+
+
+CAPTURE_METADATA_CONTRACT = ProcessorContract(
+    processor_type="capture_metadata",
+    contract_version=1,
+    processor_version=1,
+)
+FACE_EMBEDDING_CONTRACT = ProcessorContract(
+    processor_type="face_embedding",
+    contract_version=1,
+    processor_version=1,
+)
+
+
+@dataclass(frozen=True)
 class EmptyClaim:
     suggested_delay_seconds: int = 5
 

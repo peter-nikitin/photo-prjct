@@ -12,9 +12,12 @@ from picflow.models import Event, Photo
 
 from processing.models import (
     EventProcessingRun,
+    FaceEmbedding,
+    FaceProcessingAttemptArtifact,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
+    PhotoFaceDetection,
 )
 
 
@@ -104,6 +107,14 @@ class ProcessingModelTests(TestCase):
         self.assertEqual(
             {value for value, _ in ProcessingAttempt.Status.choices},
             {"in_progress", "succeeded", "failed", "expired", "stale"},
+        )
+        self.assertEqual(
+            {value for value, _ in FaceProcessingAttemptArtifact.Status.choices},
+            {"complete", "failed"},
+        )
+        self.assertEqual(
+            {value for value, _ in PhotoFaceDetection.Status.choices},
+            {"detected", "kept", "failed"},
         )
 
     def test_database_checks_reject_unknown_statuses(self) -> None:
@@ -385,6 +396,217 @@ class ProcessingModelTests(TestCase):
         with self.assertRaises(ValidationError):
             attempt.full_clean()
 
+        terminal_attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at="2026-07-29T00:00:00Z",
+            result={"capture_time": None},
+        )
+        artifact = FaceProcessingAttemptArtifact.objects.create(
+            attempt=terminal_attempt,
+            status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+            feature_payload={"payload": "ok"},
+            quality_payload={"payload": "ok"},
+        )
+        detection = PhotoFaceDetection(
+            attempt=terminal_attempt,
+            artifact=artifact,
+            face_index=0,
+            status=PhotoFaceDetection.Status.DETECTED,
+            geometry={"payload": "ok"},
+            features={"payload": "ok"},
+        )
+        with self.assertRaises(ValidationError):
+            detection.geometry = {"payload": "x" * 16_385}
+            detection.full_clean()
+
+        embedding = FaceEmbedding(
+            detection=PhotoFaceDetection.objects.create(
+                attempt=terminal_attempt,
+                artifact=artifact,
+                face_index=1,
+                status=PhotoFaceDetection.Status.DETECTED,
+                geometry={"payload": "ok"},
+                features={"payload": "ok"},
+            ),
+            model_version="v1",
+            vector=["x" * 16_385],
+            metadata={"payload": "ok"},
+        )
+        with self.assertRaises(ValidationError):
+            embedding.full_clean()
+
+    def test_face_feature_layer_enforces_attempt_face_index_uniqueness(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at="2026-07-29T00:00:00Z",
+            result={"capture_time": None},
+        )
+        artifact = FaceProcessingAttemptArtifact.objects.create(
+            attempt=attempt,
+            status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+            feature_payload={"detector": "unit"},
+            quality_payload={"passed": True},
+        )
+        PhotoFaceDetection.objects.create(
+            attempt=attempt,
+            artifact=artifact,
+            face_index=0,
+            status=PhotoFaceDetection.Status.DETECTED,
+            geometry={"x": 0, "y": 0, "w": 1, "h": 1},
+            features={"source": "test"},
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                PhotoFaceDetection.objects.create(
+                    attempt=attempt,
+                    artifact=artifact,
+                    face_index=0,
+                    status=PhotoFaceDetection.Status.KEPT,
+                    geometry={"x": 0, "y": 0, "w": 1, "h": 1},
+                    features={"source": "duplicate"},
+                )
+
+    def test_face_feature_layer_connects_artifact_and_embedding_to_attempt(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at="2026-07-29T00:00:00Z",
+            result={"capture_time": None},
+        )
+        artifact = FaceProcessingAttemptArtifact.objects.create(
+            attempt=attempt,
+            status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+            feature_payload={"detector": "unit"},
+            quality_payload={"passed": True},
+        )
+        detection = PhotoFaceDetection.objects.create(
+            attempt=attempt,
+            artifact=artifact,
+            face_index=1,
+            status=PhotoFaceDetection.Status.KEPT,
+            geometry={"x": 1, "y": 1, "w": 2, "h": 2},
+            features={"source": "link"},
+        )
+        embedding = FaceEmbedding.objects.create(
+            detection=detection,
+            model_version="v1",
+            vector=[0.1, 0.2],
+            metadata={"norm": 1.0},
+        )
+
+        self.assertEqual(detection.artifact_id, artifact.id)
+        self.assertEqual(embedding.detection_id, detection.id)
+        self.assertEqual(
+            PhotoFaceDetection.objects.filter(attempt=attempt, status=PhotoFaceDetection.Status.KEPT)
+            .count(),
+            1,
+        )
+
+    def test_face_feature_layer_rejects_non_terminal_parent_attempts(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.IN_PROGRESS,
+            result={},
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                FaceProcessingAttemptArtifact.objects.create(
+                    attempt=attempt,
+                    status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+                    feature_payload={"detector": "unit"},
+                    quality_payload={"passed": False},
+                )
+
+    def test_face_feature_layer_is_immutable_for_terminal_parent_attempt(self) -> None:
+        run = self.make_run()
+        job = self.make_job(run=run)
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.FAILED,
+            terminal_at="2026-07-29T00:00:00Z",
+            result={"capture_time": None},
+            error_code="timeout",
+        )
+        artifact = FaceProcessingAttemptArtifact.objects.create(
+            attempt=attempt,
+            status=FaceProcessingAttemptArtifact.Status.FAILED,
+            feature_payload={"detector": "unit"},
+            quality_payload={"passed": False},
+        )
+        detection = PhotoFaceDetection.objects.create(
+            attempt=attempt,
+            artifact=artifact,
+            face_index=0,
+            status=PhotoFaceDetection.Status.FAILED,
+            geometry={"x": 0, "y": 0, "w": 1, "h": 1},
+            features={"source": "blocked"},
+        )
+        embedding = FaceEmbedding.objects.create(
+            detection=detection,
+            model_version="v1",
+            vector=[0.1],
+            metadata={},
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                FaceProcessingAttemptArtifact.objects.filter(pk=artifact.pk).delete()
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                PhotoFaceDetection.objects.filter(pk=detection.pk).update(
+                    status=PhotoFaceDetection.Status.DETECTED
+                )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                FaceEmbedding.objects.filter(pk=embedding.pk).update(vector=[0.1, 0.2])
+
 
 class ProcessingInitialMigrationTests(TransactionTestCase):
     migrate_from = [("picflow", "0005_validate_photo_private_original_constraints")]
@@ -465,3 +687,31 @@ class ProcessingMigrationFunctionTests(TestCase):
         migration.create_legacy_capture_metadata_states(FakeApps(), schema_editor=None)
 
         self.assertEqual(batches, [500, 1])
+
+
+class ProcessingFaceEmbeddingMigrationTests(TransactionTestCase):
+    migrate_from = [("processing", "0001_initial")]
+    migrate_to = [("processing", "0002_add_face_embedding_schema")]
+
+    def test_face_embedding_schema_migrates_forward_and_back_without_schema_errors(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        migrated_apps = executor.loader.project_state(self.migrate_to).apps
+        for model_name in (
+            "faceprocessingattemptartifact",
+            "photofacedetection",
+            "faceembedding",
+        ):
+            self.assertIn(model_name, migrated_apps.all_models["processing"])
+            self.assertTrue(
+                migrated_apps.all_models["processing"][model_name]._meta.db_table,
+            )
+
+        executor.migrate(self.migrate_from)
+        reverted_apps = executor.loader.project_state(self.migrate_from).apps
+        for model_name in (
+            "faceprocessingattemptartifact",
+            "photofacedetection",
+            "faceembedding",
+        ):
+            self.assertNotIn(model_name, reverted_apps.all_models.get("processing", {}))

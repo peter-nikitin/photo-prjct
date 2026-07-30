@@ -11,9 +11,11 @@ from urllib.request import Request, urlopen
 
 from photo_worker.contracts import (
     MAX_JSON_FIELD_BYTES,
-    Claim,
+    PROCESSOR_TYPE,
     ContractError,
+    Claim,
     _download_url,
+    _processor_version,
     _utc_timestamp,
 )
 
@@ -97,15 +99,26 @@ class HttpClient:
             raise ApiError("invalid_api_response", retryable=True)
         return value
 
-    def claim_job(self, *, worker_build: str, lease_seconds: int) -> Claim:
+    def claim_job(
+        self,
+        *,
+        worker_build: str,
+        lease_seconds: int,
+        processor_type: str = PROCESSOR_TYPE,
+        processor_version: int | None = None,
+    ) -> Claim:
         try:
             return Claim.from_response(
                 self.post_json(
                     "claim",
                     {
                         "contract_version": 1,
-                        "processor_type": "capture_metadata",
-                        "processor_version": 1,
+                        "processor_type": processor_type,
+                        "processor_version": (
+                            _processor_version(processor_type)
+                            if processor_version is None
+                            else processor_version
+                        ),
                         "worker_build": worker_build,
                         "lease_seconds": lease_seconds,
                     },

@@ -19,7 +19,13 @@ from django.views.decorators.csrf import csrf_exempt
 from ingestion.storage import ObjectMissing, StorageUnavailable
 
 from processing.auth import has_worker_token
-from processing.contracts import ClaimedJob, CompletionConflict, EmptyClaim
+from processing.contracts import (
+    CAPTURE_METADATA_CONTRACT,
+    FACE_EMBEDDING_CONTRACT,
+    ClaimedJob,
+    CompletionConflict,
+    EmptyClaim,
+)
 from processing.models import ProcessingAttempt, ProcessingConflictAudit
 from processing.services.jobs import (
     complete_attempt,
@@ -32,14 +38,28 @@ from processing.services.jobs import (
 )
 from processing.storage import ExactObjectDownloadStorage
 
-_WARNING_CODE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 _WORKER_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _NORMALIZED_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
 _SECRET_MARKER = re.compile(r"(?:[a-z][a-z0-9+.-]*://|x-amz-|signature=|credential=|token=)", re.I)
 _SOURCE_FIELDS = {"DateTime", "DateTimeDigitized", "DateTimeOriginal"}
 _EXIF_SOURCE_VALUE = re.compile(r"\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}")
-_WARNING_CODES = {"capture_time_conflicting", "capture_time_malformed", "capture_time_missing"}
-_FAILURES = {
+_CAPTURE_METADATA_WARNINGS = {
+    "capture_time_conflicting",
+    "capture_time_malformed",
+    "capture_time_missing",
+}
+_FACE_RESULT_WARNING_CODES = {
+    "all_faces_filtered",
+    "face_embedding_failed",
+    "faces_truncated",
+    "low_quality_face",
+    "no_face_detected",
+    "multiple_faces_detected",
+    "no_faces_detected",
+    "no_valid_faces",
+    "edge_face",
+}
+_CAPTURE_METADATA_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
     "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
@@ -47,6 +67,25 @@ _FAILURES = {
     "network_interruption": (True, "A temporary network interruption occurred."),
     "storage_unavailable": (True, "Object storage is temporarily unavailable."),
     "unsupported_input": (False, "The input is unsupported."),
+}
+_FACE_EMBEDDING_FAILURES = {
+    "decode_failed": (False, "The image could not be decoded."),
+    "input_too_large": (False, "The input exceeded its declared limit."),
+    "model_inference_error": (True, "The face model inference failed."),
+    "model_inference_timeout": (True, "The face model processing timed out."),
+    "network_interruption": (True, "A temporary network interruption occurred."),
+    "no_face_detected": (False, "No face was detected in the image."),
+    "storage_unavailable": (True, "Object storage is temporarily unavailable."),
+    "timeout": (True, "The face model processing timed out."),
+    "all_faces_filtered": (False, "All detected faces were filtered before embedding."),
+}
+_PROCESSOR_FAILURES = {
+    "capture_metadata": _CAPTURE_METADATA_FAILURES,
+    "face_embedding": _FACE_EMBEDDING_FAILURES,
+}
+_PROCESSOR_RESULT_WARNINGS = {
+    "capture_metadata": _CAPTURE_METADATA_WARNINGS,
+    "face_embedding": _FACE_RESULT_WARNING_CODES,
 }
 
 
@@ -212,9 +251,9 @@ def fail(request: HttpRequest, attempt_id: str) -> JsonResponse:
         completion = fail_attempt(
             parsed_attempt_id,
             error_code=data["error_code"],
-            error_detail=_FAILURES[data["error_code"]][1],
+            error_detail=_processor_error_detail(data["processor_type"], data["error_code"]),
             canonical_error_detail=data["error_detail"],
-            retryable=_FAILURES[data["error_code"]][0],
+            retryable=_processor_retryable(data["processor_type"], data["error_code"]),
             download_duration_ms=data["download_ms"],
             compute_duration_ms=data["compute_ms"],
             total_duration_ms=data["total_ms"],
@@ -432,10 +471,58 @@ def _attempt_id(value: str) -> tuple[UUID | None, JsonResponse | None]:
         return None, _error("invalid_attempt_id", "The attempt identifier is invalid.", status=404)
 
 
+def _processor_contract(processor_type: str) -> tuple[int, int] | None:
+    if processor_type == CAPTURE_METADATA_CONTRACT.processor_type:
+        return (
+            CAPTURE_METADATA_CONTRACT.contract_version,
+            CAPTURE_METADATA_CONTRACT.processor_version,
+        )
+    if processor_type == FACE_EMBEDDING_CONTRACT.processor_type:
+        return (
+            FACE_EMBEDDING_CONTRACT.contract_version,
+            FACE_EMBEDDING_CONTRACT.processor_version,
+        )
+    return None
+
+
+def _processor_failures(processor_type: str) -> dict[str, tuple[bool, str]] | None:
+    return _PROCESSOR_FAILURES.get(processor_type)
+
+
+def _processor_error_detail(processor_type: str, error_code: str) -> str:
+    failures = _processor_failures(processor_type)
+    if failures is None:
+        return ""
+    return failures[error_code][1]
+
+
+def _processor_retryable(processor_type: str, error_code: str) -> bool:
+    failures = _processor_failures(processor_type)
+    return bool(failures[error_code][0]) if failures is not None else False
+
+
+def _valid_failure_code(processor_type: str, value: object) -> bool:
+    return value in _processor_failures(processor_type) if isinstance(value, str) else False
+
+
+def _valid_warning_code(processor_type: str, value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    warnings = _PROCESSOR_RESULT_WARNINGS.get(processor_type)
+    return value in warnings if warnings is not None else False
+
+
 def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> bool:
     try:
         attempt = ProcessingAttempt.objects.select_related("job").get(pk=attempt_id)
     except ProcessingAttempt.DoesNotExist:
+        return False
+    contract = _processor_contract(attempt.processor_type)
+    if contract is None:
+        return False
+    contract_version, processor_version = contract
+    failures = _processor_failures(attempt.processor_type)
+    if failures is None:
         return False
     started_at = _parse_timestamp(data["started_at"])
     finished_at = _parse_timestamp(data["finished_at"])
@@ -444,10 +531,11 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
         and data["attempt_id"] == str(attempt.id)
         and data["job_id"] == str(attempt.job_id)
         and type(data["contract_version"]) is int
-        and data["contract_version"] == attempt.contract_version == 1
-        and data["processor_type"] == attempt.processor_type == "capture_metadata"
+        and data["contract_version"] == attempt.contract_version == contract_version
+        and type(data["processor_type"]) is str
+        and data["processor_type"] == attempt.processor_type
         and type(data["processor_version"]) is int
-        and data["processor_version"] == attempt.processor_version == 1
+        and data["processor_version"] == attempt.processor_version == processor_version
         and _safe_worker_build(data["worker_build"])
         and data["worker_build"] == attempt.worker_build
         and started_at is not None
@@ -458,18 +546,26 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
     ):
         return False
     if outcome == "success":
-        return _valid_result(data["result"])
+        return _valid_result(data["result"], attempt.processor_type)
     return (
-        data["error_code"] in _FAILURES
+        _valid_failure_code(attempt.processor_type, data["error_code"])
         and type(data["retryable"]) is bool
-        and data["retryable"] == _FAILURES[data["error_code"]][0]
+        and data["retryable"] == failures[data["error_code"]][0]
         and isinstance(data["error_detail"], str)
         and len(data["error_detail"]) <= 512
         and _safe_error_detail(data["error_detail"])
     )
 
 
-def _valid_result(value: object) -> bool:
+def _valid_result(value: object, processor_type: str) -> bool:
+    if processor_type == CAPTURE_METADATA_CONTRACT.processor_type:
+        return _valid_capture_metadata_result(value)
+    if processor_type == FACE_EMBEDDING_CONTRACT.processor_type:
+        return _valid_face_embedding_result(value)
+    return False
+
+
+def _valid_capture_metadata_result(value: object) -> bool:
     if not isinstance(value, dict) or set(value) != {
         "capture_time",
         "source_field",
@@ -491,7 +587,11 @@ def _valid_result(value: object) -> bool:
     valid_warnings = (
         isinstance(warnings, list)
         and len(warnings) <= 8
-        and all(isinstance(code, str) and code in _WARNING_CODES for code in warnings)
+        and all(
+            isinstance(code, str)
+            and _valid_warning_code(CAPTURE_METADATA_CONTRACT.processor_type, code)
+            for code in warnings
+        )
     )
     if not valid_warnings:
         return False
@@ -506,6 +606,134 @@ def _valid_result(value: object) -> bool:
         value["source_field"] in _SOURCE_FIELDS
         and value["timezone_state"] in {"explicit", "inferred_none"}
         and "capture_time_missing" not in warnings
+    )
+
+
+def _valid_face_embedding_result(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if not (
+        "face_count" in value
+        and "faces" in value
+        and "warnings" in value
+    ):
+        return False
+    if value.get("timings") is not None and not isinstance(value["timings"], dict):
+        return False
+    if not (
+        isinstance(value["face_count"], int)
+        and not isinstance(value["face_count"], bool)
+        and 0 <= value["face_count"] <= 1_000
+    ):
+        return False
+    if not _safe_face_model(value.get("model", "sface")):
+        return False
+    faces = value["faces"]
+    if not (
+        isinstance(faces, list)
+        and len(faces) <= 1_024
+        and len(faces) == value["face_count"]
+    ):
+        return False
+    warnings = value["warnings"]
+    if not (
+        isinstance(warnings, list)
+        and len(warnings) <= 8
+        and all(_valid_face_warning(code) for code in warnings)
+    ):
+        return False
+    has_single_query_face_usable = value.get("has_single_query_face_usable")
+    if has_single_query_face_usable is not None and not isinstance(
+        has_single_query_face_usable, bool
+    ):
+        return False
+    return all(_valid_face_embedding_record(face) for face in faces)
+
+
+def _safe_face_model(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value))
+        and _safe_durable_string(value)
+    )
+
+
+def _valid_face_warning(value: object) -> bool:
+    return _valid_warning_code(FACE_EMBEDDING_CONTRACT.processor_type, value)
+
+
+def _valid_face_embedding_record(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if set(value).issuperset({"face_id", "bbox", "quality", "embedding_sha256"}):
+        if not (
+            isinstance(value["face_id"], str)
+            and 0 < len(value["face_id"]) <= 64
+            and _safe_durable_string(value["face_id"])
+        ):
+            return False
+        if not (
+            isinstance(value["bbox"], list)
+            and len(value["bbox"]) == 4
+            and all(_safe_face_coordinate(item) for item in value["bbox"])
+        ):
+            return False
+        quality = value["quality"]
+        if not (isinstance(quality, (int, float)) and 0.0 <= quality <= 1.0):
+            return False
+        return (
+            isinstance(value["embedding_sha256"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", value["embedding_sha256"]) is not None
+        )
+    if not {"index", "bbox", "confidence", "landmarks", "embedding"} <= set(value):
+        return False
+    if not (
+        isinstance(value["index"], int)
+        and value["index"] >= 0
+        and not isinstance(value["index"], bool)
+        and _valid_face_bbox(value["bbox"])
+    ):
+        return False
+    if not (
+        isinstance(value["confidence"], (int, float))
+        and 0.0 <= value["confidence"] <= 1.0
+    ):
+        return False
+    landmarks = value["landmarks"]
+    if not (
+        isinstance(landmarks, list)
+        and len(landmarks) == 5
+        and all(
+            isinstance(point, list)
+            and len(point) == 2
+            and all(isinstance(coord, (int, float)) for coord in point)
+            for point in landmarks
+        )
+    ):
+        return False
+    embedding = value["embedding"]
+    if not (
+        isinstance(embedding, list)
+        and len(embedding) <= 512
+        and all(isinstance(item, (int, float)) for item in embedding)
+    ):
+        return False
+    return True
+
+
+def _valid_face_bbox(value: object) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 4
+        and all(_safe_face_coordinate(item) for item in value)
+    )
+
+
+def _safe_face_coordinate(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and 0 <= value <= 10_000
     )
 
 

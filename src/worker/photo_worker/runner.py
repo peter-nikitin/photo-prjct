@@ -1,4 +1,4 @@
-"""Single-concurrency polling loop for the capture-metadata processor."""
+"""Single-concurrency polling loop for the private photo worker processors."""
 
 from __future__ import annotations
 
@@ -17,14 +17,32 @@ from time import monotonic
 from typing import Protocol
 
 from photo_worker.client import ApiError, DownloadError, HttpClient
-from photo_worker.contracts import FAILURE_RETRYABLE, CaptureMetadataResult, ClaimedJob, redact
+from photo_worker.contracts import (
+    FAILURE_RETRYABLE,
+    PROCESSOR_TYPE,
+    CaptureMetadataResult,
+    Claim,
+    ClaimedJob,
+    FaceEmbeddingResult,
+    PROCESSOR_TYPE_FACE_EMBEDDING,
+    redact,
+)
+from photo_worker.face_embedding import FaceEmbeddingError, extract_face_embeddings
 from photo_worker.metadata import InputTooLarge, MetadataError, extract_capture_metadata
 
 LOGGER = logging.getLogger(__name__)
 
 
 class WorkerClient(Protocol):
-    def claim_job(self, *, worker_build: str, lease_seconds: int): ...
+    def claim_job(
+        self,
+        *,
+        worker_build: str,
+        lease_seconds: int,
+        processor_type: str = PROCESSOR_TYPE,
+        processor_version: int | None = None,
+    ) -> Claim:
+        ...
 
     def download(
         self,
@@ -55,6 +73,7 @@ class WorkerClient(Protocol):
 class WorkerConfig:
     worker_build: str
     lease_seconds: int
+    processor_type: str = PROCESSOR_TYPE
     concurrency: int = 1
     temp_dir: Path | None = None
     minimum_delay_seconds: float = 1.0
@@ -64,6 +83,8 @@ class WorkerConfig:
     def __post_init__(self) -> None:
         if self.concurrency != 1:
             raise ValueError("worker concurrency must be exactly 1")
+        if self.processor_type not in {PROCESSOR_TYPE, PROCESSOR_TYPE_FACE_EMBEDDING}:
+            raise ValueError("unsupported processor type")
         if not (
             _finite_positive(self.minimum_delay_seconds)
             and _finite_positive(self.maximum_backoff_seconds)
@@ -76,8 +97,15 @@ class WorkerConfig:
         token = os.environ["PHOTO_WORKER_TOKEN"]
         build = os.environ.get("PHOTO_WORKER_BUILD", "capture-metadata-v1")
         lease = int(os.environ.get("PHOTO_WORKER_LEASE_SECONDS", "120"))
-        return cls(worker_build=build, lease_seconds=lease, log_secrets=(token,)), HttpClient(
-            api_url, token
+        processor_type = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPE", PROCESSOR_TYPE)
+        return (
+            cls(
+                worker_build=build,
+                lease_seconds=lease,
+                processor_type=processor_type,
+                log_secrets=(token,),
+            ),
+            HttpClient(api_url, token),
         )
 
 
@@ -171,6 +199,7 @@ class Worker:
         claim = self._client.claim_job(
             worker_build=self._config.worker_build,
             lease_seconds=self._config.lease_seconds,
+            processor_type=self._config.processor_type,
         )
         if claim.job is None:
             return claim.suggested_delay_seconds
@@ -226,12 +255,7 @@ class Worker:
             keeper.raise_if_lost()
             compute_started = monotonic()
             try:
-                result = extract_capture_metadata(
-                    path,
-                    max_bytes=job.input_limits.max_bytes,
-                    max_pixels=job.configuration.max_pixels,
-                    date_field_precedence=job.configuration.date_field_precedence,
-                )
+                result = self._run_processor(job, path)
             finally:
                 compute_ms = _milliseconds(compute_started)
             keeper.stop()
@@ -259,7 +283,7 @@ class Worker:
                 compute_ms=compute_ms,
                 secrets=self._config.log_secrets,
             )
-        except (DownloadError, InputTooLarge, MetadataError) as error:
+        except (DownloadError, InputTooLarge, MetadataError, FaceEmbeddingError) as error:
             assert keeper is not None
             keeper.stop()
             try:
@@ -267,7 +291,9 @@ class Worker:
             except AttemptLost:
                 _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
                 return
-            code = error.code
+            code = getattr(error, "code", None)
+            if not isinstance(code, str):
+                code = "decode_failed"
             retryable = FAILURE_RETRYABLE.get(code)
             if retryable is None:
                 code = "decode_failed"
@@ -316,6 +342,25 @@ class Worker:
                 keeper.stop()
             path.unlink(missing_ok=True)
 
+    def _run_processor(self, job: ClaimedJob, path: Path):
+        if job.processor_type == PROCESSOR_TYPE:
+            return extract_capture_metadata(
+                path,
+                max_bytes=job.input_limits.max_bytes,
+                max_pixels=job.configuration.max_pixels,
+                date_field_precedence=job.configuration.date_field_precedence,
+            )
+        if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
+            return extract_face_embeddings(
+                path,
+                max_bytes=job.input_limits.max_bytes,
+                max_pixels=job.configuration.max_pixels,
+                max_faces=job.configuration.max_faces,
+                detection_threshold=job.configuration.face_detection_threshold,
+                model=job.configuration.model,
+            )
+        raise ValueError("unsupported processor type")
+
     def _download_current(self, job: ClaimedJob, path: Path) -> None:
         expected_etag = job.input_fingerprint.verified_source_etag
         try:
@@ -351,7 +396,7 @@ def _success_payload(
     worker_build: str,
     started_at: str,
     finished_at: str,
-    result: CaptureMetadataResult,
+    result: CaptureMetadataResult | FaceEmbeddingResult,
     download_ms: int,
     compute_ms: int,
     total_ms: int,

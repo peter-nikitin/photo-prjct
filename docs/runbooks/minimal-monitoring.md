@@ -23,6 +23,20 @@ Unified Agent version, fresh `sys`, `ua`, and `app` datapoints, and controlled f
 evidence here. Until then, this file is a reviewed configuration contract, not evidence that an
 email, dashboard, agent, or scheduled probe is live.
 
+### 2026-07-30 activation attempt and rollback evidence
+
+- Manual GitHub Actions agent-configuration run
+  [`30564435043`](https://github.com/peter-nikitin/photo-prjct/actions/runs/30564435043) reached
+  the agent step. The normal build and deploy paths were skipped.
+- The agent step failed before installation because the staging SSH user did not have passwordless
+  `sudo`. Temporary OS Login roles were granted solely to recover access, then removed after
+  certificate authentication also failed.
+- The approved rollback was completed and verified: the staging VM remained `RUNNING` with no
+  attached service account; the dedicated monitoring service account, its `monitoring.editor`
+  binding, its API key, and the GitHub staging monitoring secret and folder variable were absent.
+- No Unified Agent, dashboard, alert, notification channel, or scheduled probe was activated.
+  The application, PostgreSQL data, media, deployment state, and volumes were untouched.
+
 ## First response
 
 1. Open the external GitHub Actions health-check result and dashboard

@@ -84,32 +84,33 @@ current signals cannot diagnose a realistic production problem.
 
 The system has two independent observation layers:
 
-1. A managed checker outside Yandex Cloud makes periodic HTTPS requests to the canonical health
-   endpoint. It records success, total response time, and certificate expiry and sends email on
-   sustained failure and recovery.
+1. A scheduled GitHub Actions workflow runs outside Yandex Cloud, makes periodic HTTPS requests to
+   the canonical health endpoint, measures success, total response time, and certificate expiry,
+   and writes those three custom metrics to Yandex Monitoring.
 2. Yandex Unified Agent runs on the VM, collects standard Linux metrics, scrapes a private
    Prometheus endpoint exposed by Django, and sends both streams to Yandex Monitoring. Yandex
    Monitoring stores the time series, renders the dashboard, evaluates alerts once per minute, and
    sends email through its notification channel.
 
-The exact external-check provider is a reversible operational detail. It must use probes outside
-Yandex Cloud, retain enough history to show availability and latency graphs, validate normal TLS
-trust, support the agreed failure window and certificate alert, and send both failure and recovery
-email. Replacing that provider does not change the application or VM metric contracts.
+GitHub Actions is the selected external probe runner because the project already depends on it for
+CI/CD. The workflow runs from the default branch every five minutes, and Yandex Monitoring retains
+the probe history and sends failure and recovery email. Replacing the runner later does not change
+the public-probe metric names, dashboard, alerts, application instrumentation, or VM collection.
 
 ### Data flow
 
 ```text
-External managed checker
+Scheduled GitHub Actions
         |
-        `---- HTTPS ----> findme-photo.ru/health/
+        |---- HTTPS ----> findme-photo.ru/health/
+        `---- metrics ------------------------------\
                               |
                               `-> Nginx -> Django
 
-VM Linux metrics ----\
-                      > Yandex Unified Agent -> Yandex Monitoring -> dashboard
-Django /metrics -----/                                  |
-                                                        `-> operator email
+VM Linux metrics ----\                                  |
+                      > Yandex Unified Agent ------------> Yandex Monitoring -> dashboard
+Django /metrics -----/                                                     |
+                                                                           `-> operator email
 ```
 
 Application service does not read from Yandex Monitoring and does not depend on successful metric
@@ -166,14 +167,11 @@ instrumentation must not create a label from arbitrary request data.
 
 One overview dashboard contains:
 
-- external availability, certificate time remaining, and public response latency, linked or
-  embedded when the external provider permits it;
+- external availability, certificate time remaining, and public response latency from the GitHub
+  probe metrics;
 - VM CPU/load, memory/swap, filesystem capacity/inodes, disk I/O, network I/O, and uptime;
 - Django request rate, 5xx rate/count, and p50/p95 latency; and
 - current alert states or links to them.
-
-If the external provider cannot be embedded safely, its own availability graph and a direct link
-are acceptable. The operator must not need to operate a second self-hosted dashboard.
 
 ## Alert Contract
 
@@ -181,15 +179,17 @@ Initial thresholds are operational defaults, not capacity claims or SLOs:
 
 | Alert | Initial condition | Source |
 | --- | --- | --- |
-| Public service unavailable | Confirmed failed HTTPS probes across approximately 5 minutes | External checker |
-| TLS certificate expiring | Less than 14 days of trusted certificate validity remain | External checker |
+| Public service unavailable | Two failed or missing five-minute probe datapoints; expected detection within 10–15 minutes | Yandex Monitoring |
+| TLS certificate expiring | Less than 14 days of trusted certificate validity remain | Yandex Monitoring |
 | VM telemetry missing | No expected host/agent datapoints for 5 minutes | Yandex Monitoring |
 | Disk space critical | Less than 10% or less than 5 GiB available for 10 minutes | Yandex Monitoring |
 | Memory pressure | Less than 10% memory available for 15 minutes | Yandex Monitoring |
 | CPU pressure | More than 90% CPU utilization for 15 minutes | Yandex Monitoring |
 | Application 5xx degradation | More than 20% 5xx responses with at least 5 total requests in 5 minutes | Yandex Monitoring |
 
-The external check must require repeated failures rather than alerting on one failed request.
+The public check must require two failed or missing scheduled datapoints rather than alerting on
+one failed run. GitHub Actions schedule delay is a known limitation: the initial detection target
+is 10–15 minutes, not a five-minute availability guarantee.
 Yandex Monitoring rules must treat `No data` explicitly: missing VM metrics triggers only the
 telemetry alert and must not be relabelled as a confirmed public outage.
 
@@ -209,9 +209,10 @@ notification contract.
   Monitoring reports missing VM telemetry.
 - If Unified Agent fails while the public service remains healthy, only the missing-telemetry alert
   fires. Monitoring must not claim a public outage.
-- If the external checker cannot run its probe, it distinguishes probe/provider failure from a
-  target response where supported. A provider-side absence of results is not silently converted to
-  application failure.
+- If GitHub Actions does not produce fresh probe metrics, the public-check rule treats two missing
+  five-minute datapoints as actionable because the operator cannot otherwise distinguish scheduler
+  loss from an unobserved outage. The email identifies the condition as missing external
+  observation rather than a confirmed application response.
 - If Yandex Monitoring is unavailable, the application continues serving traffic. The independent
   external check remains capable of detecting public failure.
 - Monitoring never restarts a container or VM, changes traffic, runs migrations, deploys an image,
@@ -226,8 +227,8 @@ notification contract.
 - The application metrics endpoint is private and has no public Nginx route.
 - No monitoring component receives the Docker socket or privileged-container access in this
   increment.
-- Agent and external-provider credentials are environment or host configuration, never committed
-  to Git, exposed in a dashboard, or written to application logs.
+- Agent credentials and the GitHub secret used only to write custom probe metrics are never
+  committed to Git, exposed in a dashboard, or written to application logs.
 - Metrics and labels follow the bounded allowlist in this specification. They contain no secrets,
   signed URLs, biometric data, media metadata, or user data.
 
@@ -257,8 +258,8 @@ Configuration must be testable without exhausting or stopping the real VM:
 - monitoring configuration is syntax-checked or API-validated before activation;
 - alert queries are evaluated with synthetic metric series for normal, firing, `No data`, and
   recovery states;
-- the external check is first pointed at, or temporarily configured to expect, a controlled failing
-  target to prove one failure email and one recovery email;
+- the probe workflow supports a manual controlled target override that writes test-labelled metrics
+  so failure and recovery email can be proved without changing the production alert series;
 - a controlled agent stop or blocked scrape proves the telemetry `No data` alert without claiming
   public outage; and
 - the live dashboard is inspected after activation to confirm fresh VM and application datapoints.
@@ -268,10 +269,11 @@ real certificate, or expose a public metrics endpoint.
 
 ## Acceptance Criteria
 
-1. An external probe outside Yandex Cloud periodically validates trusted HTTPS and the expected
-   successful response from `https://findme-photo.ru/health/`.
-2. Repeated public-check failure across approximately five minutes sends one operator email, and
-   restored success sends one recovery email.
+1. A scheduled GitHub Actions runner outside Yandex Cloud validates trusted HTTPS and the expected
+   successful response from `https://findme-photo.ru/health/` every five minutes and writes bounded
+   success, duration, and certificate-lifetime metrics to Yandex Monitoring.
+2. Two failed or missing scheduled probe datapoints send one operator email within the expected
+   10–15 minute window, and restored success sends one recovery email.
 3. Certificate validity below 14 days triggers the agreed operator email.
 4. Yandex Monitoring receives fresh CPU/load, memory, filesystem, network, uptime, and agent-health
    metrics available from the standard unprivileged Unified Agent Linux input on the current VM.
@@ -282,8 +284,7 @@ real certificate, or expose a public metrics endpoint.
 7. The application metrics endpoint is not reachable through the public HTTPS edge, and no metric
    label contains a raw path, query string, entity identifier, personal data, secret, or storage
    key.
-8. One Yandex Monitoring overview dashboard shows the agreed VM and Django graphs and links to the
-   external availability history when it cannot display it directly.
+8. One Yandex Monitoring overview dashboard shows the agreed VM, Django, and GitHub-probe graphs.
 9. Synthetic data proves the disk, memory, CPU, application-5xx, and telemetry-absence alert
    conditions plus their recovery transitions.
 10. Stopping or isolating Unified Agent produces only the missing-telemetry alert while a successful

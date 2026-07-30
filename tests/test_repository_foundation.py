@@ -282,6 +282,23 @@ def test_private_upload_configuration_is_wired_to_deployments() -> None:
         assert f"printf '{name}=%s\\n'" in apply_script
 
 
+def test_staging_deployment_forwards_preview_processing_configuration() -> None:
+    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Apply staging deployment")
+    expected = {
+        "PHOTO_PROCESSING_PREVIEW_ENABLED": (
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+        ),
+        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+        ),
+    }
+
+    for name, value in expected.items():
+        assert staging["env"][name] == value
+        assert name in _envs(staging)
+
+
 def test_staging_storage_probe_is_manual_explicit_and_uses_the_deployed_container() -> None:
     staging = _load_workflow("deploy.yml")
     workflow_dispatch = staging[True]["workflow_dispatch"]

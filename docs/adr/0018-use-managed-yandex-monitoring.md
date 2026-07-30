@@ -1,6 +1,6 @@
 # 0018: Use managed Yandex Monitoring with independent public probes
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-30
 - Deciders: project maintainer
 - Supersedes: none

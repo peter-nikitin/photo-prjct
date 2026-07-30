@@ -152,6 +152,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   API backed by PostgreSQL jobs and leases. Give it no database or permanent Object Storage
   credentials; issue only short-lived exact-object media grants, as defined by
   [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md).
+- Use Yandex Monitoring and one unprivileged Unified Agent for basic VM and private
+  low-cardinality Django HTTP metrics. Check the canonical public HTTPS health endpoint through a
+  managed probe outside Yandex Cloud, as defined by
+  [ADR 0018](adr/0018-use-managed-yandex-monitoring.md).
 - Allow anonymous inline delivery of a complete private original only for an eligible completed
   upload in a currently published free event, within the narrow boundary of
   [ADR 0015](adr/0015-allow-anonymous-free-event-original-delivery.md). Paid-event media and
@@ -312,8 +316,8 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Payment provider, callback contract, refunds, and download entitlement policy.
 - Paid-event media access and the broader attachment/download policy beyond ADR 0015's narrow
   anonymous inline delivery for eligible free-event originals.
-- Observability stack; backup targets; retention; RPO/RTO; encryption-at-rest policy; media
-  recovery; and disaster-recovery procedures.
+- Backup targets; monitoring retention; RPO/RTO; encryption-at-rest policy; media recovery; and
+  disaster-recovery procedures.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.
 
 ## Change rules

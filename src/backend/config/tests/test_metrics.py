@@ -43,13 +43,13 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         exposition = self.exposition()
         self.assertIn(
-            "findme_http_requests_total{environment=\"test\",method=\"GET\","
-            "route=\"test_ok\",status_class=\"2xx\"} 1.0",
+            'findme_http_requests_total{environment="test",method="GET",'
+            'route="test_ok",status_class="2xx"} 1.0',
             exposition,
         )
         self.assertIn(
-            "findme_http_request_duration_seconds_count{environment=\"test\",method=\"GET\","
-            "route=\"test_ok\",status_class=\"2xx\"} 1.0",
+            'findme_http_request_duration_seconds_count{environment="test",method="GET",'
+            'route="test_ok",status_class="2xx"} 1.0',
             exposition,
         )
         self.assertNotIn("path=", exposition)
@@ -60,8 +60,8 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertIn(
-            "findme_http_requests_total{environment=\"test\",method=\"GET\","
-            "route=\"test_error\",status_class=\"5xx\"} 1.0",
+            'findme_http_requests_total{environment="test",method="GET",'
+            'route="test_error",status_class="5xx"} 1.0',
             self.exposition(),
         )
         self.assertNotIn("storage object 9f2a2f9e is unavailable", self.exposition())
@@ -74,8 +74,8 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         exposition = self.exposition()
         self.assertIn(
-            "findme_http_requests_total{environment=\"test\",method=\"other\","
-            "route=\"test_ok\",status_class=\"2xx\"} 1.0",
+            'findme_http_requests_total{environment="test",method="other",'
+            'route="test_ok",status_class="2xx"} 1.0',
             exposition,
         )
         self.assertNotIn(arbitrary_method, exposition)
@@ -88,8 +88,8 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
         self.assertEqual(response.status_code, 404)
         exposition = self.exposition()
         self.assertIn(
-            "findme_http_requests_total{environment=\"test\",method=\"GET\","
-            "route=\"unmatched\",status_class=\"4xx\"} 1.0",
+            'findme_http_requests_total{environment="test",method="GET",'
+            'route="unmatched",status_class="4xx"} 1.0',
             exposition,
         )
         for forbidden_value in (
@@ -107,8 +107,8 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         exposition = self.exposition()
         self.assertIn(
-            "findme_http_requests_total{environment=\"test\",method=\"GET\","
-            "route=\"dynamic_photo\",status_class=\"2xx\"} 1.0",
+            'findme_http_requests_total{environment="test",method="GET",'
+            'route="dynamic_photo",status_class="2xx"} 1.0',
             exposition,
         )
         self.assertNotIn("private-run", exposition)

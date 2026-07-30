@@ -435,7 +435,18 @@ fi
 case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
   *" compose "*" ps -q web "*) printf 'web-id\n' ;;
+  *" compose "*" ps -q worker "*)
+    [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] &&
+      printf 'worker-id\n'
+    ;;
   *" inspect "*" web-id "*) sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" ;;
+  *" inspect "*" worker-id "*)
+    if [ "$APPLY_SCENARIO" = worker-crash-loop ]; then
+      printf 'true true 3\n'
+    else
+      printf 'true false 0\n'
+    fi
+    ;;
 esac
 """,
     )
@@ -569,12 +580,15 @@ def test_disabled_processing_persists_defaults_without_the_worker_profile(
     assert result.returncode == 0, result.stderr
     deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     assert "PHOTO_PROCESSING_ENABLED=False" in deployed_env
+    assert "PHOTO_PROCESSING_PREVIEW_ENABLED=False" in deployed_env
+    assert "PHOTO_PROCESSING_FACE_ENABLED=False" in deployed_env
     assert "WORKER_IMAGE=" in deployed_env
     assert "PHOTO_PROCESSING_WORKER_TOKEN=" in deployed_env
     assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120" in deployed_env
     assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=16384" in deployed_env
     assert "PHOTO_WORKER_BUILD=capture-metadata-v1" in deployed_env
     assert "PHOTO_WORKER_LEASE_SECONDS=120" in deployed_env
+    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1" in deployed_env
     assert "ALLOWED_HOSTS=localhost,web,findme-photo.ru" in deployed_env
     assert not any("--profile worker" in command for command in _apply_log(tmp_path))
 
@@ -613,6 +627,120 @@ def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
     assert "worker-token-must-not-be-logged" not in result.stdout
     assert "worker-token-must-not-be-logged" not in result.stderr
     assert "worker-token-must-not-be-logged" not in "\n".join(commands)
+
+
+def test_preview_first_activation_requires_explicit_pipeline_settings(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """An image release alone must not create preview work or start a partial preview pipeline."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token-must-not-be-logged",
+            "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
+            "PHOTO_PROCESSING_FACE_ENABLED": "True",
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+                "1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2"
+            ),
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert "PHOTO_PROCESSING_PREVIEW_ENABLED=True" in deployed_env
+    assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
+    assert (
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1,1/face_embedding/1,"
+        "2/generate_preview/1,2/face_embedding/2" in deployed_env
+    )
+
+
+@pytest.mark.parametrize(
+    "identities",
+    [
+        "1/capture_metadata/1,2/generate_preview/1,2/face_embedding/2,9/bogus/9",
+        "1/capture_metadata/1,2/generate_preview/1,2/generate_preview/1,2/face_embedding/2",
+        "1/capture_metadata/1, 2/generate_preview/1,2/face_embedding/2",
+        "1/capture_metadata/1,",
+    ],
+)
+def test_deployment_rejects_worker_identity_lists_the_worker_would_not_accept(
+    tmp_path: Path, fake_bin: Path, identities: str
+) -> None:
+    """Deployment must reject unknown, duplicate, or whitespace-bearing identities pre-mutation."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES": identities,
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
+
+
+def test_enabled_processing_rejects_a_worker_that_is_crash_looping_after_compose_up(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """A healthy web container cannot make a restarting worker deployment successful."""
+    env = _apply_env(tmp_path, fake_bin, scenario="worker-crash-loop")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "worker runtime verification" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        (
+            {"PHOTO_PROCESSING_PREVIEW_ENABLED": "True"},
+            "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_ENABLED=True",
+        ),
+        (
+            {
+                "PHOTO_PROCESSING_ENABLED": "True",
+                "WORKER_IMAGE": "worker-image",
+                "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+                "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
+                "PHOTO_PROCESSING_FACE_ENABLED": "True",
+            },
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES must include 2/generate_preview/1",
+        ),
+    ],
+)
+def test_preview_first_activation_rejects_partial_or_implicit_configuration(
+    tmp_path: Path, fake_bin: Path, overrides: dict[str, str], message: str
+) -> None:
+    """Preview and face work must be a conscious operator activation, not an image side effect."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(overrides)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
 
 
 @pytest.mark.parametrize(

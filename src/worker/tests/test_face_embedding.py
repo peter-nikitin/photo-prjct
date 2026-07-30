@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from photo_worker.face_embedding import FaceEmbeddingError, extract_face_embeddings
 from photo_worker.contracts import FaceEmbeddingFace
+from photo_worker.face_embedding import FaceEmbeddingError, extract_face_embeddings
 from PIL import Image
 
 
@@ -24,7 +24,9 @@ def write_jpeg(path: Path) -> None:
     image.close()
 
 
-def test_extract_face_embeddings_one_face_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_extract_face_embeddings_one_face_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     source = tmp_path / "photo.jpg"
     write_jpeg(source)
 
@@ -78,7 +80,13 @@ def test_extract_face_embeddings_one_face_success(monkeypatch: pytest.MonkeyPatc
     )
     assert result.has_single_query_face_usable is True
     assert result.warnings == ()
-    assert set(result.timings) == {"decode_ms", "model_load_ms", "detect_ms", "embed_ms", "total_ms"}
+    assert set(result.timings) == {
+        "decode_ms",
+        "model_load_ms",
+        "detect_ms",
+        "embed_ms",
+        "total_ms",
+    }
 
 
 def test_extract_face_embeddings_no_faces_and_no_valid_faces_have_separate_warnings(
@@ -130,7 +138,9 @@ def test_extract_face_embeddings_no_faces_and_no_valid_faces_have_separate_warni
     )
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(FaceEmbeddingError("model_inference_error")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FaceEmbeddingError("model_inference_error")
+        ),
     )
 
     invalid = extract_face_embeddings(source, max_bytes=1024)

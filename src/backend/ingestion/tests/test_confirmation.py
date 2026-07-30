@@ -8,8 +8,8 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError, close_old_connections
-from django.test import TransactionTestCase
+from django.db import IntegrityError, close_old_connections, connection
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from ingestion.models import UploadBatch, UploadItem
 from ingestion.services.batches import (
@@ -29,12 +29,14 @@ from ingestion.storage import (
     UploadGrant,
 )
 from picflow.models import Event, Photo
+from PIL import Image
 from processing.models import (
     EventProcessingRun,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
 )
+from processing.services.enrollment import GENERATE_PREVIEW_CONFIGURATION
 
 
 class SimulatedCrash(RuntimeError):
@@ -48,6 +50,7 @@ class ConfirmationStorage:
         self.failures: dict[str, Exception] = {}
         self.delete_failure: Exception | None = None
         self.promote_etags: list[str] = []
+        self.geometry_read_atomic_states: list[bool] = []
         self.final_after_promote: tuple[bytes, str, str] | None = None
 
     def add(self, key: str, content: bytes, etag_wire: str = '"source-etag"') -> None:
@@ -71,6 +74,8 @@ class ConfirmationStorage:
         content, actual_etag, _ = self.objects[key]
         if etag_wire != actual_etag:
             raise ObjectChanged()
+        if end - start > 2:
+            self.geometry_read_atomic_states.append(connection.in_atomic_block)
         return content[start : end + 1]
 
     def promote(self, *, incoming_key: str, final_key: str, etag_wire: str) -> ObjectIdentity:
@@ -192,6 +197,118 @@ class ConfirmationTests(TransactionTestCase):
                 "version_evidence": "verified_source_etag",
             },
         )
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_preview_activation_persists_the_preview_first_pair_and_only_queues_preview(
+        self,
+    ) -> None:
+        """A newly activated upload must not enqueue ML before its preview is accepted."""
+        from io import BytesIO
+
+        encoded = BytesIO()
+        image = Image.new("RGB", (40, 20), "white")
+        try:
+            exif = Image.Exif()
+            exif[274] = 6
+            image.save(encoded, "JPEG", exif=exif)
+        finally:
+            image.close()
+        payload = encoded.getvalue()
+        UploadItem.objects.filter(pk=self.item_id).update(expected_size=len(payload))
+        self.storage.add(self.item.incoming_key, payload)
+
+        photo = self.confirm_success()
+
+        self.assertEqual(
+            (photo.processing_generation, photo.gallery_media_policy),
+            ("preview_first_v1", "preview_required"),
+        )
+        preview = PhotoProcessingState.objects.get(photo=photo, processor_type="generate_preview")
+        face = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
+        self.assertEqual(preview.status, PhotoProcessingState.Status.QUEUED)
+        self.assertEqual(preview.current_job.contract_version, 2)
+        self.assertEqual(preview.current_job.processor_version, 1)
+        self.assertEqual(
+            preview.current_job.input_fingerprint["pixel_width"],
+            20,
+        )
+        self.assertEqual(preview.current_job.input_fingerprint["pixel_height"], 40)
+        self.assertEqual(face.status, PhotoProcessingState.Status.NOT_REQUESTED)
+        self.assertIsNone(face.current_job)
+        self.assertEqual(self.storage.geometry_read_atomic_states, [False])
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_checkpoint_change_after_geometry_inspection_prevents_preview_first_persistence(
+        self,
+    ) -> None:
+        from io import BytesIO
+
+        encoded = BytesIO()
+        image = Image.new("RGB", (40, 20), "white")
+        try:
+            image.save(encoded, "JPEG")
+        finally:
+            image.close()
+        payload = encoded.getvalue()
+        UploadItem.objects.filter(pk=self.item_id).update(expected_size=len(payload))
+        self.storage.add(self.item.incoming_key, payload)
+
+        def change_checkpoint(checkpoint: str) -> None:
+            if checkpoint == "after_preview_geometry":
+                UploadItem.objects.filter(pk=self.item_id).update(
+                    verified_source_etag="newer-checkpoint"
+                )
+
+        self.assertIsNone(self.confirm(change_checkpoint))
+        self.assertFalse(Photo.objects.filter(pk=self.item_id.hex).exists())
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_preview_geometry_rejects_images_over_the_shared_pixel_cap(self) -> None:
+        from io import BytesIO
+
+        encoded = BytesIO()
+        image = Image.new("RGB", (40, 20), "white")
+        try:
+            image.save(encoded, "JPEG")
+        finally:
+            image.close()
+        payload = encoded.getvalue()
+        UploadItem.objects.filter(pk=self.item_id).update(expected_size=len(payload))
+        self.storage.add(self.item.incoming_key, payload)
+        worker = GENERATE_PREVIEW_CONFIGURATION["worker"]
+        assert isinstance(worker, dict)
+
+        with patch.dict(worker, {"max_pixels": 100}):
+            self.assertIsNone(self.confirm())
+
+        item = UploadItem.objects.get(pk=self.item_id)
+        self.assertEqual(item.status, UploadItem.Status.FAILED)
+        self.assertEqual(item.error_code, "invalid_jpeg")
+        self.assertFalse(Photo.objects.filter(pk=self.item_id.hex).exists())
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_pillow_decompression_bomb_is_a_sanitized_terminal_invalid_jpeg(self) -> None:
+        from io import BytesIO
+
+        encoded = BytesIO()
+        image = Image.new("RGB", (40, 20), "white")
+        try:
+            image.save(encoded, "JPEG")
+        finally:
+            image.close()
+        payload = encoded.getvalue()
+        UploadItem.objects.filter(pk=self.item_id).update(expected_size=len(payload))
+        self.storage.add(self.item.incoming_key, payload)
+
+        with patch.object(Image, "MAX_IMAGE_PIXELS", 1):
+            self.assertIsNone(self.confirm())
+
+        item = UploadItem.objects.get(pk=self.item_id)
+        self.assertEqual(item.status, UploadItem.Status.FAILED)
+        self.assertEqual(item.error_code, "invalid_jpeg")
+        self.assertEqual(item.sanitized_error_message, "The uploaded file is not a valid JPEG.")
+        self.assertNotIn("bomb", item.sanitized_error_message.lower())
+        self.assertFalse(Photo.objects.filter(pk=self.item_id.hex).exists())
 
     def test_jpeg_signatures_metadata_and_final_identity_are_required(self) -> None:
         cases = [

@@ -116,3 +116,23 @@ class PhotoModelTests(TestCase):
         first.save()
         with self.assertRaises(ValidationError):
             self.private_photo(original_key=key).full_clean()
+
+    def test_processing_policy_defaults_to_the_legacy_pair(self) -> None:
+        photo = self.private_photo()
+
+        self.assertEqual(photo.processing_generation, "legacy_original_v1")
+        self.assertEqual(photo.gallery_media_policy, "legacy_original_allowed")
+
+    def test_processing_policy_rejects_an_invalid_generation_policy_pair(self) -> None:
+        photo = self.private_photo()
+        photo.processing_generation = "preview_first_v1"
+
+        with self.assertRaises(ValidationError):
+            photo.full_clean()
+
+        photo.processing_generation = "legacy_original_v1"
+        photo.save()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Photo.objects.filter(pk=photo.pk).update(
+                processing_generation="preview_first_v1",
+            )

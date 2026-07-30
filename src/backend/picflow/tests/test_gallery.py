@@ -1,8 +1,20 @@
 from dataclasses import FrozenInstanceError
+from datetime import date
 from unittest.mock import patch
+from uuid import uuid4
 
-from django.test import SimpleTestCase
-from ingestion.storage import OpenedObject
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
+from ingestion.storage import ObjectMissing, OpenedObject
+from processing.models import (
+    GENERATE_PREVIEW_PROCESSOR,
+    EventProcessingRun,
+    PhotoDerivative,
+    PhotoProcessingState,
+    ProcessingAttempt,
+    ProcessingJob,
+)
 
 from picflow.gallery import (
     CloseableMediaIterator,
@@ -127,7 +139,7 @@ class _FinalObjectStorage:
 
 
 class PublicGalleryMediaTests(SimpleTestCase):
-    def test_resolver_maps_both_variants_to_original(self) -> None:
+    def test_resolver_maps_legacy_small_and_large_variants_to_original(self) -> None:
         jpeg_body = _ReadableBody([])
         png_body = _ReadableBody([])
         storage = _FinalObjectStorage(
@@ -169,6 +181,123 @@ class PublicGalleryMediaTests(SimpleTestCase):
 
         with self.assertRaisesMessage(ValueError, "ineligible gallery media"):
             resolver.resolve(photo=photo, variant="original")  # type: ignore[arg-type]
+
+        self.assertEqual(storage.opened_keys, [])
+
+
+class PreviewRequiredPublicGalleryMediaTests(TestCase):
+    """The break caught here would expose an original tile before preview publication."""
+
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="preview-gallery-reader")
+        self.event = Event.objects.create(
+            name="Preview gallery",
+            slug="preview-gallery",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+
+    def make_preview_required_photo(self, *, photo_id: str) -> Photo:
+        return Photo.objects.create(
+            id=photo_id,
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/{photo_id}",
+            original_filename="race.jpg",
+            original_size=10,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+
+    def publish_preview(self, photo: Photo) -> PhotoDerivative:
+        configuration = {"generate_preview": {"variant": "preview-small-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=self.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save()
+        return PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=f"derivatives/previews/{photo.id}/preview-small-v1/{uuid4().hex}.jpg",
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+
+    def test_resolver_reads_new_small_from_derivative_and_large_from_original(self) -> None:
+        photo = self.make_preview_required_photo(photo_id="preview-photo")
+        derivative = self.publish_preview(photo)
+        preview_body = _ReadableBody([])
+        original_body = _ReadableBody([])
+        storage = _FinalObjectStorage(
+            [
+                OpenedObject(body=preview_body, size=9, content_type="image/jpeg"),
+                OpenedObject(body=original_body, size=10, content_type="image/jpeg"),
+            ]
+        )
+
+        resolver = PublicMediaResolver(storage)
+
+        self.assertEqual(resolver.resolve(photo=photo, variant="preview-small").body, preview_body)
+        self.assertEqual(resolver.resolve(photo=photo, variant="preview-large").body, original_body)
+        self.assertEqual(storage.opened_keys, [derivative.final_key, photo.original_key])
+
+    def test_resolver_never_falls_back_to_original_when_new_small_preview_is_missing(self) -> None:
+        photo = self.make_preview_required_photo(photo_id="missing-preview")
+        storage = _FinalObjectStorage([])
+
+        with self.assertRaises(ObjectMissing):
+            PublicMediaResolver(storage).resolve(photo=photo, variant="preview-small")
 
         self.assertEqual(storage.opened_keys, [])
 

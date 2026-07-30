@@ -4,6 +4,27 @@
 
 Approved by the project maintainer on 2026-07-30.
 
+Implementation status, reconciled on 2026-07-30:
+
+- The repository implementation is shipped and has targeted local test evidence for the explicit
+  policy/state, normalized-preview, verified-publication, gallery-selection, downstream-enrollment,
+  reporting, and container-boundary paths. It remains disabled by the tracked
+  `PHOTO_PROCESSING_PREVIEW_ENABLED=False` default.
+- It is not staging-configured or live-activated. No staging or production preview job, derivative,
+  gallery response, worker measurement, or recognition metric is claimed by this specification.
+- Staging activation is blocked on read-only lifecycle discovery followed by separately approved
+  application and read-back of the preview-staging expiry rule. Discovery was not completed because
+  local interactive `yc` authentication had expired.
+- Acceptance criterion 17 remains unmet: this checkout has no reproducible representative private
+  ML cohort/model artifacts for the required original-versus-preview comparison. A material quality
+  regression or inadequate concurrency-one capacity measurement blocks activation, not code
+  delivery.
+- Independent complete-task review found no remaining Critical or Important issues. Repository-wide
+  local verification passed, including 688 Python tests with 81.80% branch coverage, 25 JavaScript
+  tests, 44 containerized visual tests, Django checks and migration drift, static analysis, and the
+  standalone worker image build. These annotations do not relax the activation gates or any
+  decision and acceptance criterion below.
+
 - Related architecture: [`docs/architecture.md`](../../architecture.md), current event-gallery and
   photo-processing boundaries; proposed Media and Recognition modules; photo ingestion and
   indexing flow; evolution stages 3-4

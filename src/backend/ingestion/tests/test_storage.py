@@ -23,6 +23,11 @@ BUCKET = "private-bucket"
 INCOMING_KEY = "incoming/123e4567-e89b-12d3-a456-426614174000/123e4567-e89b-12d3-a456-426614174001"
 FINAL_KEY = "originals/123e4567e89b12d3a456426614174001"
 MISSING_FINAL_KEY = "originals/123e4567e89b12d3a456426614174002"
+PREVIEW_FINAL_KEY = (
+    "derivatives/previews/photo-42/preview-small-v1/"
+    "123e4567-e89b-12d3-a456-426614174000-"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg"
+)
 
 
 @pytest.fixture
@@ -182,6 +187,18 @@ def test_open_final_returns_validated_stream_without_reading_it(
     assert opened.body is client.last_body
     assert opened.body.read(1) == b"j"
     assert client.last_body is not None and not client.last_body.closed
+
+
+def test_open_final_allows_only_the_content_addressed_published_preview_namespace(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(PREVIEW_FINAL_KEY, b"preview", '"preview-etag"', "image/jpeg")
+
+    opened = storage.open_final(key=PREVIEW_FINAL_KEY)
+
+    assert opened.size == 7
+    assert opened.content_type == "image/jpeg"
+    assert calls(client, "get_object") == [{"Bucket": BUCKET, "Key": PREVIEW_FINAL_KEY}]
 
 
 def test_open_final_rejects_invalid_key_before_client_call(

@@ -8,12 +8,15 @@ from pathlib import Path
 import pytest
 from photo_worker.client import ApiError, DownloadError
 from photo_worker.contracts import (
+    PROCESSOR_TYPE,
+    PROCESSOR_TYPE_FACE_EMBEDDING,
+    PROCESSOR_TYPE_GENERATE_PREVIEW,
+    V2_FACE_EMBEDDING_CONFIGURATION,
+    V2_GENERATE_PREVIEW_CONFIGURATION,
     CaptureMetadataResult,
     Claim,
     FaceEmbeddingFace,
     FaceEmbeddingResult,
-    PROCESSOR_TYPE,
-    PROCESSOR_TYPE_FACE_EMBEDDING,
 )
 from photo_worker.face_embedding import FaceEmbeddingError
 from photo_worker.runner import Worker, WorkerConfig, _LeaseKeeper, _lifecycle
@@ -71,7 +74,7 @@ def make_claim(
                 "processor_version": 1,
                 "configuration": configuration(
                     processor_type=processor_type,
-                    heartbeat_interval_seconds=heartbeat_interval_seconds
+                    heartbeat_interval_seconds=heartbeat_interval_seconds,
                 ),
                 "photo_id": "photo-1",
                 "event_id": "00000000-0000-0000-0000-000000000013",
@@ -98,8 +101,16 @@ class Client:
         self.completed: list[dict[str, object]] = []
         self.failed: list[dict[str, object]] = []
         self.heartbeats: list[str] = []
+        self.claim_identities: list[tuple[int, str, int]] = []
 
-    def claim_job(self, **_: object) -> Claim:
+    def claim_job(self, **kwargs: object) -> Claim:
+        self.claim_identities.append(
+            (
+                int(kwargs["contract_version"]),
+                str(kwargs["processor_type"]),
+                int(kwargs["processor_version"]),
+            )
+        )
         return self.claim
 
     def download(
@@ -130,6 +141,290 @@ class Client:
 
     def fail(self, _attempt_id: str, payload: dict[str, object], **_: object) -> None:
         self.failed.append(payload)
+
+
+def preview_claim() -> Claim:
+    return Claim.from_response(
+        {
+            "empty": False,
+            "job": {
+                "id": "00000000-0000-0000-0000-000000000011",
+                "attempt_id": "00000000-0000-0000-0000-000000000012",
+                "contract_version": 2,
+                "processor_type": PROCESSOR_TYPE_GENERATE_PREVIEW,
+                "processor_version": 1,
+                "configuration": V2_GENERATE_PREVIEW_CONFIGURATION,
+                "photo_id": "photo-1",
+                "event_id": "00000000-0000-0000-0000-000000000013",
+                "run_id": "00000000-0000-0000-0000-000000000014",
+                "input_fingerprint": {
+                    "object_key": "originals/0123456789abcdef0123456789abcdef",
+                    "object_size": 1_000_000,
+                    "object_content_type": "image/jpeg",
+                    "object_etag": "etag-1",
+                    "media_kind": "original",
+                    "pixel_width": 3200,
+                    "pixel_height": 2000,
+                },
+                "input_limits": {"max_bytes": 1_000_000, "content_type": "image/jpeg"},
+                "lease_expires_at": "2026-07-30T10:03:00Z",
+                "download_url": "https://storage.example.test/download?signature=download-secret",
+                "download_expires_at": "2026-07-30T10:01:00Z",
+                "output_slots": [
+                    {
+                        "variant": "preview-small-v1",
+                        "upload_url": "https://storage.example.test/upload?signature=upload-secret",
+                        "upload_expires_at": "2026-07-30T10:01:00Z",
+                        "content_type": "image/jpeg",
+                        "staging_key": (
+                            "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+                            "preview-small-v1.jpg"
+                        ),
+                        "max_bytes": 10_485_760,
+                        "max_width": 1600,
+                        "max_height": 1600,
+                        "checksum_algorithm": "sha256",
+                    }
+                ],
+            },
+        }
+    )
+
+
+def preview_face_claim() -> Claim:
+    return Claim.from_response(
+        {
+            "empty": False,
+            "job": {
+                "id": "00000000-0000-0000-0000-000000000021",
+                "attempt_id": "00000000-0000-0000-0000-000000000012",
+                "contract_version": 2,
+                "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING,
+                "processor_version": 2,
+                "configuration": V2_FACE_EMBEDDING_CONFIGURATION,
+                "photo_id": "photo-2",
+                "event_id": "00000000-0000-0000-0000-000000000013",
+                "run_id": "00000000-0000-0000-0000-000000000014",
+                "input_fingerprint": {
+                    "object_key": "derivatives/previews/photo-2/preview-small-v1/"
+                    "00000000-0000-0000-0000-000000000012-"
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+                    "object_size": 1024,
+                    "object_content_type": "image/jpeg",
+                    "object_etag": None,
+                    "media_kind": "preview-small-v1",
+                    "pixel_width": 1600,
+                    "pixel_height": 1000,
+                },
+                "input_geometry": {
+                    "coordinate_space": "preview-small-v1",
+                    "pixel_width": 1600,
+                    "pixel_height": 1000,
+                    "oriented_source_width": 3200,
+                    "oriented_source_height": 2000,
+                },
+                "input_limits": {"max_bytes": 1024, "content_type": "image/jpeg"},
+                "lease_expires_at": "2026-07-30T10:03:00Z",
+                "download_url": "https://storage.example.test/download?signature=download-secret",
+                "download_expires_at": "2026-07-30T10:01:00Z",
+            },
+        }
+    )
+
+
+class PreviewClient(Client):
+    def __init__(self) -> None:
+        super().__init__(preview_claim())
+        self.calls: list[str] = []
+
+    def download(self, _url: str, destination: Path, **_: object) -> int:
+        image = Image.new("RGB", (3200, 2000), "white")
+        try:
+            image.save(destination, "JPEG")
+        finally:
+            image.close()
+        self.calls.append("download")
+        return 1_000_000
+
+    def upload_preview(self, _url: str, source: Path, **_: object) -> None:
+        assert source.is_file()
+        self.calls.append("upload")
+
+    def complete(self, attempt_id: str, payload: dict[str, object], **_: object) -> None:
+        self.calls.append("complete")
+        super().complete(attempt_id, payload)
+
+
+def test_preview_is_uploaded_before_its_typed_completion_and_all_temp_files_are_removed(
+    tmp_path: Path,
+) -> None:
+    client = PreviewClient()
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_type=PROCESSOR_TYPE_GENERATE_PREVIEW,
+        ),
+    ).run_once()
+
+    assert client.calls == ["download", "upload", "complete"]
+    result = client.completed[0]["result"]
+    assert result["variant"] == "preview-small-v1"
+    assert result["content_type"] == "image/jpeg"
+    assert (result["width"], result["height"]) == (1600, 1000)
+    assert result["upload_ms"] >= 0
+    assert list(tmp_path.iterdir()) == []
+
+
+class LeaseLostAfterUpload:
+    def __init__(self) -> None:
+        self.checks = 0
+
+    def start(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+    def raise_if_lost(self) -> None:
+        self.checks += 1
+        if self.checks == 3:
+            from photo_worker.runner import AttemptLost
+
+            raise AttemptLost()
+
+
+def test_preview_lease_loss_after_upload_stops_completion_and_redacts_all_secrets(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO")
+    client = PreviewClient()
+    keeper = LeaseLostAfterUpload()
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_type=PROCESSOR_TYPE_GENERATE_PREVIEW,
+            log_secrets=("worker-token", "download-secret", "upload-secret"),
+        ),
+        lease_keeper_factory=lambda *_args: keeper,
+    ).run_once()
+
+    assert client.calls == ["download", "upload"]
+    assert client.completed == []
+    assert client.failed == []
+    assert list(tmp_path.iterdir()) == []
+    for secret in (
+        "worker-token",
+        "download-secret",
+        "upload-secret",
+        "processing-staging/previews",
+        "hostile response",
+        "DateTimeOriginal",
+    ):
+        assert secret not in caplog.text
+
+
+def test_preview_normalization_failure_uses_the_declared_permanent_failure_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from photo_worker.preview import PreviewError
+
+    client = PreviewClient()
+    monkeypatch.setattr(
+        "photo_worker.runner.generate_preview",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PreviewError("normalization_failed")),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_type=PROCESSOR_TYPE_GENERATE_PREVIEW,
+        ),
+    ).run_once()
+
+    assert client.calls == ["download"]
+    assert (client.failed[0]["error_code"], client.failed[0]["retryable"]) == (
+        "normalization_failed",
+        False,
+    )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_second_temporary_allocation_failure_removes_first_file_without_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = Client(make_claim())
+    import photo_worker.runner as runner_module
+
+    original = runner_module.tempfile.NamedTemporaryFile
+    calls = 0
+
+    def fail_second(*args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("second temporary allocation failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module.tempfile, "NamedTemporaryFile", fail_second)
+
+    with pytest.raises(OSError, match="second temporary allocation failed"):
+        Worker(
+            client, WorkerConfig(worker_build="worker-test", lease_seconds=60, temp_dir=tmp_path)
+        ).run_once()
+
+    assert client.completed == []
+    assert client.failed == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_second_temporary_context_close_failure_removes_all_files_without_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = Client(make_claim())
+    import photo_worker.runner as runner_module
+
+    original = runner_module.tempfile.NamedTemporaryFile
+    calls = 0
+
+    class FailingClose:
+        def __init__(self, temporary: object) -> None:
+            self._temporary = temporary
+            self.name = temporary.name
+
+        def __enter__(self) -> FailingClose:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            self._temporary.close()
+            raise OSError("second temporary close failed")
+
+    def fail_second_close(*args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        temporary = original(*args, **kwargs)
+        return FailingClose(temporary) if calls == 2 else temporary
+
+    monkeypatch.setattr(runner_module.tempfile, "NamedTemporaryFile", fail_second_close)
+
+    with pytest.raises(OSError, match="second temporary close failed"):
+        Worker(
+            client, WorkerConfig(worker_build="worker-test", lease_seconds=60, temp_dir=tmp_path)
+        ).run_once()
+
+    assert client.completed == []
+    assert client.failed == []
+    assert list(tmp_path.iterdir()) == []
 
 
 def make_face_embedding_result() -> FaceEmbeddingResult:
@@ -225,6 +520,38 @@ def test_worker_processes_face_embedding_claim_and_submits_typed_result(
     assert "phase=succeeded" in caplog.text
 
 
+def test_worker_submits_preview_face_result_with_declared_geometry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(preview_face_claim())
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_face_embeddings",
+        lambda *_args, **_kwargs: make_face_embedding_result(),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_identities=("2/face_embedding/2",),
+        ),
+    ).run_once()
+
+    assert len(client.completed) == 1
+    assert client.failed == []
+    assert client.completed[0]["result"]["input_geometry"] == {
+        "coordinate_space": "preview-small-v1",
+        "pixel_width": 1600,
+        "pixel_height": 1000,
+        "oriented_source_width": 3200,
+        "oriented_source_height": 2000,
+    }
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_worker_maps_model_inference_timeout_to_retryable_failure_for_face_embedding(
     tmp_path: Path,
 ) -> None:
@@ -262,6 +589,31 @@ def test_worker_returns_server_delay_for_an_empty_claim() -> None:
     worker = Worker(client, WorkerConfig(worker_build="worker-test", lease_seconds=60))
 
     assert worker.run_once() == 7
+
+
+def test_worker_polls_configured_exact_identities_round_robin_without_parallel_claims() -> None:
+    """One process advances through identities even when an earlier queue is empty."""
+    client = Client(Claim.empty(3))
+    worker = Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            processor_identities=(
+                "1/capture_metadata/1",
+                "2/generate_preview/1",
+                "2/face_embedding/2",
+            ),
+        ),
+    )
+
+    assert [worker.run_once() for _ in range(4)] == [3, 3, 3, 3]
+    assert client.claim_identities == [
+        (1, "capture_metadata", 1),
+        (2, "generate_preview", 1),
+        (2, "face_embedding", 2),
+        (1, "capture_metadata", 1),
+    ]
 
 
 def test_claimed_configuration_sets_the_next_poll_delay(tmp_path: Path) -> None:

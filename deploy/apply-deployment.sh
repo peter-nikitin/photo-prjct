@@ -16,6 +16,42 @@ set -eu
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 requested_image="$APP_IMAGE"
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
+requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
+requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
+requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/1}"
+
+remaining_identities="$requested_worker_processor_identities"
+seen_identities=","
+while :; do
+    case "$remaining_identities" in
+        *,*)
+            processor_identity="${remaining_identities%%,*}"
+            remaining_identities="${remaining_identities#*,}"
+            more_identities=True
+            ;;
+        *)
+            processor_identity="$remaining_identities"
+            remaining_identities=""
+            more_identities=False
+            ;;
+    esac
+    case "$processor_identity" in
+        1/capture_metadata/1|1/face_embedding/1|2/generate_preview/1|2/face_embedding/2)
+            ;;
+        *)
+            echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
+            exit 2
+            ;;
+    esac
+    case "$seen_identities" in
+        *",$processor_identity,"*)
+            echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
+            exit 2
+            ;;
+    esac
+    seen_identities="${seen_identities}${processor_identity},"
+    [ "$more_identities" = False ] && break
+done
 
 case "${PHOTO_UPLOAD_ENABLED:-False}" in
     True)
@@ -67,6 +103,51 @@ case "$requested_processing_enabled" in
         exit 2
         ;;
 esac
+
+case "$requested_preview_enabled" in
+    True|False)
+        ;;
+    *)
+        echo "PHOTO_PROCESSING_PREVIEW_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+case "$requested_face_enabled" in
+    True|False)
+        ;;
+    *)
+        echo "PHOTO_PROCESSING_FACE_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$requested_preview_enabled" = True ]; then
+    if [ "$requested_processing_enabled" != True ]; then
+        echo "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_ENABLED=True" >&2
+        exit 2
+    fi
+    if [ "$requested_face_enabled" != True ]; then
+        echo "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_FACE_ENABLED=True" >&2
+        exit 2
+    fi
+    case ",$requested_worker_processor_identities," in
+        *,2/generate_preview/1,*)
+            ;;
+        *)
+            echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must include 2/generate_preview/1" >&2
+            exit 2
+            ;;
+    esac
+    case ",$requested_worker_processor_identities," in
+        *,2/face_embedding/2,*)
+            ;;
+        *)
+            echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must include 2/face_embedding/2" >&2
+            exit 2
+            ;;
+    esac
+fi
 
 : "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL}"
 overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
@@ -171,11 +252,14 @@ clear_candidate_compose_interpolation() {
         PRIVATE_MEDIA_ALLOWED_ORIGINS \
         WORKER_IMAGE \
         PHOTO_PROCESSING_ENABLED \
+        PHOTO_PROCESSING_PREVIEW_ENABLED \
+        PHOTO_PROCESSING_FACE_ENABLED \
         PHOTO_PROCESSING_WORKER_TOKEN \
         PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS \
         PHOTO_PROCESSING_MAX_REQUEST_BYTES \
         PHOTO_WORKER_BUILD \
-        PHOTO_WORKER_LEASE_SECONDS
+        PHOTO_WORKER_LEASE_SECONDS \
+        PHOTO_WORKER_PROCESSOR_IDENTITIES
 }
 
 recover_previous_deployment() {
@@ -307,11 +391,14 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
     printf 'WORKER_IMAGE=%s\n' "${WORKER_IMAGE:-}"
     printf 'PHOTO_PROCESSING_ENABLED=%s\n' "$requested_processing_enabled"
+    printf 'PHOTO_PROCESSING_PREVIEW_ENABLED=%s\n' "$requested_preview_enabled"
+    printf 'PHOTO_PROCESSING_FACE_ENABLED=%s\n' "$requested_face_enabled"
     printf 'PHOTO_PROCESSING_WORKER_TOKEN=%s\n' "${PHOTO_PROCESSING_WORKER_TOKEN:-}"
     printf 'PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=%s\n' "${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}"
     printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-16384}"
     printf 'PHOTO_WORKER_BUILD=%s\n' "${PHOTO_WORKER_BUILD:-capture-metadata-v1}"
     printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
+    printf 'PHOTO_WORKER_PROCESSOR_IDENTITIES=%s\n' "$requested_worker_processor_identities"
 } > "$requested_env_tmp"
 chmod 600 "$requested_env_tmp"
 
@@ -420,6 +507,44 @@ while [ "$attempt" -le "$max_attempts" ]; do
     attempt=$((attempt + 1))
     sleep 5
 done
+
+if [ "$requested_processing_enabled" = True ]; then
+    worker_container="$(compose_with_requested_processing_profile ps -q worker)"
+    if [ -z "$worker_container" ]; then
+        fail "Requested deployment failed worker runtime verification"
+    fi
+    attempt=1
+    max_worker_attempts=3
+    initial_restart_count=""
+    while [ "$attempt" -le "$max_worker_attempts" ]; do
+        worker_state="$(
+            docker inspect \
+                --format '{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}' \
+                "$worker_container" 2>/dev/null || true
+        )"
+        worker_running="${worker_state%% *}"
+        worker_state_tail="${worker_state#* }"
+        worker_restarting="${worker_state_tail%% *}"
+        worker_restart_count="${worker_state_tail#* }"
+        case "$worker_restart_count" in
+            ''|*[!0-9]*)
+                fail "Requested deployment failed worker runtime verification"
+                ;;
+        esac
+        if [ "$worker_running" != true ] || [ "$worker_restarting" != false ]; then
+            fail "Requested deployment failed worker runtime verification"
+        fi
+        if [ -z "$initial_restart_count" ]; then
+            initial_restart_count="$worker_restart_count"
+        elif [ "$worker_restart_count" != "$initial_restart_count" ]; then
+            fail "Requested deployment failed worker runtime verification"
+        fi
+        if [ "$attempt" -lt "$max_worker_attempts" ]; then
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+fi
 
 if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
     fail "Requested deployment failed public HTTPS smoke verification"

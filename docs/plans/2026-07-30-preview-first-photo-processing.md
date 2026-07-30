@@ -15,7 +15,8 @@ the derivative, then atomically enrolls preview-backed face processing.
 standalone Python worker, Docker Compose, pytest, Ruff, mypy, and Playwright.
 
 - Date: 2026-07-30
-- Status: Approved for implementation
+- Status: Implementation complete, independently reviewed, and CI-equivalent locally verified;
+  preview activation remains disabled behind lifecycle, ML-quality, and capacity gates
 - Owner: project maintainer
 - Related specification:
   [Preview-first photo processing](../superpowers/specs/2026-07-30-preview-first-photo-processing-design.md)
@@ -73,7 +74,7 @@ The implementation uses these stable names so adjacent tasks do not invent incom
 - Preview attempt staging key:
   `processing-staging/previews/<attempt-id>/preview-small-v1.jpg`.
 - Preview final key:
-  `derivatives/previews/<photo-id>/preview-small-v1/<attempt-id>.jpg`.
+  `derivatives/previews/<photo-id>/preview-small-v1/<attempt-id>-<sha256>.jpg`.
 - Preview output checksum: lowercase SHA-256 hex.
 - Generic versioned input fingerprint fields:
   `object_key`, `object_size`, `object_content_type`, `object_etag`,
@@ -114,6 +115,9 @@ Delivery additionally requires:
 ## Implementation
 
 ### Task 1: Persist explicit photo policy and immutable derivative identity
+
+**Execution status:** Complete with targeted local tests, migration-drift check, and independent
+review clean. The changes remain unstaged pending whole-task review.
 
 **Files:**
 
@@ -156,6 +160,8 @@ Delivery additionally requires:
 
 ### Task 2: Define versioned preview and generic-media worker contracts
 
+**Execution status:** Complete with targeted local contract tests and independent review clean.
+
 **Files:**
 
 - Modify: `src/backend/processing/contracts.py`
@@ -195,7 +201,11 @@ Delivery additionally requires:
   `PhotoDerivative`; make original-based version-1 face enrollment remain compatible.
 - [ ] Re-run the targeted suites and expect them to pass.
 
-### Task 3: Add exact staging upload and verified non-overwriting publication
+### Task 3: Add exact staging upload and verified content-addressed publication
+
+**Execution status:** Complete with targeted local storage/publication tests and independent review
+clean. The final key is content-addressed as specified after the approved plan ruling for Yandex
+CopyObject semantics.
 
 **Files:**
 
@@ -215,8 +225,8 @@ Delivery additionally requires:
   connect to downstream enrollment.
 
 - [ ] Add failing storage tests for exact-key presigned PUT, lease-bounded expiry, strict key
-  validation, HEAD verification, checksum streaming, source-conditional copy, final-key
-  non-overwrite behavior, and sanitized storage errors.
+  validation, HEAD verification, checksum streaming, source-conditional copy, content-addressed
+  final-key convergence, and sanitized storage errors.
 - [ ] Add failing service tests for current-attempt preflight, object verification, recovery after
   copy-before-transaction interruption, duplicate completion, conflict, stale completion, and
   immutable publication.
@@ -226,6 +236,10 @@ Delivery additionally requires:
 - [ ] Implement `ExactPreviewStorage` using the existing private-media credentials only in Django.
   It may sign one staging PUT, inspect/stream-hash that key, inspect a final key, and promote with a
   source precondition; it must reject every key outside the two declared preview prefixes.
+- [ ] Use the exact content-addressed final-key interface
+  `derivatives/previews/<photo-id>/preview-small-v1/<attempt-id>-<sha256>.jpg`. Different declared
+  SHA-256 values therefore select different immutable final keys; recovery may converge only after
+  full verification of the same declared key and must not assume a destination-copy precondition.
 - [ ] Implement a two-phase completion service: lock and validate current lease; release the
   transaction for storage verification/promotion; then reacquire run/job/state/attempt locks and
   revalidate current ownership before atomically accepting the attempt and creating
@@ -238,6 +252,8 @@ Delivery additionally requires:
 - [ ] Re-run the targeted command and expect all selected tests to pass.
 
 ### Task 4: Generate and upload normalized previews in the standalone worker
+
+**Execution status:** Complete with targeted local worker tests and independent review clean.
 
 **Files:**
 
@@ -274,6 +290,9 @@ Delivery additionally requires:
 - [ ] Re-run the targeted worker tests and expect them to pass.
 
 ### Task 5: Enforce preview-first enrollment and single-process processor scheduling
+
+**Execution status:** Complete with targeted local confirmation, enrollment, runner, and container
+contract tests and independent review clean. The tracked activation default remains false.
 
 **Files:**
 
@@ -331,6 +350,9 @@ Delivery additionally requires:
 
 ### Task 6: Select preview media in the gallery without changing presentation URLs
 
+**Execution status:** Complete with targeted local gallery, media-route, and storage tests and
+independent review clean. This is source/test evidence only; no gallery environment was activated.
+
 **Files:**
 
 - Modify: `src/backend/picflow/gallery.py`
@@ -361,6 +383,10 @@ Delivery additionally requires:
 - [ ] Re-run the targeted gallery tests and expect them to pass.
 
 ### Task 7: Prove the complete pipeline, reporting, resource use, and operational contract
+
+**Execution status:** Source/test and runbook work is complete with independent review clean.
+Representative original-versus-preview ML comparison and concurrency-one capacity measurement were
+not performed; both remain activation blockers.
 
 **Files:**
 
@@ -404,6 +430,11 @@ Delivery additionally requires:
   PR evidence; any material regression blocks activation, not code completion.
 
 ### Task 8: Configure staging-object expiry with a separate live approval gate
+
+**Execution status:** Complete as a documented activation blocker with independent review clean.
+The bucket lifecycle was neither read successfully nor changed because local interactive `yc`
+authentication had expired; fresh discovery, separate approval, application, and read-back remain
+required before activation.
 
 **Files:**
 
@@ -449,21 +480,21 @@ Delivery additionally requires:
 - **Produces:** repository truth aligned with delivered behavior and one reviewable complete-task
   diff.
 
-- [ ] Compare delivered behavior line-by-line with the approved specification and acceptance
+- [x] Compare delivered behavior line-by-line with the approved specification and acceptance
   criteria; record any unmet item as blocking rather than weakening the document.
-- [ ] Update `docs/architecture.md` from proposed to implemented only for behavior present and
+- [x] Update `docs/architecture.md` from proposed to implemented only for behavior present and
   executable in the repository. State separately whether preview generation is merely shipped,
   locally verified, staging-configured, or live-activated.
-- [ ] Update engineering/product job evidence only with commands or browser/runtime evidence
-  actually obtained.
-- [ ] Confirm the result still conforms to ADR 0017 and ADR 0015. Stop instead of silently changing
+- [x] Inspect engineering/product job evidence and update it only with commands or browser/runtime
+  evidence actually obtained; no status change is warranted by the local-only preview evidence.
+- [x] Confirm the result still conforms to ADR 0017 and ADR 0015. Stop instead of silently changing
   worker credentials, publication ownership, polling, or original-delivery policy.
-- [ ] Mark the plan completed only after review and final verification; do not change the approved
+- [x] Mark the plan completed only after review and final verification; do not change the approved
   specification's decisions to match implementation shortcuts.
-- [ ] Have the root controller prepare the complete unstaged review package, including untracked
+- [x] Have the root controller prepare the complete unstaged review package, including untracked
   files. Dispatch one independent reviewer for the whole task. Return fixes to the same implementer
   and re-review to the same reviewer.
-- [ ] After approval, have the root controller run [Verification](#verification), stage only task
+- [x] After approval, have the root controller run [Verification](#verification), stage only task
   files, and create one implementation commit.
 
 ## Verification

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import json
+import math
 import random
 from collections.abc import Callable
 from datetime import timedelta
@@ -17,9 +17,11 @@ from django.utils import timezone
 from processing.contracts import AttemptCompletion, ClaimedJob, CompletionConflict, EmptyClaim
 from processing.models import (
     FACE_EMBEDDING_PROCESSOR,
+    GENERATE_PREVIEW_PROCESSOR,
+    EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
-    EventProcessingRun,
+    PhotoDerivative,
     PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
@@ -37,6 +39,10 @@ DEFAULT_RETRY_POLICY = {
     "jitter_seconds": 5,
     "lease_max_seconds": 300,
 }
+
+
+class PreviewPublicationRequired(ValueError):
+    """Preview success must pass the storage-verifying publication service."""
 
 
 def claim_job(
@@ -162,7 +168,15 @@ def complete_attempt(
     now: timezone.datetime | None = None,
     jitter: Callable[[int, int], int] | None = None,
 ) -> AttemptCompletion:
-    now = now or timezone.now()
+    processor_type = (
+        ProcessingAttempt.objects.filter(pk=attempt_id)
+        .values_list("processor_type", flat=True)
+        .first()
+    )
+    if processor_type == GENERATE_PREVIEW_PROCESSOR:
+        raise PreviewPublicationRequired(
+            "Preview attempts require verified preview publication before completion."
+        )
     payload = {
         "outcome": "success",
         "result": result,
@@ -190,7 +204,6 @@ def fail_attempt(
     now: timezone.datetime | None = None,
     jitter: Callable[[int, int], int] | None = None,
 ) -> AttemptCompletion:
-    now = now or timezone.now()
     payload = {
         "outcome": "failure",
         "error_code": error_code,
@@ -240,12 +253,13 @@ def _terminal_submission(
     attempt_id: UUID,
     payload: dict[str, Any],
     *,
-    now: timezone.datetime,
+    now: timezone.datetime | None,
     jitter: Callable[[int, int], int] | None,
 ) -> AttemptCompletion:
     payload_hash = _canonical_hash(payload)
     with transaction.atomic():
         run, job, state, attempt = _locked_context(attempt_id)
+        now = now or timezone.now()
         if attempt.status != ProcessingAttempt.Status.IN_PROGRESS:
             if attempt.status == ProcessingAttempt.Status.EXPIRED:
                 return _record_late_receipt(attempt, payload, payload_hash, now)
@@ -502,12 +516,11 @@ def _terminal_failure(
     )
 
 
-def _persist_face_embedding_result(
-    attempt: ProcessingAttempt, result: dict[str, Any]
-) -> None:
+def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> None:
     if not isinstance(result, dict):
         return
     model = _coerce_face_model(result, attempt.configuration)
+    input_geometry = _face_input_geometry(attempt, result)
     faces = result.get("faces")
     if not isinstance(faces, list):
         return
@@ -539,7 +552,8 @@ def _persist_face_embedding_result(
                 "bbox": _safe_face_bbox(record.get("bbox")),
                 "landmarks": record.get("landmarks", []),
                 "model": model,
-            },
+            }
+            | input_geometry,
             features={
                 "confidence": record.get("quality"),
                 "quality": record.get("quality"),
@@ -555,6 +569,38 @@ def _persist_face_embedding_result(
                 vector=embedding,
                 metadata=_safe_dict(record),
             )
+
+
+def _face_input_geometry(attempt: ProcessingAttempt, result: dict[str, Any]) -> dict[str, Any]:
+    """Persist explicit preview coordinates only when they bind the accepted derivative."""
+    if attempt.contract_version != 2:
+        return {}
+    geometry = result.get("input_geometry")
+    if not isinstance(geometry, dict):
+        raise ValueError("preview face result is missing input geometry")
+    derivative = PhotoDerivative.objects.filter(
+        photo_id=attempt.photo_id,
+        variant="preview-small-v1",
+        accepted_attempt_id__isnull=False,
+    ).first()
+    expected = (
+        {
+            "coordinate_space": "preview-small-v1",
+            "pixel_width": derivative.width,
+            "pixel_height": derivative.height,
+            "oriented_source_width": derivative.oriented_source_width,
+            "oriented_source_height": derivative.oriented_source_height,
+        }
+        if derivative is not None
+        else None
+    )
+    if geometry != expected:
+        raise ValueError("preview face result geometry disagrees with the accepted derivative")
+    return {
+        **expected,
+        "scale_x": expected["oriented_source_width"] / expected["pixel_width"],
+        "scale_y": expected["oriented_source_height"] / expected["pixel_height"],
+    }
 
 
 def _iter_face_records(result: dict[str, Any]) -> list[tuple[int | None, dict[str, Any]]]:

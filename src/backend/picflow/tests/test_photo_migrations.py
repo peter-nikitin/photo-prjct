@@ -34,16 +34,16 @@ class PhotoMigrationTests(TransactionTestCase):
             Photo.objects.create(id="LEGACY", event=event, src="photos/legacy.jpg")
 
             executor = MigrationExecutor(connection)
-            executor.migrate([("picflow", "0005_validate_photo_private_original_constraints")])
-            apps = executor.loader.project_state(
-                [("picflow", "0005_validate_photo_private_original_constraints")]
-            ).apps
+            executor.migrate([("picflow", "0006_photo_processing_policy")])
+            apps = executor.loader.project_state([("picflow", "0006_photo_processing_policy")]).apps
             MigratedPhoto = apps.get_model("picflow", "Photo")
             migrated_photo = MigratedPhoto.objects.get(pk="LEGACY")
             self.assertEqual(migrated_photo.pk, "LEGACY")
             self.assertEqual(migrated_photo.event_id, event.pk)
             self.assertEqual(migrated_photo.src.name, "photos/legacy.jpg")
             self.assertIsNone(migrated_photo.original_key)
+            self.assertEqual(migrated_photo.processing_generation, "legacy_original_v1")
+            self.assertEqual(migrated_photo.gallery_media_policy, "legacy_original_allowed")
 
             user_app_label, user_model_name = settings.AUTH_USER_MODEL.split(".", 1)
             User = apps.get_model(user_app_label, user_model_name)

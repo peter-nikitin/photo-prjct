@@ -8,6 +8,7 @@ from django.utils import timezone
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 
+from processing.contracts import AttemptCompletion
 from processing.models import (
     EventProcessingRun,
     PhotoProcessingState,
@@ -16,8 +17,10 @@ from processing.models import (
     ProcessingLateReceipt,
 )
 from processing.services.enrollment import (
+    GENERATE_PREVIEW_CONFIGURATION,
     request_capture_metadata,
     request_face_embedding_enqueue,
+    request_processor,
 )
 
 
@@ -72,6 +75,14 @@ class WorkerApiTests(TestCase):
 
     def face_claim_body(self, **overrides: object) -> dict[str, object]:
         return self.claim_body(processor_type="face_embedding", **overrides)
+
+    def preview_claim_body(self, **overrides: object) -> dict[str, object]:
+        return self.claim_body(
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            **overrides,
+        )
 
     def terminal_body(self, job: dict[str, object], **overrides: object) -> dict[str, object]:
         failure_retryable = {
@@ -172,6 +183,192 @@ class WorkerApiTests(TestCase):
         self.assertGreaterEqual(grant.call_args.kwargs["max_ttl_seconds"], 1)
         self.assertLessEqual(grant.call_args.kwargs["max_ttl_seconds"], 119)
 
+    @patch("processing.views.ExactPreviewStorage.create_upload_grant")
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_v2_preview_claim_has_one_exact_nonpersisted_upload_slot(
+        self, download_grant, upload_grant
+    ) -> None:
+        download_grant.return_value.url = "https://storage.example.test/object?secret"
+        download_grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        upload_grant.return_value.url = "https://storage.example.test/preview-put?secret"
+        upload_grant.return_value.expires_at = timezone.now() + timedelta(seconds=20)
+        photo = self.photo("preview-api-photo")
+        request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+
+        response = self.post("/internal/photo-processing/v1/claim", self.preview_claim_body())
+
+        self.assertEqual(response.status_code, 200)
+        slot = response.json()["job"]["output_slots"]
+        self.assertEqual(len(slot), 1)
+        self.assertEqual(
+            slot[0],
+            {
+                "variant": "preview-small-v1",
+                "upload_url": "https://storage.example.test/preview-put?secret",
+                "upload_expires_at": upload_grant.return_value.expires_at.isoformat(),
+                "content_type": "image/jpeg",
+                "staging_key": (
+                    f"processing-staging/previews/{response.json()['job']['attempt_id']}/"
+                    "preview-small-v1.jpg"
+                ),
+                "max_bytes": 10_485_760,
+                "max_width": 1600,
+                "max_height": 1600,
+                "checksum_algorithm": "sha256",
+            },
+        )
+        self.assertEqual(upload_grant.call_args.kwargs["staging_key"], slot[0]["staging_key"])
+        self.assertGreaterEqual(upload_grant.call_args.kwargs["max_ttl_seconds"], 1)
+        self.assertLessEqual(upload_grant.call_args.kwargs["max_ttl_seconds"], 119)
+        self.assertEqual(ProcessingAttempt.objects.get().result, {})
+
+    @patch("processing.views.complete_preview_attempt")
+    @patch("processing.views.ExactPreviewStorage.create_upload_grant")
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_v2_preview_completion_accepts_only_the_bounded_preview_result(
+        self, download_grant, upload_grant, complete_preview
+    ) -> None:
+        download_grant.return_value.url = "https://storage.example.test/object?secret"
+        download_grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        upload_grant.return_value.url = "https://storage.example.test/preview-put?secret"
+        upload_grant.return_value.expires_at = timezone.now() + timedelta(seconds=20)
+        photo = self.photo("preview-result-photo")
+        request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+        job = self.post("/internal/photo-processing/v1/claim", self.preview_claim_body()).json()[
+            "job"
+        ]
+        complete_preview.return_value = AttemptCompletion(
+            attempt=ProcessingAttempt.objects.get(pk=job["attempt_id"])
+        )
+        result = {
+            "variant": "preview-small-v1",
+            "content_type": "image/jpeg",
+            "byte_size": 1024,
+            "width": 1600,
+            "height": 1000,
+            "oriented_source_width": 3200,
+            "oriented_source_height": 2000,
+            "sha256": "a" * 64,
+            "upload_ms": 3,
+            "warnings": ["color_profile_missing"],
+        }
+
+        rejected = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+            self.terminal_body(
+                job,
+                contract_version=2,
+                processor_type="generate_preview",
+                processor_version=1,
+                result=result | {"width": 1601},
+            ),
+        )
+        accepted = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+            self.terminal_body(
+                job,
+                contract_version=2,
+                processor_type="generate_preview",
+                processor_version=1,
+                result=result,
+            ),
+        )
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(rejected.status_code, 400)
+
+    @patch("processing.views.complete_preview_attempt")
+    @patch("processing.views.ExactPreviewStorage.create_upload_grant")
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_preview_streaming_storage_failure_is_retryable_and_sanitized(
+        self, download_grant, upload_grant, complete_preview
+    ) -> None:
+        download_grant.return_value.url = "https://storage.example.test/object?secret"
+        download_grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        upload_grant.return_value.url = "https://storage.example.test/preview-put?secret"
+        upload_grant.return_value.expires_at = timezone.now() + timedelta(seconds=20)
+        photo = self.photo("preview-streaming-failure")
+        request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+        job = self.post("/internal/photo-processing/v1/claim", self.preview_claim_body()).json()[
+            "job"
+        ]
+        complete_preview.side_effect = StorageUnavailable()
+        result = {
+            "variant": "preview-small-v1",
+            "content_type": "image/jpeg",
+            "byte_size": 1024,
+            "width": 1600,
+            "height": 1000,
+            "oriented_source_width": 3200,
+            "oriented_source_height": 2000,
+            "sha256": "a" * 64,
+            "upload_ms": 3,
+            "warnings": [],
+        }
+
+        response = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+            self.terminal_body(
+                job,
+                contract_version=2,
+                processor_type="generate_preview",
+                processor_version=1,
+                result=result,
+            ),
+        )
+
+        self.assertEqual(
+            (response.status_code, response.json()["error"]["code"]),
+            (503, "storage_unavailable"),
+        )
+        self.assertNotIn("secret", response.content.decode())
+        self.assertEqual(ProcessingAttempt.objects.get(pk=job["attempt_id"]).status, "in_progress")
+
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_completion_rejects_unknown_processor_type_or_version(self, grant) -> None:
         grant.return_value.url = "https://storage.example.test/object?secret"
@@ -200,9 +397,9 @@ class WorkerApiTests(TestCase):
         grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
         request_face_embedding_enqueue(self.photo())
 
-        face_job = self.post(
-            "/internal/photo-processing/v1/claim", self.face_claim_body()
-        ).json()["job"]
+        face_job = self.post("/internal/photo-processing/v1/claim", self.face_claim_body()).json()[
+            "job"
+        ]
         attempt = face_job["attempt_id"]
         invalid_face = self.terminal_body(
             face_job,
@@ -249,9 +446,9 @@ class WorkerApiTests(TestCase):
         grant.return_value.url = "https://storage.example.test/object?secret"
         grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
         request_face_embedding_enqueue(self.photo())
-        face_job = self.post(
-            "/internal/photo-processing/v1/claim", self.face_claim_body()
-        ).json()["job"]
+        face_job = self.post("/internal/photo-processing/v1/claim", self.face_claim_body()).json()[
+            "job"
+        ]
         attempt = face_job["attempt_id"]
         unsupported = self.post(
             f"/internal/photo-processing/v1/attempts/{attempt}/fail",

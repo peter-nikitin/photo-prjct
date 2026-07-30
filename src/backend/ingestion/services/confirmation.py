@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from io import BytesIO
 from typing import Protocol
 from uuid import UUID
 
+from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
 from django.utils import timezone
 from picflow.models import Photo
-from processing.services.enrollment import request_capture_metadata
+from PIL import Image
+from processing.services.enrollment import (
+    GENERATE_PREVIEW_CONFIGURATION,
+    request_capture_metadata,
+    request_generate_preview,
+)
 
 from ingestion.models import UploadItem
 from ingestion.services.batches import (
@@ -117,6 +124,35 @@ def confirm_upload_item(
 
         _run_failpoint(failpoint, "after_source_checkpoint")
 
+        # Storage promotion and lazy JPEG-header inspection are deliberately outside the
+        # authoritative mutation transaction. The final transaction below revalidates the
+        # persisted checkpoint and item state before publishing any database state.
+        if not recovering_final:
+            if source_etag_wire is None:
+                raise _VerificationFailure("promotion_conflict")
+            storage.promote(
+                incoming_key=item.incoming_key,
+                final_key=item.final_key,
+                etag_wire=source_etag_wire,
+            )
+            _run_failpoint(failpoint, "after_copy")
+
+        final = storage.inspect(key=item.final_key)
+        _require_final_identity(item=item, identity=final, checkpoint=checkpoint)
+        _run_failpoint(failpoint, "after_final_head")
+        preview_first = bool(getattr(settings, "PHOTO_PROCESSING_PREVIEW_ENABLED", False))
+        preview_geometry = (
+            _oriented_jpeg_geometry(
+                storage=storage,
+                key=item.final_key,
+                etag_wire=final.etag_wire,
+                byte_size=final.size,
+            )
+            if preview_first
+            else None
+        )
+        _run_failpoint(failpoint, "after_preview_geometry")
+
         with transaction.atomic():
             batch = _locked_owned_batch(uploader=uploader, batch_id=batch_id)
             item = _locked_item(batch=batch, item_id=item_id)
@@ -130,20 +166,6 @@ def confirm_upload_item(
                 if not checkpoint or item.verified_source_etag != checkpoint:
                     raise ObjectChanged()
 
-                if not recovering_final:
-                    if source_etag_wire is None:
-                        raise _VerificationFailure("promotion_conflict")
-                    storage.promote(
-                        incoming_key=item.incoming_key,
-                        final_key=item.final_key,
-                        etag_wire=source_etag_wire,
-                    )
-                    _run_failpoint(failpoint, "after_copy")
-
-                final = storage.inspect(key=item.final_key)
-                _require_final_identity(item=item, identity=final, checkpoint=checkpoint)
-                _run_failpoint(failpoint, "after_final_head")
-
                 now = timezone.now()
                 photo = Photo.objects.create(
                     id=item.id.hex,
@@ -155,11 +177,28 @@ def confirm_upload_item(
                     original_size=item.expected_size,
                     original_content_type=item.declared_content_type,
                     uploaded_at=now,
+                    processing_generation=(
+                        Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+                        if preview_first
+                        else Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+                    ),
+                    gallery_media_policy=(
+                        Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+                        if preview_first
+                        else Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
+                    ),
                 )
                 request_capture_metadata(
                     photo,
                     verified_source_etag=item.verified_source_etag,
                 )
+                if preview_geometry is not None:
+                    request_generate_preview(
+                        photo,
+                        pixel_width=preview_geometry[0],
+                        pixel_height=preview_geometry[1],
+                        verified_source_etag=item.verified_source_etag,
+                    )
                 item.photo = photo
                 item.status = UploadItem.Status.UPLOADED
                 item.error_code = ""
@@ -299,3 +338,36 @@ def _best_effort_delete(*, storage: ConfirmationStorage, incoming_key: str) -> N
         storage.delete(key=incoming_key)
     except StorageError:
         pass
+
+
+def _oriented_jpeg_geometry(
+    *, storage: ConfirmationStorage, key: str, etag_wire: str, byte_size: int
+) -> tuple[int, int]:
+    """Parse bounded JPEG headers/EXIF without decoding or materializing the pixel buffer."""
+    header_limit = min(byte_size, 1024 * 1024)
+    chunk_size = 64 * 1024
+    prefix = bytearray()
+    width = height = 0
+    orientation = 1
+    for start in range(0, header_limit, chunk_size):
+        end = min(header_limit, start + chunk_size) - 1
+        prefix.extend(storage.read_range(key=key, etag_wire=etag_wire, start=start, end=end))
+        try:
+            with Image.open(BytesIO(prefix)) as source:
+                width, height = source.size
+                orientation = int(source.getexif().get(274, 1))
+            break
+        except Image.DecompressionBombError:
+            raise _VerificationFailure("invalid_jpeg") from None
+        except (OSError, ValueError):
+            if end + 1 >= header_limit:
+                raise _VerificationFailure("invalid_jpeg") from None
+    if orientation in {5, 6, 7, 8}:
+        width, height = height, width
+    worker = GENERATE_PREVIEW_CONFIGURATION["worker"]
+    assert isinstance(worker, dict)
+    max_pixels = worker["max_pixels"]
+    assert isinstance(max_pixels, int)
+    if width < 1 or height < 1 or width * height > max_pixels:
+        raise _VerificationFailure("invalid_jpeg")
+    return width, height

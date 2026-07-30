@@ -214,7 +214,11 @@ def test_public_environments_share_one_https_edge_overlay() -> None:
 
     shared = yaml.safe_load(shared_path.read_text(encoding="utf-8"))
 
-    assert shared["services"]["nginx"]["ports"] == ["80:80", "443:443"]
+    assert shared["services"]["nginx"]["ports"] == [
+        "80:80",
+        "443:443",
+        "127.0.0.1:8080:8080",
+    ]
     assert "certbot" in shared["services"]
     staging_copy = _workflow_step(staging_workflow, "deploy", "Copy staging deployment files")
     production_copy = _workflow_step(

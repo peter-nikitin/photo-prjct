@@ -17,10 +17,18 @@ from picflow.gallery import (
     PublicMediaResolver,
 )
 from picflow.models import Event, Photo
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from config.metrics import REGISTRY
 
 
 def health(request):  # noqa: ARG001
     return JsonResponse({"status": "ok"})
+
+
+@require_GET
+def metrics(request):  # noqa: ARG001
+    return HttpResponse(generate_latest(REGISTRY), content_type=CONTENT_TYPE_LATEST)
 
 
 def event_catalog(request):

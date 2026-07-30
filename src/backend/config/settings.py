@@ -19,6 +19,7 @@ DATABASES = {
     }
 }
 DEBUG = env.bool("DEBUG", default=False)
+MONITORING_ENVIRONMENT = env("MONITORING_ENVIRONMENT", default="local")
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -37,6 +38,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "config.metrics.HttpMetricsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",

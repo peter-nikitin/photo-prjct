@@ -11,8 +11,20 @@
 
 | Environment | Resource mapping | Lifecycle |
 | --- | --- | --- |
-| Staging | Existing preemptible VM; stable VM, disk, subnet, security-group, and address IDs still require successful read-only discovery | Disposable application/data; automatic deploy from `main` |
+| Staging | Existing preemptible VM; private-media Object Storage bucket is `hires-staging` (non-secret name only); stable VM, disk, subnet, security-group, and address IDs still require successful read-only discovery | Disposable application/data; automatic deploy from `main` |
 | Production | Not provisioned | Separate non-preemptible VM after sizing evidence and pricing approval |
+
+### Staging private-media bucket mapping
+
+- Observed on 2026-07-30 from the GitHub repository variable
+  `PRIVATE_MEDIA_S3_BUCKET`: `hires-staging`.
+- This is a stable, non-secret bucket-name mapping for staging. It is not proof of the bucket's
+  current existence, ownership, ACL/CORS, lifecycle configuration, or billing state.
+- Verification was blocked on 2026-07-30: local interactive `yc` authentication had expired, so
+  `yc storage bucket list --folder-id b1g2qttgfhb4gdunvlge --format json` returned
+  `Unauthenticated`. After reauthentication, rediscover with
+  `yc storage bucket get hires-staging --full --folder-id b1g2qttgfhb4gdunvlge --format json`; do
+  not mutate the bucket merely to restore this verification.
 
 ## Public endpoint observations
 

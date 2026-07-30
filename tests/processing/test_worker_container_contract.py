@@ -52,6 +52,7 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
         "PHOTO_WORKER_TOKEN",
         "PHOTO_WORKER_BUILD",
         "PHOTO_WORKER_LEASE_SECONDS",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES",
     }
     assert environment["PHOTO_WORKER_API_URL"].endswith("/internal/photo-processing/v1")
     assert "PHOTO_PROCESSING_WORKER_TOKEN" in environment["PHOTO_WORKER_TOKEN"]
@@ -78,6 +79,9 @@ def test_production_worker_profile_is_bounded_and_isolated_from_web_configuratio
         "PHOTO_WORKER_TOKEN": "${PHOTO_PROCESSING_WORKER_TOKEN:-}",
         "PHOTO_WORKER_BUILD": "${PHOTO_WORKER_BUILD:-capture-metadata-v1}",
         "PHOTO_WORKER_LEASE_SECONDS": "${PHOTO_WORKER_LEASE_SECONDS:-120}",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+            "${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/1}"
+        ),
     }
     assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
 

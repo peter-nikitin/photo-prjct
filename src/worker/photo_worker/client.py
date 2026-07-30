@@ -12,8 +12,8 @@ from urllib.request import Request, urlopen
 from photo_worker.contracts import (
     MAX_JSON_FIELD_BYTES,
     PROCESSOR_TYPE,
-    ContractError,
     Claim,
+    ContractError,
     _download_url,
     _processor_version,
     _utc_timestamp,
@@ -44,6 +44,10 @@ class ApiError(RuntimeError):
 
 
 class DownloadError(ApiError):
+    pass
+
+
+class UploadError(ApiError):
     pass
 
 
@@ -106,16 +110,17 @@ class HttpClient:
         lease_seconds: int,
         processor_type: str = PROCESSOR_TYPE,
         processor_version: int | None = None,
+        contract_version: int = 1,
     ) -> Claim:
         try:
             return Claim.from_response(
                 self.post_json(
                     "claim",
                     {
-                        "contract_version": 1,
+                        "contract_version": contract_version,
                         "processor_type": processor_type,
                         "processor_version": (
-                            _processor_version(processor_type)
+                            _processor_version(processor_type, contract_version)
                             if processor_version is None
                             else processor_version
                         ),
@@ -237,6 +242,48 @@ class HttpClient:
                 destination.unlink(missing_ok=True)
         return written
 
+    def upload_preview(
+        self,
+        url: str,
+        source: Path,
+        *,
+        content_type: str,
+        expected_size: int,
+        max_bytes: int,
+        response_max_bytes: int = BOOTSTRAP_RESPONSE_MAX_BYTES,
+    ) -> None:
+        """PUT exactly one locally-created preview through its short-lived grant."""
+        if (
+            content_type != "image/jpeg"
+            or expected_size < 1
+            or expected_size > max_bytes
+            or not 0 < response_max_bytes <= MAX_JSON_FIELD_BYTES
+        ):
+            raise UploadError("output_contract_violation", retryable=False)
+        try:
+            if source.stat().st_size != expected_size:
+                raise UploadError("output_contract_violation", retryable=False)
+            with source.open("rb") as body:
+                request = Request(
+                    url,
+                    data=body,
+                    method="PUT",
+                    headers={
+                        "Content-Type": content_type,
+                        "Content-Length": str(expected_size),
+                    },
+                )
+                with self._opener(request, timeout=self._timeout_seconds) as response:
+                    if len(response.read(response_max_bytes + 1)) > response_max_bytes:
+                        raise UploadError("network_interruption", retryable=True)
+        except UploadError:
+            raise
+        except HTTPError as error:
+            error.close()
+            raise _upload_error(error.code) from None
+        except (URLError, OSError):
+            raise UploadError("network_interruption", retryable=True) from None
+
 
 def _read_bounded(response: Response, maximum: int) -> bytes:
     data = response.read(maximum + 1)
@@ -268,3 +315,13 @@ def _download_error(status: int) -> DownloadError:
     if status >= 500 or status == 404:
         return DownloadError("storage_unavailable", retryable=True)
     return DownloadError("network_interruption", retryable=True)
+
+
+def _upload_error(status: int) -> UploadError:
+    if status in {401, 403}:
+        # Version 2's server contract exposes this stable retryable code for any short-lived
+        # object-storage grant that expired while the attempt lease remained current.
+        return UploadError("download_authorization_expired", retryable=True)
+    if status >= 500:
+        return UploadError("storage_unavailable", retryable=True)
+    return UploadError("network_interruption", retryable=True)

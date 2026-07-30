@@ -377,26 +377,11 @@ if ! compose_with_requested_processing_profile pull; then
     fail "Deployment image pull failed"
 fi
 
-compose_up_status=0
-attempt=1
-max_compose_attempts=6
-compose_wait_seconds=5
-while [ "$attempt" -le "$max_compose_attempts" ]; do
-    compose_up_status=0
-    if compose_with_requested_processing_profile up -d --remove-orphans; then
-        break
-    fi
-    compose_up_status=$?
-    if [ "$attempt" -ge "$max_compose_attempts" ]; then
-        echo "docker compose up exit status after attempt $attempt: $compose_up_status" >&2
-        fail "Deployment Compose reconciliation failed"
-    fi
-    echo "docker compose up attempt $attempt failed with status $compose_up_status; retrying after ${compose_wait_seconds}s" >&2
-    attempt=$((attempt + 1))
-    sleep "$compose_wait_seconds"
-done
+if ! compose_with_requested_processing_profile up -d --remove-orphans; then
+    fail "Deployment compose up command failed"
+fi
 
-echo "docker compose up exit status: $compose_up_status" >&2
+echo "docker compose up exit status: 0" >&2
 
 attempt=1
 max_attempts=12

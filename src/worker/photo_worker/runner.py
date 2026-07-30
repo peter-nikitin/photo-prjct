@@ -20,11 +20,11 @@ from photo_worker.client import ApiError, DownloadError, HttpClient
 from photo_worker.contracts import (
     FAILURE_RETRYABLE,
     PROCESSOR_TYPE,
+    PROCESSOR_TYPE_FACE_EMBEDDING,
     CaptureMetadataResult,
     Claim,
     ClaimedJob,
     FaceEmbeddingResult,
-    PROCESSOR_TYPE_FACE_EMBEDDING,
     redact,
 )
 from photo_worker.face_embedding import FaceEmbeddingError, extract_face_embeddings
@@ -41,8 +41,7 @@ class WorkerClient(Protocol):
         lease_seconds: int,
         processor_type: str = PROCESSOR_TYPE,
         processor_version: int | None = None,
-    ) -> Claim:
-        ...
+    ) -> Claim: ...
 
     def download(
         self,
@@ -73,7 +72,7 @@ class WorkerClient(Protocol):
 class WorkerConfig:
     worker_build: str
     lease_seconds: int
-    processor_type: str = PROCESSOR_TYPE
+    processor_type: str = "all"
     concurrency: int = 1
     temp_dir: Path | None = None
     minimum_delay_seconds: float = 1.0
@@ -83,7 +82,11 @@ class WorkerConfig:
     def __post_init__(self) -> None:
         if self.concurrency != 1:
             raise ValueError("worker concurrency must be exactly 1")
-        if self.processor_type not in {PROCESSOR_TYPE, PROCESSOR_TYPE_FACE_EMBEDDING}:
+        if self.processor_type not in {
+            "all",
+            PROCESSOR_TYPE,
+            PROCESSOR_TYPE_FACE_EMBEDDING,
+        }:
             raise ValueError("unsupported processor type")
         if not (
             _finite_positive(self.minimum_delay_seconds)
@@ -95,9 +98,9 @@ class WorkerConfig:
     def from_env(cls) -> tuple[WorkerConfig, HttpClient]:
         api_url = os.environ["PHOTO_WORKER_API_URL"]
         token = os.environ["PHOTO_WORKER_TOKEN"]
-        build = os.environ.get("PHOTO_WORKER_BUILD", "capture-metadata-v1")
+        build = os.environ.get("PHOTO_WORKER_BUILD", "face-embedding-v1")
         lease = int(os.environ.get("PHOTO_WORKER_LEASE_SECONDS", "120"))
-        processor_type = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPE", PROCESSOR_TYPE)
+        processor_type = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPE", "all")
         return (
             cls(
                 worker_build=build,
@@ -194,12 +197,20 @@ class Worker:
         self._config = config
         self._lease_keeper_factory = lease_keeper_factory
         self._next_poll_delay_seconds = config.minimum_delay_seconds
+        self._processor_types = (
+            (PROCESSOR_TYPE, PROCESSOR_TYPE_FACE_EMBEDDING)
+            if config.processor_type == "all"
+            else (config.processor_type,)
+        )
+        self._next_processor_index = 0
 
     def run_once(self) -> int | None:
+        processor_type = self._processor_types[self._next_processor_index]
+        self._next_processor_index = (self._next_processor_index + 1) % len(self._processor_types)
         claim = self._client.claim_job(
             worker_build=self._config.worker_build,
             lease_seconds=self._config.lease_seconds,
-            processor_type=self._config.processor_type,
+            processor_type=processor_type,
         )
         if claim.job is None:
             return claim.suggested_delay_seconds

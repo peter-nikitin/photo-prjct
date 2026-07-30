@@ -7,6 +7,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 CONTRACT_VERSION = 1
@@ -206,8 +207,10 @@ class ProcessorConfiguration:
                 "normalize_embeddings",
             }:
                 raise ContractError("invalid processor configuration")
-            max_faces = face_config.get("max_faces", face_config.get("max_faces_per_photo", 1))
-            face_threshold = face_config.get(
+            configured_max_faces = face_config.get(
+                "max_faces", face_config.get("max_faces_per_photo", 1)
+            )
+            configured_face_threshold = face_config.get(
                 "detection_threshold",
                 face_config.get("detection_confidence_threshold", DEFAULT_FACE_DETECTION_THRESHOLD),
             )
@@ -221,12 +224,16 @@ class ProcessorConfiguration:
                 model = str(face_config["model"])
             else:
                 model = "sface"
-            if not _positive_int(max_faces) or max_faces > MAX_FACE_EMBEDDINGS_PER_JOB:
+            if not _positive_int(configured_max_faces):
                 raise ContractError("invalid processor configuration")
-            if not _bounded_probability(face_threshold):
+            max_faces = cast(int, configured_max_faces)
+            if max_faces > MAX_FACE_EMBEDDINGS_PER_JOB:
+                raise ContractError("invalid processor configuration")
+            if not _bounded_probability(configured_face_threshold):
                 raise ContractError("invalid processor configuration")
             if not isinstance(model, str) or model not in {"sface", "sface-v1", "sface_v1"}:
                 raise ContractError("invalid processor configuration")
+            face_threshold = cast(float, configured_face_threshold)
 
         return cls(
             date_field_precedence=_EXIF_FIELDS,
@@ -397,6 +404,7 @@ class FaceEmbeddingResult:
         return {
             "model": self.model,
             "faces": [face.as_payload() for face in self.faces],
+            "face_count": len(self.faces),
             "has_single_query_face_usable": self.has_single_query_face_usable,
             "warnings": list(self.warnings),
             "timings": dict(self.timings),

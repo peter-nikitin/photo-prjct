@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 from photo_worker.client import ApiError, DownloadError
 from photo_worker.contracts import (
+    PROCESSOR_TYPE,
+    PROCESSOR_TYPE_FACE_EMBEDDING,
     CaptureMetadataResult,
     Claim,
     FaceEmbeddingFace,
     FaceEmbeddingResult,
-    PROCESSOR_TYPE,
-    PROCESSOR_TYPE_FACE_EMBEDDING,
 )
 from photo_worker.face_embedding import FaceEmbeddingError
 from photo_worker.runner import Worker, WorkerConfig, _LeaseKeeper, _lifecycle
@@ -71,7 +71,7 @@ def make_claim(
                 "processor_version": 1,
                 "configuration": configuration(
                     processor_type=processor_type,
-                    heartbeat_interval_seconds=heartbeat_interval_seconds
+                    heartbeat_interval_seconds=heartbeat_interval_seconds,
                 ),
                 "photo_id": "photo-1",
                 "event_id": "00000000-0000-0000-0000-000000000013",
@@ -219,6 +219,9 @@ def test_worker_processes_face_embedding_claim_and_submits_typed_result(
     assert client.completed[0]["outcome"] == "success"
     assert client.completed[0]["processor_type"] == PROCESSOR_TYPE_FACE_EMBEDDING
     assert client.completed[0]["result"]["faces"][0]["index"] == 0
+    assert client.completed[0]["result"]["face_count"] == len(
+        client.completed[0]["result"]["faces"]
+    )
     assert client.completed[0]["result"]["has_single_query_face_usable"] is True
     assert len(json.dumps(client.completed[0], separators=(",", ":")).encode()) <= 8_192
     assert list(tmp_path.iterdir()) == []
@@ -262,6 +265,25 @@ def test_worker_returns_server_delay_for_an_empty_claim() -> None:
     worker = Worker(client, WorkerConfig(worker_build="worker-test", lease_seconds=60))
 
     assert worker.run_once() == 7
+
+
+def test_default_worker_alternates_claims_to_include_face_embedding() -> None:
+    class ClaimClient(Client):
+        def __init__(self) -> None:
+            super().__init__(Claim.empty(1))
+            self.processor_types: list[str] = []
+
+        def claim_job(self, **kwargs: object) -> Claim:
+            self.processor_types.append(str(kwargs["processor_type"]))
+            return Claim.empty(1)
+
+    client = ClaimClient()
+    worker = Worker(client, WorkerConfig(worker_build="face-embedding-v1", lease_seconds=60))
+
+    worker.run_once()
+    worker.run_once()
+
+    assert client.processor_types == [PROCESSOR_TYPE, PROCESSOR_TYPE_FACE_EMBEDDING]
 
 
 def test_claimed_configuration_sets_the_next_poll_delay(tmp_path: Path) -> None:

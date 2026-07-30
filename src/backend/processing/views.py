@@ -502,7 +502,8 @@ def _processor_retryable(processor_type: str, error_code: str) -> bool:
 
 
 def _valid_failure_code(processor_type: str, value: object) -> bool:
-    return value in _processor_failures(processor_type) if isinstance(value, str) else False
+    failures = _processor_failures(processor_type)
+    return isinstance(value, str) and failures is not None and value in failures
 
 
 def _valid_warning_code(processor_type: str, value: object) -> bool:
@@ -612,11 +613,7 @@ def _valid_capture_metadata_result(value: object) -> bool:
 def _valid_face_embedding_result(value: object) -> bool:
     if not isinstance(value, dict):
         return False
-    if not (
-        "face_count" in value
-        and "faces" in value
-        and "warnings" in value
-    ):
+    if not ("face_count" in value and "faces" in value and "warnings" in value):
         return False
     if value.get("timings") is not None and not isinstance(value["timings"], dict):
         return False
@@ -629,11 +626,7 @@ def _valid_face_embedding_result(value: object) -> bool:
     if not _safe_face_model(value.get("model", "sface")):
         return False
     faces = value["faces"]
-    if not (
-        isinstance(faces, list)
-        and len(faces) <= 1_024
-        and len(faces) == value["face_count"]
-    ):
+    if not (isinstance(faces, list) and len(faces) <= 1_024 and len(faces) == value["face_count"]):
         return False
     warnings = value["warnings"]
     if not (
@@ -694,10 +687,7 @@ def _valid_face_embedding_record(value: object) -> bool:
         and _valid_face_bbox(value["bbox"])
     ):
         return False
-    if not (
-        isinstance(value["confidence"], (int, float))
-        and 0.0 <= value["confidence"] <= 1.0
-    ):
+    if not (isinstance(value["confidence"], (int, float)) and 0.0 <= value["confidence"] <= 1.0):
         return False
     landmarks = value["landmarks"]
     if not (
@@ -730,11 +720,7 @@ def _valid_face_bbox(value: object) -> bool:
 
 
 def _safe_face_coordinate(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and 0 <= value <= 10_000
-    )
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 10_000
 
 
 def _parse_timestamp(value: object) -> datetime | None:

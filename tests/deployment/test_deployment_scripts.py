@@ -434,8 +434,35 @@ if [ "$APPLY_SCENARIO" = worker-recovery ] && \
 fi
 case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
-  *" compose "*" ps -q web "*) printf 'web-id\n' ;;
-  *" inspect "*" web-id "*) sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" ;;
+  *" compose "*" ps --all -q web "*) printf 'web-id\n' ;;
+  *" inspect --format {{.Config.Image}} web-id "*) sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" ;;
+  *" inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} web-id "*)
+    case "$APPLY_SCENARIO" in
+      web-startup-failure) printf 'unhealthy\n' ;;
+      web-exited-oom) printf 'none\n' ;;
+      web-startup-sequence)
+        count_file="$DEPLOY_ROOT/.health-check-count"
+        count="$(cat "$count_file" 2>/dev/null || printf 0)"
+        count=$((count + 1))
+        printf '%s\n' "$count" > "$count_file"
+        case "$count" in
+          1) printf 'starting\n' ;;
+          2) printf 'unhealthy\n' ;;
+          *) printf 'healthy\n' ;;
+        esac
+        ;;
+      *) printf 'healthy\n' ;;
+    esac
+    ;;
+  *" inspect "*" web-id "*)
+    case "$APPLY_SCENARIO" in
+      web-startup-failure)
+        printf 'status=running health=unhealthy exit_code=0 oom_killed=false\n'
+        ;;
+      web-exited-oom) printf 'status=exited health=unhealthy exit_code=137 oom_killed=true\n' ;;
+      *) printf 'status=running health=healthy exit_code=0 oom_killed=false\n' ;;
+    esac
+    ;;
 esac
 """,
     )
@@ -443,6 +470,14 @@ esac
         fake_bin / "curl",
         """
 printf 'curl %s\n' "$*" >> "$COMMAND_LOG"
+if [ "$APPLY_SCENARIO" = local-health-sequence ]; then
+  count_file="$DEPLOY_ROOT/.local-health-count"
+  count="$(cat "$count_file" 2>/dev/null || printf 0)"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$count_file"
+  [ "$count" -gt 1 ]
+  exit $?
+fi
 if [ "$APPLY_SCENARIO" = health-failure ] || \
    [ "$APPLY_SCENARIO" = worker-recovery ] || \
    [ "$APPLY_SCENARIO" = fresh-first-health-failure ]; then
@@ -569,11 +604,12 @@ def test_disabled_processing_persists_defaults_without_the_worker_profile(
     assert result.returncode == 0, result.stderr
     deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     assert "PHOTO_PROCESSING_ENABLED=False" in deployed_env
+    assert "PHOTO_PROCESSING_FACE_ENABLED=False" in deployed_env
     assert "WORKER_IMAGE=" in deployed_env
     assert "PHOTO_PROCESSING_WORKER_TOKEN=" in deployed_env
     assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120" in deployed_env
     assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=16384" in deployed_env
-    assert "PHOTO_WORKER_BUILD=capture-metadata-v1" in deployed_env
+    assert "PHOTO_WORKER_BUILD=face-embedding-v1" in deployed_env
     assert "PHOTO_WORKER_LEASE_SECONDS=120" in deployed_env
     assert "ALLOWED_HOSTS=localhost,web,findme-photo.ru" in deployed_env
     assert not any("--profile worker" in command for command in _apply_log(tmp_path))
@@ -703,7 +739,7 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
         "gallery-private-media-preflight-skipped:no-eligible-photo\n"
         "Removed upload cleanup schedule.\n"
     )
-    assert result.stderr == "docker compose up exit status: 0\n"
+    assert result.stderr == ""
     commands = _apply_log(tmp_path)
     assert "preflight-filter eligible-private-photo" in commands
     assert "preflight-order-by id" in commands
@@ -728,7 +764,7 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
         "gallery-private-media-preflight-skipped:no-existing-deployment\n"
         "Removed upload cleanup schedule.\n"
     )
-    assert result.stderr == "docker compose up exit status: 0\n"
+    assert result.stderr == ""
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
     assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
@@ -794,7 +830,7 @@ def test_candidate_private_media_preflight_reads_when_photo_exists(
     assert result.stdout == (
         "gallery-private-media-preflight-ok\nRemoved upload cleanup schedule.\n"
     )
-    assert result.stderr == "docker compose up exit status: 0\n"
+    assert result.stderr == ""
     commands = _apply_log(tmp_path)
     assert commands.count("preflight-storage-init") == 1
     assert commands.count("preflight-open originals/eligible-photo") == 1
@@ -979,10 +1015,75 @@ def test_apply_success_commits_deployed_image_only_after_checks(
     assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
     assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.count("up -d --remove-orphans") == 1
+    assert commands.count("up -d --remove-orphans") == 2
+    assert "up -d --remove-orphans db web" in commands
+    assert "up -d --remove-orphans nginx" in commands
     assert commands.count("requested-env-promoted-before-stop") == 1
     assert "https://findme-photo.ru/health/" in commands
     _assert_no_env_temporary_files(tmp_path)
+
+
+def test_web_startup_failure_reports_bounded_sanitized_diagnostics_before_rollback(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """A transient or failed web health transition must be diagnosable without leaking env."""
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="web-startup-failure"),
+    )
+
+    assert result.returncode != 0
+    assert "deployment diagnostics: compose ps" in result.stderr
+    assert "deployment diagnostics: web inspect" in result.stderr
+    assert "status=running health=unhealthy exit_code=0 oom_killed=false" in result.stdout
+    assert "deployment diagnostics: web logs" in result.stderr
+    assert "new-secret" not in result.stdout
+    assert "new-secret" not in result.stderr
+    commands = _apply_log(tmp_path)
+    assert any("up -d --remove-orphans db web" in command for command in commands)
+    assert not any("up -d --remove-orphans nginx" in command for command in commands)
+    assert any("logs --no-color --tail=100 web" in command for command in commands)
+    assert not any("inspect --format {{.Config" in command for command in commands)
+
+
+def test_web_wait_handles_starting_unhealthy_then_healthy_without_recreating_web(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="web-startup-sequence"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    assert sum("up -d --remove-orphans db web" in command for command in commands) == 1
+    assert sum("ps --all -q web" in command for command in commands) >= 3
+    assert (tmp_path / ".health-check-count").read_text(encoding="utf-8") == "3\n"
+
+
+def test_local_https_wait_retries_without_recreating_dependent_services(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="local-health-sequence"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    assert sum("up -d --remove-orphans nginx" in command for command in commands) == 1
+    assert (tmp_path / ".local-health-count").read_text(encoding="utf-8") == "2\n"
+    assert "deployment diagnostics" not in result.stderr
+
+
+def test_web_failure_diagnostics_include_exited_oom_state(tmp_path: Path, fake_bin: Path) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="web-exited-oom"),
+    )
+
+    assert result.returncode != 0
+    assert "status=exited health=unhealthy exit_code=137 oom_killed=true" in result.stdout
 
 
 @pytest.mark.parametrize("scenario", ["health-failure", "public-failure"])
@@ -1078,7 +1179,7 @@ def test_failed_env_promotion_removes_secret_bearing_requested_temp(
 
 @pytest.mark.parametrize(
     ("scenario", "expected_reconciliations"),
-    [("marker-failure", 2)],
+    [("marker-failure", 3)],
 )
 def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
     tmp_path: Path,

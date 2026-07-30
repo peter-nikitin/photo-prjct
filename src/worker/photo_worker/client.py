@@ -12,8 +12,8 @@ from urllib.request import Request, urlopen
 from photo_worker.contracts import (
     MAX_JSON_FIELD_BYTES,
     PROCESSOR_TYPE,
-    ContractError,
     Claim,
+    ContractError,
     _download_url,
     _processor_version,
     _utc_timestamp,

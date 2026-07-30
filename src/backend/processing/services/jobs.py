@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import json
+import math
 import random
 from collections.abc import Callable
 from datetime import timedelta
@@ -17,9 +17,9 @@ from django.utils import timezone
 from processing.contracts import AttemptCompletion, ClaimedJob, CompletionConflict, EmptyClaim
 from processing.models import (
     FACE_EMBEDDING_PROCESSOR,
+    EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
-    EventProcessingRun,
     PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
@@ -502,9 +502,7 @@ def _terminal_failure(
     )
 
 
-def _persist_face_embedding_result(
-    attempt: ProcessingAttempt, result: dict[str, Any]
-) -> None:
+def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> None:
     if not isinstance(result, dict):
         return
     model = _coerce_face_model(result, attempt.configuration)

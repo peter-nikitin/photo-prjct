@@ -152,7 +152,7 @@ def _decode_image(
     try:
         height, width, channels = image.shape
     except Exception:
-        raise FaceEmbeddingError("decode_failed")
+        raise FaceEmbeddingError("decode_failed") from None
 
     if not channels == 3 or height <= 0 or width <= 0:
         raise FaceEmbeddingError("decode_failed")
@@ -226,6 +226,8 @@ def _detect_faces(
             raw = raw[1]
         else:
             raw = raw[0]
+    if raw is None:
+        return []
 
     try:
         rows = np.asarray(raw)
@@ -292,7 +294,9 @@ def _normalize_detection(
     }
 
 
-def _extract_embedding(np: Any, recognizer: Any, image: Any, detection: dict[str, Any]) -> tuple[float, ...]:
+def _extract_embedding(
+    np: Any, recognizer: Any, image: Any, detection: dict[str, Any]
+) -> tuple[float, ...]:
     aligned_input = np.asarray(
         [
             *detection["bbox"],

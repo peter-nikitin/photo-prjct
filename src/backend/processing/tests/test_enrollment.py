@@ -6,8 +6,8 @@ from django.utils import timezone
 from picflow.models import Event, Photo
 
 from processing.models import (
-    EventProcessingRun,
     FACE_EMBEDDING_PROCESSOR,
+    EventProcessingRun,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -15,10 +15,10 @@ from processing.models import (
 from processing.services.enrollment import (
     CAPTURE_METADATA_CONFIGURATION,
     FACE_EMBEDDING_CONFIGURATION,
-    reconcile_face_embedding,
     reconcile_capture_metadata,
-    request_face_embedding_enqueue,
+    reconcile_face_embedding,
     request_capture_metadata,
+    request_face_embedding_enqueue,
 )
 
 
@@ -71,7 +71,10 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(run.processor_type, FACE_EMBEDDING_PROCESSOR)
         self.assertEqual(run.contract_version, 1)
         self.assertEqual(run.processor_version, 1)
-        self.assertEqual(state.current_job.configuration["face_embedding"], FACE_EMBEDDING_CONFIGURATION["face_embedding"])
+        self.assertEqual(
+            state.current_job.configuration["face_embedding"],
+            FACE_EMBEDDING_CONFIGURATION["face_embedding"],
+        )
         self.assertEqual(state.current_job.processor_type, FACE_EMBEDDING_PROCESSOR)
         self.assertEqual(state.current_job.processor_version, 1)
 
@@ -91,11 +94,15 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual([state.photo_id for state in reconciled], [first.pk, second.pk])
         self.assertEqual(ProcessingJob.objects.count(), 2)
         self.assertEqual(
-            PhotoProcessingState.objects.get(photo=first, processor_type=FACE_EMBEDDING_PROCESSOR).status,
+            PhotoProcessingState.objects.get(
+                photo=first, processor_type=FACE_EMBEDDING_PROCESSOR
+            ).status,
             PhotoProcessingState.Status.QUEUED,
         )
         self.assertEqual(
-            PhotoProcessingState.objects.get(photo=second, processor_type=FACE_EMBEDDING_PROCESSOR).status,
+            PhotoProcessingState.objects.get(
+                photo=second, processor_type=FACE_EMBEDDING_PROCESSOR
+            ).status,
             PhotoProcessingState.Status.QUEUED,
         )
         self.assertEqual(

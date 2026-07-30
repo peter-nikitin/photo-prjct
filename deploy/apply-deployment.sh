@@ -16,6 +16,7 @@ set -eu
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 requested_image="$APP_IMAGE"
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
+requested_face_processing_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 
 case "${PHOTO_UPLOAD_ENABLED:-False}" in
     True)
@@ -68,6 +69,15 @@ case "$requested_processing_enabled" in
         ;;
 esac
 
+case "$requested_face_processing_enabled" in
+    True|False)
+        ;;
+    *)
+        echo "PHOTO_PROCESSING_FACE_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
 : "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL}"
 overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
 health_port=443
@@ -104,8 +114,57 @@ compose_with_requested_processing_profile() {
 }
 
 diagnostics() {
-    compose ps || true
-    compose logs --tail=100 web nginx || true
+    echo "deployment diagnostics: compose ps" >&2
+    compose ps --all || true
+    web_container="$(compose ps --all -q web || true)"
+    if [ -n "$web_container" ]; then
+        echo "deployment diagnostics: web inspect" >&2
+        docker inspect --format 'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}}' "$web_container" || true
+    else
+        echo "deployment diagnostics: web inspect unavailable" >&2
+    fi
+    echo "deployment diagnostics: web logs" >&2
+    compose logs --no-color --tail=100 web || true
+}
+
+wait_for_candidate_web_health() {
+    attempt=1
+    max_attempts=25
+    while [ "$attempt" -le "$max_attempts" ]; do
+        web_container="$(compose ps --all -q web || true)"
+        health_status=""
+        if [ -n "$web_container" ]; then
+            health_status="$(
+                docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$web_container" 2>/dev/null || true
+            )"
+        fi
+        if [ "$health_status" = healthy ]; then
+            return 0
+        fi
+        if [ "$attempt" -eq "$max_attempts" ]; then
+            return 1
+        fi
+        echo "Candidate web health check attempt $attempt failed; retrying" >&2
+        attempt=$((attempt + 1))
+        sleep 5
+    done
+}
+
+wait_for_local_https_health() {
+    attempt=1
+    max_attempts=20
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if curl --fail-with-body --silent --show-error --max-time 15 \
+            --resolve "$PUBLIC_DOMAIN:$health_port:127.0.0.1" "$health_url"; then
+            return 0
+        fi
+        if [ "$attempt" -eq "$max_attempts" ]; then
+            return 1
+        fi
+        echo "Local HTTPS health check attempt $attempt failed; retrying" >&2
+        attempt=$((attempt + 1))
+        sleep 5
+    done
 }
 
 requested_env_tmp=""
@@ -171,6 +230,7 @@ clear_candidate_compose_interpolation() {
         PRIVATE_MEDIA_ALLOWED_ORIGINS \
         WORKER_IMAGE \
         PHOTO_PROCESSING_ENABLED \
+        PHOTO_PROCESSING_FACE_ENABLED \
         PHOTO_PROCESSING_WORKER_TOKEN \
         PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS \
         PHOTO_PROCESSING_MAX_REQUEST_BYTES \
@@ -307,10 +367,11 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
     printf 'WORKER_IMAGE=%s\n' "${WORKER_IMAGE:-}"
     printf 'PHOTO_PROCESSING_ENABLED=%s\n' "$requested_processing_enabled"
+    printf 'PHOTO_PROCESSING_FACE_ENABLED=%s\n' "$requested_face_processing_enabled"
     printf 'PHOTO_PROCESSING_WORKER_TOKEN=%s\n' "${PHOTO_PROCESSING_WORKER_TOKEN:-}"
     printf 'PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=%s\n' "${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}"
     printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-16384}"
-    printf 'PHOTO_WORKER_BUILD=%s\n' "${PHOTO_WORKER_BUILD:-capture-metadata-v1}"
+    printf 'PHOTO_WORKER_BUILD=%s\n' "${PHOTO_WORKER_BUILD:-face-embedding-v1}"
     printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
 } > "$requested_env_tmp"
 chmod 600 "$requested_env_tmp"
@@ -377,35 +438,30 @@ if ! compose_with_requested_processing_profile pull; then
     fail "Deployment image pull failed"
 fi
 
-compose_up_status=0
-compose_with_requested_processing_profile up -d --remove-orphans || compose_up_status=$?
-echo "docker compose up exit status: $compose_up_status" >&2
-if [ "$compose_up_status" -ne 0 ]; then
-    fail "Deployment Compose reconciliation failed"
+if ! compose up -d --remove-orphans db web; then
+    diagnostics
+    fail "Candidate web startup failed"
 fi
 
-attempt=1
-max_attempts=12
-while [ "$attempt" -le "$max_attempts" ]; do
-    web_container="$(compose ps -q web)"
-    running_image=""
-    if [ -n "$web_container" ]; then
-        running_image="$(
-            docker inspect --format '{{.Config.Image}}' "$web_container" 2>/dev/null || true
-        )"
+if ! wait_for_candidate_web_health; then
+    diagnostics
+    fail "Candidate web failed health verification"
+fi
+
+if [ "$requested_processing_enabled" = True ]; then
+    if ! compose_with_requested_processing_profile up -d --remove-orphans nginx worker; then
+        diagnostics
+        fail "Deployment dependent-service startup failed"
     fi
-    if [ "$running_image" = "$requested_image" ] && \
-        curl --fail-with-body --silent --show-error --max-time 15 \
-            --resolve "$PUBLIC_DOMAIN:$health_port:127.0.0.1" "$health_url"; then
-        break
-    fi
-    if [ "$attempt" -eq "$max_attempts" ]; then
-        fail "Requested deployment failed local health verification"
-    fi
-    echo "Deployment health check attempt $attempt failed; retrying" >&2
-    attempt=$((attempt + 1))
-    sleep 5
-done
+elif ! compose up -d --remove-orphans nginx; then
+    diagnostics
+    fail "Deployment nginx startup failed"
+fi
+
+if ! wait_for_local_https_health; then
+    diagnostics
+    fail "Requested deployment failed local health verification"
+fi
 
 if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
     fail "Requested deployment failed public HTTPS smoke verification"

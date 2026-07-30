@@ -186,6 +186,7 @@ def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
     expected = {
         "WORKER_IMAGE": "${{ needs.build.outputs.worker_image }}",
         "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_FACE_ENABLED": ("${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}"),
         "PHOTO_PROCESSING_WORKER_TOKEN": "${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}",
         "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
             "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
@@ -193,7 +194,7 @@ def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
         "PHOTO_PROCESSING_MAX_REQUEST_BYTES": (
             "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '16384' }}"
         ),
-        "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
+        "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'face-embedding-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
     }
     for name, value in expected.items():

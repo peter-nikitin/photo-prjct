@@ -130,7 +130,9 @@ class Migration(migrations.Migration):
             ],
             options={
                 "indexes": [
-                    models.Index(fields=["attempt", "face_index"], name="proc_face_detection_attempt_idx"),
+                    models.Index(
+                        fields=["attempt", "face_index"], name="proc_face_detect_attempt_idx"
+                    ),
                     models.Index(fields=["status"], name="proc_face_detection_status_idx"),
                 ],
                 "constraints": [
@@ -185,7 +187,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 "indexes": [
-                    models.Index(fields=["detection"], name="proc_face_embedding_detection_idx"),
+                    models.Index(fields=["detection"], name="proc_face_embed_detection_idx"),
                 ],
             },
         ),
@@ -211,7 +213,8 @@ class Migration(migrations.Migration):
                     FOR EACH ROW
                     EXECUTE FUNCTION proc_validate_face_attempt_artifact_terminal();
 
-                CREATE FUNCTION proc_guard_face_attempt_artifact_immutability() RETURNS trigger AS $$
+                CREATE FUNCTION proc_guard_face_attempt_artifact_immutability()
+                RETURNS trigger AS $$
                 BEGIN
                     IF TG_OP IN ('UPDATE', 'DELETE')
                        AND EXISTS (
@@ -341,13 +344,16 @@ class Migration(migrations.Migration):
                     EXECUTE FUNCTION proc_guard_face_embedding_immutability();
             """,
             reverse_sql="""
-                DROP TRIGGER IF EXISTS proc_face_embedding_immutability_trg ON processing_faceembedding;
+                DROP TRIGGER IF EXISTS proc_face_embedding_immutability_trg
+                ON processing_faceembedding;
                 DROP FUNCTION IF EXISTS proc_guard_face_embedding_immutability();
                 DROP TRIGGER IF EXISTS proc_face_embedding_terminal_trg ON processing_faceembedding;
                 DROP FUNCTION IF EXISTS proc_validate_face_embedding_terminal();
-                DROP TRIGGER IF EXISTS proc_face_detection_immutability_trg ON processing_photofacedetection;
+                DROP TRIGGER IF EXISTS proc_face_detection_immutability_trg
+                ON processing_photofacedetection;
                 DROP FUNCTION IF EXISTS proc_guard_face_detection_immutability();
-                DROP TRIGGER IF EXISTS proc_face_detection_terminal_trg ON processing_photofacedetection;
+                DROP TRIGGER IF EXISTS proc_face_detection_terminal_trg
+                ON processing_photofacedetection;
                 DROP FUNCTION IF EXISTS proc_validate_face_detection_terminal();
                 DROP TRIGGER IF EXISTS proc_face_attempt_artifact_immutability_trg
                     ON processing_faceprocessingattemptartifact;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import TypedDict
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
@@ -82,6 +83,13 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
 
 DEFAULT_RECONCILIATION_LIMIT = 100
 MAX_RECONCILIATION_LIMIT = 1_000
+
+
+class _ReconciliationRequest(TypedDict):
+    contract_version: int
+    processor_version: int
+    configuration: dict[str, object]
+    verified_source_etag: str | None
 
 
 def request_capture_metadata(
@@ -234,8 +242,7 @@ def _reconcilable_photo_ids(*, processor_type: str, limit: int) -> list[str]:
                 processing_states__processor_type=processor_type,
                 processing_states__status=PhotoProcessingState.Status.NOT_REQUESTED,
                 processing_states__current_job__isnull=True,
-            )
-            .values_list("pk", flat=True)[:limit]
+            ).values_list("pk", flat=True)[:limit]
         )
 
     if processor_type == FACE_EMBEDDING_PROCESSOR:
@@ -258,7 +265,7 @@ def _reconcilable_photo_ids(*, processor_type: str, limit: int) -> list[str]:
     return []
 
 
-def _reconcile_config(processor_type: str) -> dict[str, object]:
+def _reconcile_config(processor_type: str) -> _ReconciliationRequest:
     if processor_type == CAPTURE_METADATA_PROCESSOR:
         return {
             "contract_version": CONTRACT_VERSION,

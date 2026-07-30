@@ -38,6 +38,20 @@ def test_worker_container_is_minimal_and_starts_the_standalone_package() -> None
     assert "django" not in dockerfile.lower()
 
 
+def test_worker_image_pins_face_models_and_runs_real_inference_smoke() -> None:
+    """The face worker must ship its checked YuNet/SFace runtime, not require VM files."""
+    dockerfile = (ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+
+    assert "face_detection_yunet_2023mar.onnx" in dockerfile
+    assert "face_recognition_sface_2021dec.onnx" in dockerfile
+    assert dockerfile.count("ADD --checksum=sha256:") == 2
+    assert "PHOTO_WORKER_YUNET_MODEL_PATH" in dockerfile
+    assert "PHOTO_WORKER_SFACE_MODEL_PATH" in dockerfile
+    assert "python -m photo_worker.model_smoke" in dockerfile
+    smoke_source = (ROOT / "src/worker/photo_worker/model_smoke.py").read_text(encoding="utf-8")
+    assert "recognizer.feature" in smoke_source
+
+
 def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract() -> None:
     """A compose edit must not hand the worker application or permanent-storage credentials."""
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -71,12 +85,12 @@ def test_production_worker_profile_is_bounded_and_isolated_from_web_configuratio
     assert worker["depends_on"] == {"web": {"condition": "service_healthy"}}
     assert worker["restart"] == "unless-stopped"
     assert worker["cpus"] == "1.0"
-    assert worker["mem_limit"] == "768m"
+    assert worker["mem_limit"] == "2g"
     assert worker["pids_limit"] == 64
     assert worker["environment"] == {
         "PHOTO_WORKER_API_URL": "http://web:8000/internal/photo-processing/v1",
         "PHOTO_WORKER_TOKEN": "${PHOTO_PROCESSING_WORKER_TOKEN:-}",
-        "PHOTO_WORKER_BUILD": "${PHOTO_WORKER_BUILD:-capture-metadata-v1}",
+        "PHOTO_WORKER_BUILD": "${PHOTO_WORKER_BUILD:-face-embedding-v1}",
         "PHOTO_WORKER_LEASE_SECONDS": "${PHOTO_WORKER_LEASE_SECONDS:-120}",
     }
     assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))

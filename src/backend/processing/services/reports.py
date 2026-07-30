@@ -13,9 +13,9 @@ from processing.models import (
     JSON_MAX_BYTES,
     REPORT_JSON_MAX_BYTES,
     EventProcessingRun,
+    PhotoFaceDetection,
     ProcessingAttempt,
     ProcessingJob,
-    PhotoFaceDetection,
 )
 
 

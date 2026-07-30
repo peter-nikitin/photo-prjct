@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, close_old_connections
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from ingestion.models import UploadBatch, UploadItem
 from ingestion.services.batches import (
@@ -192,6 +192,16 @@ class ConfirmationTests(TransactionTestCase):
                 "version_evidence": "verified_source_etag",
             },
         )
+        face_state = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
+        self.assertEqual(face_state.status, PhotoProcessingState.Status.NOT_REQUESTED)
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_successful_confirmation_enqueues_face_embedding_when_enabled(self) -> None:
+        photo = self.confirm_success()
+
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
+        self.assertEqual(state.status, PhotoProcessingState.Status.QUEUED)
+        self.assertEqual(state.current_job.status, ProcessingJob.Status.QUEUED)
 
     def test_jpeg_signatures_metadata_and_final_identity_are_required(self) -> None:
         cases = [

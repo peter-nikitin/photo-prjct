@@ -95,7 +95,9 @@ class WorkerApiEdgeCases(WorkerApiTests):
         job = self._claim_face_one(grant)
         attempt_id = job["attempt_id"]
         PhotoProcessingState.objects.filter(photo_id="api-photo").update(current_attempt=None)
-        body = self.terminal_body(job, processor_type="face_embedding", result=self.face_result_body())
+        body = self.terminal_body(
+            job, processor_type="face_embedding", result=self.face_result_body()
+        )
 
         first = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)
         second = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)

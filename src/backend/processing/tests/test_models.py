@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TestCase, TransactionTestCase
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -14,11 +14,32 @@ from processing.models import (
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
+    PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
-    PhotoFaceDetection,
 )
+
+
+class FaceSchemaIndexContractTests(SimpleTestCase):
+    def test_index_names_fit_postgresql_limit(self) -> None:
+        migration = importlib.import_module("processing.migrations.0002_add_face_embedding_schema")
+        migration_indexes = {
+            operation.name: operation.options["indexes"]
+            for operation in migration.Migration.operations
+            if operation.__class__.__name__ == "CreateModel"
+            and operation.name in {"PhotoFaceDetection", "FaceEmbedding"}
+        }
+        for model, migration_model_name in (
+            (PhotoFaceDetection, "PhotoFaceDetection"),
+            (FaceEmbedding, "FaceEmbedding"),
+        ):
+            self.assertEqual(
+                [index.name for index in migration_indexes[migration_model_name]],
+                [index.name for index in model._meta.indexes],
+            )
+            for index in model._meta.indexes:
+                self.assertLessEqual(len(index.name), 30)
 
 
 class ProcessingModelTests(TestCase):
@@ -527,8 +548,9 @@ class ProcessingModelTests(TestCase):
         self.assertEqual(detection.artifact_id, artifact.id)
         self.assertEqual(embedding.detection_id, detection.id)
         self.assertEqual(
-            PhotoFaceDetection.objects.filter(attempt=attempt, status=PhotoFaceDetection.Status.KEPT)
-            .count(),
+            PhotoFaceDetection.objects.filter(
+                attempt=attempt, status=PhotoFaceDetection.Status.KEPT
+            ).count(),
             1,
         )
 

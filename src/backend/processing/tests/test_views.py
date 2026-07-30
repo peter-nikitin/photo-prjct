@@ -200,9 +200,9 @@ class WorkerApiTests(TestCase):
         grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
         request_face_embedding_enqueue(self.photo())
 
-        face_job = self.post(
-            "/internal/photo-processing/v1/claim", self.face_claim_body()
-        ).json()["job"]
+        face_job = self.post("/internal/photo-processing/v1/claim", self.face_claim_body()).json()[
+            "job"
+        ]
         attempt = face_job["attempt_id"]
         invalid_face = self.terminal_body(
             face_job,
@@ -249,9 +249,9 @@ class WorkerApiTests(TestCase):
         grant.return_value.url = "https://storage.example.test/object?secret"
         grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
         request_face_embedding_enqueue(self.photo())
-        face_job = self.post(
-            "/internal/photo-processing/v1/claim", self.face_claim_body()
-        ).json()["job"]
+        face_job = self.post("/internal/photo-processing/v1/claim", self.face_claim_body()).json()[
+            "job"
+        ]
         attempt = face_job["attempt_id"]
         unsupported = self.post(
             f"/internal/photo-processing/v1/attempts/{attempt}/fail",

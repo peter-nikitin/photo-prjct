@@ -8,7 +8,7 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
 from django.utils import timezone
 from picflow.models import Photo
-from processing.services.enrollment import request_capture_metadata
+from processing.services.enrollment import request_capture_metadata, request_face_embedding_enqueue
 
 from ingestion.models import UploadItem
 from ingestion.services.batches import (
@@ -157,6 +157,10 @@ def confirm_upload_item(
                     uploaded_at=now,
                 )
                 request_capture_metadata(
+                    photo,
+                    verified_source_etag=item.verified_source_etag,
+                )
+                request_face_embedding_enqueue(
                     photo,
                     verified_source_etag=item.verified_source_etag,
                 )

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 from photo_worker.contracts import (
-    Claim,
-    ContractError,
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
+    Claim,
+    ContractError,
     redact,
 )
 

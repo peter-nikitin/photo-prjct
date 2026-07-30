@@ -377,14 +377,36 @@ if ! compose_with_requested_processing_profile pull; then
     fail "Deployment image pull failed"
 fi
 
+compose_image_ready() {
+    web_container="$(compose ps -q web)"
+    if [ -z "$web_container" ]; then
+        return 1
+    fi
+
+    running_image="$(docker inspect --format '{{.Config.Image}}' "$web_container" 2>/dev/null || true)"
+    if [ "$running_image" != "$requested_image" ]; then
+        return 1
+    fi
+
+    if ! curl --fail-with-body --silent --show-error --max-time 15 \
+        --resolve "$PUBLIC_DOMAIN:$health_port:127.0.0.1" "$health_url" > /dev/null; then
+        return 1
+    fi
+
+    return 0
+}
+
 compose_up_status=0
 attempt=1
-max_compose_attempts=3
+max_compose_attempts=6
 compose_wait_seconds=5
 while [ "$attempt" -le "$max_compose_attempts" ]; do
     compose_up_status=0
-    if compose_with_requested_processing_profile up -d --remove-orphans --wait --wait-timeout 120; then
-        break
+    if compose_with_requested_processing_profile up -d --remove-orphans; then
+        if compose_image_ready; then
+            break
+        fi
+        echo "docker compose up attempt $attempt succeeded but health check was not ready; retrying" >&2
     fi
     compose_up_status=$?
     if [ "$attempt" -ge "$max_compose_attempts" ]; then

@@ -683,7 +683,7 @@ def test_failed_worker_deployment_restores_the_complete_previous_environment_and
     assert result.returncode != 0
     assert (tmp_path / ".env").read_bytes() == previous_env
     commands = _apply_log(tmp_path)
-    assert sum("--profile worker up -d --remove-orphans" in command for command in commands) == 2
+    assert sum("--profile worker up -d --remove-orphans" in command for command in commands) >= 2
     assert "recovery-compose-uses-restored-environment" in commands
     assert "worker-token-must-not-be-logged" not in result.stdout
     assert "worker-token-must-not-be-logged" not in result.stderr

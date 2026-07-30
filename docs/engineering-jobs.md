@@ -39,7 +39,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-006 | Maintainer | Promote the staging-verified image | Validated | 2026-07-17 |
 | EJ-007 | Operator | Provision a production environment | Candidate | 2026-07-17 |
 | EJ-008 | Operator | Activate trusted HTTPS | Delivered | 2026-07-17 |
-| EJ-009 | Operator | Detect service degradation | Candidate | 2026-07-30 |
+| EJ-009 | Operator | Detect service degradation | Planned | 2026-07-30 |
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-25 |
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 
@@ -144,8 +144,9 @@ sustained public failure, missing VM telemetry, imminent disk or memory exhausti
 pressure, application 5xx degradation, and recovery. Logs, tracing, business metrics, database
 internals, privileged container collection, and the disabled worker remain outside this increment.
 
-- Status: Candidate
+- Status: Planned
 - Evidence: [Minimal service monitoring design](superpowers/specs/2026-07-30-minimal-service-monitoring-design.md)
+  and [approved implementation plan](plans/2026-07-30-minimal-service-monitoring.md)
 - Last updated: 2026-07-30
 
 ### EJ-010 — Operator — Restore service data
@@ -206,3 +207,4 @@ This log is append-only.
 | 2026-07-19 | EJ-011 | Validated | Validated | Fresh unprovisioned deployments now skip the unavailable ORM gate based on absence of the successful `deployed-image` marker; established deployments retain the fail-closed database/no-row/storage gate, and neither skip is live `GetObject` evidence. |
 | 2026-07-25 | EJ-010 | Candidate | Candidate | Local clone automation now enforces a serialized local-Docker-only replacement, quiesces the normal web service, retains safety/diagnostic artifacts, and has isolated PostgreSQL 16 plus real-Django restored-schema evidence for migration readiness without startup mutations. This is partial local evidence only; scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill remain unestablished. |
 | 2026-07-30 | EJ-009 | Candidate | Candidate | The approved minimal monitoring design now defines independent public HTTPS checks, simple VM and Django HTTP graphs, actionable email alerts, safe collection boundaries, and a new-ADR prerequisite; implementation is not yet planned or delivered. |
+| 2026-07-30 | EJ-009 | Candidate | Planned | The approved implementation plan sequences bounded Django metrics, a private scrape path, a scheduled GitHub probe, Unified Agent, Yandex Monitoring resources, controlled activation, rollback, and validation. |

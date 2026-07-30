@@ -18,6 +18,7 @@ jobs:
   probe:
     name: Probe public health
     runs-on: ubuntu-latest
+    environment: staging
     permissions:
       contents: read
     env:

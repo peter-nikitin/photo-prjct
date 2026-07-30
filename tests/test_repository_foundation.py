@@ -119,6 +119,7 @@ def test_public_health_monitor_workflow_is_scheduled_and_uses_only_its_monitorin
         ],
     }
     assert job["permissions"] == {"contents": "read"}
+    assert job["environment"] == "staging"
     assert checkout["uses"] == "actions/checkout@v4"
     assert checkout["with"] == {"persist-credentials": False}
     assert job["env"] == {

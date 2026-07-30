@@ -12,6 +12,8 @@ Approved in conversation on 2026-07-30.
   [ADR 0007](../../adr/0007-nginx-certbot-https-edge.md),
   [ADR 0011](../../adr/0011-use-minimal-shared-https-rollout.md), and
   [ADR 0017](../../adr/0017-use-django-polled-photo-processing-jobs.md)
+- Required ADR:
+  [Proposed ADR 0018](../../adr/0018-use-managed-yandex-monitoring.md)
 - ADR impact: Requires new ADR
 - Implementation plan: not yet written
 

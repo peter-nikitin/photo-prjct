@@ -15,7 +15,8 @@ Approved in conversation on 2026-07-30.
 - Governing ADR:
   [ADR 0018](../../adr/0018-use-managed-yandex-monitoring.md)
 - ADR impact: Conforms to ADR 0018
-- Implementation plan: not yet written
+- Implementation plan:
+  [Draft minimal service monitoring plan](../../plans/2026-07-30-minimal-service-monitoring.md)
 
 ## Goal
 

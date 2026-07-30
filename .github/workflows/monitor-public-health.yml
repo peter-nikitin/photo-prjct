@@ -1,0 +1,39 @@
+name: Monitor public health
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Controlled public health target for validation metrics
+        required: true
+        default: https://findme-photo.ru/health/
+        type: choice
+        options:
+          - https://findme-photo.ru/health/
+          - https://example.invalid/health/
+
+jobs:
+  probe:
+    name: Probe public health
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      YANDEX_MONITORING_API_KEY: ${{ secrets.YANDEX_MONITORING_API_KEY }}
+      YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Probe public health and write metrics
+        run: |
+          python scripts/monitor_public_health.py \
+            --target "${{ github.event_name == 'schedule' && 'https://findme-photo.ru/health/' || inputs.target }}" \
+            --environment "${{ github.event_name == 'schedule' && 'staging' || 'validation' }}" \
+            --check "${{ github.event_name == 'schedule' && 'canonical-health' || 'validation-health' }}" \
+            --folder-id "$YANDEX_CLOUD_FOLDER_ID" \
+            --api-key "$YANDEX_MONITORING_API_KEY"

@@ -17,17 +17,12 @@ Approved in conversation and repository review on 2026-07-30.
   [ADR 0006](../../adr/0006-yandex-object-storage-media.md),
   [ADR 0013](../../adr/0013-use-direct-private-object-storage-ingestion.md),
   [ADR 0015](../../adr/0015-allow-anonymous-free-event-original-delivery.md), and
-  [ADR 0017](../../adr/0017-use-django-polled-photo-processing-jobs.md)
+  [ADR 0017](../../adr/0017-use-django-polled-photo-processing-jobs.md), and
+  [ADR 0019](../../adr/0019-use-public-event-selfie-search.md)
 - ADR impact:
-  - Requires new ADR — public event-scoped biometric query processing, bearer-link result access,
-    query/result retention, and the Django/worker search boundary are durable choices not yet
-    governed by an accepted ADR.
-  - Supersedes ADR 0015 — a selfie-result bearer link may deliver existing originals from a
-    published paid event, while ADR 0015 currently prohibits anonymous paid-event original
-    delivery.
-
-Approval of this specification selects the product design. It does not by itself accept the new
-ADR or supersede ADR 0015. Those decisions must be recorded before implementation relies on them.
+  Conforms to ADR 0019, which governs public event-scoped biometric query processing,
+  bearer-link result access, query/result retention, the Django/worker search boundary, and the
+  narrow paid-result original-delivery exception. ADR 0019 supersedes ADR 0015.
 
 ## Outcome
 
@@ -480,13 +475,10 @@ The design conforms to:
 - ADR 0017 by reusing Django-polled jobs, leases, short-lived exact-object read grants, bounded
   retries, and a worker with no database or permanent Object Storage credentials.
 
-The design does not conform to ADR 0015's explicit rule that paid-event originals remain
-unavailable to anonymous clients. The selected critical path introduces a narrower bearer-link
-exception for matched photos in a published paid event. ADR 0015 must therefore be superseded
-before implementation, while preserving its existing free-gallery rules and explicitly containing
-the paid exception to saved selfie results.
+ADR 0019 resolves ADR 0015's former prohibition on anonymous paid-event originals with a narrower
+bearer-link exception for matched photos in a published paid event. It preserves the existing free
+gallery rules and contains the paid exception to saved selfie results.
 
-The architecture also leaves face governance, temporary query embeddings, public result access,
-retention, and the production search boundary open. A new accepted ADR must govern those durable
-choices. It may acknowledge the deliberately deferred consent ledger, revocation, rate limiting,
-moderation, and derivative-media work, but it must not present them as implemented safeguards.
+The design conforms to ADR 0019's accepted boundaries for temporary query embeddings, public
+result access, retention, the production search boundary, and deliberately deferred consent
+ledger, revocation, rate limiting, moderation, and derivative-media work.

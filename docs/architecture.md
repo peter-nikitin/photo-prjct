@@ -152,10 +152,11 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   API backed by PostgreSQL jobs and leases. Give it no database or permanent Object Storage
   credentials; issue only short-lived exact-object media grants, as defined by
   [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md).
-- Allow anonymous inline delivery of a complete private original only for an eligible completed
-  upload in a currently published free event, within the narrow boundary of
-  [ADR 0015](adr/0015-allow-anonymous-free-event-original-delivery.md). Paid-event media and
-  broader attachment or download policy remain unresolved.
+- Allow public event-scoped selfie searches to use the existing worker for temporary query
+  embedding and Django for exact search, then publish immutable non-expiring bearer-link results
+  only after deleting the selfie. A valid result link may deliver its matched originals for a
+  published free or paid event without opening the normal paid gallery, as defined by
+  [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015.
 
 ## Deployment domain assignment — accepted
 
@@ -235,17 +236,20 @@ broker, vector engine, and ML implementations shown for later processing require
 
 1. The customer selects an event before searching.
 2. A bib query matches confirmed numbers first and automated candidates second. A face query creates
-   a temporary query embedding and returns probable matches.
+   a temporary query embedding through the existing worker, then Django performs exact comparison
+   and deletes the selfie before publishing an immutable probable-match snapshot.
 3. Every query filters by `event_id`; time and location further narrow results.
-4. Results are ordered primarily by capture time. Results from other events, if offered, appear in a
-   separate explicitly labelled section.
+4. Face results are ordered by ascending cosine distance with stable photo-ID tie breaking and are
+   exposed through the non-expiring public bearer link accepted by ADR 0019. Results from other
+   events never enter the snapshot.
 
 ### Purchase and download
 
 1. The cart contains event photos, prices, and any validated promotion.
 2. A payment transition creates or updates an order idempotently.
-3. For paid events, successful payment grants entitlement to generated exports; it never makes
-   originals public. Free events use a separate controlled anonymous original-download policy.
+3. For paid events, successful payment grants entitlement to generated exports; the normal paid
+   gallery never makes originals public. ADR 0019 temporarily permits only a ready selfie-result
+   bearer link to deliver originals saved in that result until protected derivatives exist.
 4. Downloads use short-lived signed access or an authenticated application response and are audited.
 
 ## Security, privacy, and legal boundaries
@@ -261,8 +265,11 @@ broker, vector engine, and ML implementations shown for later processing require
 - Photographer routes require the additive upload permission, and non-superuser batch access is
   restricted to the owning uploader.
 - Secrets and credentials are environment-provided; `.env` files remain untracked.
-- Face images and embeddings may be biometric personal data. Collection basis, consent, retention,
-  deletion, access control, and incident handling must be approved before face search is released.
+- Face images and embeddings may be biometric personal data. ADR 0019 accepts a narrow MVP in
+  which the selfie is deleted before terminal publication, the query embedding is not persisted,
+  and the immutable result is accessible through a non-expiring bearer link. Broader consent,
+  revocation, suppression, moderation, and incident handling remain required before named
+  identity, cross-event matching, or broader biometric reuse.
 - Face results are probable matches, not identity assertions. Users and operators need removal and
   suppression workflows.
 - Payment callbacks must be authenticated and idempotent; download authorization is derived from
@@ -307,11 +314,11 @@ Each item needs evidence and an ADR before implementation commits the architectu
 
 - Stage 3 processing SLA and the measured threshold for replacing ADR 0017 polling with a broker.
 - `pgvector` versus a dedicated vector database and migration thresholds.
-- Face detection/embedding implementation and biometric governance.
+- Broader biometric governance beyond ADR 0019's event-scoped public bearer-link MVP.
 - Bib-region detection/OCR implementation and model licensing.
 - Payment provider, callback contract, refunds, and download entitlement policy.
-- Paid-event media access and the broader attachment/download policy beyond ADR 0015's narrow
-  anonymous inline delivery for eligible free-event originals.
+- Paid-event previews, entitlements, and broader attachment/download policy beyond ADR 0019's
+  narrow saved-selfie-result original-delivery exception.
 - Observability stack; backup targets; retention; RPO/RTO; encryption-at-rest policy; media
   recovery; and disaster-recovery procedures.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.

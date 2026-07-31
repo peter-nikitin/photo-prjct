@@ -169,7 +169,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   embedding and Django for exact search, then publish immutable non-expiring bearer-link results
   only after deleting the selfie. A valid result link may deliver its matched originals for a
   published free or paid event without opening the normal paid gallery, as defined by
-  [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015.
+  [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. The direct
+  signed Object Storage transport for already authorized gallery and result media is accepted in
+  [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md); inline streaming remains
+  the implemented behavior until that delivery is verified.
 
 ## Deployment domain assignment — accepted
 

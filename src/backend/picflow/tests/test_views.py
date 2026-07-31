@@ -27,7 +27,6 @@ from processing.models import (
     ProcessingJob,
 )
 
-from picflow.gallery import CloseableMediaIterator, ResolvedPublicMedia
 from picflow.models import Event, Photo
 
 
@@ -378,6 +377,75 @@ class GalleryPageTests(TestCase):
         )
         storage_class.assert_not_called()
 
+    def test_event_detail_uses_cursor_pages_in_photo_id_order(self) -> None:
+        event = self.make_event()
+        for index in range(101):
+            self.make_private_photo(event, id=f"photo-{index:03}")
+
+        first_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(first_response.status_code, 200)
+        first_page_ids = tuple(item.photo_id for item in first_response.context["gallery_photos"])
+        self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(100)))
+        next_cursor = first_response.context["gallery_next_cursor"]
+        self.assertIsNotNone(next_cursor)
+        self.assertContains(first_response, "Показать ещё")
+        self.assertContains(first_response, "data-event-gallery")
+
+        second_response = self.client.get(
+            reverse("event_detail", kwargs={"slug": event.slug}), {"cursor": next_cursor}
+        )
+
+        second_page_ids = tuple(item.photo_id for item in second_response.context["gallery_photos"])
+        self.assertEqual(second_page_ids, ("photo-100",))
+        self.assertIsNone(second_response.context["gallery_next_cursor"])
+        self.assertTrue(set(first_page_ids).isdisjoint(second_page_ids))
+
+    def test_event_detail_renders_only_one_page_for_20000_eligible_photos(self) -> None:
+        event = self.make_event()
+        now = timezone.now()
+        Photo.objects.bulk_create(
+            [
+                Photo(
+                    id=f"photo-{index:05}",
+                    event=event,
+                    src="",
+                    uploaded_by=self.photographer,
+                    original_key=f"originals/page-{index:05}",
+                    original_filename="race.jpg",
+                    original_size=4,
+                    original_content_type="image/jpeg",
+                    uploaded_at=now,
+                )
+                for index in range(20_000)
+            ]
+        )
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context["gallery_photos"]), 100)
+        self.assertIsNotNone(response.context["gallery_next_cursor"])
+
+    def test_event_detail_rejects_malformed_or_other_event_cursor(self) -> None:
+        event = self.make_event()
+        other_event = self.make_event(name="Other", slug="other")
+        for index in range(101):
+            self.make_private_photo(event, id=f"photo-{index:03}")
+
+        first_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+        cursor = first_response.context["gallery_next_cursor"]
+
+        malformed_response = self.client.get(
+            reverse("event_detail", kwargs={"slug": event.slug}), {"cursor": "not-a-cursor"}
+        )
+        mismatched_response = self.client.get(
+            reverse("event_detail", kwargs={"slug": other_event.slug}), {"cursor": cursor}
+        )
+
+        self.assertEqual(malformed_response.status_code, 404)
+        self.assertEqual(mismatched_response.status_code, 404)
+
     def test_event_detail_excludes_legacy_other_event_and_paid_originals(self) -> None:
         event = self.make_event()
         included = self.make_private_photo(event, id="included")
@@ -503,21 +571,6 @@ class GalleryPageTests(TestCase):
         self.assertContains(response, "Фотографии пока не опубликованы")
 
 
-class _ReadableBody:
-    def __init__(self, chunks: list[bytes | Exception]) -> None:
-        self._chunks = iter(chunks)
-        self.close_calls = 0
-
-    def read(self, amt: int | None = None) -> bytes:  # noqa: ARG002
-        chunk = next(self._chunks)
-        if isinstance(chunk, Exception):
-            raise chunk
-        return chunk
-
-    def close(self) -> None:
-        self.close_calls += 1
-
-
 class GalleryMediaViewTests(TransactionTestCase):
     def setUp(self) -> None:
         Event.objects.update(publication_status=Event.PublicationStatus.DRAFT)
@@ -617,12 +670,13 @@ class GalleryMediaViewTests(TransactionTestCase):
             kwargs={"slug": event.slug, "photo_id": photo.id, "variant": variant},
         )
 
-    def test_photo_media_success_sets_approved_headers(self) -> None:
+    def test_photo_media_redirects_to_signed_preview_without_streaming_a_body(self) -> None:
         event = self.make_event()
         photo = self.make_private_photo(event, id="photo-42")
-        body = _ReadableBody([b"photo", b""])
         resolver = Mock()
-        resolver.resolve.return_value = ResolvedPublicMedia(body, 5, "image/jpeg", "jpg")
+        resolver.resolve_signed.return_value = (
+            "https://storage.example.test/preview?signature=secret"
+        )
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = views.photo_media(
@@ -632,16 +686,11 @@ class GalleryMediaViewTests(TransactionTestCase):
                 "preview-small",
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIsInstance(response._iterator, CloseableMediaIterator)
-        self.assertEqual(response["Content-Type"], "image/jpeg")
-        self.assertEqual(response["Content-Length"], "5")
-        self.assertEqual(response["Content-Disposition"], 'inline; filename="photo-photo-42.jpg"')
-        self.assertEqual(response["Cache-Control"], "private, no-store")
-        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
-        self.assertEqual(b"".join(response.streaming_content), b"photo")
-        self.assertEqual(body.close_calls, 1)
-        resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], resolver.resolve_signed.return_value)
+        self.assertEqual(response.content, b"")
+        self.assertFalse(response.streaming)
+        resolver.resolve_signed.assert_called_once_with(photo=photo, variant="preview-small")
 
     def test_photo_media_returns_404_for_unknown_variant_before_storage(self) -> None:
         event = self.make_event()
@@ -688,7 +737,7 @@ class GalleryMediaViewTests(TransactionTestCase):
             self.assertEqual(response.status_code, 404)
             resolver_factory.assert_not_called()
 
-    def test_photo_media_serves_accepted_new_preview_through_existing_routes(self) -> None:
+    def test_photo_media_redirects_an_accepted_new_preview_through_existing_routes(self) -> None:
         event = self.make_event()
         photo = self.make_private_photo(
             event,
@@ -700,16 +749,16 @@ class GalleryMediaViewTests(TransactionTestCase):
             final_key=f"derivatives/previews/{photo.id}/preview-small-v1/accepted.jpg",
         )
         resolver = Mock()
-        resolver.resolve.return_value = ResolvedPublicMedia(
-            _ReadableBody([b"preview", b""]), 7, "image/jpeg", "jpg"
+        resolver.resolve_signed.return_value = (
+            "https://storage.example.test/preview?signature=secret"
         )
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = self.client.get(self.media_url(event=event, photo=photo))
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(b"".join(response.streaming_content), b"preview")
-        resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], resolver.resolve_signed.return_value)
+        resolver.resolve_signed.assert_called_once_with(photo=photo, variant="preview-small")
 
     def test_photo_media_returns_404_for_legacy_or_other_event_photo(self) -> None:
         event = self.make_event()
@@ -729,7 +778,7 @@ class GalleryMediaViewTests(TransactionTestCase):
         event = self.make_event()
         photo = self.make_private_photo(event)
         resolver = Mock()
-        resolver.resolve.side_effect = ObjectMissing()
+        resolver.resolve_signed.side_effect = ObjectMissing()
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = self.client.get(self.media_url(event=event, photo=photo))
@@ -741,7 +790,7 @@ class GalleryMediaViewTests(TransactionTestCase):
         event = self.make_event()
         photo = self.make_private_photo(event)
         resolver = Mock()
-        resolver.resolve.side_effect = StorageError()
+        resolver.resolve_signed.side_effect = StorageError()
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = self.client.get(self.media_url(event=event, photo=photo))
@@ -787,7 +836,7 @@ class GalleryMediaViewTests(TransactionTestCase):
         event = self.make_event()
         photo = self.make_private_photo(event)
         resolver = Mock()
-        resolver.resolve.side_effect = ValueError("programmer bug")
+        resolver.resolve_signed.side_effect = ValueError("programmer bug")
 
         with (
             patch("config.views._public_media_resolver", return_value=resolver),
@@ -800,35 +849,7 @@ class GalleryMediaViewTests(TransactionTestCase):
                 "preview-small",
             )
 
-        resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
-
-    def test_photo_media_closes_body_after_mid_stream_failure(self) -> None:
-        event = self.make_event()
-        photo = self.make_private_photo(event)
-        body = _ReadableBody([b"first", RuntimeError("S3 secret")])
-        resolver = Mock()
-        resolver.resolve.return_value = ResolvedPublicMedia(body, 5, "image/jpeg", "jpg")
-
-        with patch("config.views._public_media_resolver", return_value=resolver):
-            response = self.client.get(self.media_url(event=event, photo=photo))
-
-        self.assertEqual(list(response.streaming_content), [b"first"])
-        self.assertEqual(body.close_calls, 1)
-
-    def test_photo_media_response_close_before_iteration_closes_body(self) -> None:
-        event = self.make_event()
-        photo = self.make_private_photo(event)
-        body = _ReadableBody([])
-        resolver = Mock()
-        resolver.resolve.return_value = ResolvedPublicMedia(body, 0, "image/jpeg", "jpg")
-
-        with patch("config.views._public_media_resolver", return_value=resolver):
-            response = self.client.get(self.media_url(event=event, photo=photo))
-
-        response.close()
-
-        self.assertEqual(body.close_calls, 1)
-        self.assertEqual(list(response.streaming_content), [])
+        resolver.resolve_signed.assert_called_once_with(photo=photo, variant="preview-small")
 
     def test_photo_media_rejects_non_get_methods_before_storage(self) -> None:
         event = self.make_event()

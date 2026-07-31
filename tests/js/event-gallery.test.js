@@ -46,7 +46,7 @@ test('initializes GLightbox once with local gallery options', () => {
 });
 
 test('restores focus to the pointer-opened card after close', () => {
-  let clickListener;
+  const clickListeners = [];
   let options;
   let focusCalls = 0;
   const card = {
@@ -56,7 +56,7 @@ test('restores focus to the pointer-opened card after close', () => {
   };
   const root = {
     addEventListener: (type, listener) => {
-      if (type === 'click') clickListener = listener;
+      if (type === 'click') clickListeners.push(listener);
     },
   };
 
@@ -68,7 +68,7 @@ test('restores focus to the pointer-opened card after close', () => {
     },
   });
 
-  clickListener({ target: { closest: () => card } });
+  clickListeners.forEach((listener) => listener({ target: { closest: () => card } }));
   options.onClose();
 
   assert.equal(focusCalls, 1);
@@ -80,4 +80,92 @@ test('does nothing without root or GLightbox', () => {
   assert.doesNotThrow(() => loadGalleryModule({ glightbox: (options) => calls.push(options) }));
   assert.deepEqual(calls, []);
   assert.doesNotThrow(() => loadGalleryModule({ root: {} }));
+});
+
+test('appends the next gallery fragment, advances the link, and refreshes lightbox', async () => {
+  let clickListener;
+  const appended = [];
+  const nextLink = {
+    href: 'https://findme.test/events/run?cursor=first',
+    addEventListener() {},
+    remove() {
+      this.removed = true;
+    },
+  };
+  const grid = {
+    insertAdjacentHTML: (position, markup) => appended.push({ position, markup }),
+  };
+  const root = {
+    querySelector: (selector) =>
+      selector === '.event-gallery-grid' ? grid : selector === '.event-gallery-next' ? nextLink : null,
+    addEventListener: (type, listener) => {
+      if (type === 'click') clickListener = listener;
+    },
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  const parsedNextLink = { href: 'https://findme.test/events/run?cursor=second' };
+  const fragmentGrid = { innerHTML: '<figure class="gallery-card">next</figure>' };
+  const parsedRoot = {
+    querySelector: (selector) =>
+      selector === '.event-gallery-grid'
+        ? fragmentGrid
+        : selector === '.event-gallery-next'
+          ? parsedNextLink
+          : null,
+  };
+  const eventGallery = loadGalleryModule();
+  let reloads = 0;
+  eventGallery.initializeProgressivePagination(root, {
+    fetchPage: async () => ({ ok: true, text: async () => '<html>next</html>' }),
+    parsePage: () => ({ querySelector: (selector) => (selector === '[data-event-gallery]' ? parsedRoot : null) }),
+    onAppend: () => {
+      reloads += 1;
+    },
+  });
+
+  let prevented = false;
+  clickListener({
+    target: { closest: (selector) => (selector === '.event-gallery-next' ? nextLink : null) },
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(prevented, true);
+  assert.deepEqual(appended, [
+    { position: 'beforeend', markup: '<figure class="gallery-card">next</figure>' },
+  ]);
+  assert.equal(nextLink.href, parsedNextLink.href);
+  assert.equal(reloads, 1);
+});
+
+test('keeps the next-page link after a failed progressive request', async () => {
+  let clickListener;
+  const nextLink = { href: 'https://findme.test/events/run?cursor=first' };
+  const root = {
+    querySelector: (selector) => (selector === '.event-gallery-next' ? nextLink : {}),
+    addEventListener: (type, listener) => {
+      if (type === 'click') clickListener = listener;
+    },
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  const eventGallery = loadGalleryModule();
+  eventGallery.initializeProgressivePagination(root, {
+    fetchPage: async () => ({ ok: false }),
+    parsePage: () => {
+      throw new Error('must not parse an unsuccessful response');
+    },
+  });
+
+  clickListener({
+    target: { closest: (selector) => (selector === '.event-gallery-next' ? nextLink : null) },
+    preventDefault() {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(nextLink.href, 'https://findme.test/events/run?cursor=first');
+  assert.equal(nextLink.removed, undefined);
 });

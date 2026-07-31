@@ -165,6 +165,18 @@ class _FinalObjectStorage:
         self.opened_keys.append(key)
         return next(self._opened_objects)
 
+    def sign_final(self, *, key: str) -> str:  # noqa: ARG002
+        raise AssertionError("inline resolver tests must not sign media")
+
+
+class _SignedFinalObjectStorage:
+    def __init__(self) -> None:
+        self.signed_keys: list[str] = []
+
+    def sign_final(self, *, key: str) -> str:
+        self.signed_keys.append(key)
+        return f"https://storage.example.test/{key}?signature=secret"
+
 
 class PublicGalleryMediaTests(SimpleTestCase):
     def test_resolver_maps_legacy_small_and_large_variants_to_original(self) -> None:
@@ -319,6 +331,22 @@ class PreviewRequiredPublicGalleryMediaTests(TestCase):
         self.assertEqual(resolver.resolve(photo=photo, variant="preview-small").body, preview_body)
         self.assertEqual(resolver.resolve(photo=photo, variant="preview-large").body, original_body)
         self.assertEqual(storage.opened_keys, [derivative.final_key, photo.original_key])
+
+    def test_signed_resolver_selects_preview_for_tile_and_original_for_lightbox(self) -> None:
+        photo = self.make_preview_required_photo(photo_id="preview-photo")
+        derivative = self.publish_preview(photo)
+        storage = _SignedFinalObjectStorage()
+        resolver = PublicMediaResolver(storage)  # type: ignore[arg-type]
+
+        self.assertEqual(
+            resolver.resolve_signed(photo=photo, variant="preview-small"),
+            f"https://storage.example.test/{derivative.final_key}?signature=secret",
+        )
+        self.assertEqual(
+            resolver.resolve_signed(photo=photo, variant="preview-large"),
+            f"https://storage.example.test/{photo.original_key}?signature=secret",
+        )
+        self.assertEqual(storage.signed_keys, [derivative.final_key, photo.original_key])
 
     def test_resolver_never_falls_back_to_original_when_new_small_preview_is_missing(self) -> None:
         photo = self.make_preview_required_photo(photo_id="missing-preview")

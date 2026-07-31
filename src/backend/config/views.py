@@ -1,7 +1,7 @@
 from datetime import date
 
 from django.conf import settings
-from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET
 from ingestion.storage import (
@@ -12,13 +12,14 @@ from ingestion.storage import (
 )
 from picflow.gallery import (
     GALLERY_VARIANTS,
-    CloseableMediaIterator,
     GalleryPhoto,
     GalleryPhotoFactory,
     PublicMediaResolver,
+    gallery_page,
     gallery_photo_queryset,
 )
 from picflow.models import Event
+from picflow.pagination import InvalidCursor
 from selfie_search.forms import SelfieSearchUploadForm
 
 
@@ -39,17 +40,24 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     if selfie_search_form is None and settings.SELFIE_SEARCH_ENABLED:
         selfie_search_form = SelfieSearchUploadForm()
     gallery_photos: tuple[GalleryPhoto, ...] = ()
+    gallery_next_cursor: str | None = None
     if event.access_type == Event.AccessType.FREE:
+        try:
+            page = gallery_page(event=event, cursor=request.GET.get("cursor"))
+        except InvalidCursor:
+            return HttpResponse(status=404)
         gallery_photos = tuple(
             GalleryPhotoFactory.from_photo(photo=photo, event_slug=event.slug)
-            for photo in gallery_photo_queryset(event=event)
+            for photo in page.photos
         )
+        gallery_next_cursor = page.next_cursor
     return render(
         request,
         "catalog/event_detail.html",
         {
             "event": event,
             "gallery_photos": gallery_photos,
+            "gallery_next_cursor": gallery_next_cursor,
             "selfie_search_form": selfie_search_form,
         },
     )
@@ -72,18 +80,12 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
     )
     photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
     try:
-        media = _public_media_resolver().resolve(photo=photo, variant=variant)
+        signed_url = _public_media_resolver().resolve_signed(photo=photo, variant=variant)
     except ObjectMissing:
         return HttpResponse(status=404)
     except StorageError:
         return HttpResponse(status=503)
-    stream = CloseableMediaIterator(media=media, event_slug=event.slug, photo_id=photo.pk)
-    response = StreamingHttpResponse(stream, content_type=media.content_type)
-    response["Content-Length"] = str(media.content_length)
-    response["Content-Disposition"] = f'inline; filename="photo-{photo.pk}.{media.extension}"'
-    response["Cache-Control"] = "private, no-store"
-    response["X-Content-Type-Options"] = "nosniff"
-    return response
+    return redirect(signed_url)
 
 
 def legacy_events_redirect(request):  # noqa: ARG001

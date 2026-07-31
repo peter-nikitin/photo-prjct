@@ -81,7 +81,7 @@ def test_production_worker_profile_is_bounded_and_isolated_from_web_configuratio
     assert worker["depends_on"] == {"web": {"condition": "service_healthy"}}
     assert worker["restart"] == "unless-stopped"
     assert worker["cpus"] == "1.0"
-    assert worker["mem_limit"] == "768m"
+    assert worker["mem_limit"] == "2g"
     assert worker["pids_limit"] == 64
     assert worker["environment"] == {
         "PHOTO_WORKER_API_URL": "http://web:8000/internal/photo-processing/v1",

@@ -46,5 +46,7 @@ place, and add the new record to this index.
 conforms to ADR 0019's Django/PostgreSQL authority, private worker, event isolation, transient query
 embedding, cleanup-before-publication, stable bearer result, and paid-result-only media boundaries.
 No new architecture decision is required for the local implementation. Lifecycle mutation,
-real-storage preflight, container model delivery, staging capacity evidence, and feature activation
-remain rollout work rather than completed decision evidence.
+real-storage preflight, exact rollout-image model smoke, staging capacity evidence, and feature
+activation remain rollout work rather than completed decision evidence. The existing worker image
+already packages pinned public OpenCV Zoo YuNet/SFace files; it is not a new worker or a future
+private-model delivery mechanism.

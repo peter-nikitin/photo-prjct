@@ -262,9 +262,11 @@ accepted embedding fixtures for both face generations (`1/face_embedding/1` and
 verified `2/generate_preview/1` derivative and the resulting enrollment into `2/face_embedding/2`.
 The evidence covers a published paid event, frozen event-only candidates, stable ranked results,
 selfie deletion before `ready`, and ready-result media for both generations without opening the
-normal paid gallery. `SELFIE_SEARCH_ENABLED` remains `False` by default. No staging lifecycle
-mutation, real-bucket preflight, worker model delivery, VM capacity smoke, or environment activation
-is claimed.
+normal paid gallery. The existing immutable worker image packages pinned public OpenCV Zoo
+YuNet/SFace models and runs a non-root build-time smoke through both `face_embedding` and
+`selfie_query`; the exact rollout image must run that same smoke before activation.
+`SELFIE_SEARCH_ENABLED` remains `False` by default. No staging lifecycle mutation, real-bucket
+preflight, exact rollout-image smoke, VM capacity smoke, or environment activation is claimed.
 
 ### Purchase and download
 

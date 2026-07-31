@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import photo_worker.face_embedding as face_embedding
 import pytest
 from photo_worker.contracts import FaceEmbeddingFace
 from photo_worker.face_embedding import (
@@ -26,6 +28,19 @@ def write_jpeg(path: Path) -> None:
     image = Image.new("RGB", (32, 32), "white")
     image.save(path, "JPEG")
     image.close()
+
+
+def test_detect_faces_maps_opencv_no_face_tuple_to_empty() -> None:
+    """OpenCV returns ``(retval, None)`` when YuNet finds no faces."""
+
+    class NoFaceDetector:
+        def setInputSize(self, _size: tuple[int, int]) -> None:  # noqa: N802
+            return None
+
+        def detect(self, _image: object) -> tuple[int, None]:
+            return 1, None
+
+    assert face_embedding._detect_faces(np, NoFaceDetector(), object(), 320, 320, 0.75) == []
 
 
 def test_extract_face_embeddings_one_face_success(

@@ -41,8 +41,9 @@ PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1,1/face_embedding/1,2/gene
 PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview
 ```
 
-With a disposable local PostgreSQL database and privately supplied YuNet, SFace, and true-JPEG
-files, run the real application/worker boundary without committing or printing the artifact paths:
+With a disposable local PostgreSQL database, locally available public YuNet/SFace files, and a
+true-JPEG file, run the host-process application/worker boundary without committing or printing the
+artifact paths:
 
 ```bash
 PHOTO_WORKER_YUNET_MODEL_PATH=/absolute/path/to/yunet.onnx \
@@ -58,12 +59,20 @@ deterministic accepted embedding fixtures for both face generations; the preview
 publishes a verified `2/generate_preview/1` derivative and follows production enrollment into
 `2/face_embedding/2`. It also covers exact event-scoped ranking, selfie cleanup, stable bearer
 results, the narrow paid-result media exception for both gallery generations, and unchanged normal
-paid-gallery denial. It skips when any private artifact is absent; a skip is not real-model evidence.
+paid-gallery denial. It skips when its required local JPEG or model file is absent; a skip is not
+real-model evidence.
 
-This local test does not activate Docker Compose or staging. Before enabling `selfie_query` in its
-exact rollout image, provide reviewed immutable model files at container-valid paths, apply and
-verify the exact `selfie-search/` lifecycle, run the explicit scratch-object preflight, execute the
-staging smoke and capacity measurements in the
+This host-process test does not activate Docker Compose or prove the rollout image. The existing
+worker image packages pinned public OpenCV Zoo YuNet/SFace files at immutable container paths and
+runs `photo_worker.model_smoke` during its build. Before enabling `selfie_query`, run the same smoke
+against the exact rollout image digest:
+
+```bash
+docker run --rm --entrypoint python "$WORKER_IMAGE" -m photo_worker.model_smoke
+```
+
+Then apply and verify the exact `selfie-search/` lifecycle, run the explicit scratch-object
+preflight, and execute the staging smoke and capacity measurements in the
 [public selfie-search rollout](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout),
 and only then set `SELFIE_SEARCH_ENABLED=True`.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
 from pathlib import Path
 from shutil import copy2
@@ -11,6 +12,21 @@ import yaml
 from django.test import Client, override_settings
 
 ROOT = Path(__file__).resolve().parents[2]
+OPENCV_ZOO_REVISION = "47534e27c9851bb1128ccc0102f1145e27f23f98"
+FACE_MODEL_ARTIFACTS = (
+    (
+        "PHOTO_WORKER_YUNET_MODEL_PATH",
+        "face_detection_yunet_2023mar.onnx",
+        "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        "models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    ),
+    (
+        "PHOTO_WORKER_SFACE_MODEL_PATH",
+        "face_recognition_sface_2021dec.onnx",
+        "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+        "models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+    ),
+)
 FORBIDDEN_SETTINGS = {
     "DB_NAME",
     "DB_USER",
@@ -36,6 +52,48 @@ def test_worker_container_is_minimal_and_starts_the_standalone_package() -> None
     assert "src/backend" not in dockerfile
     assert "manage.py" not in dockerfile
     assert "django" not in dockerfile.lower()
+
+
+def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() -> None:
+    """Both photo and selfie inference must run from the same immutable worker image."""
+    dockerfile = (ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+    failures: list[str] = []
+
+    for environment_name, filename, checksum, source_path in FACE_MODEL_ARTIFACTS:
+        destination = f"/worker/models/{filename}"
+        source = f"https://github.com/opencv/opencv_zoo/raw/{OPENCV_ZOO_REVISION}/{source_path}"
+        instruction = f"ADD --checksum=sha256:{checksum} {source} {destination}"
+        if instruction not in dockerfile:
+            failures.append(f"missing immutable {filename} artifact")
+        if f"{environment_name}={destination}" not in dockerfile:
+            failures.append(f"missing {environment_name} container path")
+
+    smoke_command = "RUN python -m photo_worker.model_smoke"
+    if smoke_command not in dockerfile:
+        failures.append("missing build-time face model smoke")
+    else:
+        if "RUN chown -R worker:worker /worker" not in dockerfile:
+            failures.append("model artifacts are not readable by the worker user")
+        if dockerfile.index("USER worker") > dockerfile.index(smoke_command):
+            failures.append("face model smoke does not run as the worker user")
+
+    smoke_path = ROOT / "src/worker/photo_worker/model_smoke.py"
+    if not smoke_path.is_file():
+        failures.append("missing shared face model smoke module")
+    else:
+        tree = ast.parse(smoke_path.read_text(encoding="utf-8"))
+        called_names = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        missing_paths = {"extract_face_embeddings", "extract_selfie_embedding"} - called_names
+        if missing_paths:
+            failures.append(f"smoke misses shared inference path(s): {sorted(missing_paths)}")
+        if "MAX_FACE_EMBEDDING_DIMENSIONS" not in smoke_path.read_text(encoding="utf-8"):
+            failures.append("smoke does not validate the SFace feature dimension")
+
+    assert failures == [], "\n".join(failures)
 
 
 def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract() -> None:

@@ -329,6 +329,9 @@ def _detect_faces(
         else:
             raw = raw[0]
 
+    if raw is None:
+        return []
+
     try:
         rows = np.asarray(raw)
     except Exception as error:

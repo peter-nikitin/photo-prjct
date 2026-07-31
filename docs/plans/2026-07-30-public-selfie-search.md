@@ -506,7 +506,8 @@ Expected successful outcome:
 - Playwright: all desktop/mobile visual and interaction tests pass with no unexpected snapshot
   changes.
 
-Run the real model test separately because CI does not contain private model artifacts:
+Run the host-process real-model test separately when local public model files are available. This
+proves the Django/worker boundary but does not replace smoke evidence from the rollout image:
 
 ```bash
 PHOTO_WORKER_YUNET_MODEL_PATH=/absolute/path/to/yunet.onnx \
@@ -517,13 +518,26 @@ PHOTO_WORKER_SFACE_MODEL_PATH=/absolute/path/to/sface.onnx \
 Expected: the real JPEG search reaches `ready`, returns the expected event-only order, and the
 temporary selfie fake/storage object is absent.
 
+The existing worker image (not a new worker service) packages the pinned public OpenCV Zoo YuNet and
+SFace files and runs `photo_worker.model_smoke` while building. Before activation, run the smoke in
+the exact immutable worker image selected for rollout:
+
+```bash
+docker run --rm --entrypoint python "$WORKER_IMAGE" -m photo_worker.model_smoke
+```
+
+Expected: `face-model-smoke-ok`; both the photo-embedding and selfie-query consumers load the same
+YuNet/SFace files, the synthetic JPEG produces the expected no-face outcome, and SFace returns a
+128-dimensional feature.
+
 ## Operational impact and rollout
 
-1. Build one immutable application image and one immutable worker image containing the migration
-   and all four processor types: `selfie_query`, `face_embedding`, `capture_metadata`, and
-   `generate_preview`. The worker polls five exact identities: `1/selfie_query/1`,
+1. Build one immutable application image containing the migration and one immutable existing worker
+   image containing pinned public OpenCV Zoo YuNet/SFace files and all four processor types:
+   `selfie_query`, `face_embedding`, `capture_metadata`, and `generate_preview`. The worker polls
+   five exact identities: `1/selfie_query/1`,
    `1/capture_metadata/1`, `1/face_embedding/1`, `2/generate_preview/1`, and
-   `2/face_embedding/2`.
+   `2/face_embedding/2`. Run `photo_worker.model_smoke` in that exact worker image before proceeding.
 2. Keep `SELFIE_SEARCH_ENABLED=False`. Apply the database migration; it is additive and does not
    rewrite existing photo or processing rows.
 3. Verify current accepted photo embeddings exist for representative published free and paid

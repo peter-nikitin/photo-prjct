@@ -219,7 +219,7 @@ class SubmissionTests(TestCase):
         paid = submit_selfie_search(event=self.paid_event, upload=valid_upload(), storage=storage)
 
         self.assertEqual(SelfieSearchJob.objects.filter(search=created.search).count(), 1)
-        self.assertEqual(
+        self.assertCountEqual(
             list(
                 SelfieSearchCandidate.objects.filter(search=created.search).values_list(
                     "embedding_id", flat=True

@@ -121,7 +121,8 @@ one event, so I can review probable matches.
   isolation, probable matches, selfie cleanup, stable results, and the narrow paid-result media
   exception. The feature
   remains disabled by default and has not passed its real-bucket lifecycle/preflight, container
-  model-delivery, staging smoke, or VM-capacity activation gates, so it is not yet delivered in the
+  rollout-image model-smoke, staging smoke, or VM-capacity activation gates, so it is not yet
+  delivered in the
   product.
 - Last updated: 2026-07-31
 

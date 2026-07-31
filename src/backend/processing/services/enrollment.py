@@ -27,6 +27,7 @@ FACE_EMBEDDING_PROCESSOR_VERSION = 1
 PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
 PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 2
+FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
 
 CAPTURE_METADATA_CONFIGURATION: dict[str, object] = {
     "retry_policy": {
@@ -75,14 +76,14 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "normalize_embeddings": True,
     },
     "worker": {
-        "api_response_max_bytes": 16_384,
+        "api_response_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
         "concurrency": 1,
         "heartbeat_interval_seconds": 30,
         "lease_duration_seconds": 120,
         "max_input_bytes": 50 * 1024 * 1024,
         "max_pixels": 100_000_000,
         "poll_min_delay_seconds": 5,
-        "terminal_result_max_bytes": 8_192,
+        "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
     },
 }
 

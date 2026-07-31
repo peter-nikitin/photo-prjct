@@ -71,6 +71,42 @@ class WorkerApiEdgeCases(WorkerApiTests):
         request._stream = BytesIO(raw)  # noqa: SLF001
         return request
 
+    def test_v2_face_result_rejects_more_than_its_frozen_face_or_embedding_limits(self) -> None:
+        geometry = {
+            "coordinate_space": "preview-small-v1",
+            "pixel_width": 1600,
+            "pixel_height": 1000,
+            "oriented_source_width": 3200,
+            "oriented_source_height": 2000,
+        }
+        face = {
+            "index": 0,
+            "bbox": [1.0, 2.0, 32.0, 32.0],
+            "confidence": 0.9,
+            "landmarks": [[1.0, 2.0]] * 5,
+            "embedding": [0.007812500465661287] * 128,
+        }
+
+        too_many_faces = {
+            "model": "sface",
+            "face_count": 33,
+            "faces": [face | {"index": index} for index in range(33)],
+            "warnings": [],
+            "input_geometry": geometry,
+        }
+        too_many_dimensions = {
+            "model": "sface",
+            "face_count": 1,
+            "faces": [face | {"embedding": [0.007812500465661287] * 129}],
+            "warnings": [],
+            "input_geometry": geometry,
+        }
+
+        self.assertFalse(views._valid_face_embedding_result(too_many_faces, contract_version=2))
+        self.assertFalse(
+            views._valid_face_embedding_result(too_many_dimensions, contract_version=2)
+        )
+
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_stale_completion_returns_stale_and_replay_is_idempotent(self, grant) -> None:
         job = self._claim_one(grant)

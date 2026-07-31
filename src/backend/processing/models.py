@@ -7,6 +7,7 @@ from django.utils import timezone
 from picflow.models import Event, Photo
 
 JSON_MAX_BYTES = 16_384
+PROCESSING_ATTEMPT_RESULT_MAX_BYTES = 128 * 1024
 # Worst-case report rows contain JSON-escaped control characters (six bytes each).  The 256 KiB
 # report-only ceiling leaves a safety margin over the configured cohort upper-bound calculation.
 REPORT_JSON_MAX_BYTES = 262_144
@@ -20,6 +21,15 @@ def validate_bounded_json(value: object) -> None:
     serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     if len(serialized.encode()) > JSON_MAX_BYTES:
         raise ValidationError(f"JSON payload must not exceed {JSON_MAX_BYTES} bytes.")
+
+
+def validate_bounded_processing_attempt_result(value: object) -> None:
+    serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    if len(serialized.encode()) > PROCESSING_ATTEMPT_RESULT_MAX_BYTES:
+        raise ValidationError(
+            "Processing attempt result must not exceed "
+            f"{PROCESSING_ATTEMPT_RESULT_MAX_BYTES} bytes."
+        )
 
 
 def validate_bounded_report_json(value: object) -> None:
@@ -165,7 +175,7 @@ class ProcessingAttempt(models.Model):  # noqa: DJ008
     heartbeat_at = models.DateTimeField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     terminal_at = models.DateTimeField(null=True, blank=True)
-    result = models.JSONField(default=dict, validators=[validate_bounded_json])
+    result = models.JSONField(default=dict, validators=[validate_bounded_processing_attempt_result])
     result_hash = models.CharField(max_length=64, blank=True, default="")
     error_code = models.CharField(max_length=64, blank=True, default="")
     error_detail = models.CharField(max_length=512, blank=True, default="")

@@ -495,6 +495,39 @@ def make_face_embedding_result() -> FaceEmbeddingResult:
     )
 
 
+def maximum_face_embedding_result() -> FaceEmbeddingResult:
+    """Representative maximum v2 output: 32 SFace vectors plus every typed field."""
+    return FaceEmbeddingResult(
+        model="sface",
+        faces=tuple(
+            FaceEmbeddingFace(
+                index=index,
+                bbox=(1600.0, 1000.0, 1600.0, 1000.0),
+                confidence=0.9876543,
+                landmarks=(
+                    (100.1234567, 200.1234567),
+                    (300.1234567, 400.1234567),
+                    (500.1234567, 600.1234567),
+                    (700.1234567, 800.1234567),
+                    (900.1234567, 999.1234567),
+                ),
+                # ``float(np.float32(1 / 128))`` uses this full wire representation.
+                embedding=tuple(0.007812500465661287 for _ in range(128)),
+            )
+            for index in range(32)
+        ),
+        has_single_query_face_usable=False,
+        warnings=("faces_truncated", "face_embedding_failed"),
+        timings={
+            "decode_ms": 86_400_000,
+            "model_load_ms": 86_400_000,
+            "detect_ms": 86_400_000,
+            "embed_ms": 86_400_000,
+            "total_ms": 345_600_000,
+        },
+    )
+
+
 def make_selfie_embedding_result() -> SelfieEmbeddingResult:
     return SelfieEmbeddingResult(
         model="sface",
@@ -711,6 +744,33 @@ def test_worker_submits_preview_face_result_with_declared_geometry(
         "oriented_source_width": 3200,
         "oriented_source_height": 2000,
     }
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_worker_submits_maximum_v2_face_embedding_payload_within_contract_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(preview_face_claim())
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_face_embeddings",
+        lambda *_args, **_kwargs: maximum_face_embedding_result(),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_identities=("2/face_embedding/2",),
+        ),
+    ).run_once()
+
+    assert len(client.completed) == 1
+    assert client.completed[0]["result"]["face_count"] == 32
+    payload_size = len(json.dumps(client.completed[0], separators=(",", ":")).encode())
+    assert 64 * 1024 < payload_size <= 128 * 1024
     assert list(tmp_path.iterdir()) == []
 
 

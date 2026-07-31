@@ -5,6 +5,7 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
     PROCESSOR_TYPE_SELFIE_QUERY,
+    V2_FACE_EMBEDDING_CONFIGURATION,
     V2_GENERATE_PREVIEW_CONFIGURATION,
     Claim,
     ContractError,
@@ -17,6 +18,14 @@ def test_preview_contract_caps_current_multibuffer_pipeline_at_24_megapixels() -
 
     assert isinstance(worker, dict)
     assert worker["max_pixels"] == 24_000_000
+
+
+def test_v2_face_contract_reserves_128_kib_for_a_maximum_typed_terminal_payload() -> None:
+    worker = V2_FACE_EMBEDDING_CONFIGURATION["worker"]
+
+    assert isinstance(worker, dict)
+    assert worker["terminal_result_max_bytes"] == 128 * 1024
+    assert worker["api_response_max_bytes"] == 128 * 1024
 
 
 def preview_configuration() -> dict[str, object]:
@@ -79,13 +88,13 @@ def preview_face_configuration() -> dict[str, object]:
         },
         "worker": {
             "concurrency": 1,
-            "api_response_max_bytes": 16_384,
+            "api_response_max_bytes": 128 * 1024,
             "heartbeat_interval_seconds": 30,
             "lease_duration_seconds": 120,
             "max_input_bytes": 52_428_800,
             "max_pixels": 100_000_000,
             "poll_min_delay_seconds": 5,
-            "terminal_result_max_bytes": 8_192,
+            "terminal_result_max_bytes": 128 * 1024,
         },
     }
 
@@ -184,6 +193,85 @@ def test_claim_accepts_v2_face_embedding_only_with_generic_preview_input() -> No
     assert claim.job.contract_version == 2
     assert claim.job.processor_version == 2
     assert claim.job.input_fingerprint.media_kind == "preview-small-v1"
+
+
+def test_v2_face_claim_rejects_a_transport_bound_that_is_neither_legacy_nor_current() -> None:
+    payload = preview_claim_payload()
+    job = payload["job"]
+    assert isinstance(job, dict)
+    configuration = preview_face_configuration()
+    worker = configuration["worker"]
+    assert isinstance(worker, dict)
+    worker["terminal_result_max_bytes"] = 8_193
+    job.update(
+        {
+            "processor_type": "face_embedding",
+            "processor_version": 2,
+            "configuration": configuration,
+            "input_fingerprint": {
+                "object_key": "derivatives/previews/photo-1/preview-small-v1/"
+                "00000000-0000-0000-0000-000000000012-"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+                "object_size": 1024,
+                "object_content_type": "image/jpeg",
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+            },
+            "input_geometry": {
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+            },
+        }
+    )
+    job.pop("output_slots")
+
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
+
+
+def test_v2_face_claim_rejects_the_superseded_8_kib_transport_snapshot() -> None:
+    payload = preview_claim_payload()
+    job = payload["job"]
+    assert isinstance(job, dict)
+    configuration = preview_face_configuration()
+    worker = configuration["worker"]
+    assert isinstance(worker, dict)
+    worker["api_response_max_bytes"] = 16_384
+    worker["terminal_result_max_bytes"] = 8_192
+    job.update(
+        {
+            "processor_type": "face_embedding",
+            "processor_version": 2,
+            "configuration": configuration,
+            "input_fingerprint": {
+                "object_key": "derivatives/previews/photo-1/preview-small-v1/"
+                "00000000-0000-0000-0000-000000000012-"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+                "object_size": 1024,
+                "object_content_type": "image/jpeg",
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+            },
+            "input_geometry": {
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+            },
+        }
+    )
+    job.pop("output_slots")
+
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
 
 
 @pytest.mark.parametrize(

@@ -23,10 +23,11 @@ PROCESSOR_TYPE_SELFIE_QUERY = "selfie_query"
 PROCESSOR_VERSION_SELFIE_QUERY = 1
 MAX_FACE_EMBEDDINGS_PER_JOB = 64
 MAX_FACE_EMBEDDING_DIMENSIONS = 128
+FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
 SELFIE_MAX_INPUT_BYTES = 20 * 1024 * 1024
 SELFIE_MAX_PIXELS = 25_000_000
 DEFAULT_FACE_DETECTION_THRESHOLD = 0.75
-MAX_JSON_FIELD_BYTES = 16_384
+MAX_JSON_FIELD_BYTES = FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES
 MAX_INPUT_BYTES_CAP = 50 * 1024 * 1024
 MAX_PIXELS_CAP = 100_000_000
 # Preview normalization may retain a 4 B/px decoded CMYK source, a 4 B/px orientation copy,
@@ -90,14 +91,14 @@ V2_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "normalize_embeddings": True,
     },
     "worker": {
-        "api_response_max_bytes": 16_384,
+        "api_response_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
         "concurrency": 1,
         "heartbeat_interval_seconds": 30,
         "lease_duration_seconds": 120,
         "max_input_bytes": 50 * 1024 * 1024,
         "max_pixels": 100_000_000,
         "poll_min_delay_seconds": 5,
-        "terminal_result_max_bytes": 8_192,
+        "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
     },
 }
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)

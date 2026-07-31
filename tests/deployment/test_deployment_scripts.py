@@ -596,7 +596,7 @@ def test_disabled_processing_persists_defaults_without_the_worker_profile(
     assert "WORKER_IMAGE=" in deployed_env
     assert "PHOTO_PROCESSING_WORKER_TOKEN=" in deployed_env
     assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120" in deployed_env
-    assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=16384" in deployed_env
+    assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=131072" in deployed_env
     assert "PHOTO_WORKER_BUILD=capture-metadata-v1" in deployed_env
     assert "PHOTO_WORKER_LEASE_SECONDS=120" in deployed_env
     assert (
@@ -883,7 +883,7 @@ def test_failed_worker_deployment_restores_the_complete_previous_environment_and
         b"PHOTO_PROCESSING_ENABLED=True\n"
         b"PHOTO_PROCESSING_WORKER_TOKEN=old-worker-token\n"
         b"PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120\n"
-        b"PHOTO_PROCESSING_MAX_REQUEST_BYTES=16384\n"
+        b"PHOTO_PROCESSING_MAX_REQUEST_BYTES=131072\n"
         b"PHOTO_WORKER_BUILD=old-capture-metadata\n"
         b"PHOTO_WORKER_LEASE_SECONDS=90\n"
     )

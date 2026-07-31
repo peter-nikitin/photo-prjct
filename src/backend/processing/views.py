@@ -66,6 +66,8 @@ _WORKER_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _NORMALIZED_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
 _SECRET_MARKER = re.compile(r"(?:[a-z][a-z0-9+.-]*://|x-amz-|signature=|credential=|token=)", re.I)
 _SOURCE_FIELDS = {"DateTime", "DateTimeDigitized", "DateTimeOriginal"}
+_V2_FACE_EMBEDDING_MAX_FACES = 32
+_V2_FACE_EMBEDDING_DIMENSIONS = 128
 _EXIF_SOURCE_VALUE = re.compile(r"\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}")
 _CAPTURE_METADATA_WARNINGS = {
     "capture_time_conflicting",
@@ -1118,16 +1120,22 @@ def _valid_face_embedding_result(value: object, *, contract_version: int = 1) ->
         return False
     if value.get("timings") is not None and not isinstance(value["timings"], dict):
         return False
+    maximum_faces = _V2_FACE_EMBEDDING_MAX_FACES if contract_version == 2 else 1_024
+    embedding_dimensions = _V2_FACE_EMBEDDING_DIMENSIONS if contract_version == 2 else 512
     if not (
         isinstance(value["face_count"], int)
         and not isinstance(value["face_count"], bool)
-        and 0 <= value["face_count"] <= 1_000
+        and 0 <= value["face_count"] <= maximum_faces
     ):
         return False
     if not _safe_face_model(value.get("model", "sface")):
         return False
     faces = value["faces"]
-    if not (isinstance(faces, list) and len(faces) <= 1_024 and len(faces) == value["face_count"]):
+    if not (
+        isinstance(faces, list)
+        and len(faces) <= maximum_faces
+        and len(faces) == value["face_count"]
+    ):
         return False
     warnings = value["warnings"]
     if not (
@@ -1157,7 +1165,10 @@ def _valid_face_embedding_result(value: object, *, contract_version: int = 1) ->
             and all(_positive_int(geometry[name]) for name in set(geometry) - {"coordinate_space"})
         ):
             return False
-    return all(_valid_face_embedding_record(face) for face in faces)
+    return all(
+        _valid_face_embedding_record(face, embedding_dimensions=embedding_dimensions)
+        for face in faces
+    )
 
 
 def _matches_accepted_preview_geometry(attempt: ProcessingAttempt, result: object) -> bool:
@@ -1242,7 +1253,7 @@ def _valid_face_warning(value: object) -> bool:
     return _valid_warning_code(FACE_EMBEDDING_CONTRACT.processor_type, value)
 
 
-def _valid_face_embedding_record(value: object) -> bool:
+def _valid_face_embedding_record(value: object, *, embedding_dimensions: int) -> bool:
     if not isinstance(value, dict):
         return False
     if set(value).issuperset({"face_id", "bbox", "quality", "embedding_sha256"}):
@@ -1291,7 +1302,7 @@ def _valid_face_embedding_record(value: object) -> bool:
     embedding = value["embedding"]
     if not (
         isinstance(embedding, list)
-        and len(embedding) <= 512
+        and len(embedding) <= embedding_dimensions
         and all(isinstance(item, (int, float)) for item in embedding)
     ):
         return False

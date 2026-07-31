@@ -2,6 +2,7 @@ import hashlib
 from datetime import date
 from typing import cast
 from unittest.mock import Mock, patch
+from urllib.parse import quote
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -96,6 +97,48 @@ class PublicSelfieSearchMarkupTests(TestCase):
         response = self.client.get(reverse("event_detail", kwargs={"slug": self.draft_event.slug}))
 
         self.assertEqual(response.status_code, 404)
+
+    def test_unicode_published_event_has_reversible_selfie_urls(self) -> None:
+        event = self.make_event(slug="cyclingrace-олимпия", access_type=Event.AccessType.FREE)
+        token = "unicode-search-token"
+        search = SelfieSearch.objects.create(
+            event=event,
+            public_token_digest=hashlib.sha256(token.encode("ascii")).hexdigest(),
+            status=SelfieSearch.Status.NO_FACE,
+            temporary_object_key="",
+            configuration={"public-contract": 1},
+        )
+
+        submit_url = reverse("selfie_search:submit", kwargs={"event_slug": event.slug})
+        result_url = reverse(
+            "selfie_search:result",
+            kwargs={"event_slug": event.slug, "public_token": token},
+        )
+        status_url = reverse(
+            "selfie_search:status",
+            kwargs={"event_slug": event.slug, "public_token": token},
+        )
+        media_url = reverse(
+            "selfie_search:result_media",
+            kwargs={
+                "event_slug": event.slug,
+                "public_token": token,
+                "photo_id": "photo-42",
+                "variant": "preview-small",
+            },
+        )
+
+        encoded_slug = quote(event.slug)
+        self.assertIn(encoded_slug, submit_url)
+        self.assertIn(encoded_slug, result_url)
+        self.assertIn(encoded_slug, status_url)
+        self.assertIn(encoded_slug, media_url)
+        event_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+        self.assertEqual(event_response.status_code, 200)
+        self.assertContains(event_response, submit_url)
+        result_response = self.client.get(result_url)
+        self.assertEqual(result_response.status_code, 200)
+        self.assertEqual(result_response.context["search"].pk, search.pk)
 
     def test_terminal_result_offers_a_new_search_action(self) -> None:
         event = self.free_event

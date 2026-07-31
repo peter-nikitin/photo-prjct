@@ -1,0 +1,44 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>Processing progress</h1>
+  {% if rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>Event</th>
+          <th>Processor</th>
+          <th>Run status</th>
+          <th>Total photos</th>
+          <th>Statuses</th>
+          <th>Processed</th>
+          <th>Remaining</th>
+          <th>ETA</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td><a href="{{ row.event_admin_url }}">{{ row.event }}</a></td>
+            <td>{{ row.processor }}</td>
+            <td>{{ row.status }}</td>
+            <td>Total: {{ row.total }}</td>
+            <td>
+              <div>queued: {{ row.counts.queued }}</div>
+              <div>processing: {{ row.counts.processing }}</div>
+              <div>retry_wait: {{ row.counts.retry_wait }}</div>
+              <div>succeeded: {{ row.counts.succeeded }}</div>
+              <div>failed: {{ row.counts.failed }}</div>
+              <div>cancelled: {{ row.counts.cancelled }}</div>
+            </td>
+            <td>Processed: {{ row.processed }}</td>
+            <td>Remaining: {{ row.remaining }}</td>
+            <td>{{ row.eta }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>There are no processing runs yet.</p>
+  {% endif %}
+{% endblock %}

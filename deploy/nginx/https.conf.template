@@ -78,7 +78,7 @@ server {
     client_max_body_size 25m;
 
     proxy_hide_header Referrer-Policy;
-    add_header Referrer-Policy "no-referrer" always;
+    add_header Referrer-Policy "same-origin" always;
     add_header Strict-Transport-Security "max-age=86400" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
@@ -91,6 +91,12 @@ server {
     # Bearer URLs are secrets. Do not persist a raw request URI if this upstream is unavailable.
     location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {
         error_log /dev/null emerg;
+
+        # Bearer URLs must not be sent as a referrer to any subsequent request.
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Strict-Transport-Security "max-age=86400" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
 
         proxy_pass http://django_upstream;
         proxy_http_version 1.1;

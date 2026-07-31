@@ -357,7 +357,7 @@ def test_public_edges_deny_the_private_processing_prefix_before_the_proxy_catcha
         assert source.index(deny) < source.rindex("location / {")
 
 
-def test_public_edges_sanitize_bearer_access_logs_and_do_not_override_no_referrer() -> None:
+def test_public_edges_sanitize_bearer_access_logs_and_split_referrer_policies() -> None:
     for relative_path in ("deploy/nginx/https.conf.template", "deploy/nginx/staging.conf"):
         source = (ROOT / relative_path).read_text(encoding="utf-8")
 
@@ -373,8 +373,18 @@ def test_public_edges_sanitize_bearer_access_logs_and_do_not_override_no_referre
         assert "access_log /var/log/nginx/access.log selfie_search_safe;" in source
 
     https = (ROOT / "deploy/nginx/https.conf.template").read_text(encoding="utf-8")
+    bearer_location = "location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {"
+    bearer_start = https.index(bearer_location)
+    bearer_block = https[bearer_start : https.index("\n    }", bearer_start)]
+    assert 'add_header Referrer-Policy "same-origin" always;' in https
     assert 'add_header Referrer-Policy "no-referrer" always;' in https
-    assert 'add_header Referrer-Policy "same-origin" always;' not in https
+    assert 'add_header Referrer-Policy "no-referrer" always;' in bearer_block
+    for header in (
+        'add_header Strict-Transport-Security "max-age=86400" always;',
+        'add_header X-Content-Type-Options "nosniff" always;',
+        'add_header X-Frame-Options "DENY" always;',
+    ):
+        assert header in bearer_block
     assert "proxy_hide_header Referrer-Policy;" in https
     assert "access_log /var/log/nginx/access.log selfie_search_safe;" in (
         ROOT / "deploy/nginx/reload-nginx.sh"

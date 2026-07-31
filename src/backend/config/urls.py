@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.urls import include, path
+from processing.admin_progress import admin_processing_progress
 
 from config import views
 
@@ -17,5 +18,6 @@ urlpatterns = [
     path("events/<str:slug>/", views.event_detail, name="event_detail"),
     path("legal/", views.legal, name="legal"),
     path("photographer/", include("ingestion.urls")),
+    path("admin/processing/", admin_processing_progress, name="admin_processing_progress"),
     path("admin/", admin.site.urls),
 ]

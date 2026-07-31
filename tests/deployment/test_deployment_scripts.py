@@ -672,10 +672,10 @@ def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
     assert "worker-token-must-not-be-logged" not in "\n".join(commands)
 
 
-def test_preview_first_activation_requires_explicit_pipeline_settings(
+def test_preview_first_activation_accepts_and_persists_all_worker_identities(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """An image release alone must not create preview work or start a partial preview pipeline."""
+    """The complete worker contract must reach the deployed environment unchanged."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
@@ -685,7 +685,8 @@ def test_preview_first_activation_requires_explicit_pipeline_settings(
             "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-                "1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2"
+                "1/selfie_query/1,1/capture_metadata/1,1/face_embedding/1,"
+                "2/generate_preview/1,2/face_embedding/2"
             ),
             "PHOTO_WORKER_PROCESSOR_TYPES": (
                 "selfie_query,face_embedding,capture_metadata,generate_preview"
@@ -700,8 +701,8 @@ def test_preview_first_activation_requires_explicit_pipeline_settings(
     assert "PHOTO_PROCESSING_PREVIEW_ENABLED=True" in deployed_env
     assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1,1/face_embedding/1,"
-        "2/generate_preview/1,2/face_embedding/2" in deployed_env
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/1,1/capture_metadata/1,"
+        "1/face_embedding/1,2/generate_preview/1,2/face_embedding/2" in deployed_env
     )
 
 

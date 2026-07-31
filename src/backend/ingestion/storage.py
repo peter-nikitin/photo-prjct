@@ -25,6 +25,8 @@ _ETAG = re.compile(r'"([^"\r\n]+)"')
 class _S3Client(Protocol):
     def generate_presigned_post(self, **kwargs: Any) -> dict[str, Any]: ...
 
+    def generate_presigned_url(self, **kwargs: Any) -> str: ...
+
     def head_object(self, **kwargs: Any) -> dict[str, Any]: ...
 
     def get_object(self, **kwargs: Any) -> dict[str, Any]: ...
@@ -95,6 +97,7 @@ class PrivateUploadStorage:
         self._bucket = settings.PRIVATE_MEDIA_S3_BUCKET
         self._max_file_bytes = settings.PHOTO_UPLOAD_MAX_FILE_BYTES
         self._grant_ttl_seconds = settings.PHOTO_UPLOAD_GRANT_TTL_SECONDS
+        self._download_ttl_seconds = settings.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS
         self._client = (
             client
             if client is not None
@@ -147,6 +150,25 @@ class PrivateUploadStorage:
     def inspect(self, *, key: str) -> ObjectIdentity:
         _validate_managed_key(key)
         return self._inspect(key)
+
+    def sign_final(self, *, key: str) -> str:
+        """Verify then create a short-lived GET URL for one public final object."""
+        _validate_public_final_key(key)
+        object_identity = self._inspect(key)
+        if object_identity.content_type not in {"image/jpeg", "image/png"}:
+            raise ObjectMismatch()
+        try:
+            url = self._client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=self._download_ttl_seconds,
+                HttpMethod="GET",
+            )
+            if not isinstance(url, str) or not url:
+                raise TypeError
+        except (BotoCoreError, ClientError, TypeError):
+            raise StorageUnavailable() from None
+        return url
 
     def open_final(self, *, key: str) -> OpenedObject:
         _validate_public_final_key(key)

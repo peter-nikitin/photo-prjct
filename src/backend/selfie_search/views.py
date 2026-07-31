@@ -5,7 +5,6 @@ from django.http import (
     HttpResponse,
     HttpResponseBase,
     JsonResponse,
-    StreamingHttpResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -13,11 +12,11 @@ from django.views.decorators.http import require_POST
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.gallery import (
     GALLERY_VARIANTS,
-    CloseableMediaIterator,
     GalleryPhotoFactory,
     GalleryVariant,
 )
 from picflow.models import Event, Photo
+from picflow.pagination import InvalidCursor
 
 from selfie_search.forms import SelfieSearchUploadForm
 from selfie_search.models import SelfieSearch
@@ -25,8 +24,8 @@ from selfie_search.services.results import (
     PublicSearchNotFound,
     public_status_payload,
     resolve_public_result,
+    saved_ready_result_page,
     saved_ready_result_photo,
-    saved_ready_result_photos,
 )
 from selfie_search.services.submission import submit_selfie_search
 from selfie_search.storage import TemporarySelfieStorage
@@ -60,6 +59,16 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     search = _public_search(event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
+    selfie_search_next_cursor: str | None = None
+    if search.status == SelfieSearch.Status.READY:
+        try:
+            page = saved_ready_result_page(search=search, cursor=request.GET.get("cursor"))
+        except InvalidCursor:
+            return _not_found_response()
+        photos = page.photos
+        selfie_search_next_cursor = page.next_cursor
+    else:
+        photos = ()
     gallery_photos = tuple(
         GalleryPhotoFactory.from_photo(
             photo=photo,
@@ -69,7 +78,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
                 public_token=public_token,
             ),
         )
-        for photo in saved_ready_result_photos(search)
+        for photo in photos
     )
     response = render(
         request,
@@ -77,7 +86,9 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         {
             "event": search.event,
             "gallery_photos": gallery_photos,
+            "selfie_search_next_cursor": selfie_search_next_cursor,
             "is_terminal": search.status in _TERMINAL_SEARCH_STATUSES,
+            "public_token": public_token,
             "search": search,
             "status_url": reverse(
                 "selfie_search:status",
@@ -107,16 +118,12 @@ def result_media(
     if photo is None:
         return _not_found_response()
     try:
-        media = _public_media_resolver().resolve(photo=photo, variant=variant)
+        signed_url = _public_media_resolver().resolve_signed(photo=photo, variant=variant)
     except ObjectMissing:
         return _not_found_response()
     except StorageError:
         return HttpResponse(status=503)
-    stream = CloseableMediaIterator(media=media, event_slug=search.event.slug, photo_id=photo.pk)
-    response = StreamingHttpResponse(stream, content_type=media.content_type)
-    response["Content-Length"] = str(media.content_length)
-    response["Content-Disposition"] = f'inline; filename="photo-{photo.pk}.{media.extension}"'
-    return response
+    return redirect(signed_url)
 
 
 def _event_page(request, event_slug: str, form: SelfieSearchUploadForm):

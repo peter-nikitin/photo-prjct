@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Literal, Protocol, Self
+from typing import Final, Literal, Protocol, Self
 
 from django.db.models import F, Q, QuerySet
 from django.urls import reverse
@@ -14,16 +14,20 @@ from processing.models import (
 )
 
 from picflow.models import Event, Photo
+from picflow.pagination import SignedCursor
 
 GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
 MediaUrlBuilder = Callable[[Photo, GalleryVariant], str]
+GALLERY_PAGE_SIZE: Final = 100
 
 logger = logging.getLogger(__name__)
 
 
 class FinalObjectStorage(Protocol):
     def open_final(self, *, key: str) -> OpenedObject: ...
+
+    def sign_final(self, *, key: str) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,12 @@ class GalleryPhoto:
     preview_media_small: GalleryMedia
     preview_media_large: GalleryMedia
     alt: str
+
+
+@dataclass(frozen=True)
+class GalleryPage:
+    photos: tuple[Photo, ...]
+    next_cursor: str | None
 
 
 class GalleryPhotoFactory:
@@ -87,6 +97,24 @@ def gallery_photo_queryset(*, event: Event) -> QuerySet[Photo]:
     )
 
 
+def gallery_page(
+    *, event: Event, cursor: str | None, signer: SignedCursor | None = None
+) -> GalleryPage:
+    signer = signer or SignedCursor()
+    collection = f"normal-gallery:{event.pk}"
+    photos = gallery_photo_queryset(event=event)
+    if cursor is not None:
+        photos = photos.filter(pk__gt=signer.decode(cursor=cursor, collection=collection))
+    page_with_sentinel = tuple(photos[: GALLERY_PAGE_SIZE + 1])
+    page_photos = page_with_sentinel[:GALLERY_PAGE_SIZE]
+    next_cursor = (
+        signer.encode(collection=collection, last_key=page_photos[-1].pk)
+        if len(page_with_sentinel) > GALLERY_PAGE_SIZE
+        else None
+    )
+    return GalleryPage(photos=page_photos, next_cursor=next_cursor)
+
+
 @dataclass(frozen=True)
 class ResolvedPublicMedia:
     body: ReadableBody
@@ -100,17 +128,7 @@ class PublicMediaResolver:
         self._storage = storage
 
     def resolve(self, *, photo: Photo, variant: GalleryVariant) -> ResolvedPublicMedia:
-        if variant not in GALLERY_VARIANTS or not photo.original_key:
-            raise ValueError("ineligible gallery media")
-        key = photo.original_key
-        if (
-            photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
-            and variant == "preview-small"
-        ):
-            try:
-                key = PhotoDerivative.objects.get(photo=photo, variant="preview-small-v1").final_key
-            except PhotoDerivative.DoesNotExist:
-                raise ObjectMissing() from None
+        key = self._selected_key(photo=photo, variant=variant)
         try:
             opened = self._storage.open_final(key=key)
         except ValueError:
@@ -122,6 +140,29 @@ class PublicMediaResolver:
             content_type=opened.content_type,
             extension=extension,
         )
+
+    def resolve_signed(self, *, photo: Photo, variant: GalleryVariant) -> str:
+        key = self._selected_key(photo=photo, variant=variant)
+        try:
+            return self._storage.sign_final(key=key)
+        except ValueError:
+            raise ObjectMismatch() from None
+
+    @staticmethod
+    def _selected_key(*, photo: Photo, variant: GalleryVariant) -> str:
+        if variant not in GALLERY_VARIANTS or not photo.original_key:
+            raise ValueError("ineligible gallery media")
+        if (
+            photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+            and variant == "preview-small"
+        ):
+            try:
+                return PhotoDerivative.objects.get(
+                    photo=photo, variant="preview-small-v1"
+                ).final_key
+            except PhotoDerivative.DoesNotExist:
+                raise ObjectMissing() from None
+        return photo.original_key
 
 
 class CloseableMediaIterator(Iterator[bytes]):

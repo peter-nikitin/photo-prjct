@@ -20,7 +20,7 @@
         <p role="status" aria-live="polite">Страница обновится автоматически, когда результат будет готов.</p>
       </section>
     {% elif search.status == "ready" %}
-      <section class="event-gallery selfie-search-results" aria-labelledby="selfie-search-matches-title">
+      <section class="event-gallery selfie-search-results" data-event-gallery aria-labelledby="selfie-search-matches-title">
         <h2 id="selfie-search-matches-title">Возможные совпадения</h2>
         <p class="selfie-search-count">Найдено фотографий: {{ search.matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
         {% if gallery_photos %}
@@ -34,6 +34,9 @@
               </figure>
             {% endfor %}
           </div>
+          {% if selfie_search_next_cursor %}
+            <a class="event-gallery-next" href="{% url 'selfie_search:result' event_slug=event.slug public_token=public_token %}?cursor={{ selfie_search_next_cursor|urlencode }}">Показать ещё</a>
+          {% endif %}
         {% else %}
           <p class="selfie-search-empty">Совпадений не найдено</p>
         {% endif %}

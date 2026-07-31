@@ -13,6 +13,11 @@ set -eu
 : "${DB_USER:?Set DB_USER}"
 : "${DB_PASSWORD:?Set DB_PASSWORD}"
 : "${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN}"
+: "${GUNICORN_WORKERS:?Set GUNICORN_WORKERS}"
+: "${GUNICORN_THREADS:?Set GUNICORN_THREADS}"
+: "${GUNICORN_TIMEOUT:?Set GUNICORN_TIMEOUT}"
+: "${GUNICORN_MAX_REQUESTS:?Set GUNICORN_MAX_REQUESTS}"
+: "${GUNICORN_MAX_REQUESTS_JITTER:?Set GUNICORN_MAX_REQUESTS_JITTER}"
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 requested_image="$APP_IMAGE"
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
@@ -21,6 +26,15 @@ requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}"
 requested_selfie_search_enabled="${SELFIE_SEARCH_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
+
+case "$GUNICORN_WORKERS:$GUNICORN_THREADS:$GUNICORN_TIMEOUT:$GUNICORN_MAX_REQUESTS:$GUNICORN_MAX_REQUESTS_JITTER" in
+    5:2:60:1000:100)
+        ;;
+    *)
+        echo "GUNICORN_PROFILE must be 5 workers, 2 threads, timeout 60, max requests 1000, jitter 100" >&2
+        exit 2
+        ;;
+esac
 
 remaining_identities="$requested_worker_processor_identities"
 seen_identities=","
@@ -442,6 +456,11 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'DB_PASSWORD=%s\n' "$DB_PASSWORD"
     printf 'DB_HOST=db\n'
     printf 'DB_PORT=5432\n'
+    printf 'GUNICORN_WORKERS=%s\n' "$GUNICORN_WORKERS"
+    printf 'GUNICORN_THREADS=%s\n' "$GUNICORN_THREADS"
+    printf 'GUNICORN_TIMEOUT=%s\n' "$GUNICORN_TIMEOUT"
+    printf 'GUNICORN_MAX_REQUESTS=%s\n' "$GUNICORN_MAX_REQUESTS"
+    printf 'GUNICORN_MAX_REQUESTS_JITTER=%s\n' "$GUNICORN_MAX_REQUESTS_JITTER"
     printf 'PUBLIC_DOMAIN=%s\n' "$PUBLIC_DOMAIN"
     printf 'PUBLIC_DOMAIN_ALIAS=%s\n' "$PUBLIC_DOMAIN_ALIAS"
     printf 'MEDIA_STORAGE_BACKEND=%s\n' "${MEDIA_STORAGE_BACKEND:-filesystem}"

@@ -189,6 +189,37 @@ def test_open_final_returns_validated_stream_without_reading_it(
     assert client.last_body is not None and not client.last_body.closed
 
 
+def test_sign_final_verifies_the_exact_public_object_before_creating_a_get_url(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(FINAL_KEY, b"jpeg-data", '"final-etag"')
+
+    url = storage.sign_final(key=FINAL_KEY)
+
+    assert url == client.presigned_get_url
+    assert calls(client, "head_object") == [{"Bucket": BUCKET, "Key": FINAL_KEY}]
+    assert calls(client, "generate_presigned_url") == [
+        {
+            "ClientMethod": "get_object",
+            "Params": {"Bucket": BUCKET, "Key": FINAL_KEY},
+            "ExpiresIn": 120,
+            "HttpMethod": "GET",
+        }
+    ]
+    assert calls(client, "get_object") == []
+
+
+def test_sign_final_rejects_a_non_image_object_before_signing(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(FINAL_KEY, b"not-an-image", '"final-etag"', "text/plain")
+
+    with pytest.raises(ObjectMismatch):
+        storage.sign_final(key=FINAL_KEY)
+
+    assert calls(client, "generate_presigned_url") == []
+
+
 def test_open_final_allows_only_the_content_addressed_published_preview_namespace(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:

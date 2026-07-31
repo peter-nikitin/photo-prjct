@@ -38,6 +38,7 @@ place, and add the new record to this index.
 | 0016 | [Allow deterministic staging reference media](0016-allow-deterministic-staging-reference-media.md) | Proposed |
 | 0017 | [Use Django-polled photo-processing jobs](0017-use-django-polled-photo-processing-jobs.md) | Accepted |
 | 0019 | [Use public event-scoped selfie search](0019-use-public-event-selfie-search.md) | Accepted |
+| 0020 | [Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -45,8 +46,9 @@ place, and add the new record to this index.
 [ADR 0015](0015-allow-anonymous-free-event-original-delivery.md). The repository implementation
 conforms to ADR 0019's Django/PostgreSQL authority, private worker, event isolation, transient query
 embedding, cleanup-before-publication, stable bearer result, and paid-result-only media boundaries.
-No new architecture decision is required for the local implementation. Lifecycle mutation,
-real-storage preflight, exact rollout-image model smoke, staging capacity evidence, and feature
-activation remain rollout work rather than completed decision evidence. The existing worker image
-already packages pinned public OpenCV Zoo YuNet/SFace files; it is not a new worker or a future
-private-model delivery mechanism.
+ADR 0020 supersedes only the inline-Django transport for already authorized gallery and result
+media; its direct Object Storage delivery is accepted but not yet implementation evidence. Lifecycle
+mutation, real-storage preflight, exact rollout-image model smoke, staging capacity evidence, and
+feature activation remain rollout work rather than completed decision evidence. The existing worker
+image already packages pinned public OpenCV Zoo YuNet/SFace files; it is not a new worker or a
+future private-model delivery mechanism.

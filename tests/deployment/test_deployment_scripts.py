@@ -529,6 +529,11 @@ esac
         "EXPECTED_REQUESTED_SECRET": "new-secret",
         "DEBUG": "False",
         "ALLOWED_HOSTS": "localhost",
+        "GUNICORN_WORKERS": "5",
+        "GUNICORN_THREADS": "2",
+        "GUNICORN_TIMEOUT": "60",
+        "GUNICORN_MAX_REQUESTS": "1000",
+        "GUNICORN_MAX_REQUESTS_JITTER": "100",
         "DB_NAME": "app",
         "DB_USER": "app",
         "DB_PASSWORD": "password",
@@ -577,6 +582,87 @@ def test_apply_propagates_private_media_read_settings(tmp_path: Path, fake_bin: 
     assert "PRIVATE_MEDIA_S3_BUCKET=private-gallery" in deployed_env
     assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID=gallery-access" in deployed_env
     assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=gallery-secret" in deployed_env
+
+
+def test_apply_persists_the_bounded_gunicorn_profile(tmp_path: Path, fake_bin: Path) -> None:
+    """The candidate environment must carry the web process bound into the container."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "GUNICORN_WORKERS": "5",
+            "GUNICORN_THREADS": "2",
+            "GUNICORN_TIMEOUT": "60",
+            "GUNICORN_MAX_REQUESTS": "1000",
+            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert "GUNICORN_WORKERS=5" in deployed_env
+    assert "GUNICORN_THREADS=2" in deployed_env
+    assert "GUNICORN_TIMEOUT=60" in deployed_env
+    assert "GUNICORN_MAX_REQUESTS=1000" in deployed_env
+    assert "GUNICORN_MAX_REQUESTS_JITTER=100" in deployed_env
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("GUNICORN_WORKERS", "4"), ("GUNICORN_TIMEOUT", "0")],
+)
+def test_apply_rejects_an_unsafe_gunicorn_profile_before_mutation(
+    tmp_path: Path, fake_bin: Path, name: str, value: str
+) -> None:
+    """A wrong process bound must not replace the live deployment environment."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "GUNICORN_WORKERS": "5",
+            "GUNICORN_THREADS": "2",
+            "GUNICORN_TIMEOUT": "60",
+            "GUNICORN_MAX_REQUESTS": "1000",
+            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+            name: value,
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert "GUNICORN_" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
+
+
+def test_entrypoint_runs_gunicorn_with_the_bounded_profile(tmp_path: Path, fake_bin: Path) -> None:
+    """The running web process must receive finite concurrency and recycling arguments."""
+    _write_executable(fake_bin / "python", "exit 0")
+    _write_executable(fake_bin / "gunicorn", 'printf "%s\\n" "$*" > "$GUNICORN_LOG"')
+
+    result = subprocess.run(
+        ["sh", ROOT / "src/backend/entrypoint.sh"],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "GUNICORN_LOG": str(tmp_path / "gunicorn.log"),
+            "GUNICORN_WORKERS": "5",
+            "GUNICORN_THREADS": "2",
+            "GUNICORN_TIMEOUT": "60",
+            "GUNICORN_MAX_REQUESTS": "1000",
+            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "gunicorn.log").read_text(encoding="utf-8") == (
+        "config.wsgi:application --bind 0.0.0.0:8000 --workers 5 --threads 2 "
+        "--timeout 60 --max-requests 1000 --max-requests-jitter 100\n"
+    )
 
 
 def test_disabled_processing_persists_defaults_without_the_worker_profile(

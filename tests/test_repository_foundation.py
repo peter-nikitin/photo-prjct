@@ -170,6 +170,27 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
     assert "healthcheck" in compose["services"]["web"]
 
 
+def test_deployment_workflows_forward_the_bounded_gunicorn_profile() -> None:
+    """Both delivery paths provide the required web-process bound to remote deployment."""
+    profiles = {
+        "GUNICORN_WORKERS": "5",
+        "GUNICORN_THREADS": "2",
+        "GUNICORN_TIMEOUT": "60",
+        "GUNICORN_MAX_REQUESTS": "1000",
+        "GUNICORN_MAX_REQUESTS_JITTER": "100",
+    }
+    deployments = (
+        (_load_workflow("deploy.yml"), "deploy", "Apply staging deployment"),
+        (_load_workflow("promote-production.yml"), "promote", "Apply production deployment"),
+    )
+
+    for workflow, job_name, step_name in deployments:
+        apply = _workflow_step(workflow, job_name, step_name)
+        for name, value in profiles.items():
+            assert apply["env"][name] == value
+            assert name in _envs(apply)
+
+
 def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_image() -> None:
     """Both deployment workflows pass the opt-in worker contract, disabled by default."""
     staging = _load_workflow("deploy.yml")

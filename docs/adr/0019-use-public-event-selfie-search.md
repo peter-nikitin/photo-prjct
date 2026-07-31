@@ -4,7 +4,7 @@
 - Date: 2026-07-30
 - Deciders: project maintainers
 - Supersedes: [ADR 0015](0015-allow-anonymous-free-event-original-delivery.md)
-- Superseded by: none
+- Superseded by: [ADR 0020](0020-use-signed-direct-object-storage-media-delivery.md) for authorized media transport only
 
 ## Context
 
@@ -131,3 +131,4 @@ documented callback bound.
 - [ADR 0006: Use Yandex Object Storage for media](0006-yandex-object-storage-media.md)
 - [ADR 0015: Allow anonymous free-event original delivery](0015-allow-anonymous-free-event-original-delivery.md)
 - [ADR 0017: Use Django-polled photo-processing jobs](0017-use-django-polled-photo-processing-jobs.md)
+- [ADR 0020: Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md)

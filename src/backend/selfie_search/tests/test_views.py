@@ -1,7 +1,7 @@
 import hashlib
 from datetime import date
 from typing import cast
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -9,7 +9,7 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from picflow.gallery import ResolvedPublicMedia
+from ingestion.storage import ObjectMissing, StorageError
 from picflow.models import Event, Photo
 from processing.models import (
     EventProcessingRun,
@@ -21,18 +21,6 @@ from processing.models import (
 from selfie_search.models import SelfieSearch, SelfieSearchResult
 
 type ChoiceValue = str | tuple[str, str]
-
-
-class _ReadableBody:
-    def __init__(self, reads: list[bytes]) -> None:
-        self._reads = iter(reads)
-        self.close_calls = 0
-
-    def read(self, amt: int | None = None) -> bytes:  # noqa: ARG002
-        return next(self._reads)
-
-    def close(self) -> None:
-        self.close_calls += 1
 
 
 @override_settings(
@@ -185,7 +173,13 @@ class PublicSelfieResultViewTests(TestCase):
         values.update(overrides)
         return Event.objects.create(**values)
 
-    def make_private_photo(self, event: Event, *, photo_id: str | None = None) -> Photo:
+    def make_private_photo(
+        self,
+        event: Event,
+        *,
+        photo_id: str | None = None,
+        preview_required: bool = False,
+    ) -> Photo:
         identifier = photo_id or uuid4().hex
         return Photo.objects.create(
             id=identifier,
@@ -196,6 +190,16 @@ class PublicSelfieResultViewTests(TestCase):
             original_size=5,
             original_content_type="image/jpeg",
             uploaded_at=timezone.now(),
+            processing_generation=(
+                Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+                if preview_required
+                else Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+            ),
+            gallery_media_policy=(
+                Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+                if preview_required
+                else Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
+            ),
         )
 
     def make_search(
@@ -419,6 +423,76 @@ class PublicSelfieResultViewTests(TestCase):
         )
         self.assertNotContains(response, removed.id)
 
+    def test_ready_page_omits_preview_required_member_without_accepted_preview(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(
+            search.event, photo_id="preview-not-ready", preview_required=True
+        )
+        self.add_result(search=search, photo=photo, rank=1)
+
+        response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertEqual(response.context["gallery_photos"], ())
+        self.assertNotContains(response, photo.pk)
+
+    def test_ready_page_uses_token_bound_cursor_without_expanding_saved_membership(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photos = [
+            self.make_private_photo(search.event, photo_id=f"rank-{index:03}")
+            for index in range(101)
+        ]
+        for index, photo in enumerate(photos, start=1):
+            self.add_result(search=search, photo=photo, rank=index)
+        unrelated = self.make_private_photo(search.event, photo_id="not-in-snapshot")
+
+        first_response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertEqual(
+            [item.photo_id for item in first_response.context["gallery_photos"]],
+            [photo.pk for photo in photos[:100]],
+        )
+        self.assertNotContains(first_response, unrelated.pk)
+        next_cursor = first_response.context["selfie_search_next_cursor"]
+        self.assertIsNotNone(next_cursor)
+        self.assertContains(first_response, "Показать ещё")
+        self.assertContains(first_response, "data-event-gallery")
+
+        later_response = self.client.get(
+            self.result_url(event=search.event, token=token), {"cursor": next_cursor}
+        )
+
+        self.assertEqual(
+            [item.photo_id for item in later_response.context["gallery_photos"]], [photos[100].pk]
+        )
+        self.assertIsNone(later_response.context["selfie_search_next_cursor"])
+
+    def test_ready_page_rejects_cursor_for_another_public_token(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        other_search, other_token = self.make_search(status=SelfieSearch.Status.READY)
+        for index in range(101):
+            photo = self.make_private_photo(search.event, photo_id=f"rank-{index:03}")
+            self.add_result(search=search, photo=photo, rank=index + 1)
+
+        cursor = self.client.get(self.result_url(event=search.event, token=token)).context[
+            "selfie_search_next_cursor"
+        ]
+        response = self.client.get(
+            self.result_url(event=other_search.event, token=other_token), {"cursor": cursor}
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_nonready_page_does_not_expose_pagination(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.PROCESSING)
+
+        response = self.client.get(
+            self.result_url(event=search.event, token=token), {"cursor": "not-a-cursor"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Показать ещё")
+        self.assertIsNone(response.context["selfie_search_next_cursor"])
+
     def test_event_token_mismatch_and_unpublished_event_are_not_resolvable(self) -> None:
         other_event = self.make_event(name="Other Run", slug="other-run")
         main_search, main_token = self.make_search(event=self.event)
@@ -540,7 +614,7 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(response["Allow"], "GET, HEAD")
         self.assert_bearer_headers(response)
 
-    def test_saved_result_media_streams_inline_for_free_and_paid_events(self) -> None:
+    def test_saved_result_media_redirects_for_free_and_paid_events_without_streaming(self) -> None:
         for access_type in (Event.AccessType.FREE, Event.AccessType.PAID):
             with self.subTest(access_type=access_type):
                 access_type_value = cast(str, access_type)
@@ -552,9 +626,10 @@ class PublicSelfieResultViewTests(TestCase):
                 search, token = self.make_search(event=event, status=SelfieSearch.Status.READY)
                 photo = self.make_private_photo(event, photo_id=f"{access_type_value}-result")
                 self.add_result(search=search, photo=photo, rank=1)
-                body = _ReadableBody([b"photo", b""])
                 resolver = Mock()
-                resolver.resolve.return_value = ResolvedPublicMedia(body, 5, "image/jpeg", "jpg")
+                resolver.resolve_signed.return_value = (
+                    "https://storage.example.test/photo?signature=secret"
+                )
 
                 with patch("selfie_search.views._public_media_resolver", return_value=resolver):
                     response = self.client.get(
@@ -566,15 +641,115 @@ class PublicSelfieResultViewTests(TestCase):
                         )
                     )
 
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response["Content-Type"], "image/jpeg")
-                self.assertEqual(
-                    response["Content-Disposition"], f'inline; filename="photo-{photo.id}.jpg"'
-                )
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response["Location"], resolver.resolve_signed.return_value)
                 self.assert_bearer_headers(response)
-                self.assertEqual(b"".join(response.streaming_content), b"photo")
-                self.assertEqual(body.close_calls, 1)
-                resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
+                self.assertFalse(response.streaming)
+                resolver.resolve_signed.assert_called_once_with(
+                    photo=photo, variant="preview-small"
+                )
+
+    def test_saved_result_media_uses_the_requested_preview_or_original_selection(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(search.event, photo_id="selection-result")
+        self.add_result(search=search, photo=photo, rank=1)
+        resolver = Mock()
+        resolver.resolve_signed.side_effect = (
+            "https://storage.example.test/preview?signature=secret",
+            "https://storage.example.test/original?signature=secret",
+        )
+
+        with patch("selfie_search.views._public_media_resolver", return_value=resolver):
+            preview_response = self.client.get(
+                self.result_media_url(
+                    event=search.event,
+                    token=token,
+                    photo=photo,
+                    variant="preview-small",
+                )
+            )
+            original_response = self.client.get(
+                self.result_media_url(
+                    event=search.event,
+                    token=token,
+                    photo=photo,
+                    variant="preview-large",
+                )
+            )
+
+        self.assertEqual(
+            preview_response["Location"], "https://storage.example.test/preview?signature=secret"
+        )
+        self.assertEqual(
+            original_response["Location"], "https://storage.example.test/original?signature=secret"
+        )
+        self.assertEqual(
+            resolver.resolve_signed.call_args_list,
+            [
+                call(photo=photo, variant="preview-small"),
+                call(photo=photo, variant="preview-large"),
+            ],
+        )
+
+    def test_saved_result_media_maps_missing_object_and_signing_failure(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(search.event, photo_id="storage-result")
+        self.add_result(search=search, photo=photo, rank=1)
+        resolver = Mock()
+
+        with patch("selfie_search.views._public_media_resolver", return_value=resolver):
+            resolver.resolve_signed.side_effect = ObjectMissing()
+            missing_response = self.client.get(
+                self.result_media_url(
+                    event=search.event,
+                    token=token,
+                    photo=photo,
+                    variant="preview-small",
+                )
+            )
+            resolver.resolve_signed.side_effect = StorageError()
+            unavailable_response = self.client.get(
+                self.result_media_url(
+                    event=search.event,
+                    token=token,
+                    photo=photo,
+                    variant="preview-small",
+                )
+            )
+
+        self.assertEqual(missing_response.status_code, 404)
+        self.assertEqual(unavailable_response.status_code, 503)
+        self.assert_bearer_headers(missing_response)
+        self.assert_bearer_headers(unavailable_response)
+
+    def test_saved_result_media_rejects_preview_required_member_before_signing(self) -> None:
+        paid_event = self.make_event(
+            name="Paid Run", slug="paid-preview-result", access_type=Event.AccessType.PAID
+        )
+        search, token = self.make_search(event=paid_event, status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(
+            search.event, photo_id="preview-not-ready-media", preview_required=True
+        )
+        self.add_result(search=search, photo=photo, rank=1)
+        resolver = Mock()
+
+        with patch("selfie_search.views._public_media_resolver", return_value=resolver):
+            responses = tuple(
+                self.client.get(
+                    self.result_media_url(
+                        event=search.event,
+                        token=token,
+                        photo=photo,
+                        variant=variant,
+                    )
+                )
+                for variant in ("preview-small", "preview-large")
+            )
+
+        for response in responses:
+            self.assertEqual(response.status_code, 404)
+            self.assert_bearer_headers(response)
+        resolver.resolve_signed.assert_not_called()
 
     def test_media_rejects_normal_paid_gallery_and_every_nonmember_access(self) -> None:
         paid_event = self.make_event(
@@ -649,6 +824,6 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(nonready.status_code, 404)
         self.assertEqual(invalid_token.status_code, 404)
         self.assertEqual(invalid_variant.status_code, 404)
-        resolver.resolve.assert_not_called()
+        resolver.resolve_signed.assert_not_called()
         normal_resolver.assert_not_called()
         self.assertFalse(queued_search.results.exists())

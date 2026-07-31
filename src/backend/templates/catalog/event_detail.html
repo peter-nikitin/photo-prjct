@@ -63,7 +63,7 @@
         </form>
       </section>
     {% endif %}
-    <section class="event-gallery" aria-labelledby="gallery-title">
+    <section class="event-gallery" data-event-gallery aria-labelledby="gallery-title">
       <div class="event-gallery-heading">
         <h2 id="gallery-title">Фотографии</h2>
         <span class="event-gallery-count">{{ gallery_photos|length }} фото</span>
@@ -83,6 +83,9 @@
             </figure>
           {% endfor %}
         </div>
+        {% if gallery_next_cursor %}
+          <a class="event-gallery-next" href="{% url 'event_detail' slug=event.slug %}?cursor={{ gallery_next_cursor|urlencode }}">Показать ещё</a>
+        {% endif %}
       {% else %}
         <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>
       {% endif %}

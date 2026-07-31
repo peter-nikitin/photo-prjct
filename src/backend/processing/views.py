@@ -472,7 +472,7 @@ def _claim_with_grant(data: dict[str, Any]) -> dict[str, object]:
         fingerprint = _input_fingerprint(
             claimed.job.input_fingerprint, contract_version=claimed.job.contract_version
         )
-        grant = ExactObjectDownloadStorage().create_download_grant(
+        grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
             max_ttl_seconds=_remaining_lease(claimed.attempt),
         )
@@ -502,7 +502,7 @@ def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:
         fingerprint = _input_fingerprint(
             attempt.input_fingerprint, contract_version=attempt.contract_version
         )
-        grant = ExactObjectDownloadStorage().create_download_grant(
+        grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
             max_ttl_seconds=_remaining_lease(attempt),
         )
@@ -640,6 +640,15 @@ def _remaining_lease(attempt: ProcessingAttempt | SelfieSearchAttempt) -> int:
 
 def _fingerprint_key(fingerprint: dict[str, int | str | None]) -> str:
     return cast(str, fingerprint.get("object_key", fingerprint.get("original_key")))
+
+
+def _download_storage(
+    fingerprint: dict[str, int | str | None],
+) -> ExactObjectDownloadStorage | ExactPreviewStorage:
+    """Keep original and accepted-preview grant namespaces disjoint."""
+    if fingerprint.get("media_kind") == "preview-small-v1":
+        return ExactPreviewStorage()
+    return ExactObjectDownloadStorage()
 
 
 def _validate_grant_lease(

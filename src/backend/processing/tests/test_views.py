@@ -15,6 +15,7 @@ from selfie_search.storage import DownloadGrant, StoredTemporarySelfie
 from processing.contracts import AttemptCompletion
 from processing.models import (
     EventProcessingRun,
+    PhotoDerivative,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -226,6 +227,105 @@ class WorkerApiTests(TestCase):
 
             self.assertEqual(response.status_code, 200)
             Claim.from_response(response.json())
+
+    @patch("processing.views.ExactPreviewStorage")
+    def test_preview_face_claim_grants_the_accepted_preview_derivative(
+        self, preview_storage
+    ) -> None:
+        """A v2 face claim must grant its preview input, not validate it as an original."""
+        preview_storage.return_value.create_download_grant.return_value.url = (
+            "https://storage.example.test/preview?secret"
+        )
+        preview_storage.return_value.create_download_grant.return_value.expires_at = (
+            timezone.now() + timedelta(seconds=30)
+        )
+        photo = self.photo("preview-face-claim")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        preview_state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": "image/jpeg",
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+        assert preview_state.current_job is not None
+        preview_attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=preview_state.current_job.run,
+            job=preview_state.current_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=preview_state.current_job.configuration,
+            input_fingerprint=preview_state.current_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        derivative = PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=(
+                f"derivatives/previews/{photo.id}/preview-small-v1/"
+                f"{preview_attempt.id}-{'a' * 64}.jpg"
+            ),
+            byte_size=1024,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=3200,
+            oriented_source_height=2000,
+            sha256="a" * 64,
+            accepted_attempt=preview_attempt,
+        )
+        preview_state.status = PhotoProcessingState.Status.SUCCEEDED
+        preview_state.accepted_attempt = preview_attempt
+        preview_state.succeeded_at = timezone.now()
+        preview_state.save(
+            update_fields=["status", "accepted_attempt", "succeeded_at", "updated_at"]
+        )
+        request_face_embedding_enqueue(photo)
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.claim_body(
+                contract_version=2,
+                processor_type="face_embedding",
+                processor_version=2,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        job = response.json()["job"]
+        self.assertEqual(job["input_fingerprint"]["object_key"], derivative.final_key)
+        self.assertEqual(job["download_url"], "https://storage.example.test/preview?secret")
+        self.assertEqual(
+            preview_storage.return_value.create_download_grant.call_args.kwargs["final_key"],
+            derivative.final_key,
+        )
+        Claim.from_response(response.json())
+
+        refreshed = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/download", {}
+        )
+
+        self.assertEqual(refreshed.status_code, 200)
+        self.assertEqual(
+            refreshed.json()["download_url"], "https://storage.example.test/preview?secret"
+        )
+        self.assertEqual(preview_storage.return_value.create_download_grant.call_count, 2)
 
     @patch("processing.views.ExactPreviewStorage.create_upload_grant")
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")

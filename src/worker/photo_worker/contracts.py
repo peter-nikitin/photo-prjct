@@ -19,10 +19,15 @@ PREVIEW_CONTRACT_VERSION = 2
 PROCESSOR_TYPE_GENERATE_PREVIEW = "generate_preview"
 PROCESSOR_VERSION_GENERATE_PREVIEW = 1
 PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW = 2
+PROCESSOR_TYPE_SELFIE_QUERY = "selfie_query"
+PROCESSOR_VERSION_SELFIE_QUERY = 1
 MAX_FACE_EMBEDDINGS_PER_JOB = 64
 MAX_FACE_EMBEDDING_DIMENSIONS = 128
+FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
+SELFIE_MAX_INPUT_BYTES = 20 * 1024 * 1024
+SELFIE_MAX_PIXELS = 25_000_000
 DEFAULT_FACE_DETECTION_THRESHOLD = 0.75
-MAX_JSON_FIELD_BYTES = 16_384
+MAX_JSON_FIELD_BYTES = FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES
 MAX_INPUT_BYTES_CAP = 50 * 1024 * 1024
 MAX_PIXELS_CAP = 100_000_000
 # Preview normalization may retain a 4 B/px decoded CMYK source, a 4 B/px orientation copy,
@@ -86,17 +91,18 @@ V2_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "normalize_embeddings": True,
     },
     "worker": {
-        "api_response_max_bytes": 16_384,
+        "api_response_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
         "concurrency": 1,
         "heartbeat_interval_seconds": 30,
         "lease_duration_seconds": 120,
         "max_input_bytes": 50 * 1024 * 1024,
         "max_pixels": 100_000_000,
         "poll_min_delay_seconds": 5,
-        "terminal_result_max_bytes": 8_192,
+        "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
     },
 }
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+_SELFIE_KEY = re.compile(r"selfie-search/[0-9a-f]{32}")
 _EXIF_FIELDS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
 FAILURE_RETRYABLE = {
     "decode_failed": False,
@@ -106,6 +112,9 @@ FAILURE_RETRYABLE = {
     "model_inference_error": False,
     "model_inference_timeout": True,
     "network_interruption": True,
+    "no_face_detected": False,
+    "multiple_faces_detected": False,
+    "quality_rejected": False,
     "storage_unavailable": True,
     "unsupported_input": False,
 }
@@ -220,6 +229,31 @@ class InputFingerprint:
 
 
 @dataclass(frozen=True)
+class SelfieInputFingerprint:
+    temporary_key: str
+    temporary_size: int
+    temporary_content_type: str
+
+    @classmethod
+    def from_value(cls, value: object) -> SelfieInputFingerprint:
+        fields = {"temporary_key", "temporary_size", "temporary_content_type"}
+        if not isinstance(value, dict) or set(value) != fields or not _bounded_json(value):
+            raise ContractError("invalid selfie input fingerprint")
+        key = value["temporary_key"]
+        size = value["temporary_size"]
+        content_type = value["temporary_content_type"]
+        if not (
+            isinstance(key, str)
+            and _SELFIE_KEY.fullmatch(key) is not None
+            and _positive_int(size)
+            and size <= SELFIE_MAX_INPUT_BYTES
+            and content_type in {"image/jpeg", "image/png"}
+        ):
+            raise ContractError("invalid selfie input fingerprint")
+        return cls(key, size, content_type)
+
+
+@dataclass(frozen=True)
 class ProcessorConfiguration:
     configuration_kind: str
     date_field_precedence: tuple[str, ...]
@@ -235,6 +269,8 @@ class ProcessorConfiguration:
     face_detection_threshold: float = DEFAULT_FACE_DETECTION_THRESHOLD
     model: str = "sface"
     preview_variant: str | None = None
+    embedding_dimensions: int = MAX_FACE_EMBEDDING_DIMENSIONS
+    minimum_face_px: int = 1
 
     @classmethod
     def from_value(cls, value: object) -> ProcessorConfiguration:
@@ -265,22 +301,40 @@ class ProcessorConfiguration:
             "generate_preview",
             "worker",
         }
+        expected_selfie = {
+            "retry_policy",
+            "max_cohort_size",
+            "report_max_bytes",
+            "report_row_limits",
+            "selfie_query",
+            "worker",
+        }
         if not isinstance(value, dict) or not _bounded_json(value):
             raise ContractError("invalid processor configuration")
         if set(value) == expected_capture:
             capture = value["capture_metadata"]
             face_config = None
+            preview_config = None
+            selfie_config = None
             configuration_kind = "capture_metadata"
         elif set(value) == expected_face:
             capture = None
             face_config = value["face_embedding"]
             preview_config = None
+            selfie_config = None
             configuration_kind = "face_embedding"
         elif set(value) == expected_preview:
             capture = None
             face_config = None
             preview_config = value["generate_preview"]
+            selfie_config = None
             configuration_kind = "generate_preview"
+        elif set(value) == expected_selfie:
+            capture = None
+            face_config = None
+            preview_config = None
+            selfie_config = value["selfie_query"]
+            configuration_kind = "selfie_query"
         else:
             raise ContractError("invalid processor configuration")
 
@@ -332,8 +386,25 @@ class ProcessorConfiguration:
         ):
             raise ContractError("invalid processor configuration")
 
-        preview_variant = None
-        if capture is not None:
+        if selfie_config is not None:
+            if not (
+                isinstance(selfie_config, dict)
+                and set(selfie_config)
+                == {"detection_threshold", "embedding_dimensions", "min_face_px", "model"}
+                and selfie_config["model"] == "sface"
+                and selfie_config["embedding_dimensions"] == MAX_FACE_EMBEDDING_DIMENSIONS
+                and selfie_config["min_face_px"] == 32
+                and _bounded_probability(selfie_config["detection_threshold"])
+                and worker["max_input_bytes"] == SELFIE_MAX_INPUT_BYTES
+                and worker["max_pixels"] == SELFIE_MAX_PIXELS
+            ):
+                raise ContractError("invalid processor configuration")
+            max_faces = 1
+            face_threshold = selfie_config["detection_threshold"]
+            model = "sface"
+            embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
+            minimum_face_px = 32
+        elif capture is not None:
             if not (
                 isinstance(capture, dict)
                 and set(capture) == {"date_field_precedence", "normalization"}
@@ -345,6 +416,8 @@ class ProcessorConfiguration:
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
             model = "sface"
+            embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
+            minimum_face_px = 1
         elif face_config is not None:
             if not isinstance(face_config, dict):
                 raise ContractError("invalid processor configuration")
@@ -357,8 +430,10 @@ class ProcessorConfiguration:
                 "normalize_embeddings",
             }:
                 raise ContractError("invalid processor configuration")
-            max_faces = face_config.get("max_faces", face_config.get("max_faces_per_photo", 1))
-            face_threshold = face_config.get(
+            configured_max_faces = face_config.get(
+                "max_faces", face_config.get("max_faces_per_photo", 1)
+            )
+            configured_face_threshold = face_config.get(
                 "detection_threshold",
                 face_config.get("detection_confidence_threshold", DEFAULT_FACE_DETECTION_THRESHOLD),
             )
@@ -373,15 +448,18 @@ class ProcessorConfiguration:
             else:
                 model = "sface"
             if (
-                not _positive_int(max_faces)
-                or not isinstance(max_faces, int)
-                or max_faces > MAX_FACE_EMBEDDINGS_PER_JOB
+                not _positive_int(configured_max_faces)
+                or cast(int, configured_max_faces) > MAX_FACE_EMBEDDINGS_PER_JOB
             ):
                 raise ContractError("invalid processor configuration")
-            if not _bounded_probability(face_threshold):
+            if not _bounded_probability(configured_face_threshold):
                 raise ContractError("invalid processor configuration")
             if not isinstance(model, str) or model not in {"sface", "sface-v1", "sface_v1"}:
                 raise ContractError("invalid processor configuration")
+            max_faces = cast(int, configured_max_faces)
+            face_threshold = cast(float, configured_face_threshold)
+            embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
+            minimum_face_px = int(face_config.get("min_face_px", 1))
         else:
             if not (
                 isinstance(preview_config, dict)
@@ -391,7 +469,8 @@ class ProcessorConfiguration:
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
             model = "sface"
-            preview_variant = "preview-small-v1"
+            embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
+            minimum_face_px = 1
 
         return cls(
             configuration_kind=configuration_kind,
@@ -407,7 +486,11 @@ class ProcessorConfiguration:
             max_faces=max_faces,
             face_detection_threshold=cast(float, face_threshold),
             model=model,
-            preview_variant=preview_variant,
+            preview_variant=(
+                "preview-small-v1" if configuration_kind == "generate_preview" else None
+            ),
+            embedding_dimensions=embedding_dimensions,
+            minimum_face_px=minimum_face_px,
         )
 
 
@@ -461,10 +544,11 @@ class ClaimedJob:
     processor_type: str
     processor_version: int
     configuration: ProcessorConfiguration
-    photo_id: str
-    event_id: str
-    run_id: str
-    input_fingerprint: InputFingerprint
+    photo_id: str | None
+    event_id: str | None
+    run_id: str | None
+    search_id: str | None
+    input_fingerprint: InputFingerprint | SelfieInputFingerprint
     input_limits: InputLimits
     lease_expires_at: str
     download_url: str
@@ -474,7 +558,7 @@ class ClaimedJob:
 
     @classmethod
     def from_value(cls, value: object) -> ClaimedJob:
-        common_fields = {
+        photo_fields = {
             "id",
             "attempt_id",
             "contract_version",
@@ -490,112 +574,165 @@ class ClaimedJob:
             "download_url",
             "download_expires_at",
         }
+        selfie_fields = photo_fields - {"photo_id", "event_id", "run_id"} | {"search_id"}
         if not isinstance(value, dict):
             raise ContractError("invalid claimed job")
         version = value.get("contract_version")
         if not isinstance(version, int) or isinstance(version, bool):
             raise ContractError("invalid claimed job")
-        preview = (
-            version == PREVIEW_CONTRACT_VERSION
-            and value.get("processor_type") == PROCESSOR_TYPE_GENERATE_PREVIEW
-        )
-        preview_face = (
-            version == PREVIEW_CONTRACT_VERSION
-            and value.get("processor_type") == PROCESSOR_TYPE_FACE_EMBEDDING
-            and value.get("processor_version") == PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW
-        )
-        fields = (
-            common_fields
-            | ({"output_slots"} if preview else set())
-            | ({"input_geometry"} if preview_face else set())
-        )
-        if set(value) != fields:
-            raise ContractError("invalid claimed job")
-        configuration = ProcessorConfiguration.from_value(value["configuration"])
-        fingerprint = InputFingerprint.from_value(
-            value["input_fingerprint"], contract_version=version
-        )
-        limits = _input_limits(value["input_limits"])
-        output_slots = tuple(
-            OutputSlot.from_value(slot, attempt_id=value["attempt_id"])
-            for slot in value.get("output_slots", [])
-        )
-        input_geometry = value.get("input_geometry")
-        identity = (value["contract_version"], value["processor_type"], value["processor_version"])
-        supported_identity = identity in {
-            (CONTRACT_VERSION, PROCESSOR_TYPE, PROCESSOR_VERSION),
-            (
-                CONTRACT_VERSION,
-                PROCESSOR_TYPE_FACE_EMBEDDING,
-                PROCESSOR_VERSION_FACE_EMBEDDING,
-            ),
-            (
+        processor_type = value.get("processor_type")
+        processor_version = value.get("processor_version")
+        identity = (version, processor_type, processor_version)
+        if processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+            if set(value) != selfie_fields:
+                raise ContractError("invalid claimed job")
+            configuration = ProcessorConfiguration.from_value(value["configuration"])
+            selfie_fingerprint = SelfieInputFingerprint.from_value(value["input_fingerprint"])
+            limits = _input_limits(value["input_limits"], content_types={"image/jpeg", "image/png"})
+            output_slots: tuple[OutputSlot, ...] = ()
+            input_geometry: dict[str, int | str] | None = None
+            valid = (
+                identity
+                == (CONTRACT_VERSION, PROCESSOR_TYPE_SELFIE_QUERY, PROCESSOR_VERSION_SELFIE_QUERY)
+                and configuration.configuration_kind == PROCESSOR_TYPE_SELFIE_QUERY
+                and _uuid_string(value["id"])
+                and _uuid_string(value["attempt_id"])
+                and _uuid_string(value["search_id"])
+                and limits.max_bytes == selfie_fingerprint.temporary_size
+                and limits.content_type == selfie_fingerprint.temporary_content_type
+                and limits.max_bytes <= SELFIE_MAX_INPUT_BYTES
+                and limits.max_bytes <= configuration.max_input_bytes
+                and _utc_timestamp(value["lease_expires_at"])
+                and _utc_timestamp(value["download_expires_at"])
+                and _download_url(value["download_url"])
+            )
+            photo_id = event_id = run_id = None
+            search_id = cast(str, value["search_id"])
+            fingerprint: InputFingerprint | SelfieInputFingerprint = selfie_fingerprint
+        else:
+            preview = identity == (
                 PREVIEW_CONTRACT_VERSION,
                 PROCESSOR_TYPE_GENERATE_PREVIEW,
                 PROCESSOR_VERSION_GENERATE_PREVIEW,
-            ),
-            (
+            )
+            preview_face = identity == (
                 PREVIEW_CONTRACT_VERSION,
                 PROCESSOR_TYPE_FACE_EMBEDDING,
                 PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
-            ),
-        }
-        if identity == (PREVIEW_CONTRACT_VERSION, PROCESSOR_TYPE_GENERATE_PREVIEW, 1):
-            v2_identity_matches_contract = (
-                configuration.configuration_kind == "generate_preview"
-                and value["configuration"] == V2_GENERATE_PREVIEW_CONFIGURATION
-                and fingerprint.media_kind == "original"
-                and len(output_slots) == 1
             )
-        elif identity == (PREVIEW_CONTRACT_VERSION, PROCESSOR_TYPE_FACE_EMBEDDING, 2):
-            v2_identity_matches_contract = (
-                configuration.configuration_kind == "face_embedding"
-                and value["configuration"] == V2_FACE_EMBEDDING_CONFIGURATION
-                and fingerprint.media_kind == "preview-small-v1"
-                and not output_slots
-                and _valid_preview_input_geometry(input_geometry, fingerprint)
+            fields = (
+                photo_fields
+                | ({"output_slots"} if preview else set())
+                | ({"input_geometry"} if preview_face else set())
             )
-        else:
-            v2_identity_matches_contract = True
-        if not (
-            supported_identity
-            and all(_uuid_string(value[name]) for name in ("id", "attempt_id", "run_id"))
-            # Events predate the processing app and currently use Django's numeric primary key.
-            # Keep the untrusted transport value bounded, but do not invent a UUID-only event API.
-            and _photo_identifier(value["event_id"])
-            and _photo_identifier(value["photo_id"])
-            and limits.max_bytes
-            == (fingerprint.object_size if version == 2 else fingerprint.original_size)
-            and limits.content_type
-            == (
-                fingerprint.object_content_type
-                if version == 2
-                else fingerprint.original_content_type
+            if set(value) != fields:
+                raise ContractError("invalid claimed job")
+            configuration = ProcessorConfiguration.from_value(value["configuration"])
+            photo_fingerprint = InputFingerprint.from_value(
+                value["input_fingerprint"], contract_version=version
             )
-            and limits.max_bytes <= configuration.max_input_bytes
-            and _utc_timestamp(value["lease_expires_at"])
-            and _utc_timestamp(value["download_expires_at"])
-            and _download_url(value["download_url"])
-            and ((len(output_slots) == 1) if preview else not output_slots)
-            and v2_identity_matches_contract
-        ):
+            limits = _input_limits(value["input_limits"], content_types={"image/jpeg"})
+            output_slots = tuple(
+                OutputSlot.from_value(slot, attempt_id=cast(str, value["attempt_id"]))
+                for slot in value.get("output_slots", [])
+            )
+            input_geometry = cast(dict[str, int | str] | None, value.get("input_geometry"))
+            expected_size = (
+                photo_fingerprint.object_size
+                if version == PREVIEW_CONTRACT_VERSION
+                else photo_fingerprint.original_size
+            )
+            expected_content_type = (
+                photo_fingerprint.object_content_type
+                if version == PREVIEW_CONTRACT_VERSION
+                else photo_fingerprint.original_content_type
+            )
+            supported_identity = identity in {
+                (CONTRACT_VERSION, PROCESSOR_TYPE, PROCESSOR_VERSION),
+                (
+                    CONTRACT_VERSION,
+                    PROCESSOR_TYPE_FACE_EMBEDDING,
+                    PROCESSOR_VERSION_FACE_EMBEDDING,
+                ),
+                (
+                    PREVIEW_CONTRACT_VERSION,
+                    PROCESSOR_TYPE_GENERATE_PREVIEW,
+                    PROCESSOR_VERSION_GENERATE_PREVIEW,
+                ),
+                (
+                    PREVIEW_CONTRACT_VERSION,
+                    PROCESSOR_TYPE_FACE_EMBEDDING,
+                    PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
+                ),
+            }
+            identity_matches_contract = (
+                (
+                    identity == (CONTRACT_VERSION, PROCESSOR_TYPE, PROCESSOR_VERSION)
+                    and configuration.configuration_kind == PROCESSOR_TYPE
+                )
+                or (
+                    identity
+                    == (
+                        CONTRACT_VERSION,
+                        PROCESSOR_TYPE_FACE_EMBEDDING,
+                        PROCESSOR_VERSION_FACE_EMBEDDING,
+                    )
+                    and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
+                )
+                or (
+                    preview
+                    and configuration.configuration_kind == PROCESSOR_TYPE_GENERATE_PREVIEW
+                    and value["configuration"] == V2_GENERATE_PREVIEW_CONFIGURATION
+                    and photo_fingerprint.media_kind == "original"
+                    and len(output_slots) == 1
+                )
+                or (
+                    preview_face
+                    and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
+                    and value["configuration"] == V2_FACE_EMBEDDING_CONFIGURATION
+                    and photo_fingerprint.media_kind == "preview-small-v1"
+                    and not output_slots
+                    and _valid_preview_input_geometry(input_geometry, photo_fingerprint)
+                )
+            )
+            valid = (
+                supported_identity
+                and all(_uuid_string(value[name]) for name in ("id", "attempt_id", "run_id"))
+                and _photo_identifier(value["event_id"])
+                and _photo_identifier(value["photo_id"])
+                and limits.max_bytes == expected_size
+                and limits.content_type == expected_content_type
+                and limits.max_bytes <= configuration.max_input_bytes
+                and _utc_timestamp(value["lease_expires_at"])
+                and _utc_timestamp(value["download_expires_at"])
+                and _download_url(value["download_url"])
+                and ((len(output_slots) == 1) if preview else not output_slots)
+                and identity_matches_contract
+            )
+            photo_id = cast(str, value["photo_id"])
+            event_id = cast(str, value["event_id"])
+            run_id = cast(str, value["run_id"])
+            search_id = None
+            fingerprint = photo_fingerprint
+        if not valid:
             raise ContractError("unsupported claimed job")
         return cls(
             id=value["id"],
             attempt_id=value["attempt_id"],
-            contract_version=value["contract_version"],
-            processor_type=value["processor_type"],
-            processor_version=value["processor_version"],
+            contract_version=cast(int, value["contract_version"]),
+            processor_type=cast(str, value["processor_type"]),
+            processor_version=cast(int, value["processor_version"]),
             configuration=configuration,
-            photo_id=value["photo_id"],
-            event_id=value["event_id"],
-            run_id=value["run_id"],
+            photo_id=photo_id,
+            event_id=event_id,
+            run_id=run_id,
+            search_id=search_id,
             input_fingerprint=fingerprint,
             input_limits=limits,
             lease_expires_at=value["lease_expires_at"],
             download_url=value["download_url"],
             download_expires_at=value["download_expires_at"],
-            input_geometry=cast(dict[str, int | str] | None, input_geometry),
+            input_geometry=input_geometry,
             output_slots=output_slots,
         )
 
@@ -678,6 +815,7 @@ class FaceEmbeddingResult:
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "model": self.model,
+            "face_count": len(self.faces),
             "faces": [face.as_payload() for face in self.faces],
             "has_single_query_face_usable": self.has_single_query_face_usable,
             "warnings": list(self.warnings),
@@ -688,15 +826,35 @@ class FaceEmbeddingResult:
         return payload
 
 
-def _input_limits(value: object) -> InputLimits:
+@dataclass(frozen=True)
+class SelfieEmbeddingResult:
+    model: str
+    embedding: tuple[float, ...]
+    bbox: tuple[float, float, float, float]
+    confidence: float
+    landmarks: tuple[tuple[float, float], ...]
+    timings: dict[str, int]
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "model": self.model,
+            "embedding": list(self.embedding),
+            "bbox": list(self.bbox),
+            "confidence": self.confidence,
+            "landmarks": [list(point) for point in self.landmarks],
+            "timings": dict(self.timings),
+        }
+
+
+def _input_limits(value: object, *, content_types: set[str]) -> InputLimits:
     if (
         not isinstance(value, dict)
         or set(value) != {"max_bytes", "content_type"}
         or not _positive_int(value["max_bytes"])
-        or value["content_type"] != "image/jpeg"
+        or value["content_type"] not in content_types
     ):
         raise ContractError("invalid input limits")
-    return InputLimits(max_bytes=value["max_bytes"], content_type="image/jpeg")
+    return InputLimits(max_bytes=value["max_bytes"], content_type=value["content_type"])
 
 
 def _positive_int(value: object) -> bool:
@@ -773,6 +931,8 @@ def _processor_version(processor_type: str, contract_version: int = CONTRACT_VER
         and contract_version == PREVIEW_CONTRACT_VERSION
     ):
         return PROCESSOR_VERSION_GENERATE_PREVIEW
+    if processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+        return PROCESSOR_VERSION_SELFIE_QUERY
     raise ContractError("unsupported processor type")
 
 

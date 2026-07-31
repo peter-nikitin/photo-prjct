@@ -9,6 +9,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.test import RequestFactory
 from django.utils import timezone
+from selfie_search.models import SelfieSearch
 
 from processing import views
 from processing.models import (
@@ -24,7 +25,7 @@ from processing.services.enrollment import (
     request_face_embedding_enqueue,
 )
 from processing.services.jobs import recover_expired_attempts
-from processing.tests.test_views import WorkerApiTests
+from processing.tests.test_views import SelfieWorkerApiTests, WorkerApiTests
 
 
 class WorkerApiEdgeCases(WorkerApiTests):
@@ -70,6 +71,42 @@ class WorkerApiEdgeCases(WorkerApiTests):
         request._stream = BytesIO(raw)  # noqa: SLF001
         return request
 
+    def test_v2_face_result_rejects_more_than_its_frozen_face_or_embedding_limits(self) -> None:
+        geometry = {
+            "coordinate_space": "preview-small-v1",
+            "pixel_width": 1600,
+            "pixel_height": 1000,
+            "oriented_source_width": 3200,
+            "oriented_source_height": 2000,
+        }
+        face = {
+            "index": 0,
+            "bbox": [1.0, 2.0, 32.0, 32.0],
+            "confidence": 0.9,
+            "landmarks": [[1.0, 2.0]] * 5,
+            "embedding": [0.007812500465661287] * 128,
+        }
+
+        too_many_faces = {
+            "model": "sface",
+            "face_count": 33,
+            "faces": [face | {"index": index} for index in range(33)],
+            "warnings": [],
+            "input_geometry": geometry,
+        }
+        too_many_dimensions = {
+            "model": "sface",
+            "face_count": 1,
+            "faces": [face | {"embedding": [0.007812500465661287] * 129}],
+            "warnings": [],
+            "input_geometry": geometry,
+        }
+
+        self.assertFalse(views._valid_face_embedding_result(too_many_faces, contract_version=2))
+        self.assertFalse(
+            views._valid_face_embedding_result(too_many_dimensions, contract_version=2)
+        )
+
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_stale_completion_returns_stale_and_replay_is_idempotent(self, grant) -> None:
         job = self._claim_one(grant)
@@ -96,7 +133,9 @@ class WorkerApiEdgeCases(WorkerApiTests):
         attempt_id = job["attempt_id"]
         PhotoProcessingState.objects.filter(photo_id="api-photo").update(current_attempt=None)
         body = self.terminal_body(
-            job, processor_type="face_embedding", result=self.face_result_body()
+            job,
+            processor_type="face_embedding",
+            result=self.face_result_body(),
         )
 
         first = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)
@@ -333,3 +372,43 @@ class WorkerApiEdgeCases(WorkerApiTests):
         self.assertNotIn("signature=secret", durable)
         self.assertNotIn("https://storage.example.test", durable)
         self.assertNotIn("worker-secret", durable)
+
+
+class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
+    """The production break caught here is terminal publication before exact selfie deletion."""
+
+    @patch("processing.views.TemporarySelfieStorage")
+    def test_cleanup_storage_failure_is_retryable_and_an_identical_callback_finalizes_once(
+        self, storage
+    ) -> None:
+        storage.return_value = self.storage
+        job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+        body = self.success_body(job)
+        self.storage.fail_delete = True
+
+        pending = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body
+        )
+        self.search.refresh_from_db()
+
+        self.assertEqual(
+            (pending.status_code, pending.json()["error"]["code"]),
+            (503, "storage_unavailable"),
+        )
+        self.assertEqual(self.search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(
+            self.search.temporary_object_key,
+            "selfie-search/0123456789abcdef0123456789abcdef",
+        )
+
+        self.storage.fail_delete = False
+        replay = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body
+        )
+        self.search.refresh_from_db()
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json()["idempotent"])
+        self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual(self.search.temporary_object_key, "")
+        self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])

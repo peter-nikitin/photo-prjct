@@ -17,6 +17,32 @@ visual_patterns = [
         views.event_gallery_empty,
         name="visual_event_gallery_empty",
     ),
+    path("event/selfie-search/", views.event_selfie_search, name="visual_event_selfie_search"),
+    path(
+        "event/selfie-search/processing/",
+        views.selfie_search_processing,
+        name="visual_selfie_search_processing",
+    ),
+    path(
+        "event/selfie-search/processing-status/",
+        views.selfie_search_processing_status,
+        name="visual_selfie_search_processing_status",
+    ),
+    path(
+        "event/selfie-search/empty/",
+        views.selfie_search_empty,
+        name="visual_selfie_search_empty",
+    ),
+    path(
+        "event/selfie-search/error/",
+        views.selfie_search_error,
+        name="visual_selfie_search_error",
+    ),
+    path(
+        "event/selfie-search/ready/",
+        views.selfie_search_ready,
+        name="visual_selfie_search_ready",
+    ),
     path("legal/", views.legal, name="visual_legal"),
     path("reference/search/", views.reference_search, name="visual_reference_search"),
     path(

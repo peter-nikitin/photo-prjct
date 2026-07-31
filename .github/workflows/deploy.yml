@@ -10,6 +10,11 @@ on:
         required: true
         default: false
         type: boolean
+      verify_selfie_search_storage:
+        description: Run the confirmed selfie-search temporary-storage preflight after disabled deployment
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   build:
@@ -99,10 +104,23 @@ jobs:
           PHOTO_PROCESSING_FACE_ENABLED: ${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}
           PHOTO_PROCESSING_WORKER_TOKEN: ${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}
           PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS: ${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}
-          PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '16384' }}
+          PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '131072' }}
           PHOTO_WORKER_BUILD: ${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}
           PHOTO_WORKER_LEASE_SECONDS: ${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}
+          # Preserve the deployed legacy identity unless the separately authorized preview rollout
+          # supplies its complete identity list.  The ordered processor-type contract below still
+          # lets the worker poll its typed defaults, including selfie_query.
           PHOTO_WORKER_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}
+          PHOTO_WORKER_PROCESSOR_TYPES: ${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || 'selfie_query,face_embedding,capture_metadata,generate_preview' }}
+          SELFIE_SEARCH_ENABLED: ${{ vars.SELFIE_SEARCH_ENABLED || 'False' }}
+          SELFIE_SEARCH_MAX_UPLOAD_BYTES: ${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}
+          SELFIE_SEARCH_MAX_PIXELS: ${{ vars.SELFIE_SEARCH_MAX_PIXELS || '25000000' }}
+          SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS: ${{ vars.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS || '120' }}
+          SELFIE_SEARCH_EMBEDDING_MODEL: ${{ vars.SELFIE_SEARCH_EMBEDDING_MODEL || 'sface' }}
+          SELFIE_SEARCH_EMBEDDING_DIMENSIONS: ${{ vars.SELFIE_SEARCH_EMBEDDING_DIMENSIONS || '128' }}
+          SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD: ${{ vars.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD || '0.363' }}
+          SELFIE_SEARCH_TEMPORARY_PREFIX: ${{ vars.SELFIE_SEARCH_TEMPORARY_PREFIX || 'selfie-search/' }}
+          SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS: ${{ vars.SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS || '24' }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         with:
@@ -110,7 +128,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script_stop: true
-          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,PUBLIC_DOMAIN_ALIAS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,PHOTO_UPLOAD_ENABLED,PRIVATE_MEDIA_S3_BUCKET,PRIVATE_MEDIA_S3_ACCESS_KEY_ID,PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY,PRIVATE_MEDIA_ALLOWED_ORIGINS,WORKER_IMAGE,PHOTO_PROCESSING_ENABLED,PHOTO_PROCESSING_PREVIEW_ENABLED,PHOTO_PROCESSING_FACE_ENABLED,PHOTO_PROCESSING_WORKER_TOKEN,PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS,PHOTO_PROCESSING_MAX_REQUEST_BYTES,PHOTO_WORKER_BUILD,PHOTO_WORKER_LEASE_SECONDS,PHOTO_WORKER_PROCESSOR_IDENTITIES,GHCR_USERNAME,GHCR_READ_TOKEN
+          envs: APP_IMAGE,SECRET_KEY,DEBUG,ALLOWED_HOSTS,DB_NAME,DB_USER,DB_PASSWORD,PUBLIC_DOMAIN,PUBLIC_DOMAIN_ALIAS,LETSENCRYPT_EMAIL,MEDIA_STORAGE_BACKEND,MEDIA_S3_ENDPOINT_URL,MEDIA_S3_REGION,MEDIA_S3_PUBLIC_BUCKET,MEDIA_S3_ACCESS_KEY_ID,MEDIA_S3_SECRET_ACCESS_KEY,PHOTO_UPLOAD_ENABLED,PRIVATE_MEDIA_S3_BUCKET,PRIVATE_MEDIA_S3_ACCESS_KEY_ID,PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY,PRIVATE_MEDIA_ALLOWED_ORIGINS,WORKER_IMAGE,PHOTO_PROCESSING_ENABLED,PHOTO_PROCESSING_PREVIEW_ENABLED,PHOTO_PROCESSING_FACE_ENABLED,PHOTO_PROCESSING_WORKER_TOKEN,PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS,PHOTO_PROCESSING_MAX_REQUEST_BYTES,PHOTO_WORKER_BUILD,PHOTO_WORKER_LEASE_SECONDS,PHOTO_WORKER_PROCESSOR_IDENTITIES,PHOTO_WORKER_PROCESSOR_TYPES,SELFIE_SEARCH_ENABLED,SELFIE_SEARCH_MAX_UPLOAD_BYTES,SELFIE_SEARCH_MAX_PIXELS,SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS,SELFIE_SEARCH_EMBEDDING_MODEL,SELFIE_SEARCH_EMBEDDING_DIMENSIONS,SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD,SELFIE_SEARCH_TEMPORARY_PREFIX,SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS,GHCR_USERNAME,GHCR_READ_TOKEN
           script: DEPLOYMENT_TARGET=staging DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging sh /opt/photo-prjct/deploy/apply-deployment.sh
       - name: Verify private upload storage contract
         if: ${{ inputs.verify_private_storage }}
@@ -131,3 +149,20 @@ jobs:
               -f docker-compose.https.yml \
               exec -T -e PHOTO_UPLOAD_ENABLED=True web \
               sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin "$PRIVATE_MEDIA_ALLOWED_ORIGINS"'
+      - name: Verify selfie-search temporary storage contract
+        if: ${{ inputs.verify_selfie_search_storage }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /opt/photo-prjct
+            test "$(sed -n 's/^SELFIE_SEARCH_ENABLED=//p' .env | head -n 1)" = False
+            docker compose --project-name photo-prjct-staging \
+              --env-file .env \
+              -f docker-compose.prod.yml \
+              -f docker-compose.https.yml \
+              exec -T web \
+              python manage.py verify_selfie_search_storage --confirm-real-storage

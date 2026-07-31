@@ -1,5 +1,6 @@
 from datetime import date
 
+from django.conf import settings
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET
@@ -18,6 +19,7 @@ from picflow.gallery import (
     gallery_photo_queryset,
 )
 from picflow.models import Event
+from selfie_search.forms import SelfieSearchUploadForm
 
 
 def health(request):  # noqa: ARG001
@@ -32,8 +34,10 @@ def event_catalog(request):
     return render(request, "catalog/event_catalog.html", {"events": [*upcoming, *past]})
 
 
-def event_detail(request, slug: str):
+def event_detail(request, slug: str, *, selfie_search_form=None):
     event = get_object_or_404(Event.objects.published(), slug=slug)
+    if selfie_search_form is None and settings.SELFIE_SEARCH_ENABLED:
+        selfie_search_form = SelfieSearchUploadForm()
     gallery_photos: tuple[GalleryPhoto, ...] = ()
     if event.access_type == Event.AccessType.FREE:
         gallery_photos = tuple(
@@ -43,7 +47,11 @@ def event_detail(request, slug: str):
     return render(
         request,
         "catalog/event_detail.html",
-        {"event": event, "gallery_photos": gallery_photos},
+        {
+            "event": event,
+            "gallery_photos": gallery_photos,
+            "selfie_search_form": selfie_search_form,
+        },
     )
 
 

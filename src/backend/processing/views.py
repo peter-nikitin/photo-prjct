@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import Callable
 from datetime import datetime
-from math import floor
+from math import floor, isfinite
 from typing import Any, cast
 from uuid import UUID
 
@@ -17,6 +17,24 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from ingestion.storage import ObjectMissing, StorageUnavailable
+from selfie_search.models import SelfieSearch, SelfieSearchAttempt
+from selfie_search.services.jobs import (
+    ClaimedSearchJob,
+    CleanupPending,
+    EmptySearchClaim,
+    SearchCompletionConflict,
+    claim_search_job,
+    complete_search_attempt,
+    fail_search_attempt,
+    heartbeat_search_attempt,
+    recover_expired_search_attempts,
+    selfie_worker_configuration,
+)
+from selfie_search.services.jobs import (
+    refresh_search_download as refresh_search_download_attempt,
+)
+from selfie_search.services.ranking import QueryVectorError, RankingError, validate_query_vector
+from selfie_search.storage import StoredTemporarySelfie, TemporarySelfieStorage
 
 from processing.auth import has_worker_token
 from processing.contracts import (
@@ -24,9 +42,12 @@ from processing.contracts import (
     FACE_EMBEDDING_CONTRACT,
     GENERATE_PREVIEW_CONTRACT,
     PREVIEW_FACE_EMBEDDING_CONTRACT,
+    SELFIE_QUERY_CONTRACT,
+    AttemptReference,
     ClaimedJob,
     CompletionConflict,
     EmptyClaim,
+    parse_attempt_reference,
 )
 from processing.models import PhotoDerivative, ProcessingAttempt, ProcessingConflictAudit
 from processing.services.jobs import (
@@ -45,6 +66,8 @@ _WORKER_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _NORMALIZED_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
 _SECRET_MARKER = re.compile(r"(?:[a-z][a-z0-9+.-]*://|x-amz-|signature=|credential=|token=)", re.I)
 _SOURCE_FIELDS = {"DateTime", "DateTimeDigitized", "DateTimeOriginal"}
+_V2_FACE_EMBEDDING_MAX_FACES = 32
+_V2_FACE_EMBEDDING_DIMENSIONS = 128
 _EXIF_SOURCE_VALUE = re.compile(r"\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}")
 _CAPTURE_METADATA_WARNINGS = {
     "capture_time_conflicting",
@@ -73,14 +96,17 @@ _CAPTURE_METADATA_FAILURES = {
 }
 _FACE_EMBEDDING_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
+    "download_authorization_expired": (True, "Download authorization expired."),
+    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
-    "model_inference_error": (True, "The face model inference failed."),
+    "model_inference_error": (False, "The face model inference failed."),
     "model_inference_timeout": (True, "The face model processing timed out."),
     "network_interruption": (True, "A temporary network interruption occurred."),
     "no_face_detected": (False, "No face was detected in the image."),
     "storage_unavailable": (True, "Object storage is temporarily unavailable."),
     "timeout": (True, "The face model processing timed out."),
     "all_faces_filtered": (False, "All detected faces were filtered before embedding."),
+    "unsupported_input": (False, "The input is unsupported."),
 }
 _GENERATE_PREVIEW_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
@@ -95,15 +121,31 @@ _GENERATE_PREVIEW_FAILURES = {
     "unsupported_input": (False, "The input is unsupported."),
 }
 _GENERATE_PREVIEW_WARNING_CODES = {"color_profile_missing"}
+_SELFIE_QUERY_FAILURES = {
+    "decode_failed": (False, "The selfie could not be decoded."),
+    "download_authorization_expired": (True, "Download authorization expired."),
+    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "input_too_large": (False, "The input exceeded its declared limit."),
+    "model_inference_error": (False, "The face model could not process the selfie."),
+    "model_inference_timeout": (True, "The face model processing timed out."),
+    "multiple_faces_detected": (False, "Multiple faces were detected in the selfie."),
+    "network_interruption": (True, "A temporary network interruption occurred."),
+    "no_face_detected": (False, "No face was detected in the selfie."),
+    "quality_rejected": (False, "The selfie face did not meet the quality requirement."),
+    "storage_unavailable": (True, "Object storage is temporarily unavailable."),
+    "unsupported_input": (False, "The input is unsupported."),
+}
 _PROCESSOR_FAILURES = {
     "capture_metadata": _CAPTURE_METADATA_FAILURES,
     "face_embedding": _FACE_EMBEDDING_FAILURES,
     "generate_preview": _GENERATE_PREVIEW_FAILURES,
+    "selfie_query": _SELFIE_QUERY_FAILURES,
 }
 _PROCESSOR_RESULT_WARNINGS = {
     "capture_metadata": _CAPTURE_METADATA_WARNINGS,
     "face_embedding": _FACE_RESULT_WARNING_CODES,
     "generate_preview": _GENERATE_PREVIEW_WARNING_CODES,
+    "selfie_query": set(),
 }
 
 
@@ -152,7 +194,10 @@ def claim(request: HttpRequest) -> JsonResponse:
         and _positive_int(data["lease_seconds"])
     ):
         return _invalid_request()
-    recover_expired_attempts()
+    if data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type:
+        recover_expired_search_attempts(storage=TemporarySelfieStorage())
+    else:
+        recover_expired_attempts()
     try:
         payload = _claim_with_grant(data)
     except ValueError:
@@ -170,18 +215,33 @@ def claim(request: HttpRequest) -> JsonResponse:
 
 @_endpoint
 def heartbeat(request: HttpRequest, attempt_id: str) -> JsonResponse:
-    parsed_attempt_id, error = _attempt_id(attempt_id)
+    reference, error = _attempt_reference(attempt_id)
     if error is not None:
         return error
-    assert parsed_attempt_id is not None
+    assert reference is not None
     data, error = _json_object(request, required={"lease_seconds"})
     if error is not None:
         return error
     assert data is not None
     if not _positive_int(data["lease_seconds"]):
         return _invalid_request()
+    kind = _attempt_kind(reference)
+    if kind is None:
+        return _not_found()
+    if kind == "selfie":
+        try:
+            attempt = heartbeat_search_attempt(
+                reference.attempt_id, lease_seconds=data["lease_seconds"]
+            )
+        except SelfieSearchAttempt.DoesNotExist:
+            return _not_found()
+        except ValueError:
+            return _invalid_request()
+        if attempt is None:
+            return _lease_not_current()
+        return JsonResponse({"attempt": _attempt_payload(attempt)})
     try:
-        attempt = heartbeat_attempt(parsed_attempt_id, lease_seconds=data["lease_seconds"])
+        attempt = heartbeat_attempt(reference.attempt_id, lease_seconds=data["lease_seconds"])
     except ProcessingAttempt.DoesNotExist:
         return _not_found()
     except ValueError:
@@ -193,16 +253,25 @@ def heartbeat(request: HttpRequest, attempt_id: str) -> JsonResponse:
 
 @_endpoint
 def refresh_download(request: HttpRequest, attempt_id: str) -> JsonResponse:
-    parsed_attempt_id, error = _attempt_id(attempt_id)
+    reference, error = _attempt_reference(attempt_id)
     if error is not None:
         return error
-    assert parsed_attempt_id is not None
+    assert reference is not None
     _, error = _json_object(request, required=set())
     if error is not None:
         return error
+    kind = _attempt_kind(reference)
+    if kind is None:
+        return _not_found()
     try:
-        payload = _refresh_with_grant(parsed_attempt_id)
+        payload = (
+            _refresh_selfie_with_grant(reference.attempt_id)
+            if kind == "selfie"
+            else _refresh_with_grant(reference.attempt_id)
+        )
     except ProcessingAttempt.DoesNotExist:
+        return _not_found()
+    except SelfieSearchAttempt.DoesNotExist:
         return _not_found()
     except LeaseExpired:
         return _lease_not_current()
@@ -219,20 +288,52 @@ def refresh_download(request: HttpRequest, attempt_id: str) -> JsonResponse:
 
 @_endpoint
 def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
-    parsed_attempt_id, error = _attempt_id(attempt_id)
+    reference, error = _attempt_reference(attempt_id)
     if error is not None:
         return error
-    assert parsed_attempt_id is not None
-    if not ProcessingAttempt.objects.filter(pk=parsed_attempt_id).exists():
+    assert reference is not None
+    kind = _attempt_kind(reference)
+    if kind is None:
         return _not_found()
     data, error = _json_object(request, required=_success_fields())
     if error is not None:
         return error
     assert data is not None
-    if not _valid_envelope(data, parsed_attempt_id, outcome="success"):
+    if kind == "selfie":
+        if not _valid_selfie_envelope(data, reference.attempt_id, outcome="success"):
+            return _invalid_result()
+        try:
+            search_completion = complete_search_attempt(
+                reference.attempt_id,
+                result=data["result"],
+                storage=TemporarySelfieStorage(),
+                download_duration_ms=data["download_ms"],
+                compute_duration_ms=data["compute_ms"],
+                total_duration_ms=data["total_ms"],
+                worker_started_at=data["started_at"],
+                worker_finished_at=data["finished_at"],
+            )
+        except SelfieSearchAttempt.DoesNotExist:
+            return _not_found()
+        except QueryVectorError:
+            return _invalid_result()
+        except SearchCompletionConflict:
+            return _completion_conflict()
+        except CleanupPending:
+            return _error(
+                "storage_unavailable", "Object storage is temporarily unavailable.", status=503
+            )
+        return JsonResponse(
+            _completion_payload(
+                search_completion.attempt,
+                search_completion.idempotent,
+                search_completion.stale,
+            )
+        )
+    if not _valid_envelope(data, reference.attempt_id, outcome="success"):
         return _invalid_result()
     try:
-        attempt = ProcessingAttempt.objects.only("processor_type").get(pk=parsed_attempt_id)
+        attempt = ProcessingAttempt.objects.only("processor_type").get(pk=reference.attempt_id)
         completion_kwargs = {
             "result": data["result"],
             "download_duration_ms": data["download_ms"],
@@ -242,9 +343,9 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
             "worker_finished_at": data["finished_at"],
         }
         if attempt.processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
-            completion = complete_preview_attempt(parsed_attempt_id, **completion_kwargs)
+            completion = complete_preview_attempt(reference.attempt_id, **completion_kwargs)
         else:
-            completion = complete_attempt(parsed_attempt_id, **completion_kwargs)
+            completion = complete_attempt(reference.attempt_id, **completion_kwargs)
     except ProcessingAttempt.DoesNotExist:
         return _not_found()
     except StorageUnavailable:
@@ -261,21 +362,53 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
 
 @_endpoint
 def fail(request: HttpRequest, attempt_id: str) -> JsonResponse:
-    parsed_attempt_id, error = _attempt_id(attempt_id)
+    reference, error = _attempt_reference(attempt_id)
     if error is not None:
         return error
-    assert parsed_attempt_id is not None
-    if not ProcessingAttempt.objects.filter(pk=parsed_attempt_id).exists():
+    assert reference is not None
+    kind = _attempt_kind(reference)
+    if kind is None:
         return _not_found()
     data, error = _json_object(request, required=_failure_fields())
     if error is not None:
         return error
     assert data is not None
-    if not _valid_envelope(data, parsed_attempt_id, outcome="failure"):
+    if kind == "selfie":
+        if not _valid_selfie_envelope(data, reference.attempt_id, outcome="failure"):
+            return _invalid_result()
+        try:
+            search_completion = fail_search_attempt(
+                reference.attempt_id,
+                error_code=data["error_code"],
+                error_detail=_processor_error_detail(data["processor_type"], data["error_code"]),
+                retryable=_processor_retryable(data["processor_type"], data["error_code"]),
+                storage=TemporarySelfieStorage(),
+                download_duration_ms=data["download_ms"],
+                compute_duration_ms=data["compute_ms"],
+                total_duration_ms=data["total_ms"],
+                worker_started_at=data["started_at"],
+                worker_finished_at=data["finished_at"],
+            )
+        except SelfieSearchAttempt.DoesNotExist:
+            return _not_found()
+        except SearchCompletionConflict:
+            return _completion_conflict()
+        except CleanupPending:
+            return _error(
+                "storage_unavailable", "Object storage is temporarily unavailable.", status=503
+            )
+        return JsonResponse(
+            _completion_payload(
+                search_completion.attempt,
+                search_completion.idempotent,
+                search_completion.stale,
+            )
+        )
+    if not _valid_envelope(data, reference.attempt_id, outcome="failure"):
         return _invalid_result()
     try:
         completion = fail_attempt(
-            parsed_attempt_id,
+            reference.attempt_id,
             error_code=data["error_code"],
             error_detail=_processor_error_detail(data["processor_type"], data["error_code"]),
             canonical_error_detail=data["error_detail"],
@@ -296,7 +429,15 @@ def fail(request: HttpRequest, attempt_id: str) -> JsonResponse:
     )
 
 
-def _claim(data: dict[str, Any]) -> ClaimedJob | EmptyClaim:
+def _claim(data: dict[str, Any]) -> ClaimedJob | EmptyClaim | ClaimedSearchJob | EmptySearchClaim:
+    if data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type:
+        return claim_search_job(
+            contract_version=data["contract_version"],
+            processor_type=data["processor_type"],
+            processor_version=data["processor_version"],
+            worker_build=data["worker_build"],
+            lease_seconds=data["lease_seconds"],
+        )
     from processing.services.jobs import claim_job
 
     return claim_job(
@@ -312,12 +453,28 @@ def _claim_with_grant(data: dict[str, Any]) -> dict[str, object]:
     """Keep the claim rows locked until local signature construction succeeds or rolls back."""
     with transaction.atomic():
         claimed = _claim(data)
-        if isinstance(claimed, EmptyClaim):
+        if isinstance(claimed, (EmptyClaim, EmptySearchClaim)):
             return {"empty": True, "suggested_delay_seconds": claimed.suggested_delay_seconds}
+        if isinstance(claimed, ClaimedSearchJob):
+            search = claimed.job.search
+            storage = TemporarySelfieStorage()
+            stored = storage.inspect(key=search.temporary_object_key)
+            selfie_fingerprint = _selfie_input_fingerprint(search, stored)
+            selfie_grant = storage.create_download_grant(
+                key=search.temporary_object_key,
+                max_ttl_seconds=_remaining_lease(claimed.attempt),
+            )
+            _validate_grant_lease(claimed.attempt, selfie_grant.expires_at)
+            return _selfie_claimed_payload(
+                claimed,
+                selfie_grant.url,
+                selfie_grant.expires_at,
+                selfie_fingerprint,
+            )
         fingerprint = _input_fingerprint(
             claimed.job.input_fingerprint, contract_version=claimed.job.contract_version
         )
-        grant = ExactObjectDownloadStorage().create_download_grant(
+        grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
             max_ttl_seconds=_remaining_lease(claimed.attempt),
         )
@@ -347,8 +504,30 @@ def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:
         fingerprint = _input_fingerprint(
             attempt.input_fingerprint, contract_version=attempt.contract_version
         )
-        grant = ExactObjectDownloadStorage().create_download_grant(
+        grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
+            max_ttl_seconds=_remaining_lease(attempt),
+        )
+        _validate_grant_lease(attempt, grant.expires_at)
+        return {
+            "attempt": _attempt_payload(attempt),
+            "download_url": grant.url,
+            "download_expires_at": grant.expires_at.isoformat(),
+        }
+
+
+def _refresh_selfie_with_grant(attempt_id: UUID) -> dict[str, object] | None:
+    """Refresh a temporary selfie grant without exposing its key outside the worker boundary."""
+    with transaction.atomic():
+        attempt = refresh_search_download_attempt(attempt_id)
+        if attempt is None:
+            return None
+        search = attempt.job.search
+        storage = TemporarySelfieStorage()
+        stored = storage.inspect(key=search.temporary_object_key)
+        _selfie_input_fingerprint(search, stored)
+        grant = storage.create_download_grant(
+            key=search.temporary_object_key,
             max_ttl_seconds=_remaining_lease(attempt),
         )
         _validate_grant_lease(attempt, grant.expires_at)
@@ -423,7 +602,35 @@ def _input_fingerprint(value: object, *, contract_version: int) -> dict[str, int
     }
 
 
-def _remaining_lease(attempt: ProcessingAttempt) -> int:
+def _selfie_input_fingerprint(
+    search: SelfieSearch, stored: StoredTemporarySelfie
+) -> dict[str, int | str]:
+    """Return only the verified temporary-object fingerprint accepted by selfie_query v1."""
+    configuration = search.configuration
+    if not isinstance(configuration, dict):
+        raise FingerprintInvariant()
+    configured_type = configuration.get("content_type")
+    configured_size = configuration.get("content_size")
+    if (
+        not isinstance(search.temporary_object_key, str)
+        or re.fullmatch(r"selfie-search/[0-9a-f]{32}", search.temporary_object_key) is None
+        or not isinstance(configured_size, int)
+        or isinstance(configured_size, bool)
+        or not 1 <= configured_size <= 20 * 1024 * 1024
+        or configured_type not in {"image/jpeg", "image/png"}
+        or stored.key != search.temporary_object_key
+        or stored.size != configured_size
+        or stored.content_type != configured_type
+    ):
+        raise FingerprintInvariant()
+    return {
+        "temporary_key": search.temporary_object_key,
+        "temporary_size": configured_size,
+        "temporary_content_type": configured_type,
+    }
+
+
+def _remaining_lease(attempt: ProcessingAttempt | SelfieSearchAttempt) -> int:
     if attempt.lease_expires_at is None:
         raise LeaseExpired()
     # Reserve one whole second for the separate storage clock/read after this calculation.
@@ -437,7 +644,18 @@ def _fingerprint_key(fingerprint: dict[str, int | str | None]) -> str:
     return cast(str, fingerprint.get("object_key", fingerprint.get("original_key")))
 
 
-def _validate_grant_lease(attempt: ProcessingAttempt, expires_at: datetime) -> None:
+def _download_storage(
+    fingerprint: dict[str, int | str | None],
+) -> ExactObjectDownloadStorage | ExactPreviewStorage:
+    """Keep original and accepted-preview grant namespaces disjoint."""
+    if fingerprint.get("media_kind") == "preview-small-v1":
+        return ExactPreviewStorage()
+    return ExactObjectDownloadStorage()
+
+
+def _validate_grant_lease(
+    attempt: ProcessingAttempt | SelfieSearchAttempt, expires_at: datetime
+) -> None:
     if (
         attempt.lease_expires_at is None
         or timezone.now() >= attempt.lease_expires_at
@@ -525,7 +743,39 @@ def _claimed_payload(
     return payload
 
 
-def _attempt_payload(attempt: ProcessingAttempt) -> dict[str, object]:
+def _selfie_claimed_payload(
+    claimed: ClaimedSearchJob,
+    url: str,
+    expires_at: datetime,
+    fingerprint: dict[str, int | str],
+) -> dict[str, object]:
+    search = claimed.job.search
+    attempt = claimed.attempt
+    return {
+        "empty": False,
+        "job": {
+            "id": str(claimed.job.id),
+            # Worker protocol v1 requires the raw UUID.  The endpoint also accepts its explicit
+            # ``selfie_`` alias for callers that need an unambiguous transport reference.
+            "attempt_id": str(attempt.id),
+            "contract_version": SELFIE_QUERY_CONTRACT.contract_version,
+            "processor_type": SELFIE_QUERY_CONTRACT.processor_type,
+            "processor_version": SELFIE_QUERY_CONTRACT.processor_version,
+            "configuration": selfie_worker_configuration(search),
+            "search_id": str(search.id),
+            "input_fingerprint": fingerprint,
+            "input_limits": {
+                "max_bytes": fingerprint["temporary_size"],
+                "content_type": fingerprint["temporary_content_type"],
+            },
+            "lease_expires_at": attempt.lease_expires_at.isoformat(),
+            "download_url": url,
+            "download_expires_at": expires_at.isoformat(),
+        },
+    }
+
+
+def _attempt_payload(attempt: ProcessingAttempt | SelfieSearchAttempt) -> dict[str, object]:
     return {
         "id": str(attempt.id),
         "status": attempt.status,
@@ -536,7 +786,7 @@ def _attempt_payload(attempt: ProcessingAttempt) -> dict[str, object]:
 
 
 def _completion_payload(
-    attempt: ProcessingAttempt, idempotent: bool, stale: bool
+    attempt: ProcessingAttempt | SelfieSearchAttempt, idempotent: bool, stale: bool
 ) -> dict[str, object]:
     return {"attempt": _attempt_payload(attempt), "idempotent": idempotent, "stale": stale}
 
@@ -585,6 +835,28 @@ def _attempt_id(value: str) -> tuple[UUID | None, JsonResponse | None]:
         return None, _error("invalid_attempt_id", "The attempt identifier is invalid.", status=404)
 
 
+def _attempt_reference(value: str) -> tuple[AttemptReference | None, JsonResponse | None]:
+    reference = parse_attempt_reference(value)
+    if reference is None:
+        return None, _error("invalid_attempt_id", "The attempt identifier is invalid.", status=404)
+    return reference, None
+
+
+def _attempt_kind(reference: AttemptReference) -> str | None:
+    """Resolve raw v1 UUIDs photo-first while preserving an explicit selfie transport alias."""
+    if reference.kind == "selfie":
+        return (
+            "selfie"
+            if SelfieSearchAttempt.objects.filter(pk=reference.attempt_id).exists()
+            else None
+        )
+    if ProcessingAttempt.objects.filter(pk=reference.attempt_id).exists():
+        return "photo"
+    if SelfieSearchAttempt.objects.filter(pk=reference.attempt_id).exists():
+        return "selfie"
+    return None
+
+
 def _processor_contract(processor_type: str, contract_version: int, processor_version: int) -> bool:
     return (contract_version, processor_type, processor_version) in {
         (
@@ -627,8 +899,10 @@ def _processor_retryable(processor_type: str, error_code: str) -> bool:
 
 
 def _valid_failure_code(processor_type: str, value: object) -> bool:
+    if not isinstance(value, str):
+        return False
     failures = _processor_failures(processor_type)
-    return isinstance(value, str) and failures is not None and value in failures
+    return failures is not None and value in failures
 
 
 def _valid_warning_code(processor_type: str, value: object) -> bool:
@@ -686,6 +960,102 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
         and isinstance(data["error_detail"], str)
         and len(data["error_detail"]) <= 512
         and _safe_error_detail(data["error_detail"])
+    )
+
+
+def _valid_selfie_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> bool:
+    """Validate the strict selfie worker union before touching durable search transitions."""
+    try:
+        attempt = SelfieSearchAttempt.objects.select_related("job__search").get(pk=attempt_id)
+    except SelfieSearchAttempt.DoesNotExist:
+        return False
+    search = attempt.job.search
+    failures = _processor_failures(SELFIE_QUERY_CONTRACT.processor_type)
+    assert failures is not None
+    started_at = _parse_timestamp(data["started_at"])
+    finished_at = _parse_timestamp(data["finished_at"])
+    if not (
+        data["outcome"] == outcome
+        and data["attempt_id"] == str(attempt.id)
+        and data["job_id"] == str(attempt.job_id)
+        and type(data["contract_version"]) is int
+        and data["contract_version"] == SELFIE_QUERY_CONTRACT.contract_version
+        and type(data["processor_type"]) is str
+        and data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type
+        and type(data["processor_version"]) is int
+        and data["processor_version"] == SELFIE_QUERY_CONTRACT.processor_version
+        and _safe_worker_build(data["worker_build"])
+        and started_at is not None
+        and finished_at is not None
+        and started_at <= finished_at
+        and all(_duration(data[name]) for name in ("download_ms", "compute_ms", "total_ms"))
+        and data["total_ms"] >= data["download_ms"] + data["compute_ms"]
+    ):
+        return False
+    if outcome == "success":
+        return _valid_selfie_result(data["result"], search)
+    return (
+        _valid_failure_code(SELFIE_QUERY_CONTRACT.processor_type, data["error_code"])
+        and type(data["retryable"]) is bool
+        and data["retryable"] == failures[data["error_code"]][0]
+        and isinstance(data["error_detail"], str)
+        and len(data["error_detail"]) <= 512
+        and _safe_error_detail(data["error_detail"])
+    )
+
+
+def _valid_selfie_result(value: object, search: SelfieSearch) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "model",
+        "embedding",
+        "bbox",
+        "confidence",
+        "landmarks",
+        "timings",
+    }:
+        return False
+    configuration = search.configuration
+    if not isinstance(configuration, dict) or value["model"] != configuration.get(
+        "embedding_model"
+    ):
+        return False
+    try:
+        validate_query_vector(search, value["embedding"])
+    except RankingError:
+        return False
+    confidence = value["confidence"]
+    if not (
+        _valid_face_bbox(value["bbox"])
+        and isinstance(confidence, (int, float))
+        and not isinstance(confidence, bool)
+        and isfinite(confidence)
+        and 0.0 <= confidence <= 1.0
+    ):
+        return False
+    landmarks = value["landmarks"]
+    if not (
+        isinstance(landmarks, list)
+        and len(landmarks) == 5
+        and all(
+            isinstance(point, list)
+            and len(point) == 2
+            and all(_safe_face_coordinate(coordinate) for coordinate in point)
+            for point in landmarks
+        )
+    ):
+        return False
+    timings = value["timings"]
+    return (
+        isinstance(timings, dict)
+        and set(timings) == {"decode_ms", "model_load_ms", "detect_ms", "embed_ms", "total_ms"}
+        and all(_duration(duration) for duration in timings.values())
+        and timings["total_ms"]
+        >= (
+            timings["decode_ms"]
+            + timings["model_load_ms"]
+            + timings["detect_ms"]
+            + timings["embed_ms"]
+        )
     )
 
 
@@ -750,16 +1120,22 @@ def _valid_face_embedding_result(value: object, *, contract_version: int = 1) ->
         return False
     if value.get("timings") is not None and not isinstance(value["timings"], dict):
         return False
+    maximum_faces = _V2_FACE_EMBEDDING_MAX_FACES if contract_version == 2 else 1_024
+    embedding_dimensions = _V2_FACE_EMBEDDING_DIMENSIONS if contract_version == 2 else 512
     if not (
         isinstance(value["face_count"], int)
         and not isinstance(value["face_count"], bool)
-        and 0 <= value["face_count"] <= 1_000
+        and 0 <= value["face_count"] <= maximum_faces
     ):
         return False
     if not _safe_face_model(value.get("model", "sface")):
         return False
     faces = value["faces"]
-    if not (isinstance(faces, list) and len(faces) <= 1_024 and len(faces) == value["face_count"]):
+    if not (
+        isinstance(faces, list)
+        and len(faces) <= maximum_faces
+        and len(faces) == value["face_count"]
+    ):
         return False
     warnings = value["warnings"]
     if not (
@@ -789,7 +1165,10 @@ def _valid_face_embedding_result(value: object, *, contract_version: int = 1) ->
             and all(_positive_int(geometry[name]) for name in set(geometry) - {"coordinate_space"})
         ):
             return False
-    return all(_valid_face_embedding_record(face) for face in faces)
+    return all(
+        _valid_face_embedding_record(face, embedding_dimensions=embedding_dimensions)
+        for face in faces
+    )
 
 
 def _matches_accepted_preview_geometry(attempt: ProcessingAttempt, result: object) -> bool:
@@ -874,7 +1253,7 @@ def _valid_face_warning(value: object) -> bool:
     return _valid_warning_code(FACE_EMBEDDING_CONTRACT.processor_type, value)
 
 
-def _valid_face_embedding_record(value: object) -> bool:
+def _valid_face_embedding_record(value: object, *, embedding_dimensions: int) -> bool:
     if not isinstance(value, dict):
         return False
     if set(value).issuperset({"face_id", "bbox", "quality", "embedding_sha256"}):
@@ -923,7 +1302,7 @@ def _valid_face_embedding_record(value: object) -> bool:
     embedding = value["embedding"]
     if not (
         isinstance(embedding, list)
-        and len(embedding) <= 512
+        and len(embedding) <= embedding_dimensions
         and all(isinstance(item, (int, float)) for item in embedding)
     ):
         return False
@@ -939,7 +1318,12 @@ def _valid_face_bbox(value: object) -> bool:
 
 
 def _safe_face_coordinate(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 10_000
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and isfinite(value)
+        and 0 <= value <= 10_000
+    )
 
 
 def _parse_timestamp(value: object) -> datetime | None:

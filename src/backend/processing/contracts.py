@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from processing.models import ProcessingAttempt, ProcessingJob
 
@@ -34,6 +35,40 @@ PREVIEW_FACE_EMBEDDING_CONTRACT = ProcessorContract(
     contract_version=2,
     processor_version=2,
 )
+SELFIE_QUERY_CONTRACT = ProcessorContract(
+    processor_type="selfie_query",
+    contract_version=1,
+    processor_version=1,
+)
+SELFIE_ATTEMPT_PREFIX = "selfie_"
+
+
+@dataclass(frozen=True)
+class AttemptReference:
+    """A route-level attempt identity that cannot silently cross work kinds."""
+
+    kind: str
+    attempt_id: UUID
+
+
+def parse_attempt_reference(value: str) -> AttemptReference | None:
+    """Parse a raw legacy photo UUID or an explicit ``selfie_<uuid>`` alias.
+
+    A raw UUID remains necessary for the already-versioned worker union.  Views resolve a raw UUID
+    against photo attempts first so existing photo semantics are byte-for-byte unchanged.
+    """
+    if value.startswith(SELFIE_ATTEMPT_PREFIX):
+        try:
+            return AttemptReference(
+                kind="selfie",
+                attempt_id=UUID(value.removeprefix(SELFIE_ATTEMPT_PREFIX)),
+            )
+        except ValueError:
+            return None
+    try:
+        return AttemptReference(kind="unqualified", attempt_id=UUID(value))
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)

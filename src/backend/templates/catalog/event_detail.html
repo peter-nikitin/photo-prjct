@@ -5,6 +5,7 @@
 {% block extra_css %}
   <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
   <link rel="stylesheet" href="{% static 'ui/glightbox.min.css' %}">
+  {% if selfie_search_form %}<link rel="stylesheet" href="{% static 'ui/selfie-search.css' %}">{% endif %}
 {% endblock %}
 {% block content %}
   <article class="event-detail">
@@ -43,6 +44,25 @@
         {% endif %}
       </div>
     </div>
+    {% if selfie_search_form %}
+      <section class="selfie-search" aria-labelledby="selfie-search-title">
+        <h2 id="selfie-search-title">Найти мои фото</h2>
+        <p>Мы ищем вероятные совпадения только среди фотографий этого события.</p>
+        <ul class="selfie-search-disclosures">
+          <li>Селфи удаляется после подготовки поиска.</li>
+          <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
+        </ul>
+        <form data-selfie-search-form action="{% url 'selfie_search:submit' event_slug=event.slug %}" method="post" enctype="multipart/form-data">
+          {% csrf_token %}
+          <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
+          {{ selfie_search_form.selfie }}
+          {% if selfie_search_form.selfie.errors %}
+            <div role="alert">{{ selfie_search_form.selfie.errors }}</div>
+          {% endif %}
+          <button class="button" type="submit">Найти мои фото</button>
+        </form>
+      </section>
+    {% endif %}
     <section class="event-gallery" aria-labelledby="gallery-title">
       <div class="event-gallery-heading">
         <h2 id="gallery-title">Фотографии</h2>
@@ -72,4 +92,5 @@
 {% block extra_js %}
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
+  {% if selfie_search_form %}<script src="{% static 'ui/selfie-search.js' %}"></script>{% endif %}
 {% endblock %}

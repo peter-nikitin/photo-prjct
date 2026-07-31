@@ -2,17 +2,20 @@ import importlib
 from datetime import date
 from typing import Any
 
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.db.models.deletion import ProtectedError
-from django.test import TestCase, TransactionTestCase
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
 
 from processing.models import (
     GENERATE_PREVIEW_PROCESSOR,
+    JSON_MAX_BYTES,
+    PROCESSING_ATTEMPT_RESULT_MAX_BYTES,
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
@@ -21,7 +24,29 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
+    validate_bounded_json,
+    validate_bounded_processing_attempt_result,
 )
+
+
+class ProcessingJsonBoundTests(SimpleTestCase):
+    def test_attempt_result_accepts_128_kib_terminal_payload_budget(self) -> None:
+        overhead = len(b'{"value":""}')
+        payload = {"value": "x" * (PROCESSING_ATTEMPT_RESULT_MAX_BYTES - overhead)}
+
+        validate_bounded_processing_attempt_result(payload)
+
+        with self.assertRaises(ValidationError):
+            validate_bounded_processing_attempt_result({"value": payload["value"] + "x"})
+
+    def test_existing_generic_json_bound_remains_16_kib(self) -> None:
+        overhead = len(b'{"value":""}')
+        payload = {"value": "x" * (JSON_MAX_BYTES - overhead)}
+
+        validate_bounded_json(payload)
+
+        with self.assertRaises(ValidationError):
+            validate_bounded_json({"value": payload["value"] + "x"})
 
 
 class ProcessingModelTests(TestCase):
@@ -39,7 +64,21 @@ class ProcessingModelTests(TestCase):
             city="Moscow",
         )
 
-    def make_private_photo(self, suffix: str, event: Event, **overrides) -> Photo:
+    def test_explicit_index_names_fit_postgresql_limit(self) -> None:
+        index_names = [
+            index.name
+            for model in apps.get_app_config("processing").get_models()
+            for index in model._meta.indexes
+            if index.name
+        ]
+
+        self.assertTrue(index_names)
+        self.assertTrue(
+            all(len(name) <= 30 for name in index_names),
+            f"Processing index names must be at most 30 characters: {index_names}",
+        )
+
+    def make_private_photo(self, suffix: str, event: Event, **overrides: Any) -> Photo:
         values = {
             "id": f"private-{suffix}",
             "event": event,
@@ -580,7 +619,7 @@ class ProcessingModelTests(TestCase):
             processor_version=1,
             configuration={},
             input_fingerprint={},
-            result={"payload": "x" * 16_385},
+            result={"payload": "x" * (PROCESSING_ATTEMPT_RESULT_MAX_BYTES + 1)},
         )
         with self.assertRaises(ValidationError):
             attempt.full_clean()

@@ -108,6 +108,35 @@ class ExactPreviewStorageTests(SimpleTestCase):
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg"
     )
 
+    def test_creates_a_lease_bounded_get_grant_for_one_accepted_preview(self) -> None:
+        client = FakeS3Client()
+        client.presigned_get_url = "https://storage.example.test/preview?secret"
+
+        grant = ExactPreviewStorage(client=client).create_download_grant(
+            final_key=self.final_key, max_ttl_seconds=7
+        )
+
+        self.assertEqual(grant.url, client.presigned_get_url)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "generate_presigned_url",
+                    {
+                        "ClientMethod": "get_object",
+                        "Params": {
+                            "Bucket": "private-photos",
+                            "Key": self.final_key,
+                            "ResponseContentType": "image/jpeg",
+                            "ResponseContentDisposition": 'attachment; filename="preview.jpg"',
+                        },
+                        "ExpiresIn": 7,
+                        "HttpMethod": "GET",
+                    },
+                )
+            ],
+        )
+
     def test_creates_a_lease_bounded_put_grant_for_one_exact_staging_key(self) -> None:
         client = FakeS3Client()
         client.presigned_get_url = "https://storage.example.test/staging?secret"

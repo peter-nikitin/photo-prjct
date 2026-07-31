@@ -5,9 +5,10 @@ from datetime import date
 from types import MappingProxyType
 from typing import Any
 
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.test import override_settings
+from selfie_search.forms import SelfieSearchUploadForm
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,13 @@ class FixtureGalleryPhoto:
     preview_media_small: FixtureGalleryMedia
     preview_media_large: FixtureGalleryMedia
     alt: str
+
+
+@dataclass(frozen=True)
+class FixtureSelfieSearch:
+    status: str
+    eligible_photo_count: int = 0
+    matched_photo_count: int = 0
 
 
 EVENTS = (
@@ -390,6 +398,78 @@ def event_gallery_empty(request: HttpRequest) -> HttpResponse:
         request,
         "catalog/event_detail.html",
         {"event": EVENTS[0], "gallery_photos": ()},
+    )
+
+
+def event_selfie_search(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "catalog/event_detail.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": GALLERY_PHOTOS,
+            "selfie_search_form": SelfieSearchUploadForm(),
+        },
+    )
+
+
+def selfie_search_processing(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "selfie_search/result.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": (),
+            "is_terminal": False,
+            "search": FixtureSelfieSearch("processing"),
+            "status_url": "/__visual__/event/selfie-search/processing-status/",
+        },
+    )
+
+
+def selfie_search_processing_status(request: HttpRequest) -> JsonResponse:
+    return JsonResponse({"status": "processing"})
+
+
+def selfie_search_empty(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "selfie_search/result.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": (),
+            "is_terminal": True,
+            "search": FixtureSelfieSearch("ready", eligible_photo_count=46),
+            "status_url": "",
+        },
+    )
+
+
+def selfie_search_error(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "selfie_search/result.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": (),
+            "is_terminal": True,
+            "search": FixtureSelfieSearch("multiple_faces"),
+            "status_url": "",
+        },
+    )
+
+
+def selfie_search_ready(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "selfie_search/result.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": GALLERY_PHOTOS[:3],
+            "is_terminal": True,
+            "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
+            "status_url": "",
+        },
     )
 
 

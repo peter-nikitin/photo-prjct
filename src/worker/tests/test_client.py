@@ -72,6 +72,20 @@ def test_api_response_read_is_limited_to_configured_bound_plus_one() -> None:
     assert response.read_sizes == [7]
 
 
+def test_claim_contract_error_retains_only_the_static_parser_diagnostic() -> None:
+    def opener(_request, *, timeout: float):
+        return Response(b'{"empty":false,"job":{}}')
+
+    with pytest.raises(ApiError) as raised:
+        HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener).claim_job(
+            worker_build="worker-build",
+            lease_seconds=120,
+        )
+
+    assert (raised.value.code, raised.value.retryable) == ("invalid_api_response", False)
+    assert raised.value.diagnostic == "ContractError: invalid claimed job"
+
+
 def test_download_streams_no_more_than_declared_bound_and_validates_content_type(
     tmp_path: Path,
 ) -> None:
@@ -228,10 +242,12 @@ def test_refresh_rejects_any_payload_except_the_exact_django_shape() -> None:
     def opener(_request, *, timeout: float):
         return Response(b'{"download_url":"https://storage.example.test/x?secret"}')
 
-    with pytest.raises(ApiError, match="invalid_api_response"):
+    with pytest.raises(ApiError, match="invalid_api_response") as raised:
         HttpClient(
             "https://worker.example.test/v1", "worker-secret", opener=opener
         ).refresh_download("attempt-1")
+
+    assert raised.value.diagnostic == "api:refresh_download_contract_mismatch"
 
 
 def test_refresh_accepts_the_exact_django_response_with_utc_offset() -> None:
@@ -257,14 +273,18 @@ def test_refresh_accepts_the_exact_django_response_with_utc_offset() -> None:
 
 
 @pytest.mark.parametrize(
-    ("status", "code", "retryable"),
+    ("status", "code", "retryable", "diagnostic"),
     [
-        (401, "worker_unauthorized", False),
-        (409, "lease_not_current", False),
-        (503, "storage_unavailable", True),
+        (401, "worker_unauthorized", False, "http:unauthorized"),
+        (403, "worker_unauthorized", False, "http:unauthorized"),
+        (404, "invalid_api_response", False, "http:unexpected_client_status"),
+        (409, "lease_not_current", False, "http:lease_conflict"),
+        (503, "storage_unavailable", True, "http:server_error"),
     ],
 )
-def test_api_http_classification_is_closed(status: int, code: str, retryable: bool) -> None:
+def test_api_http_classification_has_only_an_allowlisted_category(
+    status: int, code: str, retryable: bool, diagnostic: str
+) -> None:
     def opener(_request, *, timeout: float):
         raise HTTPError(
             "https://worker.example.test/internal?token=secret", status, "x", {}, io.BytesIO()
@@ -275,7 +295,11 @@ def test_api_http_classification_is_closed(status: int, code: str, retryable: bo
             "claim", {}
         )
 
-    assert (raised.value.code, raised.value.retryable) == (code, retryable)
+    assert (raised.value.code, raised.value.retryable, raised.value.diagnostic) == (
+        code,
+        retryable,
+        diagnostic,
+    )
 
 
 def test_preview_upload_uses_exact_put_content_type_and_bounded_response(tmp_path: Path) -> None:

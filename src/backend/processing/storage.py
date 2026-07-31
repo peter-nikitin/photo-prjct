@@ -151,6 +151,34 @@ class ExactPreviewStorage:
             )
         )
 
+    def create_download_grant(
+        self, *, final_key: str, max_ttl_seconds: int | None = None
+    ) -> DownloadGrant:
+        """Create a GET-only grant for one accepted, content-addressed preview."""
+        _validate_preview_final_key(final_key)
+        expires_in = self._expires_in(max_ttl_seconds)
+        try:
+            url = self._client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={
+                    "Bucket": self._bucket,
+                    "Key": final_key,
+                    "ResponseContentType": "image/jpeg",
+                    "ResponseContentDisposition": 'attachment; filename="preview.jpg"',
+                },
+                ExpiresIn=expires_in,
+                HttpMethod="GET",
+            )
+            if not isinstance(url, str) or not url:
+                raise TypeError
+        except ClientError as error:
+            if _status(error) == 404:
+                raise ObjectMissing() from None
+            raise StorageUnavailable() from None
+        except (BotoCoreError, TypeError):
+            raise StorageUnavailable() from None
+        return DownloadGrant(url=url, expires_at=timezone.now() + timedelta(seconds=expires_in))
+
     def create_upload_grant(
         self, *, staging_key: str, max_ttl_seconds: int | None = None
     ) -> PreviewUploadGrant:

@@ -21,6 +21,20 @@ from photo_worker.contracts import (
 
 BOOTSTRAP_RESPONSE_MAX_BYTES = MAX_JSON_FIELD_BYTES
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+_CONTRACT_ERROR_DIAGNOSTICS = {
+    "invalid claim response": "ContractError: invalid claim response",
+    "invalid empty claim response": "ContractError: invalid empty claim response",
+    "invalid empty-claim delay": "ContractError: invalid empty-claim delay",
+    "invalid claimed response": "ContractError: invalid claimed response",
+    "invalid claimed job": "ContractError: invalid claimed job",
+    "invalid processor configuration": "ContractError: invalid processor configuration",
+    "invalid preview output slot": "ContractError: invalid preview output slot",
+    "invalid selfie input fingerprint": "ContractError: invalid selfie input fingerprint",
+    "invalid input fingerprint": "ContractError: invalid input fingerprint",
+    "invalid input limits": "ContractError: invalid input limits",
+    "unsupported claimed job": "ContractError: unsupported claimed job",
+    "unsupported processor type": "ContractError: unsupported processor type",
+}
 
 
 class Response(Protocol):
@@ -37,10 +51,11 @@ OpenUrl = Callable[..., Response]
 
 
 class ApiError(RuntimeError):
-    def __init__(self, code: str, *, retryable: bool) -> None:
+    def __init__(self, code: str, *, retryable: bool, diagnostic: str | None = None) -> None:
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        self.diagnostic = diagnostic
 
 
 class DownloadError(ApiError):
@@ -130,7 +145,11 @@ class HttpClient:
                 )
             )
         except ContractError as error:
-            raise ApiError("invalid_api_response", retryable=False) from error
+            raise ApiError(
+                "invalid_api_response",
+                retryable=False,
+                diagnostic=_contract_error_diagnostic(error),
+            ) from error
 
     def heartbeat(
         self,
@@ -308,6 +327,13 @@ def _api_error(status: int) -> ApiError:
     if status >= 500:
         return ApiError("storage_unavailable", retryable=True)
     return ApiError("invalid_api_response", retryable=False)
+
+
+def _contract_error_diagnostic(error: ContractError) -> str:
+    """Expose only an allowlisted parser category, never a server response fragment."""
+    return _CONTRACT_ERROR_DIAGNOSTICS.get(
+        str(error), "ContractError: unrecognized schema violation"
+    )
 
 
 def _download_error(status: int) -> DownloadError:

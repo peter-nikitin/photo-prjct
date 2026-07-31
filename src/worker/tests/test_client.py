@@ -72,6 +72,20 @@ def test_api_response_read_is_limited_to_configured_bound_plus_one() -> None:
     assert response.read_sizes == [7]
 
 
+def test_claim_contract_error_retains_only_the_static_parser_diagnostic() -> None:
+    def opener(_request, *, timeout: float):
+        return Response(b'{"empty":false,"job":{}}')
+
+    with pytest.raises(ApiError) as raised:
+        HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener).claim_job(
+            worker_build="worker-build",
+            lease_seconds=120,
+        )
+
+    assert (raised.value.code, raised.value.retryable) == ("invalid_api_response", False)
+    assert raised.value.diagnostic == "ContractError: invalid claimed job"
+
+
 def test_download_streams_no_more_than_declared_bound_and_validates_content_type(
     tmp_path: Path,
 ) -> None:

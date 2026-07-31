@@ -275,6 +275,7 @@ class Worker:
         self._identity_index = 0
         self._photo_identity_index = 0
         self._prefer_selfie = True
+        self._last_claim_identity: tuple[int, str, int] | None = None
 
     def run_once(self) -> int | None:
         empty_delays: list[int] = []
@@ -345,6 +346,7 @@ class Worker:
 
     def _claim_identity(self, identity: tuple[int, str, int], empty_delays: list[int]) -> Claim:
         contract_version, processor_type, processor_version = identity
+        self._last_claim_identity = identity
         claim = self._client.claim_job(
             worker_build=self._config.worker_build,
             lease_seconds=self._config.lease_seconds,
@@ -405,7 +407,21 @@ class Worker:
                     time.sleep(self._next_poll_delay_seconds)
                     continue
                 if not error.retryable:
-                    LOGGER.error("worker_stopped code=%s", error.code)
+                    if error.diagnostic is not None and self._last_claim_identity is not None:
+                        contract_version, processor_type, processor_version = (
+                            self._last_claim_identity
+                        )
+                        LOGGER.error(
+                            "worker_stopped code=%s contract_version=%s processor_type=%s "
+                            "processor_version=%s contract_error=%s",
+                            error.code,
+                            contract_version,
+                            processor_type,
+                            processor_version,
+                            error.diagnostic,
+                        )
+                    else:
+                        LOGGER.error("worker_stopped code=%s", error.code)
                     return
                 failures += 1
                 backoff_delay = self._backoff_delay(failures)

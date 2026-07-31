@@ -7,6 +7,7 @@ from django.http import HttpResponse
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from ingestion.storage import StorageUnavailable
+from photo_worker.contracts import Claim
 from picflow.models import Event, Photo
 from selfie_search.models import SelfieSearch, SelfieSearchJob
 from selfie_search.storage import DownloadGrant, StoredTemporarySelfie
@@ -46,13 +47,18 @@ class WorkerApiTests(TestCase):
         )
         self.headers = {"HTTP_AUTHORIZATION": "Bearer worker-secret"}
 
-    def photo(self, identifier: str = "api-photo") -> Photo:
+    def photo(
+        self,
+        identifier: str = "api-photo",
+        *,
+        original_key: str = "originals/0123456789abcdef0123456789abcdef",
+    ) -> Photo:
         return Photo.objects.create(
             id=identifier,
             event=self.event,
             src="",
             uploaded_by=self.user,
-            original_key="originals/0123456789abcdef0123456789abcdef",
+            original_key=original_key,
             original_filename="photo.jpg",
             original_size=10,
             original_content_type="image/jpeg",
@@ -188,6 +194,38 @@ class WorkerApiTests(TestCase):
         self.assertEqual(grant.call_args.kwargs["final_key"], photo.original_key)
         self.assertGreaterEqual(grant.call_args.kwargs["max_ttl_seconds"], 1)
         self.assertLessEqual(grant.call_args.kwargs["max_ttl_seconds"], 119)
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_deployed_worker_identity_claims_cross_the_django_to_worker_boundary(
+        self, grant
+    ) -> None:
+        """Catch a claim JSON shape that makes the live worker stop before polling again."""
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        request_capture_metadata(self.photo("claim-contract-capture"))
+        face_photo = self.photo(
+            "claim-contract-face",
+            original_key="originals/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        request_face_embedding_enqueue(face_photo)
+
+        identities = (
+            self.claim_body(processor_type="selfie_query"),
+            self.face_claim_body(),
+            self.claim_body(),
+            self.preview_claim_body(),
+            self.claim_body(
+                contract_version=2,
+                processor_type="face_embedding",
+                processor_version=2,
+            ),
+        )
+
+        for request in identities:
+            response = self.post("/internal/photo-processing/v1/claim", request)
+
+            self.assertEqual(response.status_code, 200)
+            Claim.from_response(response.json())
 
     @patch("processing.views.ExactPreviewStorage.create_upload_grant")
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")

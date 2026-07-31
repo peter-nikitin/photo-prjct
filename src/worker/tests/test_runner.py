@@ -1032,6 +1032,38 @@ def test_non_retryable_api_error_stops_polling_without_sleep(
     assert sleeps == []
 
 
+def test_nonretryable_claim_contract_error_logs_exact_identity_without_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = Client(Claim.empty(1))
+
+    def claim_job(**_kwargs: object) -> Claim:
+        raise ApiError(
+            "invalid_api_response",
+            retryable=False,
+            diagnostic="ContractError: invalid claimed job",
+        )
+
+    client.claim_job = claim_job  # type: ignore[method-assign]
+    worker = Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            processor_identities=("1/selfie_query/1",),
+        ),
+    )
+
+    with caplog.at_level("ERROR"):
+        worker.run_forever()
+
+    assert caplog.messages == [
+        "worker_stopped code=invalid_api_response contract_version=1 "
+        "processor_type=selfie_query processor_version=1 "
+        "contract_error=ContractError: invalid claimed job"
+    ]
+
+
 def test_transient_api_error_sleeps_then_repolls_before_fatal_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

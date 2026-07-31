@@ -69,7 +69,7 @@ def generate_preview(
     warnings: list[str] = []
     try:
         with Image.open(source) as opened:
-            if opened.format != "JPEG":
+            if opened.format not in {"JPEG", "MPO"}:
                 raise PreviewError("unsupported_input")
             if opened.width < 1 or opened.height < 1:
                 raise PreviewError("invalid_dimensions")

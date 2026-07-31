@@ -939,45 +939,73 @@ class ProcessingPreviewDerivativeMigrationTests(TransactionTestCase):
         self.assertNotIn("photoderivative", reverted_apps.all_models.get("processing", {}))
 
 
-class ProcessingFaceIndexRenameMigrationTests(TransactionTestCase):
+class ProcessingFaceIndexNameMigrationTests(TransactionTestCase):
     migrate_from = [("processing", "0003_add_preview_derivative_schema")]
     migrate_to = [("processing", "0004_shorten_face_index_names")]
 
-    def index_names_for(self, table_name: str) -> set[str]:
-        with connection.cursor() as cursor:
-            constraints = connection.introspection.get_constraints(cursor, table_name)
-        return {name for name, details in constraints.items() if details["index"]}
-
-    def test_face_index_names_migrate_forward_and_back(self) -> None:
+    def test_canonical_face_index_names_migrate_to_the_current_names(self) -> None:
         executor = MigrationExecutor(connection)
         executor.migrate(self.migrate_from)
-        self.assertIn(
-            "proc_face_detection_attempt_idx",
-            self.index_names_for("processing_photofacedetection"),
-        )
-        self.assertIn(
-            "proc_face_embedding_detection_idx",
-            self.index_names_for("processing_faceembedding"),
-        )
+
+        MigrationExecutor(connection).migrate(self.migrate_to)
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_det_attempt_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_det_attempt_idx")
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_embed_det_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_embed_det_idx")
+
+    def test_legacy_face_index_names_migrate_to_the_current_names(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER INDEX proc_face_detection_attempt_idx RENAME TO proc_face_detect_attempt_idx"
+            )
+            cursor.execute(
+                "ALTER INDEX proc_face_embedding_detection_idx "
+                "RENAME TO proc_face_embed_detection_idx"
+            )
 
         executor = MigrationExecutor(connection)
         executor.migrate(self.migrate_to)
-        self.assertIn(
-            "proc_face_det_attempt_idx",
-            self.index_names_for("processing_photofacedetection"),
+        migrated_apps = executor.loader.project_state(self.migrate_to).apps
+        PhotoFaceDetection = migrated_apps.get_model("processing", "PhotoFaceDetection")
+        FaceEmbedding = migrated_apps.get_model("processing", "FaceEmbedding")
+        self.assertEqual(
+            [index.name for index in PhotoFaceDetection._meta.indexes],
+            ["proc_face_det_attempt_idx", "proc_face_detection_status_idx"],
         )
-        self.assertIn(
-            "proc_face_embed_det_idx",
-            self.index_names_for("processing_faceembedding"),
+        self.assertEqual(
+            [index.name for index in FaceEmbedding._meta.indexes],
+            ["proc_face_embed_det_idx"],
         )
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_det_attempt_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_det_attempt_idx")
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_embed_det_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_embed_det_idx")
 
         executor = MigrationExecutor(connection)
         executor.migrate(self.migrate_from)
-        self.assertIn(
-            "proc_face_detection_attempt_idx",
-            self.index_names_for("processing_photofacedetection"),
-        )
-        self.assertIn(
-            "proc_face_embedding_detection_idx",
-            self.index_names_for("processing_faceembedding"),
-        )
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_detection_attempt_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_detection_attempt_idx")
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_embedding_detection_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_embedding_detection_idx")
+
+    def test_current_face_index_names_are_idempotent(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER INDEX proc_face_detection_attempt_idx RENAME TO proc_face_det_attempt_idx"
+            )
+            cursor.execute(
+                "ALTER INDEX proc_face_embedding_detection_idx RENAME TO proc_face_embed_det_idx"
+            )
+
+        MigrationExecutor(connection).migrate(self.migrate_to)

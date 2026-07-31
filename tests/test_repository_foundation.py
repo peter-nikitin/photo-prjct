@@ -165,8 +165,8 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
     assert "healthcheck" in compose["services"]["web"]
 
 
-def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
-    """Staging may activate the worker, while production receives no activation inputs."""
+def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_image() -> None:
+    """Both deployment workflows pass the opt-in worker contract, disabled by default."""
     staging = _load_workflow("deploy.yml")
     production = _load_workflow("promote-production.yml")
     build = staging["jobs"]["build"]
@@ -200,9 +200,7 @@ def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || "
-            "'1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,"
-            "2/face_embedding/2' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
         ),
         "PHOTO_WORKER_PROCESSOR_TYPES": (
             "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
@@ -212,8 +210,33 @@ def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
     for name, value in expected.items():
         assert staging_apply["env"][name] == value
         assert name in _envs(staging_apply)
-        assert name not in production_apply["env"]
-        assert name not in _envs(production_apply)
+
+    production_expected = {
+        "WORKER_IMAGE": "ghcr.io/${{ github.repository }}-worker:${{ inputs.image_sha }}",
+        "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_PREVIEW_ENABLED": (
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+        ),
+        "PHOTO_PROCESSING_WORKER_TOKEN": "${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}",
+        "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
+            "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
+        ),
+        "PHOTO_PROCESSING_MAX_REQUEST_BYTES": (
+            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '16384' }}"
+        ),
+        "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
+        "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+        ),
+        "PHOTO_WORKER_PROCESSOR_TYPES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
+            "'selfie_query,face_embedding,capture_metadata,generate_preview' }}"
+        ),
+    }
+    for name, value in production_expected.items():
+        assert production_apply["env"].get(name) == value
+        assert name in _envs(production_apply)
 
     for name, value in {
         "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
@@ -401,6 +424,23 @@ def test_private_upload_configuration_is_wired_to_deployments() -> None:
         assert name in _envs(staging)
         assert name in _envs(production)
         assert f"printf '{name}=%s\\n'" in apply_script
+
+
+def test_staging_deployment_forwards_preview_processing_configuration() -> None:
+    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Apply staging deployment")
+    expected = {
+        "PHOTO_PROCESSING_PREVIEW_ENABLED": (
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+        ),
+        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+        ),
+    }
+
+    for name, value in expected.items():
+        assert staging["env"][name] == value
+        assert name in _envs(staging)
 
 
 def test_staging_storage_probe_is_manual_explicit_and_uses_the_deployed_container() -> None:

@@ -482,19 +482,19 @@ from contextlib import closing
 from ingestion.storage import PrivateUploadStorage
 from picflow.models import Event, Photo
 try:
-    photo = Photo.objects.filter(
+    original_key = Photo.objects.filter(
         event__publication_status=Event.PublicationStatus.PUBLISHED,
         event__access_type=Event.AccessType.FREE,
         src="",
         original_key__isnull=False,
-    ).order_by("id").first()
+    ).order_by("id").values_list("original_key", flat=True).first()
 except Exception:
     raise SystemExit("Gallery private-media read prerequisite failed") from None
-if photo is None:
+if original_key is None:
     print("gallery-private-media-preflight-skipped:no-eligible-photo")
 else:
     try:
-        opened = PrivateUploadStorage().open_final(key=photo.original_key)
+        opened = PrivateUploadStorage().open_final(key=original_key)
         with closing(opened.body) as body:
             if not body.read(1):
                 raise RuntimeError
@@ -532,10 +532,12 @@ while [ "$attempt" -le "$max_compose_attempts" ]; do
     compose_up_status=0
     if compose_with_requested_processing_profile up -d --remove-orphans; then
         break
+    else
+        compose_up_status=$?
     fi
-    compose_up_status=$?
     if [ "$attempt" -ge "$max_compose_attempts" ]; then
         echo "docker compose up exit status after attempt $attempt: $compose_up_status" >&2
+        diagnostics
         fail "Deployment Compose reconciliation failed"
     fi
     echo "docker compose up attempt $attempt failed with status $compose_up_status; retrying after ${compose_wait_seconds}s" >&2

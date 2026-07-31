@@ -62,9 +62,7 @@ def saved_ready_result_page(
     collection = f"ready-selfie-result:{search.public_token_digest}"
     rows = _eligible_saved_result_rows(search)
     if cursor is not None:
-        rank, photo_id = _decode_result_cursor(
-            signer=signer, cursor=cursor, collection=collection
-        )
+        rank, photo_id = _decode_result_cursor(signer=signer, cursor=cursor, collection=collection)
         rows = rows.filter(Q(rank__gt=rank) | Q(rank=rank, photo_id__gt=photo_id))
     page_with_sentinel = tuple(rows[: SELFIE_SEARCH_RESULT_PAGE_SIZE + 1])
     page_rows = page_with_sentinel[:SELFIE_SEARCH_RESULT_PAGE_SIZE]
@@ -83,9 +81,7 @@ def saved_ready_result_page(
     )
 
 
-def _decode_result_cursor(
-    *, signer: SignedCursor, cursor: str, collection: str
-) -> tuple[int, str]:
+def _decode_result_cursor(*, signer: SignedCursor, cursor: str, collection: str) -> tuple[int, str]:
     try:
         value = json.loads(signer.decode(cursor=cursor, collection=collection))
     except (InvalidCursor, ValueError, TypeError):

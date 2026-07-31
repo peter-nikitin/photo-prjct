@@ -674,7 +674,9 @@ class GalleryMediaViewTests(TransactionTestCase):
         event = self.make_event()
         photo = self.make_private_photo(event, id="photo-42")
         resolver = Mock()
-        resolver.resolve_signed.return_value = "https://storage.example.test/preview?signature=secret"
+        resolver.resolve_signed.return_value = (
+            "https://storage.example.test/preview?signature=secret"
+        )
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = views.photo_media(
@@ -747,7 +749,9 @@ class GalleryMediaViewTests(TransactionTestCase):
             final_key=f"derivatives/previews/{photo.id}/preview-small-v1/accepted.jpg",
         )
         resolver = Mock()
-        resolver.resolve_signed.return_value = "https://storage.example.test/preview?signature=secret"
+        resolver.resolve_signed.return_value = (
+            "https://storage.example.test/preview?signature=secret"
+        )
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = self.client.get(self.media_url(event=event, photo=photo))

@@ -1388,8 +1388,10 @@ def test_terminal_result_bound_prevents_submission_and_cleans_temp_file(
         lease_keeper_factory=deterministic_keeper_factory([True], threads),
     )
 
-    with pytest.raises(ApiError, match="invalid_api_response"):
+    with pytest.raises(ApiError, match="invalid_api_response") as raised:
         worker.run_once()
+
+    assert raised.value.diagnostic == "worker:terminal_payload_exceeds_limit"
 
     assert client.completed == []
     assert client.failed == []

@@ -773,7 +773,11 @@ def _assert_terminal_size(payload: dict[str, object], maximum: int) -> None:
     import json
 
     if len(json.dumps(payload, separators=(",", ":")).encode()) > maximum:
-        raise ApiError("invalid_api_response", retryable=False)
+        raise ApiError(
+            "invalid_api_response",
+            retryable=False,
+            diagnostic="worker:terminal_payload_exceeds_limit",
+        )
 
 
 def _unlink_temporary(path: Path | None) -> None:

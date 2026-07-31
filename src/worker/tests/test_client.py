@@ -242,10 +242,12 @@ def test_refresh_rejects_any_payload_except_the_exact_django_shape() -> None:
     def opener(_request, *, timeout: float):
         return Response(b'{"download_url":"https://storage.example.test/x?secret"}')
 
-    with pytest.raises(ApiError, match="invalid_api_response"):
+    with pytest.raises(ApiError, match="invalid_api_response") as raised:
         HttpClient(
             "https://worker.example.test/v1", "worker-secret", opener=opener
         ).refresh_download("attempt-1")
+
+    assert raised.value.diagnostic == "api:refresh_download_contract_mismatch"
 
 
 def test_refresh_accepts_the_exact_django_response_with_utc_offset() -> None:

@@ -187,7 +187,11 @@ class HttpClient:
             and _download_url(url)
             and _utc_timestamp(response.get("download_expires_at"))
         ):
-            raise ApiError("invalid_api_response", retryable=False)
+            raise ApiError(
+                "invalid_api_response",
+                retryable=False,
+                diagnostic="api:refresh_download_contract_mismatch",
+            )
         assert isinstance(url, str)
         return url
 

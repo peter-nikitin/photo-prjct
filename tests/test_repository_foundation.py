@@ -119,6 +119,11 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     assert _workflow_step(ci, "quality", "Test with coverage")["run"] == (
         "pytest --cov --cov-report=term-missing"
     )
+    python_setup = _workflow_step(ci, "quality", "Set up Python")
+    assert "src/worker/requirements.txt" in python_setup["with"]["cache-dependency-path"]
+    assert _workflow_step(ci, "quality", "Install dependencies")["run"] == (
+        "pip install -r requirements-dev.txt -r src/worker/requirements.txt"
+    )
 
 
 def test_visual_image_publisher_is_main_only_and_dependency_keyed() -> None:

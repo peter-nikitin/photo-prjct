@@ -49,10 +49,11 @@ jobs:
           cache: pip
           cache-dependency-path: |
             src/backend/requirements.txt
+            src/worker/requirements.txt
             requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: pip install -r requirements-dev.txt -r src/worker/requirements.txt
 
       - name: Check formatting
         run: ruff format --check .

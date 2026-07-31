@@ -271,14 +271,18 @@ def test_refresh_accepts_the_exact_django_response_with_utc_offset() -> None:
 
 
 @pytest.mark.parametrize(
-    ("status", "code", "retryable"),
+    ("status", "code", "retryable", "diagnostic"),
     [
-        (401, "worker_unauthorized", False),
-        (409, "lease_not_current", False),
-        (503, "storage_unavailable", True),
+        (401, "worker_unauthorized", False, "http:unauthorized"),
+        (403, "worker_unauthorized", False, "http:unauthorized"),
+        (404, "invalid_api_response", False, "http:unexpected_client_status"),
+        (409, "lease_not_current", False, "http:lease_conflict"),
+        (503, "storage_unavailable", True, "http:server_error"),
     ],
 )
-def test_api_http_classification_is_closed(status: int, code: str, retryable: bool) -> None:
+def test_api_http_classification_has_only_an_allowlisted_category(
+    status: int, code: str, retryable: bool, diagnostic: str
+) -> None:
     def opener(_request, *, timeout: float):
         raise HTTPError(
             "https://worker.example.test/internal?token=secret", status, "x", {}, io.BytesIO()
@@ -289,7 +293,11 @@ def test_api_http_classification_is_closed(status: int, code: str, retryable: bo
             "claim", {}
         )
 
-    assert (raised.value.code, raised.value.retryable) == (code, retryable)
+    assert (raised.value.code, raised.value.retryable, raised.value.diagnostic) == (
+        code,
+        retryable,
+        diagnostic,
+    )
 
 
 def test_preview_upload_uses_exact_put_content_type_and_bounded_response(tmp_path: Path) -> None:

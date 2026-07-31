@@ -35,6 +35,11 @@ _CONTRACT_ERROR_DIAGNOSTICS = {
     "unsupported claimed job": "ContractError: unsupported claimed job",
     "unsupported processor type": "ContractError: unsupported processor type",
 }
+_HTTP_ERROR_DIAGNOSTICS = {
+    401: "http:unauthorized",
+    403: "http:unauthorized",
+    409: "http:lease_conflict",
+}
 
 
 class Response(Protocol):
@@ -321,12 +326,23 @@ def _header(headers: Any, name: str) -> str:
 
 def _api_error(status: int) -> ApiError:
     if status in {401, 403}:
-        return ApiError("worker_unauthorized", retryable=False)
+        return ApiError(
+            "worker_unauthorized", retryable=False, diagnostic=_http_error_diagnostic(status)
+        )
     if status == 409:
-        return ApiError("lease_not_current", retryable=False)
+        return ApiError(
+            "lease_not_current", retryable=False, diagnostic=_http_error_diagnostic(status)
+        )
     if status >= 500:
-        return ApiError("storage_unavailable", retryable=True)
-    return ApiError("invalid_api_response", retryable=False)
+        return ApiError("storage_unavailable", retryable=True, diagnostic="http:server_error")
+    return ApiError(
+        "invalid_api_response", retryable=False, diagnostic="http:unexpected_client_status"
+    )
+
+
+def _http_error_diagnostic(status: int) -> str:
+    """Return a static HTTP category without exposing a status body or request data."""
+    return _HTTP_ERROR_DIAGNOSTICS.get(status, "http:unexpected_client_status")
 
 
 def _contract_error_diagnostic(error: ContractError) -> str:

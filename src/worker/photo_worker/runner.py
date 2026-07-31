@@ -407,18 +407,18 @@ class Worker:
                     time.sleep(self._next_poll_delay_seconds)
                     continue
                 if not error.retryable:
-                    if error.diagnostic is not None and self._last_claim_identity is not None:
+                    if self._last_claim_identity is not None:
                         contract_version, processor_type, processor_version = (
                             self._last_claim_identity
                         )
                         LOGGER.error(
                             "worker_stopped code=%s contract_version=%s processor_type=%s "
-                            "processor_version=%s contract_error=%s",
+                            "processor_version=%s failure_category=%s",
                             error.code,
                             contract_version,
                             processor_type,
                             processor_version,
-                            error.diagnostic,
+                            error.diagnostic or "api:unclassified",
                         )
                     else:
                         LOGGER.error("worker_stopped code=%s", error.code)

@@ -229,6 +229,22 @@ diagnostics() {
     compose logs --tail=100 web nginx || true
 }
 
+worker_runtime_diagnostics() {
+    echo "Worker runtime verification diagnostics:" >&2
+    compose_with_requested_processing_profile ps || true
+    if [ -n "${worker_container:-}" ]; then
+        docker inspect \
+            --format 'worker_state={{.State.Status}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} restart_count={{.RestartCount}}' \
+            "$worker_container" 2>&1 || true
+    fi
+    compose_with_requested_processing_profile logs --tail=100 worker || true
+}
+
+fail_worker_runtime_verification() {
+    worker_runtime_diagnostics
+    fail "Requested deployment failed worker runtime verification"
+}
+
 requested_env_tmp=""
 recovery_env_tmp=""
 previous_env_tmp=""
@@ -573,7 +589,7 @@ done
 if [ "$requested_processing_enabled" = True ]; then
     worker_container="$(compose_with_requested_processing_profile ps -q worker)"
     if [ -z "$worker_container" ]; then
-        fail "Requested deployment failed worker runtime verification"
+        fail_worker_runtime_verification
     fi
     attempt=1
     max_worker_attempts=3
@@ -590,16 +606,16 @@ if [ "$requested_processing_enabled" = True ]; then
         worker_restart_count="${worker_state_tail#* }"
         case "$worker_restart_count" in
             ''|*[!0-9]*)
-                fail "Requested deployment failed worker runtime verification"
+                fail_worker_runtime_verification
                 ;;
         esac
         if [ "$worker_running" != true ] || [ "$worker_restarting" != false ]; then
-            fail "Requested deployment failed worker runtime verification"
+            fail_worker_runtime_verification
         fi
         if [ -z "$initial_restart_count" ]; then
             initial_restart_count="$worker_restart_count"
         elif [ "$worker_restart_count" != "$initial_restart_count" ]; then
-            fail "Requested deployment failed worker runtime verification"
+            fail_worker_runtime_verification
         fi
         if [ "$attempt" -lt "$max_worker_attempts" ]; then
             sleep 2

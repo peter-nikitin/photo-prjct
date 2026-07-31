@@ -755,6 +755,10 @@ def test_enabled_processing_rejects_a_worker_that_is_crash_looping_after_compose
     assert result.returncode != 0
     assert "worker runtime verification" in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert any(
+        "--profile worker" in command and "logs --tail=100 worker" in command
+        for command in _apply_log(tmp_path)
+    )
 
 
 @pytest.mark.parametrize(

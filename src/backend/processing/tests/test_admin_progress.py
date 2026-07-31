@@ -29,26 +29,19 @@ class AdminProcessingProgressTests(TestCase):
             city="Moscow",
         )
 
-    def create_run(self, *, status: str = "collecting") -> EventProcessingRun:
+    def create_run(self, processor_type: str) -> EventProcessingRun:
         return EventProcessingRun.objects.create(
             event=self.event,
             contract_version=1,
-            processor_type="capture_metadata",
+            processor_type=processor_type,
             processor_version=1,
             configuration={},
-            configuration_hash="a" * 64,
-            status=status,
+            configuration_hash=(processor_type[0] * 64),
+            status="collecting",
         )
 
-    def create_job(
-        self,
-        run: EventProcessingRun,
-        suffix: str,
-        *,
-        status: str,
-        claimed_at: datetime | None = None,
-    ) -> ProcessingJob:
-        photo = Photo.objects.create(
+    def create_photo(self, suffix: str) -> Photo:
+        return Photo.objects.create(
             id=f"progress-{suffix}",
             event=self.event,
             src="",
@@ -59,6 +52,15 @@ class AdminProcessingProgressTests(TestCase):
             original_content_type="image/jpeg",
             uploaded_at=timezone.now(),
         )
+
+    def create_job(
+        self,
+        run: EventProcessingRun,
+        photo: Photo,
+        *,
+        status: str,
+        claimed_at: datetime | None = None,
+    ) -> ProcessingJob:
         return ProcessingJob.objects.create(
             event=self.event,
             run=run,
@@ -82,54 +84,61 @@ class AdminProcessingProgressTests(TestCase):
         self.client.force_login(self.staff)
         self.assertEqual(self.client.get(reverse("admin_processing_progress")).status_code, 200)
 
-    def test_displays_current_counts_and_finish_estimate(self) -> None:
+    def test_displays_one_event_row_with_common_distinct_photo_total(self) -> None:
+        preview = self.create_run("generate_preview")
+        embedding = self.create_run("face_embedding")
+        metadata = self.create_run("capture_metadata")
+        first, second = self.create_photo("first"), self.create_photo("second")
+        self.create_job(preview, first, status="succeeded")
+        self.create_job(embedding, first, status="succeeded")
+        self.create_job(metadata, first, status="succeeded")
+        self.create_job(preview, second, status="queued")
+        self.client.force_login(self.staff)
+
+        response = self.client.get(reverse("admin_processing_progress"))
+
+        self.assertContains(response, "Processing event", count=1)
+        self.assertContains(response, "Total photos: 2")
+        self.assertContains(response, "Preview")
+        self.assertContains(response, "Embedding")
+        self.assertContains(response, "Metadata")
+        self.assertContains(response, "In progress")
+
+    def test_marks_event_completed_only_when_every_worker_completed_common_total(self) -> None:
+        photos = [self.create_photo(suffix) for suffix in ("one", "two")]
+        for processor_type in ("generate_preview", "face_embedding", "capture_metadata"):
+            run = self.create_run(processor_type)
+            for photo in photos:
+                self.create_job(run, photo, status="succeeded")
+        self.client.force_login(self.staff)
+
+        response = self.client.get(reverse("admin_processing_progress"))
+
+        row = response.context["rows"][0]
+        self.assertEqual(row["status"], "Completed")
+        self.assertEqual([worker["status"] for worker in row["workers"]], ["Completed"] * 3)
+
+    def test_displays_worker_own_eta_for_one_claimed_job(self) -> None:
         now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
-        run = self.create_run()
-        for suffix in ("queued-one", "queued-two", "queued-three"):
-            self.create_job(run, suffix, status="queued")
-        self.create_job(
-            run,
-            "processing",
-            status="processing",
-            claimed_at=now - timedelta(minutes=10),
-        )
-        for suffix in ("retry-one", "retry-two"):
-            self.create_job(run, suffix, status="retry_wait")
-        for suffix in ("succeeded-one", "succeeded-two"):
-            self.create_job(run, suffix, status="succeeded")
-        self.create_job(run, "failed", status="failed")
-        self.create_job(run, "cancelled", status="cancelled")
+        preview = self.create_run("generate_preview")
+        first, second = self.create_photo("first"), self.create_photo("second")
+        self.create_job(preview, first, status="processing", claimed_at=now - timedelta(minutes=10))
+        self.create_job(preview, second, status="queued")
         self.client.force_login(self.staff)
 
         with patch("processing.admin_progress.timezone.now", return_value=now):
             response = self.client.get(reverse("admin_processing_progress"))
 
-        self.assertContains(response, "Processing event")
-        self.assertContains(response, "capture_metadata v1")
-        self.assertContains(response, "collecting")
-        self.assertContains(response, "Total: 10")
-        for status, count in {
-            "queued": 3,
-            "processing": 1,
-            "retry_wait": 2,
-            "succeeded": 2,
-            "failed": 1,
-            "cancelled": 1,
-        }.items():
-            self.assertContains(response, f"{status}: {count}")
-        self.assertContains(response, "Processed: 4")
-        self.assertContains(response, "Remaining: 6")
-        self.assertContains(response, "2026-07-31 13:00 UTC")
+        self.assertContains(response, "0 / 2")
+        self.assertContains(response, "Processing")
+        self.assertContains(response, "2026-07-31 12:20 UTC")
 
-    def test_displays_unavailable_or_completed_eta(self) -> None:
-        queued_run = self.create_run()
-        self.create_job(queued_run, "queued-only", status="queued")
-        closed_run = self.create_run()
-        self.create_job(closed_run, "closed", status="succeeded")
-        EventProcessingRun.objects.filter(pk=closed_run.pk).update(status="closed")
+    def test_embedding_waits_for_incomplete_preview_when_it_has_no_work(self) -> None:
+        preview = self.create_run("generate_preview")
+        photo = self.create_photo("waiting")
+        self.create_job(preview, photo, status="queued")
         self.client.force_login(self.staff)
 
         response = self.client.get(reverse("admin_processing_progress"))
 
-        self.assertContains(response, "—")
-        self.assertContains(response, "Completed")
+        self.assertContains(response, "Waiting for preview", count=2)

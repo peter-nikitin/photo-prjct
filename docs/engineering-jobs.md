@@ -185,9 +185,10 @@ Repository automation requires an explicit mutation flag, an approved bucket-nam
 unversioned bucket, collision-free preservation of existing lifecycle rules, exact readback, and
 automatic restoration after a mismatch. A separate explicit real-storage preflight checks the
 bounded `selfie-search/` lifecycle and performs one generated put/head/grant/delete cycle with
-sanitized markers and cleanup on failure. Automated tests validate these contracts. No live bucket,
-lifecycle document, IAM permission, scratch object, staging environment, or feature flag was
-changed or validated.
+sanitized markers and cleanup on failure. Automated tests validate these contracts. On 2026-07-31,
+staging applied the one-day `selfie-search/` lifecycle rule while preserving the existing preview
+rule; the real-bucket preflight passed its put/head/grant/delete markers, and the feature was then
+enabled. This is staging-only evidence; production remains unactivated.
 
 - Status: Validated
 - Evidence: [`src/backend/selfie_search/management/commands/configure_selfie_search_lifecycle.py`](../src/backend/selfie_search/management/commands/configure_selfie_search_lifecycle.py), [`src/backend/selfie_search/management/commands/verify_selfie_search_storage.py`](../src/backend/selfie_search/management/commands/verify_selfie_search_storage.py), [`src/backend/selfie_search/tests/test_configure_lifecycle_command.py`](../src/backend/selfie_search/tests/test_configure_lifecycle_command.py), and [`src/backend/selfie_search/tests/test_storage_contract_command.py`](../src/backend/selfie_search/tests/test_storage_contract_command.py)
@@ -216,4 +217,4 @@ This log is append-only.
 | 2026-07-19 | EJ-011 | Validated | Validated | Clarified boundary: automated tests cover candidate pull failure, no-row skip, successful one-byte read/close, sanitized storage construction/open failures with pre-promotion state preserved, and promotion-fault temporary-file cleanup; empty-read/read-exception/close-exception paths and live activation are not claimed. |
 | 2026-07-19 | EJ-011 | Validated | Validated | Fresh unprovisioned deployments now skip the unavailable ORM gate based on absence of the successful `deployed-image` marker; established deployments retain the fail-closed database/no-row/storage gate, and neither skip is live `GetObject` evidence. |
 | 2026-07-25 | EJ-010 | Candidate | Candidate | Local clone automation now enforces a serialized local-Docker-only replacement, quiesces the normal web service, retains safety/diagnostic artifacts, and has isolated PostgreSQL 16 plus real-Django restored-schema evidence for migration readiness without startup mutations. This is partial local evidence only; scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill remain unestablished. |
-| 2026-07-31 | EJ-012 | Not recorded | Validated | Automated command tests verify explicit confirmation, exact lifecycle preservation/readback/recovery, unversioned-bucket enforcement, bounded-prefix preflight, generated scratch-object cleanup, and sanitized output. This is repository evidence only; no live storage or environment activation is claimed. |
+| 2026-07-31 | EJ-012 | Not recorded | Validated | Automated command tests verify explicit confirmation, exact lifecycle preservation/readback/recovery, unversioned-bucket enforcement, bounded-prefix preflight, generated scratch-object cleanup, and sanitized output. Staging additionally applied the one-day `selfie-search/` rule without changing the preview rule, then passed real-bucket put/head/grant/delete preflight before feature enablement. Production is not activated. |

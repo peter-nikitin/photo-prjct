@@ -5,7 +5,7 @@
 > implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 - Date: 2026-07-30
-- Status: Approved
+- Status: Implemented and staging-activated; production not activated
 - Owner: project maintainer
 - Related specification:
   [`Public Selfie Search Design`](../superpowers/specs/2026-07-30-public-selfie-search-design.md)
@@ -468,6 +468,20 @@ Delivery additionally requires:
   outside this delivery unless a current critical-path failure brought it back into scope.
 - [ ] Record the explicit outcome: implementation conforms to ADR 0019 and supersedes no further
   ADR.
+
+## Staging activation evidence — 2026-07-31
+
+Branch `c62508a` was deployed to staging with `SELFIE_SEARCH_ENABLED=True`; the repository default
+remains `False`. The unversioned staging bucket has a one-day `selfie-search/` lifecycle rule while
+its existing preview rule remains unchanged. Real-storage preflight passed sanitized
+put/head/grant/delete markers. Six legacy face-embedding jobs succeeded and produced four accepted
+embeddings for the representative published event. A live selfie upload on its Unicode route
+reached a stable ready bearer URL with the expected `03eb` result; cleanup set
+`cleanup_confirmed_at`, cleared the temporary key, and left the bucket prefix empty. Result media
+was 4,665,407 bytes, equal to the original; for a temporary paid-event check normal media returned
+404 while bearer-result media returned 200, after which the event was restored to free. The existing
+worker ran at concurrency one with a 2 GiB limit, 84–91 MiB RSS, and no OOM. Production activation
+is outside this evidence and remains disabled.
 
 ## Verification
 

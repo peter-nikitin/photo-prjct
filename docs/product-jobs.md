@@ -119,11 +119,13 @@ one event, so I can review probable matches.
   deterministic gallery fixtures cover both face generations, including a verified preview
   publication and production enrollment into `2/face_embedding/2`. The evidence covers event
   isolation, probable matches, selfie cleanup, stable results, and the narrow paid-result media
-  exception. The feature
-  remains disabled by default and has not passed its real-bucket lifecycle/preflight, container
-  rollout-image model-smoke, staging smoke, or VM-capacity activation gates, so it is not yet
-  delivered in the
-  product.
+  exception. The repository default remains disabled, but staging deployed branch `c62508a` with
+  the feature enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
+  put/head/grant/delete preflight passed; six legacy face jobs produced four accepted event
+  embeddings; and a live Unicode event upload reached a stable ready bearer URL with the expected
+  original. The temporary selfie was deleted before publication, including from the bucket prefix.
+  A temporary paid-event check kept normal media denied while bearer-result media succeeded.
+  This is staging evidence only; production is not activated.
 - Last updated: 2026-07-31
 
 ### PJ-009 — Visitor — Receive a free-event original
@@ -176,4 +178,4 @@ This log is append-only.
 | 2026-07-19 | PJ-005 | Validated | Validated | Clarified evidence: automated page, eligibility, and markup tests plus Task 6's passing interaction and inspected snapshot evidence support validation; complete current-HEAD visual evidence awaits PR CI after a local Docker/`networkidle` timeout. |
 | 2026-07-19 | PJ-005 | Validated | Validated | PR #45 CI run 29693681091 supplied the pending current-HEAD evidence: all 44 visual tests passed for `7d6a718`; the earlier local Docker/`networkidle` timeout remains an infrastructure-only boundary, not passing evidence. |
 | 2026-07-19 | PJ-005 | Validated | Validated | Provenance correction: PR #45 CI run 29693681091 passed all 44 visual tests for the CI-tested implementation commit `7d6a718`; later docs-only evidence commits were not included in that run. |
-| 2026-07-31 | PJ-008 | Candidate | In progress | The accepted ADR and plan now have a locally verified public event-scoped implementation, including a real YuNet/SFace end-to-end run and 56 passing visual tests. Default-disabled staging activation gates remain unexecuted, so the job is not marked Delivered. |
+| 2026-07-31 | PJ-008 | Candidate | In progress | The accepted ADR and plan have a locally verified public event-scoped implementation and staging activation on `c62508a`: lifecycle/preflight passed, representative face embeddings were accepted, and a live Unicode event selfie reached a stable ready bearer result with cleanup and original-size media verified. Paid-result media remained available only through its bearer result. Production is not activated. |

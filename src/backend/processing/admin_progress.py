@@ -1,97 +1,137 @@
-from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import TypedDict
 
 from django.contrib.admin.views.decorators import staff_member_required
-from django.db.models import Case, Count, IntegerField, Value, When
 from django.shortcuts import render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 from picflow.models import Event
 
-from processing.models import EventProcessingRun, ProcessingJob
+from processing.models import ProcessingJob
 
-
-class ProcessingRunRow(TypedDict):
-    event: Event
-    event_admin_url: str
-    processor: str
-    status: str
-    total: int
-    counts: dict[str, int]
-    processed: int
-    remaining: int
-    eta: str
-
-
-STATUSES = tuple(ProcessingJob.Status.values)
-TERMINAL_STATUSES = (
+PROCESSORS = (
+    ("generate_preview", "Preview"),
+    ("face_embedding", "Embedding"),
+    ("capture_metadata", "Metadata"),
+)
+TERMINAL_STATUSES = {
     ProcessingJob.Status.SUCCEEDED,
     ProcessingJob.Status.FAILED,
     ProcessingJob.Status.CANCELLED,
-)
-REMAINING_STATUSES = (
-    ProcessingJob.Status.QUEUED,
-    ProcessingJob.Status.PROCESSING,
-    ProcessingJob.Status.RETRY_WAIT,
-)
+}
+RUNNABLE_STATUSES = {ProcessingJob.Status.QUEUED, ProcessingJob.Status.RETRY_WAIT}
+REMAINING_STATUSES = RUNNABLE_STATUSES | {ProcessingJob.Status.PROCESSING}
 
 
-def _eta(
-    run: EventProcessingRun, processing_jobs: Iterable[ProcessingJob], remaining: int, now: datetime
-) -> str:
-    if run.status == EventProcessingRun.Status.CLOSED:
-        return "Completed"
+class WorkerSummary(TypedDict):
+    name: str
+    completed: int
+    total: int
+    status: str
+    eta: str
+    remaining: int
 
-    current_jobs = list(processing_jobs)
-    if len(current_jobs) != 1 or current_jobs[0].claimed_at is None:
+
+class EventSummaryRow(TypedDict):
+    event: Event
+    event_admin_url: str
+    total: int
+    status: str
+    workers: list[WorkerSummary]
+
+
+def _worker_eta(current_jobs: list[ProcessingJob], remaining: int, now: datetime) -> str:
+    if len(current_jobs) != 1:
         return "—"
 
     elapsed = max(now - current_jobs[0].claimed_at, timedelta())
     return f"{(now + elapsed * remaining).strftime('%Y-%m-%d %H:%M')} UTC"
 
 
+def _worker_summary(
+    *,
+    name: str,
+    jobs: list[ProcessingJob],
+    total: int,
+    preview_remaining: int,
+    is_embedding: bool,
+    now: datetime,
+) -> WorkerSummary:
+    completed = sum(job.status in TERMINAL_STATUSES for job in jobs)
+    remaining = sum(job.status in REMAINING_STATUSES for job in jobs)
+    current_jobs = [
+        job
+        for job in jobs
+        if job.status == ProcessingJob.Status.PROCESSING and job.claimed_at is not None
+    ]
+    runnable = any(job.status in RUNNABLE_STATUSES for job in jobs)
+    is_completed = completed == total and remaining == 0
+
+    if is_completed:
+        status, eta = "Completed", "Completed"
+    elif len(current_jobs) == 1:
+        status, eta = "Processing", _worker_eta(current_jobs, remaining, now)
+    elif runnable:
+        status, eta = "Queued", "—"
+    elif is_embedding and preview_remaining:
+        status, eta = "Waiting for preview", "Waiting for preview"
+    else:
+        status, eta = "Not started", "—"
+
+    return {
+        "name": name,
+        "completed": completed,
+        "total": total,
+        "status": status,
+        "eta": eta,
+        "remaining": remaining,
+    }
+
+
 @require_GET
 @staff_member_required
 def admin_processing_progress(request):
     now = timezone.now()
-    runs = EventProcessingRun.objects.select_related("event").order_by(
-        Case(
-            When(status=EventProcessingRun.Status.CLOSED, then=Value(1)),
-            default=Value(0),
-            output_field=IntegerField(),
-        ),
-        "-created_at",
-    )
-    rows: list[ProcessingRunRow] = []
-    for run in runs:
-        counts = {status: 0 for status in STATUSES}
-        counts.update(
-            {
-                row["status"]: row["count"]
-                for row in run.jobs.values("status").annotate(count=Count("id"))
-                if row["status"] in counts
-            }
+    jobs_by_event: dict[int, list[ProcessingJob]] = {}
+    events: dict[int, Event] = {}
+    jobs = ProcessingJob.objects.filter(processor_type__in=dict(PROCESSORS)).select_related("event")
+    for job in jobs:
+        jobs_by_event.setdefault(job.event_id, []).append(job)
+        events[job.event_id] = job.event
+
+    rows: list[EventSummaryRow] = []
+    for event_id, event_jobs in jobs_by_event.items():
+        total = len({job.photo_id for job in event_jobs})
+        jobs_by_processor = {
+            processor_type: [job for job in event_jobs if job.processor_type == processor_type]
+            for processor_type, _ in PROCESSORS
+        }
+        preview_remaining = sum(
+            job.status in REMAINING_STATUSES for job in jobs_by_processor["generate_preview"]
         )
-        processed = sum(counts[status] for status in TERMINAL_STATUSES)
-        remaining = sum(counts[status] for status in REMAINING_STATUSES)
+        workers = [
+            _worker_summary(
+                name=name,
+                jobs=jobs_by_processor[processor_type],
+                total=total,
+                preview_remaining=preview_remaining,
+                is_embedding=processor_type == "face_embedding",
+                now=now,
+            )
+            for processor_type, name in PROCESSORS
+        ]
+        event_completed = all(
+            worker["completed"] == total and worker["remaining"] == 0 for worker in workers
+        )
         rows.append(
             {
-                "event": run.event,
-                "event_admin_url": reverse("admin:picflow_event_change", args=[run.event_id]),
-                "processor": f"{run.processor_type} v{run.processor_version}",
-                "status": run.status,
-                "total": sum(counts.values()),
-                "counts": counts,
-                "processed": processed,
-                "remaining": remaining,
-                "eta": _eta(
-                    run,
-                    run.jobs.filter(status=ProcessingJob.Status.PROCESSING).only("claimed_at"),
-                    remaining,
-                    now,
-                ),
+                "event": events[event_id],
+                "event_admin_url": reverse("admin:picflow_event_change", args=[event_id]),
+                "total": total,
+                "status": "Completed" if event_completed else "In progress",
+                "workers": workers,
             }
         )
-    return render(request, "processing/admin_progress.html", {"rows": rows, "statuses": STATUSES})
+
+    return render(request, "processing/admin_progress.html", {"rows": rows})

@@ -39,6 +39,19 @@ assert_no_referrer_header() {
     fi
 }
 
+assert_same_origin_referrer_header() {
+    header_file="$1"
+
+    if ! tr -d '\r' < "$header_file" | grep -Eiq '^Referrer-Policy:[[:space:]]*same-origin$'; then
+        echo "response did not retain Referrer-Policy: same-origin" >&2
+        exit 1
+    fi
+    if tr -d '\r' < "$header_file" | grep -Eiq '^Referrer-Policy:.*no-referrer'; then
+        echo "response retained a conflicting Referrer-Policy" >&2
+        exit 1
+    fi
+}
+
 request_status() {
     header_file="$1"
     request_host="$2"
@@ -115,6 +128,7 @@ exercise_bearer_error_logging() {
         docker logs "$runtime_container" >&2 || true
         exit 1
     fi
+    assert_same_origin_referrer_header "$non_bearer_headers"
 
     if [ -n "$alias" ]; then
         alias_headers="$runtime_log_dir/alias.headers"
@@ -123,7 +137,7 @@ exercise_bearer_error_logging() {
             echo "$name alias bearer redirect returned $alias_status instead of 308" >&2
             exit 1
         fi
-        if ! tr -d '\r' < "$alias_headers" | grep -Fqx "Location: https://findme-photo.ru$bearer_path"; then
+        if ! tr -d '\r' < "$alias_headers" | grep -Fxiq "Location: https://findme-photo.ru$bearer_path"; then
             echo "$name alias bearer redirect changed its canonical target" >&2
             exit 1
         fi
@@ -177,14 +191,10 @@ validate_variant() {
     grep -Fq '"$request_method <selfie-search>"' "$rendered"
     grep -Fq 'log_format selfie_search_safe' "$rendered"
     grep -Fq 'proxy_hide_header Referrer-Policy;' "$rendered"
+    grep -Fq 'add_header Referrer-Policy "same-origin" always;' "$rendered"
     grep -Fq 'add_header Referrer-Policy "no-referrer" always;' "$rendered"
     grep -Fq 'location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {' "$rendered"
     grep -Fq 'error_log /dev/null emerg;' "$rendered"
-    if grep -Fq 'add_header Referrer-Policy "same-origin" always;' "$rendered"; then
-        echo "$name retained a conflicting Referrer-Policy" >&2
-        exit 1
-    fi
-
     expected_access_logs=5
     expected_bearer_error_logs=1
     if [ -n "$alias" ]; then

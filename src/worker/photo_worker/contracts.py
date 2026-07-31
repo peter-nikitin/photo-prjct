@@ -14,6 +14,7 @@ CONTRACT_VERSION = 1
 PROCESSOR_TYPE = "capture_metadata"
 PROCESSOR_VERSION = 1
 PROCESSOR_TYPE_FACE_EMBEDDING = "face_embedding"
+PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK = "face_embedding_benchmark"
 PROCESSOR_VERSION_FACE_EMBEDDING = 1
 PREVIEW_CONTRACT_VERSION = 2
 PROCESSOR_TYPE_GENERATE_PREVIEW = "generate_preview"
@@ -101,6 +102,16 @@ V2_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
     },
 }
+FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
+    **V2_FACE_EMBEDDING_CONFIGURATION,
+    "max_cohort_size": 500,
+    "benchmark": {
+        "label": "baseline",
+        "source_mode": "event",
+        "source_run_id": None,
+        "requested_count": 1,
+    },
+}
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _SELFIE_KEY = re.compile(r"selfie-search/[0-9a-f]{32}")
 _EXIF_FIELDS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
@@ -165,7 +176,7 @@ class InputFingerprint:
         }
         if not isinstance(value, dict) or not _bounded_json(value):
             raise ContractError("invalid input fingerprint")
-        if contract_version == CONTRACT_VERSION:
+        if contract_version in {CONTRACT_VERSION, 3}:
             if set(value) != fields:
                 raise ContractError("invalid input fingerprint")
             key = value["original_key"]
@@ -293,6 +304,7 @@ class ProcessorConfiguration:
             "face_embedding",
             "worker",
         }
+        expected_benchmark = expected_face | {"benchmark"}
         expected_preview = {
             "retry_policy",
             "max_cohort_size",
@@ -323,6 +335,12 @@ class ProcessorConfiguration:
             preview_config = None
             selfie_config = None
             configuration_kind = "face_embedding"
+        elif set(value) == expected_benchmark:
+            capture = None
+            face_config = value["face_embedding"]
+            preview_config = None
+            selfie_config = None
+            configuration_kind = "face_embedding_benchmark"
         elif set(value) == expected_preview:
             capture = None
             face_config = None
@@ -383,6 +401,18 @@ class ProcessorConfiguration:
             and worker["max_pixels"] <= MAX_PIXELS_CAP
             and _positive_int(worker["terminal_result_max_bytes"])
             and worker["terminal_result_max_bytes"] <= worker["api_response_max_bytes"]
+        ):
+            raise ContractError("invalid processor configuration")
+
+        benchmark = value.get("benchmark")
+        if configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK and not (
+            isinstance(benchmark, dict)
+            and set(benchmark) == {"label", "source_mode", "source_run_id", "requested_count"}
+            and _safe_string(benchmark["label"], maximum=64)
+            and benchmark["source_mode"] in {"event", "replay"}
+            and (benchmark["source_run_id"] is None or _uuid_string(benchmark["source_run_id"]))
+            and _positive_int(benchmark["requested_count"])
+            and benchmark["requested_count"] <= 500
         ):
             raise ContractError("invalid processor configuration")
 
@@ -654,6 +684,7 @@ class ClaimedJob:
                     PROCESSOR_TYPE_FACE_EMBEDDING,
                     PROCESSOR_VERSION_FACE_EMBEDDING,
                 ),
+                (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
                 (
                     PREVIEW_CONTRACT_VERSION,
                     PROCESSOR_TYPE_GENERATE_PREVIEW,
@@ -669,6 +700,10 @@ class ClaimedJob:
                 (
                     identity == (CONTRACT_VERSION, PROCESSOR_TYPE, PROCESSOR_VERSION)
                     and configuration.configuration_kind == PROCESSOR_TYPE
+                )
+                or (
+                    identity == (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1)
+                    and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK
                 )
                 or (
                     identity
@@ -926,6 +961,8 @@ def _processor_version(processor_type: str, contract_version: int = CONTRACT_VER
             if contract_version == PREVIEW_CONTRACT_VERSION
             else PROCESSOR_VERSION_FACE_EMBEDDING
         )
+    if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
+        return 1
     if (
         processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW
         and contract_version == PREVIEW_CONTRACT_VERSION

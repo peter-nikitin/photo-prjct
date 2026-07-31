@@ -1,8 +1,8 @@
 # Sizing the preview-first photo-processing worker VM
 
 This document defines the evidence required before a supervised preview-first worker check. It does
-not assert that any current VM is adequate and does not authorize a Yandex Cloud resize, VM
-creation, or real-environment worker activation.
+not authorize a Yandex Cloud resize, VM creation, production capacity decision, or real-environment
+worker activation beyond the staged configuration below.
 
 ## What is known, and what is not
 
@@ -13,40 +13,27 @@ verifies/publishes it. Preview-backed `face_embedding` separately decodes that p
 Django and PostgreSQL hold only short queue transactions.
 
 The deployed Compose stack contains Nginx, Django/Gunicorn, and PostgreSQL. The worker is opt-in
-locally and has a disabled-by-default, resource-bounded profile in staging deployment
-configuration; the production workflow does not forward worker activation inputs. The inventory
-historically describes the current staging host as the weakest, preemptible VM, but its exact CPU,
-RAM, disk, platform, and stable resource IDs are unverified.
+and resource-bounded in staging configuration; the production workflow does not forward worker
+activation inputs. Read-only Yandex Cloud discovery recorded the current staging VM as **8 vCPU and
+32 GiB RAM**. That inventory fact does not establish disk headroom, sustainable throughput, or a
+production capacity decision.
 
-Live discovery was unavailable for this assessment because the `yc` CLI is not installed in the
-execution environment. Do not infer actual VM configuration from this document. Before a later
-operation, use read-only discovery with an explicit folder ID and without `yc config list`, which
-can expose credentials:
-
-```sh
-yc config profile list
-yc config get cloud-id
-yc config get folder-id
-yc compute instance list --folder-id <verified-folder-id> --format json
-yc compute disk list --folder-id <verified-folder-id> --format json
-```
-
-## Starting configurations
+## Staged staging configuration
 
 | Use | VM | Disk | Worker container limits | Scope |
 | --- | --- | --- | --- | --- |
-| Supervised manual measurement hypothesis | 2 vCPU, 4 GiB RAM | 30 GiB network SSD, with at least 15 GiB free after PostgreSQL data and images | `cpus: 0.75`, `mem_limit: 512m`, `pids_limit: 64` | One representative event, concurrency 1, operator present. |
-| First preview-first measurement hypothesis | 4 vCPU, 8 GiB RAM | 50 GiB network SSD, with at least 20 GiB free after image, database, and log growth | `cpus: 1.0`, `mem_limit: 768m`, `pids_limit: 64` | One representative event, concurrency 1. |
+| Initial face-worker baseline | Verified staging host: 8 vCPU, 32 GiB RAM | Verify free space before activation; no disk-capacity claim is made here. | `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64` | `PHOTO_WORKER_REPLICAS=1`, one representative event and the frozen benchmark cohort. |
+| Staged second replica | Same verified staging host | Re-check free space and Docker image growth during the two-worker run. | Two independent workers, each `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64`. | Set `PHOTO_WORKER_REPLICAS=2` only after the gate below passes. |
 
-These are measurement hypotheses, not a capacity decision or a promise of performance. The 2 vCPU
-option is only a supervised local/staging measurement option. Do not activate preview processing on
-a VM merely because its nominal shape matches either row.
+These are staged measurement configurations, not a capacity decision or a promise of performance.
+The deployment default is one worker; setting a staging variable to two is a deliberate follow-up
+operation, not an automatic consequence of a 32-GiB host.
 
-The limit values are deliberately below the VM total so that a worker fault is constrained and
-memory/CPU remain for the existing stack. The 50 MiB temporary input limit does not by itself set
-disk size: the disk must also accommodate Docker images, PostgreSQL's volume, logs, and deployment
-headroom. The disabled-by-default staging profile declares these limits, but an operator must not
-enable it before the measurements and gates below are satisfied.
+The limit values leave memory and CPU for the existing stack while containing a face-model OOM to
+one worker. The 50 MiB temporary input limit does not by itself set disk size: the disk must also
+accommodate Docker images, PostgreSQL's volume, logs, and deployment headroom. The staging profile
+declares these limits, but an operator must not enable it before the measurements and gates below
+are satisfied.
 
 ## Required preview-first measurement procedure
 
@@ -61,7 +48,7 @@ samples (five minutes) and stop early only when the PostgreSQL count of non-succ
 reaches zero:
 
 ```sh
-PHOTO_WORKER_PROCESSOR_IDENTITIES=2/generate_preview/1 docker compose --profile worker up --build -d worker
+PHOTO_WORKER_PROCESSOR_IDENTITIES=2/generate_preview/1 docker compose --profile worker up --scale worker=1 --build -d worker
 worker_container="$(docker compose --profile worker ps -q worker)"
 [ -n "$worker_container" ] || exit 1
 for sample in $(seq 1 300); do
@@ -83,7 +70,7 @@ Then start a new worker with only `2/face_embedding/2`. Stop it after the final 
 do not allow the preview worker to keep polling during this phase:
 
 ```sh
-PHOTO_WORKER_PROCESSOR_IDENTITIES=2/face_embedding/2 docker compose --profile worker up --build -d worker
+PHOTO_WORKER_PROCESSOR_IDENTITIES=2/face_embedding/2 docker compose --profile worker up --scale worker=1 --build -d worker
 worker_container="$(docker compose --profile worker ps -q worker)"
 [ -n "$worker_container" ] || exit 1
 for sample in $(seq 1 300); do
@@ -127,12 +114,22 @@ measurement hypothesis; they are not evidence until actual values and artifacts 
 
 | Measure | Acceptance threshold |
 | --- | --- |
-| Worker RSS | Peak stays at or below 70% of its configured memory limit (358 MiB for manual, 538 MiB for recommended); no OOM kill or restart. |
+| Worker RSS | Peak stays at or below 70% of the 2 GiB per-worker limit (1.4 GiB); no OOM kill or restart. |
 | Host memory | At least 1 GiB `MemAvailable` throughout the run; zero swap-in and swap-out activity. |
 | CPU and disk | No sustained (>5 min) host CPU saturation above 85% or iowait above 10%; free disk never falls below the configuration's 15/20 GiB floor. |
 | Web path | Health probes keep succeeding and p95 request latency during the run stays no worse than twice the pre-run baseline. |
 | Worker path | No lease expiry, retry, or permanent failure for valid representative JPEGs; every preview is accepted, every face `2/2` job is queued afterwards, and both event runs close. |
 | Throughput | Record photos/minute and event wall-clock duration; no fixed target is accepted until a real representative cohort establishes a baseline. |
+
+### Replica 1 to 2 acceptance gate
+
+Keep `PHOTO_WORKER_REPLICAS=1` for the initial staging measurement. Move to
+`PHOTO_WORKER_REPLICAS=2` only after the immutable worker image completes the frozen benchmark
+cohort and its replay at one replica, then completes the same pair at two replicas with all of the
+following evidence: every expected worker remains running without restart or OOM kill, web health
+probes stay healthy, host memory/disk gates above hold, and the two-worker result records an
+improvement in cohort wall-clock time. If any condition fails, return the staging variable to `1`;
+the deployment transaction reconciles the previous replica count on a failed rollout.
 
 Also record worker CPU/RSS, temporary-disk high-water mark, Django/Gunicorn CPU/RSS, PostgreSQL
 connections/RSS/IO, Nginx request latency, original/preview bytes, per-stage latencies,

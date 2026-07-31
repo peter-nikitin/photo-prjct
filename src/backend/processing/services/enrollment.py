@@ -12,6 +12,7 @@ from picflow.models import Event, Photo
 
 from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
+    FACE_EMBEDDING_BENCHMARK_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     REPORT_JSON_MAX_BYTES,
@@ -27,6 +28,8 @@ FACE_EMBEDDING_PROCESSOR_VERSION = 1
 PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
 PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 2
+FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION = 3
+FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION = 1
 FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
 
 CAPTURE_METADATA_CONFIGURATION: dict[str, object] = {
@@ -84,6 +87,17 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "max_pixels": 100_000_000,
         "poll_min_delay_seconds": 5,
         "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
+    },
+}
+
+FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
+    **FACE_EMBEDDING_CONFIGURATION,
+    "max_cohort_size": 500,
+    "benchmark": {
+        "label": "baseline",
+        "source_mode": "event",
+        "source_run_id": None,
+        "requested_count": 1,
     },
 }
 
@@ -206,6 +220,84 @@ def request_generate_preview(
             and photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
         ),
     )
+
+
+def create_face_embedding_benchmark_run(
+    *,
+    event: Event,
+    photos: list[Photo],
+    label: str,
+    source_run_id: str | None,
+) -> EventProcessingRun:
+    """Create one isolated benchmark cohort without using generic reconciliation."""
+    if not photos or len(photos) > 500:
+        raise ValueError("benchmark cohort must contain between 1 and 500 photos")
+    if any(photo.event_id != event.id or not _is_eligible(photo) for photo in photos):
+        raise ValueError("benchmark cohort contains an ineligible photo")
+    if len({photo.pk for photo in photos}) != len(photos):
+        raise ValueError("benchmark cohort contains duplicate photos")
+    configuration = {
+        **FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
+        "benchmark": {
+            "label": label,
+            "source_mode": "replay" if source_run_id else "event",
+            "source_run_id": source_run_id,
+            "requested_count": len(photos),
+        },
+    }
+    configuration_hash = _configuration_hash(configuration)
+    with transaction.atomic():
+        locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        run = EventProcessingRun.objects.create(
+            event=locked_event,
+            contract_version=FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION,
+            processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
+            processor_version=FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
+        )
+        now = timezone.now()
+        for photo in photos:
+            state, _ = PhotoProcessingState.objects.select_for_update().get_or_create(
+                photo=photo,
+                processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
+                defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+            )
+            if state.status in {
+                PhotoProcessingState.Status.QUEUED,
+                PhotoProcessingState.Status.PROCESSING,
+                PhotoProcessingState.Status.RETRY_WAIT,
+            }:
+                raise ValueError("benchmark photo already has active benchmark work")
+            job = ProcessingJob.objects.create(
+                event=locked_event,
+                run=run,
+                photo=photo,
+                contract_version=FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION,
+                processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
+                processor_version=FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION,
+                configuration=configuration,
+                configuration_hash=configuration_hash,
+                input_fingerprint=_input_fingerprint(photo, verified_source_etag=None),
+            )
+            state.status = PhotoProcessingState.Status.QUEUED
+            state.current_run = run
+            state.current_job = job
+            state.current_attempt = None
+            state.accepted_attempt = None
+            state.queued_at = now
+            state.save(
+                update_fields=[
+                    "status",
+                    "current_run",
+                    "current_job",
+                    "current_attempt",
+                    "accepted_attempt",
+                    "queued_at",
+                    "updated_at",
+                ]
+            )
+    return run
 
 
 def request_processor(

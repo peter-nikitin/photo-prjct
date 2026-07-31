@@ -228,6 +228,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
             "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
         ),
+        "PHOTO_WORKER_REPLICAS": "${{ vars.PHOTO_WORKER_REPLICAS || '1' }}",
         "PHOTO_WORKER_PROCESSOR_TYPES": (
             "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
             "'selfie_query,face_embedding,capture_metadata,generate_preview' }}"

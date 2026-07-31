@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 from photo_worker.client import ApiError, DownloadError
 from photo_worker.contracts import (
+    FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
+    PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     V2_FACE_EMBEDDING_CONFIGURATION,
@@ -619,8 +621,9 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
         "1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2",
     )
     plural, _client = WorkerConfig.from_env()
-    monkeypatch.delenv("PHOTO_WORKER_PROCESSOR_TYPES")
     monkeypatch.delenv("PHOTO_WORKER_PROCESSOR_IDENTITIES")
+    product, _client = WorkerConfig.from_env()
+    monkeypatch.delenv("PHOTO_WORKER_PROCESSOR_TYPES")
     monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_TYPE", PROCESSOR_TYPE_FACE_EMBEDDING)
     singular, _client = WorkerConfig.from_env()
 
@@ -636,7 +639,60 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
         "2/generate_preview/1",
         "2/face_embedding/2",
     )
+    assert product.processor_types == (
+        PROCESSOR_TYPE_SELFIE_QUERY,
+        PROCESSOR_TYPE_FACE_EMBEDDING,
+        PROCESSOR_TYPE,
+        PROCESSOR_TYPE_GENERATE_PREVIEW,
+    )
     assert singular.processor_types == (PROCESSOR_TYPE_FACE_EMBEDDING,)
+
+
+def test_environment_benchmark_identity_is_authoritative_over_product_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv(
+        "PHOTO_WORKER_PROCESSOR_TYPES",
+        "selfie_query,face_embedding,capture_metadata,generate_preview",
+    )
+    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", "3/face_embedding_benchmark/1")
+
+    config, _client = WorkerConfig.from_env()
+    client = Client(Claim.empty(7))
+
+    assert Worker(client, config).run_once() == 7
+    assert client.claim_identities == [(3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1)]
+
+
+def test_environment_product_identity_preserves_product_type_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv(
+        "PHOTO_WORKER_PROCESSOR_TYPES",
+        "selfie_query,face_embedding,capture_metadata,generate_preview",
+    )
+    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", "1/capture_metadata/1")
+
+    config, _client = WorkerConfig.from_env()
+    client = Client(Claim.empty(7))
+
+    assert config.processor_types == (
+        PROCESSOR_TYPE_SELFIE_QUERY,
+        PROCESSOR_TYPE_FACE_EMBEDDING,
+        PROCESSOR_TYPE,
+        PROCESSOR_TYPE_GENERATE_PREVIEW,
+    )
+    assert Worker(client, config).run_once() == 7
+    assert client.claim_identities == [
+        (1, PROCESSOR_TYPE_SELFIE_QUERY, 1),
+        (1, PROCESSOR_TYPE_FACE_EMBEDDING, 1),
+        (1, PROCESSOR_TYPE, 1),
+        (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
+    ]
 
 
 def test_worker_processes_one_claim_then_submits_typed_result_and_removes_temp_file(
@@ -713,6 +769,68 @@ def test_worker_processes_face_embedding_claim_and_submits_typed_result(
     assert len(json.dumps(client.completed[0], separators=(",", ":")).encode()) <= 8_192
     assert list(tmp_path.iterdir()) == []
     assert "phase=succeeded" in caplog.text
+
+
+def test_worker_benchmark_runs_face_extraction_but_submits_metrics_only(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    caplog.set_level("INFO")
+    claim = Claim.from_response(
+        {
+            "empty": False,
+            "job": {
+                "id": "00000000-0000-0000-0000-000000000011",
+                "attempt_id": "00000000-0000-0000-0000-000000000012",
+                "contract_version": 3,
+                "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+                "processor_version": 1,
+                "configuration": FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
+                "photo_id": "photo-1",
+                "event_id": "00000000-0000-0000-0000-000000000013",
+                "run_id": "00000000-0000-0000-0000-000000000014",
+                "input_fingerprint": {
+                    "original_key": "originals/0123456789abcdef0123456789abcdef",
+                    "original_size": 1024,
+                    "original_content_type": "image/jpeg",
+                    "verified_source_etag": None,
+                    "version_evidence": "unavailable",
+                },
+                "input_limits": {"max_bytes": 1024, "content_type": "image/jpeg"},
+                "lease_expires_at": "2026-07-29T10:03:00+00:00",
+                "download_url": "https://storage.example.test/x?signature=secret",
+                "download_expires_at": "2026-07-29T10:01:00+00:00",
+            },
+        }
+    )
+    client = Client(claim)
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_face_embeddings",
+        lambda *_args, **_kwargs: make_face_embedding_result(),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_identities=("3/face_embedding_benchmark/1",),
+        ),
+    ).run_once()
+
+    assert client.completed[0]["result"] == {
+        "model": "sface",
+        "face_count": 1,
+        "warnings": [],
+        "timings": {
+            "decode_ms": 1,
+            "model_load_ms": 2,
+            "detect_ms": 3,
+            "embed_ms": 4,
+            "total_ms": 10,
+        },
+    }
+    assert "photo-1" not in caplog.text
 
 
 def test_worker_submits_preview_face_result_with_declared_geometry(
@@ -1090,6 +1208,36 @@ def test_non_retryable_api_error_stops_polling_without_sleep(
     worker.run_forever()
 
     assert sleeps == []
+
+
+def test_run_forever_immediately_claims_after_successful_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = Worker(
+        Client(Claim.empty(1)), WorkerConfig(worker_build="worker-test", lease_seconds=60)
+    )
+    outcomes = iter(
+        [
+            None,
+            None,
+            7,
+            ApiError("worker_unauthorized", retryable=False),
+        ]
+    )
+
+    def run_once() -> int | None:
+        outcome = next(outcomes)
+        if isinstance(outcome, ApiError):
+            raise outcome
+        return outcome
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(worker, "run_once", run_once)
+    monkeypatch.setattr("photo_worker.runner.time.sleep", sleeps.append)
+
+    worker.run_forever()
+
+    assert sleeps == [7.0]
 
 
 def test_nonretryable_claim_contract_error_logs_exact_identity_without_payload(

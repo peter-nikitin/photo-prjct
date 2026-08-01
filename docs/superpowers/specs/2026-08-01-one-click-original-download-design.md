@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed for review on 2026-08-01.
+Approved on 2026-08-01.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), current gallery-media
   delivery, public event-scoped selfie-search results, and proposed commerce boundary.

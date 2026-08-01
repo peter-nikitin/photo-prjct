@@ -88,6 +88,21 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
     return redirect(signed_url)
 
 
+@require_GET
+def photo_download(request, slug: str, photo_id: str) -> HttpResponse:  # noqa: ARG001
+    event = get_object_or_404(
+        Event.objects.published(), slug=slug, access_type=Event.AccessType.FREE
+    )
+    photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
+    try:
+        signed_url = _public_media_resolver().resolve_download(photo=photo)
+    except ObjectMissing:
+        return HttpResponse(status=404)
+    except StorageError:
+        return HttpResponse(status=503)
+    return redirect(signed_url)
+
+
 def legacy_events_redirect(request):  # noqa: ARG001
     return redirect("event_catalog")
 

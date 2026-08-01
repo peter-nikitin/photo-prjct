@@ -12,6 +12,19 @@
   function initializeEventGallery(root, GLightbox) {
     if (!root || typeof GLightbox !== 'function') return null;
     let lastTrigger = null;
+    const descriptionDownload = (slide) => slide?.querySelector('.gallery-lightbox-download');
+    const removeDescriptionDownloadFromKeyboardOrder = (slide) => {
+      const download = descriptionDownload(slide);
+      if (!download) return;
+      download.classList.remove('gbtn');
+      download.removeAttribute('data-taborder');
+    };
+    const addDescriptionDownloadToKeyboardOrder = (slide) => {
+      const download = descriptionDownload(slide);
+      if (!download) return;
+      download.classList.add('gbtn');
+      download.setAttribute('data-taborder', '4');
+    };
     root.addEventListener('click', (event) => {
       lastTrigger = event.target.closest?.('.gallery-card-link') ?? null;
     });
@@ -19,6 +32,18 @@
       selector: '.event-gallery .glightbox',
       touchNavigation: true,
       loop: false,
+      descPosition: 'bottom',
+      afterSlideLoad: ({ slide }) => {
+        removeDescriptionDownloadFromKeyboardOrder(slide);
+      },
+      beforeSlideChange: (previous, current) => {
+        removeDescriptionDownloadFromKeyboardOrder(previous?.slide);
+        removeDescriptionDownloadFromKeyboardOrder(current?.slide);
+      },
+      afterSlideChange: (previous, current) => {
+        removeDescriptionDownloadFromKeyboardOrder(previous?.slide);
+        addDescriptionDownloadToKeyboardOrder(current?.slide);
+      },
       onClose: () => lastTrigger?.focus(),
     });
   }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
@@ -8,6 +9,7 @@ from django.template.loader import render_to_string
 from django.test import TestCase, override_settings
 from django.test.client import RequestFactory
 from django.urls import reverse
+from ingestion.models import UploadBatch, UploadItem
 from picflow.models import Event
 
 
@@ -78,6 +80,40 @@ class UploadTemplateTests(TestCase):
             "indexedDB",
         ):
             self.assertNotIn(forbidden, html)
+
+    def test_upload_page_context_contains_only_owned_unfinished_batches(self) -> None:
+        owned = UploadBatch.objects.create(
+            uploader=self.user, event=self.event, expected_item_count=1
+        )
+        UploadItem.objects.create(
+            batch=owned,
+            client_item_id=uuid4(),
+            original_filename="owned.jpg",
+            declared_content_type="image/jpeg",
+            expected_size=4,
+            incoming_key=f"incoming/{uuid4()}",
+            final_key=f"originals/{uuid4().hex}",
+        )
+        other = get_user_model().objects.create_user(username="other")
+        foreign = UploadBatch.objects.create(
+            uploader=other,
+            event=self.event,
+            expected_item_count=1,
+        )
+        UploadItem.objects.create(
+            batch=foreign,
+            client_item_id=uuid4(),
+            original_filename="foreign.jpg",
+            declared_content_type="image/jpeg",
+            expected_size=4,
+            incoming_key=f"incoming/{uuid4()}",
+            final_key=f"originals/{uuid4().hex}",
+        )
+
+        response = self.client.get(reverse("upload_page"))
+
+        self.assertEqual(response.context["unfinished_batches"][0].id, owned.id)
+        self.assertEqual(len(response.context["unfinished_batches"]), 1)
 
     def test_upload_navigation_requires_feature_and_permission(self) -> None:
         response = self.client.get(reverse("event_catalog"))

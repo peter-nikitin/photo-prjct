@@ -1,8 +1,16 @@
 #!/bin/sh
 set -eu
 
-CONFIG_DIR=/etc/yandex/unified_agent
-CONFIG_PATH=/etc/yandex/unified_agent/config.yml
+DEB_CONFIG_DIR=/etc/yandex/unified_agent
+DEB_CONFIG_PATH=/etc/yandex/unified_agent/config.yml
+DEB_SERVICE=unified-agent
+MANAGED_CONFIG_DIR=/etc/yc/unified_agent
+MANAGED_CONFIG_PATH=/etc/yc/unified_agent/config.yml
+MANAGED_SERVICE=unified_agent
+CONFIG_DIR=''
+CONFIG_PATH=''
+SERVICE_NAME=''
+AGENT_BINARY=''
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 TEMPLATE_PATH="$SCRIPT_DIR/monitoring/unified-agent.yml.template"
 FOLDER_ID=''
@@ -31,8 +39,8 @@ cleanup() {
     trap - 0 HUP INT TERM
 
     if [ "$exit_status" -ne 0 ] && [ "$agent_installed_by_attempt" -eq 1 ]; then
-        systemctl stop unified-agent || true
-        systemctl disable unified-agent || true
+        systemctl stop "$SERVICE_NAME" || true
+        systemctl disable "$SERVICE_NAME" || true
         rm -f "$CONFIG_PATH" || true
         dpkg --remove yandex-unified-agent || true
     elif [ "$exit_status" -ne 0 ] && [ "$agent_preexisting" -eq 1 ] && \
@@ -43,14 +51,14 @@ cleanup() {
             rm -f "$CONFIG_PATH" || true
         fi
         if [ "$service_was_enabled" -eq 1 ]; then
-            systemctl enable unified-agent || true
+            systemctl enable "$SERVICE_NAME" || true
         else
-            systemctl disable unified-agent || true
+            systemctl disable "$SERVICE_NAME" || true
         fi
         if [ "$service_was_active" -eq 1 ]; then
-            systemctl restart unified-agent || true
+            systemctl restart "$SERVICE_NAME" || true
         else
-            systemctl stop unified-agent || true
+            systemctl stop "$SERVICE_NAME" || true
         fi
     fi
 
@@ -96,18 +104,49 @@ install_agent_if_missing() {
         fail "Could not download the official Unified Agent deb package"
     dpkg -i "$package_path" || fail "Could not install the official Unified Agent deb package"
     agent_installed_by_attempt=1
+    use_deb_layout
+}
+
+use_deb_layout() {
+    CONFIG_DIR=$DEB_CONFIG_DIR
+    CONFIG_PATH=$DEB_CONFIG_PATH
+    SERVICE_NAME=$DEB_SERVICE
+}
+
+use_managed_layout() {
+    CONFIG_DIR=$MANAGED_CONFIG_DIR
+    CONFIG_PATH=$MANAGED_CONFIG_PATH
+    SERVICE_NAME=$MANAGED_SERVICE
+}
+
+is_deb_agent_installed() {
+    dpkg-query -W -f='${db:Status-Status}\n' yandex-unified-agent 2>/dev/null | grep -qx installed && \
+        systemctl cat "$DEB_SERVICE" >/dev/null 2>&1
+}
+
+is_managed_agent_installed() {
+    [ -f "$MANAGED_CONFIG_PATH" ] && systemctl cat "$MANAGED_SERVICE" >/dev/null 2>&1
 }
 
 snapshot_existing_agent() {
-    if ! command -v unified_agent >/dev/null 2>&1; then
+    AGENT_BINARY=$(command -v unified_agent || true)
+    if [ -z "$AGENT_BINARY" ]; then
         return
     fi
 
     agent_preexisting=1
-    if systemctl is-enabled --quiet unified-agent; then
+    if is_deb_agent_installed; then
+        use_deb_layout
+    elif is_managed_agent_installed; then
+        use_managed_layout
+    else
+        fail "Existing Unified Agent does not match the supported deb or managed VM layout"
+    fi
+
+    if systemctl is-enabled --quiet "$SERVICE_NAME"; then
         service_was_enabled=1
     fi
-    if systemctl is-active --quiet unified-agent; then
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
         service_was_active=1
     fi
     if [ -f "$CONFIG_PATH" ]; then
@@ -142,19 +181,21 @@ trap cleanup 0 HUP INT TERM
 
 snapshot_existing_agent
 install_agent_if_missing
-command -v unified_agent >/dev/null 2>&1 || fail "Unified Agent installation did not provide unified_agent"
+AGENT_BINARY=$(command -v unified_agent || true)
+[ -n "$AGENT_BINARY" ] || fail "Unified Agent installation did not provide unified_agent"
+[ -n "$CONFIG_PATH" ] || fail "Unified Agent installation did not select a supported layout"
 
 mkdir -p "$CONFIG_DIR"
 
 sed "s|__YANDEX_CLOUD_FOLDER_ID__|$FOLDER_ID|g" "$TEMPLATE_PATH" > "$candidate_config"
-unified_agent --config "$candidate_config" check-config
+"$AGENT_BINARY" --config "$candidate_config" check-config
 
 mv "$candidate_config" "$CONFIG_PATH"
 config_promoted=1
-systemctl enable unified-agent
-systemctl restart unified-agent
-systemctl is-active unified-agent
-printf 'Unified Agent version: %s\n' "$(unified_agent --version)"
+systemctl enable "$SERVICE_NAME"
+systemctl restart "$SERVICE_NAME"
+systemctl is-active "$SERVICE_NAME"
+printf 'Unified Agent version: %s\n' "$("$AGENT_BINARY" --version)"
 
 config_promoted=0
 rm -rf "$temporary_dir"

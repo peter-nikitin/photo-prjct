@@ -12,11 +12,14 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def _copy_script_for_host_test(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _copy_script_for_host_test(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path]:
     deploy_dir = tmp_path / "deploy"
     monitoring_dir = deploy_dir / "monitoring"
     monitoring_dir.mkdir(parents=True)
-    config_dir = tmp_path / "etc" / "yandex" / "unified_agent"
+    deb_config_dir = tmp_path / "etc" / "yandex" / "unified_agent"
+    managed_config_dir = tmp_path / "etc" / "yc" / "unified_agent"
     os_release = tmp_path / "os-release"
     os_release.write_text("ID=ubuntu\nVERSION_ID=20.04\n", encoding="utf-8")
     (monitoring_dir / "unified-agent.yml.template").write_text(
@@ -24,17 +27,28 @@ def _copy_script_for_host_test(tmp_path: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )
     source = (ROOT / "deploy/configure-monitoring-agent.sh").read_text(encoding="utf-8")
-    source = source.replace(
-        "CONFIG_DIR=/etc/yandex/unified_agent", f"CONFIG_DIR={config_dir}"
-    ).replace(
-        "CONFIG_PATH=/etc/yandex/unified_agent/config.yml",
-        f"CONFIG_PATH={config_dir / 'config.yml'}",
+    source = (
+        source.replace(
+            "DEB_CONFIG_DIR=/etc/yandex/unified_agent", f"DEB_CONFIG_DIR={deb_config_dir}"
+        )
+        .replace(
+            "DEB_CONFIG_PATH=/etc/yandex/unified_agent/config.yml",
+            f"DEB_CONFIG_PATH={deb_config_dir / 'config.yml'}",
+        )
+        .replace(
+            "MANAGED_CONFIG_DIR=/etc/yc/unified_agent",
+            f"MANAGED_CONFIG_DIR={managed_config_dir}",
+        )
+        .replace(
+            "MANAGED_CONFIG_PATH=/etc/yc/unified_agent/config.yml",
+            f"MANAGED_CONFIG_PATH={managed_config_dir / 'config.yml'}",
+        )
     )
     source = source.replace("/etc/os-release", str(os_release))
     script = deploy_dir / "configure-monitoring-agent.sh"
     script.write_text(source, encoding="utf-8")
     script.chmod(0o755)
-    return script, config_dir, tmp_path / "commands.log"
+    return script, deb_config_dir, managed_config_dir, tmp_path / "commands.log"
 
 
 def _host_test_env(tmp_path: Path, config_dir: Path, command_log: Path) -> dict[str, str]:
@@ -66,8 +80,11 @@ printf 'dpkg %s\\n' "$*" >> "$COMMAND_LOG"
 case "$*" in
   *--remove*) exit 0 ;;
 esac
-mkdir -p "$CONFIG_DIR"
-printf 'package-default\\n' > "$CONFIG_DIR/config.yml"
+if [ -n "${DEB_PACKAGE_MARKER_FILE:-}" ]; then
+  : > "$DEB_PACKAGE_MARKER_FILE"
+fi
+mkdir -p "$DEB_CONFIG_DIR"
+printf 'package-default\\n' > "$DEB_CONFIG_DIR/config.yml"
 cat > "$(dirname "$0")/unified_agent" <<'EOF'
 #!/bin/sh
 set -eu
@@ -77,6 +94,21 @@ case "$*" in
 esac
 EOF
 chmod +x "$(dirname "$0")/unified_agent"
+""",
+    )
+    _write_executable(
+        fake_bin / "dpkg-query",
+        """
+case "$*" in
+  *yandex-unified-agent*)
+    if [ -n "${DEB_PACKAGE_MARKER_FILE:-}" ] && [ -f "$DEB_PACKAGE_MARKER_FILE" ]; then
+      printf '%s\\n' installed
+      exit 0
+    fi
+    exit 1
+    ;;
+esac
+exit 1
 """,
     )
     _write_executable(
@@ -97,6 +129,12 @@ case "$1" in
     printf '%s\\n' "$count" > "$RESTART_COUNT_FILE"
     [ "${FAIL_FIRST_RESTART:-0}" = 1 ] && [ "$count" -eq 1 ] && exit 1
     ;;
+  cat)
+    case "$*" in
+      *unified-agent*) [ "${DEB_UNIT_PRESENT:-0}" = 1 ] ;;
+      *unified_agent*) [ "${MANAGED_UNIT_PRESENT:-0}" = 1 ] ;;
+    esac
+    ;;
 esac
 """,
     )
@@ -104,6 +142,9 @@ esac
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(command_log),
         "CONFIG_DIR": str(config_dir),
+        "DEB_CONFIG_DIR": str(config_dir),
+        "DEB_PACKAGE_MARKER_FILE": str(tmp_path / "deb-package-installed"),
+        "DEB_UNIT_PRESENT": "1",
         "RESTART_COUNT_FILE": str(tmp_path / "restart-count"),
     }
 
@@ -175,9 +216,12 @@ def test_monitoring_agent_script_has_safe_install_and_rollback_contract() -> Non
     assert "dpkg -i" in source
     assert "/etc/yandex/unified_agent/config.yml" in source
     assert "check-config" in source
-    assert "systemctl enable unified-agent" in source
-    assert "systemctl restart unified-agent" in source
-    assert "systemctl is-active unified-agent" in source
+    assert "DEB_SERVICE=unified-agent" in source
+    assert "MANAGED_CONFIG_PATH=/etc/yc/unified_agent/config.yml" in source
+    assert "MANAGED_SERVICE=unified_agent" in source
+    assert 'systemctl enable "$SERVICE_NAME"' in source
+    assert 'systemctl restart "$SERVICE_NAME"' in source
+    assert 'systemctl is-active "$SERVICE_NAME"' in source
     assert "trap cleanup" in source
     assert "Unified Agent version:" in source
     assert "token" not in source.lower()
@@ -185,8 +229,11 @@ def test_monitoring_agent_script_has_safe_install_and_rollback_contract() -> Non
     assert 'if [ "$exit_status" -ne 0 ] && [ "$agent_installed_by_attempt" -eq 1 ]' in source
     assert "dpkg --remove yandex-unified-agent" in source
     assert "snapshot_existing_agent" in source
-    assert "systemctl is-enabled --quiet unified-agent" in source
-    assert "systemctl is-active --quiet unified-agent" in source
+    assert "dpkg-query -W" in source
+    assert 'systemctl cat "$DEB_SERVICE"' in source
+    assert 'systemctl cat "$MANAGED_SERVICE"' in source
+    assert 'systemctl is-enabled --quiet "$SERVICE_NAME"' in source
+    assert 'systemctl is-active --quiet "$SERVICE_NAME"' in source
     assert 'mv "$previous_config" "$CONFIG_PATH" || true' in source
 
     result = subprocess.run(["sh", "-n", script], capture_output=True, text=True, check=False)
@@ -194,7 +241,7 @@ def test_monitoring_agent_script_has_safe_install_and_rollback_contract() -> Non
 
 
 def test_fresh_install_validation_failure_removes_only_the_agent_attempt(tmp_path: Path) -> None:
-    script, config_dir, command_log = _copy_script_for_host_test(tmp_path)
+    script, config_dir, _, command_log = _copy_script_for_host_test(tmp_path)
     env = _host_test_env(tmp_path, config_dir, command_log)
     env["CHECK_CONFIG_STATUS"] = "1"
 
@@ -216,7 +263,7 @@ def test_fresh_install_validation_failure_removes_only_the_agent_attempt(tmp_pat
 
 
 def test_existing_agent_restart_failure_restores_config_and_service_state(tmp_path: Path) -> None:
-    script, config_dir, command_log = _copy_script_for_host_test(tmp_path)
+    script, config_dir, _, command_log = _copy_script_for_host_test(tmp_path)
     env = _host_test_env(tmp_path, config_dir, command_log)
     fake_agent = tmp_path / "bin" / "unified_agent"
     _write_executable(
@@ -233,6 +280,8 @@ esac
     config_path.write_text("previous-config\\n", encoding="utf-8")
     env.update({"INITIAL_ENABLED": "1", "INITIAL_ACTIVE": "1", "FAIL_FIRST_RESTART": "1"})
 
+    Path(env["DEB_PACKAGE_MARKER_FILE"]).touch()
+
     result = subprocess.run(
         ["sh", script, "--folder-id", "b1g2qttgfhb4gdunvlge"],
         env={**os.environ, **env},
@@ -247,3 +296,45 @@ esac
     assert "dpkg " not in commands
     assert commands.count("systemctl enable unified-agent") == 2
     assert commands.count("systemctl restart unified-agent") == 2
+
+
+def test_managed_agent_restart_failure_restores_its_real_layout_without_dpkg_removal(
+    tmp_path: Path,
+) -> None:
+    script, _, config_dir, command_log = _copy_script_for_host_test(tmp_path)
+    env = _host_test_env(tmp_path, config_dir, command_log)
+    _write_executable(
+        tmp_path / "bin" / "unified_agent",
+        """
+case "$*" in
+  *check-config*) exit 0 ;;
+  *--version*) printf '%s\\n' managed-agent ;;
+esac
+""",
+    )
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yml"
+    config_path.write_text("managed-previous-config\\n", encoding="utf-8")
+    env.update(
+        {
+            "INITIAL_ENABLED": "1",
+            "INITIAL_ACTIVE": "1",
+            "FAIL_FIRST_RESTART": "1",
+            "MANAGED_UNIT_PRESENT": "1",
+        }
+    )
+
+    result = subprocess.run(
+        ["sh", script, "--folder-id", "b1g2qttgfhb4gdunvlge"],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert config_path.read_text(encoding="utf-8") == "managed-previous-config\\n"
+    commands = command_log.read_text(encoding="utf-8")
+    assert "dpkg " not in commands
+    assert commands.count("systemctl enable unified_agent") == 2
+    assert commands.count("systemctl restart unified_agent") == 2

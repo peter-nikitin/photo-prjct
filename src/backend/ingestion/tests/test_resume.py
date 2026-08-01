@@ -95,8 +95,9 @@ class ResumeServiceTests(TestCase):
         self.assertEqual(summaries[1].confirmed_count, 1)
         self.assertEqual(summaries[1].failed_count, 1)
         self.assertEqual(summaries[1].unresolved_count, 3)
+        status_field = "status"
         with self.assertRaises(FrozenInstanceError):
-            summaries[0].status = UploadBatch.Status.FAILED
+            setattr(summaries[0], status_field, "failed")
 
     def test_list_excludes_completed_fully_confirmed_and_other_owner_batches(self) -> None:
         completed = self.batch(status=UploadBatch.Status.COMPLETED, expected=1)
@@ -166,8 +167,9 @@ class ResumeServiceTests(TestCase):
         self.assertFalse(items[pending.id].confirmed)
         self.assertEqual(items[uploaded.id].ambiguous_sha256, "a" * 64)
         self.assertTrue(items[uploaded.id].confirmed)
+        filename_field = "filename"
         with self.assertRaises(FrozenInstanceError):
-            items[pending.id].filename = "changed.jpg"
+            setattr(items[pending.id], filename_field, "changed.jpg")
 
     def test_manifest_hides_missing_cross_owner_completed_and_fully_confirmed_batches(self) -> None:
         owned = self.batch(status=UploadBatch.Status.UPLOADING, expected=1)

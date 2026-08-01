@@ -53,8 +53,8 @@ class UploadTemplateTests(TestCase):
         self.assertContains(response, "data-retry-item")
         self.assertContains(response, "data-csrf-token=")
         self.assertContains(response, "Закрытие или перезагрузка страницы остановит")
-        self.assertContains(response, 'data-queue-group-toggle')
-        self.assertContains(response, 'data-queue-group-content')
+        self.assertContains(response, "data-queue-group-toggle")
+        self.assertContains(response, "data-queue-group-content")
         self.assertContains(
             response, 'data-register-url-template="/photographer/uploads/{batch}/items/"'
         )
@@ -132,9 +132,9 @@ class UploadTemplateTests(TestCase):
 
         response = self.client.get(reverse("upload_page"))
 
-        self.assertContains(response, 'data-unfinished-upload')
+        self.assertContains(response, "data-unfinished-upload")
         self.assertContains(response, f'data-resume-batch-id="{batch.id}"')
-        self.assertContains(response, 'data-resume-batch')
+        self.assertContains(response, "data-resume-batch")
         self.assertContains(response, 'id="resume-upload-files"')
         self.assertContains(
             response,
@@ -203,12 +203,17 @@ class UploadTemplateTests(TestCase):
         )
 
         self.assertEqual(html.count("data-rendered-queue-item"), 40)
-        self.assertLess(html.index('data-queue-group="needs_attention"'), html.index('data-queue-group="uploading"'))
-        self.assertLess(html.index('data-queue-group="uploading"'), html.index('data-queue-group="waiting"'))
-        self.assertLess(html.index('data-queue-group="waiting"'), html.index('data-queue-group="uploaded"'))
-        self.assertRegex(
-            html, r'data-queue-group-toggle="needs_attention"\s+aria-expanded="true"'
+        self.assertLess(
+            html.index('data-queue-group="needs_attention"'),
+            html.index('data-queue-group="uploading"'),
         )
+        self.assertLess(
+            html.index('data-queue-group="uploading"'), html.index('data-queue-group="waiting"')
+        )
+        self.assertLess(
+            html.index('data-queue-group="waiting"'), html.index('data-queue-group="uploaded"')
+        )
+        self.assertRegex(html, r'data-queue-group-toggle="needs_attention"\s+aria-expanded="true"')
         self.assertRegex(html, r'data-queue-group-toggle="uploading"\s+aria-expanded="true"')
         self.assertRegex(html, r'data-queue-group-toggle="waiting"\s+aria-expanded="false"')
         self.assertRegex(html, r'data-queue-group-toggle="uploaded"\s+aria-expanded="false"')

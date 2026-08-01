@@ -355,11 +355,24 @@
   function renderPage(root, coordinator, globalError = '') {
     const summary = summarize(coordinator.items);
     const terminal = summary.uploaded + summary.failed === summary.total && summary.total > 0;
+    const waiting = coordinator.items.some((item) => item.status === 'waiting');
+    const needsAttention = coordinator.items.some((item) => item.status === 'needs_attention');
+    const needsAction = waiting || needsAttention;
     const title = root.querySelector('#upload-summary-title');
     const message = root.querySelector('[data-summary-message]');
     const percent = root.querySelector('[data-summary-percent]');
     const progress = root.querySelector('[data-upload-progress]');
-    root.dataset.state = globalError ? 'partial' : coordinator.active ? 'active' : terminal && summary.failed ? 'partial' : terminal ? 'complete' : 'empty';
+    root.dataset.state = globalError
+      ? 'partial'
+      : coordinator.active
+        ? 'active'
+        : terminal && summary.failed
+          ? 'partial'
+          : terminal
+            ? 'complete'
+            : summary.total
+              ? 'partial'
+              : 'empty';
     if (title) {
       title.textContent = globalError
         ? 'Загрузка остановлена'
@@ -369,12 +382,25 @@
             ? 'Загружено частично'
             : terminal
               ? 'Загрузка завершена'
-              : 'Файлы не выбраны';
+              : needsAction
+                ? 'Требуется действие'
+                : summary.total
+                  ? 'Загрузка не завершена'
+                  : 'Файлы не выбраны';
     }
     if (message) {
-      message.textContent = globalError || (summary.total
-        ? `${summary.uploaded} из ${summary.total} файлов загружено${summary.failed ? `, ошибок: ${summary.failed}` : '.'}`
-        : 'Здесь появится общий прогресс.');
+      const incompleteMessage = needsAttention && waiting
+        ? 'Загрузка не завершена: выберите недостающие файлы и проверьте файлы, требующие внимания.'
+        : needsAttention
+          ? 'Загрузка не завершена: проверьте файлы, требующие внимания.'
+          : waiting
+            ? 'Загрузка не завершена: выберите недостающие файлы.'
+            : '';
+      message.textContent = globalError || (needsAction
+        ? incompleteMessage
+        : summary.total
+          ? `${summary.uploaded} из ${summary.total} файлов загружено${summary.failed ? `, ошибок: ${summary.failed}` : '.'}`
+          : 'Здесь появится общий прогресс.');
     }
     if (percent) percent.textContent = `${summary.progress}%`;
     if (progress) {
@@ -927,13 +953,39 @@
     }
 
     async runResumeRetry(item, token) {
-      this.markUploading(item, token);
-      const authorization = await this.control(
-        interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
-        {},
-        token,
-      );
-      await this.processItem(item, authorization.grant, token);
+      let completed = true;
+      let retryAuthorized = false;
+      try {
+        this.markUploading(item, token);
+        const authorization = await this.control(
+          interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
+          {},
+          token,
+        );
+        retryAuthorized = true;
+        this.finalized = false;
+        if (token.cancelled) {
+          await this.finishCancellation(item, token);
+        } else {
+          await this.processItem(item, authorization.grant, token);
+        }
+      } catch (error) {
+        if (token.cancelled) {
+          await this.finishCancellation(item, token);
+        } else {
+          if (retryAuthorized) {
+            await this.failItem(
+              item,
+              'transfer_retries_exhausted',
+              'Не удалось повторить загрузку. Повторите попытку.',
+            );
+          }
+          this.settleManualRetryFailure(item);
+          completed = false;
+        }
+      }
+      await this.finalizeIfReady();
+      return completed;
     }
 
     settleManualRetryFailure(item) {

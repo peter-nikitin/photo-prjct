@@ -531,6 +531,25 @@ test('returning photographer resumes only the unfinished item from an owned batc
   expect(stubs.pageErrors).toEqual([]);
 });
 
+test('incomplete resumed selections tell the photographer what action is needed', async ({ page }) => {
+  await page.goto('/__visual__/upload/empty/');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    const coordinator = root.uploadCoordinator;
+    coordinator.active = false;
+    coordinator.items = [
+      { clientItemId: 'waiting', file: { name: 'missing.jpg', size: 4 }, status: 'waiting', progress: 0 },
+      { clientItemId: 'attention', file: { name: 'extra.jpg', size: 4 }, status: 'needs_attention', progress: 0 },
+    ];
+    window.FindMeUpload.renderPage(root, coordinator);
+  });
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Требуется действие');
+  await expect(page.locator('[data-summary-message]')).toHaveText(
+    'Загрузка не завершена: выберите недостающие файлы и проверьте файлы, требующие внимания.',
+  );
+});
+
 test('browser coordinator accepts a dropped JPEG when the browser omits its MIME type', async ({
   page,
 }) => {

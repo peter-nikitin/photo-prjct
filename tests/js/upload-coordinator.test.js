@@ -13,6 +13,7 @@ const {
   matchResumeSelection,
   prepareAmbiguousFingerprints,
   prepareSelection,
+  renderPage,
   summarize,
   visibleGroupItems,
 } = require('../../src/backend/static/ui/upload-coordinator.js');
@@ -111,11 +112,35 @@ function response(status, body = {}) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
 
+function summaryRoot() {
+  const nodes = new Map([
+    ['#upload-summary-title', {}],
+    ['[data-summary-message]', {}],
+    ['[data-summary-percent]', {}],
+    ['[data-upload-progress]', {}],
+    ['[data-total-count]', {}],
+    ['[data-uploaded-count]', {}],
+    ['[data-failed-count]', {}],
+    ['[data-total-bytes]', {}],
+  ]);
+  return {
+    dataset: {},
+    querySelector(selector) {
+      return nodes.get(selector) || null;
+    },
+    node(selector) {
+      return nodes.get(selector);
+    },
+  };
+}
+
 function makeHarness({
   xhrResults = [],
   onAuthorizeControl = null,
   onConfirmControl = null,
   onRetryControl = null,
+  onFailedControl = null,
+  onFinalizeControl = null,
   retryTimer = null,
 } = {}) {
   const calls = [];
@@ -166,9 +191,15 @@ function makeHarness({
       return response(200, { item: { id: url.split('/')[3], status: 'uploaded' } });
     }
     if (url.endsWith('/failed/')) {
+      if (onFailedControl) {
+        return onFailedControl({ body, url });
+      }
       return response(200, { item: { id: url.split('/')[3], status: 'failed' } });
     }
     if (url === '/batch-1/finalize/') {
+      if (onFinalizeControl) {
+        return onFinalizeControl({ body, url });
+      }
       return response(200, { batch: { id: 'batch-1', status: 'complete' } });
     }
     throw new Error(`Unexpected control URL ${url}`);
@@ -318,6 +349,26 @@ test('only duplicate metadata groups receive lowercase SHA-256 fingerprints', as
   assert.equal(first.ambiguousSha256, 'ab'.repeat(32));
   assert.equal(second.ambiguousSha256, 'cd'.repeat(32));
   assert.equal(unique.ambiguousSha256, null);
+});
+
+test('registration sends lowercase ambiguous SHA-256 values for duplicate selections', async () => {
+  const digest = digestRecorder();
+  const { calls, coordinator } = makeHarness();
+  coordinator.crypto.subtle = digest.subtle;
+
+  await coordinator.start(
+    [file('same.jpg', 4, 1000, 'first'), file('same.jpg', 4, 1000, 'second')],
+    '42',
+  );
+
+  const registration = calls.find(({ url }) => url === '/batch-1/items/');
+  assert.deepEqual(
+    registration.body.items.map(({ filename, ambiguous_sha256: digestValue }) => [filename, digestValue]),
+    [
+      ['same.jpg', 'ab'.repeat(32)],
+      ['same.jpg', 'cd'.repeat(32)],
+    ],
+  );
 });
 
 test('resume matching binds unique modern and legacy manifest entries without hashing', async () => {
@@ -836,6 +887,120 @@ test('a failed pending retry finalizes once after a sibling retry succeeds', asy
   assert.equal(coordinator.active, false);
 });
 
+test('resume contains a retry endpoint 503 and settles the other queued item', async () => {
+  const { calls, coordinator } = makeHarness({
+    onRetryControl: () => response(503, {
+      error: { code: 'storage_unavailable', message: 'Private detail.' },
+    }),
+  });
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: [
+      manifestItem({ id: 'failed', filename: 'failed.jpg', status: 'failed' }),
+      manifestItem({ id: 'pending', filename: 'pending.jpg', status: 'pending' }),
+    ],
+  };
+
+  await coordinator.resume(
+    [file('failed.jpg', 4, 1000), file('pending.jpg', 4, 1000)],
+    manifest,
+  );
+
+  const failed = coordinator.items.find((item) => item.id === 'failed');
+  const pending = coordinator.items.find((item) => item.id === 'pending');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error, 'Не удалось повторить загрузку. Повторите попытку.');
+  assert.equal(pending.status, 'uploaded');
+  assert.equal(coordinator.active, false);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('resume contains a retry confirmation failure and settles the other queued item', async () => {
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => url.includes('/failed/')
+      ? response(503, { error: { code: 'storage_unavailable', message: 'Private detail.' } })
+      : response(200, { item: { id: url.split('/')[3], status: 'uploaded' } }),
+  });
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: [
+      manifestItem({ id: 'failed', filename: 'failed.jpg', status: 'failed' }),
+      manifestItem({ id: 'pending', filename: 'pending.jpg', status: 'pending' }),
+    ],
+  };
+
+  await coordinator.resume(
+    [file('failed.jpg', 4, 1000), file('pending.jpg', 4, 1000)],
+    manifest,
+  );
+
+  const failed = coordinator.items.find((item) => item.id === 'failed');
+  const pending = coordinator.items.find((item) => item.id === 'pending');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error, 'Не удалось повторить загрузку. Повторите попытку.');
+  assert.equal(pending.status, 'uploaded');
+  assert.equal(coordinator.active, false);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('resume confirmation failure restores the durable retry state before finalizing', async () => {
+  let durableStatus = 'failed';
+  let confirmationAttempts = 0;
+  const finalizeStatuses = [];
+  const { calls, coordinator } = makeHarness({
+    onRetryControl: ({ url }) => {
+      assert.equal(durableStatus, 'failed');
+      durableStatus = 'authorized';
+      return response(200, {
+        item: { id: url.split('/')[3], status: 'authorized', attempt: 1 },
+        grant: { url: 'https://storage.example/', fields: { policy: 'retry-secret' } },
+      });
+    },
+    onConfirmControl: ({ url }) => {
+      confirmationAttempts += 1;
+      if (confirmationAttempts === 1) {
+        assert.equal(durableStatus, 'authorized');
+        return response(503, {
+          error: { code: 'storage_unavailable', message: 'Private detail.' },
+        });
+      }
+      durableStatus = 'uploaded';
+      return response(200, { item: { id: url.split('/')[3], status: 'uploaded' } });
+    },
+    onFailedControl: ({ url }) => {
+      assert.equal(durableStatus, 'authorized');
+      durableStatus = 'failed';
+      return response(200, { item: { id: url.split('/')[3], status: 'failed' } });
+    },
+    onFinalizeControl: () => {
+      finalizeStatuses.push(durableStatus);
+      if (!['failed', 'uploaded'].includes(durableStatus)) {
+        return response(409, {
+          error: { code: 'items_not_terminal', message: 'Items are still active.' },
+        });
+      }
+      return response(200, { batch: { id: 'batch-1', status: 'complete' } });
+    },
+  });
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: [manifestItem({ id: 'failed', filename: 'failed.jpg', status: 'failed' })],
+  };
+
+  await coordinator.resume([file('failed.jpg', 4, 1000)], manifest);
+
+  assert.equal(durableStatus, 'failed');
+  assert.equal(coordinator.items[0].status, 'failed');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
+  assert.deepEqual(finalizeStatuses, ['failed']);
+
+  await coordinator.manualRetry(coordinator.items[0].clientItemId);
+
+  assert.equal(durableStatus, 'uploaded');
+  assert.equal(coordinator.items[0].status, 'uploaded');
+  assert.deepEqual(finalizeStatuses, ['failed', 'uploaded']);
+});
+
 test('close warning is active only while registered work is unfinished', async () => {
   const { coordinator } = makeHarness();
   assert.equal(coordinator.shouldWarnBeforeUnload(), false);
@@ -900,6 +1065,26 @@ test('grouped queue prioritizes actionable work and bounds every expanded page',
     totalBytes: 100_000,
     progress: 100,
   });
+});
+
+test('resume summary presents waiting and attention items as incomplete work', () => {
+  const root = summaryRoot();
+  const coordinator = {
+    active: false,
+    items: [
+      { file: { name: 'missing.jpg', size: 4 }, status: 'waiting', progress: 0 },
+      { file: { name: 'extra.jpg', size: 4 }, status: 'needs_attention', progress: 0 },
+    ],
+  };
+
+  renderPage(root, coordinator);
+
+  assert.equal(root.dataset.state, 'partial');
+  assert.equal(root.node('#upload-summary-title').textContent, 'Требуется действие');
+  assert.equal(
+    root.node('[data-summary-message]').textContent,
+    'Загрузка не завершена: выберите недостающие файлы и проверьте файлы, требующие внимания.',
+  );
 });
 
 test('coordinator source keeps files and grants in page memory only', () => {

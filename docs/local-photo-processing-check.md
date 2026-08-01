@@ -332,6 +332,24 @@ PHOTO_WORKER_PROCESSOR_IDENTITIES=3/face_embedding_benchmark/1 \
   docker compose --profile worker up --build -d --scale worker=2 worker
 ```
 
+### Staging: ручной запуск через GitHub Actions
+
+Перед запуском сохраните текущие значения staging variables `PHOTO_WORKER_PROCESSOR_IDENTITIES`,
+`PHOTO_WORKER_REPLICAS` и `PHOTO_PROCESSING_PREVIEW_ENABLED`. Для baseline установите
+`3/face_embedding_benchmark/1`, `1` и `False` соответственно, выполните normal staging deploy,
+затем вручную запустите workflow **Staging face-embedding benchmark** с `operation=baseline` и
+slug event. Он создаёт ровно 114 benchmark jobs и печатает `BENCHMARK_RUN_ID`; дождитесь закрытия
+этого run. Для replay установите replicas `2`, снова выполните normal staging deploy, затем
+запустите тот же workflow с `operation=replay` и baseline UUID. `operation=report` печатает только
+агрегированные closed-run метрики для указанного UUID; UUID, event/configuration, source links,
+job/attempt/photo IDs и storage details в вывод не попадают.
+
+Workflow принимает только slug/UUID, проверяет single benchmark identity, ожидаемую replica count
+и `PHOTO_PROCESSING_PREVIEW_ENABLED=False` на VM, а в контейнере запускает только Django management
+commands. После измерений восстановите сохранённые `PHOTO_WORKER_PROCESSOR_IDENTITIES`,
+`PHOTO_WORKER_REPLICAS` и `PHOTO_PROCESSING_PREVIEW_ENABLED`, затем вручную запустите normal staging
+deploy до возвращения обычной обработки фото.
+
 После закрытия выбранного run получите только aggregate-метрики через Django. Команда ниже
 является read-only (`SELECT`), не выводит ID, object keys, tokens, URLs, embeddings или vectors;
 она включает sample/retry/expired/stale/lease/error-code counts, input-size buckets и все

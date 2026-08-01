@@ -19,6 +19,7 @@ from picflow.pagination import SignedCursor
 GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
 MediaUrlBuilder = Callable[[Photo, GalleryVariant], str]
+DownloadUrlBuilder = Callable[[Photo], str]
 GALLERY_PAGE_SIZE: Final = 50
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class FinalObjectStorage(Protocol):
     def open_final(self, *, key: str) -> OpenedObject: ...
 
-    def sign_final(self, *, key: str) -> str: ...
+    def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class GalleryPhoto:
     photo_id: str
     preview_media_small: GalleryMedia
     preview_media_large: GalleryMedia
+    download_url: str
     alt: str
 
 
@@ -53,7 +55,11 @@ class GalleryPage:
 class GalleryPhotoFactory:
     @staticmethod
     def from_photo(
-        *, photo: Photo, event_slug: str, media_url_builder: MediaUrlBuilder | None = None
+        *,
+        photo: Photo,
+        event_slug: str,
+        media_url_builder: MediaUrlBuilder | None = None,
+        download_url_builder: DownloadUrlBuilder | None = None,
     ) -> GalleryPhoto:
         def media(variant: GalleryVariant) -> GalleryMedia:
             return GalleryMedia(
@@ -72,6 +78,14 @@ class GalleryPhotoFactory:
             photo_id=photo.pk,
             preview_media_small=media("preview-small"),
             preview_media_large=media("preview-large"),
+            download_url=(
+                download_url_builder(photo)
+                if download_url_builder is not None
+                else reverse(
+                    "photo_download",
+                    kwargs={"slug": event_slug, "photo_id": photo.pk},
+                )
+            ),
             alt=f"Фото {photo.pk} с события {photo.event.name}",
         )
 
@@ -145,6 +159,23 @@ class PublicMediaResolver:
         key = self._selected_key(photo=photo, variant=variant)
         try:
             return self._storage.sign_final(key=key)
+        except ValueError:
+            raise ObjectMismatch() from None
+
+    def resolve_download(self, *, photo: Photo) -> str:
+        if not photo.original_key or photo.original_content_type not in {
+            "image/jpeg",
+            "image/png",
+        }:
+            raise ValueError("ineligible original download")
+        extension: Literal["jpg", "png"] = (
+            "jpg" if photo.original_content_type == "image/jpeg" else "png"
+        )
+        try:
+            return self._storage.sign_final(
+                key=photo.original_key,
+                attachment_filename=f"findme-photo-{photo.pk}.{extension}",
+            )
         except ValueError:
             raise ObjectMismatch() from None
 

@@ -41,12 +41,14 @@ class GalleryPresentationContractTests(SimpleTestCase):
             photo_id="photo-42",
             preview_media_small=small,
             preview_media_large=large,
+            download_url="/events/city-run/photos/photo-42/download/",
             alt="Фото photo-42 с события City Run",
         )
 
         self.assertEqual(gallery_photo.photo_id, "photo-42")
         self.assertEqual(gallery_photo.preview_media_small, small)
         self.assertEqual(gallery_photo.preview_media_large, large)
+        self.assertEqual(gallery_photo.download_url, "/events/city-run/photos/photo-42/download/")
         self.assertEqual(gallery_photo.alt, "Фото photo-42 с события City Run")
         alt_field = "alt"
         with self.assertRaises(FrozenInstanceError):
@@ -65,6 +67,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
         reverse.side_effect = [
             "/events/city-run/photos/photo-42/media/preview-small/",
             "/events/city-run/photos/photo-42/media/preview-large/",
+            "/events/city-run/photos/photo-42/download/",
         ]
 
         gallery_photo = GalleryPhotoFactory.from_photo(photo=photo, event_slug="city-run")
@@ -84,6 +87,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
                 variant="preview-large",
             ),
         )
+        self.assertEqual(gallery_photo.download_url, "/events/city-run/photos/photo-42/download/")
         self.assertEqual(gallery_photo.alt, "Фото photo-42 с события City Run")
         self.assertEqual(
             reverse.call_args_list,
@@ -108,23 +112,36 @@ class GalleryPresentationContractTests(SimpleTestCase):
                         }
                     },
                 ),
+                (
+                    ("photo_download",),
+                    {"kwargs": {"slug": "city-run", "photo_id": "photo-42"}},
+                ),
             ],
         )
         boto3_client.assert_not_called()
 
-    def test_factory_uses_a_scoped_media_url_builder_without_storage(self) -> None:
+    @patch("boto3.client")
+    def test_factory_uses_scoped_media_and_download_url_builders_without_storage(
+        self, boto3_client
+    ) -> None:
         event = Event(name="City Run", slug="city-run")
         photo = Photo(id="photo-42", event=event)
-        calls: list[tuple[str, str]] = []
+        media_calls: list[tuple[str, str]] = []
+        download_calls: list[str] = []
 
         def result_media_url(photo: Photo, variant: str) -> str:
-            calls.append((photo.id, variant))
+            media_calls.append((photo.id, variant))
             return f"/events/city-run/selfie-search/bearer-token/photos/{photo.id}/media/{variant}/"
+
+        def result_download_url(photo: Photo) -> str:
+            download_calls.append(photo.id)
+            return f"/events/city-run/selfie-search/bearer-token/photos/{photo.id}/download/"
 
         gallery_photo = GalleryPhotoFactory.from_photo(
             photo=photo,
             event_slug=event.slug,
             media_url_builder=result_media_url,
+            download_url_builder=result_download_url,
         )
 
         self.assertEqual(
@@ -136,9 +153,15 @@ class GalleryPresentationContractTests(SimpleTestCase):
             "/events/city-run/selfie-search/bearer-token/photos/photo-42/media/preview-large/",
         )
         self.assertEqual(
-            calls,
+            gallery_photo.download_url,
+            "/events/city-run/selfie-search/bearer-token/photos/photo-42/download/",
+        )
+        self.assertEqual(
+            media_calls,
             [("photo-42", "preview-small"), ("photo-42", "preview-large")],
         )
+        self.assertEqual(download_calls, ["photo-42"])
+        boto3_client.assert_not_called()
 
 
 class _ReadableBody:
@@ -165,7 +188,7 @@ class _FinalObjectStorage:
         self.opened_keys.append(key)
         return next(self._opened_objects)
 
-    def sign_final(self, *, key: str) -> str:  # noqa: ARG002
+    def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str:  # noqa: ARG002
         raise AssertionError("inline resolver tests must not sign media")
 
 
@@ -173,8 +196,20 @@ class _SignedFinalObjectStorage:
     def __init__(self) -> None:
         self.signed_keys: list[str] = []
 
-    def sign_final(self, *, key: str) -> str:
+    def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str:  # noqa: ARG002
         self.signed_keys.append(key)
+        return f"https://storage.example.test/{key}?signature=secret"
+
+
+class _DownloadFinalObjectStorage:
+    def __init__(self) -> None:
+        self.signed_requests: list[tuple[str, str | None]] = []
+
+    def open_final(self, *, key: str) -> OpenedObject:  # noqa: ARG002
+        raise AssertionError("download resolver tests must not open media")
+
+    def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str:
+        self.signed_requests.append((key, attachment_filename))
         return f"https://storage.example.test/{key}?signature=secret"
 
 
@@ -223,6 +258,62 @@ class PublicGalleryMediaTests(SimpleTestCase):
             resolver.resolve(photo=photo, variant="original")  # type: ignore[arg-type]
 
         self.assertEqual(storage.opened_keys, [])
+
+    def test_download_resolver_signs_the_original_with_a_jpeg_attachment_name(self) -> None:
+        storage = _DownloadFinalObjectStorage()
+        photo = Photo(
+            id="photo-42",
+            original_key="originals/0123456789abcdef0123456789abcdef",
+            original_content_type="image/jpeg",
+        )
+
+        url = PublicMediaResolver(storage).resolve_download(photo=photo)
+
+        self.assertEqual(
+            url,
+            "https://storage.example.test/originals/0123456789abcdef0123456789abcdef?signature=secret",
+        )
+        self.assertEqual(
+            storage.signed_requests,
+            [(photo.original_key, "findme-photo-photo-42.jpg")],
+        )
+
+    def test_download_resolver_derives_a_png_attachment_name(self) -> None:
+        storage = _DownloadFinalObjectStorage()
+        photo = Photo(
+            id="photo-42",
+            original_key="originals/0123456789abcdef0123456789abcdef",
+            original_content_type="image/png",
+        )
+
+        PublicMediaResolver(storage).resolve_download(photo=photo)
+
+        self.assertEqual(
+            storage.signed_requests,
+            [(photo.original_key, "findme-photo-photo-42.png")],
+        )
+
+    def test_download_resolver_rejects_a_missing_original_key_before_signing(self) -> None:
+        storage = _DownloadFinalObjectStorage()
+        photo = Photo(id="photo-42", original_key=None, original_content_type="image/jpeg")
+
+        with self.assertRaisesMessage(ValueError, "ineligible original download"):
+            PublicMediaResolver(storage).resolve_download(photo=photo)
+
+        self.assertEqual(storage.signed_requests, [])
+
+    def test_download_resolver_rejects_an_unsupported_original_type_before_signing(self) -> None:
+        storage = _DownloadFinalObjectStorage()
+        photo = Photo(
+            id="photo-42",
+            original_key="originals/0123456789abcdef0123456789abcdef",
+            original_content_type="image/webp",
+        )
+
+        with self.assertRaisesMessage(ValueError, "ineligible original download"):
+            PublicMediaResolver(storage).resolve_download(photo=photo)
+
+        self.assertEqual(storage.signed_requests, [])
 
 
 class PreviewRequiredPublicGalleryMediaTests(TestCase):

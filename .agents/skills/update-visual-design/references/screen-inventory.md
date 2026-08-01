@@ -24,3 +24,9 @@ Snapshot files live in `tests/visual/visual.spec.js-snapshots/`. The `/__visual_
 The existing covered/uncovered event fixtures intentionally hide `.event-gallery`; their four
 snapshots remain focused regression surfaces for the event header and hero. Gallery layout and
 states are covered separately by the populated/empty event-gallery fixtures.
+
+On 2026-08-01, the existing populated gallery, selfie-search entry, and ready-result baselines were
+refreshed for the original-download action: `desktop-event-gallery-populated.png`,
+`mobile-event-gallery-populated.png`, `desktop-event-selfie-search.png`,
+`mobile-event-selfie-search.png`, and `mobile-selfie-search-ready.png`. No visual route or scenario
+was added.

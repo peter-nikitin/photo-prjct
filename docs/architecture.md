@@ -169,10 +169,18 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   embedding and Django for exact search, then publish immutable non-expiring bearer-link results
   only after deleting the selfie. A valid result link may deliver its matched originals for a
   published free or paid event without opening the normal paid gallery, as defined by
-  [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. The direct
-  signed Object Storage transport for already authorized gallery and result media is accepted in
-  [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md); inline streaming remains
-  the implemented behavior until that delivery is verified.
+  [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
+  signed direct Object Storage redirect transport is implemented for already authorized gallery and
+  result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
+- Allow attachment delivery wherever an existing normal-gallery or ready-result context already
+  authorizes an original, without adding a free-versus-paid branch or opening a normal paid gallery,
+  as defined by [ADR 0021](adr/0021-allow-original-download-for-authorized-photos.md). Verified
+  one-click original downloads use stable gallery and ready-result application routes, reusing
+  those contexts' existing authorization before redirecting to a short-lived signed exact-object
+  attachment URL. Rendered cards provide a subdued download action, and GLightbox provides the
+  same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
+  transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
+  future work.
 
 ## Deployment domain assignment — accepted
 

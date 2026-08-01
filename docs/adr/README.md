@@ -39,6 +39,7 @@ place, and add the new record to this index.
 | 0017 | [Use Django-polled photo-processing jobs](0017-use-django-polled-photo-processing-jobs.md) | Accepted |
 | 0019 | [Use public event-scoped selfie search](0019-use-public-event-selfie-search.md) | Accepted |
 | 0020 | [Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md) | Accepted |
+| 0021 | [Allow original download for authorized photos](0021-allow-original-download-for-authorized-photos.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -52,3 +53,8 @@ mutation, real-storage preflight, exact rollout-image model smoke, staging capac
 feature activation remain rollout work rather than completed decision evidence. The existing worker
 image already packages pinned public OpenCV Zoo YuNet/SFace files; it is not a new worker or a
 future private-model delivery mechanism.
+
+[ADR 0021](0021-allow-original-download-for-authorized-photos.md) supersedes only ADR 0019 and
+ADR 0020's attachment-download exclusions. It accepts attachment delivery wherever those existing
+gallery or ready-result contexts already authorize an original, without adding a free-versus-paid
+decision or opening a normal paid gallery.

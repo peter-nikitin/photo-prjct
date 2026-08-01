@@ -21,4 +21,9 @@ urlpatterns = [
         views.result_media,
         name="result_media",
     ),
+    path(
+        "events/<str:event_slug>/selfie-search/<str:public_token>/photos/<str:photo_id>/download/",
+        views.result_download,
+        name="result_download",
+    ),
 ]

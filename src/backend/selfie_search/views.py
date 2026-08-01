@@ -8,7 +8,7 @@ from django.http import (
 )
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.gallery import (
     GALLERY_VARIANTS,
@@ -77,6 +77,10 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
                 event_slug=search.event.slug,
                 public_token=public_token,
             ),
+            download_url_builder=_result_download_url_builder(
+                event_slug=search.event.slug,
+                public_token=public_token,
+            ),
         )
         for photo in photos
     )
@@ -126,6 +130,23 @@ def result_media(
     return redirect(signed_url)
 
 
+@require_GET
+def result_download(request, event_slug: str, public_token: str, photo_id: str) -> HttpResponseBase:  # noqa: ARG001
+    search = _public_search(event_slug=event_slug, public_token=public_token)
+    if search is None:
+        return _not_found_response()
+    photo = saved_ready_result_photo(search=search, photo_id=photo_id)
+    if photo is None:
+        return _not_found_response()
+    try:
+        signed_url = _public_media_resolver().resolve_download(photo=photo)
+    except ObjectMissing:
+        return _not_found_response()
+    except StorageError:
+        return HttpResponse(status=503)
+    return redirect(signed_url)
+
+
 def _event_page(request, event_slug: str, form: SelfieSearchUploadForm):
     from config.views import event_detail
 
@@ -160,6 +181,20 @@ def _result_media_url_builder(*, event_slug: str, public_token: str):
                 "public_token": public_token,
                 "photo_id": photo.pk,
                 "variant": variant,
+            },
+        )
+
+    return build
+
+
+def _result_download_url_builder(*, event_slug: str, public_token: str):
+    def build(photo: Photo) -> str:
+        return reverse(
+            "selfie_search:result_download",
+            kwargs={
+                "event_slug": event_slug,
+                "public_token": public_token,
+                "photo_id": photo.pk,
             },
         )
 

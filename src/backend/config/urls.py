@@ -15,6 +15,11 @@ urlpatterns = [
         views.photo_media,
         name="photo_media",
     ),
+    path(
+        "events/<str:slug>/photos/<str:photo_id>/download/",
+        views.photo_download,
+        name="photo_download",
+    ),
     path("events/<str:slug>/", views.event_detail, name="event_detail"),
     path("legal/", views.legal, name="legal"),
     path("photographer/", include("ingestion.urls")),

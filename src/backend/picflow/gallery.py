@@ -19,7 +19,7 @@ from picflow.pagination import SignedCursor
 GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
 MediaUrlBuilder = Callable[[Photo, GalleryVariant], str]
-GALLERY_PAGE_SIZE: Final = 100
+GALLERY_PAGE_SIZE: Final = 50
 
 logger = logging.getLogger(__name__)
 

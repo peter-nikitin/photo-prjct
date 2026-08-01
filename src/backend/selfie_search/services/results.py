@@ -19,7 +19,7 @@ class PublicSearchNotFound(LookupError):
     """A bearer token does not identify a currently public event result."""
 
 
-SELFIE_SEARCH_RESULT_PAGE_SIZE: Final = 100
+SELFIE_SEARCH_RESULT_PAGE_SIZE: Final = 50
 
 
 @dataclass(frozen=True)

@@ -82,8 +82,9 @@ test('does nothing without root or GLightbox', () => {
   assert.doesNotThrow(() => loadGalleryModule({ root: {} }));
 });
 
-test('appends the next gallery fragment, advances the link, and refreshes lightbox', async () => {
-  let clickListener;
+test('appends the next gallery fragment when the sentinel intersects', async () => {
+  let intersectionCallback;
+  let observed;
   const appended = [];
   const nextLink = {
     href: 'https://findme.test/events/run?cursor=first',
@@ -98,9 +99,7 @@ test('appends the next gallery fragment, advances the link, and refreshes lightb
   const root = {
     querySelector: (selector) =>
       selector === '.event-gallery-grid' ? grid : selector === '.event-gallery-next' ? nextLink : null,
-    addEventListener: (type, listener) => {
-      if (type === 'click') clickListener = listener;
-    },
+    addEventListener() {},
     setAttribute() {},
     removeAttribute() {},
   };
@@ -122,18 +121,19 @@ test('appends the next gallery fragment, advances the link, and refreshes lightb
     onAppend: () => {
       reloads += 1;
     },
+    createObserver: (callback) => ({
+      observe: (element) => {
+        intersectionCallback = callback;
+        observed = element;
+      },
+      disconnect() {},
+    }),
   });
 
-  let prevented = false;
-  clickListener({
-    target: { closest: (selector) => (selector === '.event-gallery-next' ? nextLink : null) },
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
+  assert.equal(observed, nextLink);
+  intersectionCallback([{ isIntersecting: true }]);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(prevented, true);
   assert.deepEqual(appended, [
     { position: 'beforeend', markup: '<figure class="gallery-card">next</figure>' },
   ]);
@@ -142,13 +142,12 @@ test('appends the next gallery fragment, advances the link, and refreshes lightb
 });
 
 test('keeps the next-page link after a failed progressive request', async () => {
-  let clickListener;
+  let intersectionCallback;
+  let observations = 0;
   const nextLink = { href: 'https://findme.test/events/run?cursor=first' };
   const root = {
     querySelector: (selector) => (selector === '.event-gallery-next' ? nextLink : {}),
-    addEventListener: (type, listener) => {
-      if (type === 'click') clickListener = listener;
-    },
+    addEventListener() {},
     setAttribute() {},
     removeAttribute() {},
   };
@@ -158,14 +157,19 @@ test('keeps the next-page link after a failed progressive request', async () => 
     parsePage: () => {
       throw new Error('must not parse an unsuccessful response');
     },
+    createObserver: (callback) => ({
+      observe() {
+        observations += 1;
+        intersectionCallback = callback;
+      },
+      disconnect() {},
+    }),
   });
 
-  clickListener({
-    target: { closest: (selector) => (selector === '.event-gallery-next' ? nextLink : null) },
-    preventDefault() {},
-  });
+  intersectionCallback([{ isIntersecting: true }]);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(nextLink.href, 'https://findme.test/events/run?cursor=first');
   assert.equal(nextLink.removed, undefined);
+  assert.equal(observations, 1);
 });

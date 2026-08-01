@@ -449,12 +449,12 @@ class PublicSelfieResultViewTests(TestCase):
 
         self.assertEqual(
             [item.photo_id for item in first_response.context["gallery_photos"]],
-            [photo.pk for photo in photos[:100]],
+            [photo.pk for photo in photos[:50]],
         )
         self.assertNotContains(first_response, unrelated.pk)
         next_cursor = first_response.context["selfie_search_next_cursor"]
         self.assertIsNotNone(next_cursor)
-        self.assertContains(first_response, "Показать ещё")
+        self.assertNotContains(first_response, "Показать ещё")
         self.assertContains(first_response, "data-event-gallery")
 
         later_response = self.client.get(
@@ -462,9 +462,10 @@ class PublicSelfieResultViewTests(TestCase):
         )
 
         self.assertEqual(
-            [item.photo_id for item in later_response.context["gallery_photos"]], [photos[100].pk]
+            [item.photo_id for item in later_response.context["gallery_photos"]],
+            [photo.pk for photo in photos[50:100]],
         )
-        self.assertIsNone(later_response.context["selfie_search_next_cursor"])
+        self.assertIsNotNone(later_response.context["selfie_search_next_cursor"])
 
     def test_ready_page_rejects_cursor_for_another_public_token(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)

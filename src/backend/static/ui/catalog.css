@@ -415,9 +415,49 @@
   outline-offset: 3px;
 }
 
+body .glightbox-container.glightbox-clean .gslide-description {
+  flex: 0 0 auto;
+  background: transparent;
+}
+
+body.glightbox-mobile .glightbox-container.glightbox-clean .gslide-description {
+  padding: 0;
+}
+
+body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-download {
+  color: var(--muted);
+}
+
+.glightbox-container .gslide-description .gdesc-inner,
+.glightbox-container .gslide-description .gslide-desc {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.glightbox-container .gslide-description .gdesc-inner {
+  min-height: 44px;
+  padding: 0;
+}
+
 .glightbox-container .gslide-desc .gallery-lightbox-download {
-  color: var(--focus);
-  font-weight: 800;
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.glightbox-container .gslide-desc .gallery-lightbox-download .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.glightbox-container .gslide-desc .gallery-lightbox-download:hover {
+  color: var(--charcoal);
+  background: var(--surface-soft);
 }
 
 .event-gallery-next {

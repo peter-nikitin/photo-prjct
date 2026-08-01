@@ -364,6 +364,47 @@ test('ready selfie result reuses keyboard-accessible gallery lightbox', async ({
   await expect(firstCard).toBeFocused();
 });
 
+test('gallery and ready result lightboxes keep original download as a compact icon action', async ({
+  page,
+}) => {
+  for (const [path, cardSelector, viewport, snapshot, expectedColor] of [
+    [
+      '/__visual__/event/gallery-populated/',
+      '.gallery-card-link',
+      DESKTOP_VIEWPORT,
+      'desktop-gallery-lightbox-download.png',
+      null,
+    ],
+    [
+      '/__visual__/event/selfie-search/ready/',
+      '.selfie-search-results .gallery-card-link',
+      MOBILE_VIEWPORT,
+      'mobile-selfie-search-result-lightbox-download.png',
+      'rgb(104, 111, 119)',
+    ],
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(path);
+    await page.locator(cardSelector).first().click();
+
+    const description = page.locator('.glightbox-container .gslide.current .gslide-description');
+    const download = description.getByRole('link', { name: 'Скачать оригинал' });
+    await expect(download).toBeVisible();
+    await expect(download.locator('svg use')).toHaveAttribute('href', /#download$/);
+    await expect(download).toHaveText('');
+    await expect(download).toHaveCSS('width', '44px');
+    await expect(download).toHaveCSS('height', '44px');
+    await expect(description).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(description).toHaveCSS('height', '44px');
+    if (expectedColor) {
+      await expect(download).toHaveCSS('color', expectedColor);
+    }
+    await expect(page).toHaveScreenshot(snapshot, { animations: 'disabled' });
+
+    await page.keyboard.press('Escape');
+  }
+});
+
 test('browser coordinator completes a successful upload and announces progress', async ({ page }) => {
   const stubs = await installUploadStubs(page);
   await page.goto('/__visual__/upload/empty/');

@@ -545,7 +545,10 @@ class GalleryPageTests(TestCase):
             )
             alt = f"Фото {photo.id} с события {event.name}"
             lightbox_download = (
-                f'<a class="gallery-lightbox-download" href="{download_url}">Скачать оригинал</a>'
+                f'<a class="gallery-lightbox-download" href="{download_url}" '
+                'aria-label="Скачать оригинал" title="Скачать оригинал">'
+                '<svg class="icon" aria-hidden="true"><use '
+                'href="/static/ui/icons.svg#download"></use></svg></a>'
             )
             self.assertContains(
                 response,

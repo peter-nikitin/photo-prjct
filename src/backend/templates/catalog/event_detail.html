@@ -72,7 +72,7 @@
         <div class="event-gallery-grid">
           {% for photo in gallery_photos %}
             <figure class="gallery-card">
-              <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" data-type="image" data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}">Скачать оригинал</a>' aria-label="Открыть: {{ photo.alt }}">
+              <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" data-type="image" data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал"><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg></a>' aria-label="Открыть: {{ photo.alt }}">
                 {% if forloop.counter <= 4 %}
                   <img src="{{ photo.preview_media_small.url }}" loading="eager" fetchpriority="high" alt="{{ photo.alt }}">
                 {% else %}

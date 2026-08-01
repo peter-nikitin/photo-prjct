@@ -386,10 +386,10 @@ class GalleryPageTests(TestCase):
 
         self.assertEqual(first_response.status_code, 200)
         first_page_ids = tuple(item.photo_id for item in first_response.context["gallery_photos"])
-        self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(100)))
+        self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(50)))
         next_cursor = first_response.context["gallery_next_cursor"]
         self.assertIsNotNone(next_cursor)
-        self.assertContains(first_response, "Показать ещё")
+        self.assertNotContains(first_response, "Показать ещё")
         self.assertContains(first_response, "data-event-gallery")
 
         second_response = self.client.get(
@@ -397,8 +397,8 @@ class GalleryPageTests(TestCase):
         )
 
         second_page_ids = tuple(item.photo_id for item in second_response.context["gallery_photos"])
-        self.assertEqual(second_page_ids, ("photo-100",))
-        self.assertIsNone(second_response.context["gallery_next_cursor"])
+        self.assertEqual(second_page_ids, tuple(f"photo-{index:03}" for index in range(50, 100)))
+        self.assertIsNotNone(second_response.context["gallery_next_cursor"])
         self.assertTrue(set(first_page_ids).isdisjoint(second_page_ids))
 
     def test_event_detail_renders_only_one_page_for_20000_eligible_photos(self) -> None:
@@ -424,7 +424,7 @@ class GalleryPageTests(TestCase):
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.context["gallery_photos"]), 100)
+        self.assertEqual(len(response.context["gallery_photos"]), 50)
         self.assertIsNotNone(response.context["gallery_next_cursor"])
 
     def test_event_detail_rejects_malformed_or_other_event_cursor(self) -> None:
@@ -539,17 +539,27 @@ class GalleryPageTests(TestCase):
                 "photo_media",
                 kwargs={"slug": event.slug, "photo_id": photo.id, "variant": "preview-large"},
             )
+            download_url = reverse(
+                "photo_download",
+                kwargs={"slug": event.slug, "photo_id": photo.id},
+            )
             alt = f"Фото {photo.id} с события {event.name}"
+            lightbox_download = (
+                f'<a class="gallery-lightbox-download" href="{download_url}">Скачать оригинал</a>'
+            )
             self.assertContains(
                 response,
                 f'class="gallery-card-link glightbox" href="{large_url}" '
-                f'data-gallery="event-photos" data-type="image" aria-label="Открыть: {alt}"',
+                f'data-gallery="event-photos" data-type="image" '
+                f"data-description='{lightbox_download}' "
+                f'aria-label="Открыть: {alt}"',
             )
             self.assertContains(response, f'src="{small_url}"')
             self.assertContains(response, f'alt="{alt}"')
             self.assertContains(
                 response,
-                f'<figcaption class="gallery-photo-id">Фото {photo.id}</figcaption>',
+                f'<a class="gallery-download" href="{download_url}" '
+                'aria-label="Скачать оригинал" title="Скачать оригинал">',
             )
             if index <= 4:
                 self.assertContains(
@@ -557,6 +567,7 @@ class GalleryPageTests(TestCase):
                 )
             else:
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
+        self.assertNotContains(response, "gallery-photo-id")
 
     def test_event_detail_empty_gallery_is_accessible(self) -> None:
         event = self.make_event()
@@ -669,6 +680,55 @@ class GalleryMediaViewTests(TransactionTestCase):
             "photo_media",
             kwargs={"slug": event.slug, "photo_id": photo.id, "variant": variant},
         )
+
+    def download_url(self, *, event: Event, photo: Photo) -> str:
+        return reverse(
+            "photo_download",
+            kwargs={"slug": event.slug, "photo_id": photo.id},
+        )
+
+    def test_photo_download_redirects_to_a_signed_original_without_a_body(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event, id="photo-download")
+        resolver = Mock()
+        resolver.resolve_download.return_value = (
+            "https://storage.example.test/original?signature=secret"
+        )
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(self.download_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], resolver.resolve_download.return_value)
+        self.assertEqual(response.content, b"")
+        self.assertFalse(response.streaming)
+        resolver.resolve_download.assert_called_once_with(photo=photo)
+
+    def test_photo_download_maps_storage_failures_to_existing_responses(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event, id="download-storage")
+        resolver = Mock()
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            resolver.resolve_download.side_effect = ObjectMissing()
+            missing_response = self.client.get(self.download_url(event=event, photo=photo))
+            resolver.resolve_download.side_effect = StorageError()
+            unavailable_response = self.client.get(self.download_url(event=event, photo=photo))
+
+        self.assertEqual(missing_response.status_code, 404)
+        self.assertEqual(missing_response.content, b"")
+        self.assertEqual(unavailable_response.status_code, 503)
+        self.assertEqual(unavailable_response.content, b"")
+
+    def test_photo_download_returns_404_for_paid_event_before_signing(self) -> None:
+        event = self.make_event(name="Paid", slug="paid", access_type=Event.AccessType.PAID)
+        photo = self.make_private_photo(event, id="paid-download")
+
+        with patch("config.views._public_media_resolver") as resolver_factory:
+            response = self.client.get(self.download_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 404)
+        resolver_factory.assert_not_called()
 
     def test_photo_media_redirects_to_signed_preview_without_streaming_a_body(self) -> None:
         event = self.make_event()

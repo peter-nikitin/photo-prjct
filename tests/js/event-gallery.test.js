@@ -43,6 +43,54 @@ test('initializes GLightbox once with local gallery options', () => {
   assert.equal(calls[0].selector, '.event-gallery .glightbox');
   assert.equal(calls[0].touchNavigation, true);
   assert.equal(calls[0].loop, false);
+  assert.equal(calls[0].descPosition, 'bottom');
+});
+
+test('keeps only the active built-in description download in GLightbox keyboard order', () => {
+  const calls = [];
+  const makeAction = () => {
+    const classes = new Set();
+    const attributes = new Map();
+    return {
+      classes,
+      attributes,
+      classList: {
+        add: (className) => classes.add(className),
+        remove: (className) => classes.delete(className),
+      },
+      setAttribute: (name, value) => attributes.set(name, value),
+      removeAttribute: (name) => attributes.delete(name),
+    };
+  };
+  const firstAction = makeAction();
+  const secondAction = makeAction();
+  const firstSlide = {
+    querySelector: (selector) => (selector === '.gallery-lightbox-download' ? firstAction : null),
+  };
+  const secondSlide = {
+    querySelector: (selector) => (selector === '.gallery-lightbox-download' ? secondAction : null),
+  };
+
+  loadGalleryModule({
+    root: { addEventListener() {} },
+    glightbox: (options) => calls.push(options),
+  });
+
+  calls[0].afterSlideLoad({ slide: firstSlide });
+  calls[0].afterSlideLoad({ slide: secondSlide });
+  calls[0].afterSlideChange({ slide: null }, { slide: firstSlide });
+
+  assert.deepEqual([...firstAction.classes], ['gbtn']);
+  assert.equal(firstAction.attributes.get('data-taborder'), '4');
+  assert.deepEqual([...secondAction.classes], []);
+  assert.equal(secondAction.attributes.has('data-taborder'), false);
+
+  calls[0].afterSlideChange({ slide: firstSlide }, { slide: secondSlide });
+
+  assert.deepEqual([...firstAction.classes], []);
+  assert.equal(firstAction.attributes.has('data-taborder'), false);
+  assert.deepEqual([...secondAction.classes], ['gbtn']);
+  assert.equal(secondAction.attributes.get('data-taborder'), '4');
 });
 
 test('restores focus to the pointer-opened card after close', () => {
@@ -82,8 +130,9 @@ test('does nothing without root or GLightbox', () => {
   assert.doesNotThrow(() => loadGalleryModule({ root: {} }));
 });
 
-test('appends the next gallery fragment, advances the link, and refreshes lightbox', async () => {
-  let clickListener;
+test('appends the next gallery fragment when the sentinel intersects', async () => {
+  let intersectionCallback;
+  let observed;
   const appended = [];
   const nextLink = {
     href: 'https://findme.test/events/run?cursor=first',
@@ -98,9 +147,7 @@ test('appends the next gallery fragment, advances the link, and refreshes lightb
   const root = {
     querySelector: (selector) =>
       selector === '.event-gallery-grid' ? grid : selector === '.event-gallery-next' ? nextLink : null,
-    addEventListener: (type, listener) => {
-      if (type === 'click') clickListener = listener;
-    },
+    addEventListener() {},
     setAttribute() {},
     removeAttribute() {},
   };
@@ -122,18 +169,19 @@ test('appends the next gallery fragment, advances the link, and refreshes lightb
     onAppend: () => {
       reloads += 1;
     },
+    createObserver: (callback) => ({
+      observe: (element) => {
+        intersectionCallback = callback;
+        observed = element;
+      },
+      disconnect() {},
+    }),
   });
 
-  let prevented = false;
-  clickListener({
-    target: { closest: (selector) => (selector === '.event-gallery-next' ? nextLink : null) },
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
+  assert.equal(observed, nextLink);
+  intersectionCallback([{ isIntersecting: true }]);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(prevented, true);
   assert.deepEqual(appended, [
     { position: 'beforeend', markup: '<figure class="gallery-card">next</figure>' },
   ]);
@@ -142,13 +190,12 @@ test('appends the next gallery fragment, advances the link, and refreshes lightb
 });
 
 test('keeps the next-page link after a failed progressive request', async () => {
-  let clickListener;
+  let intersectionCallback;
+  let observations = 0;
   const nextLink = { href: 'https://findme.test/events/run?cursor=first' };
   const root = {
     querySelector: (selector) => (selector === '.event-gallery-next' ? nextLink : {}),
-    addEventListener: (type, listener) => {
-      if (type === 'click') clickListener = listener;
-    },
+    addEventListener() {},
     setAttribute() {},
     removeAttribute() {},
   };
@@ -158,14 +205,19 @@ test('keeps the next-page link after a failed progressive request', async () => 
     parsePage: () => {
       throw new Error('must not parse an unsuccessful response');
     },
+    createObserver: (callback) => ({
+      observe() {
+        observations += 1;
+        intersectionCallback = callback;
+      },
+      disconnect() {},
+    }),
   });
 
-  clickListener({
-    target: { closest: (selector) => (selector === '.event-gallery-next' ? nextLink : null) },
-    preventDefault() {},
-  });
+  intersectionCallback([{ isIntersecting: true }]);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(nextLink.href, 'https://findme.test/events/run?cursor=first');
   assert.equal(nextLink.removed, undefined);
+  assert.equal(observations, 1);
 });

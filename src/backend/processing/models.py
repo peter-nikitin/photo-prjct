@@ -13,6 +13,7 @@ PROCESSING_ATTEMPT_RESULT_MAX_BYTES = 128 * 1024
 REPORT_JSON_MAX_BYTES = 262_144
 CAPTURE_METADATA_PROCESSOR = "capture_metadata"
 FACE_EMBEDDING_PROCESSOR = "face_embedding"
+FACE_EMBEDDING_BENCHMARK_PROCESSOR = "face_embedding_benchmark"
 GENERATE_PREVIEW_PROCESSOR = "generate_preview"
 _TERMINAL_ATTEMPT_STATUSES = ("succeeded", "failed", "expired", "stale")
 

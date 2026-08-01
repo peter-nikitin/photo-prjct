@@ -382,13 +382,50 @@
   outline-offset: 3px;
 }
 
-.gallery-photo-id {
-  margin: 8px 2px 0;
+.gallery-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 44px;
+}
+
+.gallery-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
   color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.75rem;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
+  background: transparent;
+}
+
+.gallery-download .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.gallery-download:hover {
+  color: var(--charcoal);
+  background: var(--surface-soft);
+}
+
+.gallery-download:focus-visible,
+.glightbox-container .gslide-desc .gallery-lightbox-download:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.glightbox-container .gslide-desc .gallery-lightbox-download {
+  color: var(--focus);
+  font-weight: 800;
+}
+
+.event-gallery-next {
+  display: block;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .glightbox-container .gclose,

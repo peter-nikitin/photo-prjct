@@ -12,6 +12,19 @@
   function initializeEventGallery(root, GLightbox) {
     if (!root || typeof GLightbox !== 'function') return null;
     let lastTrigger = null;
+    const descriptionDownload = (slide) => slide?.querySelector('.gallery-lightbox-download');
+    const removeDescriptionDownloadFromKeyboardOrder = (slide) => {
+      const download = descriptionDownload(slide);
+      if (!download) return;
+      download.classList.remove('gbtn');
+      download.removeAttribute('data-taborder');
+    };
+    const addDescriptionDownloadToKeyboardOrder = (slide) => {
+      const download = descriptionDownload(slide);
+      if (!download) return;
+      download.classList.add('gbtn');
+      download.setAttribute('data-taborder', '4');
+    };
     root.addEventListener('click', (event) => {
       lastTrigger = event.target.closest?.('.gallery-card-link') ?? null;
     });
@@ -19,26 +32,42 @@
       selector: '.event-gallery .glightbox',
       touchNavigation: true,
       loop: false,
+      descPosition: 'bottom',
+      afterSlideLoad: ({ slide }) => {
+        removeDescriptionDownloadFromKeyboardOrder(slide);
+      },
+      beforeSlideChange: (previous, current) => {
+        removeDescriptionDownloadFromKeyboardOrder(previous?.slide);
+        removeDescriptionDownloadFromKeyboardOrder(current?.slide);
+      },
+      afterSlideChange: (previous, current) => {
+        removeDescriptionDownloadFromKeyboardOrder(previous?.slide);
+        addDescriptionDownloadToKeyboardOrder(current?.slide);
+      },
       onClose: () => lastTrigger?.focus(),
     });
   }
 
-  function initializeProgressivePagination(root, { fetchPage, parsePage, onAppend } = {}) {
-    if (!root || typeof root.addEventListener !== 'function') return;
+  function initializeProgressivePagination(root, { fetchPage, parsePage, onAppend, createObserver } = {}) {
+    if (!root || typeof root.querySelector !== 'function') return;
     const requestPage = fetchPage ?? globalThis.fetch?.bind(globalThis);
     const parse =
       parsePage ??
       ((html) => new globalThis.DOMParser().parseFromString(html, 'text/html'));
-    if (typeof requestPage !== 'function') return;
+    const observerFactory =
+      createObserver ??
+      (typeof globalThis.IntersectionObserver === 'function'
+        ? (callback) => new globalThis.IntersectionObserver(callback, { rootMargin: '600px 0px' })
+        : null);
+    const link = root.querySelector('.event-gallery-next');
+    if (typeof requestPage !== 'function' || typeof observerFactory !== 'function' || !link?.href) return;
     let loading = false;
+    const observer = observerFactory((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting) || loading) return;
 
-    root.addEventListener('click', (event) => {
-      const link = event.target.closest?.('.event-gallery-next');
-      if (!link?.href) return;
-
-      event.preventDefault();
-      if (loading) return;
       loading = true;
+      let shouldContinue = false;
+      observer.disconnect();
       root.setAttribute?.('aria-busy', 'true');
       requestPage(link.href, {
         credentials: 'same-origin',
@@ -56,16 +85,24 @@
 
           grid.insertAdjacentHTML('beforeend', nextGrid.innerHTML);
           const nextLink = nextRoot.querySelector('.event-gallery-next');
-          if (nextLink) link.href = nextLink.href;
-          else link.remove();
+          if (nextLink) {
+            link.href = nextLink.href;
+            shouldContinue = true;
+          }
+          else {
+            link.remove();
+            link.href = '';
+          }
           onAppend?.();
         })
         .catch(() => {})
         .finally(() => {
           loading = false;
           root.removeAttribute?.('aria-busy');
+          if (shouldContinue) observer.observe(link);
         });
     });
+    observer.observe(link);
   }
 
   return { initializeEventGallery, initializeProgressivePagination };

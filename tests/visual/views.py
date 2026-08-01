@@ -84,6 +84,7 @@ class FixtureGalleryPhoto:
     photo_id: str
     preview_media_small: FixtureGalleryMedia
     preview_media_large: FixtureGalleryMedia
+    download_url: str
     alt: str
 
 
@@ -192,6 +193,7 @@ def _gallery_photo(photo_id: str, image: str) -> FixtureGalleryPhoto:
         photo_id=photo_id,
         preview_media_small=FixtureGalleryMedia(image, "preview-small"),
         preview_media_large=FixtureGalleryMedia(image, "preview-large"),
+        download_url=f"/__visual__/downloads/{photo_id}/",
         alt=f"Фото {photo_id} с события London 10K",
     )
 

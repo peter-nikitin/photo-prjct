@@ -301,6 +301,16 @@ class PublicSelfieResultViewTests(TestCase):
             },
         )
 
+    def result_download_url(self, *, event: Event, token: str, photo: Photo) -> str:
+        return reverse(
+            "selfie_search:result_download",
+            kwargs={
+                "event_slug": event.slug,
+                "public_token": token,
+                "photo_id": photo.id,
+            },
+        )
+
     def assert_bearer_headers(self, response) -> None:
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
@@ -402,6 +412,22 @@ class PublicSelfieResultViewTests(TestCase):
             self.assertContains(response, "2")
             self.assertContains(response, "3")
 
+        for photo in (first, second):
+            download_url = self.result_download_url(event=search.event, token=token, photo=photo)
+            lightbox_download = (
+                f'<a class="gallery-lightbox-download" href="{download_url}">Скачать оригинал</a>'
+            )
+            self.assertContains(
+                first_open,
+                f'<a class="gallery-download" href="{download_url}" '
+                'aria-label="Скачать оригинал" title="Скачать оригинал">',
+            )
+            self.assertContains(
+                first_open,
+                f"data-description='{lightbox_download}'",
+            )
+        self.assertNotContains(first_open, "gallery-photo-id")
+
     def test_ready_page_omits_removed_member_without_reranking_remaining_members(self) -> None:
         search, token = self.make_search(
             status=SelfieSearch.Status.READY,
@@ -449,12 +475,12 @@ class PublicSelfieResultViewTests(TestCase):
 
         self.assertEqual(
             [item.photo_id for item in first_response.context["gallery_photos"]],
-            [photo.pk for photo in photos[:100]],
+            [photo.pk for photo in photos[:50]],
         )
         self.assertNotContains(first_response, unrelated.pk)
         next_cursor = first_response.context["selfie_search_next_cursor"]
         self.assertIsNotNone(next_cursor)
-        self.assertContains(first_response, "Показать ещё")
+        self.assertNotContains(first_response, "Показать ещё")
         self.assertContains(first_response, "data-event-gallery")
 
         later_response = self.client.get(
@@ -462,9 +488,10 @@ class PublicSelfieResultViewTests(TestCase):
         )
 
         self.assertEqual(
-            [item.photo_id for item in later_response.context["gallery_photos"]], [photos[100].pk]
+            [item.photo_id for item in later_response.context["gallery_photos"]],
+            [photo.pk for photo in photos[50:100]],
         )
-        self.assertIsNone(later_response.context["selfie_search_next_cursor"])
+        self.assertIsNotNone(later_response.context["selfie_search_next_cursor"])
 
     def test_ready_page_rejects_cursor_for_another_public_token(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -649,6 +676,48 @@ class PublicSelfieResultViewTests(TestCase):
                     photo=photo, variant="preview-small"
                 )
 
+    def test_saved_result_download_redirects_to_a_signed_original_without_a_body(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(search.event, photo_id="download-result")
+        self.add_result(search=search, photo=photo, rank=1)
+        resolver = Mock()
+        resolver.resolve_download.return_value = (
+            "https://storage.example.test/original?signature=secret"
+        )
+
+        with patch("selfie_search.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(
+                self.result_download_url(event=search.event, token=token, photo=photo)
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], resolver.resolve_download.return_value)
+        self.assertEqual(response.content, b"")
+        self.assertFalse(response.streaming)
+        self.assert_bearer_headers(response)
+        resolver.resolve_download.assert_called_once_with(photo=photo)
+
+    def test_saved_result_download_maps_storage_failures_to_existing_responses(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(search.event, photo_id="download-storage-result")
+        self.add_result(search=search, photo=photo, rank=1)
+        resolver = Mock()
+
+        with patch("selfie_search.views._public_media_resolver", return_value=resolver):
+            resolver.resolve_download.side_effect = ObjectMissing()
+            missing_response = self.client.get(
+                self.result_download_url(event=search.event, token=token, photo=photo)
+            )
+            resolver.resolve_download.side_effect = StorageError()
+            unavailable_response = self.client.get(
+                self.result_download_url(event=search.event, token=token, photo=photo)
+            )
+
+        self.assertEqual(missing_response.status_code, 404)
+        self.assertEqual(unavailable_response.status_code, 503)
+        self.assert_bearer_headers(missing_response)
+        self.assert_bearer_headers(unavailable_response)
+
     def test_saved_result_media_uses_the_requested_preview_or_original_selection(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         photo = self.make_private_photo(search.event, photo_id="selection-result")
@@ -785,6 +854,9 @@ class PublicSelfieResultViewTests(TestCase):
                     variant="preview-small",
                 )
             )
+            unrelated_download_response = self.client.get(
+                self.result_download_url(event=paid_event, token=token, photo=unrelated)
+            )
             wrong_event = self.client.get(
                 self.result_media_url(
                     event=other_event,
@@ -820,10 +892,12 @@ class PublicSelfieResultViewTests(TestCase):
 
         self.assertEqual(normal_paid.status_code, 404)
         self.assertEqual(unrelated_response.status_code, 404)
+        self.assertEqual(unrelated_download_response.status_code, 404)
         self.assertEqual(wrong_event.status_code, 404)
         self.assertEqual(nonready.status_code, 404)
         self.assertEqual(invalid_token.status_code, 404)
         self.assertEqual(invalid_variant.status_code, 404)
         resolver.resolve_signed.assert_not_called()
+        resolver.resolve_download.assert_not_called()
         normal_resolver.assert_not_called()
         self.assertFalse(queued_search.results.exists())

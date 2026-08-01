@@ -108,6 +108,65 @@ def test_extract_face_embeddings_one_face_success(
     }
 
 
+def test_extract_face_embeddings_reuses_models_but_sets_each_image_size(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "photo.jpg"
+    write_jpeg(source)
+    first_image = DummyImage(32, 48)
+    second_image = DummyImage(64, 96)
+
+    class Detector:
+        def __init__(self) -> None:
+            self.input_sizes: list[tuple[int, int]] = []
+
+        def setInputSize(self, size: tuple[int, int]) -> None:  # noqa: N802
+            self.input_sizes.append(size)
+
+        def detect(self, _image: object) -> tuple[None, None]:
+            return None, None
+
+    detector = Detector()
+    creations = {"detector": 0, "recognizer": 0}
+
+    class FaceDetectorYN:
+        @staticmethod
+        def create(*_args: object) -> Detector:
+            creations["detector"] += 1
+            return detector
+
+    class FaceRecognizerSF:
+        @staticmethod
+        def create(*_args: object) -> object:
+            creations["recognizer"] += 1
+            return object()
+
+    FakeCv2 = type(
+        "FakeCv2",
+        (),
+        {"FaceDetectorYN": FaceDetectorYN, "FaceRecognizerSF": FaceRecognizerSF},
+    )
+
+    monkeypatch.setattr("photo_worker.face_embedding._load_numpy", lambda: np)
+    monkeypatch.setattr("photo_worker.face_embedding._load_cv2", lambda: FakeCv2())
+    images = [first_image, second_image]
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._decode_image", lambda *_args, **_kwargs: images.pop(0)
+    )
+    model_paths = [tmp_path / "yunet.onnx", tmp_path / "sface.onnx"]
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._model_path", lambda *_args, **_kwargs: model_paths.pop(0)
+    )
+    monkeypatch.setattr(face_embedding, "_MODEL_RUNTIMES", {})
+
+    extract_face_embeddings(source, max_bytes=1024)
+    model_paths[:] = [tmp_path / "yunet.onnx", tmp_path / "sface.onnx"]
+    extract_face_embeddings(source, max_bytes=1024)
+
+    assert creations == {"detector": 1, "recognizer": 1}
+    assert detector.input_sizes == [(32, 48), (64, 96)]
+
+
 def test_extract_face_embeddings_no_faces_and_no_valid_faces_have_separate_warnings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

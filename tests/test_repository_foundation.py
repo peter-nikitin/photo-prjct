@@ -76,6 +76,48 @@ def test_deployment_workflows_separate_staging_and_production() -> None:
     assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
 
 
+def test_staging_face_embedding_benchmark_is_manual_and_bounded() -> None:
+    workflow = _load_workflow("staging-face-embedding-benchmark.yml")
+    dispatch = workflow[True]["workflow_dispatch"]
+    benchmark = workflow["jobs"]["benchmark"]
+    run = _workflow_step(workflow, "benchmark", "Run bounded benchmark operation")
+
+    assert set(workflow[True]) == {"workflow_dispatch"}
+    assert benchmark["environment"] == "staging"
+    assert benchmark["concurrency"] == {
+        "group": "deploy-staging",
+        "cancel-in-progress": False,
+    }
+    assert dispatch["inputs"]["operation"] == {
+        "description": "Create a baseline cohort, replay a closed cohort, or print a closed report",
+        "required": True,
+        "type": "choice",
+        "options": ["baseline", "replay", "report"],
+    }
+    assert dispatch["inputs"]["event_slug"]["required"] is False
+    assert dispatch["inputs"]["source_run_uuid"]["required"] is False
+    assert run["uses"] == "appleboy/ssh-action@v1.0.3"
+    assert "script_stop" not in run["with"]
+    assert run["env"] == {
+        "BENCHMARK_OPERATION": "${{ inputs.operation }}",
+        "BENCHMARK_EVENT_SLUG": "${{ inputs.event_slug }}",
+        "BENCHMARK_SOURCE_RUN_UUID": "${{ inputs.source_run_uuid }}",
+    }
+    assert "3/face_embedding_benchmark/1" in run["with"]["script"]
+    assert "PHOTO_WORKER_REPLICAS" in run["with"]["script"]
+    assert "PHOTO_PROCESSING_PREVIEW_ENABLED" in run["with"]["script"]
+    assert 'test "$preview_enabled" = False' in run["with"]["script"]
+    assert "run_face_embedding_benchmark" in run["with"]["script"]
+    assert 'test -n "$BENCHMARK_EVENT_SLUG"' in run["with"]["script"]
+    assert "printf '%s' \"$BENCHMARK_EVENT_SLUG\" | grep" not in run["with"]["script"]
+    assert '--event "$BENCHMARK_EVENT_SLUG"' in run["with"]["script"]
+    assert "run_web shell -c" in run["with"]["script"]
+    assert "photos_per_minute" in run["with"]["script"]
+    assert "run.report" not in run["with"]["script"]
+    assert '"run_id"' not in run["with"]["script"]
+    assert "secrets." not in run["with"]["script"]
+
+
 def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
     ci = _load_workflow("ci.yml")
     quality = ci["jobs"]["quality"]
@@ -228,6 +270,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
             "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
         ),
+        "PHOTO_WORKER_REPLICAS": "${{ vars.PHOTO_WORKER_REPLICAS || '1' }}",
         "PHOTO_WORKER_PROCESSOR_TYPES": (
             "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
             "'selfie_query,face_embedding,capture_metadata,generate_preview' }}"

@@ -25,6 +25,11 @@ FACE_EMBEDDING_CONTRACT = ProcessorContract(
     contract_version=1,
     processor_version=1,
 )
+FACE_EMBEDDING_BENCHMARK_CONTRACT = ProcessorContract(
+    processor_type="face_embedding_benchmark",
+    contract_version=3,
+    processor_version=1,
+)
 GENERATE_PREVIEW_CONTRACT = ProcessorContract(
     processor_type="generate_preview",
     contract_version=2,

@@ -1,6 +1,6 @@
 # 0021: Allow original download for authorized photos
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-01
 - Deciders: project maintainers
 - Supersedes: ADR 0019 and ADR 0020 only for their exclusion of attachment downloads

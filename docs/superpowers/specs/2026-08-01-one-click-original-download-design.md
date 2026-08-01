@@ -14,8 +14,8 @@ Proposed for review on 2026-08-01.
   [`2026-07-31-event-media-direct-delivery-and-pagination-design.md`](2026-07-31-event-media-direct-delivery-and-pagination-design.md).
 - Related ADRs: [ADR 0019](../../adr/0019-use-public-event-selfie-search.md) and
   [ADR 0020](../../adr/0020-use-signed-direct-object-storage-media-delivery.md).
-- ADR impact: **Requires new ADR.** The new ADR must authorize attachment delivery for an original
-  that an existing gallery or ready-result route already authorizes. It must preserve ADR 0019's
+- ADR impact: **Conforms to ADR 0021.** ADR 0021 authorizes attachment delivery for an original
+  that an existing gallery or ready-result route already authorizes while preserving ADR 0019's
   result-membership boundary and ADR 0020's Django-authorized, short-lived direct Object Storage
   transport.
 

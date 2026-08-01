@@ -173,6 +173,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   signed Object Storage transport for already authorized gallery and result media is accepted in
   [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md); inline streaming remains
   the implemented behavior until that delivery is verified.
+- Allow attachment delivery wherever an existing normal-gallery or ready-result context already
+  authorizes an original, without adding a free-versus-paid branch or opening a normal paid gallery,
+  as defined by [ADR 0021](adr/0021-allow-original-download-for-authorized-photos.md). The one-click
+  card and lightbox actions remain unimplemented until their delivery is verified.
 
 ## Deployment domain assignment — accepted
 

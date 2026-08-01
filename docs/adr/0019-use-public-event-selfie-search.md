@@ -4,7 +4,7 @@
 - Date: 2026-07-30
 - Deciders: project maintainers
 - Supersedes: [ADR 0015](0015-allow-anonymous-free-event-original-delivery.md)
-- Superseded by: [ADR 0020](0020-use-signed-direct-object-storage-media-delivery.md) for authorized media transport only
+- Superseded by: [ADR 0020](0020-use-signed-direct-object-storage-media-delivery.md) for authorized media transport only; [ADR 0021](0021-allow-original-download-for-authorized-photos.md) for the attachment-download exclusion only
 
 ## Context
 

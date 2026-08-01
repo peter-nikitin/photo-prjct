@@ -39,6 +39,7 @@ place, and add the new record to this index.
 | 0017 | [Use Django-polled photo-processing jobs](0017-use-django-polled-photo-processing-jobs.md) | Accepted |
 | 0019 | [Use public event-scoped selfie search](0019-use-public-event-selfie-search.md) | Accepted |
 | 0020 | [Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md) | Accepted |
+| 0021 | [Allow original download for authorized photos](0021-allow-original-download-for-authorized-photos.md) | Proposed |
 
 ## Public selfie-search outcome
 

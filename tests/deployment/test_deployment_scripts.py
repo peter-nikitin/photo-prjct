@@ -428,6 +428,10 @@ case " $* " in
     ;;
 esac
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
+if [ "$APPLY_SCENARIO" = worker-removal-failure ] && \
+   case " $* " in *" compose "*" --profile worker rm -sf worker "*) true ;; *) false ;; esac; then
+  exit 1
+fi
 if [ "$APPLY_SCENARIO" = worker-recovery ] && \
    [ "${APP_IMAGE-unset}" = unset ] && \
    case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
@@ -443,19 +447,55 @@ if [ "$APPLY_SCENARIO" = worker-recovery ] && \
   [ "$(sed -n 's/^PUBLIC_DOMAIN=//p' "$compose_env_file")" = old.example ]
   printf 'recovery-compose-uses-restored-environment\n' >> "$COMMAND_LOG"
 fi
+if [ "$APPLY_SCENARIO" = worker-recovery-disabled ] && \
+   [ "${APP_IMAGE-unset}" = unset ] && \
+   case " $* " in *" compose "*" --profile worker rm -sf worker "*) true ;; *) false ;; esac; then
+  [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$compose_env_file")" = False ]
+  printf 'recovery-removes-worker-from-restored-disabled-environment\n' >> "$COMMAND_LOG"
+fi
 case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
   *" compose "*" ps -q web "*) printf 'web-id\n' ;;
   *" compose "*" ps -q worker "*)
-    [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] &&
-      printf 'worker-id\n'
+    [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] || exit 0
+    worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    case "$APPLY_SCENARIO" in
+      worker-second-missing)
+        printf 'worker-first\n'
+        ;;
+      *)
+        printf 'worker-first\n'
+        if [ "$worker_replicas" = 2 ]; then
+          printf 'worker-second\n'
+        fi
+        ;;
+    esac
     ;;
   *" inspect "*" web-id "*) sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" ;;
-  *" inspect "*" worker-id "*)
+  *" inspect "*" worker-first "*)
     if [ "$APPLY_SCENARIO" = worker-crash-loop ]; then
-      printf 'true true 3\n'
+      case "$*" in
+        *OOMKilled*) printf 'true true false 3\n' ;;
+        *) printf 'true true 3\n' ;;
+      esac
     else
-      printf 'true false 0\n'
+      case "$*" in
+        *OOMKilled*) printf 'true false false 0\n' ;;
+        *) printf 'true false 0\n' ;;
+      esac
+    fi
+    ;;
+  *" inspect "*" worker-second "*)
+    if [ "$APPLY_SCENARIO" = worker-second-restarting ]; then
+      case "$*" in
+        *OOMKilled*) printf 'true true false 1\n' ;;
+        *) printf 'true true 1\n' ;;
+      esac
+    else
+      case "$*" in
+        *OOMKilled*) printf 'true false false 0\n' ;;
+        *) printf 'true false 0\n' ;;
+      esac
     fi
     ;;
 esac
@@ -467,6 +507,7 @@ esac
 printf 'curl %s\n' "$*" >> "$COMMAND_LOG"
 if [ "$APPLY_SCENARIO" = health-failure ] || \
    [ "$APPLY_SCENARIO" = worker-recovery ] || \
+   [ "$APPLY_SCENARIO" = worker-recovery-disabled ] || \
    [ "$APPLY_SCENARIO" = fresh-first-health-failure ]; then
   [ "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" = old-image ]
 fi
@@ -679,6 +720,7 @@ def test_disabled_processing_persists_defaults_without_the_worker_profile(
     assert "PHOTO_PROCESSING_ENABLED=False" in deployed_env
     assert "PHOTO_PROCESSING_PREVIEW_ENABLED=False" in deployed_env
     assert "PHOTO_PROCESSING_FACE_ENABLED=False" in deployed_env
+    assert "PHOTO_WORKER_REPLICAS=1" in deployed_env
     assert "WORKER_IMAGE=" in deployed_env
     assert "PHOTO_PROCESSING_WORKER_TOKEN=" in deployed_env
     assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120" in deployed_env
@@ -694,7 +736,44 @@ def test_disabled_processing_persists_defaults_without_the_worker_profile(
         "generate_preview" in deployed_env
     )
     assert "ALLOWED_HOSTS=localhost,web,findme-photo.ru" in deployed_env
-    assert not any("--profile worker" in command for command in _apply_log(tmp_path))
+    commands = _apply_log(tmp_path)
+    assert any("--profile worker rm -sf worker" in command for command in commands)
+    assert not any("--profile worker up" in command for command in commands)
+
+
+def test_disabled_processing_removes_a_previously_running_profiled_worker(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """Disabling processing must remove a worker started by the prior profile-enabled rollout."""
+    previous_env = PREVIOUS_ENV + (
+        b"WORKER_IMAGE=old-worker-image\n"
+        b"PHOTO_PROCESSING_ENABLED=True\n"
+        b"PHOTO_PROCESSING_WORKER_TOKEN=old-worker-token\n"
+        b"PHOTO_WORKER_REPLICAS=2\n"
+    )
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    (tmp_path / ".env").write_bytes(previous_env)
+    (tmp_path / "previous-env.expected").write_bytes(previous_env)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert any("--profile worker rm -sf worker" in command for command in _apply_log(tmp_path))
+
+
+def test_disabled_processing_fails_when_stale_worker_removal_fails(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """A failed worker removal cannot be hidden by bringing up only the web stack."""
+    env = _apply_env(tmp_path, fake_bin, scenario="worker-removal-failure")
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    commands = _apply_log(tmp_path)
+    assert any("--profile worker rm -sf worker" in command for command in commands)
+    assert not any(" up -d --remove-orphans" in command for command in commands)
 
 
 def test_disabled_selfie_rollback_replaces_malformed_dormant_overrides_with_safe_values(
@@ -758,6 +837,52 @@ def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
     assert "worker-token-must-not-be-logged" not in "\n".join(commands)
 
 
+def test_enabled_processing_reconciles_two_requested_worker_replicas(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """A requested pair must be persisted and brought up as a pair."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "PHOTO_WORKER_REPLICAS": "2",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "PHOTO_WORKER_REPLICAS=2" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert any(
+        "--profile worker up -d --remove-orphans --scale worker=2" in command
+        for command in _apply_log(tmp_path)
+    )
+
+
+@pytest.mark.parametrize("scenario", ("worker-second-missing", "worker-second-restarting"))
+def test_two_worker_deployment_rejects_a_missing_or_restarting_replica(
+    tmp_path: Path, fake_bin: Path, scenario: str
+) -> None:
+    """One healthy worker cannot make a two-worker rollout successful."""
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "PHOTO_WORKER_REPLICAS": "2",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "worker runtime verification" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+
+
 def test_preview_first_activation_accepts_and_persists_all_worker_identities(
     tmp_path: Path, fake_bin: Path
 ) -> None:
@@ -772,7 +897,7 @@ def test_preview_first_activation_accepts_and_persists_all_worker_identities(
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
                 "1/selfie_query/1,1/capture_metadata/1,1/face_embedding/1,"
-                "2/generate_preview/1,2/face_embedding/2"
+                "2/generate_preview/1,2/face_embedding/2,3/face_embedding_benchmark/1"
             ),
             "PHOTO_WORKER_PROCESSOR_TYPES": (
                 "selfie_query,face_embedding,capture_metadata,generate_preview"
@@ -788,7 +913,8 @@ def test_preview_first_activation_accepts_and_persists_all_worker_identities(
     assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
         "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/1,1/capture_metadata/1,"
-        "1/face_embedding/1,2/generate_preview/1,2/face_embedding/2" in deployed_env
+        "1/face_embedding/1,2/generate_preview/1,2/face_embedding/2,"
+        "3/face_embedding_benchmark/1" in deployed_env
     )
 
 
@@ -917,6 +1043,7 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
     ("overrides", "message"),
     [
         ({"PHOTO_PROCESSING_ENABLED": "true"}, "PHOTO_PROCESSING_ENABLED must be True or False"),
+        ({"PHOTO_WORKER_REPLICAS": "3"}, "PHOTO_WORKER_REPLICAS must be 1 or 2"),
         (
             {"PHOTO_PROCESSING_FACE_ENABLED": "true"},
             "PHOTO_PROCESSING_FACE_ENABLED must be True or False",
@@ -972,6 +1099,7 @@ def test_failed_worker_deployment_restores_the_complete_previous_environment_and
         b"PHOTO_PROCESSING_MAX_REQUEST_BYTES=131072\n"
         b"PHOTO_WORKER_BUILD=old-capture-metadata\n"
         b"PHOTO_WORKER_LEASE_SECONDS=90\n"
+        b"PHOTO_WORKER_REPLICAS=2\n"
     )
     env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery")
     (tmp_path / ".env").write_bytes(previous_env)
@@ -983,6 +1111,7 @@ def test_failed_worker_deployment_restores_the_complete_previous_environment_and
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token-must-not-be-logged",
             "PHOTO_WORKER_BUILD": "candidate-capture-metadata",
             "PHOTO_WORKER_LEASE_SECONDS": "180",
+            "PHOTO_WORKER_REPLICAS": "1",
             "DB_NAME": "candidate-app",
             "PUBLIC_DOMAIN": "candidate.example",
         }
@@ -993,11 +1122,49 @@ def test_failed_worker_deployment_restores_the_complete_previous_environment_and
     assert result.returncode != 0
     assert (tmp_path / ".env").read_bytes() == previous_env
     commands = _apply_log(tmp_path)
-    assert sum("--profile worker up -d --remove-orphans" in command for command in commands) == 2
+    assert (
+        sum(
+            "--profile worker up -d --remove-orphans --scale worker=1" in command
+            for command in commands
+        )
+        == 1
+    )
+    assert (
+        sum(
+            "--profile worker up -d --remove-orphans --scale worker=2" in command
+            for command in commands
+        )
+        == 1
+    )
     assert "recovery-compose-uses-restored-environment" in commands
     assert "worker-token-must-not-be-logged" not in result.stdout
     assert "worker-token-must-not-be-logged" not in result.stderr
     assert "worker-token-must-not-be-logged" not in "\n".join(commands)
+
+
+def test_failed_worker_rollout_removes_the_candidate_worker_when_previous_deployment_is_disabled(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """Recovery to a disabled deployment cannot leave the candidate profiled worker behind."""
+    env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery-disabled")
+    previous_env = PREVIOUS_ENV + b"PHOTO_PROCESSING_ENABLED=False\n"
+    (tmp_path / ".env").write_bytes(previous_env)
+    (tmp_path / "previous-env.expected").write_bytes(previous_env)
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "PHOTO_WORKER_REPLICAS": "2",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    commands = _apply_log(tmp_path)
+    assert any("--profile worker rm -sf worker" in command for command in commands)
+    assert "recovery-removes-worker-from-restored-disabled-environment" in commands
 
 
 def test_candidate_private_media_preflight_skips_when_no_eligible_photo(

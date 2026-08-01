@@ -308,6 +308,150 @@ docker compose exec -e CHECK_EVENT_SLUG=manual-processing web python manage.py s
 
 The run must be `closed`, with one immutable report for this exact event cohort. Its report has `cohort_size: 2`, a denominator of 2, two successes, retry/stale counts, accepted output byte/dimension/download/compute/upload-duration summaries, bounded warnings and stable failures. It must not contain an original or derivative key, staging identity, signed grant, image bytes, EXIF value, checksum value, or face result. Treat the persisted durations as measurements; do not compare them to a fixed wall-clock threshold. Worker concurrency is one, so the two attempts are deliberately serial.
 
+## Локальный benchmark пропускной способности face embedding
+
+Этот benchmark создаёт отдельный конечный cohort и не меняет обычные `face_embedding` jobs,
+состояния или векторы. Зафиксированный experiment — ровно 114 photos: baseline с одной replica,
+затем replay того же закрытого cohort с двумя replicas. Не печатайте логи worker для этой
+проверки: они не нужны для метрик и могут содержать operational identifiers.
+
+```bash
+# Baseline: ровно 114 photos, одна benchmark replica.
+docker compose exec web python manage.py run_face_embedding_benchmark \
+  --event <event-slug> --limit 114 --label baseline-one-replica
+PHOTO_WORKER_PROCESSOR_IDENTITIES=3/face_embedding_benchmark/1 \
+  docker compose --profile worker up --build -d --scale worker=1 worker
+
+# Дождитесь закрытия baseline run, остановите одну replica и сохраните его UUID локально.
+docker compose --profile worker stop worker
+
+# Replay: повторяет те же 114 photos с двумя replicas.
+docker compose exec web python manage.py run_face_embedding_benchmark \
+  --source-run <closed-baseline-run-uuid> --label replay-two-replicas
+PHOTO_WORKER_PROCESSOR_IDENTITIES=3/face_embedding_benchmark/1 \
+  docker compose --profile worker up --build -d --scale worker=2 worker
+```
+
+После закрытия выбранного run получите только aggregate-метрики через Django. Команда ниже
+является read-only (`SELECT`), не выводит ID, object keys, tokens, URLs, embeddings или vectors;
+она включает sample/retry/expired/stale/lease/error-code counts, input-size buckets и все
+сохранённые timing percentiles. Benchmark contract намеренно не сохраняет исходные image
+dimensions, поэтому `representative_dimension_distribution` честно возвращает
+`not_collected_by_benchmark_contract`: не подменяйте его object key, EXIF или результатом лица.
+Замените placeholder UUID только в переменной окружения.
+
+```bash
+BENCHMARK_RUN_ID=<closed-run-uuid> docker compose exec -e BENCHMARK_RUN_ID web \
+  python manage.py shell -c '
+import os
+from django.db import connection
+sql = """
+WITH selected AS (
+  SELECT id, created_at, closed_at
+  FROM processing_eventprocessingrun
+  WHERE id = %s AND status = '\''closed'\''
+    AND contract_version = 3 AND processor_type = '\''face_embedding_benchmark'\''
+    AND processor_version = 1
+), jobs AS (
+  SELECT j.id, j.status, j.created_at, j.input_fingerprint
+  FROM processing_processingjob j JOIN selected r ON r.id = j.run_id
+), terminal_jobs AS (
+  SELECT status FROM jobs WHERE status IN ('\''succeeded'\'', '\''failed'\'', '\''cancelled'\'')
+), attempts AS (
+  SELECT a.job_id, a.status, a.error_code, a.created_at, a.claimed_at,
+         a.lease_expires_at, a.terminal_at, a.download_duration_ms,
+         a.compute_duration_ms, a.total_duration_ms, a.result
+  FROM processing_processingattempt a JOIN selected r ON r.id = a.run_id
+), measurements AS (
+  SELECT download_duration_ms, compute_duration_ms, total_duration_ms,
+         NULLIF(result #>> '\''{timings,model_load_ms}'\'', '\'''\'')::numeric AS model_load_ms,
+         NULLIF(result #>> '\''{timings,decode_ms}'\'', '\'''\'')::numeric AS decode_ms,
+         NULLIF(result #>> '\''{timings,detect_ms}'\'', '\'''\'')::numeric AS detect_ms,
+         NULLIF(result #>> '\''{timings,embed_ms}'\'', '\'''\'')::numeric AS embed_ms
+  FROM attempts WHERE terminal_at IS NOT NULL
+), first_claims AS (
+  SELECT j.id AS job_id,
+         EXTRACT(EPOCH FROM (MIN(a.claimed_at) - j.created_at)) * 1000 AS creation_to_claim_ms
+  FROM jobs j LEFT JOIN attempts a ON a.job_id = j.id
+  GROUP BY j.id, j.created_at
+), size_distribution AS (
+  SELECT CASE
+      WHEN (input_fingerprint->>'\''original_size'\'')::bigint < 1000000 THEN '\''<1MB'\''
+      WHEN (input_fingerprint->>'\''original_size'\'')::bigint < 5000000 THEN '\''1-5MB'\''
+      WHEN (input_fingerprint->>'\''original_size'\'')::bigint < 10000000 THEN '\''5-10MB'\''
+      ELSE '\''>=10MB'\'' END AS bucket,
+    COUNT(*) AS count
+  FROM jobs GROUP BY bucket
+), retry_counts AS (
+  SELECT job_id, COUNT(*) AS attempt_count FROM attempts GROUP BY job_id
+)
+SELECT
+  (SELECT COUNT(*) FROM processing_processingjob j JOIN selected r ON r.id = j.run_id) AS cohort_size,
+  (SELECT COALESCE(jsonb_object_agg(status, count), '\''{}'\''::jsonb)
+     FROM (SELECT status, COUNT(*) FROM terminal_jobs GROUP BY status) outcomes) AS terminal_outcomes,
+  (SELECT jsonb_build_object(
+     '\''jobs'\'', (SELECT COUNT(*) FROM jobs),
+     '\''terminal_attempts'\'', (SELECT COUNT(*) FROM attempts WHERE terminal_at IS NOT NULL),
+     '\''creation_to_claim_ms'\'', (SELECT COUNT(creation_to_claim_ms) FROM first_claims),
+     '\''download_ms'\'', (SELECT COUNT(download_duration_ms) FROM measurements),
+     '\''compute_ms'\'', (SELECT COUNT(compute_duration_ms) FROM measurements),
+     '\''total_ms'\'', (SELECT COUNT(total_duration_ms) FROM measurements),
+     '\''model_load_ms'\'', (SELECT COUNT(model_load_ms) FROM measurements),
+     '\''decode_ms'\'', (SELECT COUNT(decode_ms) FROM measurements),
+     '\''detect_ms'\'', (SELECT COUNT(detect_ms) FROM measurements),
+     '\''embed_ms'\'', (SELECT COUNT(embed_ms) FROM measurements)
+   )) AS sample_counts,
+  (SELECT COUNT(*) FROM retry_counts WHERE attempt_count > 1) AS retried_job_count,
+  (SELECT COUNT(*) FROM attempts WHERE status = '\''expired'\'') AS expired_attempt_count,
+  (SELECT COUNT(*) FROM attempts WHERE status = '\''stale'\'') AS stale_attempt_count,
+  (SELECT COUNT(*) FROM attempts WHERE error_code = '\''lease_not_current'\'') AS lease_loss_count,
+  (SELECT COALESCE(jsonb_object_agg(error_code, count), '\''{}'\''::jsonb)
+     FROM (SELECT error_code, COUNT(*) FROM attempts
+           WHERE terminal_at IS NOT NULL AND error_code <> '\'''\'' GROUP BY error_code) errors) AS terminal_error_code_counts,
+  (SELECT COALESCE(jsonb_object_agg(bucket, count), '\''{}'\''::jsonb) FROM size_distribution) AS representative_input_size_distribution,
+  '\''not_collected_by_benchmark_contract'\'' AS representative_dimension_distribution,
+  EXTRACT(EPOCH FROM (r.closed_at - r.created_at)) * 1000 AS wall_clock_ms,
+  (SELECT COUNT(*) FROM terminal_jobs) / NULLIF(EXTRACT(EPOCH FROM (r.closed_at - r.created_at)) / 60, 0) AS photos_per_minute,
+  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY creation_to_claim_ms) FROM first_claims) AS creation_to_claim_p50_ms,
+  (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY creation_to_claim_ms) FROM first_claims) AS creation_to_claim_p95_ms,
+  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY download_duration_ms) FROM measurements) AS download_p50_ms,
+  (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY download_duration_ms) FROM measurements) AS download_p95_ms,
+  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY compute_duration_ms) FROM measurements) AS compute_p50_ms,
+  (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY compute_duration_ms) FROM measurements) AS compute_p95_ms,
+  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY total_duration_ms) FROM measurements) AS total_p50_ms,
+  (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY total_duration_ms) FROM measurements) AS total_p95_ms,
+  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY model_load_ms) FROM measurements) AS model_load_p50_ms,
+  (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY model_load_ms) FROM measurements) AS model_load_p95_ms,
+  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY decode_ms) FROM measurements) AS decode_p50_ms,
+  (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY decode_ms) FROM measurements) AS decode_p95_ms,
+  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY detect_ms) FROM measurements) AS detect_p50_ms,
+  (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY detect_ms) FROM measurements) AS detect_p95_ms,
+  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY embed_ms) FROM measurements) AS embed_p50_ms,
+  (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY embed_ms) FROM measurements) AS embed_p95_ms
+FROM selected r
+"""
+with connection.cursor() as cursor:
+    cursor.execute(sql, [os.environ["BENCHMARK_RUN_ID"]])
+    print(dict(zip([column[0] for column in cursor.description], cursor.fetchone())))
+'
+```
+
+Снимите host/container evidence рядом с каждым baseline/replay, не добавляя в отчёт логи,
+идентификаторы или storage details. Подставьте имя worker container из первого вызова во второй:
+
+```bash
+docker compose --profile worker ps
+docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'
+docker inspect --format 'restarts={{.RestartCount}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}' <worker-container>
+grep -E 'MemTotal|MemAvailable' /proc/meminfo
+df -h
+iostat -xz 1 3
+```
+
+`docker stats` records CPU and RSS; `docker inspect` records restarts/OOM; `/proc/meminfo`,
+`df`, and `iostat` record available memory, disk space, and iowait. If `iostat` is unavailable,
+record that fact rather than installing tools during a benchmark.
+
 ## Stop and rollback
 
 Stop the worker first. This preserves all jobs, attempts, reports, originals, and the local PostgreSQL volume for inspection:

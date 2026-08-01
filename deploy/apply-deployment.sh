@@ -24,8 +24,18 @@ requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}"
+requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
 requested_selfie_search_enabled="${SELFIE_SEARCH_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
+
+case "$requested_worker_replicas" in
+    1|2)
+        ;;
+    *)
+        echo "PHOTO_WORKER_REPLICAS must be 1 or 2" >&2
+        exit 2
+        ;;
+esac
 
 case "$GUNICORN_WORKERS:$GUNICORN_THREADS:$GUNICORN_TIMEOUT:$GUNICORN_MAX_REQUESTS:$GUNICORN_MAX_REQUESTS_JITTER" in
     5:2:60:1000:100)
@@ -52,7 +62,7 @@ while :; do
             ;;
     esac
     case "$processor_identity" in
-        1/selfie_query/1|1/capture_metadata/1|1/face_embedding/1|2/generate_preview/1|2/face_embedding/2)
+        1/selfie_query/1|1/capture_metadata/1|1/face_embedding/1|2/generate_preview/1|2/face_embedding/2|3/face_embedding_benchmark/1)
             ;;
         *)
             echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
@@ -238,6 +248,25 @@ compose_with_requested_processing_profile() {
     compose_with_processing_profile "$requested_processing_enabled" "$DEPLOY_ROOT/.env" "$@"
 }
 
+compose_reconcile_processing_profile() {
+    processing_enabled="$1"
+    compose_env_file="$2"
+    worker_replicas="$3"
+
+    if [ "$processing_enabled" = True ]; then
+        compose_with_env_file "$compose_env_file" --profile worker \
+            up -d --remove-orphans --scale worker="$worker_replicas"
+    else
+        compose_with_env_file "$compose_env_file" --profile worker rm -sf worker || return 1
+        compose_with_env_file "$compose_env_file" up -d --remove-orphans
+    fi
+}
+
+compose_reconcile_requested_processing_profile() {
+    compose_reconcile_processing_profile \
+        "$requested_processing_enabled" "$DEPLOY_ROOT/.env" "$requested_worker_replicas"
+}
+
 diagnostics() {
     compose ps || true
     compose logs --tail=100 web nginx || true
@@ -246,10 +275,14 @@ diagnostics() {
 worker_runtime_diagnostics() {
     echo "Worker runtime verification diagnostics:" >&2
     compose_with_requested_processing_profile ps || true
-    if [ -n "${worker_container:-}" ]; then
-        docker inspect \
-            --format 'worker_state={{.State.Status}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} restart_count={{.RestartCount}}' \
-            "$worker_container" 2>&1 || true
+    if [ -n "${worker_containers:-}" ]; then
+        printf 'Expected worker containers (%s):\n%s\n' \
+            "$requested_worker_replicas" "$worker_containers" >&2
+        for worker_container in $worker_containers; do
+            docker inspect \
+                --format 'worker_id={{.Id}} worker_state={{.State.Status}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} restart_count={{.RestartCount}}' \
+                "$worker_container" 2>&1 || true
+        done
     fi
     compose_with_requested_processing_profile logs --tail=100 worker || true
 }
@@ -331,6 +364,7 @@ clear_candidate_compose_interpolation() {
         PHOTO_WORKER_LEASE_SECONDS \
         PHOTO_WORKER_PROCESSOR_IDENTITIES \
         PHOTO_WORKER_PROCESSOR_TYPES \
+        PHOTO_WORKER_REPLICAS \
         SELFIE_SEARCH_ENABLED \
         SELFIE_SEARCH_MAX_UPLOAD_BYTES \
         SELFIE_SEARCH_MAX_PIXELS \
@@ -348,8 +382,7 @@ recover_previous_deployment() {
     if [ "$previous_env_exists" -eq 0 ]; then
         recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.recovery.XXXXXX")" || return 1
         cp "$DEPLOY_ROOT/.env" "$recovery_env_tmp" || return 1
-        if ! compose_with_processing_profile "$requested_processing_enabled" "$recovery_env_tmp" \
-            down --remove-orphans; then
+        if ! compose_with_env_file "$recovery_env_tmp" down --remove-orphans; then
             return 1
         fi
         rm -f "$DEPLOY_ROOT/.env"
@@ -361,8 +394,8 @@ recover_previous_deployment() {
     mv "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
     previous_env_tmp=""
     clear_candidate_compose_interpolation
-    compose_with_processing_profile "$previous_processing_enabled" "$DEPLOY_ROOT/.env" \
-        up -d --remove-orphans || return 1
+    compose_reconcile_processing_profile \
+        "$previous_processing_enabled" "$DEPLOY_ROOT/.env" "$previous_worker_replicas" || return 1
     echo "Previous application and worker profile reconciled" >&2
 }
 
@@ -403,6 +436,7 @@ fail() {
 install -d -m 0755 "$DEPLOY_ROOT"
 previous_upload_enabled="False"
 previous_processing_enabled="False"
+previous_worker_replicas=1
 previous_env_exists=0
 previous_deployment_target_exists=0
 previous_compose_project_name_exists=0
@@ -417,11 +451,24 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_processing_enabled="$(
         sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
+    previous_worker_replicas="$(
+        sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$DEPLOY_ROOT/.env" | head -n 1
+    )"
     case "$previous_processing_enabled" in
         True|False)
             ;;
         *)
             previous_processing_enabled="False"
+            ;;
+    esac
+    case "$previous_worker_replicas" in
+        '')
+            previous_worker_replicas=1
+            ;;
+        1|2)
+            ;;
+        *)
+            fail "Previous PHOTO_WORKER_REPLICAS must be 1 or 2"
             ;;
     esac
 fi
@@ -485,6 +532,7 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
     printf 'PHOTO_WORKER_PROCESSOR_IDENTITIES=%s\n' "$requested_worker_processor_identities"
     printf 'PHOTO_WORKER_PROCESSOR_TYPES=%s\n' "$requested_processor_types"
+    printf 'PHOTO_WORKER_REPLICAS=%s\n' "$requested_worker_replicas"
     printf 'SELFIE_SEARCH_ENABLED=%s\n' "$requested_selfie_search_enabled"
     printf 'SELFIE_SEARCH_MAX_UPLOAD_BYTES=%s\n' "$requested_selfie_search_max_upload_bytes"
     printf 'SELFIE_SEARCH_MAX_PIXELS=%s\n' "$requested_selfie_search_max_pixels"
@@ -565,7 +613,16 @@ max_compose_attempts=3
 compose_wait_seconds=5
 while [ "$attempt" -le "$max_compose_attempts" ]; do
     compose_up_status=0
-    if compose_with_requested_processing_profile up -d --remove-orphans; then
+    if [ "$previous_env_exists" -eq 0 ] && [ "$requested_processing_enabled" = False ]; then
+        compose_up_command() {
+            compose up -d --remove-orphans
+        }
+    else
+        compose_up_command() {
+            compose_reconcile_requested_processing_profile
+        }
+    fi
+    if compose_up_command; then
         break
     else
         compose_up_status=$?
@@ -606,36 +663,50 @@ while [ "$attempt" -le "$max_attempts" ]; do
 done
 
 if [ "$requested_processing_enabled" = True ]; then
-    worker_container="$(compose_with_requested_processing_profile ps -q worker)"
-    if [ -z "$worker_container" ]; then
+    worker_containers="$(compose_with_requested_processing_profile ps -q worker)"
+    worker_container_count="$(
+        printf '%s\n' "$worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
+    )"
+    if [ "$worker_container_count" -ne "$requested_worker_replicas" ]; then
         fail_worker_runtime_verification
     fi
     attempt=1
     max_worker_attempts=3
-    initial_restart_count=""
+    initial_worker_restart_counts=""
     while [ "$attempt" -le "$max_worker_attempts" ]; do
-        worker_state="$(
-            docker inspect \
-                --format '{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}' \
-                "$worker_container" 2>/dev/null || true
-        )"
-        worker_running="${worker_state%% *}"
-        worker_state_tail="${worker_state#* }"
-        worker_restarting="${worker_state_tail%% *}"
-        worker_restart_count="${worker_state_tail#* }"
-        case "$worker_restart_count" in
-            ''|*[!0-9]*)
+        for worker_container in $worker_containers; do
+            worker_state="$(
+                docker inspect \
+                    --format '{{.State.Running}} {{.State.Restarting}} {{.State.OOMKilled}} {{.RestartCount}}' \
+                    "$worker_container" 2>/dev/null || true
+            )"
+            worker_running="${worker_state%% *}"
+            worker_state_tail="${worker_state#* }"
+            worker_restarting="${worker_state_tail%% *}"
+            worker_state_tail="${worker_state_tail#* }"
+            worker_oom_killed="${worker_state_tail%% *}"
+            worker_restart_count="${worker_state_tail#* }"
+            case "$worker_restart_count" in
+                ''|*[!0-9]*)
+                    fail_worker_runtime_verification
+                    ;;
+            esac
+            if [ "$worker_running" != true ] || \
+                [ "$worker_restarting" != false ] || \
+                [ "$worker_oom_killed" != false ]; then
                 fail_worker_runtime_verification
-                ;;
-        esac
-        if [ "$worker_running" != true ] || [ "$worker_restarting" != false ]; then
-            fail_worker_runtime_verification
-        fi
-        if [ -z "$initial_restart_count" ]; then
-            initial_restart_count="$worker_restart_count"
-        elif [ "$worker_restart_count" != "$initial_restart_count" ]; then
-            fail_worker_runtime_verification
-        fi
+            fi
+            case " $initial_worker_restart_counts " in
+                *" $worker_container:$worker_restart_count "*)
+                    ;;
+                *" $worker_container:"*)
+                    fail_worker_runtime_verification
+                    ;;
+                *)
+                    initial_worker_restart_counts="${initial_worker_restart_counts}${worker_container}:${worker_restart_count} "
+                    ;;
+            esac
+        done
         if [ "$attempt" -lt "$max_worker_attempts" ]; then
             sleep 2
         fi

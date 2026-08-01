@@ -39,6 +39,7 @@ from selfie_search.storage import StoredTemporarySelfie, TemporarySelfieStorage
 from processing.auth import has_worker_token
 from processing.contracts import (
     CAPTURE_METADATA_CONTRACT,
+    FACE_EMBEDDING_BENCHMARK_CONTRACT,
     FACE_EMBEDDING_CONTRACT,
     GENERATE_PREVIEW_CONTRACT,
     PREVIEW_FACE_EMBEDDING_CONTRACT,
@@ -138,12 +139,14 @@ _SELFIE_QUERY_FAILURES = {
 _PROCESSOR_FAILURES = {
     "capture_metadata": _CAPTURE_METADATA_FAILURES,
     "face_embedding": _FACE_EMBEDDING_FAILURES,
+    "face_embedding_benchmark": _FACE_EMBEDDING_FAILURES,
     "generate_preview": _GENERATE_PREVIEW_FAILURES,
     "selfie_query": _SELFIE_QUERY_FAILURES,
 }
 _PROCESSOR_RESULT_WARNINGS = {
     "capture_metadata": _CAPTURE_METADATA_WARNINGS,
     "face_embedding": _FACE_RESULT_WARNING_CODES,
+    "face_embedding_benchmark": _FACE_RESULT_WARNING_CODES,
     "generate_preview": _GENERATE_PREVIEW_WARNING_CODES,
     "selfie_query": set(),
 }
@@ -578,7 +581,7 @@ def _input_fingerprint(value: object, *, contract_version: int) -> dict[str, int
         ):
             raise FingerprintInvariant()
         return cast(dict[str, int | str | None], value)
-    if contract_version != 1:
+    if contract_version not in {1, 3}:
         raise FingerprintInvariant()
     key = value.get("original_key")
     size = value.get("original_size")
@@ -870,6 +873,11 @@ def _processor_contract(processor_type: str, contract_version: int, processor_ve
             FACE_EMBEDDING_CONTRACT.processor_version,
         ),
         (
+            FACE_EMBEDDING_BENCHMARK_CONTRACT.contract_version,
+            FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_type,
+            FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_version,
+        ),
+        (
             GENERATE_PREVIEW_CONTRACT.contract_version,
             GENERATE_PREVIEW_CONTRACT.processor_type,
             GENERATE_PREVIEW_CONTRACT.processor_version,
@@ -1064,6 +1072,8 @@ def _valid_result(value: object, processor_type: str, contract_version: int) -> 
         return _valid_capture_metadata_result(value)
     if processor_type == FACE_EMBEDDING_CONTRACT.processor_type:
         return _valid_face_embedding_result(value, contract_version=contract_version)
+    if processor_type == FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_type:
+        return _valid_face_embedding_benchmark_result(value)
     if processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
         return _valid_preview_result(value)
     return False
@@ -1168,6 +1178,39 @@ def _valid_face_embedding_result(value: object, *, contract_version: int = 1) ->
     return all(
         _valid_face_embedding_record(face, embedding_dimensions=embedding_dimensions)
         for face in faces
+    )
+
+
+def _valid_face_embedding_benchmark_result(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"model", "face_count", "warnings", "timings"}:
+        return False
+    if not _safe_face_model(value["model"]):
+        return False
+    if not (
+        isinstance(value["face_count"], int)
+        and not isinstance(value["face_count"], bool)
+        and 0 <= value["face_count"] <= _V2_FACE_EMBEDDING_MAX_FACES
+    ):
+        return False
+    warnings = value["warnings"]
+    if not (
+        isinstance(warnings, list)
+        and len(warnings) <= 8
+        and all(_valid_face_warning(code) for code in warnings)
+    ):
+        return False
+    timings = value["timings"]
+    return (
+        isinstance(timings, dict)
+        and set(timings) == {"decode_ms", "model_load_ms", "detect_ms", "embed_ms", "total_ms"}
+        and all(_duration(duration) for duration in timings.values())
+        and timings["total_ms"]
+        >= (
+            timings["decode_ms"]
+            + timings["model_load_ms"]
+            + timings["detect_ms"]
+            + timings["embed_ms"]
+        )
     )
 
 

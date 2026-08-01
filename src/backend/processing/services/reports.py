@@ -10,6 +10,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from processing.models import (
+    FACE_EMBEDDING_BENCHMARK_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     JSON_MAX_BYTES,
     REPORT_JSON_MAX_BYTES,
@@ -133,7 +134,6 @@ def _photo_row(job: ProcessingJob) -> dict[str, Any]:
         capture_time_present = result["capture_time"] is not None
     faces = _face_embedding_counts(accepted)
     row: dict[str, Any] = {
-        "photo_id": job.photo_id,
         "status": job.status,
         "accepted_attempt_id": str(accepted.id) if accepted else None,
         "capture_time_present": capture_time_present,
@@ -148,6 +148,8 @@ def _photo_row(job: ProcessingJob) -> dict[str, Any]:
         ],
         "error_code": (terminal.error_code if terminal else "")[:64],
     }
+    if job.processor_type != FACE_EMBEDDING_BENCHMARK_PROCESSOR:
+        row["photo_id"] = job.photo_id
     if job.processor_type == GENERATE_PREVIEW_PROCESSOR:
         row["preview"] = _preview_row(result, accepted=accepted)
     return row

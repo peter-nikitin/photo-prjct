@@ -22,6 +22,7 @@ from photo_worker.contracts import (
     PREVIEW_CONTRACT_VERSION,
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
+    PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     CaptureMetadataResult,
@@ -51,6 +52,7 @@ _SUPPORTED_IDENTITIES = {
     (1, PROCESSOR_TYPE_FACE_EMBEDDING, 1),
     (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
     (2, PROCESSOR_TYPE_FACE_EMBEDDING, 2),
+    (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
     (1, PROCESSOR_TYPE_SELFIE_QUERY, 1),
 }
 
@@ -122,6 +124,7 @@ class WorkerConfig:
         supported = {
             PROCESSOR_TYPE,
             PROCESSOR_TYPE_FACE_EMBEDDING,
+            PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
             PROCESSOR_TYPE_GENERATE_PREVIEW,
             PROCESSOR_TYPE_SELFIE_QUERY,
         }
@@ -168,7 +171,11 @@ class WorkerConfig:
             processor_types = tuple(item.strip() for item in plural.split(","))
             if not all(processor_types):
                 raise ValueError("processor types must not contain empty values")
-        identities = tuple(item for item in raw_identities.split(",") if item)
+        identities = tuple(item.strip() for item in raw_identities.split(",") if item.strip())
+        # Only the dedicated benchmark deployment is isolated from the product priority list.
+        # Product identity overrides retain their configured type fallbacks.
+        if identities == ("3/face_embedding_benchmark/1",):
+            processor_types = ()
         return (
             cls(
                 worker_build=build,
@@ -294,8 +301,7 @@ class Worker:
             raise ApiError("invalid_api_response", retryable=False)
         self._next_poll_delay_seconds = job.configuration.poll_min_delay_seconds
         _lifecycle("claimed", job, secrets=self._config.log_secrets)
-        self._process(job)
-        return None
+        return self._process(job)
 
     def _claim_plural(self, empty_delays: list[int]) -> Claim | None:
         identities = self._priority_identities()
@@ -399,9 +405,8 @@ class Worker:
             try:
                 idle_delay = self.run_once()
                 failures = 0
-                time.sleep(
-                    float(idle_delay) if idle_delay is not None else self._next_poll_delay_seconds
-                )
+                if idle_delay is not None:
+                    time.sleep(float(idle_delay))
             except ApiError as error:
                 if error.code == "lease_not_current":
                     time.sleep(self._next_poll_delay_seconds)
@@ -430,7 +435,7 @@ class Worker:
                 )
                 time.sleep(backoff_delay)
 
-    def _process(self, job: ClaimedJob) -> None:
+    def _process(self, job: ClaimedJob) -> int | None:
         _lifecycle("started", job, secrets=self._config.log_secrets)
         started_at = _timestamp()
         total_started = monotonic()
@@ -529,7 +534,7 @@ class Worker:
                 keeper.raise_if_lost()
             except AttemptLost:
                 _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
-                return
+                return job.configuration.poll_min_delay_seconds
             code = getattr(error, "code", None)
             if not isinstance(code, str):
                 code = "decode_failed"
@@ -560,7 +565,7 @@ class Worker:
             except ApiError as submission_error:
                 if submission_error.code == "lease_not_current":
                     _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
-                    return
+                    return job.configuration.poll_min_delay_seconds
                 raise
             _lifecycle(
                 "failed",
@@ -572,17 +577,18 @@ class Worker:
             )
         except AttemptLost:
             _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
-            return
+            return job.configuration.poll_min_delay_seconds
         except ApiError as error:
             if error.code == "lease_not_current":
                 _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
-                return
+                return job.configuration.poll_min_delay_seconds
             raise
         finally:
             if keeper is not None:
                 keeper.stop()
             _unlink_temporary(input_path)
             _unlink_temporary(preview_path)
+        return None
 
     def _run_processor(self, job: ClaimedJob, input_path: Path, preview_path: Path):
         if job.processor_type == PROCESSOR_TYPE:
@@ -592,7 +598,10 @@ class Worker:
                 max_pixels=job.configuration.max_pixels,
                 date_field_precedence=job.configuration.date_field_precedence,
             )
-        if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
+        if job.processor_type in {
+            PROCESSOR_TYPE_FACE_EMBEDDING,
+            PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+        }:
             result = extract_face_embeddings(
                 input_path,
                 max_bytes=job.input_limits.max_bytes,
@@ -605,6 +614,13 @@ class Worker:
                 if job.input_geometry is None:
                     raise ValueError("preview face claim is missing input geometry")
                 return result.as_payload() | {"input_geometry": job.input_geometry}
+            if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
+                return {
+                    "model": result.model,
+                    "face_count": len(result.faces),
+                    "warnings": list(result.warnings),
+                    "timings": dict(result.timings),
+                }
             return result
         if job.processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW:
             return generate_preview(
@@ -819,7 +835,11 @@ def _lifecycle(
         phase,
         redact(job.event_id, secrets=secrets),
         redact(job.run_id, secrets=secrets),
-        redact(job.photo_id, secrets=secrets),
+        (
+            "<omitted>"
+            if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK
+            else redact(job.photo_id, secrets=secrets)
+        ),
         redact(job.search_id, secrets=secrets),
         redact(job.id, secrets=secrets),
         redact(job.attempt_id, secrets=secrets),

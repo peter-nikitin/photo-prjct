@@ -97,7 +97,7 @@ def test_staging_face_embedding_benchmark_is_manual_and_bounded() -> None:
     assert dispatch["inputs"]["event_slug"]["required"] is False
     assert dispatch["inputs"]["source_run_uuid"]["required"] is False
     assert run["uses"] == "appleboy/ssh-action@v1.0.3"
-    assert run["with"]["script_stop"] is True
+    assert "script_stop" not in run["with"]
     assert run["env"] == {
         "BENCHMARK_OPERATION": "${{ inputs.operation }}",
         "BENCHMARK_EVENT_SLUG": "${{ inputs.event_slug }}",
@@ -108,6 +108,9 @@ def test_staging_face_embedding_benchmark_is_manual_and_bounded() -> None:
     assert "PHOTO_PROCESSING_PREVIEW_ENABLED" in run["with"]["script"]
     assert 'test "$preview_enabled" = False' in run["with"]["script"]
     assert "run_face_embedding_benchmark" in run["with"]["script"]
+    assert 'test -n "$BENCHMARK_EVENT_SLUG"' in run["with"]["script"]
+    assert "printf '%s' \"$BENCHMARK_EVENT_SLUG\" | grep" not in run["with"]["script"]
+    assert '--event "$BENCHMARK_EVENT_SLUG"' in run["with"]["script"]
     assert "run_web shell -c" in run["with"]["script"]
     assert "photos_per_minute" in run["with"]["script"]
     assert "run.report" not in run["with"]["script"]

@@ -40,7 +40,6 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           envs: BENCHMARK_OPERATION,BENCHMARK_EVENT_SLUG,BENCHMARK_SOURCE_RUN_UUID
-          script_stop: true
           script: |
             set -eu
             cd /opt/photo-prjct
@@ -66,7 +65,7 @@ jobs:
             case "$BENCHMARK_OPERATION" in
               baseline)
                 test "$worker_replicas" = 1
-                printf '%s' "$BENCHMARK_EVENT_SLUG" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$'
+                test -n "$BENCHMARK_EVENT_SLUG"
                 benchmark_run_id="$(run_web run_face_embedding_benchmark \
                   --event "$BENCHMARK_EVENT_SLUG" \
                   --limit 114 \

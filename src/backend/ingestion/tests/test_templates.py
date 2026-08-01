@@ -36,7 +36,7 @@ class UploadTemplateTests(TestCase):
     def setUp(self) -> None:
         self.client.force_login(self.user)
 
-    def test_upload_page_renders_accessible_bounded_queue_shell(self) -> None:
+    def test_upload_page_renders_accessible_grouped_queue_shell(self) -> None:
         response = self.client.get(reverse("upload_page"))
 
         self.assertEqual(response.status_code, 200)
@@ -53,7 +53,8 @@ class UploadTemplateTests(TestCase):
         self.assertContains(response, "data-retry-item")
         self.assertContains(response, "data-csrf-token=")
         self.assertContains(response, "Закрытие или перезагрузка страницы остановит")
-        self.assertContains(response, 'data-queue-window-size="20"')
+        self.assertContains(response, 'data-queue-group-toggle')
+        self.assertContains(response, 'data-queue-group-content')
         self.assertContains(
             response, 'data-register-url-template="/photographer/uploads/{batch}/items/"'
         )
@@ -150,18 +151,45 @@ class UploadTemplateTests(TestCase):
         response = self.client.get(reverse("event_catalog"))
         self.assertNotContains(response, reverse("upload_page"))
 
-    def test_upload_template_renders_at_most_twenty_queue_items(self) -> None:
+    def test_upload_template_renders_ordered_groups_with_twenty_item_pages(self) -> None:
         request = RequestFactory().get(reverse("upload_page"))
         request.user = self.user
-        queue = [
+        item = {
+            "name": "",
+            "meta": "10 МБ",
+            "status": "Ожидает",
+            "status_class": "pending",
+            "progress": 0,
+        }
+        queue_groups = [
             {
-                "name": f"photo-{index}.jpg",
-                "meta": "10 МБ",
-                "status": "Ожидает",
-                "status_class": "pending",
-                "progress": 0,
-            }
-            for index in range(25)
+                "key": "needs_attention",
+                "label": "Требуют внимания",
+                "expanded": True,
+                "count": 25,
+                "items": [{**item, "name": f"attention-{index}.jpg"} for index in range(25)],
+            },
+            {
+                "key": "uploading",
+                "label": "Загружаются",
+                "expanded": True,
+                "count": 25,
+                "items": [{**item, "name": f"uploading-{index}.jpg"} for index in range(25)],
+            },
+            {
+                "key": "waiting",
+                "label": "Ожидают",
+                "expanded": False,
+                "count": 9_925,
+                "items": [{**item, "name": f"waiting-{index}.jpg"} for index in range(9_925)],
+            },
+            {
+                "key": "uploaded",
+                "label": "Загружены",
+                "expanded": False,
+                "count": 25,
+                "items": [{**item, "name": f"uploaded-{index}.jpg"} for index in range(25)],
+            },
         ]
 
         html = render_to_string(
@@ -169,14 +197,27 @@ class UploadTemplateTests(TestCase):
             {
                 "events": [self.event],
                 "upload_state": "active",
-                "upload_queue": queue,
+                "upload_queue_groups": queue_groups,
             },
             request=request,
         )
 
-        self.assertEqual(html.count("data-rendered-queue-item"), 20)
-        self.assertIn("photo-19.jpg", html)
-        self.assertNotIn("photo-20.jpg", html)
+        self.assertEqual(html.count("data-rendered-queue-item"), 40)
+        self.assertLess(html.index('data-queue-group="needs_attention"'), html.index('data-queue-group="uploading"'))
+        self.assertLess(html.index('data-queue-group="uploading"'), html.index('data-queue-group="waiting"'))
+        self.assertLess(html.index('data-queue-group="waiting"'), html.index('data-queue-group="uploaded"'))
+        self.assertRegex(
+            html, r'data-queue-group-toggle="needs_attention"\s+aria-expanded="true"'
+        )
+        self.assertRegex(html, r'data-queue-group-toggle="uploading"\s+aria-expanded="true"')
+        self.assertRegex(html, r'data-queue-group-toggle="waiting"\s+aria-expanded="false"')
+        self.assertRegex(html, r'data-queue-group-toggle="uploaded"\s+aria-expanded="false"')
+        self.assertIn("attention-19.jpg", html)
+        self.assertNotIn("attention-20.jpg", html)
+        self.assertIn("uploading-19.jpg", html)
+        self.assertNotIn("uploading-20.jpg", html)
+        self.assertNotIn("waiting-0.jpg", html)
+        self.assertNotIn("Показаны последние 20 файлов", html)
 
         self.user.user_permissions.add(
             Permission.objects.get(content_type__app_label="ingestion", codename="upload_photos")

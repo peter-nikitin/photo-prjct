@@ -117,7 +117,6 @@ def upload_page(request: HttpRequest) -> HttpResponse:
                 "max_file_megabytes": settings.PHOTO_UPLOAD_MAX_FILE_BYTES // (1024 * 1024),
                 "registration_chunk": settings.PHOTO_UPLOAD_REGISTRATION_CHUNK,
                 "concurrency": settings.PHOTO_UPLOAD_CONCURRENCY,
-                "queue_window": 20,
             },
             "upload_state": "empty",
             "upload_control_urls": _upload_control_urls(),

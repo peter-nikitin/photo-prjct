@@ -195,8 +195,54 @@
     return status === 0 || status === 408 || status === 429 || status >= 500;
   }
 
-  function visibleItems(items, windowSize) {
-    return items.slice(Math.max(0, items.length - windowSize));
+  const QUEUE_PAGE_SIZE = 20;
+  const QUEUE_GROUPS = [
+    {
+      key: 'needs_attention',
+      label: 'Требуют внимания',
+      expanded: true,
+      includes: (item) => ['failed', 'needs_attention'].includes(item.status),
+    },
+    {
+      key: 'uploading',
+      label: 'Загружаются',
+      expanded: true,
+      includes: (item) => item.status === 'uploading',
+    },
+    {
+      key: 'waiting',
+      label: 'Ожидают',
+      expanded: false,
+      includes: (item) => !['failed', 'needs_attention', 'uploading', 'uploaded'].includes(item.status),
+    },
+    {
+      key: 'uploaded',
+      label: 'Загружены',
+      expanded: false,
+      includes: (item) => item.status === 'uploaded',
+    },
+  ];
+
+  function groupItems(items) {
+    return QUEUE_GROUPS.map(({ key, label, expanded, includes }) => {
+      const groupedItems = items.filter(includes);
+      return { key, label, expanded, items: groupedItems, count: groupedItems.length };
+    });
+  }
+
+  function visibleGroupItems(group, offset = 0, pageSize = QUEUE_PAGE_SIZE) {
+    const start = Math.max(0, offset);
+    return group.items.slice(start, start + pageSize);
+  }
+
+  function queuePresentation(coordinator) {
+    if (!coordinator.queuePresentation) {
+      coordinator.queuePresentation = {
+        expanded: Object.fromEntries(QUEUE_GROUPS.map(({ key, expanded }) => [key, expanded])),
+        offsets: Object.fromEntries(QUEUE_GROUPS.map(({ key }) => [key, 0])),
+      };
+    }
+    return coordinator.queuePresentation;
   }
 
   function summarize(items) {
@@ -227,6 +273,83 @@
     if (item.status === 'uploading') return `Передача · ${item.progress}%`;
     if (item.status === 'waiting') return 'Ожидает повторного выбора';
     return 'Ожидает';
+  }
+
+  function renderQueueRow(template, item, groupKey, index) {
+    const row = template.content.firstElementChild.cloneNode(true);
+    const errorId = `queue-error-${groupKey}-${index}`;
+    row.dataset.clientItemId = item.clientItemId;
+    row.dataset.renderedQueueItem = '';
+    row.classList.add(`queue-item-${item.status === 'uploading' ? 'active' : item.status}`);
+    row.querySelector('[data-file-name]').textContent = item.file.name;
+    row.querySelector('[data-file-meta]').textContent = formatBytes(item.file.size);
+    row.querySelector('[data-file-status]').textContent = statusCopy(item);
+    const itemProgress = row.querySelector('progress');
+    itemProgress.value = item.progress;
+    itemProgress.textContent = `${item.progress}%`;
+    const error = row.querySelector('[data-file-error]');
+    error.id = errorId;
+    error.textContent = item.error;
+    error.hidden = !item.error;
+    const retry = row.querySelector('[data-retry-item]');
+    retry.hidden = item.status !== 'failed';
+    retry.dataset.clientItemId = item.clientItemId;
+    retry.setAttribute('aria-describedby', errorId);
+    const cancel = row.querySelector('[data-cancel-item]');
+    cancel.hidden = !['registered', 'retry_pending', 'uploading'].includes(item.status);
+    cancel.dataset.clientItemId = item.clientItemId;
+    return row;
+  }
+
+  function renderQueue(root, coordinator) {
+    const queue = root.querySelector('[data-upload-queue]');
+    const groupTemplate = root.querySelector('#upload-queue-group-template');
+    const rowTemplate = root.querySelector('#upload-queue-row-template');
+    if (!queue || !groupTemplate || !rowTemplate) return;
+    if (!coordinator.items.length) return;
+
+    const presentation = queuePresentation(coordinator);
+    queue.replaceChildren();
+    for (const group of groupItems(coordinator.items)) {
+      const section = groupTemplate.content.firstElementChild.cloneNode(true);
+      const content = section.querySelector('[data-queue-group-content]');
+      const toggle = section.querySelector('[data-queue-group-toggle]');
+      const items = section.querySelector('[data-queue-group-items]');
+      const pagination = section.querySelector('[data-queue-pagination]');
+      const maxOffset = Math.max(0, Math.floor((group.count - 1) / QUEUE_PAGE_SIZE) * QUEUE_PAGE_SIZE);
+      const offset = Math.min(presentation.offsets[group.key] || 0, maxOffset);
+      const expanded = presentation.expanded[group.key];
+      presentation.offsets[group.key] = offset;
+
+      section.dataset.queueGroup = group.key;
+      content.id = `queue-group-${group.key}`;
+      content.hidden = !expanded;
+      toggle.dataset.queueGroupToggle = group.key;
+      toggle.setAttribute('aria-controls', content.id);
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.querySelector('[data-queue-group-label]').textContent = group.label;
+      toggle.querySelector('[data-queue-group-count]').textContent = String(group.count);
+
+      if (expanded) {
+        for (const [index, item] of visibleGroupItems(group, offset, QUEUE_PAGE_SIZE).entries()) {
+          items.append(renderQueueRow(rowTemplate, item, group.key, offset + index + 1));
+        }
+      }
+
+      if (group.count > QUEUE_PAGE_SIZE) {
+        const start = offset + 1;
+        const end = Math.min(offset + QUEUE_PAGE_SIZE, group.count);
+        pagination.hidden = false;
+        pagination.querySelector('[data-queue-page-status]').textContent = `Показаны ${start}–${end} из ${group.count}`;
+        const previous = pagination.querySelector('[data-queue-previous-page]');
+        previous.dataset.queuePageGroup = group.key;
+        previous.disabled = offset === 0;
+        const next = pagination.querySelector('[data-queue-next-page]');
+        next.dataset.queuePageGroup = group.key;
+        next.disabled = offset >= maxOffset;
+      }
+      queue.append(section);
+    }
   }
 
   function renderPage(root, coordinator, globalError = '') {
@@ -269,31 +392,7 @@
       if (node) node.textContent = String(value);
     }
 
-    const queue = root.querySelector('[data-upload-queue]');
-    const template = root.querySelector('#upload-queue-row-template');
-    if (!queue || !template || !coordinator.items.length) return;
-    queue.replaceChildren();
-    for (const item of visibleItems(coordinator.items, coordinator.config.queueWindow)) {
-      const row = template.content.firstElementChild.cloneNode(true);
-      row.dataset.clientItemId = item.clientItemId;
-      row.classList.add(`queue-item-${item.status === 'uploading' ? 'active' : item.status}`);
-      row.querySelector('[data-file-name]').textContent = item.file.name;
-      row.querySelector('[data-file-meta]').textContent = formatBytes(item.file.size);
-      row.querySelector('[data-file-status]').textContent = statusCopy(item);
-      const itemProgress = row.querySelector('progress');
-      itemProgress.value = item.progress;
-      itemProgress.textContent = `${item.progress}%`;
-      const error = row.querySelector('[data-file-error]');
-      error.textContent = item.error;
-      error.hidden = !item.error;
-      const retry = row.querySelector('[data-retry-item]');
-      retry.hidden = item.status !== 'failed';
-      retry.dataset.clientItemId = item.clientItemId;
-      const cancel = row.querySelector('[data-cancel-item]');
-      cancel.hidden = !['registered', 'retry_pending', 'uploading'].includes(item.status);
-      cancel.dataset.clientItemId = item.clientItemId;
-      queue.append(row);
-    }
+    renderQueue(root, coordinator);
   }
 
   function bindUploadPage(root, dependencies = {}) {
@@ -313,7 +412,6 @@
       maxFileBytes: Number(root.dataset.maxFileBytes),
       registrationChunk: Number(root.dataset.registrationChunk),
       concurrency: Number(root.dataset.concurrency),
-      queueWindow: Number(root.dataset.queueWindowSize),
     };
     const coordinator = new UploadCoordinator({
       config,
@@ -380,9 +478,24 @@
       begin(event.dataTransfer.files);
     });
     root.querySelector('[data-upload-queue]')?.addEventListener('click', async (event) => {
+      const toggle = event.target.closest('[data-queue-group-toggle]');
+      const previousPage = event.target.closest('[data-queue-previous-page]');
+      const nextPage = event.target.closest('[data-queue-next-page]');
       const retry = event.target.closest('[data-retry-item]');
       const cancel = event.target.closest('[data-cancel-item]');
-      if (retry) {
+      if (toggle) {
+        const presentation = queuePresentation(coordinator);
+        const key = toggle.dataset.queueGroupToggle;
+        presentation.expanded[key] = !presentation.expanded[key];
+        renderPage(root, coordinator, globalError);
+      } else if (previousPage || nextPage) {
+        const control = previousPage || nextPage;
+        const presentation = queuePresentation(coordinator);
+        const delta = nextPage ? QUEUE_PAGE_SIZE : -QUEUE_PAGE_SIZE;
+        const key = control.dataset.queuePageGroup;
+        presentation.offsets[key] = Math.max(0, (presentation.offsets[key] || 0) + delta);
+        renderPage(root, coordinator, globalError);
+      } else if (retry) {
         await coordinator.manualRetry(retry.dataset.clientItemId);
       } else if (cancel) {
         coordinator.cancel(cancel.dataset.clientItemId);
@@ -588,6 +701,13 @@
       }
     }
 
+    markUploading(item, token) {
+      if (token.cancelled || item.status === 'uploading') return;
+      item.status = 'uploading';
+      item.error = '';
+      this.onChange(this);
+    }
+
     async processItem(item, initialGrant = null, token = item.cycleToken) {
       let grant = initialGrant;
       let dataAttempt = 0;
@@ -597,6 +717,7 @@
           await this.finishCancellation(item, token);
           return;
         }
+        this.markUploading(item, token);
         if (!grant) {
           let authorization;
           try {
@@ -618,9 +739,6 @@
           await this.finishCancellation(item, token);
           return;
         }
-        item.status = 'uploading';
-        item.error = '';
-        this.onChange(this);
         const outcome = await this.transfer(item, grant);
         grant = null;
         if (token.cancelled || outcome.type === 'cancelled') {
@@ -784,6 +902,7 @@
     async runManualRetry(item, token) {
       let completed = true;
       try {
+        this.markUploading(item, token);
         const authorization = await this.control(
           interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
           {},
@@ -808,6 +927,7 @@
     }
 
     async runResumeRetry(item, token) {
+      this.markUploading(item, token);
       const authorization = await this.control(
         interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
         {},
@@ -870,6 +990,7 @@
   return {
     chunkItems,
     ControlError,
+    groupItems,
     matchingKey,
     matchResumeSelection,
     prepareAmbiguousFingerprints,
@@ -880,7 +1001,7 @@
     bindUploadPage,
     renderPage,
     summarize,
-    visibleItems,
+    visibleGroupItems,
   };
 });
 

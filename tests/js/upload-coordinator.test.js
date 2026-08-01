@@ -8,12 +8,13 @@ const {
   UploadCoordinator,
   bindUploadPage,
   chunkItems,
+  groupItems,
   matchingKey,
   matchResumeSelection,
   prepareAmbiguousFingerprints,
   prepareSelection,
   summarize,
-  visibleItems,
+  visibleGroupItems,
 } = require('../../src/backend/static/ui/upload-coordinator.js');
 
 function file(name, size, lastModified, contents = name) {
@@ -78,7 +79,6 @@ test('browser binder uses the environment passed to the module factory', () => {
       maxFileBytes: '10',
       registrationChunk: '10',
       concurrency: '4',
-      queueWindowSize: '20',
     },
     querySelector(selector) {
       return selector === '#upload-event' ? eventSelect : null;
@@ -217,7 +217,6 @@ function makeHarness({
       maxFileBytes: 10,
       registrationChunk: 100,
       concurrency: 4,
-      queueWindow: 20,
     },
     fetch,
     XMLHttpRequest: FakeXHR,
@@ -734,6 +733,7 @@ test('cancel during manual retry authorization closes the reopened batch once', 
   const retry = coordinator.manualRetry(coordinator.items[0].clientItemId);
   await retryStarted;
 
+  assert.equal(coordinator.items[0].status, 'uploading');
   assert.equal(coordinator.cancel(coordinator.items[0].clientItemId), true);
   releaseRetry();
   await retry;
@@ -852,21 +852,53 @@ test('chunkItems never registers more than one hundred files in a control call',
   assert.deepEqual(chunks.map((chunk) => chunk.length), [100, 100, 5]);
 });
 
-test('summary and queue rendering stay bounded instead of creating one row per file', () => {
-  const items = Array.from({ length: 30 }, (_, index) => ({
-    file: { size: 10 },
-    status: index < 3 ? 'uploaded' : index < 5 ? 'failed' : 'uploading',
-    progress: index < 3 ? 100 : 50,
-  }));
+test('grouped queue prioritizes actionable work and bounds every expanded page', () => {
+  const items = [
+    { clientItemId: 'failed', file: { name: 'failed.jpg', size: 10 }, status: 'failed', progress: 50 },
+    { clientItemId: 'attention', file: { name: 'attention.jpg', size: 10 }, status: 'needs_attention', progress: 0 },
+    { clientItemId: 'active', file: { name: 'active.jpg', size: 10 }, status: 'uploading', progress: 50 },
+    { clientItemId: 'registered', file: { name: 'registered.jpg', size: 10 }, status: 'registered', progress: 0 },
+    { clientItemId: 'retry', file: { name: 'retry.jpg', size: 10 }, status: 'retry_pending', progress: 0 },
+    { clientItemId: 'waiting', file: { name: 'waiting.jpg', size: 10 }, status: 'waiting', progress: 0 },
+    ...Array.from({ length: 9_994 }, (_, index) => ({
+      clientItemId: `uploaded-${index}`,
+      file: { name: `uploaded-${index}.jpg`, size: 10 },
+      status: 'uploaded',
+      progress: 100,
+    })),
+  ];
 
-  assert.equal(visibleItems(items, 20).length, 20);
-  assert.equal(visibleItems(items, 20)[0], items[10]);
+  const groups = groupItems(items);
+
+  assert.deepEqual(groups.map(({ key }) => key), [
+    'needs_attention',
+    'uploading',
+    'waiting',
+    'uploaded',
+  ]);
+  assert.deepEqual(groups.map(({ count }) => count), [2, 1, 3, 9_994]);
+  assert.deepEqual(
+    groups.slice(0, 2).map(({ expanded }) => expanded),
+    [true, true],
+  );
+  assert.deepEqual(
+    groups.slice(2).map(({ expanded }) => expanded),
+    [false, false],
+  );
+  assert.deepEqual(
+    visibleGroupItems(groups[3], 0, 20).map(({ clientItemId }) => clientItemId),
+    Array.from({ length: 20 }, (_, index) => `uploaded-${index}`),
+  );
+  assert.deepEqual(
+    visibleGroupItems(groups[3], 9_980, 20).map(({ clientItemId }) => clientItemId),
+    Array.from({ length: 14 }, (_, index) => `uploaded-${index + 9_980}`),
+  );
   assert.deepEqual(summarize(items), {
-    total: 30,
-    uploaded: 3,
-    failed: 2,
-    totalBytes: 300,
-    progress: 55,
+    total: 10_000,
+    uploaded: 9_994,
+    failed: 1,
+    totalBytes: 100_000,
+    progress: 100,
   });
 });
 

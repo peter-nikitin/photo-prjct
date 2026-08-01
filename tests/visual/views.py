@@ -283,8 +283,14 @@ UPLOAD_LIMITS = MappingProxyType(
         "max_file_megabytes": 50,
         "registration_chunk": 100,
         "concurrency": 4,
-        "queue_window": 20,
     }
+)
+
+QUEUE_GROUPS = (
+    ("needs_attention", "Требуют внимания", True),
+    ("uploading", "Загружаются", True),
+    ("waiting", "Ожидают", False),
+    ("uploaded", "Загружены", False),
 )
 
 ACTIVE_UPLOAD_QUEUE = (
@@ -540,10 +546,43 @@ def _upload(
                 "upload_limits": UPLOAD_LIMITS,
                 "upload_state": state,
                 "upload_summary": summary,
-                "upload_queue": queue,
+                "upload_queue_groups": _upload_queue_groups(queue),
                 "unfinished_batches": unfinished_uploads,
             },
         )
+
+
+def _upload_queue_groups(
+    queue: tuple[MappingProxyType[str, Any], ...],
+) -> tuple[MappingProxyType[str, Any], ...]:
+    if not queue:
+        return ()
+
+    grouped = {key: [] for key, _, _ in QUEUE_GROUPS}
+    for item in queue:
+        status_class = item["status_class"]
+        if status_class in {"failed", "needs_attention"}:
+            key = "needs_attention"
+        elif status_class == "active":
+            key = "uploading"
+        elif status_class == "uploaded":
+            key = "uploaded"
+        else:
+            key = "waiting"
+        grouped[key].append(item)
+
+    return tuple(
+        MappingProxyType(
+            {
+                "key": key,
+                "label": label,
+                "expanded": expanded,
+                "count": len(grouped[key]),
+                "items": tuple(grouped[key]),
+            }
+        )
+        for key, label, expanded in QUEUE_GROUPS
+    )
 
 
 def upload_empty(request: HttpRequest) -> HttpResponse:

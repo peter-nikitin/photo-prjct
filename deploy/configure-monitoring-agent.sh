@@ -11,6 +11,7 @@ CONFIG_DIR=''
 CONFIG_PATH=''
 SERVICE_NAME=''
 AGENT_BINARY=''
+VERSION_FLAG=''
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 TEMPLATE_PATH="$SCRIPT_DIR/monitoring/unified-agent.yml.template"
 FOLDER_ID=''
@@ -111,12 +112,14 @@ use_deb_layout() {
     CONFIG_DIR=$DEB_CONFIG_DIR
     CONFIG_PATH=$DEB_CONFIG_PATH
     SERVICE_NAME=$DEB_SERVICE
+    VERSION_FLAG=--version
 }
 
 use_managed_layout() {
     CONFIG_DIR=$MANAGED_CONFIG_DIR
     CONFIG_PATH=$MANAGED_CONFIG_PATH
     SERVICE_NAME=$MANAGED_SERVICE
+    VERSION_FLAG=-V
 }
 
 is_deb_agent_installed() {
@@ -195,7 +198,7 @@ config_promoted=1
 systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 systemctl is-active "$SERVICE_NAME"
-printf 'Unified Agent version: %s\n' "$("$AGENT_BINARY" --version)"
+printf 'Unified Agent version: %s\n' "$("$AGENT_BINARY" "$VERSION_FLAG")"
 
 config_promoted=0
 rm -rf "$temporary_dir"

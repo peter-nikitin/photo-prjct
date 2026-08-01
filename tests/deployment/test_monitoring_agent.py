@@ -88,6 +88,7 @@ printf 'package-default\\n' > "$DEB_CONFIG_DIR/config.yml"
 cat > "$(dirname "$0")/unified_agent" <<'EOF'
 #!/bin/sh
 set -eu
+printf 'agent %s\n' "$*" >> "$AGENT_COMMAND_LOG"
 case "$*" in
   *check-config*) exit "${CHECK_CONFIG_STATUS:-0}" ;;
   *--version*) printf '%s\\n' test-agent ;;
@@ -127,7 +128,7 @@ case "$1" in
     if [ -f "$RESTART_COUNT_FILE" ]; then count=$(cat "$RESTART_COUNT_FILE"); fi
     count=$((count + 1))
     printf '%s\\n' "$count" > "$RESTART_COUNT_FILE"
-    [ "${FAIL_FIRST_RESTART:-0}" = 1 ] && [ "$count" -eq 1 ] && exit 1
+    if [ "${FAIL_FIRST_RESTART:-0}" = 1 ] && [ "$count" -eq 1 ]; then exit 1; fi
     ;;
   cat)
     case "$*" in
@@ -145,6 +146,7 @@ esac
         "DEB_CONFIG_DIR": str(config_dir),
         "DEB_PACKAGE_MARKER_FILE": str(tmp_path / "deb-package-installed"),
         "DEB_UNIT_PRESENT": "1",
+        "AGENT_COMMAND_LOG": str(tmp_path / "agent-commands.log"),
         "RESTART_COUNT_FILE": str(tmp_path / "restart-count"),
     }
 
@@ -262,6 +264,26 @@ def test_fresh_install_validation_failure_removes_only_the_agent_attempt(tmp_pat
     assert "dpkg --remove yandex-unified-agent" in commands
 
 
+def test_fresh_deb_agent_keeps_its_long_version_flag(tmp_path: Path) -> None:
+    script, config_dir, _, command_log = _copy_script_for_host_test(tmp_path)
+    env = _host_test_env(tmp_path, config_dir, command_log)
+    env["INITIAL_ACTIVE"] = "1"
+
+    result = subprocess.run(
+        ["sh", script, "--folder-id", "b1g2qttgfhb4gdunvlge"],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Unified Agent version: test-agent" in result.stdout
+    assert Path(env["AGENT_COMMAND_LOG"]).read_text(encoding="utf-8").splitlines()[-1] == (
+        "agent --version"
+    )
+
+
 def test_existing_agent_restart_failure_restores_config_and_service_state(tmp_path: Path) -> None:
     script, config_dir, _, command_log = _copy_script_for_host_test(tmp_path)
     env = _host_test_env(tmp_path, config_dir, command_log)
@@ -338,3 +360,46 @@ esac
     assert "dpkg " not in commands
     assert commands.count("systemctl enable unified_agent") == 2
     assert commands.count("systemctl restart unified_agent") == 2
+
+
+def test_managed_agent_uses_short_version_flag_after_successful_activation(
+    tmp_path: Path,
+) -> None:
+    script, _, config_dir, command_log = _copy_script_for_host_test(tmp_path)
+    env = _host_test_env(tmp_path, config_dir, command_log)
+    _write_executable(
+        tmp_path / "bin" / "unified_agent",
+        """
+printf 'agent %s\\n' "$*" >> "$AGENT_COMMAND_LOG"
+case "$*" in
+  *check-config*) exit 0 ;;
+  -V) printf '%s\\n' managed-agent-26.07.11 ;;
+  --version) printf '%s\\n' 'unknown flag: --version' >&2; exit 2 ;;
+esac
+""",
+    )
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yml").write_text("managed-previous-config\\n", encoding="utf-8")
+    env.update(
+        {
+            "INITIAL_ENABLED": "1",
+            "INITIAL_ACTIVE": "1",
+            "MANAGED_UNIT_PRESENT": "1",
+        }
+    )
+
+    result = subprocess.run(
+        ["sh", script, "--folder-id", "b1g2qttgfhb4gdunvlge"],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert "Unified Agent version: managed-agent-26.07.11" in result.stdout
+    assert (config_dir / "config.yml").read_text(encoding="utf-8") != "managed-previous-config\\n"
+    agent_commands = Path(env["AGENT_COMMAND_LOG"]).read_text(encoding="utf-8").splitlines()
+    assert agent_commands[0].endswith(" check-config")
+    assert agent_commands[-1] == "agent -V"

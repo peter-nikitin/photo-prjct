@@ -386,10 +386,10 @@ class GalleryPageTests(TestCase):
 
         self.assertEqual(first_response.status_code, 200)
         first_page_ids = tuple(item.photo_id for item in first_response.context["gallery_photos"])
-        self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(100)))
+        self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(50)))
         next_cursor = first_response.context["gallery_next_cursor"]
         self.assertIsNotNone(next_cursor)
-        self.assertContains(first_response, "Показать ещё")
+        self.assertNotContains(first_response, "Показать ещё")
         self.assertContains(first_response, "data-event-gallery")
 
         second_response = self.client.get(
@@ -397,8 +397,8 @@ class GalleryPageTests(TestCase):
         )
 
         second_page_ids = tuple(item.photo_id for item in second_response.context["gallery_photos"])
-        self.assertEqual(second_page_ids, ("photo-100",))
-        self.assertIsNone(second_response.context["gallery_next_cursor"])
+        self.assertEqual(second_page_ids, tuple(f"photo-{index:03}" for index in range(50, 100)))
+        self.assertIsNotNone(second_response.context["gallery_next_cursor"])
         self.assertTrue(set(first_page_ids).isdisjoint(second_page_ids))
 
     def test_event_detail_renders_only_one_page_for_20000_eligible_photos(self) -> None:
@@ -424,7 +424,7 @@ class GalleryPageTests(TestCase):
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.context["gallery_photos"]), 100)
+        self.assertEqual(len(response.context["gallery_photos"]), 50)
         self.assertIsNotNone(response.context["gallery_next_cursor"])
 
     def test_event_detail_rejects_malformed_or_other_event_cursor(self) -> None:

@@ -39,7 +39,7 @@
             {% endfor %}
           </div>
           {% if selfie_search_next_cursor %}
-            <a class="event-gallery-next" href="{% url 'selfie_search:result' event_slug=event.slug public_token=public_token %}?cursor={{ selfie_search_next_cursor|urlencode }}">Показать ещё</a>
+            <a class="event-gallery-next" href="{% url 'selfie_search:result' event_slug=event.slug public_token=public_token %}?cursor={{ selfie_search_next_cursor|urlencode }}" aria-label="Загрузить следующие фотографии"></a>
           {% endif %}
         {% else %}
           <p class="selfie-search-empty">Совпадений не найдено</p>

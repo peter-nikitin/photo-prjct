@@ -88,7 +88,7 @@
           {% endfor %}
         </div>
         {% if gallery_next_cursor %}
-          <a class="event-gallery-next" href="{% url 'event_detail' slug=event.slug %}?cursor={{ gallery_next_cursor|urlencode }}">Показать ещё</a>
+          <a class="event-gallery-next" href="{% url 'event_detail' slug=event.slug %}?cursor={{ gallery_next_cursor|urlencode }}" aria-label="Загрузить следующие фотографии"></a>
         {% endif %}
       {% else %}
         <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>

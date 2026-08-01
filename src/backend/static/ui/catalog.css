@@ -420,6 +420,14 @@
   font-weight: 800;
 }
 
+.event-gallery-next {
+  display: block;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .glightbox-container .gclose,
 .glightbox-container .gprev,
 .glightbox-container .gnext {

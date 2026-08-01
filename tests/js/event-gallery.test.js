@@ -43,6 +43,54 @@ test('initializes GLightbox once with local gallery options', () => {
   assert.equal(calls[0].selector, '.event-gallery .glightbox');
   assert.equal(calls[0].touchNavigation, true);
   assert.equal(calls[0].loop, false);
+  assert.equal(calls[0].descPosition, 'bottom');
+});
+
+test('keeps only the active built-in description download in GLightbox keyboard order', () => {
+  const calls = [];
+  const makeAction = () => {
+    const classes = new Set();
+    const attributes = new Map();
+    return {
+      classes,
+      attributes,
+      classList: {
+        add: (className) => classes.add(className),
+        remove: (className) => classes.delete(className),
+      },
+      setAttribute: (name, value) => attributes.set(name, value),
+      removeAttribute: (name) => attributes.delete(name),
+    };
+  };
+  const firstAction = makeAction();
+  const secondAction = makeAction();
+  const firstSlide = {
+    querySelector: (selector) => (selector === '.gallery-lightbox-download' ? firstAction : null),
+  };
+  const secondSlide = {
+    querySelector: (selector) => (selector === '.gallery-lightbox-download' ? secondAction : null),
+  };
+
+  loadGalleryModule({
+    root: { addEventListener() {} },
+    glightbox: (options) => calls.push(options),
+  });
+
+  calls[0].afterSlideLoad({ slide: firstSlide });
+  calls[0].afterSlideLoad({ slide: secondSlide });
+  calls[0].afterSlideChange({ slide: null }, { slide: firstSlide });
+
+  assert.deepEqual([...firstAction.classes], ['gbtn']);
+  assert.equal(firstAction.attributes.get('data-taborder'), '4');
+  assert.deepEqual([...secondAction.classes], []);
+  assert.equal(secondAction.attributes.has('data-taborder'), false);
+
+  calls[0].afterSlideChange({ slide: firstSlide }, { slide: secondSlide });
+
+  assert.deepEqual([...firstAction.classes], []);
+  assert.equal(firstAction.attributes.has('data-taborder'), false);
+  assert.deepEqual([...secondAction.classes], ['gbtn']);
+  assert.equal(secondAction.attributes.get('data-taborder'), '4');
 });
 
 test('restores focus to the pointer-opened card after close', () => {

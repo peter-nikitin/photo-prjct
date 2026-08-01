@@ -209,6 +209,45 @@ def test_sign_final_verifies_the_exact_public_object_before_creating_a_get_url(
     assert calls(client, "get_object") == []
 
 
+def test_sign_final_adds_a_safe_attachment_disposition(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(FINAL_KEY, b"jpeg-data", '"final-etag"')
+
+    url = storage.sign_final(key=FINAL_KEY, attachment_filename="findme-photo-photo-42.jpg")
+
+    assert url == client.presigned_get_url
+    assert calls(client, "generate_presigned_url") == [
+        {
+            "ClientMethod": "get_object",
+            "Params": {
+                "Bucket": BUCKET,
+                "Key": FINAL_KEY,
+                "ResponseContentDisposition": 'attachment; filename="findme-photo-photo-42.jpg"',
+            },
+            "ExpiresIn": 120,
+            "HttpMethod": "GET",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "attachment_filename",
+    [
+        "race.jpg",
+        "findme-photo-photo-42.jpeg",
+        "findme-photo-photo-42.jpg\r\nX-Injected: yes",
+    ],
+)
+def test_sign_final_rejects_malformed_attachment_filename_before_client_call(
+    storage: PrivateUploadStorage, client: FakeS3Client, attachment_filename: str
+) -> None:
+    with pytest.raises(ValueError):
+        storage.sign_final(key=FINAL_KEY, attachment_filename=attachment_filename)
+
+    assert client.calls == []
+
+
 def test_sign_final_rejects_a_non_image_object_before_signing(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:

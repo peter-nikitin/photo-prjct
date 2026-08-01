@@ -4,7 +4,7 @@
 - Date: 2026-07-31
 - Deciders: project maintainers
 - Supersedes: ADR 0019 only for the inline-Django transport of authorized gallery and selfie-result media
-- Superseded by: none
+- Superseded by: [ADR 0021](0021-allow-original-download-for-authorized-photos.md) for the attachment-download exclusion only
 
 ## Context
 

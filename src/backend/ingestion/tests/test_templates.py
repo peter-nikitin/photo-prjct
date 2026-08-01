@@ -115,6 +115,32 @@ class UploadTemplateTests(TestCase):
         self.assertEqual(response.context["unfinished_batches"][0].id, owned.id)
         self.assertEqual(len(response.context["unfinished_batches"]), 1)
 
+    def test_upload_page_renders_an_owned_batch_resume_action_and_dedicated_picker(self) -> None:
+        batch = UploadBatch.objects.create(
+            uploader=self.user, event=self.event, expected_item_count=2
+        )
+        UploadItem.objects.create(
+            batch=batch,
+            client_item_id=uuid4(),
+            original_filename="waiting.jpg",
+            declared_content_type="image/jpeg",
+            expected_size=4,
+            incoming_key=f"incoming/{uuid4()}",
+            final_key=f"originals/{uuid4().hex}",
+        )
+
+        response = self.client.get(reverse("upload_page"))
+
+        self.assertContains(response, 'data-unfinished-upload')
+        self.assertContains(response, f'data-resume-batch-id="{batch.id}"')
+        self.assertContains(response, 'data-resume-batch')
+        self.assertContains(response, 'id="resume-upload-files"')
+        self.assertContains(
+            response,
+            'data-resume-manifest-url-template="/photographer/uploads/{batch}/resume/"',
+        )
+        self.assertContains(response, self.event.name)
+
     def test_upload_navigation_requires_feature_and_permission(self) -> None:
         response = self.client.get(reverse("event_catalog"))
         self.assertContains(response, reverse("upload_page"))

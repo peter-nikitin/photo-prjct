@@ -8,10 +8,59 @@ const {
   UploadCoordinator,
   bindUploadPage,
   chunkItems,
+  matchingKey,
+  matchResumeSelection,
+  prepareAmbiguousFingerprints,
   prepareSelection,
   summarize,
   visibleItems,
 } = require('../../src/backend/static/ui/upload-coordinator.js');
+
+function file(name, size, lastModified, contents = name) {
+  const bytes = new TextEncoder().encode(contents);
+  return {
+    name,
+    type: 'image/jpeg',
+    size,
+    lastModified,
+    arrayBuffer: async () => bytes.buffer,
+  };
+}
+
+function digestRecorder() {
+  const calls = [];
+  return {
+    calls,
+    subtle: {
+      async digest(algorithm, bytes) {
+        calls.push({ algorithm, bytes });
+        const content = Buffer.from(bytes).toString();
+        const fill = content === 'first' ? 0xab : content === 'second' ? 0xcd : 0xef;
+        return Uint8Array.from({ length: 32 }, () => fill).buffer;
+      },
+    },
+  };
+}
+
+function manifestItem({
+  id,
+  filename,
+  size = 4,
+  lastModified = 1000,
+  sha256 = null,
+  status = 'pending',
+  confirmed = false,
+}) {
+  return {
+    id,
+    filename,
+    size,
+    last_modified_ms: lastModified,
+    ambiguous_sha256: sha256,
+    status,
+    confirmed,
+  };
+}
 
 test('browser binder uses the environment passed to the module factory', () => {
   const eventSelect = { value: '', focus() {} };
@@ -237,6 +286,132 @@ test('prepareSelection accepts a JPEG extension when drag-and-drop omits the MIM
   assert.throws(
     () => prepareSelection([{ name: 'bad.png', type: '', size: 4 }], options),
     /JPEG/,
+  );
+});
+
+test('registration records last-modified metadata without hashing a unique selection', async () => {
+  const { calls, coordinator } = makeHarness();
+  const unique = file('unique.jpg', 4, 1_722_500_123_456, 'unique');
+
+  await coordinator.start([unique], '42');
+
+  const registration = calls.find(({ url }) => url === '/batch-1/items/');
+  assert.deepEqual(registration.body.items[0], {
+    client_item_id: registration.body.items[0].client_item_id,
+    filename: 'unique.jpg',
+    content_type: 'image/jpeg',
+    size: 4,
+    last_modified_ms: 1_722_500_123_456,
+    ambiguous_sha256: null,
+  });
+});
+
+test('only duplicate metadata groups receive lowercase SHA-256 fingerprints', async () => {
+  const digest = digestRecorder();
+  const first = { clientItemId: 'first', file: file('same.jpg', 4, 1000, 'first') };
+  const second = { clientItemId: 'second', file: file('same.jpg', 4, 1000, 'second') };
+  const unique = { clientItemId: 'unique', file: file('unique.jpg', 4, 1001, 'unique') };
+
+  await prepareAmbiguousFingerprints([first, second, unique], digest.subtle);
+
+  assert.equal(matchingKey(first.file), matchingKey(second.file));
+  assert.equal(digest.calls.length, 2);
+  assert.equal(first.ambiguousSha256, 'ab'.repeat(32));
+  assert.equal(second.ambiguousSha256, 'cd'.repeat(32));
+  assert.equal(unique.ambiguousSha256, null);
+});
+
+test('resume matching binds unique modern and legacy manifest entries without hashing', async () => {
+  const digest = digestRecorder();
+  const modern = file('modern.jpg', 4, 1000, 'modern');
+  const legacy = file('legacy.jpg', 4, 9000, 'legacy');
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: [
+      manifestItem({ id: 'modern', filename: 'modern.jpg', lastModified: 1000 }),
+      manifestItem({ id: 'legacy', filename: 'legacy.jpg', lastModified: null }),
+    ],
+  };
+
+  const matched = await matchResumeSelection([modern, legacy], manifest, {
+    crypto: { randomUUID: () => 'client-id' },
+    subtle: digest.subtle,
+  });
+
+  assert.deepEqual(
+    matched.matches.map(({ manifestItem: item, file: selected }) => [item.id, selected.name]),
+    [['modern', 'modern.jpg'], ['legacy', 'legacy.jpg']],
+  );
+  assert.deepEqual(matched.unmatched, []);
+  assert.equal(digest.calls.length, 0);
+});
+
+test('resume matching consumes confirmed duplicate hashes before unfinished duplicates as a multiset', async () => {
+  const digest = digestRecorder();
+  const first = file('same.jpg', 4, 1000, 'first');
+  const second = file('same.jpg', 4, 1000, 'first');
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: [
+      manifestItem({ id: 'confirmed', filename: 'same.jpg', sha256: 'ab'.repeat(32), confirmed: true, status: 'uploaded' }),
+      manifestItem({ id: 'pending', filename: 'same.jpg', sha256: 'ab'.repeat(32) }),
+    ],
+  };
+
+  const matched = await matchResumeSelection([first, second], manifest, { subtle: digest.subtle });
+
+  assert.deepEqual(matched.matches.map(({ manifestItem: item }) => item.id), ['confirmed', 'pending']);
+  assert.deepEqual(matched.unmatched, []);
+  assert.equal(digest.calls.length, 2);
+});
+
+test('resume hashes a single reselected duplicate to retry its identified unfinished item', async () => {
+  const digest = digestRecorder();
+  const { calls, coordinator } = makeHarness();
+  coordinator.crypto.subtle = digest.subtle;
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: [
+      manifestItem({
+        id: 'confirmed',
+        filename: 'same.jpg',
+        sha256: 'ab'.repeat(32),
+        confirmed: true,
+        status: 'uploaded',
+      }),
+      manifestItem({ id: 'failed', filename: 'same.jpg', sha256: 'cd'.repeat(32), status: 'failed' }),
+    ],
+  };
+
+  await coordinator.resume([file('same.jpg', 4, 1000, 'second')], manifest);
+
+  assert.equal(digest.calls.length, 1);
+  assert.equal(coordinator.items.find((item) => item.id === 'failed').status, 'uploaded');
+  assert.equal(calls.filter(({ url }) => url.includes('/items/confirmed/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/items/failed/retry/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/items/failed/confirm/')).length, 1);
+});
+
+test('resume matching leaves unresolved duplicate metadata and extra files needing attention', async () => {
+  const first = file('same.jpg', 4, 1000, 'first');
+  const second = file('same.jpg', 4, 1000, 'second');
+  const extra = file('extra.jpg', 4, 1000, 'extra');
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: [
+      manifestItem({ id: 'one', filename: 'same.jpg' }),
+      manifestItem({ id: 'two', filename: 'same.jpg' }),
+    ],
+  };
+
+  const matched = await matchResumeSelection([first, second, extra], manifest, {
+    subtle: { digest: async () => { throw new Error('legacy duplicates must not hash'); } },
+  });
+
+  assert.deepEqual(matched.matches, []);
+  assert.deepEqual(
+    matched.unmatched.map(({ file: selected, reason }) => [selected.name, reason]),
+    [['same.jpg', 'ambiguous'], ['same.jpg', 'ambiguous'], ['extra.jpg', 'extra']],
   );
 });
 
@@ -724,4 +899,45 @@ test('coordinator registers every file, uploads at most four at once, confirms, 
   assert.equal(getMaxActive(), 4);
   assert.ok(calls.every(({ headers }) => headers['X-CSRFToken'] === 'csrf-value'));
   assert.ok(coordinator.items.every(({ status }) => status === 'uploaded'));
+});
+
+test('resume skips confirmed items, retries failed items, and keeps missing manifest items waiting', async () => {
+  const { calls, coordinator, getMaxActive } = makeHarness();
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: [
+      manifestItem({ id: 'confirmed', filename: 'confirmed.jpg', confirmed: true, status: 'uploaded' }),
+      manifestItem({ id: 'pending', filename: 'pending.jpg', status: 'pending' }),
+      manifestItem({ id: 'failed', filename: 'failed.jpg', status: 'failed' }),
+      manifestItem({ id: 'missing', filename: 'missing.jpg', status: 'authorized' }),
+    ],
+  };
+
+  await coordinator.resume(
+    [file('confirmed.jpg', 4, 1000), file('pending.jpg', 4, 1000), file('failed.jpg', 4, 1000)],
+    manifest,
+  );
+
+  assert.equal(coordinator.items.find((item) => item.id === 'confirmed').status, 'uploaded');
+  assert.equal(coordinator.items.find((item) => item.id === 'missing').status, 'waiting');
+  assert.equal(calls.filter(({ url }) => url.includes('/items/confirmed/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/confirm/')).length, 2);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 0);
+  assert.equal(getMaxActive(), 2);
+});
+
+test('resume finalizes only after every durable manifest item reaches a terminal state', async () => {
+  const { calls, coordinator, getMaxActive } = makeHarness();
+  const files = Array.from({ length: 6 }, (_, index) => file(`${index}.jpg`, 4, 1000));
+  const manifest = {
+    batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
+    items: files.map((selected, index) => manifestItem({ id: `item-${index + 1}`, filename: selected.name })),
+  };
+
+  await coordinator.resume(files, manifest);
+
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+  assert.equal(getMaxActive(), 4);
 });

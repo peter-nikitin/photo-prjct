@@ -134,14 +134,30 @@ async function installUploadStubs(
   let activeTransfers = 0;
   let maxActiveTransfers = 0;
   const controlCalls = [];
+  const storageCalls = [];
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.route('**/photographer/uploads/**', async (route) => {
     const request = route.request();
-    if (request.method() !== 'POST') {
-      return route.continue();
-    }
     const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname.endsWith('/batch-resume-1/resume/')) {
+      return route.fulfill({
+        json: {
+          batch: { id: 'batch-resume-1', event: { id: 'london-10k', name: 'London 10K' } },
+          items: [
+            {
+              id: 'confirmed', filename: 'confirmed.jpg', size: 9, last_modified_ms: null,
+              ambiguous_sha256: null, status: 'uploaded', confirmed: true,
+            },
+            {
+              id: 'pending', filename: 'pending.jpg', size: 7, last_modified_ms: null,
+              ambiguous_sha256: null, status: 'pending', confirmed: false,
+            },
+          ],
+        },
+      });
+    }
+    if (request.method() !== 'POST') return route.continue();
     const body = request.postDataJSON();
     controlCalls.push({ path: url.pathname, body });
     if (url.pathname.endsWith('/batches/')) {
@@ -158,7 +174,7 @@ async function installUploadStubs(
         },
       });
     }
-    const item = url.pathname.match(/items\/(item-\d+)\//)?.[1];
+    const item = url.pathname.match(/items\/([^/]+)\//)?.[1];
     if (url.pathname.endsWith('/retry/') && retryFailureStatus) {
       return route.fulfill({
         status: retryFailureStatus,
@@ -194,6 +210,7 @@ async function installUploadStubs(
     return route.abort();
   });
   await page.route('http://storage.test/**', async (route) => {
+    storageCalls.push(new URL(route.request().url()).pathname);
     activeTransfers += 1;
     maxActiveTransfers = Math.max(maxActiveTransfers, activeTransfers);
     if (storageDelay) {
@@ -207,7 +224,7 @@ async function installUploadStubs(
       headers: { 'access-control-allow-origin': '*' },
     });
   });
-  return { controlCalls, pageErrors, getMaxActiveTransfers: () => maxActiveTransfers };
+  return { controlCalls, storageCalls, pageErrors, getMaxActiveTransfers: () => maxActiveTransfers };
 }
 
 test.describe('desktop visual regression', () => {
@@ -378,6 +395,25 @@ test('browser coordinator completes a successful upload and announces progress',
   await expect(page.getByRole('status')).toContainText('2 из 2');
   await expect(page.locator('[data-upload-queue] .queue-item')).toHaveCount(2);
   expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/confirm/'))).toHaveLength(2);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('returning photographer resumes only the unfinished item from an owned batch', async ({ page }) => {
+  const stubs = await installUploadStubs(page);
+  await page.goto('/__visual__/upload/empty/?resume=1');
+
+  await page.getByRole('button', { name: 'Продолжить загрузку' }).click();
+  await expect(page.locator('#upload-event')).toHaveValue('london-10k');
+  await expect(page.locator('#upload-event')).toBeDisabled();
+  await page.locator('#resume-upload-files').setInputFiles([
+    { name: 'confirmed.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('confirmed') },
+    { name: 'pending.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('pending') },
+  ]);
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  expect(stubs.controlCalls.filter(({ path }) => path.includes('/items/confirmed/'))).toHaveLength(0);
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/items/pending/authorize/'))).toHaveLength(1);
+  expect(stubs.storageCalls).toEqual(['/upload/pending']);
   expect(stubs.pageErrors).toEqual([]);
 });
 

@@ -1,7 +1,7 @@
 """Deterministic, database-free fixture views for visual review."""
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
 
@@ -45,6 +45,18 @@ class FixtureEvent:
 
     def get_access_type_display(self) -> str:
         return self.access_label
+
+
+@dataclass(frozen=True)
+class FixtureUnfinishedUpload:
+    id: str
+    event_id: str
+    event_name: str
+    created_at: datetime
+    last_activity_at: datetime
+    expected_count: int
+    confirmed_count: int
+    unresolved_count: int
 
 
 @dataclass(frozen=True)
@@ -109,6 +121,19 @@ EVENTS = (
         "Портреты участников и финишные кадры из expo-зоны.",
         "Доступ по коду",
         FixtureImage("/static/images/run-expo-3125.png"),
+    ),
+)
+
+UNFINISHED_UPLOADS = (
+    FixtureUnfinishedUpload(
+        id="batch-resume-1",
+        event_id="london-10k",
+        event_name="London 10K",
+        created_at=datetime(2026, 6, 8, 10, 0),
+        last_activity_at=datetime(2026, 6, 9, 14, 30),
+        expected_count=2,
+        confirmed_count=1,
+        unresolved_count=1,
     ),
 )
 
@@ -503,6 +528,7 @@ def _upload(
     state: str,
     summary: dict[str, int | str],
     queue: tuple[MappingProxyType[str, Any], ...] = (),
+    unfinished_uploads: tuple[FixtureUnfinishedUpload, ...] = (),
 ) -> HttpResponse:
     request.user = FixtureUser("Анна Смирнова")
     with override_settings(PHOTO_UPLOAD_ENABLED=True):
@@ -515,6 +541,7 @@ def _upload(
                 "upload_state": state,
                 "upload_summary": summary,
                 "upload_queue": queue,
+                "unfinished_batches": unfinished_uploads,
             },
         )
 
@@ -524,6 +551,7 @@ def upload_empty(request: HttpRequest) -> HttpResponse:
         request,
         state="empty",
         summary={"progress": 0, "total": 0, "uploaded": 0, "failed": 0, "bytes": "0 Б"},
+        unfinished_uploads=UNFINISHED_UPLOADS if request.GET.get("resume") else (),
     )
 
 

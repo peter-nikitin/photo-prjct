@@ -14,6 +14,7 @@
        data-confirm-url-template="{{ upload_control_urls.confirm|default:'/photographer/uploads/{batch}/items/{item}/confirm/' }}"
        data-failed-url-template="{{ upload_control_urls.failed|default:'/photographer/uploads/{batch}/items/{item}/failed/' }}"
        data-finalize-url-template="{{ upload_control_urls.finalize|default:'/photographer/uploads/{batch}/finalize/' }}"
+       data-resume-manifest-url-template="{{ upload_control_urls.resume_manifest|default:'/photographer/uploads/{batch}/resume/' }}"
        data-csrf-token="{{ csrf_token }}"
        data-max-files="{{ upload_limits.max_files|default:10000 }}"
        data-max-file-bytes="{{ upload_limits.max_file_bytes|default:52428800 }}"
@@ -36,6 +37,26 @@
         </div>
       {% endif %}
     </header>
+
+    {% if unfinished_batches %}
+      <section class="unfinished-uploads" data-unfinished-uploads aria-labelledby="unfinished-uploads-title">
+        <p class="eyebrow">Незавершённые загрузки</p>
+        <h2 id="unfinished-uploads-title">Продолжить загрузку</h2>
+        {% for batch in unfinished_batches %}
+          <article data-unfinished-upload data-resume-batch-id="{{ batch.id }}" data-resume-event-id="{{ batch.event_id }}">
+            <h3>{{ batch.event_name }}</h3>
+            <p>{{ batch.confirmed_count }} из {{ batch.expected_count }} загружено · осталось {{ batch.unresolved_count }}</p>
+            <p>Создана {{ batch.created_at|date:"d.m.Y" }} · обновлена {{ batch.last_activity_at|date:"d.m.Y H:i" }}</p>
+            <button type="button" data-resume-batch data-resume-batch-id="{{ batch.id }}">Продолжить загрузку</button>
+          </article>
+        {% endfor %}
+        <input class="visually-hidden"
+               id="resume-upload-files"
+               type="file"
+               accept="image/jpeg,.jpg,.jpeg"
+               multiple>
+      </section>
+    {% endif %}
 
     <section class="upload-workspace" aria-labelledby="upload-settings-title">
       <div class="upload-controls">

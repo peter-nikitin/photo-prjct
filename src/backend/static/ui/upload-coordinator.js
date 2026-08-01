@@ -34,6 +34,140 @@
     };
   }
 
+  function normalizedFilename(file) {
+    return String(file.name || '').normalize('NFC').toLocaleLowerCase('en-US');
+  }
+
+  function lastModifiedMs(file) {
+    return Number.isSafeInteger(file.lastModified) && file.lastModified >= 0
+      ? file.lastModified
+      : null;
+  }
+
+  function matchingKey(file) {
+    return `${normalizedFilename(file)}\u0000${file.size}\u0000${lastModifiedMs(file)}`;
+  }
+
+  function legacyMatchingKey(file) {
+    return `${normalizedFilename(file)}\u0000${file.size}`;
+  }
+
+  function groupBy(items, key) {
+    return items.reduce((groups, item) => {
+      const value = key(item);
+      const group = groups.get(value) || [];
+      group.push(item);
+      groups.set(value, group);
+      return groups;
+    }, new Map());
+  }
+
+  function fingerprintHex(bytes) {
+    return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function prepareAmbiguousFingerprints(items, subtle, { hashSingletons = false } = {}) {
+    const groups = groupBy(items, (item) => matchingKey(item.file));
+    await Promise.all(
+      Array.from(groups.values()).flatMap((group) => {
+        if (group.length < 2 && !hashSingletons) {
+          for (const item of group) item.ambiguousSha256 = null;
+          return [];
+        }
+        return group.map(async (item) => {
+          item.ambiguousSha256 = fingerprintHex(
+            await subtle.digest('SHA-256', await item.file.arrayBuffer()),
+          );
+        });
+      }),
+    );
+  }
+
+  async function matchResumeSelection(files, manifest, { subtle } = {}) {
+    const selected = Array.from(files || []).map((file) => ({ file }));
+    const matches = [];
+    const matched = new Set();
+    const unresolved = new Map();
+    const modernGroups = groupBy(
+      manifest.items.filter(
+        (item) => item.last_modified_ms !== null && item.last_modified_ms !== undefined,
+      ),
+      (item) => matchingKey({
+        name: item.filename,
+        size: item.size,
+        lastModified: item.last_modified_ms,
+      }),
+    );
+
+    for (const [key, manifestGroup] of modernGroups) {
+      const candidates = selected.filter(
+        (candidate) => (
+          !matched.has(candidate)
+          && !unresolved.has(candidate)
+          && matchingKey(candidate.file) === key
+        ),
+      );
+      if (manifestGroup.length === 1 && candidates.length === 1) {
+        matches.push({ manifestItem: manifestGroup[0], file: candidates[0].file });
+        matched.add(candidates[0]);
+        continue;
+      }
+      if (
+        manifestGroup.length > 1
+        && candidates.length > 0
+        && subtle
+        && manifestGroup.every((item) => item.ambiguous_sha256)
+      ) {
+        await prepareAmbiguousFingerprints(candidates, subtle, { hashSingletons: true });
+        const remainingByHash = groupBy(
+          [...manifestGroup].sort((left, right) => Number(right.confirmed) - Number(left.confirmed)),
+          (item) => item.ambiguous_sha256,
+        );
+        for (const candidate of candidates) {
+          const available = remainingByHash.get(candidate.ambiguousSha256);
+          if (available?.length) {
+            matches.push({ manifestItem: available.shift(), file: candidate.file });
+            matched.add(candidate);
+          } else {
+            unresolved.set(candidate, 'ambiguous');
+          }
+        }
+      } else if (candidates.length) {
+        for (const candidate of candidates) unresolved.set(candidate, 'ambiguous');
+      }
+    }
+
+    const legacyGroups = groupBy(
+      manifest.items.filter((item) => item.last_modified_ms === null || item.last_modified_ms === undefined),
+      (item) => legacyMatchingKey({ name: item.filename, size: item.size }),
+    );
+    for (const [key, manifestGroup] of legacyGroups) {
+      const candidates = selected.filter(
+        (candidate) => (
+          !matched.has(candidate)
+          && !unresolved.has(candidate)
+          && legacyMatchingKey(candidate.file) === key
+        ),
+      );
+      if (manifestGroup.length === 1 && candidates.length === 1) {
+        matches.push({ manifestItem: manifestGroup[0], file: candidates[0].file });
+        matched.add(candidates[0]);
+      } else if (candidates.length) {
+        for (const candidate of candidates) unresolved.set(candidate, 'ambiguous');
+      }
+    }
+
+    return {
+      matches,
+      unmatched: selected
+        .filter((candidate) => !matched.has(candidate))
+        .map((candidate) => ({
+          file: candidate.file,
+          reason: unresolved.get(candidate) || 'extra',
+        })),
+    };
+  }
+
   function chunkItems(items, size) {
     const chunks = [];
     for (let index = 0; index < items.length; index += size) {
@@ -89,7 +223,9 @@
   function statusCopy(item) {
     if (item.status === 'uploaded') return 'Загружено';
     if (item.status === 'failed') return 'Ошибка';
+    if (item.status === 'needs_attention') return 'Требует внимания';
     if (item.status === 'uploading') return `Передача · ${item.progress}%`;
+    if (item.status === 'waiting') return 'Ожидает повторного выбора';
     return 'Ожидает';
   }
 
@@ -171,6 +307,7 @@
       confirmUrl: root.dataset.confirmUrlTemplate,
       failedUrl: root.dataset.failedUrlTemplate,
       finalizeUrl: root.dataset.finalizeUrlTemplate,
+      resumeManifestUrl: root.dataset.resumeManifestUrlTemplate,
       csrfToken: root.dataset.csrfToken,
       maxFiles: Number(root.dataset.maxFiles),
       maxFileBytes: Number(root.dataset.maxFileBytes),
@@ -190,7 +327,9 @@
       onChange: () => renderPage(root, coordinator, globalError),
     });
     const input = root.querySelector('#upload-files');
+    const resumeInput = root.querySelector('#resume-upload-files');
     const eventSelect = root.querySelector('#upload-event');
+    let resumeManifest = null;
     const begin = async (files) => {
       globalError = '';
       if (!eventSelect.value) {
@@ -208,6 +347,32 @@
       }
     };
     input?.addEventListener('change', () => begin(input.files));
+    resumeInput?.addEventListener('change', async () => {
+      if (!resumeManifest || !resumeInput.files.length) return;
+      globalError = '';
+      try {
+        await coordinator.resume(resumeInput.files, resumeManifest);
+      } catch (error) {
+        globalError = error instanceof SelectionError ? error.message : 'Не удалось продолжить загрузку. Повторите попытку.';
+        coordinator.active = false;
+        renderPage(root, coordinator, globalError);
+      }
+    });
+    root.querySelector('[data-unfinished-uploads]')?.addEventListener('click', async (event) => {
+      const resume = event.target.closest('[data-resume-batch]');
+      if (!resume) return;
+      globalError = '';
+      try {
+        resumeManifest = await coordinator.loadResumeManifest(resume.dataset.resumeBatchId);
+        eventSelect.value = String(resumeManifest.batch.event.id);
+        eventSelect.disabled = true;
+        resumeInput.value = '';
+        resumeInput.click();
+      } catch (error) {
+        globalError = 'Не удалось открыть незавершённую загрузку. Повторите попытку.';
+        renderPage(root, coordinator, globalError);
+      }
+    });
     const dropTarget = root.querySelector('[data-upload-drop-target]');
     dropTarget?.addEventListener('dragover', (event) => event.preventDefault());
     dropTarget?.addEventListener('drop', (event) => {
@@ -272,6 +437,7 @@
       }));
       this.active = true;
       this.onChange(this);
+      await prepareAmbiguousFingerprints(this.items, this.crypto.subtle);
 
       const created = await this.control(this.config.createBatchUrl, {
         event_id: Number(eventId),
@@ -288,6 +454,8 @@
               filename: item.file.name,
               content_type: item.contentType,
               size: item.file.size,
+              last_modified_ms: lastModifiedMs(item.file),
+              ambiguous_sha256: item.ambiguousSha256,
             })),
           },
         );
@@ -305,6 +473,83 @@
         this.items.map((item) => this.enqueueTransfer(item, null, item.cycleToken)),
       );
       await this.finalizeIfReady();
+      return this;
+    }
+
+    async loadResumeManifest(batchId) {
+      const result = await this.fetch(
+        interpolate(this.config.resumeManifestUrl, { batch: batchId }),
+        { method: 'GET', credentials: 'same-origin' },
+      );
+      const payload = await result.json();
+      if (!result.ok) throw new ControlError(result.status, payload);
+      return payload;
+    }
+
+    async resume(files, manifest) {
+      prepareSelection(files, {
+        maxFiles: this.config.maxFiles,
+        maxFileBytes: this.config.maxFileBytes,
+        crypto: this.crypto,
+      });
+      const selection = await matchResumeSelection(files, manifest, { subtle: this.crypto.subtle });
+      const matches = new Map(selection.matches.map((match) => [match.manifestItem.id, match.file]));
+      this.batchId = manifest.batch.id;
+      this.finalizing = false;
+      this.finalized = false;
+      this.registeredAll = true;
+      this.items = manifest.items.map((manifestItem) => {
+        const selected = matches.get(manifestItem.id);
+        const confirmed = manifestItem.confirmed === true;
+        return {
+          clientItemId: `resume-${manifestItem.id}`,
+          id: manifestItem.id,
+          contentType: 'image/jpeg',
+          file: selected || { name: manifestItem.filename, size: manifestItem.size },
+          status: confirmed
+            ? 'uploaded'
+            : selected
+              ? manifestItem.status === 'failed' ? 'retry_pending' : 'registered'
+              : 'waiting',
+          progress: confirmed ? 100 : 0,
+          error: '',
+          xhr: null,
+          durable: true,
+          cycleToken: this.createCycleToken(),
+        };
+      });
+      for (const unmatched of selection.unmatched) {
+        this.items.push({
+          clientItemId: `resume-extra-${this.crypto.randomUUID()}`,
+          id: null,
+          contentType: 'image/jpeg',
+          file: unmatched.file,
+          status: 'needs_attention',
+          progress: 0,
+          error: unmatched.reason === 'extra'
+            ? 'Этот файл не входит в выбранную загрузку.'
+            : 'Не удалось однозначно сопоставить файл.',
+          xhr: null,
+          durable: false,
+          cycleToken: this.createCycleToken(),
+        });
+      }
+      this.active = true;
+      this.onChange(this);
+      await Promise.all(this.items.flatMap((item) => {
+        if (item.status === 'registered') {
+          return [this.enqueueTransfer(item, null, item.cycleToken)];
+        }
+        if (item.status === 'retry_pending') {
+          return [this.enqueueWork(() => this.runResumeRetry(item, item.cycleToken))];
+        }
+        return [];
+      }));
+      await this.finalizeIfReady();
+      if (!this.finalized) {
+        this.active = false;
+        this.onChange(this);
+      }
       return this;
     }
 
@@ -562,6 +807,15 @@
       return completed;
     }
 
+    async runResumeRetry(item, token) {
+      const authorization = await this.control(
+        interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
+        {},
+        token,
+      );
+      await this.processItem(item, authorization.grant, token);
+    }
+
     settleManualRetryFailure(item) {
       item.status = 'failed';
       item.error = 'Не удалось повторить загрузку. Повторите попытку.';
@@ -594,7 +848,10 @@
     }
 
     async finalizeIfReady() {
-      const terminal = this.items.every((item) => ['uploaded', 'failed'].includes(item.status));
+      const durableItems = this.items.filter((item) => item.durable !== false);
+      const terminal = durableItems.length > 0 && durableItems.every(
+        (item) => ['uploaded', 'failed'].includes(item.status),
+      );
       if (!this.registeredAll || !terminal || this.finalizing || this.finalized) {
         return;
       }
@@ -613,6 +870,9 @@
   return {
     chunkItems,
     ControlError,
+    matchingKey,
+    matchResumeSelection,
+    prepareAmbiguousFingerprints,
     prepareSelection,
     retryableTransfer,
     SelectionError,

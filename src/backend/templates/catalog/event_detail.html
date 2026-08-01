@@ -5,6 +5,7 @@
 {% block extra_css %}
   <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
   <link rel="stylesheet" href="{% static 'ui/glightbox.min.css' %}">
+  {% if selfie_search_form %}<link rel="stylesheet" href="{% static 'ui/selfie-search.css' %}">{% endif %}
 {% endblock %}
 {% block content %}
   <article class="event-detail">
@@ -43,7 +44,26 @@
         {% endif %}
       </div>
     </div>
-    <section class="event-gallery" aria-labelledby="gallery-title">
+    {% if selfie_search_form %}
+      <section class="selfie-search" aria-labelledby="selfie-search-title">
+        <h2 id="selfie-search-title">Найти мои фото</h2>
+        <p>Мы ищем вероятные совпадения только среди фотографий этого события.</p>
+        <ul class="selfie-search-disclosures">
+          <li>Селфи удаляется после подготовки поиска.</li>
+          <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
+        </ul>
+        <form data-selfie-search-form action="{% url 'selfie_search:submit' event_slug=event.slug %}" method="post" enctype="multipart/form-data">
+          {% csrf_token %}
+          <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
+          {{ selfie_search_form.selfie }}
+          {% if selfie_search_form.selfie.errors %}
+            <div role="alert">{{ selfie_search_form.selfie.errors }}</div>
+          {% endif %}
+          <button class="button" type="submit">Найти мои фото</button>
+        </form>
+      </section>
+    {% endif %}
+    <section class="event-gallery" data-event-gallery aria-labelledby="gallery-title">
       <div class="event-gallery-heading">
         <h2 id="gallery-title">Фотографии</h2>
         <span class="event-gallery-count">{{ gallery_photos|length }} фото</span>
@@ -52,17 +72,24 @@
         <div class="event-gallery-grid">
           {% for photo in gallery_photos %}
             <figure class="gallery-card">
-              <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" data-type="image" aria-label="Открыть: {{ photo.alt }}">
+              <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" data-type="image" data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}">Скачать оригинал</a>' aria-label="Открыть: {{ photo.alt }}">
                 {% if forloop.counter <= 4 %}
                   <img src="{{ photo.preview_media_small.url }}" loading="eager" fetchpriority="high" alt="{{ photo.alt }}">
                 {% else %}
                   <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
                 {% endif %}
               </a>
-              <figcaption class="gallery-photo-id">Фото {{ photo.photo_id }}</figcaption>
+              <div class="gallery-card-actions">
+                <a class="gallery-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал">
+                  <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg>
+                </a>
+              </div>
             </figure>
           {% endfor %}
         </div>
+        {% if gallery_next_cursor %}
+          <a class="event-gallery-next" href="{% url 'event_detail' slug=event.slug %}?cursor={{ gallery_next_cursor|urlencode }}" aria-label="Загрузить следующие фотографии"></a>
+        {% endif %}
       {% else %}
         <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>
       {% endif %}
@@ -72,4 +99,5 @@
 {% block extra_js %}
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
+  {% if selfie_search_form %}<script src="{% static 'ui/selfie-search.js' %}"></script>{% endif %}
 {% endblock %}

@@ -18,8 +18,15 @@ from django.test import (
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
+from processing.models import (
+    GENERATE_PREVIEW_PROCESSOR,
+    EventProcessingRun,
+    PhotoDerivative,
+    PhotoProcessingState,
+    ProcessingAttempt,
+    ProcessingJob,
+)
 
-from picflow.gallery import CloseableMediaIterator, ResolvedPublicMedia
 from picflow.models import Event, Photo
 
 
@@ -287,6 +294,67 @@ class GalleryPageTests(TestCase):
         values.update(overrides)
         return Photo.objects.create(**values)
 
+    def publish_preview(self, photo: Photo, *, final_key: str) -> PhotoDerivative:
+        configuration = {"generate_preview": {"variant": "preview-small-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save()
+        return PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=final_key,
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+
     @patch("config.views.PrivateUploadStorage")
     def test_event_detail_builds_ordered_gallery_without_storage(self, storage_class) -> None:
         event = self.make_event()
@@ -309,6 +377,75 @@ class GalleryPageTests(TestCase):
         )
         storage_class.assert_not_called()
 
+    def test_event_detail_uses_cursor_pages_in_photo_id_order(self) -> None:
+        event = self.make_event()
+        for index in range(101):
+            self.make_private_photo(event, id=f"photo-{index:03}")
+
+        first_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(first_response.status_code, 200)
+        first_page_ids = tuple(item.photo_id for item in first_response.context["gallery_photos"])
+        self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(50)))
+        next_cursor = first_response.context["gallery_next_cursor"]
+        self.assertIsNotNone(next_cursor)
+        self.assertNotContains(first_response, "Показать ещё")
+        self.assertContains(first_response, "data-event-gallery")
+
+        second_response = self.client.get(
+            reverse("event_detail", kwargs={"slug": event.slug}), {"cursor": next_cursor}
+        )
+
+        second_page_ids = tuple(item.photo_id for item in second_response.context["gallery_photos"])
+        self.assertEqual(second_page_ids, tuple(f"photo-{index:03}" for index in range(50, 100)))
+        self.assertIsNotNone(second_response.context["gallery_next_cursor"])
+        self.assertTrue(set(first_page_ids).isdisjoint(second_page_ids))
+
+    def test_event_detail_renders_only_one_page_for_20000_eligible_photos(self) -> None:
+        event = self.make_event()
+        now = timezone.now()
+        Photo.objects.bulk_create(
+            [
+                Photo(
+                    id=f"photo-{index:05}",
+                    event=event,
+                    src="",
+                    uploaded_by=self.photographer,
+                    original_key=f"originals/page-{index:05}",
+                    original_filename="race.jpg",
+                    original_size=4,
+                    original_content_type="image/jpeg",
+                    uploaded_at=now,
+                )
+                for index in range(20_000)
+            ]
+        )
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context["gallery_photos"]), 50)
+        self.assertIsNotNone(response.context["gallery_next_cursor"])
+
+    def test_event_detail_rejects_malformed_or_other_event_cursor(self) -> None:
+        event = self.make_event()
+        other_event = self.make_event(name="Other", slug="other")
+        for index in range(101):
+            self.make_private_photo(event, id=f"photo-{index:03}")
+
+        first_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+        cursor = first_response.context["gallery_next_cursor"]
+
+        malformed_response = self.client.get(
+            reverse("event_detail", kwargs={"slug": event.slug}), {"cursor": "not-a-cursor"}
+        )
+        mismatched_response = self.client.get(
+            reverse("event_detail", kwargs={"slug": other_event.slug}), {"cursor": cursor}
+        )
+
+        self.assertEqual(malformed_response.status_code, 404)
+        self.assertEqual(mismatched_response.status_code, 404)
+
     def test_event_detail_excludes_legacy_other_event_and_paid_originals(self) -> None:
         event = self.make_event()
         included = self.make_private_photo(event, id="included")
@@ -325,6 +462,61 @@ class GalleryPageTests(TestCase):
             tuple(item.photo_id for item in response.context["gallery_photos"]), (included.id,)
         )
         self.assertEqual(paid_response.context["gallery_photos"], ())
+
+    @patch("config.views.PrivateUploadStorage")
+    def test_event_detail_keeps_legacy_and_requires_accepted_preview_for_new_photos(
+        self, storage_class
+    ) -> None:
+        event = self.make_event()
+        legacy = self.make_private_photo(event, id="gallery-1")
+        preview_states = (
+            PhotoProcessingState.Status.NOT_REQUESTED,
+            PhotoProcessingState.Status.QUEUED,
+            PhotoProcessingState.Status.PROCESSING,
+            PhotoProcessingState.Status.RETRY_WAIT,
+            PhotoProcessingState.Status.FAILED,
+            PhotoProcessingState.Status.CANCELLED,
+            PhotoProcessingState.Status.SUCCEEDED,
+        )
+        for index, status in enumerate(preview_states, start=2):
+            photo = self.make_private_photo(
+                event,
+                id=f"gallery-{index}",
+                processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+                gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+            )
+            state = PhotoProcessingState.objects.get(
+                photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+            )
+            state.status = status
+            state.save(update_fields=["status"])
+        published = self.make_private_photo(
+            event,
+            id="gallery-9",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        derivative = self.publish_preview(
+            published,
+            final_key="derivatives/previews/gallery-9/preview-small-v1/private-preview.jpg",
+        )
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            tuple(item.photo_id for item in response.context["gallery_photos"]),
+            (legacy.id, published.id),
+        )
+        markup = response.content.decode(response.charset)
+        for secret in (
+            legacy.original_key,
+            published.original_key,
+            derivative.final_key,
+            derivative.sha256,
+        ):
+            self.assertNotIn(secret, markup)
+        storage_class.assert_not_called()
 
     def test_event_detail_gallery_markup_and_loading_policy(self) -> None:
         event = self.make_event()
@@ -347,17 +539,27 @@ class GalleryPageTests(TestCase):
                 "photo_media",
                 kwargs={"slug": event.slug, "photo_id": photo.id, "variant": "preview-large"},
             )
+            download_url = reverse(
+                "photo_download",
+                kwargs={"slug": event.slug, "photo_id": photo.id},
+            )
             alt = f"Фото {photo.id} с события {event.name}"
+            lightbox_download = (
+                f'<a class="gallery-lightbox-download" href="{download_url}">Скачать оригинал</a>'
+            )
             self.assertContains(
                 response,
                 f'class="gallery-card-link glightbox" href="{large_url}" '
-                f'data-gallery="event-photos" data-type="image" aria-label="Открыть: {alt}"',
+                f'data-gallery="event-photos" data-type="image" '
+                f"data-description='{lightbox_download}' "
+                f'aria-label="Открыть: {alt}"',
             )
             self.assertContains(response, f'src="{small_url}"')
             self.assertContains(response, f'alt="{alt}"')
             self.assertContains(
                 response,
-                f'<figcaption class="gallery-photo-id">Фото {photo.id}</figcaption>',
+                f'<a class="gallery-download" href="{download_url}" '
+                'aria-label="Скачать оригинал" title="Скачать оригинал">',
             )
             if index <= 4:
                 self.assertContains(
@@ -365,6 +567,7 @@ class GalleryPageTests(TestCase):
                 )
             else:
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
+        self.assertNotContains(response, "gallery-photo-id")
 
     def test_event_detail_empty_gallery_is_accessible(self) -> None:
         event = self.make_event()
@@ -377,21 +580,6 @@ class GalleryPageTests(TestCase):
         self.assertContains(response, 'id="gallery-title"')
         self.assertContains(response, 'class="event-gallery-count">0 фото</span>')
         self.assertContains(response, "Фотографии пока не опубликованы")
-
-
-class _ReadableBody:
-    def __init__(self, chunks: list[bytes | Exception]) -> None:
-        self._chunks = iter(chunks)
-        self.close_calls = 0
-
-    def read(self, amt: int | None = None) -> bytes:  # noqa: ARG002
-        chunk = next(self._chunks)
-        if isinstance(chunk, Exception):
-            raise chunk
-        return chunk
-
-    def close(self) -> None:
-        self.close_calls += 1
 
 
 class GalleryMediaViewTests(TransactionTestCase):
@@ -426,18 +614,129 @@ class GalleryMediaViewTests(TransactionTestCase):
         values.update(overrides)
         return Photo.objects.create(**values)
 
+    def publish_preview(self, photo: Photo, *, final_key: str) -> PhotoDerivative:
+        configuration = {"generate_preview": {"variant": "preview-small-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save()
+        return PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=final_key,
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+
     def media_url(self, *, event: Event, photo: Photo, variant: str = "preview-small") -> str:
         return reverse(
             "photo_media",
             kwargs={"slug": event.slug, "photo_id": photo.id, "variant": variant},
         )
 
-    def test_photo_media_success_sets_approved_headers(self) -> None:
+    def download_url(self, *, event: Event, photo: Photo) -> str:
+        return reverse(
+            "photo_download",
+            kwargs={"slug": event.slug, "photo_id": photo.id},
+        )
+
+    def test_photo_download_redirects_to_a_signed_original_without_a_body(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event, id="photo-download")
+        resolver = Mock()
+        resolver.resolve_download.return_value = (
+            "https://storage.example.test/original?signature=secret"
+        )
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(self.download_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], resolver.resolve_download.return_value)
+        self.assertEqual(response.content, b"")
+        self.assertFalse(response.streaming)
+        resolver.resolve_download.assert_called_once_with(photo=photo)
+
+    def test_photo_download_maps_storage_failures_to_existing_responses(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(event, id="download-storage")
+        resolver = Mock()
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            resolver.resolve_download.side_effect = ObjectMissing()
+            missing_response = self.client.get(self.download_url(event=event, photo=photo))
+            resolver.resolve_download.side_effect = StorageError()
+            unavailable_response = self.client.get(self.download_url(event=event, photo=photo))
+
+        self.assertEqual(missing_response.status_code, 404)
+        self.assertEqual(missing_response.content, b"")
+        self.assertEqual(unavailable_response.status_code, 503)
+        self.assertEqual(unavailable_response.content, b"")
+
+    def test_photo_download_returns_404_for_paid_event_before_signing(self) -> None:
+        event = self.make_event(name="Paid", slug="paid", access_type=Event.AccessType.PAID)
+        photo = self.make_private_photo(event, id="paid-download")
+
+        with patch("config.views._public_media_resolver") as resolver_factory:
+            response = self.client.get(self.download_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 404)
+        resolver_factory.assert_not_called()
+
+    def test_photo_media_redirects_to_signed_preview_without_streaming_a_body(self) -> None:
         event = self.make_event()
         photo = self.make_private_photo(event, id="photo-42")
-        body = _ReadableBody([b"photo", b""])
         resolver = Mock()
-        resolver.resolve.return_value = ResolvedPublicMedia(body, 5, "image/jpeg", "jpg")
+        resolver.resolve_signed.return_value = (
+            "https://storage.example.test/preview?signature=secret"
+        )
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = views.photo_media(
@@ -447,16 +746,11 @@ class GalleryMediaViewTests(TransactionTestCase):
                 "preview-small",
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIsInstance(response._iterator, CloseableMediaIterator)
-        self.assertEqual(response["Content-Type"], "image/jpeg")
-        self.assertEqual(response["Content-Length"], "5")
-        self.assertEqual(response["Content-Disposition"], 'inline; filename="photo-photo-42.jpg"')
-        self.assertEqual(response["Cache-Control"], "private, no-store")
-        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
-        self.assertEqual(b"".join(response.streaming_content), b"photo")
-        self.assertEqual(body.close_calls, 1)
-        resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], resolver.resolve_signed.return_value)
+        self.assertEqual(response.content, b"")
+        self.assertFalse(response.streaming)
+        resolver.resolve_signed.assert_called_once_with(photo=photo, variant="preview-small")
 
     def test_photo_media_returns_404_for_unknown_variant_before_storage(self) -> None:
         event = self.make_event()
@@ -483,6 +777,49 @@ class GalleryMediaViewTests(TransactionTestCase):
                 self.assertEqual(response.status_code, 404)
                 resolver_factory.assert_not_called()
 
+    def test_photo_media_hides_new_photo_until_its_preview_is_accepted(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(
+            event,
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+
+        for variant in ("preview-small", "preview-large"):
+            with (
+                self.subTest(variant=variant),
+                patch("config.views._public_media_resolver") as resolver_factory,
+            ):
+                response = self.client.get(
+                    self.media_url(event=event, photo=photo, variant=variant)
+                )
+
+            self.assertEqual(response.status_code, 404)
+            resolver_factory.assert_not_called()
+
+    def test_photo_media_redirects_an_accepted_new_preview_through_existing_routes(self) -> None:
+        event = self.make_event()
+        photo = self.make_private_photo(
+            event,
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        self.publish_preview(
+            photo,
+            final_key=f"derivatives/previews/{photo.id}/preview-small-v1/accepted.jpg",
+        )
+        resolver = Mock()
+        resolver.resolve_signed.return_value = (
+            "https://storage.example.test/preview?signature=secret"
+        )
+
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            response = self.client.get(self.media_url(event=event, photo=photo))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], resolver.resolve_signed.return_value)
+        resolver.resolve_signed.assert_called_once_with(photo=photo, variant="preview-small")
+
     def test_photo_media_returns_404_for_legacy_or_other_event_photo(self) -> None:
         event = self.make_event()
         other_event = self.make_event(name="Other", slug="other")
@@ -501,7 +838,7 @@ class GalleryMediaViewTests(TransactionTestCase):
         event = self.make_event()
         photo = self.make_private_photo(event)
         resolver = Mock()
-        resolver.resolve.side_effect = ObjectMissing()
+        resolver.resolve_signed.side_effect = ObjectMissing()
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = self.client.get(self.media_url(event=event, photo=photo))
@@ -513,7 +850,7 @@ class GalleryMediaViewTests(TransactionTestCase):
         event = self.make_event()
         photo = self.make_private_photo(event)
         resolver = Mock()
-        resolver.resolve.side_effect = StorageError()
+        resolver.resolve_signed.side_effect = StorageError()
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = self.client.get(self.media_url(event=event, photo=photo))
@@ -559,7 +896,7 @@ class GalleryMediaViewTests(TransactionTestCase):
         event = self.make_event()
         photo = self.make_private_photo(event)
         resolver = Mock()
-        resolver.resolve.side_effect = ValueError("programmer bug")
+        resolver.resolve_signed.side_effect = ValueError("programmer bug")
 
         with (
             patch("config.views._public_media_resolver", return_value=resolver),
@@ -572,35 +909,7 @@ class GalleryMediaViewTests(TransactionTestCase):
                 "preview-small",
             )
 
-        resolver.resolve.assert_called_once_with(photo=photo, variant="preview-small")
-
-    def test_photo_media_closes_body_after_mid_stream_failure(self) -> None:
-        event = self.make_event()
-        photo = self.make_private_photo(event)
-        body = _ReadableBody([b"first", RuntimeError("S3 secret")])
-        resolver = Mock()
-        resolver.resolve.return_value = ResolvedPublicMedia(body, 5, "image/jpeg", "jpg")
-
-        with patch("config.views._public_media_resolver", return_value=resolver):
-            response = self.client.get(self.media_url(event=event, photo=photo))
-
-        self.assertEqual(list(response.streaming_content), [b"first"])
-        self.assertEqual(body.close_calls, 1)
-
-    def test_photo_media_response_close_before_iteration_closes_body(self) -> None:
-        event = self.make_event()
-        photo = self.make_private_photo(event)
-        body = _ReadableBody([])
-        resolver = Mock()
-        resolver.resolve.return_value = ResolvedPublicMedia(body, 0, "image/jpeg", "jpg")
-
-        with patch("config.views._public_media_resolver", return_value=resolver):
-            response = self.client.get(self.media_url(event=event, photo=photo))
-
-        response.close()
-
-        self.assertEqual(body.close_calls, 1)
-        self.assertEqual(list(response.streaming_content), [])
+        resolver.resolve_signed.assert_called_once_with(photo=photo, variant="preview-small")
 
     def test_photo_media_rejects_non_get_methods_before_storage(self) -> None:
         event = self.make_event()

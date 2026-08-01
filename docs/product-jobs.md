@@ -37,7 +37,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-005 | Visitor | Browse an event gallery | Validated | 2026-07-19 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
-| PJ-008 | Customer | Find photos by face | Candidate | 2026-07-17 |
+| PJ-008 | Customer | Find photos by face | In progress | 2026-07-31 |
 | PJ-009 | Visitor | Receive a free-event original | Candidate | 2026-07-17 |
 | PJ-010 | Customer | Purchase selected photos | Candidate | 2026-07-17 |
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
@@ -111,9 +111,22 @@ quickly.
 When I have an appropriate reference image and the required consent applies, I want to search within
 one event, so I can review probable matches.
 
-- Status: Candidate
-- Evidence: [Target MVP architecture — Search](architecture.md#search) and [Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries)
-- Last updated: 2026-07-17
+- Status: In progress
+- Evidence: [ADR 0019](adr/0019-use-public-event-selfie-search.md), the
+  [public selfie-search implementation plan](plans/2026-07-30-public-selfie-search.md), and
+  [`tests/processing/test_selfie_search_e2e.py`](../tests/processing/test_selfie_search_e2e.py)
+  provide repository evidence plus local real YuNet/SFace inference for the selfie query; accepted
+  deterministic gallery fixtures cover both face generations, including a verified preview
+  publication and production enrollment into `2/face_embedding/2`. The evidence covers event
+  isolation, probable matches, selfie cleanup, stable results, and the narrow paid-result media
+  exception. The repository default remains disabled, but staging deployed branch `c62508a` with
+  the feature enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
+  put/head/grant/delete preflight passed; six legacy face jobs produced four accepted event
+  embeddings; and a live Unicode event upload reached a stable ready bearer URL with the expected
+  original. The temporary selfie was deleted before publication, including from the bucket prefix.
+  A temporary paid-event check kept normal media denied while bearer-result media succeeded.
+  This is staging evidence only; production is not activated.
+- Last updated: 2026-07-31
 
 ### PJ-009 — Visitor — Receive a free-event original
 
@@ -165,3 +178,4 @@ This log is append-only.
 | 2026-07-19 | PJ-005 | Validated | Validated | Clarified evidence: automated page, eligibility, and markup tests plus Task 6's passing interaction and inspected snapshot evidence support validation; complete current-HEAD visual evidence awaits PR CI after a local Docker/`networkidle` timeout. |
 | 2026-07-19 | PJ-005 | Validated | Validated | PR #45 CI run 29693681091 supplied the pending current-HEAD evidence: all 44 visual tests passed for `7d6a718`; the earlier local Docker/`networkidle` timeout remains an infrastructure-only boundary, not passing evidence. |
 | 2026-07-19 | PJ-005 | Validated | Validated | Provenance correction: PR #45 CI run 29693681091 passed all 44 visual tests for the CI-tested implementation commit `7d6a718`; later docs-only evidence commits were not included in that run. |
+| 2026-07-31 | PJ-008 | Candidate | In progress | The accepted ADR and plan have a locally verified public event-scoped implementation and staging activation on `c62508a`: lifecycle/preflight passed, representative face embeddings were accepted, and a live Unicode event selfie reached a stable ready bearer result with cleanup and original-size media verified. Paid-result media remained available only through its bearer result. Production is not activated. |

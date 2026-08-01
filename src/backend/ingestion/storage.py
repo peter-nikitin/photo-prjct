@@ -14,11 +14,19 @@ from django.utils import timezone
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _INCOMING_KEY = re.compile(rf"incoming/{_UUID}/{_UUID}")
 _FINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
+_PREVIEW_FINAL_KEY = re.compile(
+    r"derivatives/previews/[A-Za-z0-9_-]{1,32}/preview-small-v1/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+    r"[0-9a-f]{64}\.jpg"
+)
 _ETAG = re.compile(r'"([^"\r\n]+)"')
+_ATTACHMENT_FILENAME = re.compile(r"findme-photo-[A-Za-z0-9_-]{1,32}\.(?:jpg|png)")
 
 
 class _S3Client(Protocol):
     def generate_presigned_post(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def generate_presigned_url(self, **kwargs: Any) -> str: ...
 
     def head_object(self, **kwargs: Any) -> dict[str, Any]: ...
 
@@ -90,6 +98,7 @@ class PrivateUploadStorage:
         self._bucket = settings.PRIVATE_MEDIA_S3_BUCKET
         self._max_file_bytes = settings.PHOTO_UPLOAD_MAX_FILE_BYTES
         self._grant_ttl_seconds = settings.PHOTO_UPLOAD_GRANT_TTL_SECONDS
+        self._download_ttl_seconds = settings.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS
         self._client = (
             client
             if client is not None
@@ -143,8 +152,32 @@ class PrivateUploadStorage:
         _validate_managed_key(key)
         return self._inspect(key)
 
+    def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str:
+        """Verify then create a short-lived GET URL for one public final object."""
+        _validate_public_final_key(key)
+        if attachment_filename is not None:
+            _validate_attachment_filename(attachment_filename)
+        object_identity = self._inspect(key)
+        if object_identity.content_type not in {"image/jpeg", "image/png"}:
+            raise ObjectMismatch()
+        params = {"Bucket": self._bucket, "Key": key}
+        if attachment_filename is not None:
+            params["ResponseContentDisposition"] = f'attachment; filename="{attachment_filename}"'
+        try:
+            url = self._client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params=params,
+                ExpiresIn=self._download_ttl_seconds,
+                HttpMethod="GET",
+            )
+            if not isinstance(url, str) or not url:
+                raise TypeError
+        except (BotoCoreError, ClientError, TypeError):
+            raise StorageUnavailable() from None
+        return url
+
     def open_final(self, *, key: str) -> OpenedObject:
-        _validate_final_key(key)
+        _validate_public_final_key(key)
         try:
             response = self._client.get_object(Bucket=self._bucket, Key=key)
         except ClientError as error:
@@ -294,11 +327,23 @@ def _validate_final_key(key: str) -> None:
         raise ValueError("invalid final object key")
 
 
+def _validate_public_final_key(key: str) -> None:
+    if not isinstance(key, str) or (
+        _FINAL_KEY.fullmatch(key) is None and _PREVIEW_FINAL_KEY.fullmatch(key) is None
+    ):
+        raise ValueError("invalid final object key")
+
+
 def _validate_managed_key(key: str) -> None:
     if not isinstance(key, str) or (
         _INCOMING_KEY.fullmatch(key) is None and _FINAL_KEY.fullmatch(key) is None
     ):
         raise ValueError("invalid managed object key")
+
+
+def _validate_attachment_filename(filename: str) -> None:
+    if not isinstance(filename, str) or _ATTACHMENT_FILENAME.fullmatch(filename) is None:
+        raise ValueError("invalid attachment filename")
 
 
 def _etag_value(etag_wire: object) -> str:

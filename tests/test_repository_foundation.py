@@ -76,6 +76,48 @@ def test_deployment_workflows_separate_staging_and_production() -> None:
     assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
 
 
+def test_staging_face_embedding_benchmark_is_manual_and_bounded() -> None:
+    workflow = _load_workflow("staging-face-embedding-benchmark.yml")
+    dispatch = workflow[True]["workflow_dispatch"]
+    benchmark = workflow["jobs"]["benchmark"]
+    run = _workflow_step(workflow, "benchmark", "Run bounded benchmark operation")
+
+    assert set(workflow[True]) == {"workflow_dispatch"}
+    assert benchmark["environment"] == "staging"
+    assert benchmark["concurrency"] == {
+        "group": "deploy-staging",
+        "cancel-in-progress": False,
+    }
+    assert dispatch["inputs"]["operation"] == {
+        "description": "Create a baseline cohort, replay a closed cohort, or print a closed report",
+        "required": True,
+        "type": "choice",
+        "options": ["baseline", "replay", "report"],
+    }
+    assert dispatch["inputs"]["event_slug"]["required"] is False
+    assert dispatch["inputs"]["source_run_uuid"]["required"] is False
+    assert run["uses"] == "appleboy/ssh-action@v1.0.3"
+    assert "script_stop" not in run["with"]
+    assert run["env"] == {
+        "BENCHMARK_OPERATION": "${{ inputs.operation }}",
+        "BENCHMARK_EVENT_SLUG": "${{ inputs.event_slug }}",
+        "BENCHMARK_SOURCE_RUN_UUID": "${{ inputs.source_run_uuid }}",
+    }
+    assert "3/face_embedding_benchmark/1" in run["with"]["script"]
+    assert "PHOTO_WORKER_REPLICAS" in run["with"]["script"]
+    assert "PHOTO_PROCESSING_PREVIEW_ENABLED" in run["with"]["script"]
+    assert 'test "$preview_enabled" = False' in run["with"]["script"]
+    assert "run_face_embedding_benchmark" in run["with"]["script"]
+    assert 'test -n "$BENCHMARK_EVENT_SLUG"' in run["with"]["script"]
+    assert "printf '%s' \"$BENCHMARK_EVENT_SLUG\" | grep" not in run["with"]["script"]
+    assert '--event "$BENCHMARK_EVENT_SLUG"' in run["with"]["script"]
+    assert "run_web shell -c" in run["with"]["script"]
+    assert "photos_per_minute" in run["with"]["script"]
+    assert "run.report" not in run["with"]["script"]
+    assert '"run_id"' not in run["with"]["script"]
+    assert "secrets." not in run["with"]["script"]
+
+
 def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
     ci = _load_workflow("ci.yml")
     quality = ci["jobs"]["quality"]
@@ -155,11 +197,17 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
         "src/backend/ingestion",
         "src/backend/picflow",
         "src/backend/processing",
+        "src/backend/selfie_search",
         "src/worker/photo_worker",
     ]
     assert _workflow_step(ci, "quality", "Type check")["run"] == "mypy"
     assert _workflow_step(ci, "quality", "Test with coverage")["run"] == (
         "pytest --cov --cov-report=term-missing"
+    )
+    python_setup = _workflow_step(ci, "quality", "Set up Python")
+    assert "src/worker/requirements.txt" in python_setup["with"]["cache-dependency-path"]
+    assert _workflow_step(ci, "quality", "Install dependencies")["run"] == (
+        "pip install -r requirements-dev.txt -r src/worker/requirements.txt"
     )
 
 
@@ -207,8 +255,29 @@ def test_production_compose_uses_an_immutable_application_image() -> None:
     assert "healthcheck" in compose["services"]["web"]
 
 
-def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
-    """Staging may activate the worker, while production receives no activation inputs."""
+def test_deployment_workflows_forward_the_bounded_gunicorn_profile() -> None:
+    """Both delivery paths provide the required web-process bound to remote deployment."""
+    profiles = {
+        "GUNICORN_WORKERS": "5",
+        "GUNICORN_THREADS": "2",
+        "GUNICORN_TIMEOUT": "60",
+        "GUNICORN_MAX_REQUESTS": "1000",
+        "GUNICORN_MAX_REQUESTS_JITTER": "100",
+    }
+    deployments = (
+        (_load_workflow("deploy.yml"), "deploy", "Apply staging deployment"),
+        (_load_workflow("promote-production.yml"), "promote", "Apply production deployment"),
+    )
+
+    for workflow, job_name, step_name in deployments:
+        apply = _workflow_step(workflow, job_name, step_name)
+        for name, value in profiles.items():
+            assert apply["env"][name] == value
+            assert name in _envs(apply)
+
+
+def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_image() -> None:
+    """Both deployment workflows pass the opt-in worker contract, disabled by default."""
     staging = _load_workflow("deploy.yml")
     production = _load_workflow("promote-production.yml")
     build = staging["jobs"]["build"]
@@ -229,21 +298,94 @@ def test_staging_builds_and_forwards_an_immutable_opt_in_worker_image() -> None:
     expected = {
         "WORKER_IMAGE": "${{ needs.build.outputs.worker_image }}",
         "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_PREVIEW_ENABLED": (
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+        ),
         "PHOTO_PROCESSING_WORKER_TOKEN": "${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}",
         "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
             "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
         ),
         "PHOTO_PROCESSING_MAX_REQUEST_BYTES": (
-            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '16384' }}"
+            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '131072' }}"
         ),
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+        ),
+        "PHOTO_WORKER_REPLICAS": "${{ vars.PHOTO_WORKER_REPLICAS || '1' }}",
+        "PHOTO_WORKER_PROCESSOR_TYPES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
+            "'selfie_query,face_embedding,capture_metadata,generate_preview' }}"
+        ),
     }
     for name, value in expected.items():
         assert staging_apply["env"][name] == value
         assert name in _envs(staging_apply)
-        assert name not in production_apply["env"]
-        assert name not in _envs(production_apply)
+
+    production_expected = {
+        "WORKER_IMAGE": "ghcr.io/${{ github.repository }}-worker:${{ inputs.image_sha }}",
+        "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_PREVIEW_ENABLED": (
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+        ),
+        "PHOTO_PROCESSING_WORKER_TOKEN": "${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}",
+        "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
+            "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
+        ),
+        "PHOTO_PROCESSING_MAX_REQUEST_BYTES": (
+            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '131072' }}"
+        ),
+        "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
+        "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+        ),
+        "PHOTO_WORKER_PROCESSOR_TYPES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
+            "'selfie_query,face_embedding,capture_metadata,generate_preview' }}"
+        ),
+    }
+    for name, value in production_expected.items():
+        assert production_apply["env"].get(name) == value
+        assert name in _envs(production_apply)
+
+    for name, value in {
+        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
+        "SELFIE_SEARCH_ENABLED": "${{ vars.SELFIE_SEARCH_ENABLED || 'False' }}",
+        "SELFIE_SEARCH_MAX_UPLOAD_BYTES": (
+            "${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}"
+        ),
+        "SELFIE_SEARCH_MAX_PIXELS": "${{ vars.SELFIE_SEARCH_MAX_PIXELS || '25000000' }}",
+        "SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS": (
+            "${{ vars.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS || '120' }}"
+        ),
+        "SELFIE_SEARCH_EMBEDDING_MODEL": "${{ vars.SELFIE_SEARCH_EMBEDDING_MODEL || 'sface' }}",
+        "SELFIE_SEARCH_EMBEDDING_DIMENSIONS": (
+            "${{ vars.SELFIE_SEARCH_EMBEDDING_DIMENSIONS || '128' }}"
+        ),
+        "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD": (
+            "${{ vars.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD || '0.363' }}"
+        ),
+        "SELFIE_SEARCH_TEMPORARY_PREFIX": (
+            "${{ vars.SELFIE_SEARCH_TEMPORARY_PREFIX || 'selfie-search/' }}"
+        ),
+        "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS": (
+            "${{ vars.SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS || '24' }}"
+        ),
+    }.items():
+        assert staging_apply["env"][name] == value
+        assert production_apply["env"][name] == value
+        assert name in _envs(staging_apply)
+        assert name in _envs(production_apply)
+
+    storage_preflight = _workflow_step(
+        staging, "deploy", "Verify selfie-search temporary storage contract"
+    )
+    assert (
+        "test \"$(sed -n 's/^SELFIE_SEARCH_ENABLED=//p' .env | head -n 1)\" = False"
+        in (storage_preflight["with"]["script"])
+    )
 
 
 def test_public_environments_share_one_https_edge_overlay() -> None:
@@ -305,6 +447,87 @@ def test_public_edges_deny_the_private_processing_prefix_before_the_proxy_catcha
         assert source.index(deny) < source.rindex("location / {")
 
 
+def test_public_edges_sanitize_bearer_access_logs_and_split_referrer_policies() -> None:
+    for relative_path in ("deploy/nginx/https.conf.template", "deploy/nginx/staging.conf"):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+
+        assert "map $uri $selfie_search_access_request {" in source
+        assert "map $uri $selfie_search_access_referrer {" in source
+        assert "map $uri $selfie_search_access_user_agent {" in source
+        assert (
+            '~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "$request_method <selfie-search>";'
+            in source
+        )
+        assert '"$selfie_search_access_referrer"' in source
+        assert '"$selfie_search_access_user_agent"' in source
+        assert "access_log /var/log/nginx/access.log selfie_search_safe;" in source
+
+    https = (ROOT / "deploy/nginx/https.conf.template").read_text(encoding="utf-8")
+    bearer_location = "location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {"
+    bearer_start = https.index(bearer_location)
+    bearer_block = https[bearer_start : https.index("\n    }", bearer_start)]
+    assert 'add_header Referrer-Policy "same-origin" always;' in https
+    assert 'add_header Referrer-Policy "no-referrer" always;' in https
+    assert 'add_header Referrer-Policy "no-referrer" always;' in bearer_block
+    for header in (
+        'add_header Strict-Transport-Security "max-age=86400" always;',
+        'add_header X-Content-Type-Options "nosniff" always;',
+        'add_header X-Frame-Options "DENY" always;',
+    ):
+        assert header in bearer_block
+    assert "proxy_hide_header Referrer-Policy;" in https
+    assert "access_log /var/log/nginx/access.log selfie_search_safe;" in (
+        ROOT / "deploy/nginx/reload-nginx.sh"
+    ).read_text(encoding="utf-8")
+
+
+def test_public_edges_isolate_bearer_upstream_errors_without_changing_proxy_routing() -> None:
+    bearer_location = (
+        "location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {\n        error_log /dev/null emerg;"
+    )
+
+    for relative_path in ("deploy/nginx/https.conf.template", "deploy/nginx/staging.conf"):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+
+        assert bearer_location in source
+        assert source.count("error_log /dev/null emerg;") == 1
+        bearer_start = source.index(bearer_location)
+        internal_start = source.index("location ^~ /internal/photo-processing/ {")
+        catchall_start = source.index("location / {", bearer_start)
+        assert internal_start < bearer_start < catchall_start
+
+        bearer_block = source[bearer_start : source.index("\n    }", bearer_start)]
+        catchall_block = source[catchall_start : source.index("\n    }", catchall_start)]
+        bearer_proxy_lines = [
+            line.strip() for line in bearer_block.splitlines() if line.strip().startswith("proxy_")
+        ]
+        catchall_proxy_lines = [
+            line.strip()
+            for line in catchall_block.splitlines()
+            if line.strip().startswith("proxy_")
+        ]
+        assert bearer_proxy_lines == catchall_proxy_lines
+
+    alias = (ROOT / "deploy/nginx/reload-nginx.sh").read_text(encoding="utf-8")
+    assert bearer_location in alias
+    assert alias.count("error_log /dev/null emerg;") == 1
+    alias_bearer_start = alias.index(bearer_location)
+    alias_catchall_start = alias.index("location / {", alias_bearer_start)
+    assert alias_bearer_start < alias_catchall_start
+    alias_bearer_block = alias[alias_bearer_start : alias.index("\n    }", alias_bearer_start)]
+    alias_catchall_block = alias[
+        alias_catchall_start : alias.index("\n    }", alias_catchall_start)
+    ]
+    assert "return 308 https://${PUBLIC_DOMAIN}\\$request_uri;" in alias_bearer_block
+    assert "return 308 https://${PUBLIC_DOMAIN}\\$request_uri;" in alias_catchall_block
+    assert 'add_header Referrer-Policy "no-referrer" always;' in alias
+
+    validator = (ROOT / "tests/deployment/validate-nginx.sh").read_text(encoding="utf-8")
+    assert 'exercise_bearer_error_logging "$name" "$rendered" "$alias"' in validator
+    assert 'bearer_token="bearer-log-token-$name-$$"' in validator
+    assert "--add-host web:127.0.0.1" in validator
+
+
 def test_private_upload_configuration_is_wired_to_deployments() -> None:
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
     apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
@@ -327,6 +550,23 @@ def test_private_upload_configuration_is_wired_to_deployments() -> None:
         assert name in _envs(staging)
         assert name in _envs(production)
         assert f"printf '{name}=%s\\n'" in apply_script
+
+
+def test_staging_deployment_forwards_preview_processing_configuration() -> None:
+    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Apply staging deployment")
+    expected = {
+        "PHOTO_PROCESSING_PREVIEW_ENABLED": (
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+        ),
+        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+        ),
+    }
+
+    for name, value in expected.items():
+        assert staging["env"][name] == value
+        assert name in _envs(staging)
 
 
 def test_staging_storage_probe_is_manual_explicit_and_uses_the_deployed_container() -> None:

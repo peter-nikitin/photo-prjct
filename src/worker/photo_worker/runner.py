@@ -16,21 +16,45 @@ from pathlib import Path
 from time import monotonic
 from typing import Protocol
 
-from photo_worker.client import ApiError, DownloadError, HttpClient
+from photo_worker.client import ApiError, DownloadError, HttpClient, UploadError
 from photo_worker.contracts import (
     FAILURE_RETRYABLE,
+    PREVIEW_CONTRACT_VERSION,
     PROCESSOR_TYPE,
+    PROCESSOR_TYPE_FACE_EMBEDDING,
+    PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+    PROCESSOR_TYPE_GENERATE_PREVIEW,
+    PROCESSOR_TYPE_SELFIE_QUERY,
     CaptureMetadataResult,
     Claim,
     ClaimedJob,
     FaceEmbeddingResult,
-    PROCESSOR_TYPE_FACE_EMBEDDING,
+    SelfieEmbeddingResult,
     redact,
 )
-from photo_worker.face_embedding import FaceEmbeddingError, extract_face_embeddings
+from photo_worker.face_embedding import (
+    FaceEmbeddingError,
+    extract_face_embeddings,
+    extract_selfie_embedding,
+)
 from photo_worker.metadata import InputTooLarge, MetadataError, extract_capture_metadata
+from photo_worker.preview import PreviewError, PreviewResult, generate_preview
 
 LOGGER = logging.getLogger(__name__)
+_PREVIEW_FAILURE_RETRYABLE = {
+    "invalid_dimensions": False,
+    "normalization_failed": False,
+    "output_contract_violation": False,
+}
+_IDENTITY_PARTS = 3
+_SUPPORTED_IDENTITIES = {
+    (1, PROCESSOR_TYPE, 1),
+    (1, PROCESSOR_TYPE_FACE_EMBEDDING, 1),
+    (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
+    (2, PROCESSOR_TYPE_FACE_EMBEDDING, 2),
+    (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
+    (1, PROCESSOR_TYPE_SELFIE_QUERY, 1),
+}
 
 
 class WorkerClient(Protocol):
@@ -41,8 +65,8 @@ class WorkerClient(Protocol):
         lease_seconds: int,
         processor_type: str = PROCESSOR_TYPE,
         processor_version: int | None = None,
-    ) -> Claim:
-        ...
+        contract_version: int = 1,
+    ) -> Claim: ...
 
     def download(
         self,
@@ -51,8 +75,20 @@ class WorkerClient(Protocol):
         *,
         max_bytes: int,
         expected_size: int,
+        expected_content_type: str,
         expected_etag: str | None = None,
     ) -> int: ...
+
+    def upload_preview(
+        self,
+        url: str,
+        source: Path,
+        *,
+        content_type: str,
+        expected_size: int,
+        max_bytes: int,
+        response_max_bytes: int,
+    ) -> None: ...
 
     def heartbeat(
         self, attempt_id: str, *, lease_seconds: int, response_max_bytes: int
@@ -73,7 +109,9 @@ class WorkerClient(Protocol):
 class WorkerConfig:
     worker_build: str
     lease_seconds: int
-    processor_type: str = PROCESSOR_TYPE
+    processor_type: str | None = None
+    processor_types: tuple[str, ...] = ()
+    processor_identities: tuple[str, ...] = ()
     concurrency: int = 1
     temp_dir: Path | None = None
     minimum_delay_seconds: float = 1.0
@@ -83,8 +121,35 @@ class WorkerConfig:
     def __post_init__(self) -> None:
         if self.concurrency != 1:
             raise ValueError("worker concurrency must be exactly 1")
-        if self.processor_type not in {PROCESSOR_TYPE, PROCESSOR_TYPE_FACE_EMBEDDING}:
+        supported = {
+            PROCESSOR_TYPE,
+            PROCESSOR_TYPE_FACE_EMBEDDING,
+            PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+            PROCESSOR_TYPE_GENERATE_PREVIEW,
+            PROCESSOR_TYPE_SELFIE_QUERY,
+        }
+        if self.processor_type is not None and self.processor_type not in supported:
             raise ValueError("unsupported processor type")
+        types = self.processor_types
+        if types and (
+            any(processor not in supported for processor in types) or len(set(types)) != len(types)
+        ):
+            raise ValueError("unsupported processor type")
+        if self.processor_type is not None:
+            if types and types != (self.processor_type,):
+                raise ValueError("processor type configuration conflicts")
+            types = (self.processor_type,)
+        elif not types and not self.processor_identities:
+            types = (PROCESSOR_TYPE,)
+        identities = tuple(_parse_processor_identity(value) for value in self.processor_identities)
+        if len(set(identities)) != len(identities):
+            raise ValueError("processor identities must not repeat")
+        object.__setattr__(self, "processor_types", types)
+        object.__setattr__(
+            self,
+            "processor_type",
+            types[0] if types else identities[0][1],
+        )
         if not (
             _finite_positive(self.minimum_delay_seconds)
             and _finite_positive(self.maximum_backoff_seconds)
@@ -97,12 +162,27 @@ class WorkerConfig:
         token = os.environ["PHOTO_WORKER_TOKEN"]
         build = os.environ.get("PHOTO_WORKER_BUILD", "capture-metadata-v1")
         lease = int(os.environ.get("PHOTO_WORKER_LEASE_SECONDS", "120"))
-        processor_type = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPE", PROCESSOR_TYPE)
+        raw_identities = os.environ.get("PHOTO_WORKER_PROCESSOR_IDENTITIES", "")
+        singular = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPE", PROCESSOR_TYPE)
+        plural = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPES")
+        if plural is None:
+            processor_types: tuple[str, ...] = ()
+        else:
+            processor_types = tuple(item.strip() for item in plural.split(","))
+            if not all(processor_types):
+                raise ValueError("processor types must not contain empty values")
+        identities = tuple(item.strip() for item in raw_identities.split(",") if item.strip())
+        # Only the dedicated benchmark deployment is isolated from the product priority list.
+        # Product identity overrides retain their configured type fallbacks.
+        if identities == ("3/face_embedding_benchmark/1",):
+            processor_types = ()
         return (
             cls(
                 worker_build=build,
                 lease_seconds=lease,
-                processor_type=processor_type,
+                processor_type=(singular if not processor_types and not identities else None),
+                processor_identities=identities,
+                processor_types=processor_types,
                 log_secrets=(token,),
             ),
             HttpClient(api_url, token),
@@ -179,7 +259,12 @@ class LeaseKeeper(Protocol):
 
 
 class Worker:
-    """Processes at most one claimed job per ``run_once`` call."""
+    """Processes at most one claimed job per ``run_once`` call.
+
+    A plural configuration gives a claimed selfie one photo round-robin opportunity before the
+    next selfie claim. The photo cursor advances past a claimed exact identity, bounding each
+    configured photo identity's wait even while selfie or legacy face queues remain nonempty.
+    """
 
     def __init__(
         self,
@@ -194,21 +279,125 @@ class Worker:
         self._config = config
         self._lease_keeper_factory = lease_keeper_factory
         self._next_poll_delay_seconds = config.minimum_delay_seconds
+        self._identity_index = 0
+        self._photo_identity_index = 0
+        self._prefer_selfie = True
+        self._last_claim_identity: tuple[int, str, int] | None = None
 
     def run_once(self) -> int | None:
+        empty_delays: list[int] = []
+        claim: Claim | None
+        if not self._config.processor_types:
+            contract_version, processor_type, processor_version = self._next_identity()
+            claim = self._claim_identity(
+                (contract_version, processor_type, processor_version), empty_delays
+            )
+        else:
+            claim = self._claim_plural(empty_delays)
+        if claim is None or claim.job is None:
+            return min(empty_delays)
+        job = claim.job
+        if job.configuration.heartbeat_interval_seconds >= self._config.lease_seconds:
+            raise ApiError("invalid_api_response", retryable=False)
+        self._next_poll_delay_seconds = job.configuration.poll_min_delay_seconds
+        _lifecycle("claimed", job, secrets=self._config.log_secrets)
+        return self._process(job)
+
+    def _claim_plural(self, empty_delays: list[int]) -> Claim | None:
+        identities = self._priority_identities()
+        selfie = next(
+            (identity for identity in identities if identity[1] == PROCESSOR_TYPE_SELFIE_QUERY),
+            None,
+        )
+        photos = tuple(identity for identity in identities if identity != selfie)
+        if selfie is None:
+            return self._claim_photo_opportunity(photos, empty_delays)
+        if not photos:
+            return self._claim_identity(selfie, empty_delays)
+
+        if self._prefer_selfie:
+            selfie_claim = self._claim_identity(selfie, empty_delays)
+            if selfie_claim.job is not None:
+                self._prefer_selfie = False
+                return selfie_claim
+            photo_claim = self._claim_photo_opportunity(photos, empty_delays)
+            if photo_claim is not None and photo_claim.job is not None:
+                self._prefer_selfie = True
+            return photo_claim
+
+        photo_claim = self._claim_photo_opportunity(photos, empty_delays)
+        if photo_claim is not None and photo_claim.job is not None:
+            self._prefer_selfie = True
+            return photo_claim
+        selfie_claim = self._claim_identity(selfie, empty_delays)
+        if selfie_claim.job is not None:
+            self._prefer_selfie = False
+        return selfie_claim
+
+    def _claim_photo_opportunity(
+        self,
+        identities: tuple[tuple[int, str, int], ...],
+        empty_delays: list[int],
+    ) -> Claim | None:
+        if not identities:
+            return None
+        start = self._photo_identity_index % len(identities)
+        for offset in range(len(identities)):
+            index = (start + offset) % len(identities)
+            candidate = self._claim_identity(identities[index], empty_delays)
+            if candidate.job is not None:
+                self._photo_identity_index = (index + 1) % len(identities)
+                return candidate
+        return None
+
+    def _claim_identity(self, identity: tuple[int, str, int], empty_delays: list[int]) -> Claim:
+        contract_version, processor_type, processor_version = identity
+        self._last_claim_identity = identity
         claim = self._client.claim_job(
             worker_build=self._config.worker_build,
             lease_seconds=self._config.lease_seconds,
-            processor_type=self._config.processor_type,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            contract_version=contract_version,
         )
         if claim.job is None:
-            return claim.suggested_delay_seconds
-        if claim.job.configuration.heartbeat_interval_seconds >= self._config.lease_seconds:
-            raise ApiError("invalid_api_response", retryable=False)
-        self._next_poll_delay_seconds = claim.job.configuration.poll_min_delay_seconds
-        _lifecycle("claimed", claim.job, secrets=self._config.log_secrets)
-        self._process(claim.job)
-        return None
+            assert claim.suggested_delay_seconds is not None
+            empty_delays.append(claim.suggested_delay_seconds)
+        return claim
+
+    def _next_identity(self) -> tuple[int, str, int]:
+        identities = tuple(
+            _parse_processor_identity(value) for value in self._config.processor_identities
+        )
+        if identities:
+            identity = identities[self._identity_index]
+            self._identity_index = (self._identity_index + 1) % len(identities)
+            return identity
+        assert self._config.processor_type is not None
+        return _default_processor_identity(self._config.processor_type)
+
+    def _identities_for_type(self, processor_type: str) -> tuple[tuple[int, str, int], ...]:
+        identities = tuple(
+            identity
+            for identity in (
+                _parse_processor_identity(value) for value in self._config.processor_identities
+            )
+            if identity[1] == processor_type
+        )
+        return identities or (_default_processor_identity(processor_type),)
+
+    def _priority_identities(self) -> tuple[tuple[int, str, int], ...]:
+        configured = tuple(
+            _parse_processor_identity(value) for value in self._config.processor_identities
+        )
+        ordered: list[tuple[int, str, int]] = []
+        for processor_type in self._config.processor_types:
+            identities = tuple(identity for identity in configured if identity[1] == processor_type)
+            ordered.extend(identities or (_default_processor_identity(processor_type),))
+        # A preview rollout may retain its v2 identities while the public priority list remains
+        # selfie-first.  Poll those explicit identities after the ordered public processors.
+        ordered.extend(identity for identity in configured if identity not in ordered)
+        return tuple(ordered)
 
     def run_forever(self) -> None:
         failures = 0
@@ -216,15 +405,28 @@ class Worker:
             try:
                 idle_delay = self.run_once()
                 failures = 0
-                time.sleep(
-                    float(idle_delay) if idle_delay is not None else self._next_poll_delay_seconds
-                )
+                if idle_delay is not None:
+                    time.sleep(float(idle_delay))
             except ApiError as error:
                 if error.code == "lease_not_current":
                     time.sleep(self._next_poll_delay_seconds)
                     continue
                 if not error.retryable:
-                    LOGGER.error("worker_stopped code=%s", error.code)
+                    if self._last_claim_identity is not None:
+                        contract_version, processor_type, processor_version = (
+                            self._last_claim_identity
+                        )
+                        LOGGER.error(
+                            "worker_stopped code=%s contract_version=%s processor_type=%s "
+                            "processor_version=%s failure_category=%s",
+                            error.code,
+                            contract_version,
+                            processor_type,
+                            processor_version,
+                            error.diagnostic or "api:unclassified",
+                        )
+                    else:
+                        LOGGER.error("worker_stopped code=%s", error.code)
                     return
                 failures += 1
                 backoff_delay = self._backoff_delay(failures)
@@ -233,31 +435,61 @@ class Worker:
                 )
                 time.sleep(backoff_delay)
 
-    def _process(self, job: ClaimedJob) -> None:
+    def _process(self, job: ClaimedJob) -> int | None:
         _lifecycle("started", job, secrets=self._config.log_secrets)
         started_at = _timestamp()
         total_started = monotonic()
         download_ms = 0
         compute_ms = 0
-        with tempfile.NamedTemporaryFile(
-            suffix=".jpg", dir=self._config.temp_dir, delete=False
-        ) as temporary:
-            path = Path(temporary.name)
+        input_path: Path | None = None
+        preview_path: Path | None = None
         keeper: LeaseKeeper | None = None
         try:
+            with tempfile.NamedTemporaryFile(
+                suffix=(".png" if job.input_limits.content_type == "image/png" else ".jpg"),
+                dir=self._config.temp_dir,
+                delete=False,
+            ) as temporary:
+                input_path = Path(temporary.name)
+            with tempfile.NamedTemporaryFile(
+                suffix=".jpg", dir=self._config.temp_dir, delete=False
+            ) as temporary:
+                preview_path = Path(temporary.name)
+            assert input_path is not None and preview_path is not None
             keeper = self._lease_keeper_factory(self._client, job, self._config.lease_seconds)
             keeper.start()
             download_started = monotonic()
             try:
-                self._download_current(job, path)
+                self._download_current(job, input_path)
             finally:
                 download_ms = _milliseconds(download_started)
             keeper.raise_if_lost()
             compute_started = monotonic()
             try:
-                result = self._run_processor(job, path)
+                result = self._run_processor(job, input_path, preview_path)
             finally:
                 compute_ms = _milliseconds(compute_started)
+            if isinstance(result, PreviewResult):
+                keeper.raise_if_lost()
+                upload_started = monotonic()
+                try:
+                    output_slot = job.output_slots[0]
+                    self._client.upload_preview(
+                        output_slot.upload_url,
+                        preview_path,
+                        content_type=output_slot.content_type,
+                        expected_size=result.byte_size,
+                        max_bytes=output_slot.max_bytes,
+                        response_max_bytes=job.configuration.api_response_max_bytes,
+                    )
+                finally:
+                    upload_ms = _milliseconds(upload_started)
+                keeper.raise_if_lost()
+                result_payload = result.as_payload(upload_ms=upload_ms)
+            elif isinstance(result, dict):
+                result_payload = result
+            else:
+                result_payload = result.as_payload()
             keeper.stop()
             keeper.raise_if_lost()
             payload = _success_payload(
@@ -265,17 +497,22 @@ class Worker:
                 self._config.worker_build,
                 started_at,
                 _timestamp(),
-                result,
+                result_payload,
                 download_ms,
                 compute_ms,
                 _milliseconds(total_started),
             )
             _assert_terminal_size(payload, job.configuration.terminal_result_max_bytes)
-            self._client.complete(
-                job.attempt_id,
-                payload,
-                response_max_bytes=job.configuration.api_response_max_bytes,
-            )
+            try:
+                self._client.complete(
+                    job.attempt_id,
+                    payload,
+                    response_max_bytes=job.configuration.api_response_max_bytes,
+                )
+            finally:
+                # A selfie embedding is transient: release its payload as soon as the callback ends.
+                del payload
+                del result
             _lifecycle(
                 "succeeded",
                 job,
@@ -283,18 +520,27 @@ class Worker:
                 compute_ms=compute_ms,
                 secrets=self._config.log_secrets,
             )
-        except (DownloadError, InputTooLarge, MetadataError, FaceEmbeddingError) as error:
+        except (
+            DownloadError,
+            InputTooLarge,
+            MetadataError,
+            FaceEmbeddingError,
+            PreviewError,
+            UploadError,
+        ) as error:
             assert keeper is not None
             keeper.stop()
             try:
                 keeper.raise_if_lost()
             except AttemptLost:
                 _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
-                return
+                return job.configuration.poll_min_delay_seconds
             code = getattr(error, "code", None)
             if not isinstance(code, str):
                 code = "decode_failed"
             retryable = FAILURE_RETRYABLE.get(code)
+            if retryable is None and job.processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW:
+                retryable = _PREVIEW_FAILURE_RETRYABLE.get(code)
             if retryable is None:
                 code = "decode_failed"
                 retryable = False
@@ -319,7 +565,7 @@ class Worker:
             except ApiError as submission_error:
                 if submission_error.code == "lease_not_current":
                     _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
-                    return
+                    return job.configuration.poll_min_delay_seconds
                 raise
             _lifecycle(
                 "failed",
@@ -331,44 +577,84 @@ class Worker:
             )
         except AttemptLost:
             _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
-            return
+            return job.configuration.poll_min_delay_seconds
         except ApiError as error:
             if error.code == "lease_not_current":
                 _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
-                return
+                return job.configuration.poll_min_delay_seconds
             raise
         finally:
             if keeper is not None:
                 keeper.stop()
-            path.unlink(missing_ok=True)
+            _unlink_temporary(input_path)
+            _unlink_temporary(preview_path)
+        return None
 
-    def _run_processor(self, job: ClaimedJob, path: Path):
+    def _run_processor(self, job: ClaimedJob, input_path: Path, preview_path: Path):
         if job.processor_type == PROCESSOR_TYPE:
             return extract_capture_metadata(
-                path,
+                input_path,
                 max_bytes=job.input_limits.max_bytes,
                 max_pixels=job.configuration.max_pixels,
                 date_field_precedence=job.configuration.date_field_precedence,
             )
-        if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
-            return extract_face_embeddings(
-                path,
+        if job.processor_type in {
+            PROCESSOR_TYPE_FACE_EMBEDDING,
+            PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+        }:
+            result = extract_face_embeddings(
+                input_path,
                 max_bytes=job.input_limits.max_bytes,
                 max_pixels=job.configuration.max_pixels,
                 max_faces=job.configuration.max_faces,
                 detection_threshold=job.configuration.face_detection_threshold,
                 model=job.configuration.model,
             )
+            if job.contract_version == PREVIEW_CONTRACT_VERSION:
+                if job.input_geometry is None:
+                    raise ValueError("preview face claim is missing input geometry")
+                return result.as_payload() | {"input_geometry": job.input_geometry}
+            if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
+                return {
+                    "model": result.model,
+                    "face_count": len(result.faces),
+                    "warnings": list(result.warnings),
+                    "timings": dict(result.timings),
+                }
+            return result
+        if job.processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW:
+            return generate_preview(
+                input_path,
+                preview_path,
+                max_input_bytes=job.input_limits.max_bytes,
+                max_pixels=job.configuration.max_pixels,
+                slot=job.output_slots[0],
+            )
+        if job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+            return extract_selfie_embedding(
+                input_path,
+                max_bytes=job.input_limits.max_bytes,
+                content_type=job.input_limits.content_type,
+                max_pixels=job.configuration.max_pixels,
+                detection_threshold=job.configuration.face_detection_threshold,
+                minimum_face_px=job.configuration.minimum_face_px,
+                model=job.configuration.model,
+            )
         raise ValueError("unsupported processor type")
 
     def _download_current(self, job: ClaimedJob, path: Path) -> None:
-        expected_etag = job.input_fingerprint.verified_source_etag
+        expected_etag = (
+            getattr(job.input_fingerprint, "object_etag", None)
+            if job.contract_version == PREVIEW_CONTRACT_VERSION
+            else getattr(job.input_fingerprint, "verified_source_etag", None)
+        )
         try:
             self._client.download(
                 job.download_url,
                 path,
                 max_bytes=job.input_limits.max_bytes,
-                expected_size=job.input_fingerprint.original_size,
+                expected_size=_fingerprint_size(job),
+                expected_content_type=job.input_limits.content_type,
                 expected_etag=expected_etag,
             )
         except DownloadError as error:
@@ -382,7 +668,8 @@ class Worker:
                 refreshed_url,
                 path,
                 max_bytes=job.input_limits.max_bytes,
-                expected_size=job.input_fingerprint.original_size,
+                expected_size=_fingerprint_size(job),
+                expected_content_type=job.input_limits.content_type,
                 expected_etag=expected_etag,
             )
 
@@ -396,7 +683,7 @@ def _success_payload(
     worker_build: str,
     started_at: str,
     finished_at: str,
-    result: CaptureMetadataResult | FaceEmbeddingResult,
+    result: CaptureMetadataResult | FaceEmbeddingResult | SelfieEmbeddingResult | dict[str, object],
     download_ms: int,
     compute_ms: int,
     total_ms: int,
@@ -405,7 +692,7 @@ def _success_payload(
         job, worker_build, started_at, finished_at, download_ms, compute_ms, total_ms
     ) | {
         "outcome": "success",
-        "result": result.as_payload(),
+        "result": result if isinstance(result, dict) else result.as_payload(),
     }
 
 
@@ -471,11 +758,64 @@ def _finite_positive(value: object) -> bool:
     )
 
 
+def _parse_processor_identity(value: str) -> tuple[int, str, int]:
+    """Parse one exact, ordered worker identity without accepting aliases or whitespace."""
+    if not isinstance(value, str) or value.strip() != value:
+        raise ValueError("invalid processor identity")
+    parts = value.split("/")
+    if len(parts) != _IDENTITY_PARTS:
+        raise ValueError("invalid processor identity")
+    try:
+        identity = (int(parts[0]), parts[1], int(parts[2]))
+    except ValueError as error:
+        raise ValueError("invalid processor identity") from error
+    if identity not in _SUPPORTED_IDENTITIES:
+        raise ValueError("unsupported processor identity")
+    return identity
+
+
+def _default_processor_identity(processor_type: str) -> tuple[int, str, int]:
+    identity = (
+        PREVIEW_CONTRACT_VERSION if processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW else 1,
+        processor_type,
+        1,
+    )
+    if identity not in _SUPPORTED_IDENTITIES:
+        raise ValueError("unsupported processor type")
+    return identity
+
+
 def _assert_terminal_size(payload: dict[str, object], maximum: int) -> None:
     import json
 
     if len(json.dumps(payload, separators=(",", ":")).encode()) > maximum:
+        raise ApiError(
+            "invalid_api_response",
+            retryable=False,
+            diagnostic="worker:terminal_payload_exceeds_limit",
+        )
+
+
+def _unlink_temporary(path: Path | None) -> None:
+    """Best-effort cleanup without making a second path depend on the first one."""
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _fingerprint_size(job: ClaimedJob) -> int:
+    if job.contract_version == PREVIEW_CONTRACT_VERSION:
+        size = getattr(job.input_fingerprint, "object_size", None)
+    elif job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+        size = getattr(job.input_fingerprint, "temporary_size", None)
+    else:
+        size = getattr(job.input_fingerprint, "original_size", None)
+    if not isinstance(size, int):
         raise ApiError("invalid_api_response", retryable=False)
+    return size
 
 
 def _lifecycle(
@@ -489,12 +829,18 @@ def _lifecycle(
 ) -> None:
     """Log only opaque identifiers and bounded stable values, never source metadata or URLs."""
     LOGGER.info(
-        "worker_lifecycle phase=%s event_id=%s run_id=%s photo_id=%s job_id=%s attempt_id=%s "
+        "worker_lifecycle phase=%s event_id=%s run_id=%s photo_id=%s search_id=%s "
+        "job_id=%s attempt_id=%s "
         "code=%s download_ms=%s compute_ms=%s",
         phase,
         redact(job.event_id, secrets=secrets),
         redact(job.run_id, secrets=secrets),
-        redact(job.photo_id, secrets=secrets),
+        (
+            "<omitted>"
+            if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK
+            else redact(job.photo_id, secrets=secrets)
+        ),
+        redact(job.search_id, secrets=secrets),
         redact(job.id, secrets=secrets),
         redact(job.attempt_id, secrets=secrets),
         code or "",

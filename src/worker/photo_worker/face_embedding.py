@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -8,8 +10,11 @@ from typing import Any
 from photo_worker.contracts import (
     MAX_FACE_EMBEDDING_DIMENSIONS,
     MAX_PIXELS_CAP,
+    SELFIE_MAX_INPUT_BYTES,
+    SELFIE_MAX_PIXELS,
     FaceEmbeddingFace,
     FaceEmbeddingResult,
+    SelfieEmbeddingResult,
 )
 
 
@@ -19,6 +24,113 @@ class FaceEmbeddingError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class _ModelRuntime:
+    detector: Any
+    recognizer: Any
+
+
+_MODEL_RUNTIMES: dict[tuple[Path, Path, float], _ModelRuntime] = {}
+
+
+def extract_selfie_embedding(
+    path: Path,
+    *,
+    max_bytes: int,
+    content_type: str,
+    max_pixels: int = SELFIE_MAX_PIXELS,
+    detection_threshold: float = 0.75,
+    minimum_face_px: int = 32,
+    model: str = "sface",
+    yunet_model_path: Path | None = None,
+    sface_model_path: Path | None = None,
+) -> SelfieEmbeddingResult:
+    """Return one transient query embedding or a stable selfie-domain failure."""
+    if (
+        content_type not in {"image/jpeg", "image/png"}
+        or not 0 < max_bytes <= SELFIE_MAX_INPUT_BYTES
+        or not 0 < max_pixels <= SELFIE_MAX_PIXELS
+        or minimum_face_px != 32
+        or not 0.0 <= detection_threshold <= 1.0
+        or model != "sface"
+    ):
+        raise FaceEmbeddingError("unsupported_input")
+
+    np = _load_numpy()
+    cv2 = _load_cv2()
+    image: Any | None = None
+    embedding: tuple[float, ...] | None = None
+    started = monotonic()
+    try:
+        image = _decode_image(np, cv2, path, max_bytes=max_bytes, max_pixels=max_pixels)
+        decode_ms = _elapsed_ms(started)
+        width, height = image.shape[1], image.shape[0]
+        model_started = monotonic()
+        runtime = _get_model_runtime(
+            cv2,
+            width,
+            height,
+            _model_path(yunet_model_path, "PHOTO_WORKER_YUNET_MODEL_PATH"),
+            _model_path(sface_model_path, "PHOTO_WORKER_SFACE_MODEL_PATH"),
+            detection_threshold,
+        )
+        model_ms = _elapsed_ms(model_started)
+        detect_started = monotonic()
+        detections = _detect_faces(np, runtime.detector, image, width, height, detection_threshold)
+        detect_ms = _elapsed_ms(detect_started)
+        if not detections:
+            raise FaceEmbeddingError("no_face_detected")
+        if len(detections) != 1:
+            raise FaceEmbeddingError("multiple_faces_detected")
+        detection = detections[0]
+        bbox = detection["bbox"]
+        if min(float(bbox[2]), float(bbox[3])) < minimum_face_px:
+            raise FaceEmbeddingError("quality_rejected")
+        embed_started = monotonic()
+        embedding = _extract_embedding(np, runtime.recognizer, image, detection)
+        normalized = _normalized_selfie_vector(embedding)
+        embed_ms = _elapsed_ms(embed_started)
+        return SelfieEmbeddingResult(
+            model=model,
+            embedding=normalized,
+            bbox=bbox,
+            confidence=detection["confidence"],
+            landmarks=detection["landmarks"],
+            timings={
+                "decode_ms": decode_ms,
+                "model_load_ms": model_ms,
+                "detect_ms": detect_ms,
+                "embed_ms": embed_ms,
+                "total_ms": decode_ms + model_ms + detect_ms + embed_ms,
+            },
+        )
+    except FaceEmbeddingError:
+        raise
+    except Exception as error:
+        raise FaceEmbeddingError("model_inference_error") from error
+    finally:
+        if embedding is not None:
+            del embedding
+        if image is not None:
+            del image
+        del np
+        del cv2
+
+
+def _normalized_selfie_vector(vector: tuple[float, ...]) -> tuple[float, ...]:
+    if len(vector) != MAX_FACE_EMBEDDING_DIMENSIONS or not all(
+        math.isfinite(value) for value in vector
+    ):
+        raise FaceEmbeddingError("quality_rejected")
+    norm = math.sqrt(sum(value * value for value in vector))
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise FaceEmbeddingError("quality_rejected")
+    normalized = tuple(value / norm for value in vector)
+    if not all(math.isfinite(value) for value in normalized):
+        raise FaceEmbeddingError("quality_rejected")
+    return normalized
 
 
 def extract_face_embeddings(
@@ -54,13 +166,13 @@ def extract_face_embeddings(
         model_started = monotonic()
         yunet_model = _model_path(yunet_model_path, "PHOTO_WORKER_YUNET_MODEL_PATH")
         sface_model = _model_path(sface_model_path, "PHOTO_WORKER_SFACE_MODEL_PATH")
-        detector, recognizer = _load_models(
+        runtime = _get_model_runtime(
             cv2, width, height, yunet_model, sface_model, detection_threshold
         )
         model_ms = _elapsed_ms(model_started)
 
         detect_started = monotonic()
-        detections = _detect_faces(np, detector, image, width, height, detection_threshold)
+        detections = _detect_faces(np, runtime.detector, image, width, height, detection_threshold)
         detect_ms = _elapsed_ms(detect_started)
 
         warnings: list[str] = []
@@ -75,7 +187,7 @@ def extract_face_embeddings(
         faces: list[FaceEmbeddingFace] = []
         for index, detection in enumerate(selected):
             try:
-                embedding = _extract_embedding(np, recognizer, image, detection)
+                embedding = _extract_embedding(np, runtime.recognizer, image, detection)
             except FaceEmbeddingError:
                 warnings.append("face_embedding_failed")
                 continue
@@ -152,7 +264,7 @@ def _decode_image(
     try:
         height, width, channels = image.shape
     except Exception:
-        raise FaceEmbeddingError("decode_failed")
+        raise FaceEmbeddingError("decode_failed") from None
 
     if not channels == 3 or height <= 0 or width <= 0:
         raise FaceEmbeddingError("decode_failed")
@@ -173,7 +285,24 @@ def _model_path(path: Path | None, env_var: str) -> Path:
     if not model.is_file():
         raise FaceEmbeddingError("model_inference_error")
 
-    return model
+    return model.resolve()
+
+
+def _get_model_runtime(
+    cv2: Any,
+    width: int,
+    height: int,
+    yunet_model: Path,
+    sface_model: Path,
+    threshold: float,
+) -> _ModelRuntime:
+    key = (yunet_model.resolve(), sface_model.resolve(), threshold)
+    runtime = _MODEL_RUNTIMES.get(key)
+    if runtime is None:
+        detector, recognizer = _load_models(cv2, width, height, yunet_model, sface_model, threshold)
+        runtime = _ModelRuntime(detector=detector, recognizer=recognizer)
+        _MODEL_RUNTIMES[key] = runtime
+    return runtime
 
 
 def _load_models(
@@ -226,6 +355,9 @@ def _detect_faces(
             raw = raw[1]
         else:
             raw = raw[0]
+
+    if raw is None:
+        return []
 
     try:
         rows = np.asarray(raw)
@@ -292,7 +424,9 @@ def _normalize_detection(
     }
 
 
-def _extract_embedding(np: Any, recognizer: Any, image: Any, detection: dict[str, Any]) -> tuple[float, ...]:
+def _extract_embedding(
+    np: Any, recognizer: Any, image: Any, detection: dict[str, Any]
+) -> tuple[float, ...]:
     aligned_input = np.asarray(
         [
             *detection["bbox"],

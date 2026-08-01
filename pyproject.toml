@@ -35,6 +35,7 @@ source = [
     "src/backend/ingestion",
     "src/backend/picflow",
     "src/backend/processing",
+    "src/backend/selfie_search",
     "src/worker/photo_worker",
 ]
 omit = ["*/migrations/*", "*/tests/*", "*/asgi.py", "*/wsgi.py"]

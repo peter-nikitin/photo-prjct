@@ -1,5 +1,24 @@
 server_tokens off;
 
+map $uri $selfie_search_access_request {
+    default $request;
+    ~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "$request_method <selfie-search>";
+}
+
+map $uri $selfie_search_access_referrer {
+    default $http_referer;
+    ~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "-";
+}
+
+map $uri $selfie_search_access_user_agent {
+    default $http_user_agent;
+    ~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "-";
+}
+
+log_format selfie_search_safe '$remote_addr - $remote_user [$time_local] '
+    '"$selfie_search_access_request" $status $body_bytes_sent '
+    '"$selfie_search_access_referrer" "$selfie_search_access_user_agent"';
+
 upstream django_upstream {
     server web:8000;
 }
@@ -8,6 +27,7 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
+    access_log /var/log/nginx/access.log selfie_search_safe;
 
     return 444;
 }
@@ -16,6 +36,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${PUBLIC_DOMAIN}${PUBLIC_DOMAIN_ALIAS_SERVER_NAME};
+    access_log /var/log/nginx/access.log selfie_search_safe;
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -32,6 +53,7 @@ server {
     listen [::]:443 ssl default_server;
     http2 on;
     server_name _;
+    access_log /var/log/nginx/access.log selfie_search_safe;
 
     ssl_certificate /etc/letsencrypt/live/photo-prjct/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/photo-prjct/privkey.pem;
@@ -47,6 +69,7 @@ server {
     listen [::]:443 ssl;
     http2 on;
     server_name ${PUBLIC_DOMAIN};
+    access_log /var/log/nginx/access.log selfie_search_safe;
 
     ssl_certificate /etc/letsencrypt/live/photo-prjct/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/photo-prjct/privkey.pem;
@@ -54,6 +77,7 @@ server {
 
     client_max_body_size 25m;
 
+    proxy_hide_header Referrer-Policy;
     add_header Referrer-Policy "same-origin" always;
     add_header Strict-Transport-Security "max-age=86400" always;
     add_header X-Content-Type-Options "nosniff" always;
@@ -66,6 +90,26 @@ server {
 
     location = /metrics/ {
         return 404;
+    }
+
+    # Bearer URLs are secrets. Do not persist a raw request URI if this upstream is unavailable.
+    location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {
+        error_log /dev/null emerg;
+
+        # Bearer URLs must not be sent as a referrer to any subsequent request.
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Strict-Transport-Security "max-age=86400" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+
+        proxy_pass http://django_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-SSL on;
+        proxy_set_header X-Real-IP $remote_addr;
     }
 
     location / {
@@ -83,6 +127,7 @@ server {
 server {
     listen 8080;
     server_name _;
+    access_log /var/log/nginx/access.log selfie_search_safe;
 
     location = /health/ {
         proxy_pass http://django_upstream;

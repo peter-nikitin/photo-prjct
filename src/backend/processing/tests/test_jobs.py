@@ -13,6 +13,8 @@ from picflow.models import Event, Photo
 from processing.contracts import ClaimedJob, CompletionConflict
 from processing.models import (
     EventProcessingRun,
+    PhotoDerivative,
+    PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -20,8 +22,10 @@ from processing.models import (
 )
 from processing.services.enrollment import (
     CAPTURE_METADATA_CONFIGURATION,
+    GENERATE_PREVIEW_CONFIGURATION,
     request_capture_metadata,
     request_face_embedding_enqueue,
+    request_processor,
 )
 from processing.services.jobs import (
     MAX_ATTEMPTS,
@@ -130,6 +134,150 @@ class ProcessingJobServiceTests(TestCase):
 
         self.assertTrue(empty.empty)
         self.assertGreaterEqual(empty.suggested_delay_seconds, 1)
+
+    def test_unverified_preview_result_cannot_bypass_the_publication_service(self) -> None:
+        photo = self.private_photo("preview-publication-boundary")
+        request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": "image/jpeg",
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+        claimed = claim_job(
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            worker_build="preview-worker",
+        )
+
+        with self.assertRaises(ValueError):
+            complete_attempt(
+                claimed.attempt.id,
+                result={"variant": "preview-small-v1"},
+            )
+
+        claimed.attempt.refresh_from_db()
+        self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_preview_face_detection_persists_derivative_coordinate_space_and_scale(self) -> None:
+        photo = self.private_photo("preview-face-geometry")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        preview_state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+        assert preview_state.current_job is not None
+        preview_attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=preview_state.current_job.run,
+            job=preview_state.current_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint=preview_state.current_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        derivative = PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=(
+                f"derivatives/previews/{photo.id}/preview-small-v1/"
+                f"{preview_attempt.id}-{'a' * 64}.jpg"
+            ),
+            byte_size=1024,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=3200,
+            oriented_source_height=2000,
+            sha256="a" * 64,
+            accepted_attempt=preview_attempt,
+        )
+        preview_state.status = PhotoProcessingState.Status.SUCCEEDED
+        preview_state.accepted_attempt = preview_attempt
+        preview_state.succeeded_at = timezone.now()
+        preview_state.save(
+            update_fields=["status", "accepted_attempt", "succeeded_at", "updated_at"]
+        )
+
+        face_state = request_face_embedding_enqueue(photo)
+        assert face_state.current_job is not None
+        claimed = claim_job(
+            contract_version=2,
+            processor_type="face_embedding",
+            processor_version=2,
+            worker_build="worker-2",
+        )
+        complete_attempt(
+            claimed.attempt.id,
+            result={
+                "model": "sface",
+                "face_count": 1,
+                "faces": [
+                    {
+                        "index": 0,
+                        "bbox": [10, 20, 30, 40],
+                        "confidence": 0.9,
+                        "landmarks": [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
+                        "embedding": [0.1, 0.2],
+                    }
+                ],
+                "warnings": [],
+                "input_geometry": {
+                    "coordinate_space": "preview-small-v1",
+                    "pixel_width": derivative.width,
+                    "pixel_height": derivative.height,
+                    "oriented_source_width": derivative.oriented_source_width,
+                    "oriented_source_height": derivative.oriented_source_height,
+                },
+            },
+        )
+
+        detection = PhotoFaceDetection.objects.get(attempt=claimed.attempt)
+        self.assertEqual(
+            detection.geometry,
+            {
+                "bbox": [10.0, 20.0, 30.0, 40.0],
+                "landmarks": [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
+                "model": "sface",
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+                "scale_x": 2.0,
+                "scale_y": 2.0,
+            },
+        )
 
     def test_later_eligible_photo_enters_a_new_collecting_run_after_first_claim(self) -> None:
         first = self.private_photo("sealed")

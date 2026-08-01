@@ -1,10 +1,12 @@
 from django.contrib import admin
 from django.urls import include, path
+from processing.admin_progress import admin_processing_progress
 
 from config import views
 
 urlpatterns = [
     path("internal/photo-processing/v1/", include("processing.urls")),
+    path("", include("selfie_search.urls")),
     path("health/", views.health, name="health"),
     path("metrics/", views.metrics, name="metrics"),
     path("", views.event_catalog, name="event_catalog"),
@@ -14,8 +16,14 @@ urlpatterns = [
         views.photo_media,
         name="photo_media",
     ),
+    path(
+        "events/<str:slug>/photos/<str:photo_id>/download/",
+        views.photo_download,
+        name="photo_download",
+    ),
     path("events/<str:slug>/", views.event_detail, name="event_detail"),
     path("legal/", views.legal, name="legal"),
     path("photographer/", include("ingestion.urls")),
+    path("admin/processing/", admin_processing_progress, name="admin_processing_progress"),
     path("admin/", admin.site.urls),
 ]

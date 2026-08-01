@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
-from photo_worker.client import ApiError, DownloadError, HttpClient
+from photo_worker.client import ApiError, DownloadError, HttpClient, UploadError
 
 
 class Response:
@@ -70,6 +70,20 @@ def test_api_response_read_is_limited_to_configured_bound_plus_one() -> None:
         ).post_json("claim", {}, response_max_bytes=6)
 
     assert response.read_sizes == [7]
+
+
+def test_claim_contract_error_retains_only_the_static_parser_diagnostic() -> None:
+    def opener(_request, *, timeout: float):
+        return Response(b'{"empty":false,"job":{}}')
+
+    with pytest.raises(ApiError) as raised:
+        HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener).claim_job(
+            worker_build="worker-build",
+            lease_seconds=120,
+        )
+
+    assert (raised.value.code, raised.value.retryable) == ("invalid_api_response", False)
+    assert raised.value.diagnostic == "ContractError: invalid claimed job"
 
 
 def test_download_streams_no_more_than_declared_bound_and_validates_content_type(
@@ -228,10 +242,12 @@ def test_refresh_rejects_any_payload_except_the_exact_django_shape() -> None:
     def opener(_request, *, timeout: float):
         return Response(b'{"download_url":"https://storage.example.test/x?secret"}')
 
-    with pytest.raises(ApiError, match="invalid_api_response"):
+    with pytest.raises(ApiError, match="invalid_api_response") as raised:
         HttpClient(
             "https://worker.example.test/v1", "worker-secret", opener=opener
         ).refresh_download("attempt-1")
+
+    assert raised.value.diagnostic == "api:refresh_download_contract_mismatch"
 
 
 def test_refresh_accepts_the_exact_django_response_with_utc_offset() -> None:
@@ -257,14 +273,18 @@ def test_refresh_accepts_the_exact_django_response_with_utc_offset() -> None:
 
 
 @pytest.mark.parametrize(
-    ("status", "code", "retryable"),
+    ("status", "code", "retryable", "diagnostic"),
     [
-        (401, "worker_unauthorized", False),
-        (409, "lease_not_current", False),
-        (503, "storage_unavailable", True),
+        (401, "worker_unauthorized", False, "http:unauthorized"),
+        (403, "worker_unauthorized", False, "http:unauthorized"),
+        (404, "invalid_api_response", False, "http:unexpected_client_status"),
+        (409, "lease_not_current", False, "http:lease_conflict"),
+        (503, "storage_unavailable", True, "http:server_error"),
     ],
 )
-def test_api_http_classification_is_closed(status: int, code: str, retryable: bool) -> None:
+def test_api_http_classification_has_only_an_allowlisted_category(
+    status: int, code: str, retryable: bool, diagnostic: str
+) -> None:
     def opener(_request, *, timeout: float):
         raise HTTPError(
             "https://worker.example.test/internal?token=secret", status, "x", {}, io.BytesIO()
@@ -275,4 +295,102 @@ def test_api_http_classification_is_closed(status: int, code: str, retryable: bo
             "claim", {}
         )
 
+    assert (raised.value.code, raised.value.retryable, raised.value.diagnostic) == (
+        code,
+        retryable,
+        diagnostic,
+    )
+
+
+def test_preview_upload_uses_exact_put_content_type_and_bounded_response(tmp_path: Path) -> None:
+    source = tmp_path / "preview.jpg"
+    source.write_bytes(b"preview-bytes")
+    requests = []
+    response = Response(b"", headers={})
+
+    def opener(request, *, timeout: float):
+        requests.append(request)
+        return response
+
+    HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener).upload_preview(
+        "https://storage.example.test/put?signature=secret",
+        source,
+        content_type="image/jpeg",
+        expected_size=len(b"preview-bytes"),
+        max_bytes=100,
+        response_max_bytes=8,
+    )
+
+    request = requests[0]
+    assert request.get_method() == "PUT"
+    assert request.get_header("Content-type") == "image/jpeg"
+    assert request.get_header("Content-length") == str(len(b"preview-bytes"))
+    assert request.get_header("Authorization") is None
+    assert response.read_sizes == [9]
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "retryable"),
+    [
+        (401, "download_authorization_expired", True),
+        (403, "download_authorization_expired", True),
+        (503, "storage_unavailable", True),
+    ],
+)
+def test_preview_upload_maps_grant_and_storage_failures_to_allowed_pairs(
+    tmp_path: Path, status: int, code: str, retryable: bool
+) -> None:
+    source = tmp_path / "preview.jpg"
+    source.write_bytes(b"preview")
+
+    def opener(_request, *, timeout: float):
+        raise HTTPError(
+            "https://storage.example.test/put?signature=secret", status, "hostile", {}, io.BytesIO()
+        )
+
+    with pytest.raises(UploadError) as raised:
+        HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener).upload_preview(
+            "https://storage.example.test/put?signature=secret",
+            source,
+            content_type="image/jpeg",
+            expected_size=7,
+            max_bytes=100,
+        )
+
     assert (raised.value.code, raised.value.retryable) == (code, retryable)
+
+
+def test_preview_upload_rejects_interruption_and_oversized_response_without_exposing_url(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "preview.jpg"
+    source.write_bytes(b"preview")
+
+    with pytest.raises(UploadError, match="network_interruption"):
+        HttpClient(
+            "https://worker.example.test/v1",
+            "worker-secret",
+            opener=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("hostile https://storage.example.test/put?secret")
+            ),
+        ).upload_preview(
+            "https://storage.example.test/put?signature=secret",
+            source,
+            content_type="image/jpeg",
+            expected_size=7,
+            max_bytes=100,
+        )
+
+    with pytest.raises(UploadError, match="network_interruption"):
+        HttpClient(
+            "https://worker.example.test/v1",
+            "worker-secret",
+            opener=lambda *_args, **_kwargs: Response(b"too-long"),
+        ).upload_preview(
+            "https://storage.example.test/put?signature=secret",
+            source,
+            content_type="image/jpeg",
+            expected_size=7,
+            max_bytes=100,
+            response_max_bytes=3,
+        )

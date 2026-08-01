@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import TypedDict
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
@@ -11,9 +12,12 @@ from picflow.models import Event, Photo
 
 from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
+    FACE_EMBEDDING_BENCHMARK_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
+    GENERATE_PREVIEW_PROCESSOR,
     REPORT_JSON_MAX_BYTES,
     EventProcessingRun,
+    PhotoDerivative,
     PhotoProcessingState,
     ProcessingJob,
 )
@@ -21,6 +25,12 @@ from processing.models import (
 CONTRACT_VERSION = 1
 PROCESSOR_VERSION = 1
 FACE_EMBEDDING_PROCESSOR_VERSION = 1
+PREVIEW_CONTRACT_VERSION = 2
+GENERATE_PREVIEW_PROCESSOR_VERSION = 1
+PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 2
+FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION = 3
+FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION = 1
+FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
 
 CAPTURE_METADATA_CONFIGURATION: dict[str, object] = {
     "retry_policy": {
@@ -69,12 +79,61 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "normalize_embeddings": True,
     },
     "worker": {
-        "api_response_max_bytes": 16_384,
+        "api_response_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
         "concurrency": 1,
         "heartbeat_interval_seconds": 30,
         "lease_duration_seconds": 120,
         "max_input_bytes": 50 * 1024 * 1024,
         "max_pixels": 100_000_000,
+        "poll_min_delay_seconds": 5,
+        "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
+    },
+}
+
+FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
+    **FACE_EMBEDDING_CONFIGURATION,
+    "max_cohort_size": 500,
+    "benchmark": {
+        "label": "baseline",
+        "source_mode": "event",
+        "source_run_id": None,
+        "requested_count": 1,
+    },
+}
+
+GENERATE_PREVIEW_CONFIGURATION: dict[str, object] = {
+    "retry_policy": {
+        "max_attempts": 3,
+        "base_backoff_seconds": 30,
+        "max_backoff_seconds": 300,
+        "jitter_seconds": 5,
+        "lease_max_seconds": 300,
+    },
+    "max_cohort_size": 16,
+    "report_max_bytes": REPORT_JSON_MAX_BYTES,
+    "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
+    "generate_preview": {
+        "variant": "preview-small-v1",
+        "output_format": "jpeg",
+        "max_long_edge": 1600,
+        "jpeg_quality": 85,
+        "color_space": "srgb",
+        "upscale": False,
+        "apply_exif_orientation": True,
+        "strip_metadata": True,
+        "watermark": "none",
+        "max_output_bytes": 10 * 1024 * 1024,
+        "max_output_width": 1600,
+        "max_output_height": 1600,
+        "checksum_algorithm": "sha256",
+    },
+    "worker": {
+        "api_response_max_bytes": 16_384,
+        "concurrency": 1,
+        "heartbeat_interval_seconds": 30,
+        "lease_duration_seconds": 120,
+        "max_input_bytes": 50 * 1024 * 1024,
+        "max_pixels": 24_000_000,
         "poll_min_delay_seconds": 5,
         "terminal_result_max_bytes": 8_192,
     },
@@ -82,6 +141,13 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
 
 DEFAULT_RECONCILIATION_LIMIT = 100
 MAX_RECONCILIATION_LIMIT = 1_000
+
+
+class _ReconciliationProcessorConfig(TypedDict):
+    contract_version: int
+    processor_version: int
+    configuration: dict[str, object]
+    verified_source_etag: str | None
 
 
 def request_capture_metadata(
@@ -103,6 +169,18 @@ def request_face_embedding_enqueue(
     photo: Photo, *, verified_source_etag: str | None = None
 ) -> PhotoProcessingState:
     """Queue a face-embedding job if the feature flag is enabled."""
+    preview = _accepted_preview(photo)
+    if photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1:
+        return request_processor(
+            photo=photo,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            contract_version=PREVIEW_CONTRACT_VERSION,
+            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
+            enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
+            and preview is not None,
+        )
     return request_processor(
         photo=photo,
         processor_type=FACE_EMBEDDING_PROCESSOR,
@@ -114,6 +192,114 @@ def request_face_embedding_enqueue(
     )
 
 
+def request_generate_preview(
+    photo: Photo,
+    *,
+    pixel_width: int,
+    pixel_height: int,
+    verified_source_etag: str | None = None,
+) -> PhotoProcessingState:
+    """Queue the original-backed preview only for an explicitly preview-first photo."""
+    return request_processor(
+        photo=photo,
+        processor_type=GENERATE_PREVIEW_PROCESSOR,
+        contract_version=PREVIEW_CONTRACT_VERSION,
+        processor_version=GENERATE_PREVIEW_PROCESSOR_VERSION,
+        configuration=GENERATE_PREVIEW_CONFIGURATION,
+        input_fingerprint={
+            "object_key": photo.original_key,
+            "object_size": photo.original_size,
+            "object_content_type": photo.original_content_type,
+            "object_etag": verified_source_etag,
+            "media_kind": "original",
+            "pixel_width": pixel_width,
+            "pixel_height": pixel_height,
+        },
+        enabled=(
+            photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+            and photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        ),
+    )
+
+
+def create_face_embedding_benchmark_run(
+    *,
+    event: Event,
+    photos: list[Photo],
+    label: str,
+    source_run_id: str | None,
+) -> EventProcessingRun:
+    """Create one isolated benchmark cohort without using generic reconciliation."""
+    if not photos or len(photos) > 500:
+        raise ValueError("benchmark cohort must contain between 1 and 500 photos")
+    if any(photo.event_id != event.id or not _is_eligible(photo) for photo in photos):
+        raise ValueError("benchmark cohort contains an ineligible photo")
+    if len({photo.pk for photo in photos}) != len(photos):
+        raise ValueError("benchmark cohort contains duplicate photos")
+    configuration = {
+        **FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
+        "benchmark": {
+            "label": label,
+            "source_mode": "replay" if source_run_id else "event",
+            "source_run_id": source_run_id,
+            "requested_count": len(photos),
+        },
+    }
+    configuration_hash = _configuration_hash(configuration)
+    with transaction.atomic():
+        locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        run = EventProcessingRun.objects.create(
+            event=locked_event,
+            contract_version=FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION,
+            processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
+            processor_version=FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
+        )
+        now = timezone.now()
+        for photo in photos:
+            state, _ = PhotoProcessingState.objects.select_for_update().get_or_create(
+                photo=photo,
+                processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
+                defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+            )
+            if state.status in {
+                PhotoProcessingState.Status.QUEUED,
+                PhotoProcessingState.Status.PROCESSING,
+                PhotoProcessingState.Status.RETRY_WAIT,
+            }:
+                raise ValueError("benchmark photo already has active benchmark work")
+            job = ProcessingJob.objects.create(
+                event=locked_event,
+                run=run,
+                photo=photo,
+                contract_version=FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION,
+                processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
+                processor_version=FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION,
+                configuration=configuration,
+                configuration_hash=configuration_hash,
+                input_fingerprint=_input_fingerprint(photo, verified_source_etag=None),
+            )
+            state.status = PhotoProcessingState.Status.QUEUED
+            state.current_run = run
+            state.current_job = job
+            state.current_attempt = None
+            state.accepted_attempt = None
+            state.queued_at = now
+            state.save(
+                update_fields=[
+                    "status",
+                    "current_run",
+                    "current_job",
+                    "current_attempt",
+                    "accepted_attempt",
+                    "queued_at",
+                    "updated_at",
+                ]
+            )
+    return run
+
+
 def request_processor(
     photo: Photo,
     *,
@@ -122,6 +308,7 @@ def request_processor(
     processor_version: int,
     configuration: dict[str, object],
     verified_source_etag: str | None = None,
+    input_fingerprint: dict[str, int | str | None] | None = None,
     enabled: bool = True,
 ) -> PhotoProcessingState:
     """Queue the first compatible job exactly once for an eligible photo."""
@@ -135,10 +322,11 @@ def request_processor(
             return state
 
         configuration_hash = _configuration_hash(configuration)
-        input_fingerprint = _input_fingerprint(
-            photo,
-            verified_source_etag=verified_source_etag,
-        )
+        if input_fingerprint is None:
+            input_fingerprint = _input_fingerprint(
+                photo,
+                verified_source_etag=verified_source_etag,
+            )
         # Use the same run -> state ordering as claims to avoid a seal/enroll deadlock.
         run = _locked_collecting_run(
             event=Event.objects.select_for_update().get(pk=photo.event_id),
@@ -194,11 +382,28 @@ def reconcile_face_embedding(
     *, limit: int = DEFAULT_RECONCILIATION_LIMIT
 ) -> list[PhotoProcessingState]:
     """Enroll one bounded, idempotent batch of eligible photos for face embeddings."""
-    return _reconcile(
-        processor_type=FACE_EMBEDDING_PROCESSOR,
-        limit=limit,
-        processor_enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)),
-    )
+    if not bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)):
+        return []
+    if not 1 <= limit <= MAX_RECONCILIATION_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_RECONCILIATION_LIMIT}")
+    reconciled: list[PhotoProcessingState] = []
+    for photo in Photo.objects.order_by("pk"):
+        if photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1:
+            if _accepted_preview(photo) is None:
+                continue
+        elif not _is_eligible(photo):
+            continue
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+        )
+        if state.status != PhotoProcessingState.Status.NOT_REQUESTED or state.current_job_id:
+            continue
+        reconciled.append(request_face_embedding_enqueue(photo))
+        if len(reconciled) >= limit:
+            break
+    return reconciled
 
 
 def _reconcile(
@@ -210,11 +415,15 @@ def _reconcile(
         raise ValueError(f"limit must be between 1 and {MAX_RECONCILIATION_LIMIT}")
 
     photo_ids = _reconcilable_photo_ids(processor_type=processor_type, limit=limit)
+    config = _reconcile_config(processor_type)
     return [
         request_processor(
             Photo.objects.get(pk=photo_id),
             processor_type=processor_type,
-            **_reconcile_config(processor_type),
+            contract_version=config["contract_version"],
+            processor_version=config["processor_version"],
+            configuration=config["configuration"],
+            verified_source_etag=config["verified_source_etag"],
         )
         for photo_id in photo_ids
     ]
@@ -234,8 +443,7 @@ def _reconcilable_photo_ids(*, processor_type: str, limit: int) -> list[str]:
                 processing_states__processor_type=processor_type,
                 processing_states__status=PhotoProcessingState.Status.NOT_REQUESTED,
                 processing_states__current_job__isnull=True,
-            )
-            .values_list("pk", flat=True)[:limit]
+            ).values_list("pk", flat=True)[:limit]
         )
 
     if processor_type == FACE_EMBEDDING_PROCESSOR:
@@ -258,7 +466,7 @@ def _reconcilable_photo_ids(*, processor_type: str, limit: int) -> list[str]:
     return []
 
 
-def _reconcile_config(processor_type: str) -> dict[str, object]:
+def _reconcile_config(processor_type: str) -> _ReconciliationProcessorConfig:
     if processor_type == CAPTURE_METADATA_PROCESSOR:
         return {
             "contract_version": CONTRACT_VERSION,
@@ -300,6 +508,38 @@ def _input_fingerprint(
         "original_content_type": photo.original_content_type,
         "verified_source_etag": verified_source_etag,
         "version_evidence": "verified_source_etag" if verified_source_etag else "unavailable",
+    }
+
+
+def _accepted_preview(photo: Photo) -> PhotoDerivative | None:
+    preview = PhotoDerivative.objects.filter(photo=photo, variant="preview-small-v1").first()
+    if preview is None:
+        return None
+    try:
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+        )
+    except PhotoProcessingState.DoesNotExist:
+        return None
+    if (
+        state.status != PhotoProcessingState.Status.SUCCEEDED
+        or state.accepted_attempt_id != preview.accepted_attempt_id
+    ):
+        return None
+    return preview
+
+
+def _derivative_fingerprint(
+    derivative: PhotoDerivative,
+) -> dict[str, int | str | None]:
+    return {
+        "object_key": derivative.final_key,
+        "object_size": derivative.byte_size,
+        "object_content_type": derivative.content_type,
+        "object_etag": None,
+        "media_kind": derivative.variant,
+        "pixel_width": derivative.width,
+        "pixel_height": derivative.height,
     }
 
 

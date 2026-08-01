@@ -1,4 +1,5 @@
 from datetime import date
+from typing import cast
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -6,8 +7,9 @@ from django.utils import timezone
 from picflow.models import Event, Photo
 
 from processing.models import (
-    EventProcessingRun,
     FACE_EMBEDDING_PROCESSOR,
+    EventProcessingRun,
+    PhotoDerivative,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -15,10 +17,12 @@ from processing.models import (
 from processing.services.enrollment import (
     CAPTURE_METADATA_CONFIGURATION,
     FACE_EMBEDDING_CONFIGURATION,
-    reconcile_face_embedding,
+    GENERATE_PREVIEW_CONFIGURATION,
     reconcile_capture_metadata,
-    request_face_embedding_enqueue,
+    reconcile_face_embedding,
     request_capture_metadata,
+    request_face_embedding_enqueue,
+    request_processor,
 )
 
 
@@ -71,7 +75,10 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(run.processor_type, FACE_EMBEDDING_PROCESSOR)
         self.assertEqual(run.contract_version, 1)
         self.assertEqual(run.processor_version, 1)
-        self.assertEqual(state.current_job.configuration["face_embedding"], FACE_EMBEDDING_CONFIGURATION["face_embedding"])
+        self.assertEqual(
+            state.current_job.configuration["face_embedding"],
+            FACE_EMBEDDING_CONFIGURATION["face_embedding"],
+        )
         self.assertEqual(state.current_job.processor_type, FACE_EMBEDDING_PROCESSOR)
         self.assertEqual(state.current_job.processor_version, 1)
 
@@ -91,11 +98,15 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual([state.photo_id for state in reconciled], [first.pk, second.pk])
         self.assertEqual(ProcessingJob.objects.count(), 2)
         self.assertEqual(
-            PhotoProcessingState.objects.get(photo=first, processor_type=FACE_EMBEDDING_PROCESSOR).status,
+            PhotoProcessingState.objects.get(
+                photo=first, processor_type=FACE_EMBEDDING_PROCESSOR
+            ).status,
             PhotoProcessingState.Status.QUEUED,
         )
         self.assertEqual(
-            PhotoProcessingState.objects.get(photo=second, processor_type=FACE_EMBEDDING_PROCESSOR).status,
+            PhotoProcessingState.objects.get(
+                photo=second, processor_type=FACE_EMBEDDING_PROCESSOR
+            ).status,
             PhotoProcessingState.Status.QUEUED,
         )
         self.assertEqual(
@@ -144,6 +155,107 @@ class CaptureMetadataEnrollmentTests(TestCase):
                     "DateTime",
                 ],
                 "normalization": "utc_assume_utc_if_missing",
+            },
+        )
+
+    def test_v2_preview_configuration_records_all_output_affecting_rules(self) -> None:
+        self.assertEqual(
+            GENERATE_PREVIEW_CONFIGURATION["generate_preview"],
+            {
+                "variant": "preview-small-v1",
+                "output_format": "jpeg",
+                "max_long_edge": 1600,
+                "jpeg_quality": 85,
+                "color_space": "srgb",
+                "upscale": False,
+                "apply_exif_orientation": True,
+                "strip_metadata": True,
+                "watermark": "none",
+                "max_output_bytes": 10_485_760,
+                "max_output_width": 1600,
+                "max_output_height": 1600,
+                "checksum_algorithm": "sha256",
+            },
+        )
+        worker_configuration = cast(dict[str, object], GENERATE_PREVIEW_CONFIGURATION["worker"])
+        self.assertEqual(worker_configuration["max_pixels"], 24_000_000)
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_preview_first_face_enrollment_uses_only_the_published_derivative(self) -> None:
+        photo = self.private_photo("preview-face")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        preview_state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+        preview_job = preview_state.current_job
+        assert preview_job is not None
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=preview_job.run,
+            job=preview_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint=preview_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        derivative = PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=(
+                f"derivatives/previews/preview-face/preview-small-v1/{attempt.id}-{'a' * 64}.jpg"
+            ),
+            byte_size=1024,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=3200,
+            oriented_source_height=2000,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+        preview_state.status = PhotoProcessingState.Status.SUCCEEDED
+        preview_state.accepted_attempt = attempt
+        preview_state.succeeded_at = timezone.now()
+        preview_state.save(
+            update_fields=["status", "accepted_attempt", "succeeded_at", "updated_at"]
+        )
+
+        state = request_face_embedding_enqueue(photo)
+
+        assert state.current_job is not None
+        self.assertEqual(
+            (state.current_job.contract_version, state.current_job.processor_version), (2, 2)
+        )
+        self.assertEqual(
+            state.current_job.input_fingerprint,
+            {
+                "object_key": derivative.final_key,
+                "object_size": derivative.byte_size,
+                "object_content_type": "image/jpeg",
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
             },
         )
         self.assertEqual(

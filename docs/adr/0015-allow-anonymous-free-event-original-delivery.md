@@ -1,10 +1,10 @@
 # 0015: Allow anonymous free-event original delivery
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-07-19
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0019](0019-use-public-event-selfie-search.md)
 
 ## Context
 

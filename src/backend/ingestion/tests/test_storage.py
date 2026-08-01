@@ -23,6 +23,11 @@ BUCKET = "private-bucket"
 INCOMING_KEY = "incoming/123e4567-e89b-12d3-a456-426614174000/123e4567-e89b-12d3-a456-426614174001"
 FINAL_KEY = "originals/123e4567e89b12d3a456426614174001"
 MISSING_FINAL_KEY = "originals/123e4567e89b12d3a456426614174002"
+PREVIEW_FINAL_KEY = (
+    "derivatives/previews/photo-42/preview-small-v1/"
+    "123e4567-e89b-12d3-a456-426614174000-"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg"
+)
 
 
 @pytest.fixture
@@ -182,6 +187,88 @@ def test_open_final_returns_validated_stream_without_reading_it(
     assert opened.body is client.last_body
     assert opened.body.read(1) == b"j"
     assert client.last_body is not None and not client.last_body.closed
+
+
+def test_sign_final_verifies_the_exact_public_object_before_creating_a_get_url(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(FINAL_KEY, b"jpeg-data", '"final-etag"')
+
+    url = storage.sign_final(key=FINAL_KEY)
+
+    assert url == client.presigned_get_url
+    assert calls(client, "head_object") == [{"Bucket": BUCKET, "Key": FINAL_KEY}]
+    assert calls(client, "generate_presigned_url") == [
+        {
+            "ClientMethod": "get_object",
+            "Params": {"Bucket": BUCKET, "Key": FINAL_KEY},
+            "ExpiresIn": 120,
+            "HttpMethod": "GET",
+        }
+    ]
+    assert calls(client, "get_object") == []
+
+
+def test_sign_final_adds_a_safe_attachment_disposition(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(FINAL_KEY, b"jpeg-data", '"final-etag"')
+
+    url = storage.sign_final(key=FINAL_KEY, attachment_filename="findme-photo-photo-42.jpg")
+
+    assert url == client.presigned_get_url
+    assert calls(client, "generate_presigned_url") == [
+        {
+            "ClientMethod": "get_object",
+            "Params": {
+                "Bucket": BUCKET,
+                "Key": FINAL_KEY,
+                "ResponseContentDisposition": 'attachment; filename="findme-photo-photo-42.jpg"',
+            },
+            "ExpiresIn": 120,
+            "HttpMethod": "GET",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "attachment_filename",
+    [
+        "race.jpg",
+        "findme-photo-photo-42.jpeg",
+        "findme-photo-photo-42.jpg\r\nX-Injected: yes",
+    ],
+)
+def test_sign_final_rejects_malformed_attachment_filename_before_client_call(
+    storage: PrivateUploadStorage, client: FakeS3Client, attachment_filename: str
+) -> None:
+    with pytest.raises(ValueError):
+        storage.sign_final(key=FINAL_KEY, attachment_filename=attachment_filename)
+
+    assert client.calls == []
+
+
+def test_sign_final_rejects_a_non_image_object_before_signing(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(FINAL_KEY, b"not-an-image", '"final-etag"', "text/plain")
+
+    with pytest.raises(ObjectMismatch):
+        storage.sign_final(key=FINAL_KEY)
+
+    assert calls(client, "generate_presigned_url") == []
+
+
+def test_open_final_allows_only_the_content_addressed_published_preview_namespace(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(PREVIEW_FINAL_KEY, b"preview", '"preview-etag"', "image/jpeg")
+
+    opened = storage.open_final(key=PREVIEW_FINAL_KEY)
+
+    assert opened.size == 7
+    assert opened.content_type == "image/jpeg"
+    assert calls(client, "get_object") == [{"Bucket": BUCKET, "Key": PREVIEW_FINAL_KEY}]
 
 
 def test_open_final_rejects_invalid_key_before_client_call(

@@ -2,23 +2,51 @@ import importlib
 from datetime import date
 from typing import Any
 
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TestCase, TransactionTestCase
+from django.db.models.deletion import ProtectedError
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
 
 from processing.models import (
+    GENERATE_PREVIEW_PROCESSOR,
+    JSON_MAX_BYTES,
+    PROCESSING_ATTEMPT_RESULT_MAX_BYTES,
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
+    PhotoDerivative,
+    PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
-    PhotoFaceDetection,
+    validate_bounded_json,
+    validate_bounded_processing_attempt_result,
 )
+
+
+class ProcessingJsonBoundTests(SimpleTestCase):
+    def test_attempt_result_accepts_128_kib_terminal_payload_budget(self) -> None:
+        overhead = len(b'{"value":""}')
+        payload = {"value": "x" * (PROCESSING_ATTEMPT_RESULT_MAX_BYTES - overhead)}
+
+        validate_bounded_processing_attempt_result(payload)
+
+        with self.assertRaises(ValidationError):
+            validate_bounded_processing_attempt_result({"value": payload["value"] + "x"})
+
+    def test_existing_generic_json_bound_remains_16_kib(self) -> None:
+        overhead = len(b'{"value":""}')
+        payload = {"value": "x" * (JSON_MAX_BYTES - overhead)}
+
+        validate_bounded_json(payload)
+
+        with self.assertRaises(ValidationError):
+            validate_bounded_json({"value": payload["value"] + "x"})
 
 
 class ProcessingModelTests(TestCase):
@@ -36,18 +64,34 @@ class ProcessingModelTests(TestCase):
             city="Moscow",
         )
 
-    def make_private_photo(self, suffix: str, event: Event) -> Photo:
-        return Photo.objects.create(
-            id=f"private-{suffix}",
-            event=event,
-            src="",
-            uploaded_by=self.user,
-            original_key=f"originals/{suffix}",
-            original_filename=f"{suffix}.jpg",
-            original_size=10,
-            original_content_type="image/jpeg",
-            uploaded_at=timezone.now(),
+    def test_explicit_index_names_fit_postgresql_limit(self) -> None:
+        index_names = [
+            index.name
+            for model in apps.get_app_config("processing").get_models()
+            for index in model._meta.indexes
+            if index.name
+        ]
+
+        self.assertTrue(index_names)
+        self.assertTrue(
+            all(len(name) <= 30 for name in index_names),
+            f"Processing index names must be at most 30 characters: {index_names}",
         )
+
+    def make_private_photo(self, suffix: str, event: Event, **overrides: Any) -> Photo:
+        values = {
+            "id": f"private-{suffix}",
+            "event": event,
+            "src": "",
+            "uploaded_by": self.user,
+            "original_key": f"originals/{suffix}",
+            "original_filename": f"{suffix}.jpg",
+            "original_size": 10,
+            "original_content_type": "image/jpeg",
+            "uploaded_at": timezone.now(),
+        }
+        values.update(overrides)
+        return Photo.objects.create(**values)
 
     def make_run(self, *, event: Event | None = None, **overrides) -> EventProcessingRun:
         values = {
@@ -135,6 +179,190 @@ class ProcessingModelTests(TestCase):
                 photo=self.photo,
                 processor_type="capture_metadata",
                 status=PhotoProcessingState.Status.NOT_REQUESTED,
+            )
+
+    def test_preview_first_photo_creates_explicit_preview_and_face_states(self) -> None:
+        photo = self.make_private_photo(
+            "preview-first",
+            self.event,
+            processing_generation="preview_first_v1",
+            gallery_media_policy="preview_required",
+        )
+
+        self.assertEqual(
+            set(
+                PhotoProcessingState.objects.filter(photo=photo).values_list(
+                    "processor_type", "status"
+                )
+            ),
+            {
+                ("capture_metadata", "not_requested"),
+                ("generate_preview", "not_requested"),
+                ("face_embedding", "not_requested"),
+            },
+        )
+
+    def test_legacy_photo_does_not_create_preview_state(self) -> None:
+        self.assertFalse(
+            PhotoProcessingState.objects.filter(
+                photo=self.photo,
+                processor_type=GENERATE_PREVIEW_PROCESSOR,
+            ).exists()
+        )
+
+    def make_preview_attempt(
+        self,
+        *,
+        photo: Photo | None = None,
+        processor_type: str = GENERATE_PREVIEW_PROCESSOR,
+        **overrides,
+    ) -> ProcessingAttempt:
+        attempt_photo = photo or self.photo
+        run = self.make_run(processor_type=processor_type)
+        job = self.make_job(run=run, photo=attempt_photo, processor_type=processor_type)
+        values = {
+            "event": self.event,
+            "run": run,
+            "job": job,
+            "photo": attempt_photo,
+            "contract_version": 1,
+            "processor_type": processor_type,
+            "processor_version": 1,
+            "configuration": {},
+            "input_fingerprint": {},
+            "status": ProcessingAttempt.Status.SUCCEEDED,
+            "terminal_at": timezone.now(),
+            "accepted": True,
+        }
+        values.update(overrides)
+        return ProcessingAttempt.objects.create(**values)
+
+    def preview_derivative_values(self, **overrides) -> dict[str, object]:
+        values = {
+            "photo": self.photo,
+            "variant": "preview-small-v1",
+            "final_key": "derivatives/preview-small-v1.jpg",
+            "byte_size": 100,
+            "content_type": "image/jpeg",
+            "width": 1600,
+            "height": 1000,
+            "oriented_source_width": 3200,
+            "oriented_source_height": 2000,
+            "sha256": "a" * 64,
+            "accepted_attempt": self.make_preview_attempt(),
+        }
+        values.update(overrides)
+        return values
+
+    def make_preview_derivative(self, **overrides) -> PhotoDerivative:
+        values = self.preview_derivative_values(**overrides)
+        return PhotoDerivative.objects.create(**values)
+
+    def test_derivative_is_unique_per_photo_variant_and_protects_its_attempt(self) -> None:
+        derivative = self.make_preview_derivative()
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.make_preview_derivative(
+                final_key="derivatives/second-preview-small-v1.jpg",
+                accepted_attempt=self.make_preview_attempt(),
+            )
+        with self.assertRaises(ProtectedError):
+            derivative.accepted_attempt.delete()
+
+    def test_derivative_cannot_mutate_after_publication(self) -> None:
+        derivative = self.make_preview_derivative()
+        derivative.width = 800
+
+        with self.assertRaises(ValidationError):
+            derivative.save()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PhotoDerivative.objects.filter(pk=derivative.pk).update(width=800)
+
+    def test_derivative_cannot_be_deleted_after_publication(self) -> None:
+        derivative = self.make_preview_derivative()
+
+        with self.assertRaises(ValidationError):
+            derivative.delete()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PhotoDerivative.objects.filter(pk=derivative.pk).delete()
+
+    def test_derivative_model_validation_requires_an_accepted_preview_attempt(self) -> None:
+        other_photo = self.make_private_photo("other", self.event)
+        invalid_attempts = {
+            "wrong_photo": self.make_preview_attempt(photo=other_photo),
+            "unaccepted": self.make_preview_attempt(accepted=False),
+            "failed": self.make_preview_attempt(status=ProcessingAttempt.Status.FAILED),
+            "stale": self.make_preview_attempt(status=ProcessingAttempt.Status.STALE),
+            "wrong_processor": self.make_preview_attempt(processor_type="capture_metadata"),
+        }
+
+        for reason, attempt in invalid_attempts.items():
+            with self.subTest(reason=reason):
+                derivative = PhotoDerivative(
+                    **self.preview_derivative_values(
+                        variant=f"preview-small-v1-{reason}",
+                        final_key=f"derivatives/{reason}.jpg",
+                        accepted_attempt=attempt,
+                    )
+                )
+                with self.assertRaises(ValidationError):
+                    derivative.full_clean()
+
+    def test_derivative_database_requires_an_accepted_preview_attempt(self) -> None:
+        other_photo = self.make_private_photo("other", self.event)
+        invalid_attempts = {
+            "wrong_photo": self.make_preview_attempt(photo=other_photo),
+            "unaccepted": self.make_preview_attempt(accepted=False),
+            "failed": self.make_preview_attempt(status=ProcessingAttempt.Status.FAILED),
+            "stale": self.make_preview_attempt(status=ProcessingAttempt.Status.STALE),
+            "wrong_processor": self.make_preview_attempt(processor_type="capture_metadata"),
+        }
+
+        for reason, attempt in invalid_attempts.items():
+            with self.subTest(reason=reason), transaction.atomic():
+                with self.assertRaises(IntegrityError):
+                    PhotoDerivative.objects.create(
+                        **self.preview_derivative_values(
+                            variant=f"preview-small-v1-{reason}",
+                            final_key=f"derivatives/{reason}.jpg",
+                            accepted_attempt=attempt,
+                        )
+                    )
+
+    def test_derivative_insert_trigger_blocks_bulk_and_direct_sql_inserts(self) -> None:
+        attempt = self.make_preview_attempt(accepted=False)
+        derivative = PhotoDerivative(
+            **self.preview_derivative_values(
+                variant="preview-small-v1-bulk",
+                final_key="derivatives/bulk.jpg",
+                accepted_attempt=attempt,
+            )
+        )
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PhotoDerivative.objects.bulk_create([derivative])
+        with self.assertRaises(IntegrityError), transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO processing_photoderivative (
+                    photo_id, variant, final_key, byte_size, content_type, width, height,
+                    oriented_source_width, oriented_source_height, sha256, accepted_attempt_id,
+                    published_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                """,
+                [
+                    self.photo.pk,
+                    "preview-small-v1-direct",
+                    "derivatives/direct.jpg",
+                    100,
+                    "image/jpeg",
+                    1600,
+                    1000,
+                    3200,
+                    2000,
+                    "a" * 64,
+                    attempt.pk,
+                ],
             )
 
     def test_exact_job_identity_is_unique(self) -> None:
@@ -391,7 +619,7 @@ class ProcessingModelTests(TestCase):
             processor_version=1,
             configuration={},
             input_fingerprint={},
-            result={"payload": "x" * 16_385},
+            result={"payload": "x" * (PROCESSING_ATTEMPT_RESULT_MAX_BYTES + 1)},
         )
         with self.assertRaises(ValidationError):
             attempt.full_clean()
@@ -527,8 +755,9 @@ class ProcessingModelTests(TestCase):
         self.assertEqual(detection.artifact_id, artifact.id)
         self.assertEqual(embedding.detection_id, detection.id)
         self.assertEqual(
-            PhotoFaceDetection.objects.filter(attempt=attempt, status=PhotoFaceDetection.Status.KEPT)
-            .count(),
+            PhotoFaceDetection.objects.filter(
+                attempt=attempt, status=PhotoFaceDetection.Status.KEPT
+            ).count(),
             1,
         )
 
@@ -715,3 +944,92 @@ class ProcessingFaceEmbeddingMigrationTests(TransactionTestCase):
             "faceembedding",
         ):
             self.assertNotIn(model_name, reverted_apps.all_models.get("processing", {}))
+
+
+class ProcessingPreviewDerivativeMigrationTests(TransactionTestCase):
+    migrate_from = [("processing", "0002_add_face_embedding_schema")]
+    migrate_to = [("processing", "0003_add_preview_derivative_schema")]
+
+    def test_preview_derivative_schema_migrates_forward_and_back_without_schema_errors(
+        self,
+    ) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        migrated_apps = executor.loader.project_state(self.migrate_to).apps
+        self.assertIn("photoderivative", migrated_apps.all_models["processing"])
+
+        executor.migrate(self.migrate_from)
+        reverted_apps = executor.loader.project_state(self.migrate_from).apps
+        self.assertNotIn("photoderivative", reverted_apps.all_models.get("processing", {}))
+
+
+class ProcessingFaceIndexNameMigrationTests(TransactionTestCase):
+    migrate_from = [("processing", "0003_add_preview_derivative_schema")]
+    migrate_to = [("processing", "0004_shorten_face_index_names")]
+
+    def test_canonical_face_index_names_migrate_to_the_current_names(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+
+        MigrationExecutor(connection).migrate(self.migrate_to)
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_det_attempt_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_det_attempt_idx")
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_embed_det_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_embed_det_idx")
+
+    def test_legacy_face_index_names_migrate_to_the_current_names(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER INDEX proc_face_detection_attempt_idx RENAME TO proc_face_detect_attempt_idx"
+            )
+            cursor.execute(
+                "ALTER INDEX proc_face_embedding_detection_idx "
+                "RENAME TO proc_face_embed_detection_idx"
+            )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        migrated_apps = executor.loader.project_state(self.migrate_to).apps
+        PhotoFaceDetection = migrated_apps.get_model("processing", "PhotoFaceDetection")
+        FaceEmbedding = migrated_apps.get_model("processing", "FaceEmbedding")
+        self.assertEqual(
+            [index.name for index in PhotoFaceDetection._meta.indexes],
+            ["proc_face_det_attempt_idx", "proc_face_detection_status_idx"],
+        )
+        self.assertEqual(
+            [index.name for index in FaceEmbedding._meta.indexes],
+            ["proc_face_embed_det_idx"],
+        )
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_det_attempt_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_det_attempt_idx")
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_embed_det_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_embed_det_idx")
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_detection_attempt_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_detection_attempt_idx")
+            cursor.execute("SELECT to_regclass(%s)::text", ["proc_face_embedding_detection_idx"])
+            self.assertEqual(cursor.fetchone()[0], "proc_face_embedding_detection_idx")
+
+    def test_current_face_index_names_are_idempotent(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER INDEX proc_face_detection_attempt_idx RENAME TO proc_face_det_attempt_idx"
+            )
+            cursor.execute(
+                "ALTER INDEX proc_face_embedding_detection_idx RENAME TO proc_face_embed_det_idx"
+            )
+
+        MigrationExecutor(connection).migrate(self.migrate_to)

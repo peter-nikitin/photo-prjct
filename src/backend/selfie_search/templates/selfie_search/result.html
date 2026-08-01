@@ -1,0 +1,69 @@
+{% extends "ui/base.html" %}
+{% load static %}
+
+{% block title %}Поиск фотографий — {{ event.name }}{% endblock %}
+{% block body_class %}selfie-search-result-page{% endblock %}
+{% block extra_css %}
+  <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
+  <link rel="stylesheet" href="{% static 'ui/glightbox.min.css' %}">
+  <link rel="stylesheet" href="{% static 'ui/selfie-search.css' %}">
+{% endblock %}
+
+{% block content %}
+  <article class="selfie-search-result" aria-labelledby="selfie-search-result-title"{% if not is_terminal %} data-selfie-search-result data-status-url="{{ status_url }}"{% endif %}>
+    <h1 id="selfie-search-result-title">{{ event.name }}</h1>
+    <p class="selfie-search-lead">Поиск показывает вероятные совпадения. Селфи удаляется после подготовки поиска, а результат увидит любой, у кого есть эта ссылка.</p>
+
+    {% if search.status == "queued" or search.status == "processing" or search.status == "cleanup_pending" %}
+      <section class="selfie-search-state" aria-labelledby="selfie-search-state-title">
+        <h2 id="selfie-search-state-title">Ищем ваши фотографии…</h2>
+        <p role="status" aria-live="polite">Страница обновится автоматически, когда результат будет готов.</p>
+      </section>
+    {% elif search.status == "ready" %}
+      <section class="event-gallery selfie-search-results" data-event-gallery aria-labelledby="selfie-search-matches-title">
+        <h2 id="selfie-search-matches-title">Возможные совпадения</h2>
+        <p class="selfie-search-count">Найдено фотографий: {{ search.matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
+        {% if gallery_photos %}
+          <div class="event-gallery-grid">
+            {% for photo in gallery_photos %}
+              <figure class="gallery-card">
+                <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="selfie-search-results" data-type="image" data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}">Скачать оригинал</a>' aria-label="Открыть: {{ photo.alt }}">
+                  <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
+                </a>
+                <div class="gallery-card-actions">
+                  <a class="gallery-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал">
+                    <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg>
+                  </a>
+                </div>
+              </figure>
+            {% endfor %}
+          </div>
+          {% if selfie_search_next_cursor %}
+            <a class="event-gallery-next" href="{% url 'selfie_search:result' event_slug=event.slug public_token=public_token %}?cursor={{ selfie_search_next_cursor|urlencode }}" aria-label="Загрузить следующие фотографии"></a>
+          {% endif %}
+        {% else %}
+          <p class="selfie-search-empty">Совпадений не найдено</p>
+        {% endif %}
+      </section>
+    {% elif search.status == "no_face" %}
+      <p class="selfie-search-state" role="alert">На селфи не удалось найти подходящее лицо.</p>
+    {% elif search.status == "multiple_faces" %}
+      <p class="selfie-search-state" role="alert">На селфи должно быть только одно лицо.</p>
+    {% elif search.status == "quality_rejected" %}
+      <p class="selfie-search-state" role="alert">Не удалось получить надёжное совпадение.</p>
+    {% elif search.status == "search_unavailable" %}
+      <p class="selfie-search-state" role="alert">Для этого события пока нет подходящих фотографий.</p>
+    {% else %}
+      <p class="selfie-search-state" role="alert">Поиск сейчас недоступен. Попробуйте другое селфи.</p>
+    {% endif %}
+
+    {% if is_terminal %}
+      <a class="button" href="{% url 'event_detail' slug=event.slug %}">Искать по другому селфи</a>
+    {% endif %}
+  </article>
+{% endblock %}
+{% block extra_js %}
+  <script src="{% static 'ui/glightbox.min.js' %}"></script>
+  <script src="{% static 'ui/event-gallery.js' %}"></script>
+  {% if not is_terminal %}<script src="{% static 'ui/selfie-search.js' %}"></script>{% endif %}
+{% endblock %}

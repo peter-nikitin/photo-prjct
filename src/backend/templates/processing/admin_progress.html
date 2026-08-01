@@ -1,0 +1,37 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>Processing progress</h1>
+  {% if rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>Event</th>
+          <th>Event status</th>
+          <th>Total photos</th>
+          {% for worker in rows.0.workers %}
+            <th>{{ worker.name }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td><a href="{{ row.event_admin_url }}">{{ row.event }}</a></td>
+            <td>{{ row.status }}</td>
+            <td>Total photos: {{ row.total }}</td>
+            {% for worker in row.workers %}
+              <td>
+                <div>{{ worker.completed }} / {{ worker.total }}</div>
+                <div>{{ worker.status }}</div>
+                <div>{{ worker.eta }}</div>
+              </td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>There are no processing jobs yet.</p>
+  {% endif %}
+{% endblock %}

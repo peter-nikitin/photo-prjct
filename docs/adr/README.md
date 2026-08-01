@@ -34,7 +34,28 @@ place, and add the new record to this index.
 | 0012 | [Use Django photographer permissions](0012-use-django-photographer-permissions.md) | Accepted |
 | 0013 | [Use direct private Object Storage ingestion](0013-use-direct-private-object-storage-ingestion.md) | Accepted |
 | 0014 | [Keep Stage 2 ingestion request-driven](0014-keep-stage-2-ingestion-request-driven.md) | Accepted |
-| 0015 | [Allow anonymous free-event original delivery](0015-allow-anonymous-free-event-original-delivery.md) | Accepted |
+| 0015 | [Allow anonymous free-event original delivery](0015-allow-anonymous-free-event-original-delivery.md) | Superseded |
 | 0016 | [Allow deterministic staging reference media](0016-allow-deterministic-staging-reference-media.md) | Proposed |
 | 0017 | [Use Django-polled photo-processing jobs](0017-use-django-polled-photo-processing-jobs.md) | Accepted |
 | 0018 | [Use managed Yandex Monitoring with independent public probes](0018-use-managed-yandex-monitoring.md) | Accepted |
+| 0019 | [Use public event-scoped selfie search](0019-use-public-event-selfie-search.md) | Accepted |
+| 0020 | [Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md) | Accepted |
+| 0021 | [Allow original download for authorized photos](0021-allow-original-download-for-authorized-photos.md) | Accepted |
+
+## Public selfie-search outcome
+
+[ADR 0019](0019-use-public-event-selfie-search.md) supersedes
+[ADR 0015](0015-allow-anonymous-free-event-original-delivery.md). The repository implementation
+conforms to ADR 0019's Django/PostgreSQL authority, private worker, event isolation, transient query
+embedding, cleanup-before-publication, stable bearer result, and paid-result-only media boundaries.
+ADR 0020 supersedes only the inline-Django transport for already authorized gallery and result
+media; its direct Object Storage delivery is accepted but not yet implementation evidence. Lifecycle
+mutation, real-storage preflight, exact rollout-image model smoke, staging capacity evidence, and
+feature activation remain rollout work rather than completed decision evidence. The existing worker
+image already packages pinned public OpenCV Zoo YuNet/SFace files; it is not a new worker or a
+future private-model delivery mechanism.
+
+[ADR 0021](0021-allow-original-download-for-authorized-photos.md) supersedes only ADR 0019 and
+ADR 0020's attachment-download exclusions. It accepts attachment delivery wherever those existing
+gallery or ready-result contexts already authorize an original, without adding a free-versus-paid
+decision or opening a normal paid gallery.

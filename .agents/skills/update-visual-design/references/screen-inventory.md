@@ -7,6 +7,8 @@ This inventory is the canonical map from visual concepts to Django templates and
 | Catalog | production | `src/backend/templates/catalog/event_catalog.html` | `/` | `/__visual__/catalog/populated/`, `/__visual__/catalog/empty/` | `desktop-catalog-populated.png`, `desktop-catalog-empty.png`, `mobile-catalog-populated.png`, `mobile-catalog-empty.png` |
 | Event detail | production | `src/backend/templates/catalog/event_detail.html` | `/events/<slug>/` | `/__visual__/event/covered/`, `/__visual__/event/uncovered/` | `desktop-event-covered.png`, `desktop-event-uncovered.png`, `mobile-event-covered.png`, `mobile-event-uncovered.png` |
 | Event gallery | production | `src/backend/templates/catalog/event_detail.html` | `/events/<slug>/` | `/__visual__/event/gallery-populated/`, `/__visual__/event/gallery-empty/` | `desktop-event-gallery-populated.png`, `desktop-event-gallery-empty.png`, `mobile-event-gallery-populated.png`, `mobile-event-gallery-empty.png` |
+| Selfie search entry | production | `src/backend/templates/catalog/event_detail.html` | `/events/<slug>/` | `/__visual__/event/selfie-search/` | `desktop-event-selfie-search.png`, `mobile-event-selfie-search.png` |
+| Selfie search result | production | `src/backend/selfie_search/templates/selfie_search/result.html` | `/events/<slug>/selfie-search/<public-token>/` | `/__visual__/event/selfie-search/processing/`, `/__visual__/event/selfie-search/empty/`, `/__visual__/event/selfie-search/error/`, `/__visual__/event/selfie-search/ready/` | `desktop-selfie-search-processing.png`, `desktop-selfie-search-empty.png`, `desktop-selfie-search-error.png`, `desktop-selfie-search-ready.png`, `mobile-selfie-search-processing.png`, `mobile-selfie-search-empty.png`, `mobile-selfie-search-error.png`, `mobile-selfie-search-ready.png` |
 | Legal | production | `src/backend/templates/ui/legal.html` | `/legal/` | `/__visual__/legal/` | `desktop-legal.png`, `mobile-legal.png` |
 | Shared public shell | production | `src/backend/templates/ui/base.html` | none | covered by production screen routes | covered by production screen snapshots |
 | Search workspace | design-reference | `tests/visual/templates/design_reference/search.html` | none | `/__visual__/reference/search/` | `desktop-reference-search.png`, `mobile-reference-search.png` |
@@ -22,3 +24,9 @@ Snapshot files live in `tests/visual/visual.spec.js-snapshots/`. The `/__visual_
 The existing covered/uncovered event fixtures intentionally hide `.event-gallery`; their four
 snapshots remain focused regression surfaces for the event header and hero. Gallery layout and
 states are covered separately by the populated/empty event-gallery fixtures.
+
+On 2026-08-01, the existing populated gallery, selfie-search entry, and ready-result baselines were
+refreshed for the original-download action: `desktop-event-gallery-populated.png`,
+`mobile-event-gallery-populated.png`, `desktop-event-selfie-search.png`,
+`mobile-event-selfie-search.png`, and `mobile-selfie-search-ready.png`. No visual route or scenario
+was added.

@@ -1442,6 +1442,20 @@ def test_staging_apply_activates_https_edge_and_public_checks(
     assert "verify-public-edge" in commands
 
 
+def test_staging_apply_labels_web_metrics_as_staging(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="success", target="staging"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "MONITORING_ENVIRONMENT=staging\n" in (tmp_path / ".env").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_apply_success_commits_deployed_image_only_after_checks(
     tmp_path: Path, fake_bin: Path
 ) -> None:

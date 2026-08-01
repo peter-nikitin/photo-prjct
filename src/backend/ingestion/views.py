@@ -191,6 +191,8 @@ def upload_items_register(request: HttpRequest, batch: UUID) -> JsonResponse:
             filename=item["filename"],
             content_type=item["content_type"],
             size=item["size"],
+            last_modified_ms=item["last_modified_ms"],
+            ambiguous_sha256=item["ambiguous_sha256"],
         )
         for item in data["items"]
     ]

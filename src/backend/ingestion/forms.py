@@ -5,6 +5,8 @@ from typing import Any
 from django import forms
 from django.conf import settings
 
+from ingestion.models import MAX_POSTGRES_BIGINT
+
 
 class BatchCreateForm(forms.Form):
     event_id = forms.IntegerField(min_value=1)
@@ -22,6 +24,28 @@ class ItemForm(forms.Form):
         min_value=1,
         max_value=settings.PHOTO_UPLOAD_MAX_FILE_BYTES,
     )
+    last_modified_ms = forms.IntegerField(
+        required=False,
+        min_value=0,
+        max_value=MAX_POSTGRES_BIGINT,
+    )
+    ambiguous_sha256 = forms.RegexField(
+        regex=r"^[0-9a-f]{64}$",
+        required=False,
+        empty_value=None,
+    )
+
+    def clean(self) -> dict[str, Any]:
+        cleaned_data = super().clean()
+        if (
+            cleaned_data.get("ambiguous_sha256") is not None
+            and cleaned_data.get("last_modified_ms") is None
+        ):
+            self.add_error(
+                "ambiguous_sha256",
+                "A SHA-256 fingerprint requires a last-modified timestamp.",
+            )
+        return cleaned_data
 
 
 class ItemRegistrationForm(forms.Form):

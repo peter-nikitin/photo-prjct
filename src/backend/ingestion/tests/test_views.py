@@ -45,22 +45,23 @@ class UploadViewTests(TestCase):
         payload = response.json()
         return UUID(payload["batch"]["id"]), payload
 
-    def register_item(self, batch_id: UUID, client_item_id: UUID | None = None):
+    def register_item(
+        self,
+        batch_id: UUID,
+        client_item_id: UUID | None = None,
+        **resume_metadata: object,
+    ):
         client_item_id = client_item_id or uuid4()
+        item = {
+            "client_item_id": str(client_item_id),
+            "filename": "race.jpg",
+            "content_type": "image/jpeg",
+            "size": 4,
+        }
+        item.update(resume_metadata)
         response = self.client.post(
             reverse("upload_items_register", args=[batch_id]),
-            json.dumps(
-                {
-                    "items": [
-                        {
-                            "client_item_id": str(client_item_id),
-                            "filename": "race.jpg",
-                            "content_type": "image/jpeg",
-                            "size": 4,
-                        }
-                    ]
-                }
-            ),
+            json.dumps({"items": [item]}),
             content_type="application/json",
         )
         return client_item_id, response
@@ -127,6 +128,34 @@ class UploadViewTests(TestCase):
         serialized = json.dumps(created.json())
         self.assertNotIn("incoming", serialized)
         self.assertNotIn("originals", serialized)
+
+    def test_registration_accepts_optional_resume_metadata(self) -> None:
+        batch_id, _ = self.create_batch()
+        client_item_id, response = self.register_item(
+            batch_id,
+            last_modified_ms=1_722_500_123_456,
+            ambiguous_sha256="a" * 64,
+        )
+
+        self.assertEqual(response.status_code, 201)
+        item = UploadItem.objects.get(client_item_id=client_item_id)
+        self.assertEqual(item.client_last_modified_ms, 1_722_500_123_456)
+        self.assertEqual(item.ambiguous_sha256, "a" * 64)
+
+    def test_registration_rejects_invalid_resume_metadata(self) -> None:
+        batch_id, _ = self.create_batch()
+        invalid_values = (
+            {"last_modified_ms": -1},
+            {"last_modified_ms": 9_223_372_036_854_775_808},
+            {"last_modified_ms": 1_722_500_123_456, "ambiguous_sha256": "A" * 64},
+            {"ambiguous_sha256": "a" * 64},
+        )
+
+        for values in invalid_values:
+            with self.subTest(values=values):
+                _, response = self.register_item(batch_id, **values)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"]["code"], "validation_error")
 
     @patch("ingestion.views.PrivateUploadStorage")
     def test_authorize_is_only_response_with_signed_form(self, storage_class) -> None:

@@ -163,7 +163,9 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   returns one transient query embedding, Django loads and ranks the compatible event cohort once
   without persisting per-face candidate rows, deletes the temporary selfie before terminal
   publication, and serves stable immutable results. Searches created before this direct-ranking
-  change remain compatible with their already-persisted candidate rows.
+  change remain compatible with their already-persisted candidate rows. The direct path selects
+  only the six identity/vector fields needed for ranking and reads them in bounded database chunks;
+  it does not hydrate the full embedding, detection, attempt, and photo model graph.
   Staging activated this path on 2026-07-31 after applying the one-day `selfie-search/` lifecycle
   rule, passing real-bucket preflight, and verifying a live published Unicode event search,
   original-size result media, and paid-result-only media access. The repository default remains

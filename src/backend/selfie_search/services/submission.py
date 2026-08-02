@@ -21,7 +21,8 @@ from processing.services.enrollment import (
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
 )
 
-from selfie_search.models import SelfieSearch, SelfieSearchCandidate, SelfieSearchJob
+from selfie_search.models import SelfieSearch, SelfieSearchJob
+from selfie_search.services.ranking import CandidateEmbedding
 
 
 @dataclass(frozen=True)
@@ -63,20 +64,20 @@ def submit_selfie_search(*, event: Event, upload, storage) -> CreatedSearch:
     return CreatedSearch(search=search, public_token=public_token)
 
 
-def freeze_search_candidates(search: SelfieSearch) -> None:
-    """Freeze the compatible event cohort after the worker returns the query embedding."""
-    if SelfieSearchCandidate.objects.filter(search=search).exists():
-        return
+def compatible_search_candidates(search: SelfieSearch) -> list[CandidateEmbedding]:
+    """Load the compatible event cohort without persisting intermediate rows."""
     candidates = _compatible_candidates(event=search.event, configuration=search.configuration)
-    SelfieSearchCandidate.objects.bulk_create(
-        [
-            SelfieSearchCandidate(search=search, embedding=embedding, photo_id=photo_id)
-            for embedding, photo_id in candidates
-        ]
-    )
     search.eligible_photo_count = len({photo_id for _, photo_id in candidates})
     search.eligible_face_count = len(candidates)
     search.save(update_fields=["eligible_photo_count", "eligible_face_count"])
+    return [
+        CandidateEmbedding(
+            embedding=embedding,
+            photo_id=str(photo_id),
+            photo_event_id=embedding.detection.attempt.photo.event_id,
+        )
+        for embedding, photo_id in candidates
+    ]
 
 
 def resolve_public_search(event_slug: str, public_token: str) -> SelfieSearch:

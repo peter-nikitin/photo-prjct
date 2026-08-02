@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from uuid import UUID
+
+from processing.models import FaceEmbedding
 
 from selfie_search.models import SelfieSearch
 
@@ -29,12 +32,43 @@ class RankedPhoto:
     cosine_distance: float
 
 
+@dataclass(frozen=True)
+class CandidateEmbedding:
+    embedding: FaceEmbedding
+    photo_id: str
+    photo_event_id: object
+
+
 def rank_search(search: SelfieSearch, query_vector: object) -> tuple[RankedPhoto, ...]:
     """Return one best direct face match per frozen photo in deterministic order.
 
     The query remains an argument for the duration of this call only.  No ranking helper writes it
     to Django state, storage, or logs.
     """
+    candidates = search.candidates.select_related(
+        "photo",
+        "embedding__detection__attempt",
+    ).order_by("id")
+    return rank_embeddings(
+        search,
+        query_vector,
+        (
+            CandidateEmbedding(
+                embedding=candidate.embedding,
+                photo_id=str(candidate.photo_id),
+                photo_event_id=candidate.photo.event_id,
+            )
+            for candidate in candidates
+        ),
+    )
+
+
+def rank_embeddings(
+    search: SelfieSearch,
+    query_vector: object,
+    candidates: Iterable[CandidateEmbedding],
+) -> tuple[RankedPhoto, ...]:
+    """Rank an in-memory compatible cohort without persisting intermediate candidate rows."""
     configuration = _configuration(search)
     query = _normalized_vector(
         query_vector,
@@ -42,18 +76,14 @@ def rank_search(search: SelfieSearch, query_vector: object) -> tuple[RankedPhoto
         error_type=QueryVectorError,
     )
     best_by_photo: dict[str, RankedPhoto] = {}
-    candidates = search.candidates.select_related(
-        "photo",
-        "embedding__detection__attempt",
-    ).order_by("id")
     for candidate in candidates:
         embedding = candidate.embedding
         detection = embedding.detection
         attempt = detection.attempt
         if (
-            candidate.photo.event_id != search.event_id
+            candidate.photo_event_id != search.event_id
             or attempt.event_id != search.event_id
-            or attempt.photo_id != candidate.photo_id
+            or str(attempt.photo_id) != candidate.photo_id
         ):
             raise RankingError("candidate identity is outside the frozen search event")
         if embedding.model_version != configuration.model:
@@ -67,7 +97,7 @@ def rank_search(search: SelfieSearch, query_vector: object) -> tuple[RankedPhoto
         if distance > configuration.threshold:
             continue
         ranked = RankedPhoto(
-            photo_id=str(candidate.photo_id),
+            photo_id=candidate.photo_id,
             detection_id=detection.id,
             cosine_distance=distance,
         )

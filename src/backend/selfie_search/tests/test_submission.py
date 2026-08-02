@@ -32,6 +32,14 @@ from processing.services.enrollment import (
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
 )
 from selfie_search.models import SelfieSearch, SelfieSearchCandidate, SelfieSearchJob
+from selfie_search.services.jobs import (
+    ClaimedSearchJob,
+    claim_search_job,
+    complete_search_attempt,
+)
+from selfie_search.services.submission import (
+    _configuration as submission_configuration,
+)
 from selfie_search.services.submission import resolve_public_search, submit_selfie_search
 
 
@@ -103,6 +111,7 @@ class SubmissionTests(TestCase):
         photo_id: str,
         model: str = "sface",
         dimensions: int = 128,
+        vector: list[float] | None = None,
         accepted: bool = True,
         contract_version: int = CONTRACT_VERSION,
         processor_version: int = FACE_EMBEDDING_PROCESSOR_VERSION,
@@ -173,12 +182,15 @@ class SubmissionTests(TestCase):
             artifact=artifact, attempt=attempt, face_index=0, status=PhotoFaceDetection.Status.KEPT
         )
         return FaceEmbedding.objects.create(
-            detection=detection, model_version=model, vector=[0.0] * dimensions, metadata={}
+            detection=detection,
+            model_version=model,
+            vector=vector if vector is not None else [0.0] * dimensions,
+            metadata={},
         )
 
-    def test_published_free_and_paid_events_freeze_both_approved_face_generations(self) -> None:
-        legacy = self.make_eligible_embedding(event=self.event, photo_id="legacy")
-        preview = self.make_eligible_embedding(
+    def test_published_free_and_paid_events_queue_without_freezing_face_candidates(self) -> None:
+        self.make_eligible_embedding(event=self.event, photo_id="legacy")
+        self.make_eligible_embedding(
             event=self.event,
             photo_id="preview",
             contract_version=PREVIEW_CONTRACT_VERSION,
@@ -219,16 +231,10 @@ class SubmissionTests(TestCase):
         paid = submit_selfie_search(event=self.paid_event, upload=valid_upload(), storage=storage)
 
         self.assertEqual(SelfieSearchJob.objects.filter(search=created.search).count(), 1)
-        self.assertCountEqual(
-            list(
-                SelfieSearchCandidate.objects.filter(search=created.search).values_list(
-                    "embedding_id", flat=True
-                )
-            ),
-            [legacy.id, preview.id],
-        )
-        self.assertEqual(created.search.eligible_photo_count, 2)
-        self.assertEqual(created.search.eligible_face_count, 2)
+        self.assertFalse(SelfieSearchCandidate.objects.filter(search=created.search).exists())
+        self.assertFalse(SelfieSearchCandidate.objects.filter(search=paid.search).exists())
+        self.assertEqual(created.search.eligible_photo_count, 0)
+        self.assertEqual(created.search.eligible_face_count, 0)
         generations = created.search.configuration["gallery_face_embedding_generations"]
         self.assertEqual(
             [
@@ -260,6 +266,48 @@ class SubmissionTests(TestCase):
         self.assertEqual(created.search.configuration["embedding_model"], "sface")
         self.assertEqual(created.search.configuration["embedding_dimensions"], 128)
         self.assertEqual(paid.search.event_id, self.paid_event.id)
+
+    def test_successful_worker_callback_freezes_candidates_then_ranks(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="async-candidate",
+            vector=[1.0] + [0.0] * 127,
+        )
+        storage = RecordingStorage()
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="a" * 64,
+            temporary_object_key="selfie-search/async-callback",
+            configuration=submission_configuration(
+                content_type="image/jpeg",
+                content_size=1024,
+            ),
+        )
+        SelfieSearchJob.objects.create(search=search, configuration=search.configuration)
+        claimed = claim_search_job(
+            contract_version=1,
+            processor_type="selfie_query",
+            processor_version=1,
+            worker_build="worker-test",
+        )
+        self.assertIsInstance(claimed, ClaimedSearchJob)
+        assert isinstance(claimed, ClaimedSearchJob)
+
+        complete_search_attempt(
+            claimed.attempt.id,
+            result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
+            storage=storage,
+        )
+        search.refresh_from_db()
+
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.eligible_photo_count, 1)
+        self.assertEqual(search.eligible_face_count, 1)
+        self.assertEqual(
+            list(search.candidates.values_list("embedding_id", flat=True)),
+            [embedding.id],
+        )
+        self.assertEqual(search.matched_photo_count, 1)
 
     def test_draft_event_is_rejected_without_upload_or_search(self) -> None:
         storage = RecordingStorage()

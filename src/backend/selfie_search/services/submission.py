@@ -53,17 +53,6 @@ def submit_selfie_search(*, event: Event, upload, storage) -> CreatedSearch:
                 configuration=configuration,
                 configuration_hash=_configuration_hash(configuration),
             )
-            candidates = _compatible_candidates(event=event, configuration=configuration)
-            SelfieSearchCandidate.objects.bulk_create(
-                [
-                    SelfieSearchCandidate(search=search, embedding=embedding, photo_id=photo_id)
-                    for embedding, photo_id in candidates
-                ]
-            )
-            photo_count = len({photo_id for _, photo_id in candidates})
-            search.eligible_photo_count = photo_count
-            search.eligible_face_count = len(candidates)
-            search.save(update_fields=["eligible_photo_count", "eligible_face_count"])
             SelfieSearchJob.objects.create(search=search, configuration=configuration)
     except Exception:
         try:
@@ -72,6 +61,22 @@ def submit_selfie_search(*, event: Event, upload, storage) -> CreatedSearch:
             pass
         raise
     return CreatedSearch(search=search, public_token=public_token)
+
+
+def freeze_search_candidates(search: SelfieSearch) -> None:
+    """Freeze the compatible event cohort after the worker returns the query embedding."""
+    if SelfieSearchCandidate.objects.filter(search=search).exists():
+        return
+    candidates = _compatible_candidates(event=search.event, configuration=search.configuration)
+    SelfieSearchCandidate.objects.bulk_create(
+        [
+            SelfieSearchCandidate(search=search, embedding=embedding, photo_id=photo_id)
+            for embedding, photo_id in candidates
+        ]
+    )
+    search.eligible_photo_count = len({photo_id for _, photo_id in candidates})
+    search.eligible_face_count = len(candidates)
+    search.save(update_fields=["eligible_photo_count", "eligible_face_count"])
 
 
 def resolve_public_search(event_slug: str, public_token: str) -> SelfieSearch:

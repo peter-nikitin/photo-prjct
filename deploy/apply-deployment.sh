@@ -38,10 +38,10 @@ case "$requested_worker_replicas" in
 esac
 
 case "$GUNICORN_WORKERS:$GUNICORN_THREADS:$GUNICORN_TIMEOUT:$GUNICORN_MAX_REQUESTS:$GUNICORN_MAX_REQUESTS_JITTER" in
-    5:2:60:1000:100)
+    5:2:180:1000:100)
         ;;
     *)
-        echo "GUNICORN_PROFILE must be 5 workers, 2 threads, timeout 60, max requests 1000, jitter 100" >&2
+        echo "GUNICORN_PROFILE must be 5 workers, 2 threads, timeout 180, max requests 1000, jitter 100" >&2
         exit 2
         ;;
 esac

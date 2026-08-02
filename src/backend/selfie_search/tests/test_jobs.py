@@ -35,6 +35,7 @@ from selfie_search.services.jobs import (
     refresh_search_download,
     search_attempt_reference,
 )
+from selfie_search.services.submission import _configuration as submission_configuration
 
 
 class RecordingStorage:
@@ -68,13 +69,10 @@ class SearchJobTests(TestCase):
             event=self.event,
             public_token_digest=f"search-{ordinal:0>57}"[:64],
             temporary_object_key="selfie-search/0123456789abcdef0123456789abcdef",
-            configuration={
-                "embedding_model": "sface",
-                "embedding_dimensions": 128,
-                "cosine_distance_threshold": 0.363,
-                "content_type": "image/jpeg",
-                "content_size": 1024,
-            },
+            configuration=submission_configuration(
+                content_type="image/jpeg",
+                content_size=1024,
+            ),
         )
         SelfieSearchJob.objects.create(search=search, configuration=search.configuration)
         if with_candidate:

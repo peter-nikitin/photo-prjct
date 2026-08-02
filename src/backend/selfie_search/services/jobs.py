@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from time import perf_counter
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -31,6 +33,8 @@ from selfie_search.services.ranking import (
     validate_query_vector,
 )
 from selfie_search.services.submission import compatible_search_candidates
+
+logger = logging.getLogger(__name__)
 
 SELFIE_QUERY_CONTRACT_VERSION = 1
 SELFIE_QUERY_PROCESSOR_TYPE = "selfie_query"
@@ -217,9 +221,21 @@ def complete_search_attempt(
                     ranked = rank_search(search, query)
                     has_eligible_candidates = True
                 else:
+                    cohort_started_at = perf_counter()
                     candidates = compatible_search_candidates(search)
+                    cohort_loaded_at = perf_counter()
                     ranked = rank_embeddings(search, query, candidates)
+                    ranked_at = perf_counter()
                     has_eligible_candidates = bool(candidates)
+                    logger.info(
+                        "selfie cohort ranked search_id=%s load_ms=%d rank_ms=%d "
+                        "faces=%d matches=%d",
+                        search.id,
+                        round((cohort_loaded_at - cohort_started_at) * 1_000),
+                        round((ranked_at - cohort_loaded_at) * 1_000),
+                        len(candidates),
+                        len(ranked),
+                    )
             except QueryVectorError:
                 raise
             except RankingError:

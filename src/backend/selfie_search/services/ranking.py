@@ -7,8 +7,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from uuid import UUID
 
-from processing.models import FaceEmbedding
-
 from selfie_search.models import SelfieSearch
 
 _NORMALIZATION_TOLERANCE = 1e-6
@@ -34,9 +32,13 @@ class RankedPhoto:
 
 @dataclass(frozen=True)
 class CandidateEmbedding:
-    embedding: FaceEmbedding
+    vector: object
+    model_version: str
+    detection_id: UUID
     photo_id: str
     photo_event_id: object
+    attempt_event_id: object
+    attempt_photo_id: object
 
 
 def rank_search(search: SelfieSearch, query_vector: object) -> tuple[RankedPhoto, ...]:
@@ -54,9 +56,13 @@ def rank_search(search: SelfieSearch, query_vector: object) -> tuple[RankedPhoto
         query_vector,
         (
             CandidateEmbedding(
-                embedding=candidate.embedding,
+                vector=candidate.embedding.vector,
+                model_version=candidate.embedding.model_version,
+                detection_id=candidate.embedding.detection_id,
                 photo_id=str(candidate.photo_id),
                 photo_event_id=candidate.photo.event_id,
+                attempt_event_id=candidate.embedding.detection.attempt.event_id,
+                attempt_photo_id=candidate.embedding.detection.attempt.photo_id,
             )
             for candidate in candidates
         ),
@@ -77,19 +83,16 @@ def rank_embeddings(
     )
     best_by_photo: dict[str, RankedPhoto] = {}
     for candidate in candidates:
-        embedding = candidate.embedding
-        detection = embedding.detection
-        attempt = detection.attempt
         if (
             candidate.photo_event_id != search.event_id
-            or attempt.event_id != search.event_id
-            or str(attempt.photo_id) != candidate.photo_id
+            or candidate.attempt_event_id != search.event_id
+            or str(candidate.attempt_photo_id) != candidate.photo_id
         ):
             raise RankingError("candidate identity is outside the frozen search event")
-        if embedding.model_version != configuration.model:
+        if candidate.model_version != configuration.model:
             raise RankingError("candidate embedding model is incompatible")
         gallery = _normalized_vector(
-            embedding.vector,
+            candidate.vector,
             dimensions=configuration.dimensions,
             error_type=RankingError,
         )
@@ -98,7 +101,7 @@ def rank_embeddings(
             continue
         ranked = RankedPhoto(
             photo_id=candidate.photo_id,
-            detection_id=detection.id,
+            detection_id=candidate.detection_id,
             cosine_distance=distance,
         )
         previous = best_by_photo.get(ranked.photo_id)

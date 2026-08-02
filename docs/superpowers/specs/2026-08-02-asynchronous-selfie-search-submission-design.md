@@ -15,10 +15,16 @@
 - Direct in-memory cohort ranking was implemented in
   [PR #82](https://github.com/peter-nikitin/photo-prjct/pull/82), merged as
   `f356ea12fc97e36b2b750cbfaf654235bd459b41`.
+- Lightweight field-only cohort loading and phase timings were implemented in
+  [PR #85](https://github.com/peter-nikitin/photo-prjct/pull/85), merged as
+  `4fa5f8e4d02aa6ba7d8e3bcc067ac7e92a2aedf0`.
 - CI passed the complete Python, migration, JavaScript, and containerized visual-regression gates.
 - Staging deployed the matching immutable web and worker images. The public health endpoint returned
   HTTP 200, both worker replicas and the web container had zero restarts, and the deployed Gunicorn
   timeout was 180 seconds.
+- A read-only staging benchmark over the observed 56,183-face event loaded the compatible cohort
+  in 5,798 ms and ran unchanged exact Python ranking in 2,532 ms. The active web and worker images
+  matched `4fa5f8e4d02aa6ba7d8e3bcc067ac7e92a2aedf0`, had zero restarts, and health returned HTTP 200.
 
 ## Outcome
 
@@ -64,8 +70,10 @@ included.
 4. The current worker claims the queued job, reads the selfie, and returns a transient normalized
    query embedding.
 5. Inside the accepted completion path, Django loads the compatible accepted face embeddings for
-   the search's event once, records eligible photo/face counts, performs the existing deterministic
-   exact ranking over that in-memory cohort, and prepares only the matched result rows.
+   the search's event once using a field-only `values_list` query and a bounded database iterator,
+   records eligible photo/face counts, performs the existing deterministic exact ranking over that
+   in-memory cohort, and prepares only the matched result rows. Structured INFO timings contain
+   search ID, load/rank durations, face count, and match count, but no vector or selfie data.
 6. Django deletes the temporary selfie and only then publishes the terminal state. The query
    embedding is never persisted.
 

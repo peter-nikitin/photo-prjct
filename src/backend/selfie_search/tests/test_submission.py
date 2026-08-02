@@ -8,8 +8,9 @@ from zlib import crc32
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import IntegrityError
+from django.db import IntegrityError, connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import StorageUnavailable
@@ -40,7 +41,11 @@ from selfie_search.services.jobs import (
 from selfie_search.services.submission import (
     _configuration as submission_configuration,
 )
-from selfie_search.services.submission import resolve_public_search, submit_selfie_search
+from selfie_search.services.submission import (
+    compatible_search_candidates,
+    resolve_public_search,
+    submit_selfie_search,
+)
 
 
 class RecordingStorage:
@@ -293,11 +298,12 @@ class SubmissionTests(TestCase):
         self.assertIsInstance(claimed, ClaimedSearchJob)
         assert isinstance(claimed, ClaimedSearchJob)
 
-        complete_search_attempt(
-            claimed.attempt.id,
-            result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
-            storage=storage,
-        )
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            complete_search_attempt(
+                claimed.attempt.id,
+                result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
+                storage=storage,
+            )
         search.refresh_from_db()
 
         self.assertEqual(search.status, SelfieSearch.Status.READY)
@@ -309,6 +315,35 @@ class SubmissionTests(TestCase):
             [embedding.id],
         )
         self.assertEqual(search.matched_photo_count, 1)
+        self.assertRegex(
+            "\n".join(logs.output),
+            r"selfie cohort ranked search_id=.* load_ms=\d+ rank_ms=\d+ faces=1 matches=1",
+        )
+
+    def test_compatible_cohort_selects_only_fields_needed_for_ranking(self) -> None:
+        self.make_eligible_embedding(
+            event=self.event,
+            photo_id="lightweight-candidate",
+            vector=[1.0] + [0.0] * 127,
+        )
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="f" * 64,
+            temporary_object_key="selfie-search/lightweight",
+            configuration=submission_configuration(content_type="image/jpeg", content_size=1),
+            configuration_hash="f" * 64,
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            candidates = compatible_search_candidates(search)
+
+        cohort_sql = next(
+            query["sql"] for query in queries if 'FROM "processing_faceembedding"' in query["sql"]
+        )
+        self.assertNotIn('"processing_faceembedding"."metadata"', cohort_sql)
+        self.assertNotIn('"processing_photofacedetection"."geometry"', cohort_sql)
+        self.assertNotIn('"processing_processingattempt"."input_fingerprint"', cohort_sql)
+        self.assertEqual(candidates[0].photo_id, "lightweight-candidate")
 
     def test_draft_event_is_rejected_without_upload_or_search(self) -> None:
         storage = RecordingStorage()

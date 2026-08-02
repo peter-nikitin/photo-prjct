@@ -67,17 +67,10 @@ def submit_selfie_search(*, event: Event, upload, storage) -> CreatedSearch:
 def compatible_search_candidates(search: SelfieSearch) -> list[CandidateEmbedding]:
     """Load the compatible event cohort without persisting intermediate rows."""
     candidates = _compatible_candidates(event=search.event, configuration=search.configuration)
-    search.eligible_photo_count = len({photo_id for _, photo_id in candidates})
+    search.eligible_photo_count = len({candidate.photo_id for candidate in candidates})
     search.eligible_face_count = len(candidates)
     search.save(update_fields=["eligible_photo_count", "eligible_face_count"])
-    return [
-        CandidateEmbedding(
-            embedding=embedding,
-            photo_id=str(photo_id),
-            photo_event_id=embedding.detection.attempt.photo.event_id,
-        )
-        for embedding, photo_id in candidates
-    ]
+    return candidates
 
 
 def resolve_public_search(event_slug: str, public_token: str) -> SelfieSearch:
@@ -148,13 +141,30 @@ def _compatible_candidates(*, event: Event, configuration: dict[str, object]):
             detection__attempt__photo__original_size__isnull=False,
         )
         .filter(compatible_generation)
-        .select_related("detection__attempt__photo")
+        .values_list(
+            "vector",
+            "model_version",
+            "detection_id",
+            "detection__attempt__photo_id",
+            "detection__attempt__photo__event_id",
+            "detection__attempt__event_id",
+        )
     )
     dimensions = configuration["embedding_dimensions"]
     return [
-        (embedding, embedding.detection.attempt.photo_id)
-        for embedding in embeddings
-        if isinstance(embedding.vector, list) and len(embedding.vector) == dimensions
+        CandidateEmbedding(
+            vector=vector,
+            model_version=model_version,
+            detection_id=detection_id,
+            photo_id=str(photo_id),
+            photo_event_id=photo_event_id,
+            attempt_event_id=attempt_event_id,
+            attempt_photo_id=photo_id,
+        )
+        for vector, model_version, detection_id, photo_id, photo_event_id, attempt_event_id in (
+            embeddings.iterator(chunk_size=2_000)
+        )
+        if isinstance(vector, list) and len(vector) == dimensions
     ]
 
 

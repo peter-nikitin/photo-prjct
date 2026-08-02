@@ -1,5 +1,7 @@
 from datetime import date, timedelta
+from hashlib import sha256
 from html.parser import HTMLParser
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -66,8 +68,34 @@ class PublicShellTests(SimpleTestCase):
         self.assertContains(response, f'href="{reverse("legal")}"')
         self.assertNotContains(response, f'href="{reverse("admin:index")}"')
         self.assertNotContains(response, "Прототип")
+        self.assertContains(response, 'href="tel:+79031275766"')
+        self.assertNotContains(response, "mailto:")
+        for document_name in (
+            "public-offer.pdf",
+            "user-agreement.pdf",
+            "personal-data-policy.pdf",
+        ):
+            self.assertContains(response, f'href="/static/ui/legal/{document_name}"')
         for section_id in ("offer", "terms", "personal", "cookies"):
-            self.assertContains(response, f'id="{section_id}"')
+            self.assertNotContains(response, f'id="{section_id}"')
+
+    def test_packaged_legal_documents_match_accepted_sources(self) -> None:
+        static_directory = Path(__file__).resolve().parents[2] / "static" / "ui" / "legal"
+        expected_hashes = {
+            "public-offer.pdf": "33a64514790b8193ad1704cbfaa606504ba73f71d2aaf4c0331480895d494371",
+            "user-agreement.pdf": (
+                "8da40d74391781495753c14d380ba43ea60d6e510da727ac98e428b7e035a07d"
+            ),
+            "personal-data-policy.pdf": (
+                "7b8be1e72e3d8f939b48cf1458375a8b7635942a06fed918967476e22a77c68d"
+            ),
+        }
+
+        for document_name, expected_hash in expected_hashes.items():
+            with self.subTest(document_name=document_name):
+                document = static_directory / document_name
+                self.assertTrue(document.is_file())
+                self.assertEqual(sha256(document.read_bytes()).hexdigest(), expected_hash)
 
 
 @override_settings(

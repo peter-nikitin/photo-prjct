@@ -250,6 +250,21 @@ test('all links on live production pages resolve', async ({ page, request }) => 
   }
 });
 
+test('legal contacts and documents are keyboard reachable', async ({ page, request }) => {
+  await page.goto('/legal/');
+
+  const links = page.locator('.legal-content a');
+  await expect(links).toHaveCount(4);
+  await links.nth(0).focus();
+  await expect(links.nth(0)).toBeFocused();
+
+  for (const index of [1, 2, 3]) {
+    const href = await links.nth(index).getAttribute('href');
+    const response = await request.get(href);
+    expect(response.status(), `${href} must resolve successfully`).toBeLessThan(400);
+  }
+});
+
 test('gallery supports keyboard navigation and focus restoration', async ({ page }) => {
   await page.goto('/__visual__/event/gallery-populated/');
   const firstCard = page.locator('.gallery-card-link').first();

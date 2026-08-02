@@ -267,7 +267,7 @@ class SubmissionTests(TestCase):
         self.assertEqual(created.search.configuration["embedding_dimensions"], 128)
         self.assertEqual(paid.search.event_id, self.paid_event.id)
 
-    def test_successful_worker_callback_freezes_candidates_then_ranks(self) -> None:
+    def test_successful_worker_callback_ranks_without_persisting_candidates(self) -> None:
         embedding = self.make_eligible_embedding(
             event=self.event,
             photo_id="async-candidate",
@@ -303,8 +303,9 @@ class SubmissionTests(TestCase):
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertEqual(search.eligible_photo_count, 1)
         self.assertEqual(search.eligible_face_count, 1)
+        self.assertFalse(search.candidates.exists())
         self.assertEqual(
-            list(search.candidates.values_list("embedding_id", flat=True)),
+            list(search.results.values_list("detection__embedding", flat=True)),
             [embedding.id],
         )
         self.assertEqual(search.matched_photo_count, 1)

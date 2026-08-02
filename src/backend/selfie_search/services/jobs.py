@@ -26,10 +26,11 @@ from selfie_search.models import (
 from selfie_search.services.ranking import (
     QueryVectorError,
     RankingError,
+    rank_embeddings,
     rank_search,
     validate_query_vector,
 )
-from selfie_search.services.submission import freeze_search_candidates
+from selfie_search.services.submission import compatible_search_candidates
 
 SELFIE_QUERY_CONTRACT_VERSION = 1
 SELFIE_QUERY_PROCESSOR_TYPE = "selfie_query"
@@ -212,8 +213,13 @@ def complete_search_attempt(
         else:
             try:
                 query = _query_from_result(search, result)
-                freeze_search_candidates(search)
-                ranked = rank_search(search, query)
+                if SelfieSearchCandidate.objects.filter(search=search).exists():
+                    ranked = rank_search(search, query)
+                    has_eligible_candidates = True
+                else:
+                    candidates = compatible_search_candidates(search)
+                    ranked = rank_embeddings(search, query, candidates)
+                    has_eligible_candidates = bool(candidates)
             except QueryVectorError:
                 raise
             except RankingError:
@@ -245,7 +251,7 @@ def complete_search_attempt(
             else:
                 intended_status = str(
                     SelfieSearch.Status.SEARCH_UNAVAILABLE
-                    if not SelfieSearchCandidate.objects.filter(search=search).exists()
+                    if not has_eligible_candidates
                     else SelfieSearch.Status.READY
                 )
                 _terminal_attempt(

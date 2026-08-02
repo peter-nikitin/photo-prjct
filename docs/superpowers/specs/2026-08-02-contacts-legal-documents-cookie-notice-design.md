@@ -93,7 +93,11 @@ the acknowledgement does not control analytics loading.
 ## Yandex Metrika
 
 The supplied Yandex Metrika counter `111239706` is included once through the shared production base
-template. Its initialization contract is unchanged:
+template, except on a valid public selfie bearer-result page. That result page's non-expiring bearer
+token authorizes matched originals, so it must not be sent through the required `location.href`
+initialization field to Metrika. The existing bearer-protection middleware marks the request before
+template rendering; the shared analytics context uses that marker rather than a template URL match.
+Its initialization contract is otherwise unchanged:
 
 ```javascript
 ym(111239706, "init", {
@@ -108,19 +112,22 @@ ym(111239706, "init", {
 });
 ```
 
-The asynchronous tag loads immediately on every user-facing page that uses `ui/base.html`, whether
-or not the visitor has pressed `OK`. The supplied `noscript` tracking image is also present for those
-pages when JavaScript is disabled.
+The asynchronous tag loads immediately on every eligible user-facing page that uses `ui/base.html`,
+whether or not the visitor has pressed `OK`. The supplied `noscript` tracking image is also present
+for those pages when JavaScript is disabled.
 
 The counter is intentionally absent from Django Admin, `/health/`, internal processing APIs, media
-responses, redirects, and any other non-HTML response. Test-only visual-reference pages must not
-send real analytics traffic; their settings or templates suppress the production counter while
-retaining a deterministic cookie-notice state for visual testing.
+responses, redirects, valid public selfie bearer-result HTML, and any other non-HTML response.
+Test-only visual-reference pages must not send real analytics traffic; their settings or templates
+suppress the production counter while retaining a deterministic cookie-notice state for visual
+testing.
 
 ## Failure and compatibility behavior
 
 - A failed or blocked Metrika request does not block rendering or any FindMe Photo workflow.
 - The counter bootstrap appears at most once in each rendered page.
+- A bearer-result page retains the cookie notice but emits neither Metrika bootstrap nor noscript
+  fallback, so the bearer token never reaches the analytics request URL.
 - Missing PDF assets are a release failure rather than a reason to display dead placeholder links.
 - Existing `/legal/` bookmarks continue to work.
 - The cookie notice works independently of Django authentication and does not contain personal
@@ -170,10 +177,11 @@ notice as an informational acknowledgement.
    page loads in that browser profile.
 5. Missing, stale, cleared, or unavailable local storage produces the specified safe behavior
    without breaking the page.
-6. Public production HTML includes one counter `111239706` bootstrap and the supplied no-JavaScript
-   tracking fallback; analytics loading does not wait for `OK`.
-7. Django Admin, test-only visual references, health/API/media/non-HTML routes do not emit real
-   Metrika traffic.
+6. Eligible public production HTML includes one counter `111239706` bootstrap and the supplied
+   no-JavaScript tracking fallback; analytics loading does not wait for `OK`. Valid public
+   selfie bearer-result HTML emits neither analytics element.
+7. Django Admin, test-only visual references, health/API/media/non-HTML routes, and valid public
+   selfie bearer-result HTML do not emit real Metrika traffic.
 8. Desktop and mobile browser checks confirm readable document links, a non-blocking notice,
    keyboard operation, acknowledgement persistence, and no regression in existing public
    navigation.

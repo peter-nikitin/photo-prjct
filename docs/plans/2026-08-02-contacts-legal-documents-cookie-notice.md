@@ -18,14 +18,18 @@
 Deliver the outcome and acceptance criteria in the
 [approved specification](../superpowers/specs/2026-08-02-contacts-legal-documents-cookie-notice-design.md#outcome):
 a public contacts/document catalog with the three accepted PDFs, plus the approved global cookie
-notice and Yandex Metrika counter on user-facing Django pages.
+notice and Yandex Metrika counter on eligible user-facing Django pages. Public selfie bearer-result
+pages remain eligible for the notice but suppress Metrika, because its bootstrap reports
+`location.href` and that URL carries a non-expiring authorization token.
 
 ## Architecture
 
 Keep Django templates and packaged static assets as the production source of truth. The existing
 `/legal/` route serves the contacts/document catalog; the shared `ui/base.html` owns the notice and
 analytics inclusion. A small context processor makes the fixed production counter suppressible in
-the test-only visual settings without introducing runtime configuration or a new service.
+the test-only visual settings and for requests marked by the existing public-selfie bearer
+protection middleware, without introducing runtime configuration, template URL matching, or a new
+service.
 
 ## Tech stack
 
@@ -42,6 +46,8 @@ CSS, pytest/Django test client, and Playwright visual/browser tests.
 - Load Yandex Metrika counter `111239706` immediately with the exact supplied initialization
   options; acknowledgement does not gate analytics.
 - Emit no production analytics from Django Admin, non-HTML endpoints, or test-only visual pages.
+- Emit no Metrika bootstrap or no-JavaScript pixel from a valid public selfie bearer-result page;
+  retain its cookie notice.
 - Add no dependency, model, migration, CMS, or external document store.
 
 ## Scope
@@ -67,6 +73,8 @@ Implements the approved specification without scope changes.
 - `src/backend/static/ui/design-system.css`: shared fixed-notice desktop/mobile/accessibility styles.
 - `src/backend/picflow/tests/test_views.py`: server-rendered page, assets, counter, and suppression
   contracts.
+- `src/backend/selfie_search/tests/test_views.py`: bearer-result analytics-suppression regression
+  contract.
 - `tests/test_visual_reference.py`: deterministic visual-setting contract.
 - `tests/visual/visual.spec.js`: notice behavior, persistence, failure-path, outbound-analytics, link,
   and responsive checks.
@@ -132,9 +140,9 @@ and acceptance criteria 1–2 and the relevant portion of 8.
 
 ### Task 2: Add the global cookie notice and Yandex Metrika
 
-**Deliverable:** Every production user-facing base-template page emits one approved counter and a
-resilient versioned notice; test-only visual pages emit no real counter and exercise the notice
-deterministically.
+**Deliverable:** Every eligible production user-facing base-template page emits one approved counter
+and a resilient versioned notice; valid public selfie bearer-result pages retain the notice but emit
+no counter. Test-only visual pages emit no real counter and exercise the notice deterministically.
 
 **Files:**
 
@@ -145,6 +153,7 @@ deterministically.
 - Create: `src/backend/static/ui/cookie-notice.js`
 - Modify: `src/backend/static/ui/design-system.css`
 - Modify: `src/backend/picflow/tests/test_views.py`
+- Modify: `src/backend/selfie_search/tests/test_views.py`
 - Modify: `tests/test_visual_reference.py`
 - Modify: `tests/visual/visual.spec.js`
 - Create/update: dedicated cookie-notice desktop/mobile files under `tests/visual/snapshots/`
@@ -165,11 +174,12 @@ and acceptance criteria 3–8.
 - static entrypoint `ui/cookie-notice.js` using key `findme_cookie_notice` and version
   `2026-08-02`.
 
-- [ ] Add failing server-rendered tests proving production public pages contain exactly one counter
-  ID/bootstrap, the no-JavaScript watch URL, exact notice copy, the personal-data-policy link, the
-  two data hooks, and the deferred local script. Add suppression tests under
-  `YANDEX_METRIKA_COUNTER_ID=None`, plus a visual-settings assertion that the real counter is
-  disabled.
+- [ ] Add failing server-rendered tests proving eligible production public pages contain exactly one
+  counter ID/bootstrap, the no-JavaScript watch URL, exact notice copy, the personal-data-policy
+  link, the two data hooks, and the deferred local script. Add a valid bearer-result regression
+  proving it contains no `mc.yandex.ru` while a normal public catalog page still has exactly one
+  bootstrap. Add suppression tests under `YANDEX_METRIKA_COUNTER_ID=None`, plus a visual-settings
+  assertion that the real counter is disabled.
 - [ ] Add failing Playwright cases for a fresh profile, `OK` dismissal and reload persistence,
   stale-version redisplay, a thrown `localStorage` read/write path that leaves the page operable,
   keyboard activation, mobile non-overflow, and absence of requests to `mc.yandex.ru` in the visual
@@ -181,8 +191,9 @@ and acceptance criteria 3–8.
   and behavior.
 - [ ] Define fixed production setting `YANDEX_METRIKA_COUNTER_ID = 111239706`, add the named context
   processor to the existing Django template backend, and override the setting to `None` in
-  `tests/visual/settings.py`. Keep the value out of `.env` because it is public, fixed, and not a
-  secret.
+  `tests/visual/settings.py`. Have the context processor also suppress the counter for the existing
+  public-selfie bearer middleware marker; do not inspect URLs in the template. Keep the value out of
+  `.env` because it is public, fixed, and not a secret.
 - [ ] Add one guarded Metrika block to `ui/base.html`: render it only when
   `yandex_metrika_counter_id` is not `None`, retain the supplied asynchronous bootstrap and exact
   initialization options, and include the supplied no-JavaScript image. Add the notice outside
@@ -227,8 +238,9 @@ fact that must be recorded.
   deployed commit/image rather than a mutable checkout.
 - [ ] On `https://findme-photo.ru/` and `/legal/`, verify the phone, all three PDFs, fresh-profile
   notice, `OK` persistence, responsive layout, one `tag.js?id=111239706` request, and a successful
-  Metrika watch request. Confirm `/admin/` HTML contains neither the counter nor notice and
-  `/health/` remains the unchanged JSON response.
+  Metrika watch request. Open a valid public selfie bearer-result and verify its notice remains but
+  neither a `tag.js` nor a Metrika watch request is made. Confirm `/admin/` HTML contains neither
+  the counter nor notice and `/health/` remains the unchanged JSON response.
 - [ ] Inspect application/edge logs for new 4xx/5xx failures and confirm Metrika begins receiving
   public page views. Report separately anything not observable immediately in the Metrika UI.
 

@@ -322,6 +322,17 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
 
+    def test_bearer_result_suppresses_metrika_while_catalog_keeps_one_counter(self) -> None:
+        search, token = self.make_search()
+
+        bearer_response = self.client.get(self.result_url(event=search.event, token=token))
+        catalog_response = self.client.get(reverse("event_catalog"))
+
+        self.assertEqual(bearer_response.status_code, 200)
+        self.assertNotContains(bearer_response, "mc.yandex.ru")
+        self.assertContains(bearer_response, "data-cookie-notice")
+        self.assertEqual(catalog_response.content.count(b'ym(111239706, "init", {'), 1)
+
     def test_page_exposes_each_public_state_with_bearer_headers(self) -> None:
         state_copy = {
             SelfieSearch.Status.QUEUED: "Ищем ваши фотографии…",

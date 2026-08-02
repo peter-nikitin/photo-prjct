@@ -125,8 +125,13 @@ one event, so I can review probable matches.
   embeddings; and a live Unicode event upload reached a stable ready bearer URL with the expected
   original. The temporary selfie was deleted before publication, including from the bucket prefix.
   A temporary paid-event check kept normal media denied while bearer-result media succeeded.
-  This is staging evidence only; production is not activated.
-- Last updated: 2026-07-31
+  On 2026-08-02, staging deployed immediate queued-result navigation and then direct event-cohort
+  ranking in PRs
+  [#80](https://github.com/peter-nikitin/photo-prjct/pull/80) and
+  [#82](https://github.com/peter-nikitin/photo-prjct/pull/82). New searches persist only eligible
+  counts and matched results instead of one candidate row per eligible face; legacy frozen-candidate
+  searches remain readable. This is staging evidence only; production is not activated.
+- Last updated: 2026-08-02
 
 ### PJ-009 — Visitor — Receive a free-event original
 

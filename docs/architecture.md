@@ -160,8 +160,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md).
 - The `selfie_search` Django app and the existing worker implement public event-scoped selfie
   search: submission immediately creates the queued bearer-link result page; after the worker
-  returns one transient query embedding, Django freezes and searches the event cohort, deletes the
-  temporary selfie before terminal publication, and serves stable results.
+  returns one transient query embedding, Django loads and ranks the compatible event cohort once
+  without persisting per-face candidate rows, deletes the temporary selfie before terminal
+  publication, and serves stable immutable results. Searches created before this direct-ranking
+  change remain compatible with their already-persisted candidate rows.
   Staging activated this path on 2026-07-31 after applying the one-day `selfie-search/` lifecycle
   rule, passing real-bucket preflight, and verifying a live published Unicode event search,
   original-size result media, and paid-result-only media access. The repository default remains

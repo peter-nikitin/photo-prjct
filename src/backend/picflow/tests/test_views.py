@@ -54,6 +54,33 @@ class NavigationMarkupParser(HTMLParser):
 )
 @modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
 class PublicShellTests(SimpleTestCase):
+    def test_public_shell_includes_one_metrika_counter_and_cookie_notice(self) -> None:
+        response = self.client.get(reverse("legal"))
+
+        self.assertEqual(response.content.count(b'ym(111239706, "init", {'), 1)
+        self.assertContains(response, "https://mc.yandex.ru/metrika/tag.js")
+        self.assertContains(response, "https://mc.yandex.ru/watch/111239706")
+        self.assertContains(
+            response,
+            (
+                "Мы используем файлы cookie, чтобы обеспечить работу нашего сайта и "
+                "проанализировать его"
+            ),
+        )
+        self.assertContains(response, "использование. Продолжая использовать этот сайт, вы даете")
+        self.assertContains(response, "согласие на использование файлов cookie.")
+        self.assertContains(response, "data-cookie-notice")
+        self.assertContains(response, "data-cookie-notice-accept")
+        self.assertContains(response, 'href="/static/ui/legal/personal-data-policy.pdf"')
+        self.assertContains(response, 'src="/static/ui/cookie-notice.js" defer')
+
+    @override_settings(YANDEX_METRIKA_COUNTER_ID=None)
+    def test_public_shell_suppresses_metrika_when_counter_is_disabled(self) -> None:
+        response = self.client.get(reverse("legal"))
+
+        self.assertNotContains(response, "mc.yandex.ru")
+        self.assertNotContains(response, 'ym(111239706, "init", {')
+
     def test_legal_page_uses_shared_accessible_shell(self) -> None:
         response = self.client.get(reverse("legal"))
 

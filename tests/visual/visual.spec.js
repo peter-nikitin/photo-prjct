@@ -86,9 +86,22 @@ async function settlePage(page) {
   });
 }
 
-async function capturePage(page, { path, snapshot, viewport }) {
+async function preloadCookieAcknowledgement(page) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('findme_cookie_notice', '2026-08-02');
+  });
+}
+
+async function capturePage(page, { path, snapshot, viewport, cookieAcknowledged = true }) {
   const { failures, resources } = collectBrowserFailures(page);
   await page.setViewportSize(viewport);
+  if (cookieAcknowledged) {
+    await preloadCookieAcknowledgement(page);
+  } else {
+    await page.addInitScript(() => {
+      window.localStorage.removeItem('findme_cookie_notice');
+    });
+  }
 
   const response = await page.goto(path);
   expect(response, `Expected a document response for ${path}`).not.toBeNull();
@@ -232,6 +245,107 @@ test.describe('mobile visual regression', () => {
       });
     });
   }
+});
+
+test('cookie notice is visible and usable on a fresh desktop profile', async ({ page }) => {
+  await capturePage(page, {
+    path: '/__visual__/legal/',
+    snapshot: 'desktop-cookie-notice.png',
+    viewport: DESKTOP_VIEWPORT,
+    cookieAcknowledged: false,
+  });
+
+  const notice = page.locator('[data-cookie-notice]');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText(
+    'Мы используем файлы cookie, чтобы обеспечить работу нашего сайта и проанализировать его',
+  );
+  await expect(notice.getByRole('link')).toHaveAttribute('href', /personal-data-policy\.pdf$/);
+  await expect(notice.getByRole('button', { name: 'OK' })).toBeVisible();
+});
+
+test('cookie notice is readable without overflow on a fresh mobile profile', async ({ page }) => {
+  await capturePage(page, {
+    path: '/__visual__/legal/',
+    snapshot: 'mobile-cookie-notice.png',
+    viewport: MOBILE_VIEWPORT,
+    cookieAcknowledged: false,
+  });
+
+  await expect(page.locator('[data-cookie-notice]')).toBeVisible();
+});
+
+test('cookie notice stores acknowledgement before hiding and persists across reloads', async ({ page }) => {
+  await page.goto('/__visual__/legal/');
+  const notice = page.locator('[data-cookie-notice]');
+  const accept = notice.getByRole('button', { name: 'OK' });
+
+  await expect(notice).toBeVisible();
+  await accept.click();
+  await expect(notice).toBeHidden();
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem('findme_cookie_notice')))
+    .toBe('2026-08-02');
+  await page.reload();
+  await expect(notice).toBeHidden();
+});
+
+test('cookie notice reappears for a stale acknowledgement', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('findme_cookie_notice', 'stale-version');
+  });
+  await page.goto('/__visual__/legal/');
+
+  await expect(page.locator('[data-cookie-notice]')).toBeVisible();
+});
+
+test('cookie notice remains operable when localStorage read or write throws', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem() {
+          throw new Error('read blocked');
+        },
+        setItem() {
+          throw new Error('write blocked');
+        },
+      },
+    });
+  });
+  await page.goto('/__visual__/legal/');
+
+  const notice = page.locator('[data-cookie-notice]');
+  await expect(notice).toBeVisible();
+  await notice.getByRole('button', { name: 'OK' }).click();
+  await expect(notice).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
+test('cookie notice accept button works from the keyboard', async ({ page }) => {
+  await page.goto('/__visual__/legal/');
+  const notice = page.locator('[data-cookie-notice]');
+  const accept = notice.getByRole('button', { name: 'OK' });
+
+  await accept.focus();
+  await page.keyboard.press('Enter');
+  await expect(notice).toBeHidden();
+});
+
+test('visual pages do not request Yandex Metrika', async ({ page }) => {
+  const metrikaRequests = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).hostname === 'mc.yandex.ru') {
+      metrikaRequests.push(request.url());
+    }
+  });
+
+  await page.goto('/__visual__/legal/');
+  await settlePage(page);
+
+  expect(metrikaRequests).toEqual([]);
 });
 
 test('all links on live production pages resolve', async ({ page, request }) => {
@@ -508,6 +622,7 @@ test('slow upload has an active close warning and visible cancel control', async
 
 test('cancel is visible during authorization and aborts the pending control request', async ({ page }) => {
   const stubs = await installUploadStubs(page, { authorizeDelay: 1000 });
+  await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
   await page.locator('#upload-files').setInputFiles({
@@ -588,6 +703,7 @@ test('manual retry 503 remains retryable without leaking an unhandled page error
     retryFailureStatus: 503,
     storageStatuses: [400],
   });
+  await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
   await page.locator('#upload-files').setInputFiles({
@@ -613,6 +729,7 @@ test('manual retry confirm failure is contained without an unhandled page error'
     confirmFailureStatus: 503,
     storageStatuses: [400, 204],
   });
+  await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
   await page.locator('#upload-files').setInputFiles({

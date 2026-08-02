@@ -33,6 +33,7 @@ DATABASES = {
     }
 }
 DEBUG = env.bool("DEBUG", default=False)
+YANDEX_METRIKA_COUNTER_ID = 111239706
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -75,6 +76,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "config.context_processors.analytics",
                 "ingestion.context_processors.photographer_navigation",
             ],
         },

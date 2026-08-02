@@ -10,6 +10,7 @@ from ingestion.storage import StorageUnavailable
 from photo_worker.contracts import Claim
 from picflow.models import Event, Photo
 from selfie_search.models import SelfieSearch, SelfieSearchJob
+from selfie_search.services.submission import _configuration
 from selfie_search.storage import DownloadGrant, StoredTemporarySelfie
 
 from processing.contracts import AttemptCompletion
@@ -956,17 +957,12 @@ class SelfieWorkerApiTests(TestCase):
             end_date=date.today(),
             city="Moscow",
         )
+        configuration = _configuration(content_type="image/jpeg", content_size=1024)
         self.search = SelfieSearch.objects.create(
             event=self.event,
             public_token_digest="b" * 64,
             temporary_object_key="selfie-search/0123456789abcdef0123456789abcdef",
-            configuration={
-                "embedding_model": "sface",
-                "embedding_dimensions": 128,
-                "cosine_distance_threshold": 0.363,
-                "content_type": "image/jpeg",
-                "content_size": 1024,
-            },
+            configuration=configuration,
         )
         SelfieSearchJob.objects.create(search=self.search, configuration=self.search.configuration)
         self.headers = {"HTTP_AUTHORIZATION": "Bearer worker-secret"}

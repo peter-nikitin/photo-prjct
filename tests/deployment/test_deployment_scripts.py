@@ -572,7 +572,7 @@ esac
         "ALLOWED_HOSTS": "localhost",
         "GUNICORN_WORKERS": "5",
         "GUNICORN_THREADS": "2",
-        "GUNICORN_TIMEOUT": "60",
+        "GUNICORN_TIMEOUT": "180",
         "GUNICORN_MAX_REQUESTS": "1000",
         "GUNICORN_MAX_REQUESTS_JITTER": "100",
         "DB_NAME": "app",
@@ -632,7 +632,7 @@ def test_apply_persists_the_bounded_gunicorn_profile(tmp_path: Path, fake_bin: P
         {
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
-            "GUNICORN_TIMEOUT": "60",
+            "GUNICORN_TIMEOUT": "180",
             "GUNICORN_MAX_REQUESTS": "1000",
             "GUNICORN_MAX_REQUESTS_JITTER": "100",
         }
@@ -644,7 +644,7 @@ def test_apply_persists_the_bounded_gunicorn_profile(tmp_path: Path, fake_bin: P
     deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     assert "GUNICORN_WORKERS=5" in deployed_env
     assert "GUNICORN_THREADS=2" in deployed_env
-    assert "GUNICORN_TIMEOUT=60" in deployed_env
+    assert "GUNICORN_TIMEOUT=180" in deployed_env
     assert "GUNICORN_MAX_REQUESTS=1000" in deployed_env
     assert "GUNICORN_MAX_REQUESTS_JITTER=100" in deployed_env
 
@@ -662,7 +662,7 @@ def test_apply_rejects_an_unsafe_gunicorn_profile_before_mutation(
         {
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
-            "GUNICORN_TIMEOUT": "60",
+            "GUNICORN_TIMEOUT": "180",
             "GUNICORN_MAX_REQUESTS": "1000",
             "GUNICORN_MAX_REQUESTS_JITTER": "100",
             name: value,
@@ -690,7 +690,7 @@ def test_entrypoint_runs_gunicorn_with_the_bounded_profile(tmp_path: Path, fake_
             "GUNICORN_LOG": str(tmp_path / "gunicorn.log"),
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
-            "GUNICORN_TIMEOUT": "60",
+            "GUNICORN_TIMEOUT": "180",
             "GUNICORN_MAX_REQUESTS": "1000",
             "GUNICORN_MAX_REQUESTS_JITTER": "100",
         },
@@ -702,7 +702,7 @@ def test_entrypoint_runs_gunicorn_with_the_bounded_profile(tmp_path: Path, fake_
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "gunicorn.log").read_text(encoding="utf-8") == (
         "config.wsgi:application --bind 0.0.0.0:8000 --workers 5 --threads 2 "
-        "--timeout 60 --max-requests 1000 --max-requests-jitter 100\n"
+        "--timeout 180 --max-requests 1000 --max-requests-jitter 100\n"
     )
 
 

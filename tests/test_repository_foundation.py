@@ -217,7 +217,7 @@ def test_deployment_workflows_forward_the_bounded_gunicorn_profile() -> None:
     profiles = {
         "GUNICORN_WORKERS": "5",
         "GUNICORN_THREADS": "2",
-        "GUNICORN_TIMEOUT": "60",
+        "GUNICORN_TIMEOUT": "180",
         "GUNICORN_MAX_REQUESTS": "1000",
         "GUNICORN_MAX_REQUESTS_JITTER": "100",
     }

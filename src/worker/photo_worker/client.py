@@ -77,7 +77,7 @@ class HttpClient:
         api_url: str,
         token: str,
         *,
-        timeout_seconds: float = 20.0,
+        timeout_seconds: float = 180.0,
         opener: OpenUrl = urlopen,
     ) -> None:
         if not api_url.startswith(("http://", "https://")) or not token:

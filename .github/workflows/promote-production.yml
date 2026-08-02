@@ -56,7 +56,7 @@ jobs:
           ALLOWED_HOSTS: ${{ secrets.ALLOWED_HOSTS }}
           GUNICORN_WORKERS: '5'
           GUNICORN_THREADS: '2'
-          GUNICORN_TIMEOUT: '60'
+          GUNICORN_TIMEOUT: '180'
           GUNICORN_MAX_REQUESTS: '1000'
           GUNICORN_MAX_REQUESTS_JITTER: '100'
           DB_NAME: ${{ secrets.DB_NAME }}

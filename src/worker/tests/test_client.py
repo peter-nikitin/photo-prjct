@@ -43,9 +43,11 @@ class PartialResponse(Response):
 
 def test_json_requests_use_bearer_auth_and_do_not_put_token_in_url() -> None:
     requests = []
+    timeouts = []
 
     def opener(request, *, timeout: float):
         requests.append(request)
+        timeouts.append(timeout)
         return Response(b'{"empty": true, "suggested_delay_seconds": 5}')
 
     client = HttpClient(
@@ -57,6 +59,7 @@ def test_json_requests_use_bearer_auth_and_do_not_put_token_in_url() -> None:
     assert request.full_url == "https://worker.example.test/internal/photo-processing/v1/claim"
     assert request.get_header("Authorization") == "Bearer worker-secret"
     assert json.loads(request.data) == {"contract_version": 1}
+    assert timeouts == [180.0]
 
 
 def test_api_response_read_is_limited_to_configured_bound_plus_one() -> None:

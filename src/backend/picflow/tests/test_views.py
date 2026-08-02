@@ -1,5 +1,7 @@
 from datetime import date, timedelta
+from hashlib import sha256
 from html.parser import HTMLParser
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -52,6 +54,33 @@ class NavigationMarkupParser(HTMLParser):
 )
 @modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
 class PublicShellTests(SimpleTestCase):
+    def test_public_shell_includes_one_metrika_counter_and_cookie_notice(self) -> None:
+        response = self.client.get(reverse("legal"))
+
+        self.assertEqual(response.content.count(b'ym(111239706, "init", {'), 1)
+        self.assertContains(response, "https://mc.yandex.ru/metrika/tag.js")
+        self.assertContains(response, "https://mc.yandex.ru/watch/111239706")
+        self.assertContains(
+            response,
+            (
+                "Мы используем файлы cookie, чтобы обеспечить работу нашего сайта и "
+                "проанализировать его"
+            ),
+        )
+        self.assertContains(response, "использование. Продолжая использовать этот сайт, вы даете")
+        self.assertContains(response, "согласие на использование файлов cookie.")
+        self.assertContains(response, "data-cookie-notice")
+        self.assertContains(response, "data-cookie-notice-accept")
+        self.assertContains(response, 'href="/static/ui/legal/personal-data-policy.pdf"')
+        self.assertContains(response, 'src="/static/ui/cookie-notice.js" defer')
+
+    @override_settings(YANDEX_METRIKA_COUNTER_ID=None)
+    def test_public_shell_suppresses_metrika_when_counter_is_disabled(self) -> None:
+        response = self.client.get(reverse("legal"))
+
+        self.assertNotContains(response, "mc.yandex.ru")
+        self.assertNotContains(response, 'ym(111239706, "init", {')
+
     def test_legal_page_uses_shared_accessible_shell(self) -> None:
         response = self.client.get(reverse("legal"))
 
@@ -66,8 +95,34 @@ class PublicShellTests(SimpleTestCase):
         self.assertContains(response, f'href="{reverse("legal")}"')
         self.assertNotContains(response, f'href="{reverse("admin:index")}"')
         self.assertNotContains(response, "Прототип")
+        self.assertContains(response, 'href="tel:+79031275766"')
+        self.assertNotContains(response, "mailto:")
+        for document_name in (
+            "public-offer.pdf",
+            "user-agreement.pdf",
+            "personal-data-policy.pdf",
+        ):
+            self.assertContains(response, f'href="/static/ui/legal/{document_name}"')
         for section_id in ("offer", "terms", "personal", "cookies"):
-            self.assertContains(response, f'id="{section_id}"')
+            self.assertNotContains(response, f'id="{section_id}"')
+
+    def test_packaged_legal_documents_match_accepted_sources(self) -> None:
+        static_directory = Path(__file__).resolve().parents[2] / "static" / "ui" / "legal"
+        expected_hashes = {
+            "public-offer.pdf": "33a64514790b8193ad1704cbfaa606504ba73f71d2aaf4c0331480895d494371",
+            "user-agreement.pdf": (
+                "8da40d74391781495753c14d380ba43ea60d6e510da727ac98e428b7e035a07d"
+            ),
+            "personal-data-policy.pdf": (
+                "7b8be1e72e3d8f939b48cf1458375a8b7635942a06fed918967476e22a77c68d"
+            ),
+        }
+
+        for document_name, expected_hash in expected_hashes.items():
+            with self.subTest(document_name=document_name):
+                document = static_directory / document_name
+                self.assertTrue(document.is_file())
+                self.assertEqual(sha256(document.read_bytes()).hexdigest(), expected_hash)
 
 
 @override_settings(

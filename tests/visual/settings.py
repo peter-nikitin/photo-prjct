@@ -13,6 +13,7 @@ VISUAL_DIR = Path(__file__).resolve().parent
 
 DEBUG = True
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
+YANDEX_METRIKA_COUNTER_ID = None
 ROOT_URLCONF = "tests.visual.urls"
 TEMPLATES = deepcopy(production_settings.TEMPLATES)
 TEMPLATES[0]["DIRS"] = [VISUAL_DIR / "templates", *TEMPLATES[0]["DIRS"]]

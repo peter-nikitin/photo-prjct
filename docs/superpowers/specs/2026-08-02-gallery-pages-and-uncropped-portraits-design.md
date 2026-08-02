@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved in conversation on 2026-08-02; written specification pending repository review.
+Approved on 2026-08-02.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), current gallery and public
   selfie-search presentation boundaries.
@@ -128,4 +128,3 @@ result therefore retains its persisted rank order.
 8. Empty states, GLightbox access, authorized original download, stable media URLs, and gallery or
    bearer authorization continue to work.
 9. Focused Django, JavaScript, contract, and desktop/mobile visual regression checks pass.
-

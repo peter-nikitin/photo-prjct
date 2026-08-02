@@ -87,8 +87,12 @@
             </figure>
           {% endfor %}
         </div>
-        {% if gallery_next_cursor %}
-          <a class="event-gallery-next" href="{% url 'event_detail' slug=event.slug %}?cursor={{ gallery_next_cursor|urlencode }}" aria-label="Загрузить следующие фотографии"></a>
+        {% if gallery_page.paginator.num_pages > 1 %}
+          <nav class="gallery-pagination" aria-label="Страницы галереи">
+            {% if gallery_page.has_previous %}<a href="?page={{ gallery_page.previous_page_number }}">Назад</a>{% endif %}
+            <span>Страница {{ gallery_page.number }} из {{ gallery_page.paginator.num_pages }}</span>
+            {% if gallery_page.has_next %}<a href="?page={{ gallery_page.next_page_number }}">Вперёд</a>{% endif %}
+          </nav>
         {% endif %}
       {% else %}
         <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>

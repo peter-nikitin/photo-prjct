@@ -182,6 +182,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
   transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
   future work.
+- Present normal galleries and ready selfie-search results as server-rendered numbered pages of at
+  most 100 photos. Normal galleries use original filename then photo ID order; ready results retain
+  persisted rank then photo ID order. [ADR 0022](adr/0022-use-numbered-gallery-pages.md) supersedes
+  only ADR 0020's cursor-pagination follow-up.
 
 ## Deployment domain assignment — accepted
 

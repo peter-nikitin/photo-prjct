@@ -1,5 +1,6 @@
 from config.views import _public_media_resolver
 from django.conf import settings
+from django.core.paginator import InvalidPage
 from django.http import (
     Http404,
     HttpResponse,
@@ -16,7 +17,6 @@ from picflow.gallery import (
     GalleryVariant,
 )
 from picflow.models import Event, Photo
-from picflow.pagination import InvalidCursor
 
 from selfie_search.forms import SelfieSearchUploadForm
 from selfie_search.models import SelfieSearch
@@ -59,14 +59,15 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     search = _public_search(event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
-    selfie_search_next_cursor: str | None = None
+    selfie_search_page = None
     if search.status == SelfieSearch.Status.READY:
         try:
-            page = saved_ready_result_page(search=search, cursor=request.GET.get("cursor"))
-        except InvalidCursor:
+            selfie_search_page = saved_ready_result_page(
+                search=search, page_number=request.GET.get("page")
+            )
+        except InvalidPage:
             return _not_found_response()
-        photos = page.photos
-        selfie_search_next_cursor = page.next_cursor
+        photos = tuple(row.photo for row in selfie_search_page.object_list)
     else:
         photos = ()
     gallery_photos = tuple(
@@ -90,7 +91,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         {
             "event": search.event,
             "gallery_photos": gallery_photos,
-            "selfie_search_next_cursor": selfie_search_next_cursor,
+            "selfie_search_page": selfie_search_page,
             "is_terminal": search.status in _TERMINAL_SEARCH_STATUSES,
             "public_token": public_token,
             "search": search,

@@ -40,6 +40,7 @@ place, and add the new record to this index.
 | 0019 | [Use public event-scoped selfie search](0019-use-public-event-selfie-search.md) | Accepted |
 | 0020 | [Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md) | Accepted |
 | 0021 | [Allow original download for authorized photos](0021-allow-original-download-for-authorized-photos.md) | Accepted |
+| 0022 | [Use numbered gallery pages](0022-use-numbered-gallery-pages.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -58,3 +59,7 @@ future private-model delivery mechanism.
 ADR 0020's attachment-download exclusions. It accepts attachment delivery wherever those existing
 gallery or ready-result contexts already authorize an original, without adding a free-versus-paid
 decision or opening a normal paid gallery.
+
+[ADR 0022](0022-use-numbered-gallery-pages.md) supersedes only ADR 0020's cursor-pagination
+follow-up. Normal galleries and ready selfie-search results use bounded numbered pages; all media
+delivery and authorization decisions in ADRs 0019, 0020, and 0021 remain unchanged.

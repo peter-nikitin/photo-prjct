@@ -159,8 +159,9 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   credentials; issue only short-lived exact-object media grants, as defined by
   [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md).
 - The `selfie_search` Django app and the existing worker implement public event-scoped selfie
-  search: the worker returns one transient query embedding, Django searches a frozen event cohort,
-  deletes the temporary selfie before terminal publication, and serves stable bearer-link results.
+  search: submission immediately creates the queued bearer-link result page; after the worker
+  returns one transient query embedding, Django freezes and searches the event cohort, deletes the
+  temporary selfie before terminal publication, and serves stable results.
   Staging activated this path on 2026-07-31 after applying the one-day `selfie-search/` lifecycle
   rule, passing real-bucket preflight, and verifying a live published Unicode event search,
   original-size result media, and paid-result-only media access. The repository default remains

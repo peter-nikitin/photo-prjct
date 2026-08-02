@@ -30,3 +30,6 @@ refreshed for the original-download action: `desktop-event-gallery-populated.png
 `mobile-event-gallery-populated.png`, `desktop-event-selfie-search.png`,
 `mobile-event-selfie-search.png`, and `mobile-selfie-search-ready.png`. No visual route or scenario
 was added.
+
+On 2026-08-02, the existing desktop and mobile selfie-search entry baselines were refreshed for the
+approved selfie-selection guidance. No visual route or scenario was added.

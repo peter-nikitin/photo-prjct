@@ -1,6 +1,7 @@
 from datetime import date
 
 from django.conf import settings
+from django.core.paginator import InvalidPage
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET
@@ -19,7 +20,6 @@ from picflow.gallery import (
     gallery_photo_queryset,
 )
 from picflow.models import Event
-from picflow.pagination import InvalidCursor
 from selfie_search.forms import SelfieSearchUploadForm
 
 
@@ -40,24 +40,23 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     if selfie_search_form is None and settings.SELFIE_SEARCH_ENABLED:
         selfie_search_form = SelfieSearchUploadForm()
     gallery_photos: tuple[GalleryPhoto, ...] = ()
-    gallery_next_cursor: str | None = None
+    gallery_page_data = None
     if event.access_type == Event.AccessType.FREE:
         try:
-            page = gallery_page(event=event, cursor=request.GET.get("cursor"))
-        except InvalidCursor:
+            gallery_page_data = gallery_page(event=event, page_number=request.GET.get("page"))
+        except InvalidPage:
             return HttpResponse(status=404)
         gallery_photos = tuple(
             GalleryPhotoFactory.from_photo(photo=photo, event_slug=event.slug)
-            for photo in page.photos
+            for photo in gallery_page_data.object_list
         )
-        gallery_next_cursor = page.next_cursor
     return render(
         request,
         "catalog/event_detail.html",
         {
             "event": event,
             "gallery_photos": gallery_photos,
-            "gallery_next_cursor": gallery_next_cursor,
+            "gallery_page": gallery_page_data,
             "selfie_search_form": selfie_search_form,
         },
     )

@@ -356,10 +356,12 @@ class GalleryPageTests(TestCase):
         )
 
     @patch("config.views.PrivateUploadStorage")
-    def test_event_detail_builds_ordered_gallery_without_storage(self, storage_class) -> None:
+    def test_event_detail_builds_filename_ordered_gallery_without_storage(
+        self, storage_class
+    ) -> None:
         event = self.make_event()
-        later = self.make_private_photo(event, id="photo-2")
-        earlier = self.make_private_photo(event, id="photo-1")
+        later = self.make_private_photo(event, id="photo-1", original_filename="z-last.jpg")
+        earlier = self.make_private_photo(event, id="photo-2", original_filename="a-first.jpg")
 
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
@@ -377,29 +379,39 @@ class GalleryPageTests(TestCase):
         )
         storage_class.assert_not_called()
 
-    def test_event_detail_uses_cursor_pages_in_photo_id_order(self) -> None:
+    def test_event_detail_uses_numbered_pages_in_filename_order(self) -> None:
         event = self.make_event()
         for index in range(101):
-            self.make_private_photo(event, id=f"photo-{index:03}")
+            self.make_private_photo(
+                event,
+                id=f"photo-{index:03}",
+                original_filename=f"image-{index:03}.jpg",
+            )
 
         first_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertEqual(first_response.status_code, 200)
         first_page_ids = tuple(item.photo_id for item in first_response.context["gallery_photos"])
-        self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(50)))
-        next_cursor = first_response.context["gallery_next_cursor"]
-        self.assertIsNotNone(next_cursor)
-        self.assertNotContains(first_response, "Показать ещё")
-        self.assertContains(first_response, "data-event-gallery")
+        self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(100)))
+        self.assertContains(first_response, "Страница 1 из 2")
+        self.assertContains(first_response, "?page=2")
 
         second_response = self.client.get(
-            reverse("event_detail", kwargs={"slug": event.slug}), {"cursor": next_cursor}
+            reverse("event_detail", kwargs={"slug": event.slug}), {"page": 2}
         )
 
         second_page_ids = tuple(item.photo_id for item in second_response.context["gallery_photos"])
-        self.assertEqual(second_page_ids, tuple(f"photo-{index:03}" for index in range(50, 100)))
-        self.assertIsNotNone(second_response.context["gallery_next_cursor"])
+        self.assertEqual(second_page_ids, ("photo-100",))
+        self.assertContains(second_response, "Страница 2 из 2")
+        self.assertContains(second_response, "?page=1")
         self.assertTrue(set(first_page_ids).isdisjoint(second_page_ids))
+
+        for invalid_page in ("bad", "0", "3"):
+            with self.subTest(page=invalid_page):
+                response = self.client.get(
+                    reverse("event_detail", kwargs={"slug": event.slug}), {"page": invalid_page}
+                )
+                self.assertEqual(response.status_code, 404)
 
     def test_event_detail_renders_only_one_page_for_20000_eligible_photos(self) -> None:
         event = self.make_event()
@@ -424,27 +436,8 @@ class GalleryPageTests(TestCase):
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.context["gallery_photos"]), 50)
-        self.assertIsNotNone(response.context["gallery_next_cursor"])
-
-    def test_event_detail_rejects_malformed_or_other_event_cursor(self) -> None:
-        event = self.make_event()
-        other_event = self.make_event(name="Other", slug="other")
-        for index in range(101):
-            self.make_private_photo(event, id=f"photo-{index:03}")
-
-        first_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
-        cursor = first_response.context["gallery_next_cursor"]
-
-        malformed_response = self.client.get(
-            reverse("event_detail", kwargs={"slug": event.slug}), {"cursor": "not-a-cursor"}
-        )
-        mismatched_response = self.client.get(
-            reverse("event_detail", kwargs={"slug": other_event.slug}), {"cursor": cursor}
-        )
-
-        self.assertEqual(malformed_response.status_code, 404)
-        self.assertEqual(mismatched_response.status_code, 404)
+        self.assertEqual(len(response.context["gallery_photos"]), 100)
+        self.assertContains(response, "Страница 1 из 200")
 
     def test_event_detail_excludes_legacy_other_event_and_paid_originals(self) -> None:
         event = self.make_event()

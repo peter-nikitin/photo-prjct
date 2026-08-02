@@ -3,6 +3,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol, Self
 
+from django.core.paginator import Page, Paginator
 from django.db.models import F, Q, QuerySet
 from django.urls import reverse
 from ingestion.storage import ObjectMismatch, ObjectMissing, OpenedObject, ReadableBody
@@ -14,13 +15,12 @@ from processing.models import (
 )
 
 from picflow.models import Event, Photo
-from picflow.pagination import SignedCursor
 
 GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
 MediaUrlBuilder = Callable[[Photo, GalleryVariant], str]
 DownloadUrlBuilder = Callable[[Photo], str]
-GALLERY_PAGE_SIZE: Final = 50
+GALLERY_PAGE_SIZE: Final = 100
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +44,6 @@ class GalleryPhoto:
     preview_media_large: GalleryMedia
     download_url: str
     alt: str
-
-
-@dataclass(frozen=True)
-class GalleryPage:
-    photos: tuple[Photo, ...]
-    next_cursor: str | None
 
 
 class GalleryPhotoFactory:
@@ -107,26 +101,12 @@ def gallery_photo_queryset(*, event: Event) -> QuerySet[Photo]:
             Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED) | preview_ready
         )
         .select_related("event")
-        .order_by("id")
+        .order_by("original_filename", "id")
     )
 
 
-def gallery_page(
-    *, event: Event, cursor: str | None, signer: SignedCursor | None = None
-) -> GalleryPage:
-    signer = signer or SignedCursor()
-    collection = f"normal-gallery:{event.pk}"
-    photos = gallery_photo_queryset(event=event)
-    if cursor is not None:
-        photos = photos.filter(pk__gt=signer.decode(cursor=cursor, collection=collection))
-    page_with_sentinel = tuple(photos[: GALLERY_PAGE_SIZE + 1])
-    page_photos = page_with_sentinel[:GALLERY_PAGE_SIZE]
-    next_cursor = (
-        signer.encode(collection=collection, last_key=page_photos[-1].pk)
-        if len(page_with_sentinel) > GALLERY_PAGE_SIZE
-        else None
-    )
-    return GalleryPage(photos=page_photos, next_cursor=next_cursor)
+def gallery_page(*, event: Event, page_number: str | None) -> Page[Photo]:
+    return Paginator(gallery_photo_queryset(event=event), GALLERY_PAGE_SIZE).page(page_number or 1)
 
 
 @dataclass(frozen=True)

@@ -38,8 +38,12 @@
               </figure>
             {% endfor %}
           </div>
-          {% if selfie_search_next_cursor %}
-            <a class="event-gallery-next" href="{% url 'selfie_search:result' event_slug=event.slug public_token=public_token %}?cursor={{ selfie_search_next_cursor|urlencode }}" aria-label="Загрузить следующие фотографии"></a>
+          {% if selfie_search_page.paginator.num_pages > 1 %}
+            <nav class="gallery-pagination" aria-label="Страницы результатов поиска">
+              {% if selfie_search_page.has_previous %}<a href="?page={{ selfie_search_page.previous_page_number }}">Назад</a>{% endif %}
+              <span>Страница {{ selfie_search_page.number }} из {{ selfie_search_page.paginator.num_pages }}</span>
+              {% if selfie_search_page.has_next %}<a href="?page={{ selfie_search_page.next_page_number }}">Вперёд</a>{% endif %}
+            </nav>
           {% endif %}
         {% else %}
           <p class="selfie-search-empty">Совпадений не найдено</p>

@@ -464,7 +464,7 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(response.context["gallery_photos"], ())
         self.assertNotContains(response, photo.pk)
 
-    def test_ready_page_uses_token_bound_cursor_without_expanding_saved_membership(self) -> None:
+    def test_ready_page_uses_numbered_pages_without_reranking_or_expanding_membership(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         photos = [
             self.make_private_photo(search.event, photo_id=f"rank-{index:03}")
@@ -478,50 +478,42 @@ class PublicSelfieResultViewTests(TestCase):
 
         self.assertEqual(
             [item.photo_id for item in first_response.context["gallery_photos"]],
-            [photo.pk for photo in photos[:50]],
+            [photo.pk for photo in photos[:100]],
         )
         self.assertNotContains(first_response, unrelated.pk)
-        next_cursor = first_response.context["selfie_search_next_cursor"]
-        self.assertIsNotNone(next_cursor)
-        self.assertNotContains(first_response, "Показать ещё")
-        self.assertContains(first_response, "data-event-gallery")
+        self.assertContains(first_response, "Страница 1 из 2")
+        self.assertContains(first_response, "?page=2")
 
         later_response = self.client.get(
-            self.result_url(event=search.event, token=token), {"cursor": next_cursor}
+            self.result_url(event=search.event, token=token), {"page": 2}
         )
 
         self.assertEqual(
             [item.photo_id for item in later_response.context["gallery_photos"]],
-            [photo.pk for photo in photos[50:100]],
+            [photos[100].pk],
         )
-        self.assertIsNotNone(later_response.context["selfie_search_next_cursor"])
+        self.assertContains(later_response, "Страница 2 из 2")
+        self.assertContains(later_response, "?page=1")
 
-    def test_ready_page_rejects_cursor_for_another_public_token(self) -> None:
+    def test_ready_page_rejects_invalid_page(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
-        other_search, other_token = self.make_search(status=SelfieSearch.Status.READY)
-        for index in range(101):
-            photo = self.make_private_photo(search.event, photo_id=f"rank-{index:03}")
-            self.add_result(search=search, photo=photo, rank=index + 1)
-
-        cursor = self.client.get(self.result_url(event=search.event, token=token)).context[
-            "selfie_search_next_cursor"
-        ]
-        response = self.client.get(
-            self.result_url(event=other_search.event, token=other_token), {"cursor": cursor}
-        )
-
-        self.assertEqual(response.status_code, 404)
+        for invalid_page in ("bad", "0", "2"):
+            with self.subTest(page=invalid_page):
+                response = self.client.get(
+                    self.result_url(event=search.event, token=token), {"page": invalid_page}
+                )
+                self.assertEqual(response.status_code, 404)
 
     def test_nonready_page_does_not_expose_pagination(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.PROCESSING)
 
         response = self.client.get(
-            self.result_url(event=search.event, token=token), {"cursor": "not-a-cursor"}
+            self.result_url(event=search.event, token=token), {"page": "not-a-page"}
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Показать ещё")
-        self.assertIsNone(response.context["selfie_search_next_cursor"])
+        self.assertNotContains(response, "gallery-pagination")
 
     def test_event_token_mismatch_and_unpublished_event_are_not_resolvable(self) -> None:
         other_event = self.make_event(name="Other Run", slug="other-run")

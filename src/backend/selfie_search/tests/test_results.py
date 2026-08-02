@@ -103,16 +103,16 @@ class SavedReadyResultPageTests(TestCase):
         third = self.add_result(photo_id="rank-three", rank=3)
         Photo.objects.filter(pk=removed.pk).update(original_key="")
 
-        page = saved_ready_result_page(search=self.search, cursor=None)
+        page = saved_ready_result_page(search=self.search, page_number=None)
 
-        self.assertEqual(tuple(photo.pk for photo in page.photos), (first.pk, third.pk))
-        self.assertIsNone(page.next_cursor)
+        self.assertEqual(tuple(row.photo_id for row in page.object_list), (first.pk, third.pk))
+        self.assertFalse(page.has_next())
 
-    def test_nonready_search_has_no_page_or_cursor(self) -> None:
+    def test_nonready_search_has_empty_page(self) -> None:
         self.search.status = SelfieSearch.Status.PROCESSING
         self.search.save(update_fields=["status"])
 
-        page = saved_ready_result_page(search=self.search, cursor=None)
+        page = saved_ready_result_page(search=self.search, page_number=None)
 
-        self.assertEqual(page.photos, ())
-        self.assertIsNone(page.next_cursor)
+        self.assertEqual(tuple(page.object_list), ())
+        self.assertFalse(page.has_next())

@@ -75,6 +75,12 @@ class PublicSelfieSearchMarkupTests(TestCase):
                     response,
                     "Мы ищем вероятные совпадения только среди фотографий этого события.",
                 )
+                self.assertContains(
+                    response,
+                    "Загрузите чёткую фотографию, где лицо хорошо видно. "
+                    "Лучше использовать фото с дня мероприятия, особенно если на мероприятии "
+                    "вы были в очках или головном уборе.",
+                )
                 self.assertContains(response, "Селфи удаляется после подготовки поиска.")
                 self.assertContains(
                     response,

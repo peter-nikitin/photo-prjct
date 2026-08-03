@@ -6,7 +6,7 @@ from zlib import crc32
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase
 from PIL import Image
-from selfie_search.forms import SelfieSearchUploadForm
+from selfie_search.forms import SelfieSearchUploadForm, SelfieUploadObservation
 
 
 def image_upload(*, image_format: str, size: tuple[int, int] = (8, 8)) -> SimpleUploadedFile:
@@ -43,6 +43,133 @@ class SelfieSearchUploadFormTests(SimpleTestCase):
 
         self.assertFalse(form.is_valid())
         self.assertIn("selfie", form.errors)
+
+    def test_upload_with_clear_checkbox_remains_accepted(self) -> None:
+        form = SelfieSearchUploadForm(
+            data={"selfie-clear": "on"}, files={"selfie": image_upload(image_format="JPEG")}
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_clear_only_is_a_bounded_missing_or_empty_rejection(self) -> None:
+        form = SelfieSearchUploadForm(data={"selfie-clear": "on"}, files={})
+
+        self.assertFalse(form.is_valid())
+        error = form.errors.as_data()["selfie"][0]
+        self.assertEqual(error.message, "This field is required.")
+        self.assertEqual(error.code, "missing_or_empty")
+
+    def test_validation_errors_keep_existing_messages_and_expose_bounded_reason_codes(self) -> None:
+        cases = (
+            (
+                "missing",
+                SelfieSearchUploadForm(files={}),
+                "This field is required.",
+                "missing_or_empty",
+            ),
+            (
+                "empty",
+                SelfieSearchUploadForm(
+                    files={
+                        "selfie": SimpleUploadedFile("selfie.jpg", b"", content_type="image/jpeg")
+                    }
+                ),
+                "The submitted file is empty.",
+                "missing_or_empty",
+            ),
+            (
+                "unsupported",
+                SelfieSearchUploadForm(
+                    files={
+                        "selfie": SimpleUploadedFile(
+                            "selfie.jpg", b"not an image", content_type="image/gif"
+                        )
+                    }
+                ),
+                "Загрузите файл JPEG или PNG.",
+                "unsupported_format",
+            ),
+            (
+                "corrupt",
+                SelfieSearchUploadForm(
+                    files={
+                        "selfie": SimpleUploadedFile(
+                            "selfie.jpg", b"not an image", content_type="image/jpeg"
+                        )
+                    }
+                ),
+                "Файл повреждён. Выберите другое селфи.",
+                "corrupt_image",
+            ),
+            (
+                "too_large",
+                SelfieSearchUploadForm(
+                    files={
+                        "selfie": SimpleUploadedFile(
+                            "selfie.jpg",
+                            b"x" * (20 * 1024 * 1024 + 1),
+                            content_type="image/jpeg",
+                        )
+                    }
+                ),
+                "Размер селфи не должен превышать 20 МиБ.",
+                "source_too_large",
+            ),
+            (
+                "pixel_limit",
+                SelfieSearchUploadForm(
+                    files={"selfie": image_upload(image_format="PNG", size=(5001, 5000))}
+                ),
+                "Изображение не должно превышать 25 000 000 пикселей.",
+                "pixel_limit_exceeded",
+            ),
+        )
+        for name, form, message, code in cases:
+            with self.subTest(name=name):
+                self.assertFalse(form.is_valid())
+                error = form.errors.as_data()["selfie"][0]
+                self.assertEqual(error.message, message)
+                self.assertEqual(error.code, code)
+
+    def test_observation_is_frozen_after_validation_without_rereading_upload(self) -> None:
+        upload = image_upload(image_format="JPEG")
+        form = SelfieSearchUploadForm(files={"selfie": upload})
+
+        self.assertTrue(form.is_valid(), form.errors)
+        upload.file = type(
+            "UnreadableUpload", (), {"read": lambda _self: (_ for _ in ()).throw(AssertionError())}
+        )()
+        with patch.object(
+            upload.file, "read", side_effect=AssertionError("upload read after validation")
+        ):
+            observation = form.observation()
+
+        self.assertEqual(
+            observation,
+            SelfieUploadObservation(
+                actual_format="jpeg", declared_type="jpeg", source_size_bucket="le_1mib"
+            ),
+        )
+
+    def test_observation_uses_unknown_actual_format_when_pillow_cannot_identify_upload(
+        self,
+    ) -> None:
+        form = SelfieSearchUploadForm(
+            files={
+                "selfie": SimpleUploadedFile(
+                    "selfie.jpg", b"not an image", content_type="image/jpeg"
+                )
+            }
+        )
+
+        self.assertFalse(form.is_valid())
+
+        self.assertEqual(
+            form.observation(),
+            SelfieUploadObservation(
+                actual_format="unknown", declared_type="jpeg", source_size_bucket="le_1mib"
+            ),
+        )
 
     def test_rejects_spoofed_content_type_and_extension(self) -> None:
         upload = SimpleUploadedFile("selfie.jpg", b"not an image", content_type="image/gif")

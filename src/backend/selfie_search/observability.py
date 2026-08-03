@@ -168,6 +168,19 @@ def declared_type_label(value: object) -> str:
     return "other"
 
 
+def actual_format_label(value: object) -> str:
+    """Return the bounded Pillow format label used by submission events."""
+
+    if not isinstance(value, str):
+        return "unknown"
+    return {
+        "JPEG": "jpeg",
+        "PNG": "png",
+        "HEIC": "heic",
+        "HEIF": "heif",
+    }.get(value.upper(), "unknown")
+
+
 def source_size_bucket(value: object) -> str:
     """Return the fixed source-size bucket without exposing a byte count."""
 

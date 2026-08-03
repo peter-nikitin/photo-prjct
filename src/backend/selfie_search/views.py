@@ -1,3 +1,6 @@
+import logging
+from time import monotonic
+
 from config.views import _public_media_resolver
 from django.conf import settings
 from django.core.paginator import InvalidPage
@@ -20,6 +23,7 @@ from picflow.models import Event, Photo
 
 from selfie_search.forms import SelfieSearchUploadForm
 from selfie_search.models import SelfieSearch
+from selfie_search.observability import SelfieEventName, emit_selfie_event
 from selfie_search.services.results import (
     PublicSearchNotFound,
     public_status_payload,
@@ -30,14 +34,26 @@ from selfie_search.services.results import (
 from selfie_search.services.submission import submit_selfie_search
 from selfie_search.storage import TemporarySelfieStorage
 
+logger = logging.getLogger(__name__)
+
 
 @require_POST
 def submit(request, event_slug: str):
+    started_at = monotonic()
     event = get_object_or_404(Event.objects.published(), slug=event_slug)
     if not settings.SELFIE_SEARCH_ENABLED:
         raise Http404
     form = SelfieSearchUploadForm(files=request.FILES)
     if not form.is_valid():
+        _emit_submission_finished(
+            event=event,
+            form=form,
+            outcome="rejected",
+            reason_code=form.errors.as_data()["selfie"][0].code,
+            search_id=None,
+            started_at=started_at,
+            level=logging.INFO,
+        )
         return _event_page(request, event_slug, form)
     try:
         created = submit_selfie_search(
@@ -46,12 +62,56 @@ def submit(request, event_slug: str):
             storage=TemporarySelfieStorage(),
         )
     except StorageUnavailable:
+        _emit_submission_finished(
+            event=event,
+            form=form,
+            outcome="storage_unavailable",
+            reason_code="storage_unavailable",
+            search_id=None,
+            started_at=started_at,
+            level=logging.WARNING,
+        )
         form.add_error("selfie", "Не удалось загрузить селфи. Попробуйте ещё раз.")
         return _event_page(request, event_slug, form)
+    _emit_submission_finished(
+        event=event,
+        form=form,
+        outcome="accepted",
+        reason_code="",
+        search_id=created.search.pk,
+        started_at=started_at,
+        level=logging.INFO,
+    )
     return redirect(
         "selfie_search:result",
         event_slug=event.slug,
         public_token=created.public_token,
+    )
+
+
+def _emit_submission_finished(
+    *,
+    event: Event,
+    form: SelfieSearchUploadForm,
+    outcome: str,
+    reason_code: str,
+    search_id: object | None,
+    started_at: float,
+    level: int,
+) -> None:
+    observation = form.observation()
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.SUBMISSION_FINISHED,
+        level=level,
+        event_id=event.pk,
+        outcome=outcome,
+        reason_code=reason_code,
+        search_id=search_id,
+        actual_format=observation.actual_format,
+        declared_type=observation.declared_type,
+        source_size_bucket=observation.source_size_bucket,
+        duration_ms=int((monotonic() - started_at) * 1_000),
     )
 
 

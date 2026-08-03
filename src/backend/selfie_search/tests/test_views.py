@@ -1,16 +1,24 @@
 import hashlib
+import json
+import logging
+from contextlib import ExitStack
 from datetime import date
+from io import BytesIO
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock, call, patch
 from urllib.parse import quote
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from ingestion.storage import ObjectMissing, StorageError
+from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.models import Event, Photo
+from PIL import Image
 from processing.models import (
     EventProcessingRun,
     FaceProcessingAttemptArtifact,
@@ -18,7 +26,8 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
-from selfie_search.models import SelfieSearch, SelfieSearchResult
+from selfie_search.models import SelfieSearch, SelfieSearchJob, SelfieSearchResult
+from selfie_search.observability import OBSERVABILITY_FAILURE_MARKER
 
 type ChoiceValue = str | tuple[str, str]
 
@@ -155,6 +164,264 @@ class PublicSelfieSearchMarkupTests(TestCase):
         self.assertEqual(response.context["search"].pk, search.pk)
         self.assertContains(response, "Искать по другому селфи")
         self.assertContains(response, reverse("event_detail", kwargs={"slug": event.slug}))
+
+
+class _CaptureLogger(logging.Logger):
+    def __init__(self) -> None:
+        super().__init__("selfie-submission-capture", logging.DEBUG)
+        self.calls: list[tuple[int, str]] = []
+
+    def log(self, level: int, message: str) -> None:  # type: ignore[override]
+        self.calls.append((level, message))
+
+
+class _FailingLogger(logging.Logger):
+    def __init__(self) -> None:
+        super().__init__("selfie-submission-failing", logging.DEBUG)
+
+    def log(self, _level: int, _message: str) -> None:  # type: ignore[override]
+        raise RuntimeError("logger unavailable")
+
+
+class _RecordingTemporaryStorage:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.deleted: list[str] = []
+
+    def put(self, *, key: str, content: bytes, content_type: str):  # noqa: ARG002
+        self.objects[key] = content
+        return SimpleNamespace(key=key, size=len(content), content_type=content_type)
+
+    def delete(self, *, key: str) -> None:
+        self.deleted.append(key)
+        self.objects.pop(key, None)
+
+
+@override_settings(
+    SELFIE_SEARCH_ENABLED=True,
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
+)
+class SelfieSubmissionObservabilityTests(TestCase):
+    """The production breaks caught here are missing or premature submission outcomes."""
+
+    def setUp(self) -> None:
+        self.event = Event.objects.create(
+            name="Observability Run",
+            slug="observability-run",
+            start_date=date(2026, 8, 4),
+            end_date=date(2026, 8, 4),
+            city="Moscow",
+            access_type=Event.AccessType.FREE,
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+        self.submit_url = reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})
+
+    @staticmethod
+    def valid_upload() -> SimpleUploadedFile:
+        content = BytesIO()
+        Image.new("RGB", (8, 8), color="white").save(content, format="JPEG")
+        return SimpleUploadedFile("selfie.jpeg", content.getvalue(), content_type="image/jpeg")
+
+    def test_invalid_submission_emits_one_rejected_event_from_the_form_reason(self) -> None:
+        logger = _CaptureLogger()
+        corrupt = SimpleUploadedFile("selfie.jpg", b"not an image", content_type="image/jpeg")
+
+        with patch("selfie_search.views.logger", logger):
+            response = self.client.post(self.submit_url, {"selfie": corrupt})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Файл повреждён. Выберите другое селфи.")
+        self.assertEqual(len(logger.calls), 1)
+        level, line = logger.calls[0]
+        payload = json.loads(line)
+        self.assertEqual(level, logging.INFO)
+        self.assertEqual(payload["event"], "selfie_submission_finished")
+        self.assertEqual(payload["event_id"], str(self.event.pk))
+        self.assertEqual(payload["outcome"], "rejected")
+        self.assertEqual(payload["reason_code"], "corrupt_image")
+        self.assertIsNone(payload["search_id"])
+        self.assertEqual(payload["actual_format"], "unknown")
+        self.assertEqual(payload["declared_type"], "jpeg")
+
+    def test_clear_only_submission_emits_a_bounded_missing_or_empty_event(self) -> None:
+        logger = _CaptureLogger()
+
+        with patch("selfie_search.views.logger", logger):
+            response = self.client.post(self.submit_url, {"selfie-clear": "on"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(logger.calls), 1)
+        payload = json.loads(logger.calls[0][1])
+        self.assertEqual(payload["outcome"], "rejected")
+        self.assertEqual(payload["reason_code"], "missing_or_empty")
+
+    def test_storage_failure_emits_one_warning_without_accepting_the_submission(self) -> None:
+        logger = _CaptureLogger()
+
+        with (
+            patch("selfie_search.views.logger", logger),
+            patch("selfie_search.views.submit_selfie_search", side_effect=StorageUnavailable),
+        ):
+            response = self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Не удалось загрузить селфи. Попробуйте ещё раз.")
+        self.assertEqual(len(logger.calls), 1)
+        level, line = logger.calls[0]
+        payload = json.loads(line)
+        self.assertEqual(level, logging.WARNING)
+        self.assertEqual(payload["outcome"], "storage_unavailable")
+        self.assertEqual(payload["reason_code"], "storage_unavailable")
+        self.assertIsNone(payload["search_id"])
+
+    def test_accepted_submission_emits_after_success_with_the_created_search_id(self) -> None:
+        logger = _CaptureLogger()
+        search_id = uuid4()
+        created = SimpleNamespace(
+            search=SimpleNamespace(pk=search_id), public_token="opaque-public-token"
+        )
+
+        with (
+            patch("selfie_search.views.logger", logger),
+            patch("selfie_search.views.submit_selfie_search", return_value=created),
+        ):
+            response = self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.event.slug, "public_token": "opaque-public-token"},
+            ),
+        )
+        self.assertEqual(len(logger.calls), 1)
+        level, line = logger.calls[0]
+        payload = json.loads(line)
+        self.assertEqual(level, logging.INFO)
+        self.assertEqual(payload["outcome"], "accepted")
+        self.assertEqual(payload["reason_code"], "")
+        self.assertEqual(payload["search_id"], str(search_id))
+        self.assertNotIn("opaque-public-token", line)
+
+    def test_database_failure_never_claims_an_accepted_submission(self) -> None:
+        logger = _CaptureLogger()
+
+        with (
+            patch("selfie_search.views.logger", logger),
+            patch(
+                "selfie_search.views.submit_selfie_search",
+                side_effect=IntegrityError("database failed"),
+            ),
+            self.assertRaises(IntegrityError),
+        ):
+            self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+
+        self.assertEqual(logger.calls, [])
+
+    def test_event_output_failure_keeps_the_accepted_redirect_unchanged(self) -> None:
+        created = SimpleNamespace(
+            search=SimpleNamespace(pk=uuid4()), public_token="opaque-public-token"
+        )
+        with (
+            patch("selfie_search.views.logger", _FailingLogger()),
+            patch("selfie_search.views.submit_selfie_search", return_value=created),
+        ):
+            response = self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_event_serialization_failure_keeps_the_accepted_redirect_unchanged(self) -> None:
+        logger = _CaptureLogger()
+        created = SimpleNamespace(
+            search=SimpleNamespace(pk=uuid4()), public_token="opaque-public-token"
+        )
+        with (
+            patch("selfie_search.views.logger", logger),
+            patch("selfie_search.views.submit_selfie_search", return_value=created),
+            patch(
+                "selfie_search.observability.json.dumps",
+                side_effect=RuntimeError("serialization failed"),
+            ),
+        ):
+            response = self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(logger.calls, [(logging.ERROR, OBSERVABILITY_FAILURE_MARKER)])
+
+    def test_real_submission_persists_search_job_and_object_when_observability_fails(self) -> None:
+        for failure in ("logger", "serialization"):
+            with self.subTest(failure=failure):
+                storage = _RecordingTemporaryStorage()
+                upload = self.valid_upload()
+                expected_content = upload.read()
+                upload.seek(0)
+                logger = _CaptureLogger()
+                failure_patch = (
+                    patch("selfie_search.views.logger", _FailingLogger())
+                    if failure == "logger"
+                    else patch(
+                        "selfie_search.observability.json",
+                        SimpleNamespace(
+                            dumps=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                                RuntimeError("serialization failed")
+                            )
+                        ),
+                    )
+                )
+
+                with ExitStack() as stack:
+                    stack.enter_context(
+                        patch("selfie_search.views.TemporarySelfieStorage", return_value=storage)
+                    )
+                    if failure == "serialization":
+                        stack.enter_context(patch("selfie_search.views.logger", logger))
+                    stack.enter_context(failure_patch)
+                    response = self.client.post(self.submit_url, {"selfie": upload})
+
+                self.assertEqual(response.status_code, 302)
+                search = SelfieSearch.objects.get(
+                    event=self.event, temporary_object_key=next(iter(storage.objects))
+                )
+                self.assertEqual(SelfieSearchJob.objects.filter(search=search).count(), 1)
+                self.assertEqual(storage.deleted, [])
+                self.assertEqual(storage.objects, {search.temporary_object_key: expected_content})
+                if failure == "serialization":
+                    self.assertEqual(logger.calls, [(logging.ERROR, OBSERVABILITY_FAILURE_MARKER)])
+
+    def test_real_database_failure_still_compensates_temporary_object_when_observability_fails(
+        self,
+    ) -> None:
+        for failure in ("logger", "serialization"):
+            with self.subTest(failure=failure):
+                storage = _RecordingTemporaryStorage()
+                failure_patch = (
+                    patch("selfie_search.views.logger", _FailingLogger())
+                    if failure == "logger"
+                    else patch(
+                        "selfie_search.observability.json",
+                        SimpleNamespace(
+                            dumps=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                                RuntimeError("serialization failed")
+                            )
+                        ),
+                    )
+                )
+
+                with (
+                    patch("selfie_search.views.TemporarySelfieStorage", return_value=storage),
+                    patch(
+                        "selfie_search.services.submission.SelfieSearchJob.objects.create",
+                        side_effect=IntegrityError("job create failed"),
+                    ),
+                    failure_patch,
+                    self.assertRaises(IntegrityError),
+                ):
+                    self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+
+                self.assertFalse(SelfieSearch.objects.filter(event=self.event).exists())
+                self.assertEqual(len(storage.deleted), 1)
+                self.assertEqual(storage.objects, {})
 
 
 @override_settings(

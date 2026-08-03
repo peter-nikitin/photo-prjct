@@ -1,0 +1,11 @@
+[Unit]
+Description=Generate the daily selfie-search summary at 00:10 Moscow
+
+[Timer]
+OnCalendar=*-*-* 00:10:00 Europe/Moscow
+RandomizedDelaySec=0
+Persistent=true
+Unit=selfie-search-summary.service
+
+[Install]
+WantedBy=timers.target

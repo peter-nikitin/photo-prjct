@@ -18,6 +18,8 @@ services:
     image: ${APP_IMAGE:?APP_IMAGE must be set}
     env_file:
       - ${APP_ENV_FILE:-.env}
+    environment:
+      DEPLOYMENT_TARGET: ${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}
     expose:
       - "8000"
     depends_on:
@@ -36,12 +38,17 @@ services:
       retries: 6
       start_period: 30s
     restart: unless-stopped
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=web findme.environment=${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}"
 
   worker:
     image: ${WORKER_IMAGE:-}
     profiles:
       - worker
     environment:
+      DEPLOYMENT_TARGET: ${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}
       PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
       PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
       PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
@@ -55,6 +62,10 @@ services:
     cpus: "1.0"
     mem_limit: 2g
     pids_limit: 64
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=worker findme.environment=${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}"
 
 volumes:
   pgdata:

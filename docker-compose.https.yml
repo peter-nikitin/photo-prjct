@@ -3,6 +3,7 @@ services:
     image: nginx:1.27-alpine
     command: ["/bin/sh", "/opt/nginx/reload-nginx.sh"]
     environment:
+      DEPLOYMENT_TARGET: ${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?PUBLIC_DOMAIN must be set}
       PUBLIC_DOMAIN_ALIAS: ${PUBLIC_DOMAIN_ALIAS:-}
     ports:
@@ -21,6 +22,10 @@ services:
       timeout: 5s
       retries: 6
     restart: unless-stopped
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=nginx findme.environment=${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}"
 
   certbot:
     image: certbot/certbot:v2.11.0

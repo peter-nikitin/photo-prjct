@@ -39,11 +39,7 @@
             {% endfor %}
           </div>
           {% if selfie_search_page.paginator.num_pages > 1 %}
-            <nav class="gallery-pagination" aria-label="Страницы результатов поиска">
-              {% if selfie_search_page.has_previous %}<a href="?page={{ selfie_search_page.previous_page_number }}">Назад</a>{% endif %}
-              <span>Страница {{ selfie_search_page.number }} из {{ selfie_search_page.paginator.num_pages }}</span>
-              {% if selfie_search_page.has_next %}<a href="?page={{ selfie_search_page.next_page_number }}">Вперёд</a>{% endif %}
-            </nav>
+            {% include "ui/gallery_pagination.html" with pagination_page=selfie_search_page pagination_label="Страницы результатов поиска" %}
           {% endif %}
         {% else %}
           <p class="selfie-search-empty">Совпадений не найдено</p>

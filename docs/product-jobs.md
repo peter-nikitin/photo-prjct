@@ -41,6 +41,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-009 | Visitor | Receive a free-event original | Candidate | 2026-07-17 |
 | PJ-010 | Customer | Purchase selected photos | Candidate | 2026-07-17 |
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
+| PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
 
 ## Job details
 
@@ -169,6 +170,15 @@ purchased securely.
 - Evidence: [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download)
 - Last updated: 2026-07-17
 
+### PJ-012 — Visitor — Jump to a known gallery page
+
+When a paginated photo gallery has many pages and I know the page number I need, I want to go
+directly to it, so I can reach that part of the photo list quickly.
+
+- Status: In progress
+- Evidence: [PR #93](https://github.com/peter-nikitin/photo-prjct/pull/93), the shared [`src/backend/templates/ui/gallery_pagination.html`](../src/backend/templates/ui/gallery_pagination.html), focused event pagination coverage in [`src/backend/picflow/tests/test_views.py::GalleryPageTests::test_event_detail_uses_numbered_pages_in_filename_order`](../src/backend/picflow/tests/test_views.py), focused selfie pagination coverage in [`src/backend/selfie_search/tests/test_views.py::PublicSelfieResultViewTests::test_ready_page_uses_numbered_pages_without_reranking_or_expanding_membership`](../src/backend/selfie_search/tests/test_views.py), and four production-screen visual baselines covered by [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js): [`desktop-event-gallery-populated.png`](../tests/visual/visual.spec.js-snapshots/desktop-event-gallery-populated.png), [`mobile-event-gallery-populated.png`](../tests/visual/visual.spec.js-snapshots/mobile-event-gallery-populated.png), [`desktop-selfie-search-ready.png`](../tests/visual/visual.spec.js-snapshots/desktop-selfie-search-ready.png), and [`mobile-selfie-search-ready.png`](../tests/visual/visual.spec.js-snapshots/mobile-selfie-search-ready.png). PR #93 is open; CI, merge, and deployment are not recorded as delivery evidence.
+- Last updated: 2026-08-04
+
 Visual design-reference screens are not delivery evidence.
 
 ## Status log
@@ -194,3 +204,4 @@ This log is append-only.
 | 2026-07-19 | PJ-005 | Validated | Validated | PR #45 CI run 29693681091 supplied the pending current-HEAD evidence: all 44 visual tests passed for `7d6a718`; the earlier local Docker/`networkidle` timeout remains an infrastructure-only boundary, not passing evidence. |
 | 2026-07-19 | PJ-005 | Validated | Validated | Provenance correction: PR #45 CI run 29693681091 passed all 44 visual tests for the CI-tested implementation commit `7d6a718`; later docs-only evidence commits were not included in that run. |
 | 2026-07-31 | PJ-008 | Candidate | In progress | The accepted ADR and plan have a locally verified public event-scoped implementation and staging activation on `c62508a`: lifecycle/preflight passed, representative face embeddings were accepted, and a live Unicode event selfie reached a stable ready bearer result with cleanup and original-size media verified. Paid-result media remained available only through its bearer result. Production is not activated. |
+| 2026-08-04 | PJ-012 | Not recorded | In progress | [PR #93](https://github.com/peter-nikitin/photo-prjct/pull/93) and locally verified Django pagination and visual contracts: the focused event/selfie view tests plus four production-screen baselines covered by [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js). |

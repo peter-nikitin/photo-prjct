@@ -89,11 +89,7 @@
           {% endfor %}
         </div>
         {% if gallery_page.paginator.num_pages > 1 %}
-          <nav class="gallery-pagination" aria-label="Страницы галереи">
-            {% if gallery_page.has_previous %}<a href="?page={{ gallery_page.previous_page_number }}">Назад</a>{% endif %}
-            <span>Страница {{ gallery_page.number }} из {{ gallery_page.paginator.num_pages }}</span>
-            {% if gallery_page.has_next %}<a href="?page={{ gallery_page.next_page_number }}">Вперёд</a>{% endif %}
-          </nav>
+          {% include "ui/gallery_pagination.html" with pagination_page=gallery_page pagination_label="Страницы галереи" %}
         {% endif %}
       {% else %}
         <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>

@@ -450,6 +450,13 @@ class GalleryPageTests(TestCase):
         self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(100)))
         self.assertContains(first_response, "Страница 1 из 2")
         self.assertContains(first_response, "?page=2")
+        self.assertContains(first_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(first_response, 'name="page"')
+        self.assertContains(first_response, 'type="number"')
+        self.assertContains(first_response, 'min="1"')
+        self.assertContains(first_response, 'max="2"')
+        self.assertContains(first_response, 'value="1"')
+        self.assertContains(first_response, "Перейти")
 
         second_response = self.client.get(
             reverse("event_detail", kwargs={"slug": event.slug}), {"page": 2}
@@ -459,6 +466,13 @@ class GalleryPageTests(TestCase):
         self.assertEqual(second_page_ids, ("photo-100",))
         self.assertContains(second_response, "Страница 2 из 2")
         self.assertContains(second_response, "?page=1")
+        self.assertContains(second_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(second_response, 'name="page"')
+        self.assertContains(second_response, 'type="number"')
+        self.assertContains(second_response, 'min="1"')
+        self.assertContains(second_response, 'max="2"')
+        self.assertContains(second_response, 'value="2"')
+        self.assertContains(second_response, "Перейти")
         self.assertTrue(set(first_page_ids).isdisjoint(second_page_ids))
 
         for invalid_page in ("bad", "0", "3"):

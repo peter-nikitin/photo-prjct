@@ -33,3 +33,6 @@ was added.
 
 On 2026-08-02, the existing desktop and mobile selfie-search entry baselines were refreshed for the
 approved selfie-selection guidance. No visual route or scenario was added.
+
+On 2026-08-04, the existing populated event gallery and ready selfie-result baselines were refreshed
+to cover the shared page-jump control. No visual route or scenario was added.

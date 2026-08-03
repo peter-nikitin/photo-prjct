@@ -1595,3 +1595,43 @@ def test_failed_certificate_renewal_waits_before_next_attempt(
         "certbot renew --webroot --webroot-path /var/www/certbot --quiet",
         "sleep 43200",
     ]
+
+
+def test_nginx_validation_covers_submission_and_bearer_redaction_contract() -> None:
+    validator = (ROOT / "tests/deployment/validate-nginx.sh").read_text(encoding="utf-8")
+
+    for route in (
+        "submission_path=",
+        "bearer_result_path=",
+        "bearer_status_path=",
+        "bearer_media_path=",
+        "bearer_download_path=",
+        "event_path=",
+        "static_path=",
+        "bearer_4xx_headers=",
+    ):
+        assert route in validator
+
+    for sentinel in (
+        "sentinel-client-ip",
+        "sentinel-referrer",
+        "sentinel-user-agent",
+        "sentinel-tracking",
+        "bearer-log-token",
+        "sentinel-request-body",
+    ):
+        assert sentinel in validator
+
+    for assertion in (
+        "request_time",
+        "status",
+        "body_bytes_sent",
+        "error_log",
+        "ordinary_path",
+        "submission_path",
+        "ordinary_client_address",
+        "client_max_body_size 1k",
+        " 413 ",
+        "^-",
+    ):
+        assert assertion in validator

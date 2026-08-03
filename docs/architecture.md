@@ -190,6 +190,13 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   most 100 photos. Normal galleries use original filename then photo ID order; ready results retain
   persisted rank then photo ID order. [ADR 0022](adr/0022-use-numbered-gallery-pages.md) supersedes
   only ADR 0020's cursor-pagination follow-up.
+- The deployment repository implements a bounded selfie-search operations slice: exact structured
+  application/worker events, privacy-redacted Nginx routing, persistent host journald policy capped
+  at 14 days and 1 GiB, stable Compose journal tags, and a daily Moscow-time summary timer. The
+  deployment entrypoint reconciles and verifies these managed files with exact rollback. This is
+  repository verification only; staging activation evidence is not yet recorded. Journald is
+  operational evidence, not a product-data backup. Dashboards, alert delivery, central/cloud
+  logging, and biometric-quality benchmarking remain proposed or excluded.
 
 ## Deployment domain assignment — accepted
 
@@ -215,7 +222,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Search | Event-scoped face/bib/time/location queries | Public face search implemented locally with activation pending; remaining modes proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
 | Commerce | Cart, promotions, orders, payment state, download entitlement | Proposed |
-| Operations | Processing visibility, structured logs, health and backups | Proposed |
+| Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
 transactional state. Background processing and specialized ML runtimes may use separate containers

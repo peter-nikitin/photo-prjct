@@ -4,6 +4,8 @@ set -eu
 
 DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/photo-prjct}"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+SUMMARIZER="$SCRIPT_DIR/summarize.py"
 if [ -z "${DEPLOYMENT_TARGET:-}" ]; then
     DEPLOYMENT_TARGET=$(sed -n '1p' "$DEPLOY_ROOT/deployment-target")
 fi
@@ -47,9 +49,9 @@ journalctl \
     > "$journal_input"
 
 if [ "$recomputed" = True ]; then
-    "$PYTHON_BIN" "$DEPLOY_ROOT/deploy/selfie-observability/summarize.py" \
+    "$PYTHON_BIN" "$SUMMARIZER" \
         --date "$report_date" --recomputed < "$journal_input"
 else
-    "$PYTHON_BIN" "$DEPLOY_ROOT/deploy/selfie-observability/summarize.py" \
+    "$PYTHON_BIN" "$SUMMARIZER" \
         --date "$report_date" < "$journal_input"
 fi

@@ -91,6 +91,40 @@ def _terminal_fields(**overrides: object) -> dict[str, Any]:
     return fields
 
 
+def test_probe_has_only_the_common_envelope_and_random_non_secret_id() -> None:
+    logger = _CaptureLogger()
+    probe_id = uuid4()
+
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.OBSERVABILITY_PROBE,
+        probe_id=probe_id,
+    )
+
+    payload = json.loads(logger.calls[0][1])
+    assert set(payload) == {
+        "schema_version",
+        "event",
+        "occurred_at",
+        "service",
+        "environment",
+        "probe_id",
+    }
+    assert payload["event"] == "selfie_observability_probe"
+    assert payload["service"] == "web"
+    assert payload["probe_id"] == str(probe_id)
+
+
+@pytest.mark.parametrize("probe_id", ["not-a-uuid", 1, None])
+def test_probe_rejects_invalid_ids(probe_id: object) -> None:
+    with pytest.raises(SelfieEventContractError):
+        emit_selfie_event(
+            _CaptureLogger(),
+            event=SelfieEventName.OBSERVABILITY_PROBE,
+            probe_id=probe_id,
+        )
+
+
 _PRIVACY_SENTINELS = {
     "bearer": "Bearer SECRET-BEARER",
     "url": "https://storage.example/signed?token=SECRET-URL",

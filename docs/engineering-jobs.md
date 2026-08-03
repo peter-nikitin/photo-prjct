@@ -43,6 +43,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-25 |
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 | EJ-012 | Maintainer | Gate temporary selfie storage activation | Validated | 2026-07-31 |
+| EJ-013 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 
 ## Job details
 
@@ -150,6 +151,18 @@ procedure with agreed recovery targets, so I can recover service safely.
 - Evidence: [`scripts/clone-staging-db.sh`](../scripts/clone-staging-db.sh) and [`tests/deployment/test_clone_staging_database.py`](../tests/deployment/test_clone_staging_database.py) provide partial local restore evidence: a developer can create a validated staging logical dump, replace only the current checkout's local Compose database through a serialized local-Docker-only workflow, quiesce the normal web service, retain diagnostic and safety dumps, and validate migration readiness without running the mutating web entrypoint. Separate isolated PostgreSQL 16 integrations verify marker/owner/ACL normalization and the actual project image's `django_migrations`, `showmigrations`, and `makemigrations` readiness against a restored migrated schema without staging network contact. This remains insufficient for service-data recovery: scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill are not established. See also [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions).
 - Last updated: 2026-07-25
 
+### EJ-013 — Operator — Inspect bounded selfie-search operational evidence
+
+When I operate selfie search, I want privacy-bounded events and a reproducible daily summary, so I
+can diagnose its funnel without turning logs into product state or a backup.
+
+- Status: Delivered
+- Evidence: repository tests cover strict event contracts, redacted edge logs, deterministic daily
+  aggregation, idempotent managed-file installation, exact rollback, effective journal caps, timer
+  state, Compose tags, and bounded probe readability. No staging deployment or replacement-
+  persistence evidence is claimed yet.
+- Last updated: 2026-08-04
+
 ### EJ-011 — Maintainer — Gate private gallery media activation
 
 When I deploy a gallery-capable image, I want its candidate code and requested private-media
@@ -218,3 +231,4 @@ This log is append-only.
 | 2026-07-19 | EJ-011 | Validated | Validated | Fresh unprovisioned deployments now skip the unavailable ORM gate based on absence of the successful `deployed-image` marker; established deployments retain the fail-closed database/no-row/storage gate, and neither skip is live `GetObject` evidence. |
 | 2026-07-25 | EJ-010 | Candidate | Candidate | Local clone automation now enforces a serialized local-Docker-only replacement, quiesces the normal web service, retains safety/diagnostic artifacts, and has isolated PostgreSQL 16 plus real-Django restored-schema evidence for migration readiness without startup mutations. This is partial local evidence only; scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill remain unestablished. |
 | 2026-07-31 | EJ-012 | Not recorded | Validated | Automated command tests verify explicit confirmation, exact lifecycle preservation/readback/recovery, unversioned-bucket enforcement, bounded-prefix preflight, generated scratch-object cleanup, and sanitized output. Staging additionally applied the one-day `selfie-search/` rule without changing the preview rule, then passed real-bucket put/head/grant/delete preflight before feature enablement. Production is not activated. |
+| 2026-08-04 | EJ-013 | Not recorded | Delivered | Repository verification covers strict bounded events, edge redaction, journald reconciliation and exact rollback, timer/driver/tag checks, probe readability, and deterministic recomputation. Staging activation is not claimed. |

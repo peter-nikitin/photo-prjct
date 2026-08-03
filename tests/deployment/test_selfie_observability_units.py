@@ -38,7 +38,7 @@ def test_summary_units_are_root_owned_and_run_at_exactly_0010_moscow() -> None:
     assert service["Service"]["User"] == "root"
     assert service["Service"]["Group"] == "root"
     assert service["Service"]["ExecStart"] == (
-        "/opt/photo-prjct/deploy/selfie-observability/run-daily-summary.sh"
+        "/bin/sh /usr/local/lib/findme-selfie-observability/run-daily-summary.sh"
     )
     assert "EnvironmentFile" not in service["Service"]
     assert timer["Timer"]["OnCalendar"] == "*-*-* 00:10:00 Europe/Moscow"

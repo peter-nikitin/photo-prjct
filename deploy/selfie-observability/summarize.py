@@ -21,6 +21,7 @@ EVENT_NAMES = {
     "selfie_ranking_finished",
     "selfie_search_terminal",
 }
+PROBE_EVENT = "selfie_observability_probe"
 MAX_BOUNDED_INTEGER = 2**31 - 1
 ENVIRONMENTS = {"local", "test", "staging", "production"}
 COMMON_FIELDS = {"schema_version", "event", "occurred_at", "service", "environment"}
@@ -256,6 +257,21 @@ def _consume_line(
     claims_selfie = isinstance(event, str) and event.startswith("selfie_")
     if not claims_selfie:
         return
+    if event == PROBE_EVENT:
+        expected = COMMON_FIELDS | {"probe_id"}
+        if (
+            value.get("schema_version") == 1
+            and set(value) == expected
+            and value.get("service") == "web"
+            and value.get("environment") in ENVIRONMENTS
+        ):
+            try:
+                _timestamp(value.get("occurred_at"))
+                UUID(str(value["probe_id"]))
+            except (TypeError, ValueError):
+                pass
+            else:
+                return None
     if value.get("schema_version") != 1 or event not in EVENT_NAMES:
         state.integrity["unknown_schema_or_event"] += 1
         return

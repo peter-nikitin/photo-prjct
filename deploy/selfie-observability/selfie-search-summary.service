@@ -6,4 +6,4 @@ After=systemd-journald.service
 Type=oneshot
 User=root
 Group=root
-ExecStart=/opt/photo-prjct/deploy/selfie-observability/run-daily-summary.sh
+ExecStart=/bin/sh /usr/local/lib/findme-selfie-observability/run-daily-summary.sh

@@ -35,6 +35,7 @@ ObservabilityContractError = SelfieEventContractError
 
 
 class SelfieEventName(StrEnum):
+    OBSERVABILITY_PROBE = "selfie_observability_probe"
     SUBMISSION_FINISHED = "selfie_submission_finished"
     RANKING_FINISHED = "selfie_ranking_finished"
     SEARCH_TERMINAL = "selfie_search_terminal"
@@ -75,6 +76,7 @@ _TERMINAL_FAILURE_BY_STATUS = {
 OBSERVABILITY_FAILURE_MARKER = "selfie_observability_emit_failed"
 
 _EVENT_FIELDS: dict[SelfieEventName, frozenset[str]] = {
+    SelfieEventName.OBSERVABILITY_PROBE: frozenset({"probe_id"}),
     SelfieEventName.SUBMISSION_FINISHED: frozenset(
         {
             "event_id",
@@ -213,7 +215,9 @@ def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dic
     if set(fields) != expected:
         raise SelfieEventContractError("event fields do not match the contract")
     normalized: dict[str, object]
-    if event is SelfieEventName.SUBMISSION_FINISHED:
+    if event is SelfieEventName.OBSERVABILITY_PROBE:
+        normalized = {"probe_id": _opaque_id(fields["probe_id"], allow_integer=False)}
+    elif event is SelfieEventName.SUBMISSION_FINISHED:
         normalized = _submission_fields(fields)
     elif event is SelfieEventName.RANKING_FINISHED:
         normalized = _ranking_fields(fields)

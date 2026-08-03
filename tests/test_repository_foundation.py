@@ -722,3 +722,24 @@ def test_local_node_version_matches_ci_and_visual_container() -> None:
     assert package["engines"]["node"] == ">=22 <23"
     assert node_setup["with"]["node-version"] == "22"
     assert "FROM node:22-bookworm-slim@sha256:" in dockerfile
+
+
+def test_selfie_observability_is_owned_by_the_supported_deployment_entrypoint() -> None:
+    apply = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+    installer = (ROOT / "deploy/install-selfie-observability.sh").read_text(encoding="utf-8")
+    verifier = (ROOT / "deploy/verify-selfie-observability.sh").read_text(encoding="utf-8")
+
+    assert apply.index('install-selfie-observability.sh" install') < apply.index(
+        "compose stop nginx"
+    )
+    assert apply.index("verify-selfie-observability.sh") > apply.index("verify-public-edge.sh")
+    assert 'install-selfie-observability.sh" rollback' in apply
+    for setting in ("Storage=persistent", "MaxRetentionSec=14day", "SystemMaxUse=1G"):
+        assert setting in verifier
+    assert "journalctl --vacuum" not in installer
+    assert "rm -rf" not in installer
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "journalctl -u selfie-search-summary.service --since '14 days ago' -o cat" in readme
+    assert '| grep \'"event":"selfie_search_daily_summary"\'' in readme
+    assert " -t selfie-search-daily-summary" not in readme
+    assert "/usr/local/lib/findme-selfie-observability/run-daily-summary.sh" in readme

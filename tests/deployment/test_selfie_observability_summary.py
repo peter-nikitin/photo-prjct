@@ -303,6 +303,24 @@ def test_empty_day_is_complete_and_recomputation_is_semantically_deterministic()
     assert first.submissions["total"] == 0
 
 
+def test_valid_probe_is_ignored_but_malformed_claimed_probe_marks_integrity() -> None:
+    summarize = _load_module()
+    valid = _event(
+        "selfie_observability_probe",
+        "2026-08-03T10:00:00Z",
+        probe_id="00000000-0000-0000-0000-000000000001",
+    )
+    malformed = json.loads(valid)
+    malformed["service"] = "worker"
+
+    summary = summarize.summarize_jsonl(
+        [valid, json.dumps(malformed)], report_date=date(2026, 8, 3)
+    )
+
+    assert summary.integrity["unknown_schema_or_event"] == 1
+    assert summary.submissions["total"] == 0
+
+
 def test_claimed_events_with_unbounded_reason_id_or_fields_are_malformed_and_never_leak() -> None:
     summarize = _load_module()
     arbitrary_reason = _submission(

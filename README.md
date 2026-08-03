@@ -29,6 +29,30 @@ each directory needs its own ignored `.env` file. Both configurations expose Pos
 `5432` and Django on port `8000`; stop one before starting the other unless you intentionally change
 the port mappings.
 
+Create a feature worktree from the main checkout with the supported bootstrap command:
+
+```bash
+make worktree NAME=my-change
+cd .worktrees/my-change
+```
+
+`BASE` defaults to `origin/main`; override it with `BASE=<ref>` when necessary. The command creates
+branch `codex/<name>`, links the main checkout's ignored `.venv`, creates a worktree-local `.env`
+from `.env.example` with safe host-test values, and verifies Python, pytest, and Django imports. It
+never reads or copies the main checkout's `.env`.
+
+Run a focused or full Python test selection without activating the virtual environment or manually
+supplying Django settings:
+
+```bash
+make test TESTS="tests/test_repository_foundation.py"
+make test
+make check
+```
+
+`make check` runs the CI-equivalent Python formatting, lint, type, coverage, Django, and migration
+checks. PostgreSQL must be available on `localhost:5432`, matching CI.
+
 ### Verify public selfie search locally
 
 Public selfie search and its processing dependencies are opt-in. Tracked defaults keep

@@ -31,10 +31,11 @@ human and agent interface.
 **Interfaces:**
 - Consumes: `NAME`, optional `BASE`, repository root `.venv`, and `.env.example`.
 - Produces: `scripts/create-worktree.py NAME [BASE]`, creating `.worktrees/NAME` on
-  `codex/NAME` with linked `.venv` and local `.env`.
+  `codex/NAME` with linked `.venv`, local `.env`, and an installed shared pre-commit hook.
 
 - [ ] Write tests for slug validation, preflight-before-Git behavior, exact `git worktree add`
-      arguments, relative `.venv` symlink creation, and safe `.env.example` transformation.
+      arguments, relative `.venv` symlink creation, safe `.env.example` transformation, and hook
+      installation.
 - [ ] Run `.venv/bin/pytest -q tests/test_create_worktree.py` and confirm failure because the
       helper does not exist.
 - [ ] Implement the smallest standard-library helper satisfying those contracts.
@@ -51,7 +52,7 @@ human and agent interface.
 
 **Interfaces:**
 - Consumes: optional caller-provided Django variables and optional `TESTS` Make variable.
-- Produces: `make worktree`, `make test`, and `make check`.
+- Produces: `make worktree`, `make hooks`, `make test`, and `make check`.
 
 - [ ] Add repository-foundation assertions for executable paths, CI-equivalent environment
       defaults, command forwarding, documented interfaces, and non-secret bootstrap behavior.

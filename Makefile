@@ -1,4 +1,4 @@
-.PHONY: check db-clone-staging test worktree
+.PHONY: check db-clone-staging hooks test worktree
 
 BASE ?= origin/main
 TESTS ?=
@@ -6,6 +6,9 @@ TESTS ?=
 worktree:
 	@test -n "$(NAME)" || { echo "NAME is required: make worktree NAME=<name> [BASE=<ref>]" >&2; exit 2; }
 	.venv/bin/python scripts/create-worktree.py "$(NAME)" "$(BASE)"
+
+hooks:
+	.venv/bin/pre-commit install
 
 test:
 	sh scripts/run-in-test-env.sh .venv/bin/pytest $(TESTS)

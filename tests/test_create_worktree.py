@@ -47,6 +47,16 @@ def _repository(tmp_path: Path, *, with_venv: bool = True) -> Path:
         bin_directory.mkdir(parents=True)
         _write_executable(bin_directory / "python", "#!/bin/sh\necho 'Python 3.12.test'\n")
         _write_executable(bin_directory / "pytest", "#!/bin/sh\necho 'pytest test'\n")
+        _write_executable(
+            bin_directory / "pre-commit",
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'test "$1" = install\n'
+            "hook_path=$(git rev-parse --git-path hooks/pre-commit)\n"
+            'mkdir -p "$(dirname "$hook_path")"\n'
+            "printf '#!/bin/sh\\nexit 0\\n' > \"$hook_path\"\n"
+            'chmod +x "$hook_path"\n',
+        )
     _run("git", "add", ".gitignore", ".env.example", cwd=repository)
     _run("git", "commit", "-qm", "initial", cwd=repository)
     return repository
@@ -76,6 +86,7 @@ def test_creates_test_ready_worktree_without_copying_root_secrets(tmp_path: Path
     )
     assert "root-secret-must-not-leak" not in (worktree / ".env").read_text(encoding="utf-8")
     assert _run("git", "status", "--short", cwd=worktree).stdout == ""
+    assert (repository / ".git" / "hooks" / "pre-commit").stat().st_mode & 0o111
 
 
 def test_rejects_unsafe_name_before_creating_git_state(tmp_path: Path) -> None:

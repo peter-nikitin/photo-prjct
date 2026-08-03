@@ -71,6 +71,18 @@ def test_make_test_renders_requested_selection_with_project_runner() -> None:
     )
 
 
+def test_make_hooks_uses_project_pre_commit() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "hooks"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout == ".venv/bin/pre-commit install\n"
+
+
 def test_make_worktree_requires_name_without_changing_git_state() -> None:
     branches_before = subprocess.run(
         ["git", "branch", "--format=%(refname:short)"],

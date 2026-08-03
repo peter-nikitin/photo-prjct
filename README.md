@@ -38,8 +38,8 @@ cd .worktrees/my-change
 
 `BASE` defaults to `origin/main`; override it with `BASE=<ref>` when necessary. The command creates
 branch `codex/<name>`, links the main checkout's ignored `.venv`, creates a worktree-local `.env`
-from `.env.example` with safe host-test values, and verifies Python, pytest, and Django imports. It
-never reads or copies the main checkout's `.env`.
+from `.env.example` with safe host-test values, installs the shared pre-commit hook, and verifies
+Python, pytest, and Django settings. It never reads or copies the main checkout's `.env`.
 
 Run a focused or full Python test selection without activating the virtual environment or manually
 supplying Django settings:
@@ -301,15 +301,17 @@ python src/backend/manage.py check
 python src/backend/manage.py makemigrations --check --dry-run
 ```
 
-Install fast local hooks with:
+New worktrees install fast local hooks automatically. Install or repair the shared hook in an
+existing checkout with:
 
 ```bash
-pre-commit install
-pre-commit run --all-files
+make hooks
 ```
 
-The hooks format and lint Python files. CI remains authoritative and also runs types, tests, Django
-checks, migration drift detection, and repository skill-structure tests.
+The hook formats and lints staged Python files. If it changes a file, stage the result and repeat the
+commit. Run `.venv/bin/pre-commit run --all-files` only when intentionally checking the whole
+repository. CI remains authoritative and also runs types, tests, Django checks, migration drift
+detection, and repository skill-structure tests.
 
 ## Deployment
 

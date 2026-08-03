@@ -42,6 +42,10 @@ def validate_preconditions(root: Path, name: str) -> None:
         raise RuntimeError(f"root virtual environment is missing: {root / '.venv'}")
     if not (root / ".venv" / "bin" / "pytest").is_file():
         raise RuntimeError(f"pytest is missing from the root virtual environment: {root / '.venv'}")
+    if not (root / ".venv" / "bin" / "pre-commit").is_file():
+        raise RuntimeError(
+            f"pre-commit is missing from the root virtual environment: {root / '.venv'}"
+        )
     if not (root / ".env.example").is_file():
         raise RuntimeError(f"tracked environment template is missing: {root / '.env.example'}")
 
@@ -78,6 +82,7 @@ def create_worktree(root: Path, name: str, base: str) -> Path:
 
     subprocess.run([str(venv_link / "bin" / "python"), "--version"], cwd=target, check=True)
     subprocess.run([str(venv_link / "bin" / "pytest"), "--version"], cwd=target, check=True)
+    subprocess.run([str(venv_link / "bin" / "pre-commit"), "install"], cwd=target, check=True)
     check_environment = {**os.environ, **TEST_ENVIRONMENT}
     subprocess.run(
         [str(venv_link / "bin" / "python"), "src/backend/manage.py", "check"],

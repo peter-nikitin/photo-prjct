@@ -462,6 +462,7 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
 
 .gallery-pagination {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 16px;
@@ -477,6 +478,51 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
   color: var(--ink);
   font-weight: 800;
   text-decoration: none;
+}
+
+.gallery-pagination-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gallery-pagination-input {
+  width: 4.5rem;
+  min-height: 44px;
+  padding: 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: center;
+}
+
+.gallery-pagination-button {
+  min-height: 44px;
+  padding: 11px 14px;
+  border: 1px solid var(--teal);
+  border-radius: 10px;
+  background: var(--teal);
+  color: var(--surface);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.gallery-pagination-button:hover {
+  border-color: var(--teal-strong);
+  background: var(--teal-strong);
+}
+
+@media (max-width: 480px) {
+  .gallery-pagination {
+    gap: 10px;
+  }
+
+  .gallery-pagination-form {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: center;
+  }
 }
 
 .glightbox-container .gclose,

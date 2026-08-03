@@ -94,6 +94,10 @@
   margin-top: clamp(36px, 6vw, 70px);
 }
 
+section.selfie-search-results:has(.event-gallery-grid) + .button {
+  margin-block-start: 16px;
+}
+
 .selfie-search-count {
   margin-bottom: 22px;
 }

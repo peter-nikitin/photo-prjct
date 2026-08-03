@@ -10,7 +10,7 @@
 - Related specification:
   [`2026-08-04-selfie-search-quality-feedback-design.md`](../superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md)
 - Related product job:
-  [`PJ-012 — Customer — Report selfie-search quality`](../product-jobs.md#pj-012--customer--report-selfie-search-quality)
+  [`PJ-013 — Customer — Report selfie-search quality`](../product-jobs.md#pj-013--customer--report-selfie-search-quality)
 - Related architecture:
   [`docs/architecture.md`](../architecture.md), accepted public selfie-search and biometric
   feedback boundaries
@@ -392,7 +392,7 @@ final commit after independent whole-branch review.
   `python src/backend/manage.py makemigrations --check --dry-run`; expected GREEN is zero failures,
   branch coverage at or above the repository threshold, and no migration drift.
 - [ ] Compare the complete diff with the approved specification, ADRs 0019/0023, and architecture.
-  Update `PJ-012` to `In progress` only after implementation has begun, to `Delivered` only after
+  Update `PJ-013` to `In progress` only after implementation has begun, to `Delivered` only after
   the customer path is enabled in an environment, and never to `Validated` without real customer-
   outcome evidence.
 - [ ] Create one working-tree review package containing every task file, including untracked files;

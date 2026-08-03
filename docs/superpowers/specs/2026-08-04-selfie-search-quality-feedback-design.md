@@ -9,7 +9,7 @@
 - **Related product jobs:**
   [`PJ-008 — Customer — Find photos by face`](../../product-jobs.md#pj-008--customer--find-photos-by-face)
   and
-  [`PJ-012 — Customer — Report selfie-search quality`](../../product-jobs.md#pj-012--customer--report-selfie-search-quality)
+  [`PJ-013 — Customer — Report selfie-search quality`](../../product-jobs.md#pj-013--customer--report-selfie-search-quality)
 - **Related specifications:**
   [`2026-07-30-public-selfie-search-design.md`](2026-07-30-public-selfie-search-design.md),
   [`2026-08-02-asynchronous-selfie-search-submission-design.md`](2026-08-02-asynchronous-selfie-search-submission-design.md),

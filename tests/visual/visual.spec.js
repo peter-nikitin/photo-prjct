@@ -553,6 +553,7 @@ test('gallery and ready result lightboxes keep original download as a compact ic
 
 test('browser coordinator completes a successful upload and announces progress', async ({ page }) => {
   const stubs = await installUploadStubs(page);
+  await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
   await page.locator('#upload-files').setInputFiles([

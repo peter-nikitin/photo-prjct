@@ -177,6 +177,14 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
   signed direct Object Storage redirect transport is implemented for already authorized gallery and
   result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
+- Allow one consented quality-feedback record per terminal selfie search without delaying ADR
+  0019's temporary-selfie cleanup. The browser may retain the selected file locally for seven days;
+  submission stores immutable feedback, plaintext contact, explicit consent evidence, and optional
+  result labels in PostgreSQL, plus one selfie in a dedicated private KMS-encrypted bucket whose
+  30-day lifecycle is authoritative. Public media routes and the ML worker cannot access feedback
+  media, and staff access is explicit and audited, as defined by
+  [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md). This is accepted design, not yet
+  implementation or deployment evidence.
 - Allow attachment delivery wherever an existing normal-gallery or ready-result context already
   authorizes an original, without adding a free-versus-paid branch or opening a normal paid gallery,
   as defined by [ADR 0021](adr/0021-allow-original-download-for-authorized-photos.md). Verified
@@ -329,6 +337,10 @@ preflight, exact rollout-image smoke, VM capacity smoke, or environment activati
   and the immutable result is accessible through a non-expiring bearer link. Broader consent,
   revocation, suppression, moderation, and incident handling remain required before named
   identity, cross-event matching, or broader biometric reuse.
+- ADR 0023 accepts the narrower feedback-specific consent and retention boundary: one immutable
+  quality report may retain plaintext contact, consent evidence, search labels, and a lifecycle-
+  bounded private feedback selfie. It does not authorize named identity, automated training,
+  cross-event reuse, or a general biometric consent ledger.
 - Face results are probable matches, not identity assertions. Users and operators need removal and
   suppression workflows.
 - Payment callbacks must be authenticated and idempotent; download authorization is derived from

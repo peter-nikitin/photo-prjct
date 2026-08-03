@@ -41,7 +41,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-009 | Visitor | Receive a free-event original | Candidate | 2026-07-17 |
 | PJ-010 | Customer | Purchase selected photos | Candidate | 2026-07-17 |
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
-| PJ-012 | Customer | Report selfie-search quality | Candidate | 2026-08-04 |
+| PJ-012 | Customer | Report selfie-search quality | Planned | 2026-08-04 |
 
 ## Job details
 
@@ -103,7 +103,7 @@ event.
 When automated processing fails or produces uncertain metadata, I want to inspect and correct the
 result, so I can keep published search data reliable.
 
-- Status: Candidate
+- Status: Planned
 - Evidence: [Target MVP architecture — Moderation](architecture.md#target-mvp-architecture--proposed)
 - Last updated: 2026-07-17
 
@@ -180,8 +180,9 @@ future feedback prompts in my browser.
 - Status: Candidate
 - Evidence: The
   [selfie-search quality feedback specification](superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md)
-  records the approved product design. Implementation planning is blocked on the specification's
-  written review and a new ADR for consented feedback-selfie/contact retention and staff access.
+  and the
+  [implementation plan](plans/2026-08-04-selfie-search-quality-feedback.md) record the approved
+  design, accepted ADR boundary, task sequence, verification, and staged rollout gates.
 - Last updated: 2026-08-04
 
 Visual design-reference screens are not delivery evidence.
@@ -209,4 +210,5 @@ This log is append-only.
 | 2026-07-19 | PJ-005 | Validated | Validated | PR #45 CI run 29693681091 supplied the pending current-HEAD evidence: all 44 visual tests passed for `7d6a718`; the earlier local Docker/`networkidle` timeout remains an infrastructure-only boundary, not passing evidence. |
 | 2026-07-19 | PJ-005 | Validated | Validated | Provenance correction: PR #45 CI run 29693681091 passed all 44 visual tests for the CI-tested implementation commit `7d6a718`; later docs-only evidence commits were not included in that run. |
 | 2026-07-31 | PJ-008 | Candidate | In progress | The accepted ADR and plan have a locally verified public event-scoped implementation and staging activation on `c62508a`: lifecycle/preflight passed, representative face embeddings were accepted, and a live Unicode event selfie reached a stable ready bearer result with cleanup and original-size media verified. Paid-result media remained available only through its bearer result. Production is not activated. |
-| 2026-08-04 | PJ-012 | Not recorded | Candidate | Approved product design recorded in the selfie-search quality feedback specification; implementation planning awaits written-spec review and the required privacy/retention ADR. |
+| 2026-08-04 | PJ-012 | Not recorded | Candidate | Approved product design recorded in the selfie-search quality feedback specification; implementation planning awaits explicit acceptance of the required privacy/retention ADR. |
+| 2026-08-04 | PJ-012 | Candidate | Planned | ADR 0023 was explicitly accepted and the decision-complete selfie-search quality feedback implementation plan was approved for execution. |

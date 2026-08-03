@@ -1,6 +1,6 @@
 # Selfie Search Quality Feedback Design
 
-- **Status:** Approved design, pending written-spec review
+- **Status:** Approved in conversation and written review on 2026-08-04
 - **Date:** 2026-08-04
 - **Owner:** FindMe Photo
 - **Related architecture:** [`docs/architecture.md`](../../architecture.md), current public
@@ -19,12 +19,12 @@
   [ADR 0001](../../adr/0001-django-modular-monolith.md),
   [ADR 0002](../../adr/0002-postgresql-system-of-record.md),
   [ADR 0006](../../adr/0006-yandex-object-storage-media.md), and
-  [ADR 0019](../../adr/0019-use-public-event-selfie-search.md)
-- **ADR impact:** **Requires new ADR.** The search itself continues to conform to ADR 0019: its
+  [ADR 0019](../../adr/0019-use-public-event-selfie-search.md), and
+  [ADR 0023](../../adr/0023-store-consented-selfie-search-feedback.md)
+- **ADR impact:** **Conforms to ADR 0023.** The search itself continues to conform to ADR 0019: its
   server-side temporary selfie is deleted before terminal publication and its query embedding is
-  never persisted. Feedback introduces a separate, consented server-side copy of the selfie,
-  plaintext contact data, result-photo labels, retention periods, and staff access. Those are durable
-  biometric-governance and private-media choices not accepted by ADR 0019.
+  never persisted. ADR 0023 governs the separate consented feedback copy, plaintext contact,
+  result-photo labels, lifecycle, and staff-access boundaries.
 
 ## Outcome
 
@@ -510,9 +510,6 @@ existing cards in an explicit mode.
 
 ## Delivery boundary
 
-Specification approval selects this product design but does not approve the new biometric
-retention architecture or legal activation. Before implementation planning, a new ADR must accept
-or revise the KMS-encrypted lifecycle-bound feedback-selfie storage, durable plaintext PostgreSQL
-contact and labels, restricted and audited staff access, and consent boundaries. The published
-personal-data policy must be reconciled with the approved purpose and retention behavior before the
-feature is enabled.
+Specification approval selects this product design under accepted ADR 0023 but does not constitute
+legal activation. The published personal-data policy must be reconciled with the approved purpose
+and retention behavior before the feature is enabled.

@@ -41,6 +41,7 @@ place, and add the new record to this index.
 | 0020 | [Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md) | Accepted |
 | 0021 | [Allow original download for authorized photos](0021-allow-original-download-for-authorized-photos.md) | Accepted |
 | 0022 | [Use numbered gallery pages](0022-use-numbered-gallery-pages.md) | Accepted |
+| 0023 | [Store consented selfie-search quality feedback](0023-store-consented-selfie-search-feedback.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -63,3 +64,10 @@ decision or opening a normal paid gallery.
 [ADR 0022](0022-use-numbered-gallery-pages.md) supersedes only ADR 0020's cursor-pagination
 follow-up. Normal galleries and ready selfie-search results use bounded numbered pages; all media
 delivery and authorization decisions in ADRs 0019, 0020, and 0021 remain unchanged.
+
+[ADR 0023](0023-store-consented-selfie-search-feedback.md) preserves ADR 0019's search-selfie
+cleanup gate while accepting a separate consented feedback copy: the browser retains the selected
+file locally for at most seven days, PostgreSQL stores one immutable feedback/contact/consent record
+per search, and a dedicated private KMS-encrypted bucket deletes feedback selfies through its
+30-day lifecycle. Feedback media is unavailable to public media routes and the ML worker; sensitive
+staff access is explicit and audited.

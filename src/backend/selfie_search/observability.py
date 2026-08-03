@@ -137,12 +137,12 @@ def emit_selfie_event(
     try:
         serialized = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     except Exception:
-        _emit_failure_marker(logger)
+        emit_selfie_observability_failure(logger)
         return
     try:
         logger.log(level, serialized)
     except Exception:
-        _emit_failure_marker(logger)
+        emit_selfie_observability_failure(logger)
 
 
 def declared_type_label(value: object) -> str:
@@ -357,7 +357,9 @@ def _environment() -> str:
     return value if value in _ENVIRONMENTS else "local"
 
 
-def _emit_failure_marker(logger: logging.Logger) -> None:
+def emit_selfie_observability_failure(logger: logging.Logger) -> None:
+    """Emit only the fixed failure marker and contain output failures."""
+
     try:
         logger.log(logging.ERROR, OBSERVABILITY_FAILURE_MARKER)
     except Exception:

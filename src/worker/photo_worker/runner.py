@@ -16,7 +16,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Protocol
 
-from photo_worker.client import ApiError, DownloadError, HttpClient, UploadError
+from photo_worker.client import ApiError, CallbackResult, DownloadError, HttpClient, UploadError
 from photo_worker.contracts import (
     FAILURE_RETRYABLE,
     PREVIEW_CONTRACT_VERSION,
@@ -38,6 +38,7 @@ from photo_worker.face_embedding import (
     extract_selfie_embedding,
 )
 from photo_worker.metadata import InputTooLarge, MetadataError, extract_capture_metadata
+from photo_worker.observability import SelfieWorkerEventName, emit_selfie_worker_event
 from photo_worker.preview import PreviewError, PreviewResult, generate_preview
 
 LOGGER = logging.getLogger(__name__)
@@ -98,11 +99,11 @@ class WorkerClient(Protocol):
 
     def complete(
         self, attempt_id: str, payload: dict[str, object], *, response_max_bytes: int
-    ) -> None: ...
+    ) -> CallbackResult | None: ...
 
     def fail(
         self, attempt_id: str, payload: dict[str, object], *, response_max_bytes: int
-    ) -> None: ...
+    ) -> CallbackResult | None: ...
 
 
 @dataclass(frozen=True)
@@ -492,6 +493,7 @@ class Worker:
                 result_payload = result.as_payload()
             keeper.stop()
             keeper.raise_if_lost()
+            total_ms = _milliseconds(total_started)
             payload = _success_payload(
                 job,
                 self._config.worker_build,
@@ -500,26 +502,40 @@ class Worker:
                 result_payload,
                 download_ms,
                 compute_ms,
-                _milliseconds(total_started),
+                total_ms,
             )
             _assert_terminal_size(payload, job.configuration.terminal_result_max_bytes)
             try:
-                self._client.complete(
+                callback = self._client.complete(
                     job.attempt_id,
                     payload,
                     response_max_bytes=job.configuration.api_response_max_bytes,
                 )
+                if job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+                    if not isinstance(callback, CallbackResult):
+                        raise ApiError("invalid_api_response", retryable=False)
+                    if not callback.idempotent and not callback.stale:
+                        _emit_selfie_attempt_finished(
+                            job,
+                            outcome="succeeded",
+                            reason_code="",
+                            retryable=False,
+                            download_ms=download_ms,
+                            compute_ms=compute_ms,
+                            total_ms=total_ms,
+                        )
             finally:
                 # A selfie embedding is transient: release its payload as soon as the callback ends.
                 del payload
                 del result
-            _lifecycle(
-                "succeeded",
-                job,
-                download_ms=download_ms,
-                compute_ms=compute_ms,
-                secrets=self._config.log_secrets,
-            )
+            if job.processor_type != PROCESSOR_TYPE_SELFIE_QUERY:
+                _lifecycle(
+                    "succeeded",
+                    job,
+                    download_ms=download_ms,
+                    compute_ms=compute_ms,
+                    secrets=self._config.log_secrets,
+                )
         except (
             DownloadError,
             InputTooLarge,
@@ -544,6 +560,7 @@ class Worker:
             if retryable is None:
                 code = "decode_failed"
                 retryable = False
+            total_ms = _milliseconds(total_started)
             payload = _failure_payload(
                 job,
                 self._config.worker_build,
@@ -553,28 +570,42 @@ class Worker:
                 retryable,
                 download_ms,
                 compute_ms,
-                _milliseconds(total_started),
+                total_ms,
             )
             _assert_terminal_size(payload, job.configuration.terminal_result_max_bytes)
             try:
-                self._client.fail(
+                callback = self._client.fail(
                     job.attempt_id,
                     payload,
                     response_max_bytes=job.configuration.api_response_max_bytes,
                 )
+                if job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+                    if not isinstance(callback, CallbackResult):
+                        raise ApiError("invalid_api_response", retryable=False)
+                    if not callback.idempotent and not callback.stale:
+                        _emit_selfie_attempt_finished(
+                            job,
+                            outcome="failed",
+                            reason_code=code,
+                            retryable=retryable,
+                            download_ms=download_ms,
+                            compute_ms=compute_ms,
+                            total_ms=total_ms,
+                        )
             except ApiError as submission_error:
                 if submission_error.code == "lease_not_current":
                     _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
                     return job.configuration.poll_min_delay_seconds
                 raise
-            _lifecycle(
-                "failed",
-                job,
-                code=code,
-                download_ms=download_ms,
-                compute_ms=compute_ms,
-                secrets=self._config.log_secrets,
-            )
+            if job.processor_type != PROCESSOR_TYPE_SELFIE_QUERY:
+                _lifecycle(
+                    "failed",
+                    job,
+                    code=code,
+                    download_ms=download_ms,
+                    compute_ms=compute_ms,
+                    secrets=self._config.log_secrets,
+                )
         except AttemptLost:
             _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
             return job.configuration.poll_min_delay_seconds
@@ -846,4 +877,33 @@ def _lifecycle(
         code or "",
         download_ms if download_ms is not None else "",
         compute_ms if compute_ms is not None else "",
+    )
+
+
+def _emit_selfie_attempt_finished(
+    job: ClaimedJob,
+    *,
+    outcome: str,
+    reason_code: str,
+    retryable: bool,
+    download_ms: int | None,
+    compute_ms: int | None,
+    total_ms: int | None,
+) -> None:
+    if job.processor_type != PROCESSOR_TYPE_SELFIE_QUERY:
+        return
+    emit_selfie_worker_event(
+        LOGGER,
+        event=SelfieWorkerEventName.ATTEMPT_FINISHED,
+        level=logging.WARNING if retryable else logging.INFO,
+        event_id=job.event_id,
+        search_id=job.search_id,
+        job_id=job.id,
+        attempt_id=job.attempt_id,
+        outcome=outcome,
+        reason_code=reason_code,
+        retryable=retryable,
+        download_ms=download_ms,
+        compute_ms=compute_ms,
+        total_ms=total_ms,
     )

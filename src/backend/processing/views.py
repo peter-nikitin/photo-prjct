@@ -765,6 +765,7 @@ def _selfie_claimed_payload(
             "processor_type": SELFIE_QUERY_CONTRACT.processor_type,
             "processor_version": SELFIE_QUERY_CONTRACT.processor_version,
             "configuration": selfie_worker_configuration(search),
+            "event_id": str(search.event_id),
             "search_id": str(search.id),
             "input_fingerprint": fingerprint,
             "input_limits": {

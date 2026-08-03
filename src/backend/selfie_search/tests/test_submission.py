@@ -315,10 +315,11 @@ class SubmissionTests(TestCase):
             [embedding.id],
         )
         self.assertEqual(search.matched_photo_count, 1)
-        self.assertRegex(
-            "\n".join(logs.output),
-            r"selfie cohort ranked search_id=.* load_ms=\d+ rank_ms=\d+ faces=1 matches=1",
-        )
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
+        self.assertEqual(ranking["eligible_photo_count"], 1)
+        self.assertEqual(ranking["eligible_face_count"], 1)
+        self.assertEqual(ranking["matched_photo_count"], 1)
 
     def test_compatible_cohort_selects_only_fields_needed_for_ranking(self) -> None:
         self.make_eligible_embedding(

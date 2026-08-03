@@ -77,8 +77,14 @@
     });
   }
 
+  function focusSelfieSearchError(document) {
+    const error = document.querySelector('[data-selfie-search-error]');
+    if (error && typeof error.focus === 'function') error.focus();
+  }
+
   function startBrowserUi(document, window) {
     bindSelfieSearchForm(document.querySelector('[data-selfie-search-form]'));
+    focusSelfieSearchError(document);
     const result = document.querySelector('[data-selfie-search-result]');
     if (!result) return null;
     return new SelfieSearchPoller({
@@ -90,7 +96,12 @@
     }).start();
   }
 
-  return { SelfieSearchPoller, bindSelfieSearchForm, startBrowserUi };
+  return {
+    SelfieSearchPoller,
+    bindSelfieSearchForm,
+    focusSelfieSearchError,
+    startBrowserUi,
+  };
 });
 
 if (typeof document !== 'undefined') {

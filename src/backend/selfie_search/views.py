@@ -1,4 +1,7 @@
+import logging
+
 from config.views import _public_media_resolver
+from django import forms
 from django.conf import settings
 from django.core.paginator import InvalidPage
 from django.http import (
@@ -19,6 +22,7 @@ from picflow.gallery import (
 from picflow.models import Event, Photo
 
 from selfie_search.forms import SelfieSearchUploadForm
+from selfie_search.images import SelfieImageRejected
 from selfie_search.models import SelfieSearch
 from selfie_search.services.results import (
     PublicSearchNotFound,
@@ -30,6 +34,11 @@ from selfie_search.services.results import (
 from selfie_search.services.submission import submit_selfie_search
 from selfie_search.storage import TemporarySelfieStorage
 
+logger = logging.getLogger(__name__)
+
+_SAFE_DECLARED_TYPES = frozenset({"image/jpeg", "image/png", "image/heic", "image/heif"})
+_SAFE_ACTUAL_FORMATS = frozenset({"jpeg", "png", "heic", "heif", "gif", "webp", "avif", "raw"})
+
 
 @require_POST
 def submit(request, event_slug: str):
@@ -38,16 +47,37 @@ def submit(request, event_slug: str):
         raise Http404
     form = SelfieSearchUploadForm(files=request.FILES)
     if not form.is_valid():
-        return _event_page(request, event_slug, form)
+        rejection = form.image_rejection or SelfieImageRejected("missing_or_empty", None)
+        _log_submission_rejection(
+            event=event,
+            reason=rejection.reason,
+            upload=request.FILES.get("selfie"),
+            actual_format=rejection.actual_format,
+        )
+        return _event_page(request, event_slug, form, status=422)
+    selfie = form.cleaned_data["selfie"]
     try:
         created = submit_selfie_search(
             event=event,
-            upload=form.cleaned_data["selfie"],
+            selfie=selfie,
             storage=TemporarySelfieStorage(),
         )
     except StorageUnavailable:
-        form.add_error("selfie", "Не удалось загрузить селфи. Попробуйте ещё раз.")
-        return _event_page(request, event_slug, form)
+        form.add_error(
+            None,
+            forms.ValidationError(
+                "Не удалось загрузить фотографию. Попробуйте ещё раз.",
+                code="storage_unavailable",
+            ),
+        )
+        _log_submission_rejection(
+            event=event,
+            reason="storage_unavailable",
+            upload=request.FILES.get("selfie"),
+            actual_format=selfie.source_format,
+            level=logging.WARNING,
+        )
+        return _event_page(request, event_slug, form, status=503)
     return redirect(
         "selfie_search:result",
         event_slug=event.slug,
@@ -148,10 +178,45 @@ def result_download(request, event_slug: str, public_token: str, photo_id: str) 
     return redirect(signed_url)
 
 
-def _event_page(request, event_slug: str, form: SelfieSearchUploadForm):
+def _event_page(request, event_slug: str, form: SelfieSearchUploadForm, *, status: int = 200):
     from config.views import event_detail
 
-    return event_detail(request, event_slug, selfie_search_form=form)
+    response = event_detail(request, event_slug, selfie_search_form=form)
+    response.status_code = status
+    return response
+
+
+def _log_submission_rejection(
+    *,
+    event: Event,
+    reason: str,
+    upload: object,
+    actual_format: str | None,
+    level: int = logging.INFO,
+) -> None:
+    logger.log(
+        level,
+        "selfie_submission_rejected",
+        extra={
+            "event_id": event.pk,
+            "reason": reason,
+            "source_size": _safe_upload_size(upload),
+            "actual_format": (actual_format if actual_format in _SAFE_ACTUAL_FORMATS else None),
+            "declared_type": _safe_declared_type(upload),
+        },
+    )
+
+
+def _safe_upload_size(upload: object) -> int | None:
+    size = getattr(upload, "size", None)
+    return size if isinstance(size, int) and not isinstance(size, bool) else None
+
+
+def _safe_declared_type(upload: object) -> str:
+    declared_type = getattr(upload, "content_type", None)
+    if isinstance(declared_type, str) and declared_type in _SAFE_DECLARED_TYPES:
+        return declared_type
+    return "other"
 
 
 _TERMINAL_SEARCH_STATUSES = frozenset(

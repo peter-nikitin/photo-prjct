@@ -1,16 +1,23 @@
 import hashlib
 from datetime import date
+from io import BytesIO
+from pathlib import Path
+from struct import pack
 from typing import cast
 from unittest.mock import Mock, call, patch
 from urllib.parse import quote
 from uuid import uuid4
+from zlib import crc32
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from ingestion.storage import ObjectMissing, StorageError
+from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.models import Event, Photo
+from PIL import Image
 from processing.models import (
     EventProcessingRun,
     FaceProcessingAttemptArtifact,
@@ -18,7 +25,7 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
-from selfie_search.models import SelfieSearch, SelfieSearchResult
+from selfie_search.models import SelfieSearch, SelfieSearchJob, SelfieSearchResult
 
 type ChoiceValue = str | tuple[str, str]
 
@@ -70,7 +77,10 @@ class PublicSelfieSearchMarkupTests(TestCase):
                 self.assertContains(response, 'enctype="multipart/form-data"')
                 self.assertContains(response, 'name="csrfmiddlewaretoken"')
                 self.assertContains(response, 'name="selfie"')
-                self.assertContains(response, 'accept="image/jpeg,image/png"')
+                self.assertContains(
+                    response,
+                    'accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif"',
+                )
                 self.assertContains(
                     response,
                     "Мы ищем вероятные совпадения только среди фотографий этого события.",
@@ -155,6 +165,188 @@ class PublicSelfieSearchMarkupTests(TestCase):
         self.assertEqual(response.context["search"].pk, search.pk)
         self.assertContains(response, "Искать по другому селфи")
         self.assertContains(response, reverse("event_detail", kwargs={"slug": event.slug}))
+
+
+def _view_jpeg_upload() -> SimpleUploadedFile:
+    content = BytesIO()
+    Image.new("RGB", (8, 8), color="white").save(content, format="JPEG")
+    return SimpleUploadedFile("selfie.jpg", content.getvalue(), content_type="image/jpeg")
+
+
+def _view_pixel_limit_upload() -> SimpleUploadedFile:
+    ihdr = pack(">IIBBBBB", 5_001, 5_000, 8, 2, 0, 0, 0)
+    content = b"\x89PNG\r\n\x1a\n" + pack(">I", len(ihdr)) + b"IHDR" + ihdr
+    content += pack(">I", crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
+    content += pack(">I", 0) + b"IEND" + pack(">I", crc32(b"IEND") & 0xFFFFFFFF)
+    return SimpleUploadedFile("selfie.png", content, content_type="image/png")
+
+
+class FailingSubmissionStorage:
+    def put(self, *, key: str, content: bytes, content_type: str):  # noqa: ARG002
+        raise StorageUnavailable()
+
+
+@override_settings(
+    SELFIE_SEARCH_ENABLED=True,
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
+)
+class SelfieSubmissionFeedbackTests(TestCase):
+    def setUp(self) -> None:
+        self.event = Event.objects.create(
+            name="Feedback event",
+            slug="feedback-event",
+            start_date=date(2026, 7, 30),
+            end_date=date(2026, 7, 30),
+            city="Moscow",
+            access_type=Event.AccessType.FREE,
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+        self.url = reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})
+
+    def post(self, upload: SimpleUploadedFile | None) -> HttpResponse:
+        return self.client.post(self.url, {} if upload is None else {"selfie": upload})
+
+    def assert_customer_rejection(
+        self,
+        *,
+        upload: SimpleUploadedFile | None,
+        reason: str,
+        message: str,
+        actual_format: str | None,
+        declared_type: str,
+    ) -> None:
+        before_searches = SelfieSearch.objects.count()
+        before_jobs = SelfieSearchJob.objects.count()
+        with patch("selfie_search.views.TemporarySelfieStorage") as storage_factory:
+            with self.assertLogs("selfie_search.views", level="INFO") as logs:
+                response = self.post(upload)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(SelfieSearch.objects.count(), before_searches)
+        self.assertEqual(SelfieSearchJob.objects.count(), before_jobs)
+        storage_factory.assert_not_called()
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        self.assertEqual(record.getMessage(), "selfie_submission_rejected")
+        self.assertEqual(record.event_id, self.event.pk)
+        self.assertEqual(record.reason, reason)
+        self.assertEqual(record.actual_format, actual_format)
+        self.assertEqual(record.declared_type, declared_type)
+        self.assertContains(response, message, status_code=422)
+        self.assertContains(response, 'id="selfie-search"', status_code=422)
+        self.assertContains(response, 'role="alert"', status_code=422)
+        self.assertContains(
+            response,
+            (
+                f'action="{reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})}'
+                '#selfie-search"'
+            ),
+            status_code=422,
+        )
+        self.assertContains(response, ">Найти мои фото</button>", status_code=422)
+        self.assertNotContains(response, 'type="submit" disabled', status_code=422)
+        self.assertEqual(response.content.count(b'role="alert"'), 1)
+        captured = repr(record.__dict__) + "\n".join(logs.output)
+        for forbidden in (
+            "selfie.jpg",
+            "selfie.bin",
+            "application/octet-stream",
+            "selfie-search/",
+            "signed",
+            "vector",
+            "traceback",
+        ):
+            self.assertNotIn(forbidden, captured)
+
+    def test_customer_correctable_rejections_have_one_safe_event_and_no_side_effects(self) -> None:
+        content = BytesIO()
+        Image.new("RGB", (8, 8), color="white").save(content, format="GIF")
+        cases = (
+            (None, "missing_or_empty", "Выберите фотографию для поиска.", None, "other"),
+            (
+                SimpleUploadedFile(
+                    "selfie.bin", content.getvalue(), content_type="application/octet-stream"
+                ),
+                "unsupported_format",
+                "Не удалось прочитать фотографию. Выберите JPEG, PNG, HEIC или HEIF.",
+                "gif",
+                "other",
+            ),
+            (
+                SimpleUploadedFile("selfie.jpg", b"\xff\xd8\xff", content_type="image/jpeg"),
+                "corrupt_image",
+                "Фотография повреждена. Выберите другой файл.",
+                None,
+                "image/jpeg",
+            ),
+            (
+                SimpleUploadedFile(
+                    "selfie.jpg", b"x" * (20 * 1024 * 1024 + 1), content_type="image/jpeg"
+                ),
+                "source_too_large",
+                "Размер фотографии не должен превышать 20 МиБ.",
+                None,
+                "image/jpeg",
+            ),
+            (
+                _view_pixel_limit_upload(),
+                "pixel_limit_exceeded",
+                "Изображение слишком большое. Уменьшите его так, чтобы "
+                "ширина × высота были не больше 25 млн пикселей — "
+                "например, 5000 × 5000.",
+                "png",
+                "image/png",
+            ),
+        )
+        for upload, reason, message, actual_format, declared_type in cases:
+            with self.subTest(reason=reason):
+                self.assert_customer_rejection(
+                    upload=upload,
+                    reason=reason,
+                    message=message,
+                    actual_format=actual_format,
+                    declared_type=declared_type,
+                )
+
+    def test_normalized_oversize_rejection_is_safe_and_customer_correctable(self) -> None:
+        fixture = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
+        upload = SimpleUploadedFile("iphone.heic", fixture, content_type="image/heic")
+        with override_settings(SELFIE_SEARCH_MAX_UPLOAD_BYTES=len(fixture)):
+            with patch(
+                "selfie_search.images._normalize_heif", return_value=b"x" * (len(fixture) + 1)
+            ):
+                self.assert_customer_rejection(
+                    upload=upload,
+                    reason="normalized_too_large",
+                    message="Размер фотографии не должен превышать 20 МиБ.",
+                    actual_format="heic",
+                    declared_type="image/heic",
+                )
+
+    def test_storage_failure_is_503_retryable_and_has_no_search_or_job(self) -> None:
+        with patch(
+            "selfie_search.views.TemporarySelfieStorage",
+            return_value=FailingSubmissionStorage(),
+        ):
+            with self.assertLogs("selfie_search.views", level="WARNING") as logs:
+                response = self.post(_view_jpeg_upload())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(SelfieSearch.objects.exists())
+        self.assertFalse(SelfieSearchJob.objects.exists())
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        self.assertEqual(record.getMessage(), "selfie_submission_rejected")
+        self.assertEqual(record.reason, "storage_unavailable")
+        self.assertEqual(record.actual_format, "jpeg")
+        self.assertEqual(record.declared_type, "image/jpeg")
+        self.assertContains(
+            response,
+            "Не удалось загрузить фотографию. Попробуйте ещё раз.",
+            status_code=503,
+        )
+        self.assertContains(response, 'role="alert"', status_code=503)
+        self.assertContains(response, ">Найти мои фото</button>", status_code=503)
 
 
 @override_settings(

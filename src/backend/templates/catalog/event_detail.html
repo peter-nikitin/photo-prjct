@@ -45,7 +45,7 @@
       </div>
     </div>
     {% if selfie_search_form %}
-      <section class="selfie-search" aria-labelledby="selfie-search-title">
+      <section id="selfie-search" class="selfie-search" aria-labelledby="selfie-search-title">
         <h2 id="selfie-search-title">Найти мои фото</h2>
         <p>Мы ищем вероятные совпадения только среди фотографий этого события.</p>
         <p>Загрузите чёткую фотографию, где лицо хорошо видно. Лучше использовать фото с дня мероприятия, особенно если на мероприятии вы были в очках или головном уборе.</p>
@@ -53,13 +53,18 @@
           <li>Селфи удаляется после подготовки поиска.</li>
           <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
         </ul>
-        <form data-selfie-search-form action="{% url 'selfie_search:submit' event_slug=event.slug %}" method="post" enctype="multipart/form-data">
+        <form data-selfie-search-form action="{% url 'selfie_search:submit' event_slug=event.slug %}#selfie-search" method="post" enctype="multipart/form-data">
           {% csrf_token %}
+          {% if selfie_search_form.non_field_errors or selfie_search_form.selfie.errors %}
+            <div id="selfie-search-error" class="selfie-search-error" data-selfie-search-error role="alert" tabindex="-1">
+              {% for error in selfie_search_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+              {% if not selfie_search_form.non_field_errors %}
+                {% for error in selfie_search_form.selfie.errors %}<p>{{ error }}</p>{% endfor %}
+              {% endif %}
+            </div>
+          {% endif %}
           <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
           {{ selfie_search_form.selfie }}
-          {% if selfie_search_form.selfie.errors %}
-            <div role="alert">{{ selfie_search_form.selfie.errors }}</div>
-          {% endif %}
           <button class="button" type="submit">Найти мои фото</button>
         </form>
       </section>

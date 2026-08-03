@@ -177,6 +177,11 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
   signed direct Object Storage redirect transport is implemented for already authorized gallery and
   result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
+  The browser source boundary accepts JPEG, PNG, HEIC, and HEIF; Django bounds and decodes the
+  source, preserving JPEG/PNG or normalizing HEIC/HEIF to canonical JPEG bytes before temporary
+  storage and worker input. Stored objects and worker configuration remain canonical JPEG/PNG only,
+  with no source metadata propagated. This conforms to ADR 0019; its privacy, event-isolation,
+  bearer, and cleanup boundaries are unchanged.
 - Allow attachment delivery wherever an existing normal-gallery or ready-result context already
   authorizes an original, without adding a free-versus-paid branch or opening a normal paid gallery,
   as defined by [ADR 0021](adr/0021-allow-original-download-for-authorized-photos.md). Verified

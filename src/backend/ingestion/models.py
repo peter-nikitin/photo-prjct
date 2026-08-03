@@ -6,6 +6,8 @@ from django.db import models
 from django.utils import timezone
 from picflow.models import Event, Photo
 
+MAX_POSTGRES_BIGINT = 9_223_372_036_854_775_807
+
 
 class UploadBatch(models.Model):  # noqa: DJ008
     class Status(models.TextChoices):
@@ -66,6 +68,12 @@ class UploadItem(models.Model):  # noqa: DJ008
     declared_content_type = models.CharField(max_length=100)
     expected_size = models.BigIntegerField(
         validators=[MinValueValidator(1), MaxValueValidator(52_428_800)]
+    )
+    client_last_modified_ms = models.BigIntegerField(null=True, blank=True)
+    ambiguous_sha256 = models.CharField(  # noqa: DJ001
+        max_length=64,
+        null=True,
+        blank=True,
     )
     incoming_key = models.CharField(max_length=255, unique=True)
     final_key = models.CharField(max_length=255, unique=True)

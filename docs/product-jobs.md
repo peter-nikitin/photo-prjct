@@ -33,7 +33,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-001 | Operator | Publish an event | Validated | 2026-07-17 |
 | PJ-002 | Visitor | Discover published events | Validated | 2026-07-17 |
 | PJ-003 | Visitor | Review event details | Validated | 2026-07-17 |
-| PJ-004 | Photographer | Upload an event batch | Candidate | 2026-07-17 |
+| PJ-004 | Photographer | Upload an event batch | Validated | 2026-08-01 |
 | PJ-005 | Visitor | Browse an event gallery | Validated | 2026-07-19 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
@@ -75,9 +75,18 @@ When I find an event, I want to open its public details, so I can confirm it is 
 When I finish photographing an event, I want to upload a batch with event and capture context, so I
 can submit it for processing.
 
-- Status: Candidate
-- Evidence: [Target MVP architecture — Ingestion](architecture.md#target-mvp-architecture--proposed)
-- Last updated: 2026-07-17
+- Status: Validated
+- Evidence: The implemented request-driven uploader creates owned batches, transfers JPEGs directly
+  to the private incoming prefix, confirms and promotes verified originals, and lets a returning
+  photographer explicitly reselect files for an unfinished owned batch. PostgreSQL reconstructs the
+  open-page queue, skips server-confirmed items, and leaves missing or ambiguous files unresolved;
+  closing the page still stops transfer. Local 2026-08-01 evidence: 174 focused ingestion/visual
+  Python tests passed (54 subtests), 38 JavaScript tests passed, 60 containerized Playwright tests
+  passed, and the full Python suite passed 890 tests with 3 skipped at 82.71% branch coverage.
+  `manage.py check` and migration drift passed. After independently reviewed test-only corrections,
+  the full-repository Ruff format check, Ruff lint, mypy over 131 source files, and
+  `git diff --check` also passed.
+- Last updated: 2026-08-01
 
 ### PJ-005 — Visitor — Browse an event gallery
 
@@ -172,6 +181,7 @@ This log is append-only.
 | 2026-07-17 | PJ-002 | Not recorded | Validated | [`src/backend/picflow/tests/test_views.py::PageTests::test_catalog_only_shows_published_events`](../src/backend/picflow/tests/test_views.py) and [`src/backend/picflow/tests/test_views.py::PageTests::test_catalog_orders_upcoming_then_past`](../src/backend/picflow/tests/test_views.py) |
 | 2026-07-17 | PJ-003 | Not recorded | Validated | [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_renders_published_event`](../src/backend/picflow/tests/test_views.py) and [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_returns_404_for_draft_event`](../src/backend/picflow/tests/test_views.py) |
 | 2026-07-17 | PJ-004 | Not recorded | Candidate | [Target MVP architecture — Ingestion](architecture.md#target-mvp-architecture--proposed) |
+| 2026-08-01 | PJ-004 | Candidate | Validated | Implemented resumable owned-batch upload is locally evidenced by focused, JavaScript, containerized visual, full Python with 82.71% branch coverage, Django-check, migration-drift, Ruff format/lint, mypy, and diff-check runs. |
 | 2026-07-17 | PJ-005 | Not recorded | Candidate | [Architecture evolution stages — Photo-bank core](architecture.md#evolution-stages) |
 | 2026-07-17 | PJ-006 | Not recorded | Candidate | [Target MVP architecture — Moderation](architecture.md#target-mvp-architecture--proposed) |
 | 2026-07-17 | PJ-007 | Not recorded | Candidate | [Target MVP architecture — Search](architecture.md#search) |

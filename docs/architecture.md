@@ -209,7 +209,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Module | Responsibility | Status |
 | --- | --- | --- |
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
-| Ingestion | Photographer permissions, request-driven batch upload, object promotion, upload state | Proposed |
+| Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
 | Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals and preview-first slice; remaining scope proposed |
 | Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed; preview-backed worker input/persistence contract is implemented but not activated |
 | Search | Event-scoped face/bib/time/location queries | Public face search implemented locally with activation pending; remaining modes proposed |
@@ -245,7 +245,11 @@ broker, vector engine, and ML implementations shown for later processing require
 ### Photo ingestion and indexing
 
 1. An authorized photographer creates a batch for any event. The photographer may access only their
-   own batches; superusers retain administrative visibility.
+   own batches; superusers retain administrative visibility. PostgreSQL preserves unfinished batch
+   and item state, so an open upload page can list the photographer's unfinished batches and, after
+   explicit reselection of local files, reconstruct its browser queue while skipping server-confirmed
+   items. Closing the page still stops unfinished browser transfers; it does not retain local-file
+   access or continue transfer in the background.
 2. A browser-managed queue uploads files with bounded concurrency to generated keys in a private
    incoming prefix using constrained 10-minute presigned POST grants.
 3. In a confirmation request, Django verifies the incoming object and binds validation and

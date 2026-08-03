@@ -44,6 +44,7 @@ from ingestion.services.batches import (
     report_item_failed,
 )
 from ingestion.services.confirmation import confirm_upload_item
+from ingestion.services.resume import ResumeManifest, get_resume_manifest, list_unfinished_batches
 from ingestion.storage import PrivateUploadStorage, StorageError
 
 UploadView = Callable[..., HttpResponse]
@@ -116,10 +117,10 @@ def upload_page(request: HttpRequest) -> HttpResponse:
                 "max_file_megabytes": settings.PHOTO_UPLOAD_MAX_FILE_BYTES // (1024 * 1024),
                 "registration_chunk": settings.PHOTO_UPLOAD_REGISTRATION_CHUNK,
                 "concurrency": settings.PHOTO_UPLOAD_CONCURRENCY,
-                "queue_window": 20,
             },
             "upload_state": "empty",
             "upload_control_urls": _upload_control_urls(),
+            "unfinished_batches": list_unfinished_batches(request.user),
         },
     )
 
@@ -142,7 +143,20 @@ def _upload_control_urls() -> dict[str, str]:
         "confirm": item_url("upload_item_confirm"),
         "failed": item_url("upload_item_failed"),
         "finalize": reverse("upload_batch_finalize", args=[_URL_BATCH]).replace(batch, "{batch}"),
+        "resume_manifest": reverse("upload_batch_resume_manifest", args=[_URL_BATCH]).replace(
+            batch, "{batch}"
+        ),
     }
+
+
+@require_GET
+@_upload_access(json_errors=True)
+def upload_batch_resume_manifest(request: HttpRequest, batch: UUID) -> JsonResponse:
+    try:
+        manifest = get_resume_manifest(uploader=request.user, batch_id=batch)
+    except UploadBatch.DoesNotExist:
+        return _not_found()
+    return JsonResponse(_resume_manifest_payload(manifest))
 
 
 @require_POST
@@ -191,6 +205,8 @@ def upload_items_register(request: HttpRequest, batch: UUID) -> JsonResponse:
             filename=item["filename"],
             content_type=item["content_type"],
             size=item["size"],
+            last_modified_ms=item["last_modified_ms"],
+            ambiguous_sha256=item["ambiguous_sha256"],
         )
         for item in data["items"]
     ]
@@ -452,4 +468,26 @@ def _final_batch_payload(batch: BatchResult) -> dict[str, object]:
         "expected": batch.expected,
         "uploaded": batch.uploaded,
         "failed": batch.failed,
+    }
+
+
+def _resume_manifest_payload(manifest: ResumeManifest) -> dict[str, object]:
+    return {
+        "batch": {
+            "id": str(manifest.id),
+            "event": {"id": manifest.event_id, "name": manifest.event_name},
+            "expected_item_count": manifest.expected_count,
+        },
+        "items": [
+            {
+                "id": str(item.id),
+                "filename": item.filename,
+                "size": item.size,
+                "last_modified_ms": item.last_modified_ms,
+                "ambiguous_sha256": item.ambiguous_sha256,
+                "status": item.status,
+                "confirmed": item.confirmed,
+            }
+            for item in manifest.items
+        ],
     }

@@ -73,8 +73,17 @@ class BatchServiceTests(TransactionTestCase):
         filename: str = "finish.jpg",
         content_type: str = "image/jpeg",
         size: int = 1234,
+        last_modified_ms: int | None = None,
+        ambiguous_sha256: str | None = None,
     ) -> ItemInput:
-        return ItemInput(client_item_id or uuid4(), filename, content_type, size)
+        return ItemInput(
+            client_item_id or uuid4(),
+            filename,
+            content_type,
+            size,
+            last_modified_ms,
+            ambiguous_sha256,
+        )
 
     def register_one(self, batch_id: UUID, item=None):
         result = register_items(
@@ -108,6 +117,64 @@ class BatchServiceTests(TransactionTestCase):
         self.assertEqual(row.incoming_key, f"incoming/{batch.id}/{row.id}")
         self.assertEqual(row.final_key, f"originals/{row.id.hex}")
         self.assertNotIn(row.original_filename, row.incoming_key)
+
+    def test_registration_persists_resume_metadata_only_for_ambiguous_items(self) -> None:
+        batch = self.make_batch(2)
+        ambiguous = self.item_input(
+            last_modified_ms=1_722_500_123_456,
+            ambiguous_sha256="a" * 64,
+        )
+        unique = self.item_input(last_modified_ms=1_722_500_123_457)
+
+        register_items(uploader=self.user, batch_id=batch.id, items=[ambiguous, unique])
+
+        stored_ambiguous = UploadItem.objects.get(client_item_id=ambiguous.client_item_id)
+        stored_unique = UploadItem.objects.get(client_item_id=unique.client_item_id)
+        self.assertEqual(stored_ambiguous.client_last_modified_ms, 1_722_500_123_456)
+        self.assertEqual(stored_ambiguous.ambiguous_sha256, "a" * 64)
+        self.assertEqual(stored_unique.client_last_modified_ms, 1_722_500_123_457)
+        self.assertIsNone(stored_unique.ambiguous_sha256)
+
+    def test_registration_replay_rejects_changed_resume_metadata(self) -> None:
+        batch = self.make_batch()
+        client_item_id = uuid4()
+        registered = self.item_input(
+            client_item_id,
+            last_modified_ms=1_722_500_123_456,
+            ambiguous_sha256="a" * 64,
+        )
+        register_items(uploader=self.user, batch_id=batch.id, items=[registered])
+
+        for changed in (
+            self.item_input(
+                client_item_id,
+                last_modified_ms=1_722_500_123_457,
+                ambiguous_sha256="a" * 64,
+            ),
+            self.item_input(
+                client_item_id,
+                last_modified_ms=1_722_500_123_456,
+                ambiguous_sha256="b" * 64,
+            ),
+        ):
+            with self.subTest(changed=changed):
+                with self.assertRaises(BatchConflict) as raised:
+                    register_items(uploader=self.user, batch_id=batch.id, items=[changed])
+                self.assertEqual(raised.exception.code, "item_metadata_conflict")
+
+    def test_registration_rejects_invalid_resume_metadata(self) -> None:
+        batch = self.make_batch(3)
+        invalid_items = (
+            self.item_input(last_modified_ms=-1),
+            self.item_input(last_modified_ms=9_223_372_036_854_775_808),
+            self.item_input(last_modified_ms=1_722_500_123_456, ambiguous_sha256="A" * 64),
+            self.item_input(ambiguous_sha256="a" * 64),
+        )
+
+        for item in invalid_items:
+            with self.subTest(item=item):
+                with self.assertRaises(BatchConflict):
+                    register_items(uploader=self.user, batch_id=batch.id, items=[item])
 
     def test_registration_conflicting_metadata_and_chunk_limits(self) -> None:
         batch = self.make_batch(100)

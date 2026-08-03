@@ -1,7 +1,7 @@
 """Deterministic, database-free fixture views for visual review."""
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
 
@@ -45,6 +45,18 @@ class FixtureEvent:
 
     def get_access_type_display(self) -> str:
         return self.access_label
+
+
+@dataclass(frozen=True)
+class FixtureUnfinishedUpload:
+    id: str
+    event_id: str
+    event_name: str
+    created_at: datetime
+    last_activity_at: datetime
+    expected_count: int
+    confirmed_count: int
+    unresolved_count: int
 
 
 @dataclass(frozen=True)
@@ -110,6 +122,19 @@ EVENTS = (
         "Портреты участников и финишные кадры из expo-зоны.",
         "Доступ по коду",
         FixtureImage("/static/images/run-expo-3125.png"),
+    ),
+)
+
+UNFINISHED_UPLOADS = (
+    FixtureUnfinishedUpload(
+        id="batch-resume-1",
+        event_id="london-10k",
+        event_name="London 10K",
+        created_at=datetime(2026, 6, 8, 10, 0),
+        last_activity_at=datetime(2026, 6, 9, 14, 30),
+        expected_count=2,
+        confirmed_count=1,
+        unresolved_count=1,
     ),
 )
 
@@ -260,8 +285,14 @@ UPLOAD_LIMITS = MappingProxyType(
         "max_file_megabytes": 50,
         "registration_chunk": 100,
         "concurrency": 4,
-        "queue_window": 20,
     }
+)
+
+QUEUE_GROUPS = (
+    ("needs_attention", "Требуют внимания", True),
+    ("uploading", "Загружаются", True),
+    ("waiting", "Ожидают", False),
+    ("uploaded", "Загружены", False),
 )
 
 ACTIVE_UPLOAD_QUEUE = (
@@ -505,6 +536,7 @@ def _upload(
     state: str,
     summary: dict[str, int | str],
     queue: tuple[MappingProxyType[str, Any], ...] = (),
+    unfinished_uploads: tuple[FixtureUnfinishedUpload, ...] = (),
 ) -> HttpResponse:
     request.user = FixtureUser("Анна Смирнова")
     with override_settings(PHOTO_UPLOAD_ENABLED=True):
@@ -516,9 +548,43 @@ def _upload(
                 "upload_limits": UPLOAD_LIMITS,
                 "upload_state": state,
                 "upload_summary": summary,
-                "upload_queue": queue,
+                "upload_queue_groups": _upload_queue_groups(queue),
+                "unfinished_batches": unfinished_uploads,
             },
         )
+
+
+def _upload_queue_groups(
+    queue: tuple[MappingProxyType[str, Any], ...],
+) -> tuple[MappingProxyType[str, Any], ...]:
+    if not queue:
+        return ()
+
+    grouped = {key: [] for key, _, _ in QUEUE_GROUPS}
+    for item in queue:
+        status_class = item["status_class"]
+        if status_class in {"failed", "needs_attention"}:
+            key = "needs_attention"
+        elif status_class == "active":
+            key = "uploading"
+        elif status_class == "uploaded":
+            key = "uploaded"
+        else:
+            key = "waiting"
+        grouped[key].append(item)
+
+    return tuple(
+        MappingProxyType(
+            {
+                "key": key,
+                "label": label,
+                "expanded": expanded,
+                "count": len(grouped[key]),
+                "items": tuple(grouped[key]),
+            }
+        )
+        for key, label, expanded in QUEUE_GROUPS
+    )
 
 
 def upload_empty(request: HttpRequest) -> HttpResponse:
@@ -526,6 +592,7 @@ def upload_empty(request: HttpRequest) -> HttpResponse:
         request,
         state="empty",
         summary={"progress": 0, "total": 0, "uploaded": 0, "failed": 0, "bytes": "0 Б"},
+        unfinished_uploads=UNFINISHED_UPLOADS if request.GET.get("resume") else (),
     )
 
 

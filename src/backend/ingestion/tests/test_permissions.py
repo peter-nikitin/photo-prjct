@@ -46,6 +46,7 @@ class UploadPermissionTests(TestCase):
         item = uuid4()
         return [
             ("get", reverse("upload_page")),
+            ("get", reverse("upload_batch_resume_manifest", args=[batch])),
             ("post", reverse("upload_batch_create")),
             ("post", reverse("upload_items_register", args=[batch])),
             ("post", reverse("upload_item_authorize", args=[batch, item])),
@@ -131,6 +132,7 @@ class UploadPermissionTests(TestCase):
         client.force_login(self.staff_photographer)
 
         urls = [
+            reverse("upload_batch_resume_manifest", args=[batch.id]),
             reverse("upload_items_register", args=[batch.id]),
             reverse("upload_item_authorize", args=[batch.id, item.id]),
             reverse("upload_item_retry", args=[batch.id, item.id]),
@@ -141,7 +143,11 @@ class UploadPermissionTests(TestCase):
             reverse("upload_item_retry", args=[foreign_batch.id, item.id]),
         ]
         for url in urls:
-            response = client.post(url, "{}", content_type="application/json")
+            response = (
+                client.get(url)
+                if url.endswith("/resume/")
+                else client.post(url, "{}", content_type="application/json")
+            )
             self.assertEqual(response.status_code, 404)
             self.assertEqual(response.json()["error"]["code"], "not_found")
 

@@ -147,14 +147,30 @@ async function installUploadStubs(
   let activeTransfers = 0;
   let maxActiveTransfers = 0;
   const controlCalls = [];
+  const storageCalls = [];
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.route('**/photographer/uploads/**', async (route) => {
     const request = route.request();
-    if (request.method() !== 'POST') {
-      return route.continue();
-    }
     const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname.endsWith('/batch-resume-1/resume/')) {
+      return route.fulfill({
+        json: {
+          batch: { id: 'batch-resume-1', event: { id: 'london-10k', name: 'London 10K' } },
+          items: [
+            {
+              id: 'confirmed', filename: 'confirmed.jpg', size: 9, last_modified_ms: null,
+              ambiguous_sha256: null, status: 'uploaded', confirmed: true,
+            },
+            {
+              id: 'pending', filename: 'pending.jpg', size: 7, last_modified_ms: null,
+              ambiguous_sha256: null, status: 'pending', confirmed: false,
+            },
+          ],
+        },
+      });
+    }
+    if (request.method() !== 'POST') return route.continue();
     const body = request.postDataJSON();
     controlCalls.push({ path: url.pathname, body });
     if (url.pathname.endsWith('/batches/')) {
@@ -171,7 +187,7 @@ async function installUploadStubs(
         },
       });
     }
-    const item = url.pathname.match(/items\/(item-\d+)\//)?.[1];
+    const item = url.pathname.match(/items\/([^/]+)\//)?.[1];
     if (url.pathname.endsWith('/retry/') && retryFailureStatus) {
       return route.fulfill({
         status: retryFailureStatus,
@@ -207,6 +223,7 @@ async function installUploadStubs(
     return route.abort();
   });
   await page.route('http://storage.test/**', async (route) => {
+    storageCalls.push(new URL(route.request().url()).pathname);
     activeTransfers += 1;
     maxActiveTransfers = Math.max(maxActiveTransfers, activeTransfers);
     if (storageDelay) {
@@ -220,7 +237,7 @@ async function installUploadStubs(
       headers: { 'access-control-allow-origin': '*' },
     });
   });
-  return { controlCalls, pageErrors, getMaxActiveTransfers: () => maxActiveTransfers };
+  return { controlCalls, storageCalls, pageErrors, getMaxActiveTransfers: () => maxActiveTransfers };
 }
 
 test.describe('desktop visual regression', () => {
@@ -546,9 +563,161 @@ test('browser coordinator completes a successful upload and announces progress',
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
   await expect(page.locator('[data-summary-message]')).toContainText('2 из 2');
   await expect(page.getByRole('status')).toContainText('2 из 2');
+  const uploadedToggle = page.locator('[data-queue-group-toggle="uploaded"]');
+  await expect(uploadedToggle).toHaveAttribute('aria-expanded', 'false');
+  await uploadedToggle.click();
   await expect(page.locator('[data-upload-queue] .queue-item')).toHaveCount(2);
   expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/confirm/'))).toHaveLength(2);
   expect(stubs.pageErrors).toEqual([]);
+});
+
+test('upload queue prioritizes groups, discloses them from the keyboard, and pages ten thousand files', async ({ page }) => {
+  await page.goto('/__visual__/upload/empty/');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    const coordinator = root.uploadCoordinator;
+    coordinator.items = [
+      {
+        clientItemId: 'failed', file: { name: 'failed.jpg', size: 10 }, status: 'failed', progress: 50,
+        error: 'Файл требует повторной отправки.',
+      },
+      {
+        clientItemId: 'active', file: { name: 'active.jpg', size: 10 }, status: 'uploading', progress: 68,
+        error: '',
+      },
+      ...Array.from({ length: 2 }, (_, index) => ({
+        clientItemId: `waiting-${index}`, file: { name: `waiting-${index}.jpg`, size: 10 },
+        status: 'waiting', progress: 0, error: '',
+      })),
+      ...Array.from({ length: 9_996 }, (_, index) => ({
+        clientItemId: `uploaded-${index}`, file: { name: `uploaded-${index}.jpg`, size: 10 },
+        status: 'uploaded', progress: 100, error: '',
+      })),
+    ];
+    window.FindMeUpload.renderPage(root, coordinator);
+  });
+
+  const groups = page.locator('[data-upload-queue] > [data-queue-group]');
+  await expect(groups).toHaveCount(4);
+  expect(await groups.evaluateAll((nodes) => nodes.map((node) => node.dataset.queueGroup))).toEqual([
+    'needs_attention',
+    'uploading',
+    'waiting',
+    'uploaded',
+  ]);
+  await expect(page.locator('[data-queue-group="needs_attention"]')).toContainText('failed.jpg');
+  await expect(page.locator('[data-queue-group="uploading"]')).toContainText('active.jpg');
+  await expect(page.locator('[data-queue-group-toggle="needs_attention"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('[data-queue-group-toggle="uploading"]')).toHaveAttribute('aria-expanded', 'true');
+  const waitingToggle = page.locator('[data-queue-group-toggle="waiting"]');
+  await expect(waitingToggle).toHaveAttribute('aria-expanded', 'false');
+  await waitingToggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(waitingToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('[data-queue-group="waiting"] .queue-item')).toHaveCount(2);
+
+  const uploadedToggle = page.locator('[data-queue-group-toggle="uploaded"]');
+  await uploadedToggle.focus();
+  await page.keyboard.press('Space');
+  await expect(uploadedToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('[data-queue-group="uploaded"] .queue-item')).toHaveCount(20);
+  await uploadedToggle.evaluate((button) => button.closest('[data-queue-group]').querySelector('[data-queue-next-page]').click());
+  await expect(page.locator('[data-queue-group="uploaded"]')).toContainText('uploaded-20.jpg');
+  await expect(page.locator('[data-queue-group="uploaded"] .queue-item')).toHaveCount(20);
+});
+
+test('desktop upload summary keeps controls, geometry, and every metric visible as counters gain digits', async ({ page }) => {
+  await page.goto('/__visual__/upload/empty/');
+  const measurements = await page.evaluate(() => {
+    const controls = document.querySelector('.upload-controls');
+    const summary = document.querySelector('.upload-summary');
+    const countNodes = document.querySelectorAll(
+      '[data-total-count], [data-uploaded-count], [data-failed-count], [data-total-bytes]',
+    );
+    const measureMetrics = () => {
+      const metrics = document.querySelector('.summary-metrics').getBoundingClientRect().toJSON();
+      const values = Array.from(document.querySelectorAll('.summary-metrics dt, .summary-metrics dd'))
+        .map((node) => ({ text: node.textContent, box: node.getBoundingClientRect().toJSON() }));
+      return { metrics, values };
+    };
+    return [9, 10, 999, 1_000].map((count) => {
+      countNodes.forEach((node, index) => {
+        node.textContent = index === 3 ? '2,1 из 5,8 ГБ' : count.toLocaleString('ru-RU');
+      });
+      return {
+        controls: controls.getBoundingClientRect().toJSON(),
+        summary: summary.getBoundingClientRect().toJSON(),
+        metricVisibility: measureMetrics(),
+        fontVariantNumeric: getComputedStyle(summary.querySelector('[data-total-count]')).fontVariantNumeric,
+        widths: [document.documentElement.clientWidth, document.documentElement.scrollWidth],
+      };
+    });
+  });
+
+  for (const measurement of measurements.slice(1)) {
+    expect(measurement.controls).toEqual(measurements[0].controls);
+    expect(measurement.summary).toEqual(measurements[0].summary);
+    expect(measurement.widths[1]).toBeLessThanOrEqual(measurement.widths[0]);
+  }
+  for (const measurement of measurements) {
+    expect(measurement.metricVisibility.values).toHaveLength(8);
+    for (const { text, box } of measurement.metricVisibility.values) {
+      expect(text).not.toBe('');
+      expect(box.top).toBeGreaterThanOrEqual(measurement.metricVisibility.metrics.top);
+      expect(box.bottom).toBeLessThanOrEqual(measurement.metricVisibility.metrics.bottom);
+    }
+  }
+  expect(measurements[0].fontVariantNumeric).toContain('tabular-nums');
+});
+
+test('mobile upload summary reserves separate metric and message rows', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await page.goto('/__visual__/upload/active/');
+  const boxes = await page.evaluate(() => {
+    const metrics = document.querySelector('.summary-metrics').getBoundingClientRect().toJSON();
+    const message = document.querySelector('[data-summary-message]').getBoundingClientRect().toJSON();
+    return { metrics, message };
+  });
+
+  expect(boxes.message.y).toBeGreaterThanOrEqual(boxes.metrics.y + boxes.metrics.height);
+});
+
+test('returning photographer resumes only the unfinished item from an owned batch', async ({ page }) => {
+  const stubs = await installUploadStubs(page);
+  await page.goto('/__visual__/upload/empty/?resume=1');
+
+  await page.getByRole('button', { name: 'Продолжить загрузку' }).click();
+  await expect(page.locator('#upload-event')).toHaveValue('london-10k');
+  await expect(page.locator('#upload-event')).toBeDisabled();
+  await page.locator('#resume-upload-files').setInputFiles([
+    { name: 'confirmed.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('confirmed') },
+    { name: 'pending.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('pending') },
+  ]);
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  expect(stubs.controlCalls.filter(({ path }) => path.includes('/items/confirmed/'))).toHaveLength(0);
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/items/pending/authorize/'))).toHaveLength(1);
+  expect(stubs.storageCalls).toEqual(['/upload/pending']);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('incomplete resumed selections tell the photographer what action is needed', async ({ page }) => {
+  await page.goto('/__visual__/upload/empty/');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    const coordinator = root.uploadCoordinator;
+    coordinator.active = false;
+    coordinator.items = [
+      { clientItemId: 'waiting', file: { name: 'missing.jpg', size: 4 }, status: 'waiting', progress: 0 },
+      { clientItemId: 'attention', file: { name: 'extra.jpg', size: 4 }, status: 'needs_attention', progress: 0 },
+    ];
+    window.FindMeUpload.renderPage(root, coordinator);
+  });
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Требуется действие');
+  await expect(page.locator('[data-summary-message]')).toHaveText(
+    'Загрузка не завершена: выберите недостающие файлы и проверьте файлы, требующие внимания.',
+  );
 });
 
 test('browser coordinator accepts a dropped JPEG when the browser omits its MIME type', async ({
@@ -693,6 +862,10 @@ test('failed file can be retried from the keyboard without losing its row', asyn
   await page.keyboard.press('Enter');
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  const uploadedToggle = page.locator('[data-queue-group-toggle="uploaded"]');
+  await expect(uploadedToggle).toHaveAttribute('aria-expanded', 'false');
+  await uploadedToggle.focus();
+  await page.keyboard.press('Enter');
   await expect(page.locator('[data-upload-queue] .queue-item')).toHaveCount(1);
   expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/retry/'))).toHaveLength(1);
   expect(stubs.pageErrors).toEqual([]);

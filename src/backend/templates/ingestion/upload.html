@@ -14,12 +14,12 @@
        data-confirm-url-template="{{ upload_control_urls.confirm|default:'/photographer/uploads/{batch}/items/{item}/confirm/' }}"
        data-failed-url-template="{{ upload_control_urls.failed|default:'/photographer/uploads/{batch}/items/{item}/failed/' }}"
        data-finalize-url-template="{{ upload_control_urls.finalize|default:'/photographer/uploads/{batch}/finalize/' }}"
+       data-resume-manifest-url-template="{{ upload_control_urls.resume_manifest|default:'/photographer/uploads/{batch}/resume/' }}"
        data-csrf-token="{{ csrf_token }}"
        data-max-files="{{ upload_limits.max_files|default:10000 }}"
        data-max-file-bytes="{{ upload_limits.max_file_bytes|default:52428800 }}"
        data-registration-chunk="{{ upload_limits.registration_chunk|default:100 }}"
-       data-concurrency="{{ upload_limits.concurrency|default:4 }}"
-       data-queue-window-size="{{ upload_limits.queue_window|default:20 }}">
+       data-concurrency="{{ upload_limits.concurrency|default:4 }}">
     <header class="upload-heading">
       <div>
         <p class="eyebrow">Кабинет фотографа</p>
@@ -36,6 +36,26 @@
         </div>
       {% endif %}
     </header>
+
+    {% if unfinished_batches %}
+      <section class="unfinished-uploads" data-unfinished-uploads aria-labelledby="unfinished-uploads-title">
+        <p class="eyebrow">Незавершённые загрузки</p>
+        <h2 id="unfinished-uploads-title">Продолжить загрузку</h2>
+        {% for batch in unfinished_batches %}
+          <article data-unfinished-upload data-resume-batch-id="{{ batch.id }}" data-resume-event-id="{{ batch.event_id }}">
+            <h3>{{ batch.event_name }}</h3>
+            <p>{{ batch.confirmed_count }} из {{ batch.expected_count }} загружено · осталось {{ batch.unresolved_count }}</p>
+            <p>Создана {{ batch.created_at|date:"d.m.Y" }} · обновлена {{ batch.last_activity_at|date:"d.m.Y H:i" }}</p>
+            <button type="button" data-resume-batch data-resume-batch-id="{{ batch.id }}">Продолжить загрузку</button>
+          </article>
+        {% endfor %}
+        <input class="visually-hidden"
+               id="resume-upload-files"
+               type="file"
+               accept="image/jpeg,.jpg,.jpeg"
+               multiple>
+      </section>
+    {% endif %}
 
     <section class="upload-workspace" aria-labelledby="upload-settings-title">
       <div class="upload-controls">
@@ -85,10 +105,10 @@
           {{ upload_summary.progress|default:0 }}%
         </progress>
         <dl class="summary-metrics">
-          <div><dt>Выбрано</dt><dd data-total-count>{{ upload_summary.total|default:0 }}</dd></div>
-          <div><dt>Загружено</dt><dd data-uploaded-count>{{ upload_summary.uploaded|default:0 }}</dd></div>
-          <div><dt>Ошибки</dt><dd data-failed-count>{{ upload_summary.failed|default:0 }}</dd></div>
-          <div><dt>Объём</dt><dd data-total-bytes>{{ upload_summary.bytes|default:"0 Б" }}</dd></div>
+          <div><dt>Выбрано</dt><dd class="summary-value" data-total-count>{{ upload_summary.total|default:0 }}</dd></div>
+          <div><dt>Загружено</dt><dd class="summary-value" data-uploaded-count>{{ upload_summary.uploaded|default:0 }}</dd></div>
+          <div><dt>Ошибки</dt><dd class="summary-value" data-failed-count>{{ upload_summary.failed|default:0 }}</dd></div>
+          <div><dt>Объём</dt><dd class="summary-value" data-total-bytes>{{ upload_summary.bytes|default:"0 Б" }}</dd></div>
         </dl>
         <p class="summary-message" data-summary-message>
           {% if upload_state == "complete" %}Все оригиналы сохранены.{% elif upload_state == "partial" %}Успешные файлы сохранены. Повторите передачу файлов с ошибкой.{% elif upload_state == "active" %}Не закрывайте страницу до окончания передачи.{% else %}Здесь появится общий прогресс.{% endif %}
@@ -102,25 +122,53 @@
           <p class="eyebrow">Файлы</p>
           <h2 id="queue-title">Состояние очереди</h2>
         </div>
-        <span class="queue-window-note">Показаны последние 20 файлов</span>
       </div>
       <div class="queue-list" data-upload-queue>
-        {% for item in upload_queue|slice:":20" %}
-          <article class="queue-item queue-item-{{ item.status_class }}" data-rendered-queue-item>
-            <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>
-            <div class="queue-file-copy">
-              <strong>{{ item.name }}</strong>
-              <span>{{ item.meta }}</span>
-              {% if item.error %}<p id="queue-error-{{ forloop.counter }}" class="queue-error">{{ item.error }}</p>{% endif %}
+        {% for group in upload_queue_groups %}
+          <section class="queue-group" data-queue-group="{{ group.key }}">
+            <h3 class="queue-group-heading">
+              <button class="queue-group-toggle"
+                      type="button"
+                      data-queue-group-toggle="{{ group.key }}"
+                      aria-expanded="{{ group.expanded|yesno:'true,false' }}"
+                      aria-controls="queue-group-{{ group.key }}">
+                <span data-queue-group-label>{{ group.label }}</span>
+                <span class="queue-group-count"><span data-queue-group-count>{{ group.count }}</span><span class="visually-hidden"> файлов</span></span>
+              </button>
+            </h3>
+            <div id="queue-group-{{ group.key }}" class="queue-group-content" data-queue-group-content{% if not group.expanded %} hidden{% endif %}>
+              <div class="queue-group-items" data-queue-group-items>
+                {% if group.expanded %}
+                  {% for item in group.items|slice:":20" %}
+                    <article class="queue-item queue-item-{{ item.status_class }}" data-rendered-queue-item>
+                      <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>
+                      <div class="queue-file-copy">
+                        <strong>{{ item.name }}</strong>
+                        <span>{{ item.meta }}</span>
+                        {% if item.error %}<p id="queue-error-{{ group.key }}-{{ forloop.counter }}" class="queue-error">{{ item.error }}</p>{% endif %}
+                      </div>
+                      <div class="queue-item-progress">
+                        <span>{{ item.status }}</span>
+                        <progress max="100" value="{{ item.progress }}">{{ item.progress }}%</progress>
+                      </div>
+                      {% if item.retry %}
+                        <button class="retry-button" type="button" data-retry-item aria-describedby="queue-error-{{ group.key }}-{{ forloop.counter }}">Повторить</button>
+                      {% endif %}
+                    </article>
+                  {% endfor %}
+                {% endif %}
+              </div>
+              {% if group.count > 20 %}
+                <nav class="queue-pagination" data-queue-pagination aria-label="Навигация по группе {{ group.label }}">
+                  <span data-queue-page-status>Показаны 1–20 из {{ group.count }}</span>
+                  <span class="queue-pagination-controls">
+                    <button type="button" data-queue-previous-page data-queue-page-group="{{ group.key }}" disabled>Назад</button>
+                    <button type="button" data-queue-next-page data-queue-page-group="{{ group.key }}">Далее</button>
+                  </span>
+                </nav>
+              {% endif %}
             </div>
-            <div class="queue-item-progress">
-              <span>{{ item.status }}</span>
-              <progress max="100" value="{{ item.progress }}">{{ item.progress }}%</progress>
-            </div>
-            {% if item.retry %}
-              <button class="retry-button" type="button" data-retry-item aria-describedby="queue-error-{{ forloop.counter }}">Повторить</button>
-            {% endif %}
-          </article>
+          </section>
         {% empty %}
           <div class="queue-empty" data-queue-empty>
             <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#image"></use></svg>
@@ -128,6 +176,26 @@
           </div>
         {% endfor %}
       </div>
+      <template id="upload-queue-group-template">
+        <section class="queue-group" data-queue-group>
+          <h3 class="queue-group-heading">
+            <button class="queue-group-toggle" type="button" data-queue-group-toggle aria-expanded="false">
+              <span data-queue-group-label></span>
+              <span class="queue-group-count"><span data-queue-group-count></span><span class="visually-hidden"> файлов</span></span>
+            </button>
+          </h3>
+          <div class="queue-group-content" data-queue-group-content hidden>
+            <div class="queue-group-items" data-queue-group-items></div>
+            <nav class="queue-pagination" data-queue-pagination aria-label="Навигация по группе" hidden>
+              <span data-queue-page-status></span>
+              <span class="queue-pagination-controls">
+                <button type="button" data-queue-previous-page>Назад</button>
+                <button type="button" data-queue-next-page>Далее</button>
+              </span>
+            </nav>
+          </div>
+        </section>
+      </template>
       <template id="upload-queue-row-template">
         <article class="queue-item">
           <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>

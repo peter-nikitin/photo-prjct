@@ -5,6 +5,7 @@ from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
@@ -447,6 +448,22 @@ def event_selfie_search(request: HttpRequest) -> HttpResponse:
             "event": EVENTS[0],
             "gallery_photos": GALLERY_PHOTOS,
             "selfie_search_form": SelfieSearchUploadForm(),
+        },
+    )
+
+
+def event_selfie_search_rejected(request: HttpRequest) -> HttpResponse:
+    form = SelfieSearchUploadForm(
+        files={"selfie": SimpleUploadedFile("selfie.gif", b"GIF89a", content_type="image/gif")}
+    )
+    form.is_valid()
+    return _render(
+        request,
+        "catalog/event_detail.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": GALLERY_PHOTOS,
+            "selfie_search_form": form,
         },
     )
 

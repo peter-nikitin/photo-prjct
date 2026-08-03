@@ -1,51 +1,48 @@
 from __future__ import annotations
 
-from io import BytesIO
-
 from django import forms
-from django.conf import settings
-from PIL import Image, UnidentifiedImageError
 
-_PIXEL_LIMIT_ERROR = "Изображение не должно превышать 25 000 000 пикселей."
+from selfie_search.images import SelfieImageRejected, prepare_selfie_image
+
+_REJECTION_MESSAGES = {
+    "missing_or_empty": "Выберите фотографию для поиска.",
+    "unsupported_format": "Не удалось прочитать фотографию. Выберите JPEG, PNG, HEIC или HEIF.",
+    "corrupt_image": "Фотография повреждена. Выберите другой файл.",
+    "source_too_large": "Размер фотографии не должен превышать 20 МиБ.",
+    "normalized_too_large": "Размер фотографии не должен превышать 20 МиБ.",
+    "pixel_limit_exceeded": (
+        "Изображение слишком большое. Уменьшите его так, чтобы ширина × высота были не больше "
+        "25 млн пикселей — например, 5000 × 5000."
+    ),
+}
 
 
 class SelfieSearchUploadForm(forms.Form):
     selfie = forms.FileField(
-        widget=forms.ClearableFileInput(attrs={"accept": "image/jpeg,image/png"})
+        required=False,
+        widget=forms.ClearableFileInput(
+            attrs={
+                "accept": "image/jpeg,image/png,image/heic,image/heif,.heic,.heif",
+            }
+        ),
     )
 
-    def clean_selfie(self):
-        upload = self.cleaned_data["selfie"]
-        if upload.size <= 0:
-            raise forms.ValidationError("Выберите непустой файл JPEG или PNG.")
-        if upload.size > settings.SELFIE_SEARCH_MAX_UPLOAD_BYTES:
-            raise forms.ValidationError("Размер селфи не должен превышать 20 МиБ.")
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.image_rejection: SelfieImageRejected | None = None
 
-        content = upload.read()
+    def clean_selfie(self):
+        upload = self.cleaned_data.get("selfie")
+        if upload is None:
+            rejection = SelfieImageRejected("missing_or_empty", None)
+            self.image_rejection = rejection
+            raise forms.ValidationError(
+                _REJECTION_MESSAGES[rejection.reason], code=rejection.reason
+            )
         try:
-            image = Image.open(BytesIO(content))
-        except Image.DecompressionBombError:
-            raise forms.ValidationError(_PIXEL_LIMIT_ERROR) from None
-        except (UnidentifiedImageError, OSError):
-            if upload.content_type in {"image/jpeg", "image/png"}:
-                raise forms.ValidationError("Файл повреждён. Выберите другое селфи.") from None
-            raise forms.ValidationError("Загрузите файл JPEG или PNG.") from None
-        image_format = image.format
-        if image_format is None:
-            raise forms.ValidationError("Загрузите файл JPEG или PNG.")
-        expected_content_type = {"JPEG": "image/jpeg", "PNG": "image/png"}.get(image_format)
-        if expected_content_type is None or upload.content_type != expected_content_type:
-            raise forms.ValidationError("Загрузите файл JPEG или PNG.")
-        width, height = image.size
-        if width * height > settings.SELFIE_SEARCH_MAX_PIXELS:
-            raise forms.ValidationError(_PIXEL_LIMIT_ERROR)
-        try:
-            image.verify()
-            verified = Image.open(BytesIO(content))
-            verified.load()
-        except Image.DecompressionBombError:
-            raise forms.ValidationError(_PIXEL_LIMIT_ERROR) from None
-        except (OSError, SyntaxError):
-            raise forms.ValidationError("Файл повреждён. Выберите другое селфи.") from None
-        upload.seek(0)
-        return upload
+            return prepare_selfie_image(upload)
+        except SelfieImageRejected as rejected:
+            self.image_rejection = rejected
+            raise forms.ValidationError(
+                _REJECTION_MESSAGES[rejected.reason], code=rejected.reason
+            ) from None

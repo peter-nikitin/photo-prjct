@@ -3,7 +3,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { SelfieSearchPoller, bindSelfieSearchForm } = require('../../src/backend/static/ui/selfie-search.js');
+const {
+  SelfieSearchPoller,
+  bindSelfieSearchForm,
+  startBrowserUi,
+} = require('../../src/backend/static/ui/selfie-search.js');
 
 function clock() {
   const scheduled = [];
@@ -37,6 +41,23 @@ test('disables the submit control immediately to prevent a duplicate selfie uplo
 
   assert.equal(button.disabled, true);
   assert.equal(button.textContent, 'Ищем фотографии…');
+});
+
+test('focuses an existing selfie rejection summary when the page starts', () => {
+  let focusCount = 0;
+  const form = { addEventListener() {} };
+  const error = { focus() { focusCount += 1; } };
+  const document = {
+    querySelector(selector) {
+      if (selector === '[data-selfie-search-form]') return form;
+      if (selector === '[data-selfie-search-error]') return error;
+      return null;
+    },
+  };
+
+  startBrowserUi(document, {});
+
+  assert.equal(focusCount, 1);
 });
 
 test('polls queued, processing, and cleanup states every two seconds before terminal refresh', async () => {

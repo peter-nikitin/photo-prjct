@@ -43,6 +43,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-25 |
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 | EJ-012 | Maintainer | Gate temporary selfie storage activation | Validated | 2026-07-31 |
+| EJ-013 | Contributor | Start isolated repository work reliably | Validated | 2026-08-04 |
 
 ## Job details
 
@@ -194,6 +195,28 @@ enabled. This is staging-only evidence; production remains unactivated.
 - Evidence: [`src/backend/selfie_search/management/commands/configure_selfie_search_lifecycle.py`](../src/backend/selfie_search/management/commands/configure_selfie_search_lifecycle.py), [`src/backend/selfie_search/management/commands/verify_selfie_search_storage.py`](../src/backend/selfie_search/management/commands/verify_selfie_search_storage.py), [`src/backend/selfie_search/tests/test_configure_lifecycle_command.py`](../src/backend/selfie_search/tests/test_configure_lifecycle_command.py), and [`src/backend/selfie_search/tests/test_storage_contract_command.py`](../src/backend/selfie_search/tests/test_storage_contract_command.py)
 - Last updated: 2026-07-31
 
+### EJ-013 — Contributor — Start isolated repository work reliably
+
+When I start work in an isolated worktree, I want the repository's Python environment, safe local
+Django settings, formatting hooks, and verification commands prepared automatically, so I can run
+the first test and create a consistently formatted commit without reconstructing setup knowledge.
+
+`make worktree NAME=<name> [BASE=<ref>]` creates the isolated branch and checkout, links the shared
+ignored `.venv`, creates a worktree-local `.env` without copying root secrets, installs the shared
+Ruff pre-commit hook, and verifies Python, pytest, and Django settings. `make hooks` repairs the hook
+for an existing checkout, while `make test` and `make check` provide stable commands with CI-like
+Django variables. Behavioral tests cover validation before Git mutation, secret isolation, clean
+Git state, hook installation, environment defaults, and Make command forwarding. A real disposable
+worktree smoke and an actual hook-driven commit additionally validated the integrated workflow.
+
+- Status: Validated
+- Evidence: [`scripts/create-worktree.py`](../scripts/create-worktree.py),
+  [`scripts/run-in-test-env.sh`](../scripts/run-in-test-env.sh), [`Makefile`](../Makefile),
+  [`tests/test_create_worktree.py`](../tests/test_create_worktree.py),
+  [`tests/test_worktree_commands.py`](../tests/test_worktree_commands.py), and
+  [PR #94 successful Quality checks](https://github.com/peter-nikitin/photo-prjct/actions/runs/30857287973/job/91831124522)
+- Last updated: 2026-08-04
+
 ## Status log
 
 This log is append-only.
@@ -218,3 +241,4 @@ This log is append-only.
 | 2026-07-19 | EJ-011 | Validated | Validated | Fresh unprovisioned deployments now skip the unavailable ORM gate based on absence of the successful `deployed-image` marker; established deployments retain the fail-closed database/no-row/storage gate, and neither skip is live `GetObject` evidence. |
 | 2026-07-25 | EJ-010 | Candidate | Candidate | Local clone automation now enforces a serialized local-Docker-only replacement, quiesces the normal web service, retains safety/diagnostic artifacts, and has isolated PostgreSQL 16 plus real-Django restored-schema evidence for migration readiness without startup mutations. This is partial local evidence only; scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill remain unestablished. |
 | 2026-07-31 | EJ-012 | Not recorded | Validated | Automated command tests verify explicit confirmation, exact lifecycle preservation/readback/recovery, unversioned-bucket enforcement, bounded-prefix preflight, generated scratch-object cleanup, and sanitized output. Staging additionally applied the one-day `selfie-search/` rule without changing the preview rule, then passed real-bucket put/head/grant/delete preflight before feature enablement. Production is not activated. |
+| 2026-08-04 | EJ-013 | Not recorded | Validated | PR #94 adds and tests the supported worktree bootstrap, CI-like test wrapper, shared Ruff pre-commit installation, clean Git state, secret isolation, and stable `make test`/`make check` entry points; a disposable real-worktree smoke, hook-driven commit, and successful Quality checks validate the integrated workflow. |

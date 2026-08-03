@@ -500,6 +500,13 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertNotContains(first_response, unrelated.pk)
         self.assertContains(first_response, "Страница 1 из 2")
         self.assertContains(first_response, "?page=2")
+        self.assertContains(first_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(first_response, 'name="page"')
+        self.assertContains(first_response, 'type="number"')
+        self.assertContains(first_response, 'min="1"')
+        self.assertContains(first_response, 'max="2"')
+        self.assertContains(first_response, 'value="1"')
+        self.assertContains(first_response, "Перейти")
 
         later_response = self.client.get(
             self.result_url(event=search.event, token=token), {"page": 2}
@@ -511,6 +518,13 @@ class PublicSelfieResultViewTests(TestCase):
         )
         self.assertContains(later_response, "Страница 2 из 2")
         self.assertContains(later_response, "?page=1")
+        self.assertContains(later_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(later_response, 'name="page"')
+        self.assertContains(later_response, 'type="number"')
+        self.assertContains(later_response, 'min="1"')
+        self.assertContains(later_response, 'max="2"')
+        self.assertContains(later_response, 'value="2"')
+        self.assertContains(later_response, "Перейти")
 
     def test_ready_page_rejects_invalid_page(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)

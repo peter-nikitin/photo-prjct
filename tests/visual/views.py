@@ -5,6 +5,7 @@ from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
 
+from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.test import override_settings
@@ -422,7 +423,11 @@ def event_gallery_populated(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "catalog/event_detail.html",
-        {"event": EVENTS[0], "gallery_photos": GALLERY_PHOTOS},
+        {
+            "event": EVENTS[0],
+            "gallery_photos": GALLERY_PHOTOS,
+            "gallery_page": Paginator(GALLERY_PHOTOS, 3).page(1),
+        },
     )
 
 
@@ -499,6 +504,7 @@ def selfie_search_ready(request: HttpRequest) -> HttpResponse:
         {
             "event": EVENTS[0],
             "gallery_photos": GALLERY_PHOTOS[:3],
+            "selfie_search_page": Paginator(GALLERY_PHOTOS[:3], 2).page(1),
             "is_terminal": True,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
             "status_url": "",

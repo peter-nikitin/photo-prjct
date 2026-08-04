@@ -803,7 +803,21 @@ class PublicSelfieResultViewTests(TestCase):
             "Отзыв об этом поиске можно отправить только из браузера, где он был начат, "
             "пока локальная копия селфи ещё доступна.",
         )
-        self.assertContains(response, "Оценить качество поиска")
+        self.assertContains(response, 'class="selfie-search-terminal-actions"', count=1)
+        self.assertContains(response, "data-feedback-form")
+        body = response.content.decode()
+        self.assertLess(
+            body.index("Искать по другому селфи"),
+            body.index("Помогите улучшить поиск"),
+        )
+        self.assertNotContains(response, "Оценить качество поиска")
+        self.assertNotContains(response, "Закрыть")
+        self.assertNotContains(response, "Не спрашивать больше на этом устройстве")
+        self.assertNotContains(response, "data-feedback-open")
+        self.assertNotContains(response, "data-feedback-close")
+        self.assertNotContains(response, "data-feedback-opt-out")
+        self.assertNotContains(response, "data-feedback-open-initial")
+        self.assertNotContains(response, "data-feedback-form hidden")
         self.assertContains(response, "Размечено 0 из 1 фотографий")
         self.assertContains(response, "Я есть")
         self.assertContains(response, "Меня нет")
@@ -828,9 +842,21 @@ class PublicSelfieResultViewTests(TestCase):
 
         response = self.client.get(self.result_url(event=search.event, token=token))
 
+        self.assertContains(response, 'class="selfie-search-terminal-actions"', count=1)
+        body = response.content.decode()
+        self.assertLess(
+            body.index("Искать по другому селфи"),
+            body.index("Помогите улучшить поиск"),
+        )
+        self.assertNotContains(response, "data-feedback-form hidden")
         self.assertContains(response, 'data-feedback-variant="problem"')
         self.assertContains(response, "Помогите улучшить поиск")
         self.assertNotContains(response, "Оценить качество поиска")
+        self.assertNotContains(response, "Закрыть")
+        self.assertNotContains(response, "Не спрашивать больше на этом устройстве")
+        self.assertNotContains(response, "data-feedback-open")
+        self.assertNotContains(response, "data-feedback-close")
+        self.assertNotContains(response, "data-feedback-opt-out")
         self.assertNotContains(response, "Я есть")
         self.assertNotContains(response, "Меня нет")
 
@@ -854,6 +880,9 @@ class PublicSelfieResultViewTests(TestCase):
 
         response = self.client.get(self.result_url(event=search.event, token=token))
 
+        self.assertContains(response, 'class="selfie-search-terminal-actions"', count=1)
+        body = response.content.decode()
+        self.assertLess(body.index("Искать по другому селфи"), body.index("data-feedback-cleanup"))
         self.assertNotContains(response, "Спасибо, отзыв отправлен.")
         self.assertContains(response, "data-feedback-cleanup")
         self.assertContains(response, "data-feedback-cleanup-retry")

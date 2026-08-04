@@ -368,6 +368,72 @@ validate_variant() {
     grep -Fq 'return 308 https://findme-photo.ru$request_uri;' "$rendered"
     grep -Fq 'location ^~ /internal/photo-processing/ {' "$rendered"
     grep -Fq 'return 404;' "$rendered"
+    grep -Fq '    listen 8080;' "$rendered"
+    metric_locations="$(grep -c '^    location = /metrics/ {' "$rendered")"
+    if [ "$metric_locations" -ne 2 ]; then
+        echo "$name must define public and private exact metrics locations" >&2
+        exit 1
+    fi
+    public_metric_denials="$(awk '
+        /location = \/metrics\// {
+            getline
+            if ($0 ~ /^[[:space:]]*return 404;/) count++
+        }
+        END { print count + 0 }
+    ' "$rendered")"
+    if [ "$public_metric_denials" -ne 1 ]; then
+        echo "$name must deny metrics exactly once on the public HTTPS edge" >&2
+        exit 1
+    fi
+    canonical_tls_server="$(awk '
+        /^[[:space:]]*server[[:space:]]*\{/ {
+            block = $0 ORS
+            depth = 1
+            next
+        }
+        depth {
+            block = block $0 ORS
+            opens = gsub(/\{/, "{", $0)
+            closes = gsub(/\}/, "}", $0)
+            depth += opens - closes
+            if (depth == 0) {
+                if (index(block, "listen 443 ssl;") && \
+                    index(block, "server_name findme-photo.ru;")) {
+                    print block
+                }
+                depth = 0
+            }
+        }
+    ' "$rendered")"
+    if [ -z "$canonical_tls_server" ]; then
+        echo "$name did not render a canonical TLS server" >&2
+        exit 1
+    fi
+    canonical_metrics_line="$(printf '%s\n' "$canonical_tls_server" | \
+        awk '/^[[:space:]]*location = \/metrics\/ \{/ { location = NR; in_metrics = 1; next } \
+             in_metrics && /^[[:space:]]*return 404;/ { print location; exit } \
+             in_metrics && /^[[:space:]]*}/ { exit }')"
+    canonical_catchall_line="$(printf '%s\n' "$canonical_tls_server" | \
+        awk '/^[[:space:]]*location \/ \{/ { print NR; exit }')"
+    if [ -z "$canonical_metrics_line" ] || [ -z "$canonical_catchall_line" ] || \
+        [ "$canonical_metrics_line" -ge "$canonical_catchall_line" ]; then
+        echo "$name canonical TLS server must deny exact metrics before its proxy catch-all" >&2
+        exit 1
+    fi
+    private_server="$(awk '/^[[:space:]]*listen 8080;/ { private = 1 } private { print }' "$rendered")"
+    private_locations="$(printf '%s\n' "$private_server" | grep -c '^[[:space:]]*location ')"
+    if [ "$private_locations" -ne 3 ]; then
+        echo "$name private listener must expose only health, metrics, and its deny fallback" >&2
+        exit 1
+    fi
+    printf '%s\n' "$private_server" | grep -Fq 'location = /health/ {'
+    printf '%s\n' "$private_server" | grep -Fq 'location = /metrics/ {'
+    printf '%s\n' "$private_server" | grep -Fq 'return 444;'
+    private_proxies="$(printf '%s\n' "$private_server" | grep -c 'proxy_pass http://django_upstream;')"
+    if [ "$private_proxies" -ne 2 ]; then
+        echo "$name private listener must proxy only health and metrics" >&2
+        exit 1
+    fi
     grep -Fq 'map $uri $selfie_search_access_client_address {' "$rendered"
     grep -Fq 'map $uri $selfie_search_access_remote_user {' "$rendered"
     grep -Fq 'map $uri $selfie_search_access_request {' "$rendered"

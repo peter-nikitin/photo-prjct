@@ -752,9 +752,81 @@ def test_entrypoint_runs_gunicorn_with_the_bounded_profile(tmp_path: Path, fake_
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "gunicorn.log").read_text(encoding="utf-8") == (
-        "config.wsgi:application --bind 0.0.0.0:8000 --workers 5 --threads 2 "
+        "config.wsgi:application --config python:config.gunicorn --bind 0.0.0.0:8000 "
+        "--workers 5 --threads 2 "
         "--timeout 180 --max-requests 1000 --max-requests-jitter 100\n"
     )
+
+
+def test_entrypoint_recreates_the_shared_multiprocess_directory_before_gunicorn(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    _write_executable(fake_bin / "python", "exit 0")
+    _write_executable(fake_bin / "rm", 'printf "rm %s\\n" "$*" >> "$COMMAND_LOG"')
+    _write_executable(fake_bin / "mkdir", 'printf "mkdir %s\\n" "$*" >> "$COMMAND_LOG"')
+    _write_executable(
+        fake_bin / "gunicorn",
+        'printf "multiproc=%s args=%s\\n" "$PROMETHEUS_MULTIPROC_DIR" "$*" >> "$COMMAND_LOG"',
+    )
+
+    result = subprocess.run(
+        ["sh", ROOT / "src/backend/entrypoint.sh"],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "COMMAND_LOG": str(tmp_path / "commands.log"),
+            "GUNICORN_WORKERS": "5",
+            "GUNICORN_THREADS": "2",
+            "GUNICORN_TIMEOUT": "180",
+            "GUNICORN_MAX_REQUESTS": "1000",
+            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines() == [
+        "rm -rf /tmp/prometheus_multiproc",
+        "mkdir -p /tmp/prometheus_multiproc",
+        (
+            "multiproc=/tmp/prometheus_multiproc args=config.wsgi:application --config "
+            "python:config.gunicorn --bind 0.0.0.0:8000 --workers 5 --threads 2 --timeout 180 "
+            "--max-requests 1000 --max-requests-jitter 100"
+        ),
+    ]
+
+
+def test_entrypoint_starts_gunicorn_when_multiprocess_directory_cleanup_fails(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    _write_executable(fake_bin / "python", "exit 0")
+    _write_executable(fake_bin / "rm", "exit 1")
+    _write_executable(
+        fake_bin / "gunicorn",
+        'printf "multiproc=%s\\n" "${PROMETHEUS_MULTIPROC_DIR-}" > "$GUNICORN_LOG"',
+    )
+
+    result = subprocess.run(
+        ["sh", ROOT / "src/backend/entrypoint.sh"],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "GUNICORN_LOG": str(tmp_path / "gunicorn.log"),
+            "GUNICORN_WORKERS": "5",
+            "GUNICORN_THREADS": "2",
+            "GUNICORN_TIMEOUT": "180",
+            "GUNICORN_MAX_REQUESTS": "1000",
+            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "gunicorn.log").read_text(encoding="utf-8") == "multiproc=\n"
 
 
 def test_disabled_processing_persists_defaults_without_the_worker_profile(
@@ -1491,6 +1563,16 @@ def test_staging_apply_activates_https_edge_and_public_checks(
     assert "reconcile-certificate" in commands
     assert "https://findme-photo.ru/health/" in commands
     assert "verify-public-edge" in commands
+
+
+def test_staging_apply_labels_web_metrics_as_staging(tmp_path: Path, fake_bin: Path) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="success", target="staging"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "MONITORING_ENVIRONMENT=staging\n" in (tmp_path / ".env").read_text(encoding="utf-8")
 
 
 def test_apply_success_commits_deployed_image_only_after_checks(

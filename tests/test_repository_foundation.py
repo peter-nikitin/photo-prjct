@@ -140,6 +140,49 @@ def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
     assert "PUSH_VISUAL_TEST_IMAGE" not in visual["env"]
 
 
+def test_public_health_monitor_workflow_is_scheduled_and_uses_only_its_monitoring_credentials() -> (
+    None
+):
+    workflow = _load_workflow("monitor-public-health.yml")
+    dispatch = workflow[True]["workflow_dispatch"]
+    job = workflow["jobs"]["probe"]
+    checkout = _workflow_step(workflow, "probe", "Check out repository")
+    run_probe = _workflow_step(workflow, "probe", "Probe public health and write metrics")
+
+    assert workflow[True]["schedule"] == [{"cron": "*/5 * * * *"}]
+    assert dispatch["inputs"]["target"] == {
+        "description": "Controlled public health target for validation metrics",
+        "required": True,
+        "default": "https://findme-photo.ru/health/",
+        "type": "choice",
+        "options": [
+            "https://findme-photo.ru/health/",
+            "https://example.invalid/health/",
+        ],
+    }
+    assert job["permissions"] == {"contents": "read"}
+    assert job["environment"] == "staging"
+    assert checkout["uses"] == "actions/checkout@v4"
+    assert checkout["with"] == {"persist-credentials": False}
+    assert job["env"] == {
+        "YANDEX_MONITORING_API_KEY": "${{ secrets.YANDEX_MONITORING_API_KEY }}",
+        "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
+    }
+    command = run_probe["run"]
+    assert "python scripts/monitor_public_health.py" in command
+    assert (
+        "${{ github.event_name == 'schedule' && "
+        "'https://findme-photo.ru/health/' || inputs.target }}" in command
+    )
+    assert "${{ github.event_name == 'schedule' && 'staging' || 'validation' }}" in command
+    assert (
+        "${{ github.event_name == 'schedule' && 'canonical-health' || 'validation-health' }}"
+        in command
+    )
+    assert '--folder-id "$YANDEX_CLOUD_FOLDER_ID"' in command
+    assert '--api-key "$YANDEX_MONITORING_API_KEY"' in command
+
+
 def test_root_quality_contract_includes_processing_and_standalone_worker() -> None:
     """Delivered processing code must be collected, typed, and counted by the root CI commands."""
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]
@@ -356,7 +399,11 @@ def test_public_environments_share_one_https_edge_overlay() -> None:
 
     shared = yaml.safe_load(shared_path.read_text(encoding="utf-8"))
 
-    assert shared["services"]["nginx"]["ports"] == ["80:80", "443:443"]
+    assert shared["services"]["nginx"]["ports"] == [
+        "80:80",
+        "443:443",
+        "127.0.0.1:8080:8080",
+    ]
     assert "certbot" in shared["services"]
     staging_copy = _workflow_step(staging_workflow, "deploy", "Copy staging deployment files")
     production_copy = _workflow_step(
@@ -563,6 +610,42 @@ def test_staging_storage_probe_is_manual_explicit_and_uses_the_deployed_containe
     assert probe["with"]["envs"] == "PRIVATE_MEDIA_ALLOWED_ORIGINS"
     assert "exec -T -e PHOTO_UPLOAD_ENABLED=True web" in probe["with"]["script"]
     assert "--confirm-real-storage" in probe["with"]["script"]
+
+
+def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deploy_rollback() -> (
+    None
+):
+    staging = _load_workflow("deploy.yml")
+    production = _load_workflow("promote-production.yml")
+    dispatch = staging[True]["workflow_dispatch"]
+    agent = staging["jobs"]["configure-monitoring-agent"]
+    staging_deploy = staging["jobs"]["deploy"]
+
+    assert dispatch["inputs"]["configure_monitoring_agent"] == {
+        "description": (
+            "Configure the staging Yandex Unified Agent without deploying the application"
+        ),
+        "required": True,
+        "default": False,
+        "type": "boolean",
+    }
+    assert agent["environment"] == "staging"
+    assert (
+        agent["if"]
+        == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent }}"
+    )
+    assert "needs" not in agent
+    assert (
+        staging_deploy["if"]
+        == "${{ github.event_name == 'push' || !inputs.configure_monitoring_agent }}"
+    )
+    assert "configure-monitoring-agent" not in json.dumps(staging_deploy)
+    assert "configure-monitoring-agent" not in json.dumps(production)
+    run = _workflow_step(staging, "configure-monitoring-agent", "Configure staging Unified Agent")
+    assert run["env"] == {"YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}"}
+    assert run["with"]["envs"] == "YANDEX_CLOUD_FOLDER_ID"
+    assert "YANDEX_MONITORING_API_KEY" not in json.dumps(agent)
+    assert "sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh" in run["with"]["script"]
 
 
 def test_focused_deployment_scripts_are_versioned() -> None:

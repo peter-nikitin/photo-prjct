@@ -8,6 +8,7 @@ urlpatterns = [
     path("internal/photo-processing/v1/", include("processing.urls")),
     path("", include("selfie_search.urls")),
     path("health/", views.health, name="health"),
+    path("metrics/", views.metrics, name="metrics"),
     path("", views.event_catalog, name="event_catalog"),
     path("events/", views.legacy_events_redirect, name="legacy_events"),
     path(

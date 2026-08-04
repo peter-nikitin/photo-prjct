@@ -1,0 +1,90 @@
+{
+  "folderId": "__YANDEX_CLOUD_FOLDER_ID__",
+  "name": "findme-photo-staging-overview",
+  "title": "FindMe Photo staging overview",
+  "description": "Import template for the current public HTTPS path. Replace __YANDEX_CLOUD_FOLDER_ID__ before DashboardService.Create.",
+  "labels": {
+    "environment": "staging",
+    "managed-by": "repository"
+  },
+  "widgets": [
+    {
+      "position": {"x": "0", "y": "0", "w": "36", "h": "4"},
+      "text": {"text": "## Alert status\nAlerts are created separately from this template. Their exact resource names are recorded in `deploy/monitoring/alerts.md`; add alert widgets after live creation records their IDs."}
+    },
+    {
+      "position": {"x": "0", "y": "4", "w": "18", "h": "8"},
+      "chart": {"id": "external-health", "title": "External health", "queries": {"targets": [
+        {"query": "\"findme_probe_success\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\", check=\"canonical-health\"}"},
+        {"query": "\"findme_probe_duration_seconds\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\", check=\"canonical-health\"}"},
+        {"query": "\"findme_probe_tls_days_remaining\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\", check=\"canonical-health\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "18", "y": "4", "w": "18", "h": "8"},
+      "chart": {"id": "cpu-load", "title": "VM CPU and load", "queries": {"targets": [
+        {"query": "\"sys.system.UsefulTime\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"sys.system.IdleTime\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"sys.proc.LoadAverage1min\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "0", "y": "12", "w": "18", "h": "8"},
+      "chart": {"id": "memory-swap", "title": "VM memory and swap", "queries": {"targets": [
+        {"query": "\"sys.memory.MemAvailable\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"sys.memory.MemTotal\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"sys.memory.SwapFree\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"sys.memory.SwapTotal\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "18", "y": "12", "w": "18", "h": "8"},
+      "chart": {"id": "filesystem", "title": "Filesystem capacity and inodes", "queries": {"targets": [
+        {"query": "\"sys.filesystem.FreeB\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", mountpoint=\"/\"}"},
+        {"query": "\"sys.filesystem.SizeB\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", mountpoint=\"/\"}"},
+        {"query": "\"sys.filesystem.INodeFree\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", mountpoint=\"/\"}"},
+        {"query": "\"sys.filesystem.INodeTotal\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", mountpoint=\"/\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "0", "y": "20", "w": "18", "h": "8"},
+      "chart": {"id": "disk-io", "title": "Disk I/O", "queries": {"targets": [
+        {"query": "\"sys.io.Disks.ReadBytes\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"sys.io.Disks.WriteBytes\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "18", "y": "20", "w": "18", "h": "8"},
+      "chart": {"id": "network-io", "title": "Network I/O", "queries": {"targets": [
+        {"query": "\"sys.net.Ifs.RxBytes\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"sys.net.Ifs.TxBytes\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "0", "y": "28", "w": "18", "h": "8"},
+      "chart": {"id": "uptime-agent-health", "title": "VM uptime and Unified Agent health", "queries": {"targets": [
+        {"query": "\"sys.system.UpTime\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"ua.backlog\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", scope=\"health\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "18", "y": "28", "w": "18", "h": "8"},
+      "chart": {"id": "request-rate", "title": "Django request rate", "queries": {"targets": [
+        {"query": "non_negative_derivative(\"app.findme_http_requests_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\"})"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "0", "y": "36", "w": "18", "h": "8"},
+      "chart": {"id": "http-5xx", "title": "Django 5xx responses", "queries": {"targets": [
+        {"query": "non_negative_derivative(\"app.findme_http_requests_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\", status_class=\"5xx\"})"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "18", "y": "36", "w": "18", "h": "8"},
+      "chart": {"id": "http-latency", "title": "Django request latency (p50 / p95)", "queries": {"targets": [
+        {"query": "histogram_percentile(50, \"app.findme_http_request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\"})"},
+        {"query": "histogram_percentile(95, \"app.findme_http_request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\"})"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    }
+  ]
+}

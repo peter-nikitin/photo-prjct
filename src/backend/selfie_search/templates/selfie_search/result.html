@@ -32,7 +32,7 @@
                 </a>
                 <div class="gallery-card-actions">
                   {% if feedback and feedback.variant == "result_labels" %}
-                    <div class="gallery-card-feedback-controls" data-feedback-card-controls{% if not feedback.open_initial %} hidden{% endif %}>
+                    <div class="gallery-card-feedback-controls" data-feedback-card-controls>
                       <button class="gallery-feedback-choice" type="button" data-feedback-result-id="{{ result.pk }}" data-feedback-label="present" aria-pressed="false" aria-label="На фотографии {{ forloop.counter }}: я есть">Я есть</button>
                       <button class="gallery-feedback-choice" type="button" data-feedback-result-id="{{ result.pk }}" data-feedback-label="absent" aria-pressed="false" aria-label="На фотографии {{ forloop.counter }}: меня нет">Меня нет</button>
                     </div>
@@ -63,52 +63,51 @@
       <p class="selfie-search-state" role="alert">Поиск сейчас недоступен. Попробуйте другое селфи.</p>
     {% endif %}
 
-    {% if feedback %}
-      <p class="selfie-search-feedback-error" data-feedback-storage-warning role="alert" hidden></p>
-      <p class="selfie-search-feedback-unavailable" data-feedback-unavailable role="status" hidden>Отзыв об этом поиске можно отправить только из браузера, где он был начат, пока локальная копия селфи ещё доступна.</p>
-      <section class="selfie-search-feedback" data-selfie-feedback data-feedback-variant="{{ feedback.variant }}" data-feedback-total="{{ feedback.visible_result_count }}" data-feedback-url="{{ feedback.url }}"{% if feedback.preview %} data-feedback-preview="true"{% endif %}{% if feedback.open_initial %} data-feedback-open-initial="true"{% endif %}{% if not feedback.open_initial %} hidden{% endif %} aria-labelledby="selfie-search-feedback-title">
-        {% if feedback.variant == "result_labels" %}
-          <button class="button" type="button" data-feedback-open>Оценить качество поиска</button>
-        {% endif %}
-        <form class="selfie-search-feedback-form" data-feedback-form{% if feedback.variant == "result_labels" and not feedback.open_initial %} hidden{% endif %} novalidate>
-          {% csrf_token %}
-          <h2 id="selfie-search-feedback-title">Помогите улучшить поиск</h2>
-          {% if feedback.variant == "problem" %}
-            <p>Поиск не дал подходящих фотографий. Ваш отзыв поможет нам улучшить результат.</p>
-          {% else %}
-            <p class="selfie-search-feedback-progress" data-feedback-progress>Размечено 0 из {{ feedback.visible_result_count }} фотографий</p>
-            <p>Можно отправить отзыв и без полной разметки, но каждая отметка очень поможет улучшить поиск.</p>
-          {% endif %}
-          <p class="selfie-search-feedback-disclosure">К отзыву приложим ваше селфи — то самое, которое вы использовали для этого поиска. Повторно выбирать файл не нужно.</p>
-          <label for="feedback-contact">Контакт для связи</label>
-          <input id="feedback-contact" name="contact" type="text" maxlength="254" required aria-describedby="feedback-contact-hint feedback-contact-error">
-          <small id="feedback-contact-hint">Телефон, Telegram или email</small>
-          <p id="feedback-contact-error" class="selfie-search-feedback-error" data-feedback-contact-error hidden></p>
-          <label class="selfie-search-feedback-consent" for="feedback-consent">
-            <input id="feedback-consent" name="personal_data_consent" type="checkbox" required aria-describedby="feedback-consent-error">
-            <span>Я согласен на обработку моего селфи, контактных данных и оценки результатов поиска для анализа качества поиска и связи со мной в соответствии с <a href="{% static 'ui/legal/personal-data-policy.pdf' %}">Политикой обработки персональных данных</a>.</span>
-          </label>
-          <p id="feedback-consent-error" class="selfie-search-feedback-error" data-feedback-consent-error hidden></p>
-          <p class="selfie-search-feedback-lifecycle">Селфи будет автоматически удалено из закрытого хранилища.</p>
-          <p class="selfie-search-feedback-error" data-feedback-submit-error role="alert" hidden></p>
-          <div class="selfie-search-feedback-actions">
-            <button class="button" type="submit" data-feedback-submit>Отправить отзыв</button>
-            {% if feedback.variant == "result_labels" %}<button class="button button-secondary" type="button" data-feedback-close>Закрыть</button>{% endif %}
-            <button class="button button-secondary" type="button" data-feedback-opt-out>Не спрашивать больше на этом устройстве</button>
-          </div>
-        </form>
-      </section>
-    {% elif feedback_submitted %}
-      <section class="selfie-search-feedback-confirmation" data-feedback-cleanup>
-        <p data-feedback-cleanup-pending role="status">Завершаем локальную очистку…</p>
-        <p class="selfie-search-feedback-error" data-feedback-cleanup-error role="alert" hidden></p>
-        <button class="button button-secondary" type="button" data-feedback-cleanup-retry hidden>Повторить очистку</button>
-        <p data-feedback-cleanup-success role="status" hidden></p>
-      </section>
-    {% endif %}
-
     {% if is_terminal %}
-      <a class="button" href="{% url 'event_detail' slug=event.slug %}">Искать по другому селфи</a>
+      <div class="selfie-search-terminal-actions">
+        <a class="button" href="{% url 'event_detail' slug=event.slug %}">Искать по другому селфи</a>
+        {% if feedback or feedback_submitted %}
+          <div class="selfie-search-terminal-feedback">
+            {% if feedback %}
+              <p class="selfie-search-feedback-unavailable" data-feedback-unavailable role="status" hidden>Отзыв об этом поиске можно отправить только из браузера, где он был начат, пока локальная копия селфи ещё доступна.</p>
+              <section class="selfie-search-feedback" data-selfie-feedback data-feedback-variant="{{ feedback.variant }}" data-feedback-total="{{ feedback.visible_result_count }}" data-feedback-url="{{ feedback.url }}"{% if feedback.preview %} data-feedback-preview="true"{% endif %} aria-labelledby="selfie-search-feedback-title">
+                <form class="selfie-search-feedback-form" data-feedback-form novalidate>
+                  {% csrf_token %}
+                  <h2 id="selfie-search-feedback-title">Помогите улучшить поиск</h2>
+                  {% if feedback.variant == "problem" %}
+                    <p>Поиск не дал подходящих фотографий. Ваш отзыв поможет нам улучшить результат.</p>
+                  {% else %}
+                    <p class="selfie-search-feedback-progress" data-feedback-progress>Размечено 0 из {{ feedback.visible_result_count }} фотографий</p>
+                    <p>Можно отправить отзыв и без полной разметки, но каждая отметка очень поможет улучшить поиск.</p>
+                  {% endif %}
+                  <p class="selfie-search-feedback-disclosure">К отзыву приложим ваше селфи — то самое, которое вы использовали для этого поиска. Повторно выбирать файл не нужно.</p>
+                  <label for="feedback-contact">Контакт для связи</label>
+                  <input id="feedback-contact" name="contact" type="text" maxlength="254" required aria-describedby="feedback-contact-hint feedback-contact-error">
+                  <small id="feedback-contact-hint">Телефон, Telegram или email</small>
+                  <p id="feedback-contact-error" class="selfie-search-feedback-error" data-feedback-contact-error hidden></p>
+                  <label class="selfie-search-feedback-consent" for="feedback-consent">
+                    <input id="feedback-consent" name="personal_data_consent" type="checkbox" required aria-describedby="feedback-consent-error">
+                    <span>Я согласен на обработку моего селфи, контактных данных и оценки результатов поиска для анализа качества поиска и связи со мной в соответствии с <a href="{% static 'ui/legal/personal-data-policy.pdf' %}">Политикой обработки персональных данных</a>.</span>
+                  </label>
+                  <p id="feedback-consent-error" class="selfie-search-feedback-error" data-feedback-consent-error hidden></p>
+                  <p class="selfie-search-feedback-lifecycle">Селфи будет автоматически удалено из закрытого хранилища.</p>
+                  <p class="selfie-search-feedback-error" data-feedback-submit-error role="alert" hidden></p>
+                  <div class="selfie-search-feedback-actions">
+                    <button class="button" type="submit" data-feedback-submit>Отправить отзыв</button>
+                  </div>
+                </form>
+              </section>
+            {% elif feedback_submitted %}
+              <section class="selfie-search-feedback-confirmation" data-feedback-cleanup>
+                <p data-feedback-cleanup-pending role="status">Завершаем локальную очистку…</p>
+                <p class="selfie-search-feedback-error" data-feedback-cleanup-error role="alert" hidden></p>
+                <button class="button button-secondary" type="button" data-feedback-cleanup-retry hidden>Повторить очистку</button>
+                <p data-feedback-cleanup-success role="status" hidden></p>
+              </section>
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
     {% endif %}
   </article>
 {% endblock %}

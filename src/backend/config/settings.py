@@ -33,6 +33,7 @@ DATABASES = {
     }
 }
 DEBUG = env.bool("DEBUG", default=False)
+MONITORING_ENVIRONMENT = env("MONITORING_ENVIRONMENT", default="local")
 YANDEX_METRIKA_COUNTER_ID = 111239706
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
@@ -53,6 +54,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "config.metrics.HttpMetricsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",

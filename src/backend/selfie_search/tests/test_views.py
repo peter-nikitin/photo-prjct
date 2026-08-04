@@ -1006,7 +1006,8 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertLess(body.index("Искать по другому селфи"), body.index("data-feedback-cleanup"))
         self.assertNotContains(response, "Спасибо, отзыв отправлен.")
         self.assertContains(response, "data-feedback-cleanup")
-        self.assertContains(response, "data-feedback-cleanup-retry")
+        self.assertNotContains(response, "data-feedback-cleanup-retry")
+        self.assertNotContains(response, "Повторить очистку")
         self.assertNotContains(
             response,
             '<section class="selfie-search-feedback" data-selfie-feedback',

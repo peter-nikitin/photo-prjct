@@ -63,6 +63,17 @@ print(json.dumps({name: getattr(settings, name) for name in json.loads(__import_
 
 
 class SelfieSearchSettingsTests(SimpleTestCase):
+    def test_logging_routes_selfie_info_events_to_console(self) -> None:
+        from django.conf import settings
+
+        logger = settings.LOGGING["loggers"]["selfie_search"]
+        handler = settings.LOGGING["handlers"]["selfie_console"]
+
+        self.assertEqual(
+            logger, {"handlers": ["selfie_console"], "level": "INFO", "propagate": False}
+        )
+        self.assertEqual(handler, {"class": "logging.StreamHandler", "level": "INFO"})
+
     def test_disabled_defaults_are_the_approved_bounded_contract(self) -> None:
         from django.conf import settings
 

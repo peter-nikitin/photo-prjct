@@ -247,8 +247,12 @@ case "$action" in
         for command in grep journalctl; do
             command -v "$command" >/dev/null 2>&1 || { echo "missing observability dependency: $command" >&2; exit 1; }
         done
-        journalctl --since '2 minutes ago' -o cat \
-            | grep -Fq "\"probe_id\":\"$probe_id\"" || {
+        {
+            journalctl --since '2 minutes ago' \
+                CONTAINER_TAG='findme.service=web findme.environment=staging' -o cat
+            journalctl --since '2 minutes ago' \
+                CONTAINER_TAG='findme.service=web findme.environment=production' -o cat
+        } | grep -Fq "\"probe_id\":\"$probe_id\"" || {
                 echo "emitted observability probe is unreadable" >&2
                 exit 1
             }

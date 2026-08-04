@@ -1,9 +1,11 @@
+import re
 from typing import Any
+from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 from ingestion.storage import ObjectMissing, StorageUnavailable
 from ingestion.tests.fakes import client_error
-from selfie_search.storage import TemporarySelfieStorage
+from selfie_search.storage import FeedbackSelfieStorage, TemporarySelfieStorage
 
 
 class PutCapableFakeS3Client:
@@ -151,3 +153,115 @@ class TemporarySelfieStorageTests(SimpleTestCase):
             )
 
         self.assertNotIn("secret", str(caught.exception))
+
+
+@override_settings(
+    SELFIE_FEEDBACK_S3_BUCKET="private-selfie-feedback",
+    SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="feedback-access-key",
+    SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY="feedback-secret-key",
+    SELFIE_FEEDBACK_S3_ENDPOINT_URL="https://storage.yandexcloud.net",
+    SELFIE_FEEDBACK_S3_REGION="ru-central1",
+    SELFIE_FEEDBACK_KMS_KEY_ID="kms-feedback-key",
+    SELFIE_FEEDBACK_MAX_UPLOAD_BYTES=20 * 1024 * 1024,
+    SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS=60,
+)
+class FeedbackSelfieStorageTests(SimpleTestCase):
+    """The production breaks caught here are widening staff-only feedback-media access."""
+
+    key = "0123456789abcdef0123456789abcdef"
+
+    def test_put_generates_an_opaque_key_and_uses_private_kms_encrypted_storage(self) -> None:
+        client = PutCapableFakeS3Client()
+
+        with patch("selfie_search.storage.secrets.token_hex", return_value=self.key):
+            stored = FeedbackSelfieStorage(client=client).put(
+                content=b"jpeg", content_type="image/jpeg"
+            )
+
+        self.assertEqual(
+            (stored.key, stored.size, stored.content_type),
+            (self.key, 4, "image/jpeg"),
+        )
+        self.assertRegex(stored.key, r"^[0-9a-f]{32}$")
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "put_object",
+                    {
+                        "Bucket": "private-selfie-feedback",
+                        "Key": self.key,
+                        "Body": b"jpeg",
+                        "ContentType": "image/jpeg",
+                        "ContentLength": 4,
+                        "ACL": "private",
+                        "ServerSideEncryption": "aws:kms",
+                        "SSEKMSKeyId": "kms-feedback-key",
+                    },
+                )
+            ],
+        )
+
+    def test_rejects_invalid_content_and_nonopaque_object_keys(self) -> None:
+        storage = FeedbackSelfieStorage(client=PutCapableFakeS3Client())
+
+        with self.assertRaises(ValueError):
+            storage.put(content=b"", content_type="image/jpeg")
+        with self.assertRaises(ValueError):
+            storage.put(content=b"x", content_type="image/gif")
+        with self.assertRaises(ValueError):
+            storage.put(content=b"x" * (20 * 1024 * 1024 + 1), content_type="image/png")
+        for invalid_key in ("feedback/" + self.key, self.key.upper(), "not-a-key"):
+            with self.assertRaises(ValueError):
+                storage.inspect(key=invalid_key)
+            with self.assertRaises(ValueError):
+                storage.delete(key=invalid_key)
+            with self.assertRaises(ValueError):
+                storage.create_download_grant(key=invalid_key)
+
+    def test_inspects_only_a_valid_exact_feedback_object(self) -> None:
+        client = PutCapableFakeS3Client()
+        client.objects[self.key] = (b"jpeg", "image/png")
+
+        stored = FeedbackSelfieStorage(client=client).inspect(key=self.key)
+
+        self.assertEqual((stored.key, stored.size, stored.content_type), (self.key, 4, "image/png"))
+        self.assertEqual(
+            client.calls,
+            [("head_object", {"Bucket": "private-selfie-feedback", "Key": self.key})],
+        )
+
+    def test_missing_feedback_object_is_not_a_storage_incident(self) -> None:
+        with self.assertRaises(ObjectMissing):
+            FeedbackSelfieStorage(client=PutCapableFakeS3Client()).inspect(key=self.key)
+
+    def test_staff_grant_is_get_only_for_the_exact_key_and_exactly_sixty_seconds(self) -> None:
+        client = PutCapableFakeS3Client()
+
+        grant = FeedbackSelfieStorage(client=client).create_download_grant(key=self.key)
+
+        self.assertEqual(grant.url, client.presigned_get_url)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "generate_presigned_url",
+                    {
+                        "ClientMethod": "get_object",
+                        "Params": {"Bucket": "private-selfie-feedback", "Key": self.key},
+                        "ExpiresIn": 60,
+                        "HttpMethod": "GET",
+                    },
+                )
+            ],
+        )
+
+    def test_sanitizes_sdk_failures_without_exposing_a_key_or_secret(self) -> None:
+        client = PutCapableFakeS3Client()
+        client.failures["put_object"] = client_error(500, message="raw secret " + self.key)
+
+        with patch("selfie_search.storage.secrets.token_hex", return_value=self.key):
+            with self.assertRaises(StorageUnavailable) as caught:
+                FeedbackSelfieStorage(client=client).put(content=b"jpeg", content_type="image/jpeg")
+
+        self.assertIsNone(re.search(r"secret|" + self.key, str(caught.exception)))

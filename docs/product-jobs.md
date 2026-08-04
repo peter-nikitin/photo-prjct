@@ -42,7 +42,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-010 | Customer | Purchase selected photos | Candidate | 2026-07-17 |
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
 | PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
-| PJ-013 | Customer | Report selfie-search quality | Planned | 2026-08-04 |
+| PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-04 |
 
 ## Job details
 
@@ -187,12 +187,17 @@ which returned photos contain me, so I can help FindMe Photo investigate failure
 search quality without selecting the same selfie again, while retaining the ability to disable
 future feedback prompts in my browser.
 
-- Status: Candidate
-- Evidence: The
-  [selfie-search quality feedback specification](superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md)
-  and the
-  [implementation plan](plans/2026-08-04-selfie-search-quality-feedback.md) record the approved
-  design, accepted ADR boundary, task sequence, verification, and staged rollout gates.
+- Status: In progress
+- Evidence: The repository implementation covers the approved browser-local selfie reuse,
+  compact failed/empty report, in-gallery result marking, consent/contact validation, immutable
+  feedback schema, restricted audited admin inspection, and guarded feedback-bucket lifecycle.
+  Focused Django/deployment tests, JavaScript tests, containerized visual tests, and the complete
+  CI-equivalent release gate pass on this branch. The
+  [selfie-search quality feedback specification](superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md),
+  [implementation plan](plans/2026-08-04-selfie-search-quality-feedback.md), and
+  [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md) define the accepted boundary.
+  `SELFIE_FEEDBACK_ENABLED=False` remains the default; no staging or production activation or
+  real customer-outcome evidence is claimed.
 - Last updated: 2026-08-04
 
 Visual design-reference screens are not delivery evidence.
@@ -223,3 +228,4 @@ This log is append-only.
 | 2026-08-04 | PJ-012 | Not recorded | In progress | [PR #93](https://github.com/peter-nikitin/photo-prjct/pull/93) and locally verified Django pagination and visual contracts: the focused event/selfie view tests plus four production-screen baselines covered by [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js). |
 | 2026-08-04 | PJ-013 | Not recorded | Candidate | Approved product design recorded in the selfie-search quality feedback specification; implementation planning awaits explicit acceptance of the required privacy/retention ADR. |
 | 2026-08-04 | PJ-013 | Candidate | Planned | ADR 0023 was explicitly accepted and the decision-complete selfie-search quality feedback implementation plan was approved for execution. |
+| 2026-08-04 | PJ-013 | Planned | In progress | Repository implementation and automated release-gate evidence are complete; the feature remains disabled by default and has no staging/production activation or real customer-outcome evidence. |

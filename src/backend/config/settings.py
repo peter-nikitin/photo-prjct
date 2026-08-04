@@ -169,6 +169,53 @@ else:
     SELFIE_SEARCH_TEMPORARY_PREFIX = "selfie-search/"
     SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS = 24
 
+SELFIE_FEEDBACK_ENABLED = _exact_environment_boolean("SELFIE_FEEDBACK_ENABLED")
+if SELFIE_FEEDBACK_ENABLED:
+    if not SELFIE_SEARCH_ENABLED:
+        raise ImproperlyConfigured("SELFIE_FEEDBACK_ENABLED requires SELFIE_SEARCH_ENABLED")
+    SELFIE_FEEDBACK_S3_BUCKET = env("SELFIE_FEEDBACK_S3_BUCKET", default="")
+    SELFIE_FEEDBACK_S3_ACCESS_KEY_ID = env("SELFIE_FEEDBACK_S3_ACCESS_KEY_ID", default="")
+    SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY = env("SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY", default="")
+    SELFIE_FEEDBACK_S3_ENDPOINT_URL = env(
+        "SELFIE_FEEDBACK_S3_ENDPOINT_URL", default="https://storage.yandexcloud.net"
+    )
+    SELFIE_FEEDBACK_S3_REGION = env("SELFIE_FEEDBACK_S3_REGION", default="ru-central1")
+    SELFIE_FEEDBACK_KMS_KEY_ID = env("SELFIE_FEEDBACK_KMS_KEY_ID", default="")
+    SELFIE_FEEDBACK_MAX_UPLOAD_BYTES = env.int(
+        "SELFIE_FEEDBACK_MAX_UPLOAD_BYTES", default=20 * 1024 * 1024
+    )
+    SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS = env.int(
+        "SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS", default=60
+    )
+    required_values = {
+        "SELFIE_FEEDBACK_S3_BUCKET": SELFIE_FEEDBACK_S3_BUCKET,
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": SELFIE_FEEDBACK_S3_ACCESS_KEY_ID,
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY,
+        "SELFIE_FEEDBACK_KMS_KEY_ID": SELFIE_FEEDBACK_KMS_KEY_ID,
+    }
+    if not all(isinstance(value, str) and value.strip() for value in required_values.values()):
+        raise ImproperlyConfigured(
+            "Selfie-feedback requires dedicated bucket credentials and KMS key"
+        )
+    if SELFIE_FEEDBACK_S3_BUCKET == PRIVATE_MEDIA_S3_BUCKET:
+        raise ImproperlyConfigured("Selfie-feedback bucket must be separate from private media")
+    if (
+        SELFIE_FEEDBACK_MAX_UPLOAD_BYTES != 20 * 1024 * 1024
+        or SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS != 60
+        or SELFIE_FEEDBACK_S3_ENDPOINT_URL != "https://storage.yandexcloud.net"
+        or SELFIE_FEEDBACK_S3_REGION != "ru-central1"
+    ):
+        raise ImproperlyConfigured("Selfie-feedback settings do not match the approved contract")
+else:
+    SELFIE_FEEDBACK_S3_BUCKET = ""
+    SELFIE_FEEDBACK_S3_ACCESS_KEY_ID = ""
+    SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY = ""
+    SELFIE_FEEDBACK_S3_ENDPOINT_URL = "https://storage.yandexcloud.net"
+    SELFIE_FEEDBACK_S3_REGION = "ru-central1"
+    SELFIE_FEEDBACK_KMS_KEY_ID = ""
+    SELFIE_FEEDBACK_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+    SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS = 60
+
 LOGIN_URL = "photographer_login"
 
 if env("MEDIA_STORAGE_BACKEND", default="filesystem") == "s3":

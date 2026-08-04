@@ -43,6 +43,16 @@ visual_patterns = [
         views.selfie_search_ready,
         name="visual_selfie_search_ready",
     ),
+    path(
+        "event/selfie-search/feedback-problem/",
+        views.selfie_search_feedback_problem,
+        name="visual_selfie_search_feedback_problem",
+    ),
+    path(
+        "event/selfie-search/feedback-marking/",
+        views.selfie_search_feedback_marking,
+        name="visual_selfie_search_feedback_marking",
+    ),
     path("legal/", views.legal, name="visual_legal"),
     path("reference/search/", views.reference_search, name="visual_reference_search"),
     path(

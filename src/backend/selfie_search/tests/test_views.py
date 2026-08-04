@@ -18,7 +18,7 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
-from selfie_search.models import SelfieSearch, SelfieSearchResult
+from selfie_search.models import SelfieSearch, SelfieSearchFeedback, SelfieSearchResult
 
 type ChoiceValue = str | tuple[str, str]
 
@@ -92,6 +92,26 @@ class PublicSelfieSearchMarkupTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    @override_settings(SELFIE_FEEDBACK_ENABLED=False)
+    def test_disabled_feedback_entry_exposes_no_preservation_marker_or_correlation(
+        self,
+    ) -> None:
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.free_event.slug}))
+
+        self.assertContains(response, 'data-selfie-feedback-enabled="false"')
+        self.assertNotContains(response, 'name="feedback_correlation"')
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_enabled_feedback_search_entry_accepts_a_browser_correlation(self) -> None:
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.free_event.slug}))
+
+        self.assertContains(response, 'data-selfie-feedback-enabled="true"')
+        self.assertContains(
+            response,
+            '<input type="hidden" name="feedback_correlation" value="">',
+            html=True,
+        )
+
     def test_unicode_published_event_has_reversible_selfie_urls(self) -> None:
         event = self.make_event(slug="cyclingrace-олимпия", access_type=Event.AccessType.FREE)
         token = "unicode-search-token"
@@ -155,6 +175,36 @@ class PublicSelfieSearchMarkupTests(TestCase):
         self.assertEqual(response.context["search"].pk, search.pk)
         self.assertContains(response, "Искать по другому селфи")
         self.assertContains(response, reverse("event_detail", kwargs={"slug": event.slug}))
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_result_exposes_a_valid_redirect_correlation_without_session_binding(self) -> None:
+        token = "correlated-search-token"
+        SelfieSearch.objects.create(
+            event=self.free_event,
+            public_token_digest=hashlib.sha256(token.encode("ascii")).hexdigest(),
+            status=SelfieSearch.Status.NO_FACE,
+            temporary_object_key="",
+            configuration={"public-contract": 1},
+        )
+        correlation = "a" * 32
+
+        response = self.client.get(
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.free_event.slug, "public_token": token},
+            ),
+            {"feedback_correlation": correlation},
+        )
+
+        self.assertContains(response, f'data-feedback-correlation="{correlation}"')
+        invalid = self.client.get(
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.free_event.slug, "public_token": token},
+            ),
+            {"feedback_correlation": "not valid"},
+        )
+        self.assertNotContains(invalid, 'data-feedback-correlation="not valid"')
 
 
 @override_settings(
@@ -447,6 +497,85 @@ class PublicSelfieResultViewTests(TestCase):
                 f"data-description='{lightbox_download}'",
             )
         self.assertNotContains(first_open, "gallery-photo-id")
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_terminal_feedback_markup_uses_the_saved_result_membership_and_exact_consent(
+        self,
+    ) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(search.event, photo_id="feedback-result")
+        result = self.add_result(search=search, photo=photo, rank=1)
+
+        response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertContains(response, "data-selfie-feedback")
+        self.assertContains(response, 'data-feedback-variant="result_labels"')
+        self.assertContains(response, f'data-feedback-result-id="{result.pk}"')
+        self.assertContains(response, 'data-feedback-total="1"')
+        self.assertContains(response, "data-feedback-unavailable")
+        self.assertContains(
+            response,
+            "Отзыв об этом поиске можно отправить только из браузера, где он был начат, "
+            "пока локальная копия селфи ещё доступна.",
+        )
+        self.assertContains(response, "Оценить качество поиска")
+        self.assertContains(response, "Размечено 0 из 1 фотографий")
+        self.assertContains(response, "Я есть")
+        self.assertContains(response, "Меня нет")
+        self.assertContains(response, "Контакт для связи")
+        self.assertContains(response, "Телефон, Telegram или email")
+        self.assertContains(
+            response,
+            "К отзыву приложим ваше селфи — то самое, которое вы использовали для этого поиска. "
+            "Повторно выбирать файл не нужно.",
+        )
+        self.assertContains(
+            response,
+            "Я согласен на обработку моего селфи, контактных данных и оценки результатов поиска "
+            "для анализа качества поиска и связи со мной в соответствии с ",
+        )
+        self.assertContains(response, "ui/legal/personal-data-policy.pdf")
+        self.assertNotContains(response, 'type="file"')
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_terminal_problem_feedback_has_no_result_questions(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.NO_FACE)
+
+        response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertContains(response, 'data-feedback-variant="problem"')
+        self.assertContains(response, "Помогите улучшить поиск")
+        self.assertNotContains(response, "Оценить качество поиска")
+        self.assertNotContains(response, "Я есть")
+        self.assertNotContains(response, "Меня нет")
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_terminal_result_confirms_already_submitted_feedback_without_new_form(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.NO_FACE)
+        SelfieSearchFeedback.objects.create(
+            search=search,
+            variant=SelfieSearchFeedback.Variant.PROBLEM,
+            contact="customer@example.test",
+            personal_data_consent=True,
+            consent_text_version="2026-08-04",
+            consented_at=timezone.now(),
+            source_status=search.status,
+            source_configuration=search.configuration,
+            object_key=f"feedback/{uuid4().hex}",
+            object_content_type="image/jpeg",
+            object_size=1,
+            object_uploaded_at=timezone.now(),
+        )
+
+        response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertNotContains(response, "Спасибо, отзыв отправлен.")
+        self.assertContains(response, "data-feedback-cleanup")
+        self.assertContains(response, "data-feedback-cleanup-retry")
+        self.assertNotContains(
+            response,
+            '<section class="selfie-search-feedback" data-selfie-feedback',
+        )
 
     def test_ready_page_omits_removed_member_without_reranking_remaining_members(self) -> None:
         search, token = self.make_search(

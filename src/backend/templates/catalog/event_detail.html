@@ -53,8 +53,9 @@
           <li>Селфи удаляется после подготовки поиска.</li>
           <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
         </ul>
-        <form data-selfie-search-form action="{% url 'selfie_search:submit' event_slug=event.slug %}" method="post" enctype="multipart/form-data">
+        <form data-selfie-search-form data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" action="{% url 'selfie_search:submit' event_slug=event.slug %}" method="post" enctype="multipart/form-data">
           {% csrf_token %}
+          {% if selfie_feedback_enabled %}<input type="hidden" name="feedback_correlation" value="">{% endif %}
           <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
           {{ selfie_search_form.selfie }}
           {% if selfie_search_form.selfie.errors %}

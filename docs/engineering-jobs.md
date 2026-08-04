@@ -44,6 +44,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 | EJ-012 | Maintainer | Gate temporary selfie storage activation | Validated | 2026-07-31 |
 | EJ-013 | Contributor | Start isolated repository work reliably | Validated | 2026-08-04 |
+| EJ-014 | Maintainer | Gate consented feedback storage activation | Validated | 2026-08-04 |
 
 ## Job details
 
@@ -217,6 +218,23 @@ worktree smoke and an actual hook-driven commit additionally validated the integ
   [PR #94 successful Quality checks](https://github.com/peter-nikitin/photo-prjct/actions/runs/30857287973/job/91831124522)
 - Last updated: 2026-08-04
 
+### EJ-014 — Maintainer — Gate consented feedback storage activation
+
+When I prepare an environment for consented selfie-search feedback, I want the dedicated bucket,
+KMS, lifecycle, anonymous-denial, and web-only credential contract checked fail-closed, so I can
+keep feedback disabled until its private storage boundary is ready.
+
+The repository provides a guarded 30-day lifecycle mutation with exact bucket/KMS digest,
+unversioned and unlocked checks, readback, and recovery. Its explicit real-storage preflight checks
+default KMS encryption, private ACLs, anonymous object and list denial, lifecycle, and one opaque
+put/head/range/grant/delete scratch cycle. Deployment tests verify disabled-by-default wiring,
+preflight confirmation before enablement, and that feedback credentials reach only the web service;
+no live Yandex bucket or staging activation is claimed.
+
+- Status: Validated
+- Evidence: [`src/backend/selfie_search/feedback_lifecycle.py`](../src/backend/selfie_search/feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py`](../src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py`](../src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py), [`src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py`](../src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py), [`src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py`](../src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py), [`src/backend/selfie_search/tests/test_feedback_storage_contract_command.py`](../src/backend/selfie_search/tests/test_feedback_storage_contract_command.py), and [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py)
+- Last updated: 2026-08-04
+
 ## Status log
 
 This log is append-only.
@@ -242,3 +260,4 @@ This log is append-only.
 | 2026-07-25 | EJ-010 | Candidate | Candidate | Local clone automation now enforces a serialized local-Docker-only replacement, quiesces the normal web service, retains safety/diagnostic artifacts, and has isolated PostgreSQL 16 plus real-Django restored-schema evidence for migration readiness without startup mutations. This is partial local evidence only; scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill remain unestablished. |
 | 2026-07-31 | EJ-012 | Not recorded | Validated | Automated command tests verify explicit confirmation, exact lifecycle preservation/readback/recovery, unversioned-bucket enforcement, bounded-prefix preflight, generated scratch-object cleanup, and sanitized output. Staging additionally applied the one-day `selfie-search/` rule without changing the preview rule, then passed real-bucket put/head/grant/delete preflight before feature enablement. Production is not activated. |
 | 2026-08-04 | EJ-013 | Not recorded | Validated | PR #94 adds and tests the supported worktree bootstrap, CI-like test wrapper, shared Ruff pre-commit installation, clean Git state, secret isolation, and stable `make test`/`make check` entry points; a disposable real-worktree smoke, hook-driven commit, and successful Quality checks validate the integrated workflow. |
+| 2026-08-04 | EJ-014 | Not recorded | Validated | Automated lifecycle, storage-contract, and deployment tests verify the guarded 30-day feedback bucket contract, anonymous denial probes, scratch cleanup, disabled-by-default wiring, and web-only credential propagation. No live bucket/KMS preflight or environment activation is claimed. |

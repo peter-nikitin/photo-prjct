@@ -39,6 +39,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     event = get_object_or_404(Event.objects.published(), slug=slug)
     if selfie_search_form is None and settings.SELFIE_SEARCH_ENABLED:
         selfie_search_form = SelfieSearchUploadForm()
+    selfie_feedback_enabled = bool(settings.SELFIE_FEEDBACK_ENABLED)
     gallery_photos: tuple[GalleryPhoto, ...] = ()
     gallery_page_data = None
     if event.access_type == Event.AccessType.FREE:
@@ -58,6 +59,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             "gallery_photos": gallery_photos,
             "gallery_page": gallery_page_data,
             "selfie_search_form": selfie_search_form,
+            "selfie_feedback_enabled": selfie_feedback_enabled,
         },
     )
 

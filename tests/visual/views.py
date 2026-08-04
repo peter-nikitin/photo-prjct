@@ -96,6 +96,11 @@ class FixtureSelfieSearch:
     matched_photo_count: int = 0
 
 
+@dataclass(frozen=True)
+class FixtureSelfieSearchResult:
+    pk: str
+
+
 EVENTS = (
     FixtureEvent(
         "London 10K",
@@ -498,16 +503,75 @@ def selfie_search_error(request: HttpRequest) -> HttpResponse:
 
 
 def selfie_search_ready(request: HttpRequest) -> HttpResponse:
+    photos = GALLERY_PHOTOS[:3]
+    results = tuple(
+        FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
+        for index in range(1, 4)
+    )
     return _render(
         request,
         "selfie_search/result.html",
         {
             "event": EVENTS[0],
-            "gallery_photos": GALLERY_PHOTOS[:3],
-            "selfie_search_page": Paginator(GALLERY_PHOTOS[:3], 2).page(1),
+            "gallery_photos": photos,
+            "gallery_result_items": tuple(zip(results, photos, strict=True)),
+            "selfie_search_page": Paginator(photos, 2).page(1),
             "is_terminal": True,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
             "status_url": "",
+        },
+    )
+
+
+def selfie_search_feedback_problem(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "selfie_search/result.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": (),
+            "gallery_result_items": (),
+            "is_terminal": True,
+            "public_token_digest": "a" * 64,
+            "search": FixtureSelfieSearch("no_face"),
+            "status_url": "",
+            "feedback": {
+                "variant": "problem",
+                "visible_result_count": 0,
+                "url": "/__visual__/feedback/",
+                "preview": True,
+            },
+            "selfie_feedback_enabled": True,
+        },
+    )
+
+
+def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
+    photos = GALLERY_PHOTOS[:3]
+    results = tuple(
+        FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000000{index}")
+        for index in range(1, 4)
+    )
+    return _render(
+        request,
+        "selfie_search/result.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": photos,
+            "gallery_result_items": tuple(zip(results, photos, strict=True)),
+            "selfie_search_page": Paginator(photos, 2).page(1),
+            "is_terminal": True,
+            "public_token_digest": "b" * 64,
+            "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
+            "status_url": "",
+            "feedback": {
+                "variant": "result_labels",
+                "visible_result_count": 3,
+                "url": "/__visual__/feedback/",
+                "preview": True,
+                "open_initial": True,
+            },
+            "selfie_feedback_enabled": True,
         },
     )
 

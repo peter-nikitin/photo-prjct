@@ -100,6 +100,33 @@ preflight, and execute the staging smoke and capacity measurements in the
 [public selfie-search rollout](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout),
 and only then set `SELFIE_SEARCH_ENABLED=True`.
 
+### Verify selfie-search feedback storage on staging
+
+Selfie-search feedback is implemented but remains disabled by default. After the dedicated private
+bucket, KMS key, and web-only credentials have been provisioned, run the explicit preflight while
+the deployed `.env` still has `SELFIE_FEEDBACK_ENABLED=False`; export the bucket, access-key,
+secret-key, and KMS-key variables for the command as the deployment workflow does:
+
+```bash
+cd /opt/photo-prjct
+test "$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)" = False
+docker compose --project-name photo-prjct-staging \
+  --env-file .env \
+  -f docker-compose.prod.yml \
+  -f docker-compose.https.yml \
+  exec -T \
+  -e SELFIE_FEEDBACK_ENABLED=True \
+  -e SELFIE_FEEDBACK_S3_BUCKET \
+  -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID \
+  -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY \
+  -e SELFIE_FEEDBACK_KMS_KEY_ID \
+  web python manage.py verify_selfie_feedback_storage --confirm-real-storage
+```
+
+The command checks the dedicated bucket contract and removes its generated scratch object. It is
+covered by the repository's automated storage/deployment tests; passing it does not enable feedback
+or replace the separate policy, lifecycle-mutation, staging smoke, and activation gates.
+
 ### Prepare Node.js
 
 The repository uses Node 22 for JavaScript unit tests and local npm commands. With

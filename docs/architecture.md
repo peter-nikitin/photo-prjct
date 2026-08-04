@@ -82,6 +82,14 @@ The repository currently contains an early Django application:
   readiness without starting Django's mutating entrypoint. The web service remains stopped for an
   explicit restart after successful validation. This is not the service backup, retention, or
   disaster-recovery strategy.
+- The repository implements the consented selfie-search quality-feedback path governed by
+  [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md): browser-local seven-day selfie
+  preservation, one immutable feedback record per terminal search, optional saved-result labels,
+  explicit consent and contact validation, restricted audited staff inspection, and dedicated
+  private feedback storage with guarded 30-day lifecycle and deployment preflight commands. The
+  implementation is disabled by default (`SELFIE_FEEDBACK_ENABLED=False`); no environment
+  activation, published-policy gate, live bucket/KMS preflight, or customer-outcome evidence is
+  claimed yet.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
 - Staging's normal deployment uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and
   proxy the internal Django service. The canonical apex and `www` names route to that edge, with
@@ -177,14 +185,14 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
   signed direct Object Storage redirect transport is implemented for already authorized gallery and
   result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
-- Allow one consented quality-feedback record per terminal selfie search without delaying ADR
-  0019's temporary-selfie cleanup. The browser may retain the selected file locally for seven days;
-  submission stores immutable feedback, plaintext contact, explicit consent evidence, and optional
-  result labels in PostgreSQL, plus one selfie in a dedicated private KMS-encrypted bucket whose
-  30-day lifecycle is authoritative. Public media routes and the ML worker cannot access feedback
-  media, and staff access is explicit and audited, as defined by
-  [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md). This is accepted design, not yet
-  implementation or deployment evidence.
+- Keep one consented quality-feedback record per terminal selfie search without delaying ADR 0019's
+  temporary-selfie cleanup. The repository implementation retains the selected file locally for
+  seven days, stores immutable feedback/contact/consent/labels in PostgreSQL, and stores one selfie
+  in a dedicated private KMS-encrypted bucket whose 30-day lifecycle is authoritative. Public media
+  routes and the ML worker cannot access feedback media, and staff access is explicit and audited,
+  as defined by [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md). The feature remains
+  disabled by default and has no staging or production activation evidence until its policy, bucket,
+  KMS, and live-preflight gates are satisfied.
 - Allow attachment delivery wherever an existing normal-gallery or ready-result context already
   authorizes an original, without adding a free-versus-paid branch or opening a normal paid gallery,
   as defined by [ADR 0021](adr/0021-allow-original-download-for-authorized-photos.md). Verified

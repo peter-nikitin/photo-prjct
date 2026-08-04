@@ -7,6 +7,7 @@ from django.http import (
     HttpResponseBase,
     HttpResponseNotAllowed,
 )
+from django.urls import Resolver404, resolve
 
 _PUBLIC_BEARER_PATH = re.compile(r"^/events/[^/]+/selfie-search/[^/]+(?:/|$)")
 _READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
@@ -27,11 +28,15 @@ class PublicSelfieBearerProtectionMiddleware:
         original_path_info = request.META.get("PATH_INFO")
         # URL resolution uses path_info. BaseHandler and CsrfViewMiddleware log path,
         # so redact only the latter before an inner handler can turn an exception into a 4xx/5xx.
-        request.path = _SANITIZED_BEARER_PATH
-        request.META["PATH_INFO"] = _SANITIZED_BEARER_PATH
         request._is_public_selfie_bearer_request = True
-        if request.method not in _READ_ONLY_METHODS:
+        is_feedback_post = _is_feedback_post(request)
+        if request.method not in _READ_ONLY_METHODS and not is_feedback_post:
+            request.path = _SANITIZED_BEARER_PATH
+            request.META["PATH_INFO"] = _SANITIZED_BEARER_PATH
             return _protect_bearer_response(HttpResponseNotAllowed(["GET", "HEAD"]))
+        request.path = _SANITIZED_BEARER_PATH
+        if not is_feedback_post:
+            request.META["PATH_INFO"] = _SANITIZED_BEARER_PATH
         response = _protect_bearer_response(self.get_response(request))
         request.path = original_path
         request.META["PATH_INFO"] = original_path_info
@@ -54,3 +59,12 @@ def _protect_bearer_response(response: HttpResponseBase) -> HttpResponseBase:
         # An inner exception log, if any, sees the redacted request.path above.
         response._has_been_logged = True
     return response
+
+
+def _is_feedback_post(request: HttpRequest) -> bool:
+    if request.method != "POST":
+        return False
+    try:
+        return resolve(request.path_info).view_name == "selfie_search:feedback"
+    except Resolver404:
+        return False

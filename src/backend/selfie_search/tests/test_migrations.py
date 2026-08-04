@@ -5,7 +5,7 @@ from django.test import TransactionTestCase
 
 class SelfieSearchMigrationTests(TransactionTestCase):
     migrate_from = [("processing", "0002_add_face_embedding_schema")]
-    migrate_to = [("selfie_search", "0001_initial")]
+    migrate_to = [("selfie_search", "0002_selfiesearchfeedback_and_more")]
 
     def test_schema_migrates_forward_and_back_without_errors(self) -> None:
         executor = MigrationExecutor(connection)
@@ -17,6 +17,9 @@ class SelfieSearchMigrationTests(TransactionTestCase):
             "selfiesearchjob",
             "selfiesearchattempt",
             "selfiesearchresult",
+            "selfiesearchfeedback",
+            "selfiesearchfeedbacklabel",
+            "selfiesearchfeedbackaccessaudit",
         ):
             self.assertIn(model_name, migrated_apps.all_models["selfie_search"])
 

@@ -217,7 +217,16 @@ fi
 overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
 health_port=443
 health_url="https://$PUBLIC_DOMAIN/health/"
-observability_root_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+observability_helper=/usr/local/sbin/findme-selfie-observability
+observability_package=/usr/local/lib/findme-selfie-observability-package
+
+verify_observability_bootstrap() {
+    cmp -s "$DEPLOY_ROOT/deploy/selfie-observability/root-helper.sh" "$observability_helper" || return 1
+    for name in journald.conf selfie-search-summary.service selfie-search-summary.timer \
+        run-daily-summary.sh summarize.py; do
+        cmp -s "$DEPLOY_ROOT/deploy/selfie-observability/$name" "$observability_package/$name" || return 1
+    done
+}
 
 compose_with_env_file() {
     compose_env_file="$1"
@@ -304,7 +313,6 @@ mutation_started=0
 deployment_committed=0
 recovery_in_progress=0
 observability_installed=0
-observability_state_dir=""
 
 cleanup() {
     rm -f \
@@ -429,9 +437,7 @@ on_exit() {
             fi
         fi
         if [ "$observability_installed" -eq 1 ]; then
-            sudo -n env -i PATH="$observability_root_path" DEPLOY_ROOT="$DEPLOY_ROOT" \
-                SELFIE_OBSERVABILITY_STATE_DIR="$observability_state_dir" \
-                sh "$DEPLOY_ROOT/deploy/install-selfie-observability.sh" rollback || \
+            sudo -n "$observability_helper" rollback || \
                 echo "Observability managed-file rollback failed" >&2
         fi
     fi
@@ -615,17 +621,12 @@ else
     fi
 fi
 
-sudo -n true || fail "Passwordless sudo is required for observability reconciliation"
+verify_observability_bootstrap || fail "Selfie observability bootstrap is missing or stale; run deploy/bootstrap-selfie-observability.sh as an operator"
+observability_installed=1
 mutation_started=1
+sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
 mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
 requested_env_tmp=""
-
-observability_state_dir="$(mktemp -d "$DEPLOY_ROOT/.selfie-observability-state.XXXXXX")"
-observability_installed=1
-sudo -n env -i PATH="$observability_root_path" DEPLOY_ROOT="$DEPLOY_ROOT" \
-    SELFIE_OBSERVABILITY_STATE_DIR="$observability_state_dir" \
-    sh "$DEPLOY_ROOT/deploy/install-selfie-observability.sh" install || \
-    fail "Selfie observability host reconciliation failed"
 
 compose stop nginx || true
 if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
@@ -746,10 +747,11 @@ fi
 if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
     fail "Requested deployment failed public HTTPS smoke verification"
 fi
-if ! sudo -n env -i PATH="$observability_root_path" DEPLOY_ROOT="$DEPLOY_ROOT" COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
-    DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
-    sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
+if ! sudo -n "$observability_helper" verify; then
     fail "Requested deployment failed selfie observability verification"
+fi
+if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
+    fail "Requested deployment failed application observability verification"
 fi
 
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.XXXXXX")"
@@ -772,7 +774,5 @@ marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.XXXXXX")"
 printf '%s\n' "$requested_image" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
-sudo -n env -i PATH="$observability_root_path" DEPLOY_ROOT="$DEPLOY_ROOT" \
-    SELFIE_OBSERVABILITY_STATE_DIR="$observability_state_dir" \
-    sh "$DEPLOY_ROOT/deploy/install-selfie-observability.sh" commit
+sudo -n "$observability_helper" commit
 deployment_committed=1

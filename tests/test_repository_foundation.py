@@ -726,18 +726,20 @@ def test_local_node_version_matches_ci_and_visual_container() -> None:
 
 def test_selfie_observability_is_owned_by_the_supported_deployment_entrypoint() -> None:
     apply = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
-    installer = (ROOT / "deploy/install-selfie-observability.sh").read_text(encoding="utf-8")
+    helper = (ROOT / "deploy/selfie-observability/root-helper.sh").read_text(encoding="utf-8")
+    bootstrap = (ROOT / "deploy/bootstrap-selfie-observability.sh").read_text(encoding="utf-8")
     verifier = (ROOT / "deploy/verify-selfie-observability.sh").read_text(encoding="utf-8")
 
-    assert apply.index('install-selfie-observability.sh" install') < apply.index(
-        "compose stop nginx"
-    )
+    assert apply.index('"$observability_helper" install') < apply.index("compose stop nginx")
     assert apply.index("verify-selfie-observability.sh") > apply.index("verify-public-edge.sh")
-    assert 'install-selfie-observability.sh" rollback' in apply
+    assert '"$observability_helper" rollback' in apply
     for setting in ("Storage=persistent", "MaxRetentionSec=14day", "SystemMaxUse=1G"):
-        assert setting in verifier
-    assert "journalctl --vacuum" not in installer
-    assert "rm -rf" not in installer
+        assert setting in helper
+    assert "/opt/photo-prjct" not in helper
+    assert "NOPASSWD: ALL" not in bootstrap
+    assert "journalctl --vacuum" not in helper
+    assert "rm -rf" not in helper
+    assert "systemd-analyze cat-config" not in verifier
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "journalctl -u selfie-search-summary.service --since '14 days ago' -o cat" in readme
     assert '| grep \'"event":"selfie_search_daily_summary"\'' in readme

@@ -22,6 +22,8 @@ EVENT_NAMES = {
     "selfie_search_terminal",
 }
 PROBE_EVENT = "selfie_observability_probe"
+OBSERVABILITY_FAILURE_MARKER = "selfie_observability_emit_failed"
+LOG_LEVEL_PREFIXES = ("DEBUG ", "INFO ", "WARNING ", "ERROR ", "CRITICAL ")
 MAX_BOUNDED_INTEGER = 2**31 - 1
 ENVIRONMENTS = {"local", "test", "staging", "production"}
 COMMON_FIELDS = {"schema_version", "event", "occurred_at", "service", "environment"}
@@ -245,10 +247,17 @@ def _consume_line(
     line = raw_line.strip()
     if not line:
         return
+    for prefix in LOG_LEVEL_PREFIXES:
+        if line.startswith(prefix):
+            line = line[len(prefix) :]
+            break
+    if line == OBSERVABILITY_FAILURE_MARKER:
+        state.integrity["malformed_events"] += 1
+        return
     try:
         value = json.loads(line)
     except json.JSONDecodeError:
-        if "selfie_" in line or "schema_version" in line:
+        if line.startswith("{") and ("selfie_" in line or "schema_version" in line):
             state.integrity["malformed_events"] += 1
         return
     if not isinstance(value, dict):

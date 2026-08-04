@@ -1665,13 +1665,37 @@ def _observability_install_env(tmp_path: Path, fake_bin: Path) -> dict[str, str]
         """
 printf '%s\n' "$*" >> "$COMMAND_LOG"
 case "$*" in
+  "enable --now selfie-search-summary.timer")
+    [ "$TIMER_ENABLE_FAILURE" = none ] || exit 1
+    ;;
   "disable selfie-search-summary.timer")
     : > "$COMMAND_LOG.disable-attempted"
+    if [ "$TIMER_MISSING_COMMAND_FAILURE" = 1 ] && \
+       [ ! -e "$SELFIE_OBSERVABILITY_SYSTEMD_DIR/selfie-search-summary.timer" ]; then
+      exit 1
+    fi
     [ "$TIMER_ROLLBACK_FAILURE" != disable ] || exit 1
     ;;
   "stop selfie-search-summary.timer")
     : > "$COMMAND_LOG.stop-attempted"
+    if [ "$TIMER_MISSING_COMMAND_FAILURE" = 1 ] && \
+       [ ! -e "$SELFIE_OBSERVABILITY_SYSTEMD_DIR/selfie-search-summary.timer" ]; then
+      exit 1
+    fi
     [ "$TIMER_ROLLBACK_FAILURE" != stop ] || exit 1
+    ;;
+  "restart systemd-journald")
+    if [ "$ROLLBACK_LATE_FAILURE" = twice ] && \
+       [ -f "$SELFIE_OBSERVABILITY_STATE_DIR/timer.enable-attempted" ]; then
+      if [ ! -f "$COMMAND_LOG.late-failed-1" ]; then
+        : > "$COMMAND_LOG.late-failed-1"
+        exit 1
+      fi
+      if [ ! -f "$COMMAND_LOG.late-failed-2" ]; then
+        : > "$COMMAND_LOG.late-failed-2"
+        exit 1
+      fi
+    fi
     ;;
   "is-enabled --quiet selfie-search-summary.timer")
     if [ "$TIMER_ROLLBACK_FAILURE" = disable ] && [ -f "$COMMAND_LOG.disable-attempted" ]; then
@@ -1725,6 +1749,9 @@ fi
         "COMMAND_LOG": str(tmp_path / "systemctl.log"),
         "TIMER_INITIAL": "enabled",
         "TIMER_ROLLBACK_FAILURE": "none",
+        "TIMER_ENABLE_FAILURE": "none",
+        "TIMER_MISSING_COMMAND_FAILURE": "0",
+        "ROLLBACK_LATE_FAILURE": "none",
     }
 
 
@@ -1736,6 +1763,7 @@ def test_observability_installer_first_install_noop_and_exact_rollback(
     systemd = tmp_path / "systemd"
     journald.mkdir()
     systemd.mkdir()
+    (systemd / "selfie-search-summary.timer").write_text("prior timer\n", encoding="utf-8")
     managed = journald / "60-findme-selfie-observability.conf"
     managed.write_text("prior-managed\n", encoding="utf-8")
     unrelated = systemd / "unrelated.service"
@@ -1802,6 +1830,7 @@ def test_observability_installer_second_file_failure_restores_files_and_disabled
     journald.mkdir()
     systemd.mkdir()
     runtime.mkdir()
+    (systemd / "selfie-search-summary.timer").write_text("prior timer\n", encoding="utf-8")
     managed = journald / "60-findme-selfie-observability.conf"
     managed.write_text("prior\n", encoding="utf-8")
 
@@ -1813,6 +1842,117 @@ def test_observability_installer_second_file_failure_restores_files_and_disabled
     commands = (tmp_path / "systemctl.log").read_text(encoding="utf-8")
     assert "disable selfie-search-summary.timer" in commands
     assert "stop selfie-search-summary.timer" in commands
+
+
+def test_observability_first_install_rollback_accepts_absent_timer_unit(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _observability_install_env(tmp_path, fake_bin)
+    env["TIMER_INITIAL"] = "disabled"
+    install = fake_bin / "install"
+    install.write_text(
+        install.read_text(encoding="utf-8").replace(
+            'if [ "$is_dir" -eq 1 ]; then',
+            'case "$args" in *selfie-search-summary.service.candidate*) exit 9 ;; esac\n'
+            'if [ "$is_dir" -eq 1 ]; then',
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "journald").mkdir()
+    (tmp_path / "systemd").mkdir()
+    (tmp_path / "runtime").mkdir()
+
+    result = _run("deploy/selfie-observability/root-helper.sh", env=env)
+
+    assert result.returncode == 9
+    assert "SELFIE_OBSERVABILITY_ROLLBACK_COMPLETE" in result.stdout
+    assert not (tmp_path / "state").exists()
+    commands = (tmp_path / "systemctl.log").read_text(encoding="utf-8")
+    assert "disable selfie-search-summary.timer" not in commands
+    assert "stop selfie-search-summary.timer" not in commands
+
+
+def test_observability_successful_first_install_rollback_disables_new_timer(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _observability_install_env(tmp_path, fake_bin)
+    env["TIMER_INITIAL"] = "disabled"
+    (tmp_path / "journald").mkdir()
+    (tmp_path / "systemd").mkdir()
+
+    installed = _run("deploy/selfie-observability/root-helper.sh", env=env)
+    rollback = subprocess.run(
+        ["sh", ROOT / "deploy/selfie-observability/root-helper.sh", "rollback"],
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert installed.returncode == rollback.returncode == 0
+    assert "SELFIE_OBSERVABILITY_ROLLBACK_COMPLETE" in rollback.stdout
+    assert not (tmp_path / "state").exists()
+    commands = (tmp_path / "systemctl.log").read_text(encoding="utf-8")
+    assert "disable selfie-search-summary.timer" in commands
+    assert "stop selfie-search-summary.timer" in commands
+
+
+def test_observability_partial_timer_enable_failure_rolls_back_first_install(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _observability_install_env(tmp_path, fake_bin)
+    env.update({"TIMER_INITIAL": "disabled", "TIMER_ENABLE_FAILURE": "fail"})
+    (tmp_path / "journald").mkdir()
+    (tmp_path / "systemd").mkdir()
+
+    result = _run("deploy/selfie-observability/root-helper.sh", env=env)
+
+    assert result.returncode != 0
+    assert "SELFIE_OBSERVABILITY_ROLLBACK_COMPLETE" in result.stdout
+    assert not (tmp_path / "state").exists()
+    commands = (tmp_path / "systemctl.log").read_text(encoding="utf-8")
+    assert "enable --now selfie-search-summary.timer" in commands
+    assert "disable selfie-search-summary.timer" in commands
+    assert "stop selfie-search-summary.timer" in commands
+
+
+def test_observability_first_install_rollback_retry_accepts_already_removed_timer(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _observability_install_env(tmp_path, fake_bin)
+    env.update(
+        {
+            "TIMER_INITIAL": "disabled",
+            "TIMER_MISSING_COMMAND_FAILURE": "1",
+            "ROLLBACK_LATE_FAILURE": "twice",
+        }
+    )
+    (tmp_path / "journald").mkdir()
+    (tmp_path / "systemd").mkdir()
+
+    installed = _run("deploy/selfie-observability/root-helper.sh", env=env)
+    first = subprocess.run(
+        ["sh", ROOT / "deploy/selfie-observability/root-helper.sh", "rollback"],
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    armed_after_first = (tmp_path / "state/transaction-armed").exists()
+    second = subprocess.run(
+        ["sh", ROOT / "deploy/selfie-observability/root-helper.sh", "rollback"],
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert installed.returncode == 0
+    assert first.returncode != 0
+    assert armed_after_first
+    assert second.returncode == 0
+    assert "SELFIE_OBSERVABILITY_ROLLBACK_COMPLETE" in second.stdout
+    assert not (tmp_path / "state").exists()
 
 
 def test_observability_installer_signal_after_first_replacement_restores_prior_file(
@@ -1881,6 +2021,8 @@ def test_observability_rollback_never_claims_complete_when_timer_state_remains_w
 ) -> None:
     env = _observability_install_env(tmp_path, fake_bin)
     env.update({"TIMER_INITIAL": "disabled", "TIMER_ROLLBACK_FAILURE": failed_command})
+    (tmp_path / "systemd").mkdir()
+    (tmp_path / "systemd/selfie-search-summary.timer").write_text("prior timer\n", encoding="utf-8")
     install = fake_bin / "install"
     install.write_text(
         install.read_text(encoding="utf-8").replace(
@@ -1942,7 +2084,9 @@ case "$*" in
     [ "$VERIFY_SCENARIO" != disk-failure ] || exit 1
     printf 'Archived and active journals take up 12.0M in the file system.\n'
     ;;
-  *"-o short-unix"*) [ "$VERIFY_SCENARIO" != oldest ] || printf '100.000000 first\n' ;;
+  *"-o short-unix"*)
+    [ "$VERIFY_SCENARIO" != oldest ] || printf '%s\n100.000000 first\n' '-- Boot boundary --'
+    ;;
   *) : ;;
 esac
 """,

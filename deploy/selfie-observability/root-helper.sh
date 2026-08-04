@@ -106,6 +106,16 @@ rollback_transaction() {
         return 0
     fi
     rollback_status=0
+    if [ -f "$STATE_DIR/timer.enable-attempted" ]; then
+        if [ ! -f "$STATE_DIR/timer.was-active" ]; then
+            systemctl stop selfie-search-summary.timer || true
+            if systemctl is-active --quiet selfie-search-summary.timer; then rollback_status=1; fi
+        fi
+        if [ ! -f "$STATE_DIR/timer.was-enabled" ]; then
+            systemctl disable selfie-search-summary.timer || true
+            if systemctl is-enabled --quiet selfie-search-summary.timer; then rollback_status=1; fi
+        fi
+    fi
     restore_file summarize.py || rollback_status=1
     restore_file run-daily-summary.sh || rollback_status=1
     restore_file selfie-search-summary.timer || rollback_status=1
@@ -116,15 +126,19 @@ rollback_transaction() {
     if [ -f "$STATE_DIR/timer.was-enabled" ]; then
         systemctl enable selfie-search-summary.timer || rollback_status=1
         systemctl is-enabled --quiet selfie-search-summary.timer || rollback_status=1
-    else
-        systemctl disable selfie-search-summary.timer || rollback_status=1
+    elif [ -f "$STATE_DIR/timer.existed" ] && [ ! -f "$STATE_DIR/timer.enable-attempted" ]; then
+        systemctl disable selfie-search-summary.timer || true
+        if systemctl is-enabled --quiet selfie-search-summary.timer; then rollback_status=1; fi
+    elif [ -f "$STATE_DIR/timer.enable-attempted" ]; then
         if systemctl is-enabled --quiet selfie-search-summary.timer; then rollback_status=1; fi
     fi
     if [ -f "$STATE_DIR/timer.was-active" ]; then
         systemctl start selfie-search-summary.timer || rollback_status=1
         systemctl is-active --quiet selfie-search-summary.timer || rollback_status=1
-    else
-        systemctl stop selfie-search-summary.timer || rollback_status=1
+    elif [ -f "$STATE_DIR/timer.existed" ] && [ ! -f "$STATE_DIR/timer.enable-attempted" ]; then
+        systemctl stop selfie-search-summary.timer || true
+        if systemctl is-active --quiet selfie-search-summary.timer; then rollback_status=1; fi
+    elif [ -f "$STATE_DIR/timer.enable-attempted" ]; then
         if systemctl is-active --quiet selfie-search-summary.timer; then rollback_status=1; fi
     fi
     [ -f "$STATE_DIR/runtime-dir.existed" ] || rmdir "$RUNTIME_DIR" 2>/dev/null || true
@@ -151,6 +165,8 @@ remove_state() {
     done
     rm -f "$STATE_DIR/systemd.changed" "$STATE_DIR/journald.changed" \
         "$STATE_DIR/timer.was-enabled" "$STATE_DIR/timer.was-active" \
+        "$STATE_DIR/timer.existed" \
+        "$STATE_DIR/timer.enable-attempted" \
         "$STATE_DIR/transaction-armed" "$STATE_DIR/runtime-dir.existed" \
         "$STATE_DIR/systemd-dir.existed" "$STATE_DIR/journald-dir.existed"
     rmdir "$STATE_DIR" 2>/dev/null || true
@@ -211,12 +227,10 @@ case "$action" in
         disk_usage="$(printf '%s\n' "$disk_line" | sed -n 's/.*take[s]* up \([^ ]*\).*/\1/p' | tail -n 1)"
         [ -n "$disk_usage" ] || { echo "journal disk usage is unreadable" >&2; exit 1; }
         printf 'journal_disk_usage=%s\n' "$disk_usage"
-        oldest_line="$(journalctl -u docker.service --since '14 days ago' -o short-unix --grep '"event":"selfie_' 2>/dev/null | sed -n '1p')"
-        if [ -z "$oldest_line" ]; then
+        oldest_timestamp="$(journalctl -u docker.service --since '14 days ago' -o short-unix --grep '"event":"selfie_' 2>/dev/null | sed -n 's/^\([0-9][0-9.]*\) .*/\1/p' | sed -n '1p')"
+        if [ -z "$oldest_timestamp" ]; then
             echo oldest_selfie_event_realtime=none
         else
-            oldest_timestamp="${oldest_line%% *}"
-            case "$oldest_timestamp" in *[!0-9.]*|'') echo "oldest selfie event timestamp is unreadable" >&2; exit 1 ;; esac
             printf 'oldest_selfie_event_realtime=%s\n' "$oldest_timestamp"
         fi
         echo SELFIE_OBSERVABILITY_HOST_VERIFIED
@@ -258,6 +272,8 @@ validate_root_package
 [ ! -f "$STATE_DIR/transaction-armed" ] || { echo "observability transaction is already armed" >&2; exit 1; }
 timer_was_enabled=0
 timer_was_active=0
+timer_existed=0
+[ ! -e "$SYSTEMD_DIR/selfie-search-summary.timer" ] || timer_existed=1
 systemctl is-enabled --quiet selfie-search-summary.timer && timer_was_enabled=1 || true
 systemctl is-active --quiet selfie-search-summary.timer && timer_was_active=1 || true
 systemd_dir_existed=0; [ -d "$SYSTEMD_DIR" ] && systemd_dir_existed=1
@@ -268,6 +284,7 @@ mutation_started=1
 install -d -o root -g root -m 0700 "$STATE_DIR"
 [ "$timer_was_enabled" -eq 0 ] || : > "$STATE_DIR/timer.was-enabled"
 [ "$timer_was_active" -eq 0 ] || : > "$STATE_DIR/timer.was-active"
+[ "$timer_existed" -eq 0 ] || : > "$STATE_DIR/timer.existed"
 [ "$systemd_dir_existed" -eq 0 ] || : > "$STATE_DIR/systemd-dir.existed"
 [ "$journald_dir_existed" -eq 0 ] || : > "$STATE_DIR/journald-dir.existed"
 [ "$runtime_dir_existed" -eq 0 ] || : > "$STATE_DIR/runtime-dir.existed"
@@ -310,6 +327,7 @@ if [ -f "$STATE_DIR/journald.conf.changed" ]; then
     : > "$STATE_DIR/journald.changed"
     systemctl restart systemd-journald
 fi
+: > "$STATE_DIR/timer.enable-attempted"
 systemctl enable --now selfie-search-summary.timer
 transaction_complete=1
 echo SELFIE_OBSERVABILITY_INSTALL_READY

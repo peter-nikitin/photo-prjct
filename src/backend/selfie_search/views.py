@@ -2,6 +2,7 @@ import logging
 from time import monotonic
 
 from config.views import _public_media_resolver
+from django import forms
 from django.conf import settings
 from django.core.paginator import InvalidPage
 from django.http import (
@@ -45,20 +46,22 @@ def submit(request, event_slug: str):
         raise Http404
     form = SelfieSearchUploadForm(files=request.FILES)
     if not form.is_valid():
+        reason_code = form.image_rejection.reason if form.image_rejection else "missing_or_empty"
         _emit_submission_finished(
             event=event,
             form=form,
             outcome="rejected",
-            reason_code=form.errors.as_data()["selfie"][0].code,
+            reason_code=reason_code,
             search_id=None,
             started_at=started_at,
             level=logging.INFO,
         )
-        return _event_page(request, event_slug, form)
+        return _event_page(request, event_slug, form, status=422)
+    selfie = form.cleaned_data["selfie"]
     try:
         created = submit_selfie_search(
             event=event,
-            upload=form.cleaned_data["selfie"],
+            selfie=selfie,
             storage=TemporarySelfieStorage(),
         )
     except StorageUnavailable:
@@ -71,8 +74,14 @@ def submit(request, event_slug: str):
             started_at=started_at,
             level=logging.WARNING,
         )
-        form.add_error("selfie", "Не удалось загрузить селфи. Попробуйте ещё раз.")
-        return _event_page(request, event_slug, form)
+        form.add_error(
+            None,
+            forms.ValidationError(
+                "Не удалось загрузить фотографию. Попробуйте ещё раз.",
+                code="storage_unavailable",
+            ),
+        )
+        return _event_page(request, event_slug, form, status=503)
     _emit_submission_finished(
         event=event,
         form=form,
@@ -208,10 +217,12 @@ def result_download(request, event_slug: str, public_token: str, photo_id: str) 
     return redirect(signed_url)
 
 
-def _event_page(request, event_slug: str, form: SelfieSearchUploadForm):
+def _event_page(request, event_slug: str, form: SelfieSearchUploadForm, *, status: int = 200):
     from config.views import event_detail
 
-    return event_detail(request, event_slug, selfie_search_form=form)
+    response = event_detail(request, event_slug, selfie_search_form=form)
+    response.status_code = status
+    return response
 
 
 _TERMINAL_SEARCH_STATUSES = frozenset(

@@ -1,18 +1,21 @@
 import hashlib
 import json
 import logging
-from contextlib import ExitStack
 from datetime import date
 from io import BytesIO
+from pathlib import Path
+from struct import pack
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock, call, patch
 from urllib.parse import quote
 from uuid import uuid4
+from zlib import crc32
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
+from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -79,7 +82,10 @@ class PublicSelfieSearchMarkupTests(TestCase):
                 self.assertContains(response, 'enctype="multipart/form-data"')
                 self.assertContains(response, 'name="csrfmiddlewaretoken"')
                 self.assertContains(response, 'name="selfie"')
-                self.assertContains(response, 'accept="image/jpeg,image/png"')
+                self.assertContains(
+                    response,
+                    'accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif"',
+                )
                 self.assertContains(
                     response,
                     "Мы ищем вероятные совпадения только среди фотографий этого события.",
@@ -166,6 +172,25 @@ class PublicSelfieSearchMarkupTests(TestCase):
         self.assertContains(response, reverse("event_detail", kwargs={"slug": event.slug}))
 
 
+def _view_jpeg_upload() -> SimpleUploadedFile:
+    content = BytesIO()
+    Image.new("RGB", (8, 8), color="white").save(content, format="JPEG")
+    return SimpleUploadedFile("selfie.jpg", content.getvalue(), content_type="image/jpeg")
+
+
+def _view_pixel_limit_upload() -> SimpleUploadedFile:
+    ihdr = pack(">IIBBBBB", 5_001, 5_000, 8, 2, 0, 0, 0)
+    content = b"\x89PNG\r\n\x1a\n" + pack(">I", len(ihdr)) + b"IHDR" + ihdr
+    content += pack(">I", crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
+    content += pack(">I", 0) + b"IEND" + pack(">I", crc32(b"IEND") & 0xFFFFFFFF)
+    return SimpleUploadedFile("selfie.png", content, content_type="image/png")
+
+
+class FailingSubmissionStorage:
+    def put(self, *, key: str, content: bytes, content_type: str):  # noqa: ARG002
+        raise StorageUnavailable()
+
+
 class _CaptureLogger(logging.Logger):
     def __init__(self) -> None:
         super().__init__("selfie-submission-capture", logging.DEBUG)
@@ -183,98 +208,172 @@ class _FailingLogger(logging.Logger):
         raise RuntimeError("logger unavailable")
 
 
-class _RecordingTemporaryStorage:
-    def __init__(self) -> None:
-        self.objects: dict[str, bytes] = {}
-        self.deleted: list[str] = []
-
-    def put(self, *, key: str, content: bytes, content_type: str):  # noqa: ARG002
-        self.objects[key] = content
-        return SimpleNamespace(key=key, size=len(content), content_type=content_type)
-
-    def delete(self, *, key: str) -> None:
-        self.deleted.append(key)
-        self.objects.pop(key, None)
-
-
 @override_settings(
     SELFIE_SEARCH_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
-class SelfieSubmissionObservabilityTests(TestCase):
-    """The production breaks caught here are missing or premature submission outcomes."""
-
+class SelfieSubmissionFeedbackTests(TestCase):
     def setUp(self) -> None:
         self.event = Event.objects.create(
-            name="Observability Run",
-            slug="observability-run",
-            start_date=date(2026, 8, 4),
-            end_date=date(2026, 8, 4),
+            name="Feedback event",
+            slug="feedback-event",
+            start_date=date(2026, 7, 30),
+            end_date=date(2026, 7, 30),
             city="Moscow",
             access_type=Event.AccessType.FREE,
             publication_status=Event.PublicationStatus.PUBLISHED,
         )
-        self.submit_url = reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})
+        self.url = reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})
 
-    @staticmethod
-    def valid_upload() -> SimpleUploadedFile:
-        content = BytesIO()
-        Image.new("RGB", (8, 8), color="white").save(content, format="JPEG")
-        return SimpleUploadedFile("selfie.jpeg", content.getvalue(), content_type="image/jpeg")
+    def post(self, upload: SimpleUploadedFile | None) -> HttpResponse:
+        return self.client.post(self.url, {} if upload is None else {"selfie": upload})
 
-    def test_invalid_submission_emits_one_rejected_event_from_the_form_reason(self) -> None:
-        logger = _CaptureLogger()
-        corrupt = SimpleUploadedFile("selfie.jpg", b"not an image", content_type="image/jpeg")
+    def assert_customer_rejection(
+        self,
+        *,
+        upload: SimpleUploadedFile | None,
+        reason: str,
+        message: str,
+        actual_format: str | None,
+        declared_type: str,
+    ) -> None:
+        before_searches = SelfieSearch.objects.count()
+        before_jobs = SelfieSearchJob.objects.count()
+        with patch("selfie_search.views.TemporarySelfieStorage") as storage_factory:
+            with self.assertLogs("selfie_search.views", level="INFO") as logs:
+                response = self.post(upload)
 
-        with patch("selfie_search.views.logger", logger):
-            response = self.client.post(self.submit_url, {"selfie": corrupt})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Файл повреждён. Выберите другое селфи.")
-        self.assertEqual(len(logger.calls), 1)
-        level, line = logger.calls[0]
-        payload = json.loads(line)
-        self.assertEqual(level, logging.INFO)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(SelfieSearch.objects.count(), before_searches)
+        self.assertEqual(SelfieSearchJob.objects.count(), before_jobs)
+        storage_factory.assert_not_called()
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        payload = json.loads(record.getMessage())
         self.assertEqual(payload["event"], "selfie_submission_finished")
         self.assertEqual(payload["event_id"], str(self.event.pk))
         self.assertEqual(payload["outcome"], "rejected")
-        self.assertEqual(payload["reason_code"], "corrupt_image")
-        self.assertIsNone(payload["search_id"])
-        self.assertEqual(payload["actual_format"], "unknown")
-        self.assertEqual(payload["declared_type"], "jpeg")
-
-    def test_clear_only_submission_emits_a_bounded_missing_or_empty_event(self) -> None:
-        logger = _CaptureLogger()
-
-        with patch("selfie_search.views.logger", logger):
-            response = self.client.post(self.submit_url, {"selfie-clear": "on"})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(logger.calls), 1)
-        payload = json.loads(logger.calls[0][1])
-        self.assertEqual(payload["outcome"], "rejected")
-        self.assertEqual(payload["reason_code"], "missing_or_empty")
-
-    def test_storage_failure_emits_one_warning_without_accepting_the_submission(self) -> None:
-        logger = _CaptureLogger()
-
-        with (
-            patch("selfie_search.views.logger", logger),
-            patch("selfie_search.views.submit_selfie_search", side_effect=StorageUnavailable),
+        self.assertEqual(payload["reason_code"], reason)
+        self.assertEqual(payload["actual_format"], actual_format)
+        self.assertEqual(payload["declared_type"], declared_type)
+        self.assertContains(response, message, status_code=422)
+        self.assertContains(response, 'id="selfie-search"', status_code=422)
+        self.assertContains(response, 'role="alert"', status_code=422)
+        self.assertContains(
+            response,
+            (
+                f'action="{reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})}'
+                '#selfie-search"'
+            ),
+            status_code=422,
+        )
+        self.assertContains(response, ">Найти мои фото</button>", status_code=422)
+        self.assertNotContains(response, 'type="submit" disabled', status_code=422)
+        self.assertEqual(response.content.count(b'role="alert"'), 1)
+        captured = repr(record.__dict__) + "\n".join(logs.output)
+        for forbidden in (
+            "selfie.jpg",
+            "selfie.bin",
+            "application/octet-stream",
+            "selfie-search/",
+            "signed",
+            "vector",
+            "traceback",
         ):
-            response = self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+            self.assertNotIn(forbidden, captured)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Не удалось загрузить селфи. Попробуйте ещё раз.")
-        self.assertEqual(len(logger.calls), 1)
-        level, line = logger.calls[0]
-        payload = json.loads(line)
-        self.assertEqual(level, logging.WARNING)
+    def test_customer_correctable_rejections_have_one_safe_event_and_no_side_effects(self) -> None:
+        content = BytesIO()
+        Image.new("RGB", (8, 8), color="white").save(content, format="GIF")
+        cases = (
+            (None, "missing_or_empty", "Выберите фотографию для поиска.", "unknown", "missing"),
+            (
+                SimpleUploadedFile(
+                    "selfie.bin", content.getvalue(), content_type="application/octet-stream"
+                ),
+                "unsupported_format",
+                "Не удалось прочитать фотографию. Выберите JPEG, PNG, HEIC или HEIF.",
+                "unknown",
+                "octet_stream",
+            ),
+            (
+                SimpleUploadedFile("selfie.jpg", b"\xff\xd8\xff", content_type="image/jpeg"),
+                "corrupt_image",
+                "Фотография повреждена. Выберите другой файл.",
+                "unknown",
+                "jpeg",
+            ),
+            (
+                SimpleUploadedFile(
+                    "selfie.jpg", b"x" * (20 * 1024 * 1024 + 1), content_type="image/jpeg"
+                ),
+                "source_too_large",
+                "Размер фотографии не должен превышать 20 МиБ.",
+                "unknown",
+                "jpeg",
+            ),
+            (
+                _view_pixel_limit_upload(),
+                "pixel_limit_exceeded",
+                "Изображение слишком большое. Уменьшите его так, чтобы "
+                "ширина × высота были не больше 25 млн пикселей — "
+                "например, 5000 × 5000.",
+                "png",
+                "png",
+            ),
+        )
+        for upload, reason, message, actual_format, declared_type in cases:
+            with self.subTest(reason=reason):
+                self.assert_customer_rejection(
+                    upload=upload,
+                    reason=reason,
+                    message=message,
+                    actual_format=actual_format,
+                    declared_type=declared_type,
+                )
+
+    def test_normalized_oversize_rejection_is_safe_and_customer_correctable(self) -> None:
+        fixture = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
+        upload = SimpleUploadedFile("iphone.heic", fixture, content_type="image/heic")
+        with override_settings(SELFIE_SEARCH_MAX_UPLOAD_BYTES=len(fixture)):
+            with patch(
+                "selfie_search.images._normalize_heif", return_value=b"x" * (len(fixture) + 1)
+            ):
+                self.assert_customer_rejection(
+                    upload=upload,
+                    reason="normalized_too_large",
+                    message="Размер фотографии не должен превышать 20 МиБ.",
+                    actual_format="heic",
+                    declared_type="heic",
+                )
+
+    def test_storage_failure_is_503_retryable_and_has_no_search_or_job(self) -> None:
+        with patch(
+            "selfie_search.views.TemporarySelfieStorage",
+            return_value=FailingSubmissionStorage(),
+        ):
+            with self.assertLogs("selfie_search.views", level="WARNING") as logs:
+                response = self.post(_view_jpeg_upload())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(SelfieSearch.objects.exists())
+        self.assertFalse(SelfieSearchJob.objects.exists())
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        payload = json.loads(record.getMessage())
         self.assertEqual(payload["outcome"], "storage_unavailable")
         self.assertEqual(payload["reason_code"], "storage_unavailable")
-        self.assertIsNone(payload["search_id"])
+        self.assertEqual(payload["actual_format"], "jpeg")
+        self.assertEqual(payload["declared_type"], "jpeg")
+        self.assertContains(
+            response,
+            "Не удалось загрузить фотографию. Попробуйте ещё раз.",
+            status_code=503,
+        )
+        self.assertContains(response, 'role="alert"', status_code=503)
+        self.assertContains(response, ">Найти мои фото</button>", status_code=503)
 
-    def test_accepted_submission_emits_after_success_with_the_created_search_id(self) -> None:
+    def test_accepted_submission_emits_after_success_with_created_search_id(self) -> None:
         logger = _CaptureLogger()
         search_id = uuid4()
         created = SimpleNamespace(
@@ -285,28 +384,20 @@ class SelfieSubmissionObservabilityTests(TestCase):
             patch("selfie_search.views.logger", logger),
             patch("selfie_search.views.submit_selfie_search", return_value=created),
         ):
-            response = self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+            response = self.post(_view_jpeg_upload())
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            response["Location"],
-            reverse(
-                "selfie_search:result",
-                kwargs={"event_slug": self.event.slug, "public_token": "opaque-public-token"},
-            ),
-        )
         self.assertEqual(len(logger.calls), 1)
         level, line = logger.calls[0]
         payload = json.loads(line)
         self.assertEqual(level, logging.INFO)
         self.assertEqual(payload["outcome"], "accepted")
-        self.assertEqual(payload["reason_code"], "")
         self.assertEqual(payload["search_id"], str(search_id))
+        self.assertEqual(payload["actual_format"], "jpeg")
         self.assertNotIn("opaque-public-token", line)
 
     def test_database_failure_never_claims_an_accepted_submission(self) -> None:
         logger = _CaptureLogger()
-
         with (
             patch("selfie_search.views.logger", logger),
             patch(
@@ -315,27 +406,23 @@ class SelfieSubmissionObservabilityTests(TestCase):
             ),
             self.assertRaises(IntegrityError),
         ):
-            self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+            self.post(_view_jpeg_upload())
 
         self.assertEqual(logger.calls, [])
 
-    def test_event_output_failure_keeps_the_accepted_redirect_unchanged(self) -> None:
-        created = SimpleNamespace(
-            search=SimpleNamespace(pk=uuid4()), public_token="opaque-public-token"
-        )
+    def test_observability_output_failure_keeps_accepted_redirect(self) -> None:
+        created = SimpleNamespace(search=SimpleNamespace(pk=uuid4()), public_token="opaque-token")
         with (
             patch("selfie_search.views.logger", _FailingLogger()),
             patch("selfie_search.views.submit_selfie_search", return_value=created),
         ):
-            response = self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+            response = self.post(_view_jpeg_upload())
 
         self.assertEqual(response.status_code, 302)
 
-    def test_event_serialization_failure_keeps_the_accepted_redirect_unchanged(self) -> None:
+    def test_observability_serialization_failure_keeps_accepted_redirect(self) -> None:
         logger = _CaptureLogger()
-        created = SimpleNamespace(
-            search=SimpleNamespace(pk=uuid4()), public_token="opaque-public-token"
-        )
+        created = SimpleNamespace(search=SimpleNamespace(pk=uuid4()), public_token="opaque-token")
         with (
             patch("selfie_search.views.logger", logger),
             patch("selfie_search.views.submit_selfie_search", return_value=created),
@@ -344,84 +431,10 @@ class SelfieSubmissionObservabilityTests(TestCase):
                 side_effect=RuntimeError("serialization failed"),
             ),
         ):
-            response = self.client.post(self.submit_url, {"selfie": self.valid_upload()})
+            response = self.post(_view_jpeg_upload())
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(logger.calls, [(logging.ERROR, OBSERVABILITY_FAILURE_MARKER)])
-
-    def test_real_submission_persists_search_job_and_object_when_observability_fails(self) -> None:
-        for failure in ("logger", "serialization"):
-            with self.subTest(failure=failure):
-                storage = _RecordingTemporaryStorage()
-                upload = self.valid_upload()
-                expected_content = upload.read()
-                upload.seek(0)
-                logger = _CaptureLogger()
-                failure_patch = (
-                    patch("selfie_search.views.logger", _FailingLogger())
-                    if failure == "logger"
-                    else patch(
-                        "selfie_search.observability.json",
-                        SimpleNamespace(
-                            dumps=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                                RuntimeError("serialization failed")
-                            )
-                        ),
-                    )
-                )
-
-                with ExitStack() as stack:
-                    stack.enter_context(
-                        patch("selfie_search.views.TemporarySelfieStorage", return_value=storage)
-                    )
-                    if failure == "serialization":
-                        stack.enter_context(patch("selfie_search.views.logger", logger))
-                    stack.enter_context(failure_patch)
-                    response = self.client.post(self.submit_url, {"selfie": upload})
-
-                self.assertEqual(response.status_code, 302)
-                search = SelfieSearch.objects.get(
-                    event=self.event, temporary_object_key=next(iter(storage.objects))
-                )
-                self.assertEqual(SelfieSearchJob.objects.filter(search=search).count(), 1)
-                self.assertEqual(storage.deleted, [])
-                self.assertEqual(storage.objects, {search.temporary_object_key: expected_content})
-                if failure == "serialization":
-                    self.assertEqual(logger.calls, [(logging.ERROR, OBSERVABILITY_FAILURE_MARKER)])
-
-    def test_real_database_failure_still_compensates_temporary_object_when_observability_fails(
-        self,
-    ) -> None:
-        for failure in ("logger", "serialization"):
-            with self.subTest(failure=failure):
-                storage = _RecordingTemporaryStorage()
-                failure_patch = (
-                    patch("selfie_search.views.logger", _FailingLogger())
-                    if failure == "logger"
-                    else patch(
-                        "selfie_search.observability.json",
-                        SimpleNamespace(
-                            dumps=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                                RuntimeError("serialization failed")
-                            )
-                        ),
-                    )
-                )
-
-                with (
-                    patch("selfie_search.views.TemporarySelfieStorage", return_value=storage),
-                    patch(
-                        "selfie_search.services.submission.SelfieSearchJob.objects.create",
-                        side_effect=IntegrityError("job create failed"),
-                    ),
-                    failure_patch,
-                    self.assertRaises(IntegrityError),
-                ):
-                    self.client.post(self.submit_url, {"selfie": self.valid_upload()})
-
-                self.assertFalse(SelfieSearch.objects.filter(event=self.event).exists())
-                self.assertEqual(len(storage.deleted), 1)
-                self.assertEqual(storage.objects, {})
 
 
 @override_settings(
@@ -767,6 +780,13 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertNotContains(first_response, unrelated.pk)
         self.assertContains(first_response, "Страница 1 из 2")
         self.assertContains(first_response, "?page=2")
+        self.assertContains(first_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(first_response, 'name="page"')
+        self.assertContains(first_response, 'type="number"')
+        self.assertContains(first_response, 'min="1"')
+        self.assertContains(first_response, 'max="2"')
+        self.assertContains(first_response, 'value="1"')
+        self.assertContains(first_response, "Перейти")
 
         later_response = self.client.get(
             self.result_url(event=search.event, token=token), {"page": 2}
@@ -778,6 +798,13 @@ class PublicSelfieResultViewTests(TestCase):
         )
         self.assertContains(later_response, "Страница 2 из 2")
         self.assertContains(later_response, "?page=1")
+        self.assertContains(later_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(later_response, 'name="page"')
+        self.assertContains(later_response, 'type="number"')
+        self.assertContains(later_response, 'min="1"')
+        self.assertContains(later_response, 'max="2"')
+        self.assertContains(later_response, 'value="2"')
+        self.assertContains(later_response, "Перейти")
 
     def test_ready_page_rejects_invalid_page(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)

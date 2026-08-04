@@ -15,6 +15,21 @@
 FindMe Photo is an event photo marketplace where customers discover photos from events and
 photographers and operators publish and manage event photos.
 
+## Worktrees and local Python
+
+- Create feature worktrees only through `make worktree NAME=<name> [BASE=<ref>]` from the main
+  checkout. The command creates `.worktrees/<name>` on `codex/<name>`, links the root `.venv`, and
+  creates a local test-safe `.env` without copying root secrets.
+- Run Python tests through `make test` or `make test TESTS="<selectors>"`. Run the complete Python
+  quality suite through `make check`.
+- Do not run Ruff formatting manually before committing. The installed pre-commit hook applies
+  Ruff fixes and formatting to staged Python files. If it changes files, stage those changes and
+  repeat the commit. Use `make hooks` to install or repair the shared hook in an existing checkout.
+- Do not rely on virtual-environment activation or global `python`, `pytest`, `ruff`, or `mypy`.
+  When a direct command is necessary, use the explicit `.venv/bin/...` executable.
+- Do not copy or link the main checkout's `.env` into a worktree. Each worktree owns its ignored
+  local `.env`.
+
 ## Where to find information
 
 - [Product jobs](docs/product-jobs.md) records customer-facing jobs and their evidence-backed status.

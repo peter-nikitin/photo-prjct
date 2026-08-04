@@ -11,6 +11,7 @@ const desktopPages = [
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-selfie-search', '/__visual__/event/selfie-search/'],
+  ['event-selfie-search-rejected', '/__visual__/event/selfie-search/rejected/'],
   ['selfie-search-processing', '/__visual__/event/selfie-search/processing/'],
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
@@ -36,6 +37,7 @@ const mobilePages = [
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-selfie-search', '/__visual__/event/selfie-search/'],
+  ['event-selfie-search-rejected', '/__visual__/event/selfie-search/rejected/'],
   ['selfie-search-processing', '/__visual__/event/selfie-search/processing/'],
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
@@ -493,8 +495,27 @@ test('selfie search form keeps its native multipart fallback without JavaScript'
     const form = page.locator('[data-selfie-search-form]');
     await expect(form).toHaveAttribute('method', 'post');
     await expect(form).toHaveAttribute('enctype', 'multipart/form-data');
-    await expect(form.locator('input[type="file"]')).toHaveAttribute('accept', 'image/jpeg,image/png');
+    await expect(form.locator('input[type="file"]')).toHaveAttribute(
+      'accept',
+      'image/jpeg,image/png,image/heic,image/heif,.heic,.heif',
+    );
     await expect(form.getByRole('button', { name: 'Найти мои фото' })).toBeEnabled();
+  } finally {
+    await context.close();
+  }
+});
+
+test('selfie search rejection keeps correction controls visible without JavaScript', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    const response = await page.goto('/__visual__/event/selfie-search/rejected/');
+    expect(response?.status()).toBeLessThan(400);
+    await expect(page.locator('[data-selfie-search-error]')).toHaveText(
+      'Не удалось прочитать фотографию. Выберите JPEG, PNG, HEIC или HEIF.',
+    );
+    await expect(page.locator('input[type="file"]')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Найти мои фото' })).toBeEnabled();
   } finally {
     await context.close();
   }

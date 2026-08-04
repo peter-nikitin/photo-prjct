@@ -2,6 +2,7 @@ import hashlib
 import json
 from datetime import date
 from io import BytesIO
+from pathlib import Path
 from struct import pack
 from unittest.mock import patch
 from zlib import crc32
@@ -32,6 +33,7 @@ from processing.services.enrollment import (
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
 )
+from selfie_search.images import PreparedSelfie, prepare_selfie_image
 from selfie_search.models import SelfieSearch, SelfieSearchCandidate, SelfieSearchJob
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
@@ -73,6 +75,17 @@ def valid_upload() -> SimpleUploadedFile:
     content = BytesIO()
     Image.new("RGB", (8, 8), color="white").save(content, format="JPEG")
     return SimpleUploadedFile("selfie.jpg", content.getvalue(), content_type="image/jpeg")
+
+
+def valid_selfie() -> PreparedSelfie:
+    return prepare_selfie_image(valid_upload())
+
+
+def heic_selfie() -> PreparedSelfie:
+    content = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
+    return prepare_selfie_image(
+        SimpleUploadedFile("iphone.heic", content, content_type="image/heic")
+    )
 
 
 def decompression_bomb_upload() -> SimpleUploadedFile:
@@ -232,8 +245,8 @@ class SubmissionTests(TestCase):
         self.make_eligible_embedding(event=self.paid_event, photo_id="e")
         storage = RecordingStorage()
 
-        created = submit_selfie_search(event=self.event, upload=valid_upload(), storage=storage)
-        paid = submit_selfie_search(event=self.paid_event, upload=valid_upload(), storage=storage)
+        created = submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
+        paid = submit_selfie_search(event=self.paid_event, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(SelfieSearchJob.objects.filter(search=created.search).count(), 1)
         self.assertFalse(SelfieSearchCandidate.objects.filter(search=created.search).exists())
@@ -321,6 +334,22 @@ class SubmissionTests(TestCase):
         self.assertEqual(ranking["eligible_face_count"], 1)
         self.assertEqual(ranking["matched_photo_count"], 1)
 
+    def test_stores_only_prepared_canonical_bytes_and_type_for_a_heic_source(self) -> None:
+        selfie = heic_selfie()
+        source = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
+        storage = RecordingStorage()
+
+        created = submit_selfie_search(event=self.event, selfie=selfie, storage=storage)
+
+        self.assertEqual(storage.objects[next(iter(storage.objects))], selfie.content)
+        self.assertNotEqual(storage.objects[next(iter(storage.objects))], source)
+        self.assertEqual(created.search.configuration["content_type"], "image/jpeg")
+        self.assertEqual(created.search.configuration["content_size"], len(selfie.content))
+        configuration = json.dumps(created.search.configuration)
+        self.assertNotIn("source_format", configuration)
+        self.assertNotIn("source_size", configuration)
+        self.assertNotIn("image/heic", configuration)
+
     def test_compatible_cohort_selects_only_fields_needed_for_ranking(self) -> None:
         self.make_eligible_embedding(
             event=self.event,
@@ -350,7 +379,7 @@ class SubmissionTests(TestCase):
         storage = RecordingStorage()
 
         with self.assertRaises(ValueError):
-            submit_selfie_search(event=self.draft, upload=valid_upload(), storage=storage)
+            submit_selfie_search(event=self.draft, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(storage.objects, {})
         self.assertFalse(SelfieSearch.objects.filter(event=self.draft).exists())
@@ -358,7 +387,7 @@ class SubmissionTests(TestCase):
     def test_stores_only_a_sha256_digest_of_a_random_bearer_token(self) -> None:
         storage = RecordingStorage()
 
-        created = submit_selfie_search(event=self.event, upload=valid_upload(), storage=storage)
+        created = submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(len(created.public_token), 43)
         self.assertEqual(len(created.search.public_token_digest), 64)
@@ -376,7 +405,7 @@ class SubmissionTests(TestCase):
             side_effect=IntegrityError,
         ):
             with self.assertRaises(IntegrityError):
-                submit_selfie_search(event=self.event, upload=valid_upload(), storage=storage)
+                submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(storage.objects, {})
         self.assertEqual(len(storage.deleted), 1)
@@ -404,10 +433,14 @@ class SubmissionTests(TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, self.event.name)
-        self.assertContains(response, "Файл повреждён. Выберите другое селфи.")
-        self.assertContains(response, 'name="selfie"')
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, self.event.name, status_code=422)
+        self.assertContains(
+            response,
+            "Фотография повреждена. Выберите другой файл.",
+            status_code=422,
+        )
+        self.assertContains(response, 'name="selfie"', status_code=422)
 
     def test_decompression_bomb_post_creates_no_search_job_or_temporary_object(self) -> None:
         storage = RecordingStorage()
@@ -417,8 +450,14 @@ class SubmissionTests(TestCase):
                 {"selfie": decompression_bomb_upload()},
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "25 000 000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(
+            response,
+            "Изображение слишком большое. Уменьшите его так, чтобы "
+            "ширина × высота были не больше 25 млн пикселей — "
+            "например, 5000 × 5000.",
+            status_code=422,
+        )
         self.assertFalse(SelfieSearch.objects.filter(event=self.event).exists())
         self.assertFalse(SelfieSearchJob.objects.exists())
         self.assertEqual(storage.objects, {})
@@ -430,7 +469,11 @@ class SubmissionTests(TestCase):
                 {"selfie": valid_upload()},
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, self.event.name)
-        self.assertContains(response, "Не удалось загрузить селфи. Попробуйте ещё раз.")
-        self.assertContains(response, 'name="selfie"')
+        self.assertEqual(response.status_code, 503)
+        self.assertContains(response, self.event.name, status_code=503)
+        self.assertContains(
+            response,
+            "Не удалось загрузить фотографию. Попробуйте ещё раз.",
+            status_code=503,
+        )
+        self.assertContains(response, 'name="selfie"', status_code=503)

@@ -19,6 +19,11 @@ visual_patterns = [
     ),
     path("event/selfie-search/", views.event_selfie_search, name="visual_event_selfie_search"),
     path(
+        "event/selfie-search/rejected/",
+        views.event_selfie_search_rejected,
+        name="visual_event_selfie_search_rejected",
+    ),
+    path(
         "event/selfie-search/processing/",
         views.selfie_search_processing,
         name="visual_selfie_search_processing",

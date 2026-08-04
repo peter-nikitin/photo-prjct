@@ -43,6 +43,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
 | PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-04 |
+| PJ-014 | Customer | Return to saved selfie-search results | Candidate | 2026-08-04 |
 
 ## Job details
 
@@ -200,6 +201,20 @@ future feedback prompts in my browser.
   real customer-outcome evidence is claimed.
 - Last updated: 2026-08-04
 
+### PJ-014 — Customer — Return to saved selfie-search results
+
+When I have previously searched for photos by selfie on this device, I want to see my saved
+results on the event page, so I can reopen the result I need without selecting and uploading the
+selfie again.
+
+- Status: Candidate
+- Evidence: The approved
+  [device-local saved selfie-search results specification](superpowers/specs/2026-08-04-device-local-saved-selfie-results-design.md)
+  records the product intent and proposed implementation. Existing non-expiring bearer-result URLs
+  are governed by [ADR 0019](adr/0019-use-public-event-selfie-search.md). No implementation or
+  customer-outcome evidence exists yet.
+- Last updated: 2026-08-04
+
 Visual design-reference screens are not delivery evidence.
 
 ## Status log
@@ -229,3 +244,4 @@ This log is append-only.
 | 2026-08-04 | PJ-013 | Not recorded | Candidate | Approved product design recorded in the selfie-search quality feedback specification; implementation planning awaits explicit acceptance of the required privacy/retention ADR. |
 | 2026-08-04 | PJ-013 | Candidate | Planned | ADR 0023 was explicitly accepted and the decision-complete selfie-search quality feedback implementation plan was approved for execution. |
 | 2026-08-04 | PJ-013 | Planned | In progress | Repository implementation and automated release-gate evidence are complete; the feature remains disabled by default and has no staging/production activation or real customer-outcome evidence. |
+| 2026-08-04 | PJ-014 | Not recorded | Candidate | Approved product design proposes a device-local list of saved bearer results on each event page; implementation planning has not started. |

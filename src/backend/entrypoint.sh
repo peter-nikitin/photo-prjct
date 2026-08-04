@@ -5,7 +5,15 @@ python manage.py migrate --noinput
 python manage.py bootstrap_photographer_group
 python manage.py collectstatic --noinput
 
-exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 \
+metrics_dir=/tmp/prometheus_multiproc
+if rm -rf "$metrics_dir" && mkdir -p "$metrics_dir"; then
+    export PROMETHEUS_MULTIPROC_DIR="$metrics_dir"
+else
+    echo "Prometheus multiprocess metrics are unavailable" >&2
+    unset PROMETHEUS_MULTIPROC_DIR
+fi
+
+exec gunicorn config.wsgi:application --config python:config.gunicorn --bind 0.0.0.0:8000 \
     --workers "$GUNICORN_WORKERS" \
     --threads "$GUNICORN_THREADS" \
     --timeout "$GUNICORN_TIMEOUT" \

@@ -37,6 +37,7 @@ place, and add the new record to this index.
 | 0015 | [Allow anonymous free-event original delivery](0015-allow-anonymous-free-event-original-delivery.md) | Superseded |
 | 0016 | [Allow deterministic staging reference media](0016-allow-deterministic-staging-reference-media.md) | Proposed |
 | 0017 | [Use Django-polled photo-processing jobs](0017-use-django-polled-photo-processing-jobs.md) | Accepted |
+| 0018 | [Use managed Yandex Monitoring with independent public probes](0018-use-managed-yandex-monitoring.md) | Accepted |
 | 0019 | [Use public event-scoped selfie search](0019-use-public-event-selfie-search.md) | Accepted |
 | 0020 | [Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md) | Accepted |
 | 0021 | [Allow original download for authorized photos](0021-allow-original-download-for-authorized-photos.md) | Accepted |

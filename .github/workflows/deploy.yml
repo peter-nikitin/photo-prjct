@@ -15,6 +15,11 @@ on:
         required: true
         default: false
         type: boolean
+      configure_monitoring_agent:
+        description: Configure the staging Yandex Unified Agent without deploying the application
+        required: true
+        default: false
+        type: boolean
       verify_selfie_feedback_storage:
         description: Run the confirmed dedicated feedback-storage preflight while feedback remains disabled
         required: true
@@ -24,6 +29,7 @@ on:
 jobs:
   build:
     name: Build immutable image
+    if: ${{ github.event_name == 'push' || !inputs.configure_monitoring_agent }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -62,6 +68,7 @@ jobs:
 
   deploy:
     name: Deploy staging
+    if: ${{ github.event_name == 'push' || !inputs.configure_monitoring_agent }}
     runs-on: ubuntu-latest
     needs: build
     environment: staging
@@ -214,3 +221,33 @@ jobs:
               -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY \
               -e SELFIE_FEEDBACK_KMS_KEY_ID \
               web python manage.py verify_selfie_feedback_storage --confirm-real-storage
+
+  configure-monitoring-agent:
+    name: Configure staging Unified Agent
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent }}
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Copy Unified Agent configuration
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          source: deploy/configure-monitoring-agent.sh,deploy/monitoring
+          target: /opt/photo-prjct/
+      - name: Configure staging Unified Agent
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: YANDEX_CLOUD_FOLDER_ID
+          script_stop: true
+          script: sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"

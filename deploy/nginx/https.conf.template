@@ -99,6 +99,10 @@ server {
         return 404;
     }
 
+    location = /metrics/ {
+        return 404;
+    }
+
     # Submission uploads can contain private request metadata. Keep edge failures out of logs.
     location ~ ^/events/[^/]+/selfie-search/$ {
         error_log /dev/null emerg;
@@ -146,11 +150,22 @@ server {
 }
 
 server {
-    listen 127.0.0.1:8080;
+    listen 8080;
     server_name _;
     access_log /var/log/nginx/access.log selfie_search_safe;
 
     location = /health/ {
+        proxy_pass http://django_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-SSL on;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location = /metrics/ {
         proxy_pass http://django_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host ${PUBLIC_DOMAIN};

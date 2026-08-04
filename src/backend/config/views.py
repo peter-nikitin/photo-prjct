@@ -20,11 +20,19 @@ from picflow.gallery import (
     gallery_photo_queryset,
 )
 from picflow.models import Event
+from prometheus_client import CONTENT_TYPE_LATEST
 from selfie_search.forms import SelfieSearchUploadForm
+
+from config.metrics import generate_metrics
 
 
 def health(request):  # noqa: ARG001
     return JsonResponse({"status": "ok"})
+
+
+@require_GET
+def metrics(request):  # noqa: ARG001
+    return HttpResponse(generate_metrics(), content_type=CONTENT_TYPE_LATEST)
 
 
 def event_catalog(request):

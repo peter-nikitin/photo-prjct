@@ -39,7 +39,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-006 | Maintainer | Promote the staging-verified image | Validated | 2026-07-17 |
 | EJ-007 | Operator | Provision a production environment | Candidate | 2026-07-17 |
 | EJ-008 | Operator | Activate trusted HTTPS | Delivered | 2026-07-17 |
-| EJ-009 | Operator | Detect service degradation | Candidate | 2026-07-17 |
+| EJ-009 | Operator | Detect service degradation | Planned | 2026-07-30 |
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-25 |
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 | EJ-012 | Maintainer | Gate temporary selfie storage activation | Validated | 2026-07-31 |
@@ -140,9 +140,18 @@ activated and observed, so I can serve trusted canonical traffic and renew certi
 When a product or processing component becomes unhealthy, I want monitoring and actionable alerts,
 so I can respond before failures persist unnoticed.
 
-- Status: Candidate
-- Evidence: [Architecture open decisions — Observability stack](architecture.md#open-decisions)
-- Last updated: 2026-07-17
+The approved minimum is limited to the current public critical path. An external managed checker
+observes canonical HTTPS availability, TLS validity, and latency independently from Yandex Cloud.
+Yandex Monitoring receives simple Linux VM metrics from Unified Agent and private low-cardinality
+Django HTTP request, 5xx, and latency metrics. One dashboard and one operator email channel cover
+sustained public failure, missing VM telemetry, imminent disk or memory exhaustion, sustained CPU
+pressure, application 5xx degradation, and recovery. Logs, tracing, business metrics, database
+internals, privileged container collection, and the disabled worker remain outside this increment.
+
+- Status: Planned
+- Evidence: [Minimal service monitoring design](superpowers/specs/2026-07-30-minimal-service-monitoring-design.md)
+  and [approved implementation plan](plans/2026-07-30-minimal-service-monitoring.md)
+- Last updated: 2026-07-30
 
 ### EJ-010 — Operator — Restore service data
 
@@ -271,6 +280,8 @@ This log is append-only.
 | 2026-07-19 | EJ-011 | Validated | Validated | Clarified boundary: automated tests cover candidate pull failure, no-row skip, successful one-byte read/close, sanitized storage construction/open failures with pre-promotion state preserved, and promotion-fault temporary-file cleanup; empty-read/read-exception/close-exception paths and live activation are not claimed. |
 | 2026-07-19 | EJ-011 | Validated | Validated | Fresh unprovisioned deployments now skip the unavailable ORM gate based on absence of the successful `deployed-image` marker; established deployments retain the fail-closed database/no-row/storage gate, and neither skip is live `GetObject` evidence. |
 | 2026-07-25 | EJ-010 | Candidate | Candidate | Local clone automation now enforces a serialized local-Docker-only replacement, quiesces the normal web service, retains safety/diagnostic artifacts, and has isolated PostgreSQL 16 plus real-Django restored-schema evidence for migration readiness without startup mutations. This is partial local evidence only; scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill remain unestablished. |
+| 2026-07-30 | EJ-009 | Candidate | Candidate | The approved minimal monitoring design now defines independent public HTTPS checks, simple VM and Django HTTP graphs, actionable email alerts, safe collection boundaries, and a new-ADR prerequisite; implementation is not yet planned or delivered. |
+| 2026-07-30 | EJ-009 | Candidate | Planned | The approved implementation plan sequences bounded Django metrics, a private scrape path, a scheduled GitHub probe, Unified Agent, Yandex Monitoring resources, controlled activation, rollback, and validation. |
 | 2026-07-31 | EJ-012 | Not recorded | Validated | Automated command tests verify explicit confirmation, exact lifecycle preservation/readback/recovery, unversioned-bucket enforcement, bounded-prefix preflight, generated scratch-object cleanup, and sanitized output. Staging additionally applied the one-day `selfie-search/` rule without changing the preview rule, then passed real-bucket put/head/grant/delete preflight before feature enablement. Production is not activated. |
 | 2026-08-04 | EJ-013 | Not recorded | Validated | PR #94 adds and tests the supported worktree bootstrap, CI-like test wrapper, shared Ruff pre-commit installation, clean Git state, secret isolation, and stable `make test`/`make check` entry points; a disposable real-worktree smoke, hook-driven commit, and successful Quality checks validate the integrated workflow. |
 | 2026-08-04 | EJ-014 | Not recorded | Validated | Automated lifecycle, storage-contract, and deployment tests verify the guarded 30-day feedback bucket contract, anonymous denial probes, scratch cleanup, disabled-by-default wiring, and web-only credential propagation. No live bucket/KMS preflight or environment activation is claimed. |

@@ -42,6 +42,20 @@
   max-width: 520px;
 }
 
+.selfie-search-error {
+  margin-bottom: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--coral);
+  border-radius: 9px;
+  background: #fff1ed;
+  color: #7a2d20;
+  font-weight: 750;
+}
+
+.selfie-search-error p {
+  margin: 0;
+}
+
 .selfie-search label {
   font-weight: 800;
 }
@@ -94,8 +108,93 @@
   margin-top: clamp(36px, 6vw, 70px);
 }
 
+section.selfie-search-results:has(.event-gallery-grid) + .button {
+  margin-block-start: 16px;
+}
+
 .selfie-search-count {
   margin-bottom: 22px;
+}
+
+.selfie-search-feedback {
+  display: grid;
+  max-width: 680px;
+  gap: 18px;
+  margin-top: clamp(32px, 5vw, 52px);
+  padding: clamp(22px, 4vw, 32px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.selfie-search-feedback[hidden],
+.selfie-search-feedback [hidden] {
+  display: none;
+}
+
+.selfie-search-feedback-form {
+  display: grid;
+  gap: 12px;
+}
+
+.selfie-search-feedback-form input[type="text"] {
+  width: 100%;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  font: inherit;
+}
+
+.selfie-search-feedback-consent {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.selfie-search-feedback-consent input {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.selfie-search-feedback-progress {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.selfie-search-feedback-disclosure,
+.selfie-search-feedback-lifecycle,
+.selfie-search-feedback-form small {
+  color: var(--muted);
+}
+
+.selfie-search-feedback-error {
+  margin: 0;
+  color: #a82d22;
+  font-weight: 700;
+}
+
+.selfie-search-feedback-confirmation,
+.selfie-search-feedback-unavailable {
+  max-width: 680px;
+  margin-top: clamp(32px, 5vw, 52px);
+  padding: 18px 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.selfie-search-feedback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
 }
 
 @media (max-width: 620px) {
@@ -104,7 +203,8 @@
   }
 
   .selfie-search .button,
-  .selfie-search-result > .button {
+  .selfie-search-result > .button,
+  .selfie-search-feedback-actions .button {
     width: 100%;
   }
 }

@@ -34,6 +34,140 @@
     };
   }
 
+  function normalizedFilename(file) {
+    return String(file.name || '').normalize('NFC').toLocaleLowerCase('en-US');
+  }
+
+  function lastModifiedMs(file) {
+    return Number.isSafeInteger(file.lastModified) && file.lastModified >= 0
+      ? file.lastModified
+      : null;
+  }
+
+  function matchingKey(file) {
+    return `${normalizedFilename(file)}\u0000${file.size}\u0000${lastModifiedMs(file)}`;
+  }
+
+  function legacyMatchingKey(file) {
+    return `${normalizedFilename(file)}\u0000${file.size}`;
+  }
+
+  function groupBy(items, key) {
+    return items.reduce((groups, item) => {
+      const value = key(item);
+      const group = groups.get(value) || [];
+      group.push(item);
+      groups.set(value, group);
+      return groups;
+    }, new Map());
+  }
+
+  function fingerprintHex(bytes) {
+    return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function prepareAmbiguousFingerprints(items, subtle, { hashSingletons = false } = {}) {
+    const groups = groupBy(items, (item) => matchingKey(item.file));
+    await Promise.all(
+      Array.from(groups.values()).flatMap((group) => {
+        if (group.length < 2 && !hashSingletons) {
+          for (const item of group) item.ambiguousSha256 = null;
+          return [];
+        }
+        return group.map(async (item) => {
+          item.ambiguousSha256 = fingerprintHex(
+            await subtle.digest('SHA-256', await item.file.arrayBuffer()),
+          );
+        });
+      }),
+    );
+  }
+
+  async function matchResumeSelection(files, manifest, { subtle } = {}) {
+    const selected = Array.from(files || []).map((file) => ({ file }));
+    const matches = [];
+    const matched = new Set();
+    const unresolved = new Map();
+    const modernGroups = groupBy(
+      manifest.items.filter(
+        (item) => item.last_modified_ms !== null && item.last_modified_ms !== undefined,
+      ),
+      (item) => matchingKey({
+        name: item.filename,
+        size: item.size,
+        lastModified: item.last_modified_ms,
+      }),
+    );
+
+    for (const [key, manifestGroup] of modernGroups) {
+      const candidates = selected.filter(
+        (candidate) => (
+          !matched.has(candidate)
+          && !unresolved.has(candidate)
+          && matchingKey(candidate.file) === key
+        ),
+      );
+      if (manifestGroup.length === 1 && candidates.length === 1) {
+        matches.push({ manifestItem: manifestGroup[0], file: candidates[0].file });
+        matched.add(candidates[0]);
+        continue;
+      }
+      if (
+        manifestGroup.length > 1
+        && candidates.length > 0
+        && subtle
+        && manifestGroup.every((item) => item.ambiguous_sha256)
+      ) {
+        await prepareAmbiguousFingerprints(candidates, subtle, { hashSingletons: true });
+        const remainingByHash = groupBy(
+          [...manifestGroup].sort((left, right) => Number(right.confirmed) - Number(left.confirmed)),
+          (item) => item.ambiguous_sha256,
+        );
+        for (const candidate of candidates) {
+          const available = remainingByHash.get(candidate.ambiguousSha256);
+          if (available?.length) {
+            matches.push({ manifestItem: available.shift(), file: candidate.file });
+            matched.add(candidate);
+          } else {
+            unresolved.set(candidate, 'ambiguous');
+          }
+        }
+      } else if (candidates.length) {
+        for (const candidate of candidates) unresolved.set(candidate, 'ambiguous');
+      }
+    }
+
+    const legacyGroups = groupBy(
+      manifest.items.filter((item) => item.last_modified_ms === null || item.last_modified_ms === undefined),
+      (item) => legacyMatchingKey({ name: item.filename, size: item.size }),
+    );
+    for (const [key, manifestGroup] of legacyGroups) {
+      const candidates = selected.filter(
+        (candidate) => (
+          !matched.has(candidate)
+          && !unresolved.has(candidate)
+          && legacyMatchingKey(candidate.file) === key
+        ),
+      );
+      if (manifestGroup.length === 1 && candidates.length === 1) {
+        matches.push({ manifestItem: manifestGroup[0], file: candidates[0].file });
+        matched.add(candidates[0]);
+      } else if (candidates.length) {
+        for (const candidate of candidates) unresolved.set(candidate, 'ambiguous');
+      }
+    }
+
+    return {
+      matches,
+      unmatched: selected
+        .filter((candidate) => !matched.has(candidate))
+        .map((candidate) => ({
+          file: candidate.file,
+          reason: unresolved.get(candidate) || 'extra',
+        })),
+    };
+  }
+
   function chunkItems(items, size) {
     const chunks = [];
     for (let index = 0; index < items.length; index += size) {
@@ -61,8 +195,54 @@
     return status === 0 || status === 408 || status === 429 || status >= 500;
   }
 
-  function visibleItems(items, windowSize) {
-    return items.slice(Math.max(0, items.length - windowSize));
+  const QUEUE_PAGE_SIZE = 20;
+  const QUEUE_GROUPS = [
+    {
+      key: 'needs_attention',
+      label: 'Требуют внимания',
+      expanded: true,
+      includes: (item) => ['failed', 'needs_attention'].includes(item.status),
+    },
+    {
+      key: 'uploading',
+      label: 'Загружаются',
+      expanded: true,
+      includes: (item) => item.status === 'uploading',
+    },
+    {
+      key: 'waiting',
+      label: 'Ожидают',
+      expanded: false,
+      includes: (item) => !['failed', 'needs_attention', 'uploading', 'uploaded'].includes(item.status),
+    },
+    {
+      key: 'uploaded',
+      label: 'Загружены',
+      expanded: false,
+      includes: (item) => item.status === 'uploaded',
+    },
+  ];
+
+  function groupItems(items) {
+    return QUEUE_GROUPS.map(({ key, label, expanded, includes }) => {
+      const groupedItems = items.filter(includes);
+      return { key, label, expanded, items: groupedItems, count: groupedItems.length };
+    });
+  }
+
+  function visibleGroupItems(group, offset = 0, pageSize = QUEUE_PAGE_SIZE) {
+    const start = Math.max(0, offset);
+    return group.items.slice(start, start + pageSize);
+  }
+
+  function queuePresentation(coordinator) {
+    if (!coordinator.queuePresentation) {
+      coordinator.queuePresentation = {
+        expanded: Object.fromEntries(QUEUE_GROUPS.map(({ key, expanded }) => [key, expanded])),
+        offsets: Object.fromEntries(QUEUE_GROUPS.map(({ key }) => [key, 0])),
+      };
+    }
+    return coordinator.queuePresentation;
   }
 
   function summarize(items) {
@@ -89,18 +269,110 @@
   function statusCopy(item) {
     if (item.status === 'uploaded') return 'Загружено';
     if (item.status === 'failed') return 'Ошибка';
+    if (item.status === 'needs_attention') return 'Требует внимания';
     if (item.status === 'uploading') return `Передача · ${item.progress}%`;
+    if (item.status === 'waiting') return 'Ожидает повторного выбора';
     return 'Ожидает';
+  }
+
+  function renderQueueRow(template, item, groupKey, index) {
+    const row = template.content.firstElementChild.cloneNode(true);
+    const errorId = `queue-error-${groupKey}-${index}`;
+    row.dataset.clientItemId = item.clientItemId;
+    row.dataset.renderedQueueItem = '';
+    row.classList.add(`queue-item-${item.status === 'uploading' ? 'active' : item.status}`);
+    row.querySelector('[data-file-name]').textContent = item.file.name;
+    row.querySelector('[data-file-meta]').textContent = formatBytes(item.file.size);
+    row.querySelector('[data-file-status]').textContent = statusCopy(item);
+    const itemProgress = row.querySelector('progress');
+    itemProgress.value = item.progress;
+    itemProgress.textContent = `${item.progress}%`;
+    const error = row.querySelector('[data-file-error]');
+    error.id = errorId;
+    error.textContent = item.error;
+    error.hidden = !item.error;
+    const retry = row.querySelector('[data-retry-item]');
+    retry.hidden = item.status !== 'failed';
+    retry.dataset.clientItemId = item.clientItemId;
+    retry.setAttribute('aria-describedby', errorId);
+    const cancel = row.querySelector('[data-cancel-item]');
+    cancel.hidden = !['registered', 'retry_pending', 'uploading'].includes(item.status);
+    cancel.dataset.clientItemId = item.clientItemId;
+    return row;
+  }
+
+  function renderQueue(root, coordinator) {
+    const queue = root.querySelector('[data-upload-queue]');
+    const groupTemplate = root.querySelector('#upload-queue-group-template');
+    const rowTemplate = root.querySelector('#upload-queue-row-template');
+    if (!queue || !groupTemplate || !rowTemplate) return;
+    if (!coordinator.items.length) return;
+
+    const presentation = queuePresentation(coordinator);
+    queue.replaceChildren();
+    for (const group of groupItems(coordinator.items)) {
+      const section = groupTemplate.content.firstElementChild.cloneNode(true);
+      const content = section.querySelector('[data-queue-group-content]');
+      const toggle = section.querySelector('[data-queue-group-toggle]');
+      const items = section.querySelector('[data-queue-group-items]');
+      const pagination = section.querySelector('[data-queue-pagination]');
+      const maxOffset = Math.max(0, Math.floor((group.count - 1) / QUEUE_PAGE_SIZE) * QUEUE_PAGE_SIZE);
+      const offset = Math.min(presentation.offsets[group.key] || 0, maxOffset);
+      const expanded = presentation.expanded[group.key];
+      presentation.offsets[group.key] = offset;
+
+      section.dataset.queueGroup = group.key;
+      content.id = `queue-group-${group.key}`;
+      content.hidden = !expanded;
+      toggle.dataset.queueGroupToggle = group.key;
+      toggle.setAttribute('aria-controls', content.id);
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.querySelector('[data-queue-group-label]').textContent = group.label;
+      toggle.querySelector('[data-queue-group-count]').textContent = String(group.count);
+
+      if (expanded) {
+        for (const [index, item] of visibleGroupItems(group, offset, QUEUE_PAGE_SIZE).entries()) {
+          items.append(renderQueueRow(rowTemplate, item, group.key, offset + index + 1));
+        }
+      }
+
+      if (group.count > QUEUE_PAGE_SIZE) {
+        const start = offset + 1;
+        const end = Math.min(offset + QUEUE_PAGE_SIZE, group.count);
+        pagination.hidden = false;
+        pagination.querySelector('[data-queue-page-status]').textContent = `Показаны ${start}–${end} из ${group.count}`;
+        const previous = pagination.querySelector('[data-queue-previous-page]');
+        previous.dataset.queuePageGroup = group.key;
+        previous.disabled = offset === 0;
+        const next = pagination.querySelector('[data-queue-next-page]');
+        next.dataset.queuePageGroup = group.key;
+        next.disabled = offset >= maxOffset;
+      }
+      queue.append(section);
+    }
   }
 
   function renderPage(root, coordinator, globalError = '') {
     const summary = summarize(coordinator.items);
     const terminal = summary.uploaded + summary.failed === summary.total && summary.total > 0;
+    const waiting = coordinator.items.some((item) => item.status === 'waiting');
+    const needsAttention = coordinator.items.some((item) => item.status === 'needs_attention');
+    const needsAction = waiting || needsAttention;
     const title = root.querySelector('#upload-summary-title');
     const message = root.querySelector('[data-summary-message]');
     const percent = root.querySelector('[data-summary-percent]');
     const progress = root.querySelector('[data-upload-progress]');
-    root.dataset.state = globalError ? 'partial' : coordinator.active ? 'active' : terminal && summary.failed ? 'partial' : terminal ? 'complete' : 'empty';
+    root.dataset.state = globalError
+      ? 'partial'
+      : coordinator.active
+        ? 'active'
+        : terminal && summary.failed
+          ? 'partial'
+          : terminal
+            ? 'complete'
+            : summary.total
+              ? 'partial'
+              : 'empty';
     if (title) {
       title.textContent = globalError
         ? 'Загрузка остановлена'
@@ -110,12 +382,25 @@
             ? 'Загружено частично'
             : terminal
               ? 'Загрузка завершена'
-              : 'Файлы не выбраны';
+              : needsAction
+                ? 'Требуется действие'
+                : summary.total
+                  ? 'Загрузка не завершена'
+                  : 'Файлы не выбраны';
     }
     if (message) {
-      message.textContent = globalError || (summary.total
-        ? `${summary.uploaded} из ${summary.total} файлов загружено${summary.failed ? `, ошибок: ${summary.failed}` : '.'}`
-        : 'Здесь появится общий прогресс.');
+      const incompleteMessage = needsAttention && waiting
+        ? 'Загрузка не завершена: выберите недостающие файлы и проверьте файлы, требующие внимания.'
+        : needsAttention
+          ? 'Загрузка не завершена: проверьте файлы, требующие внимания.'
+          : waiting
+            ? 'Загрузка не завершена: выберите недостающие файлы.'
+            : '';
+      message.textContent = globalError || (needsAction
+        ? incompleteMessage
+        : summary.total
+          ? `${summary.uploaded} из ${summary.total} файлов загружено${summary.failed ? `, ошибок: ${summary.failed}` : '.'}`
+          : 'Здесь появится общий прогресс.');
     }
     if (percent) percent.textContent = `${summary.progress}%`;
     if (progress) {
@@ -133,31 +418,7 @@
       if (node) node.textContent = String(value);
     }
 
-    const queue = root.querySelector('[data-upload-queue]');
-    const template = root.querySelector('#upload-queue-row-template');
-    if (!queue || !template || !coordinator.items.length) return;
-    queue.replaceChildren();
-    for (const item of visibleItems(coordinator.items, coordinator.config.queueWindow)) {
-      const row = template.content.firstElementChild.cloneNode(true);
-      row.dataset.clientItemId = item.clientItemId;
-      row.classList.add(`queue-item-${item.status === 'uploading' ? 'active' : item.status}`);
-      row.querySelector('[data-file-name]').textContent = item.file.name;
-      row.querySelector('[data-file-meta]').textContent = formatBytes(item.file.size);
-      row.querySelector('[data-file-status]').textContent = statusCopy(item);
-      const itemProgress = row.querySelector('progress');
-      itemProgress.value = item.progress;
-      itemProgress.textContent = `${item.progress}%`;
-      const error = row.querySelector('[data-file-error]');
-      error.textContent = item.error;
-      error.hidden = !item.error;
-      const retry = row.querySelector('[data-retry-item]');
-      retry.hidden = item.status !== 'failed';
-      retry.dataset.clientItemId = item.clientItemId;
-      const cancel = row.querySelector('[data-cancel-item]');
-      cancel.hidden = !['registered', 'retry_pending', 'uploading'].includes(item.status);
-      cancel.dataset.clientItemId = item.clientItemId;
-      queue.append(row);
-    }
+    renderQueue(root, coordinator);
   }
 
   function bindUploadPage(root, dependencies = {}) {
@@ -171,12 +432,12 @@
       confirmUrl: root.dataset.confirmUrlTemplate,
       failedUrl: root.dataset.failedUrlTemplate,
       finalizeUrl: root.dataset.finalizeUrlTemplate,
+      resumeManifestUrl: root.dataset.resumeManifestUrlTemplate,
       csrfToken: root.dataset.csrfToken,
       maxFiles: Number(root.dataset.maxFiles),
       maxFileBytes: Number(root.dataset.maxFileBytes),
       registrationChunk: Number(root.dataset.registrationChunk),
       concurrency: Number(root.dataset.concurrency),
-      queueWindow: Number(root.dataset.queueWindowSize),
     };
     const coordinator = new UploadCoordinator({
       config,
@@ -190,7 +451,9 @@
       onChange: () => renderPage(root, coordinator, globalError),
     });
     const input = root.querySelector('#upload-files');
+    const resumeInput = root.querySelector('#resume-upload-files');
     const eventSelect = root.querySelector('#upload-event');
+    let resumeManifest = null;
     const begin = async (files) => {
       globalError = '';
       if (!eventSelect.value) {
@@ -208,6 +471,32 @@
       }
     };
     input?.addEventListener('change', () => begin(input.files));
+    resumeInput?.addEventListener('change', async () => {
+      if (!resumeManifest || !resumeInput.files.length) return;
+      globalError = '';
+      try {
+        await coordinator.resume(resumeInput.files, resumeManifest);
+      } catch (error) {
+        globalError = error instanceof SelectionError ? error.message : 'Не удалось продолжить загрузку. Повторите попытку.';
+        coordinator.active = false;
+        renderPage(root, coordinator, globalError);
+      }
+    });
+    root.querySelector('[data-unfinished-uploads]')?.addEventListener('click', async (event) => {
+      const resume = event.target.closest('[data-resume-batch]');
+      if (!resume) return;
+      globalError = '';
+      try {
+        resumeManifest = await coordinator.loadResumeManifest(resume.dataset.resumeBatchId);
+        eventSelect.value = String(resumeManifest.batch.event.id);
+        eventSelect.disabled = true;
+        resumeInput.value = '';
+        resumeInput.click();
+      } catch (error) {
+        globalError = 'Не удалось открыть незавершённую загрузку. Повторите попытку.';
+        renderPage(root, coordinator, globalError);
+      }
+    });
     const dropTarget = root.querySelector('[data-upload-drop-target]');
     dropTarget?.addEventListener('dragover', (event) => event.preventDefault());
     dropTarget?.addEventListener('drop', (event) => {
@@ -215,9 +504,24 @@
       begin(event.dataTransfer.files);
     });
     root.querySelector('[data-upload-queue]')?.addEventListener('click', async (event) => {
+      const toggle = event.target.closest('[data-queue-group-toggle]');
+      const previousPage = event.target.closest('[data-queue-previous-page]');
+      const nextPage = event.target.closest('[data-queue-next-page]');
       const retry = event.target.closest('[data-retry-item]');
       const cancel = event.target.closest('[data-cancel-item]');
-      if (retry) {
+      if (toggle) {
+        const presentation = queuePresentation(coordinator);
+        const key = toggle.dataset.queueGroupToggle;
+        presentation.expanded[key] = !presentation.expanded[key];
+        renderPage(root, coordinator, globalError);
+      } else if (previousPage || nextPage) {
+        const control = previousPage || nextPage;
+        const presentation = queuePresentation(coordinator);
+        const delta = nextPage ? QUEUE_PAGE_SIZE : -QUEUE_PAGE_SIZE;
+        const key = control.dataset.queuePageGroup;
+        presentation.offsets[key] = Math.max(0, (presentation.offsets[key] || 0) + delta);
+        renderPage(root, coordinator, globalError);
+      } else if (retry) {
         await coordinator.manualRetry(retry.dataset.clientItemId);
       } else if (cancel) {
         coordinator.cancel(cancel.dataset.clientItemId);
@@ -272,6 +576,7 @@
       }));
       this.active = true;
       this.onChange(this);
+      await prepareAmbiguousFingerprints(this.items, this.crypto.subtle);
 
       const created = await this.control(this.config.createBatchUrl, {
         event_id: Number(eventId),
@@ -288,6 +593,8 @@
               filename: item.file.name,
               content_type: item.contentType,
               size: item.file.size,
+              last_modified_ms: lastModifiedMs(item.file),
+              ambiguous_sha256: item.ambiguousSha256,
             })),
           },
         );
@@ -305,6 +612,83 @@
         this.items.map((item) => this.enqueueTransfer(item, null, item.cycleToken)),
       );
       await this.finalizeIfReady();
+      return this;
+    }
+
+    async loadResumeManifest(batchId) {
+      const result = await this.fetch(
+        interpolate(this.config.resumeManifestUrl, { batch: batchId }),
+        { method: 'GET', credentials: 'same-origin' },
+      );
+      const payload = await result.json();
+      if (!result.ok) throw new ControlError(result.status, payload);
+      return payload;
+    }
+
+    async resume(files, manifest) {
+      prepareSelection(files, {
+        maxFiles: this.config.maxFiles,
+        maxFileBytes: this.config.maxFileBytes,
+        crypto: this.crypto,
+      });
+      const selection = await matchResumeSelection(files, manifest, { subtle: this.crypto.subtle });
+      const matches = new Map(selection.matches.map((match) => [match.manifestItem.id, match.file]));
+      this.batchId = manifest.batch.id;
+      this.finalizing = false;
+      this.finalized = false;
+      this.registeredAll = true;
+      this.items = manifest.items.map((manifestItem) => {
+        const selected = matches.get(manifestItem.id);
+        const confirmed = manifestItem.confirmed === true;
+        return {
+          clientItemId: `resume-${manifestItem.id}`,
+          id: manifestItem.id,
+          contentType: 'image/jpeg',
+          file: selected || { name: manifestItem.filename, size: manifestItem.size },
+          status: confirmed
+            ? 'uploaded'
+            : selected
+              ? manifestItem.status === 'failed' ? 'retry_pending' : 'registered'
+              : 'waiting',
+          progress: confirmed ? 100 : 0,
+          error: '',
+          xhr: null,
+          durable: true,
+          cycleToken: this.createCycleToken(),
+        };
+      });
+      for (const unmatched of selection.unmatched) {
+        this.items.push({
+          clientItemId: `resume-extra-${this.crypto.randomUUID()}`,
+          id: null,
+          contentType: 'image/jpeg',
+          file: unmatched.file,
+          status: 'needs_attention',
+          progress: 0,
+          error: unmatched.reason === 'extra'
+            ? 'Этот файл не входит в выбранную загрузку.'
+            : 'Не удалось однозначно сопоставить файл.',
+          xhr: null,
+          durable: false,
+          cycleToken: this.createCycleToken(),
+        });
+      }
+      this.active = true;
+      this.onChange(this);
+      await Promise.all(this.items.flatMap((item) => {
+        if (item.status === 'registered') {
+          return [this.enqueueTransfer(item, null, item.cycleToken)];
+        }
+        if (item.status === 'retry_pending') {
+          return [this.enqueueWork(() => this.runResumeRetry(item, item.cycleToken))];
+        }
+        return [];
+      }));
+      await this.finalizeIfReady();
+      if (!this.finalized) {
+        this.active = false;
+        this.onChange(this);
+      }
       return this;
     }
 
@@ -343,6 +727,13 @@
       }
     }
 
+    markUploading(item, token) {
+      if (token.cancelled || item.status === 'uploading') return;
+      item.status = 'uploading';
+      item.error = '';
+      this.onChange(this);
+    }
+
     async processItem(item, initialGrant = null, token = item.cycleToken) {
       let grant = initialGrant;
       let dataAttempt = 0;
@@ -352,6 +743,7 @@
           await this.finishCancellation(item, token);
           return;
         }
+        this.markUploading(item, token);
         if (!grant) {
           let authorization;
           try {
@@ -373,9 +765,6 @@
           await this.finishCancellation(item, token);
           return;
         }
-        item.status = 'uploading';
-        item.error = '';
-        this.onChange(this);
         const outcome = await this.transfer(item, grant);
         grant = null;
         if (token.cancelled || outcome.type === 'cancelled') {
@@ -539,6 +928,7 @@
     async runManualRetry(item, token) {
       let completed = true;
       try {
+        this.markUploading(item, token);
         const authorization = await this.control(
           interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
           {},
@@ -554,6 +944,42 @@
         if (token.cancelled) {
           await this.finishCancellation(item, token);
         } else {
+          this.settleManualRetryFailure(item);
+          completed = false;
+        }
+      }
+      await this.finalizeIfReady();
+      return completed;
+    }
+
+    async runResumeRetry(item, token) {
+      let completed = true;
+      let retryAuthorized = false;
+      try {
+        this.markUploading(item, token);
+        const authorization = await this.control(
+          interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
+          {},
+          token,
+        );
+        retryAuthorized = true;
+        this.finalized = false;
+        if (token.cancelled) {
+          await this.finishCancellation(item, token);
+        } else {
+          await this.processItem(item, authorization.grant, token);
+        }
+      } catch (error) {
+        if (token.cancelled) {
+          await this.finishCancellation(item, token);
+        } else {
+          if (retryAuthorized) {
+            await this.failItem(
+              item,
+              'transfer_retries_exhausted',
+              'Не удалось повторить загрузку. Повторите попытку.',
+            );
+          }
           this.settleManualRetryFailure(item);
           completed = false;
         }
@@ -594,7 +1020,10 @@
     }
 
     async finalizeIfReady() {
-      const terminal = this.items.every((item) => ['uploaded', 'failed'].includes(item.status));
+      const durableItems = this.items.filter((item) => item.durable !== false);
+      const terminal = durableItems.length > 0 && durableItems.every(
+        (item) => ['uploaded', 'failed'].includes(item.status),
+      );
       if (!this.registeredAll || !terminal || this.finalizing || this.finalized) {
         return;
       }
@@ -613,6 +1042,10 @@
   return {
     chunkItems,
     ControlError,
+    groupItems,
+    matchingKey,
+    matchResumeSelection,
+    prepareAmbiguousFingerprints,
     prepareSelection,
     retryableTransfer,
     SelectionError,
@@ -620,7 +1053,7 @@
     bindUploadPage,
     renderPage,
     summarize,
-    visibleItems,
+    visibleGroupItems,
   };
 });
 

@@ -1,23 +1,34 @@
 server_tokens off;
 
+map $uri $selfie_search_access_client_address {
+    default $remote_addr;
+    ~^/events/[^/]+/selfie-search(?:/|$) "-";
+}
+
+map $uri $selfie_search_access_remote_user {
+    default $remote_user;
+    ~^/events/[^/]+/selfie-search(?:/|$) "-";
+}
+
 map $uri $selfie_search_access_request {
     default $request;
+    ~^/events/[^/]+/selfie-search/$ "$request_method <selfie-search>";
     ~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "$request_method <selfie-search>";
 }
 
 map $uri $selfie_search_access_referrer {
     default $http_referer;
-    ~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "-";
+    ~^/events/[^/]+/selfie-search(?:/|$) "-";
 }
 
 map $uri $selfie_search_access_user_agent {
     default $http_user_agent;
-    ~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "-";
+    ~^/events/[^/]+/selfie-search(?:/|$) "-";
 }
 
-log_format selfie_search_safe '$remote_addr - $remote_user [$time_local] '
+log_format selfie_search_safe '$selfie_search_access_client_address - $selfie_search_access_remote_user [$time_local] '
     '"$selfie_search_access_request" $status $body_bytes_sent '
-    '"$selfie_search_access_referrer" "$selfie_search_access_user_agent"';
+    '"$selfie_search_access_referrer" "$selfie_search_access_user_agent" $request_time';
 
 upstream django_upstream {
     server web:8000;
@@ -90,6 +101,20 @@ server {
 
     location = /metrics/ {
         return 404;
+    }
+
+    # Submission uploads can contain private request metadata. Keep edge failures out of logs.
+    location ~ ^/events/[^/]+/selfie-search/$ {
+        error_log /dev/null emerg;
+
+        proxy_pass http://django_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-SSL on;
+        proxy_set_header X-Real-IP $remote_addr;
     }
 
     # Bearer URLs are secrets. Do not persist a raw request URI if this upstream is unavailable.

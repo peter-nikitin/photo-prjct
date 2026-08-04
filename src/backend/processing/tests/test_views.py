@@ -10,6 +10,7 @@ from ingestion.storage import StorageUnavailable
 from photo_worker.contracts import Claim
 from picflow.models import Event, Photo
 from selfie_search.models import SelfieSearch, SelfieSearchJob
+from selfie_search.services.submission import _configuration
 from selfie_search.storage import DownloadGrant, StoredTemporarySelfie
 
 from processing.contracts import AttemptCompletion
@@ -956,17 +957,12 @@ class SelfieWorkerApiTests(TestCase):
             end_date=date.today(),
             city="Moscow",
         )
+        configuration = _configuration(content_type="image/jpeg", content_size=1024)
         self.search = SelfieSearch.objects.create(
             event=self.event,
             public_token_digest="b" * 64,
             temporary_object_key="selfie-search/0123456789abcdef0123456789abcdef",
-            configuration={
-                "embedding_model": "sface",
-                "embedding_dimensions": 128,
-                "cosine_distance_threshold": 0.363,
-                "content_type": "image/jpeg",
-                "content_size": 1024,
-            },
+            configuration=configuration,
         )
         SelfieSearchJob.objects.create(search=self.search, configuration=self.search.configuration)
         self.headers = {"HTTP_AUTHORIZATION": "Bearer worker-secret"}
@@ -1037,6 +1033,7 @@ class SelfieWorkerApiTests(TestCase):
                 "processor_type",
                 "processor_version",
                 "configuration",
+                "event_id",
                 "search_id",
                 "input_fingerprint",
                 "input_limits",
@@ -1047,6 +1044,10 @@ class SelfieWorkerApiTests(TestCase):
         )
         self.assertEqual(job["search_id"], str(self.search.id))
         self.assertNotIn("photo_id", job)
+        self.assertEqual(job["input_limits"], {"max_bytes": 1024, "content_type": "image/jpeg"})
+        self.assertNotIn("source_format", json.dumps(job["configuration"]))
+        self.assertNotIn("source_size", json.dumps(job["configuration"]))
+        self.assertNotIn("image/heic", json.dumps(job["configuration"]))
         self.assertEqual(
             job["input_fingerprint"]["temporary_key"],
             "selfie-search/0123456789abcdef0123456789abcdef",

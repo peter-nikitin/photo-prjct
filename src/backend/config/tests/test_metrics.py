@@ -1,10 +1,18 @@
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.http import HttpResponse
 from django.test import SimpleTestCase, override_settings
-from django.urls import path, reverse
+from django.urls import path
+from prometheus_client import REGISTRY
 
-from config.metrics import REGISTRY
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 def named_ok(request):  # noqa: ARG001
@@ -115,14 +123,103 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
         self.assertNotIn("7bc7b7f7-789d-4b4f-a174-9f7c6b1aa123", exposition)
 
 
-class MetricsEndpointTests(SimpleTestCase):
-    def test_returns_prometheus_content_without_observing_the_scrape(self) -> None:
-        with patch("config.metrics.time.perf_counter", side_effect=(1.0, 1.5)):
-            self.client.get(reverse("health"))
+class MultiprocessMetricsTests(SimpleTestCase):
+    def test_aggregates_metrics_recorded_by_multiple_gunicorn_processes(self) -> None:
+        """A scrape must include observations from every Gunicorn worker process."""
+        worker = """
+            from config.metrics import HTTP_REQUEST_DURATION, HTTP_REQUESTS
 
-        response = self.client.get("/metrics/")
+            labels = {
+                "environment": "staging",
+                "route": "health",
+                "method": "GET",
+                "status_class": "2xx",
+            }
+            HTTP_REQUESTS.labels(**labels).inc()
+            HTTP_REQUEST_DURATION.labels(**labels).observe(0.5)
+        """
+        scrape = """
+            import django
+            from django.test import Client
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "text/plain; version=1.0.0; charset=utf-8")
-        self.assertContains(response, "findme_http_requests_total")
-        self.assertNotIn('route="metrics"', response.content.decode())
+            django.setup()
+
+            response = Client().get("/metrics/")
+            if response.status_code != 200:
+                raise RuntimeError(f"unexpected status: {response.status_code}")
+            if response["Content-Type"] != "text/plain; version=1.0.0; charset=utf-8":
+                raise RuntimeError(f"unexpected content type: {response['Content-Type']}")
+            print(response.content.decode(), end="")
+        """
+
+        with tempfile.TemporaryDirectory() as metrics_directory:
+            environment = {
+                **os.environ,
+                "PROMETHEUS_MULTIPROC_DIR": metrics_directory,
+                "DJANGO_SETTINGS_MODULE": "config.settings",
+                "DB_NAME": "app",
+                "DB_USER": "app",
+                "DB_PASSWORD": "app",
+                "DB_HOST": "localhost",
+                "DB_PORT": "5432",
+                "SECRET_KEY": "test",
+                "ALLOWED_HOSTS": "testserver",
+            }
+            for _ in range(2):
+                result = subprocess.run(
+                    [sys.executable, "-c", textwrap.dedent(worker)],
+                    cwd=BACKEND_DIR,
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            result = subprocess.run(
+                [sys.executable, "-c", textwrap.dedent(scrape)],
+                cwd=BACKEND_DIR,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            'findme_http_requests_total{environment="staging",method="GET",'
+            'route="health",status_class="2xx"} 2.0',
+            result.stdout,
+        )
+        self.assertIn(
+            'findme_http_request_duration_seconds_count{environment="staging",method="GET",'
+            'route="health",status_class="2xx"} 2.0',
+            result.stdout,
+        )
+        self.assertIn(
+            'findme_http_request_duration_seconds_sum{environment="staging",method="GET",'
+            'route="health",status_class="2xx"} 1.0',
+            result.stdout,
+        )
+        self.assertNotIn('route="metrics"', result.stdout)
+
+
+class GunicornMetricsLifecycleTests(SimpleTestCase):
+    def test_child_exit_is_safe_when_multiprocess_metrics_are_unavailable(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            from config.gunicorn import child_exit
+
+            child_exit(None, SimpleNamespace(pid=123))
+
+    def test_child_exit_removes_live_metrics_for_the_exiting_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as metrics_directory:
+            stale_metric = Path(metrics_directory) / "gauge_livesum_123.db"
+            stale_metric.touch()
+            with patch.dict(
+                os.environ, {"PROMETHEUS_MULTIPROC_DIR": metrics_directory}, clear=False
+            ):
+                from config.gunicorn import child_exit
+
+                child_exit(None, SimpleNamespace(pid=123))
+
+            self.assertFalse(stale_metric.exists())

@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
-from photo_worker.client import ApiError, DownloadError, HttpClient, UploadError
+from photo_worker.client import ApiError, CallbackResult, DownloadError, HttpClient, UploadError
 
 
 class Response:
@@ -43,9 +43,11 @@ class PartialResponse(Response):
 
 def test_json_requests_use_bearer_auth_and_do_not_put_token_in_url() -> None:
     requests = []
+    timeouts = []
 
     def opener(request, *, timeout: float):
         requests.append(request)
+        timeouts.append(timeout)
         return Response(b'{"empty": true, "suggested_delay_seconds": 5}')
 
     client = HttpClient(
@@ -57,6 +59,7 @@ def test_json_requests_use_bearer_auth_and_do_not_put_token_in_url() -> None:
     assert request.full_url == "https://worker.example.test/internal/photo-processing/v1/claim"
     assert request.get_header("Authorization") == "Bearer worker-secret"
     assert json.loads(request.data) == {"contract_version": 1}
+    assert timeouts == [180.0]
 
 
 def test_api_response_read_is_limited_to_configured_bound_plus_one() -> None:
@@ -269,6 +272,81 @@ def test_refresh_accepts_the_exact_django_response_with_utc_offset() -> None:
             "https://worker.example.test/v1", "worker-secret", opener=opener
         ).refresh_download("attempt-1")
         == "https://storage.example.test/x?secret"
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "status"),
+    [("complete", "succeeded"), ("complete", "failed"), ("fail", "failed")],
+)
+def test_terminal_callbacks_return_the_exact_validated_completion_metadata(
+    method: str, status: str
+) -> None:
+    def opener(_request, *, timeout: float):
+        return Response(
+            json.dumps(
+                {
+                    "attempt": {
+                        "id": "attempt-1",
+                        "status": status,
+                        "lease_expires_at": "2026-07-29T10:03:00+00:00",
+                    },
+                    "idempotent": True,
+                    "stale": False,
+                }
+            ).encode()
+        )
+
+    result = getattr(
+        HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener), method
+    )("attempt-1", {})
+
+    assert result == CallbackResult(
+        attempt_id="attempt-1", status=status, idempotent=True, stale=False
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {
+            "attempt": {"id": "different", "status": "succeeded", "lease_expires_at": None},
+            "idempotent": False,
+            "stale": False,
+        },
+        {
+            "attempt": {"id": "attempt-1", "status": "in_progress", "lease_expires_at": None},
+            "idempotent": False,
+            "stale": False,
+        },
+        {
+            "attempt": {"id": "attempt-1", "status": "succeeded", "lease_expires_at": None},
+            "idempotent": "yes",
+            "stale": False,
+        },
+        {
+            "attempt": {"id": "attempt-1", "status": "succeeded", "lease_expires_at": None},
+            "idempotent": False,
+            "stale": False,
+            "extra": True,
+        },
+    ],
+)
+def test_terminal_callbacks_reject_non_exact_completion_metadata(
+    response: dict[str, object],
+) -> None:
+    def opener(_request, *, timeout: float):
+        return Response(json.dumps(response).encode())
+
+    with pytest.raises(ApiError) as raised:
+        HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener).complete(
+            "attempt-1", {}
+        )
+
+    assert (raised.value.code, raised.value.retryable, raised.value.diagnostic) == (
+        "invalid_api_response",
+        False,
+        "api:callback_result_contract_mismatch",
     )
 
 

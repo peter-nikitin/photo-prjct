@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from time import perf_counter
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -23,12 +25,21 @@ from selfie_search.models import (
     SelfieSearchJob,
     SelfieSearchResult,
 )
+from selfie_search.observability import (
+    SelfieEventName,
+    emit_selfie_event,
+    emit_selfie_observability_failure,
+)
 from selfie_search.services.ranking import (
     QueryVectorError,
     RankingError,
+    rank_embeddings,
     rank_search,
     validate_query_vector,
 )
+from selfie_search.services.submission import compatible_search_candidates
+
+logger = logging.getLogger(__name__)
 
 SELFIE_QUERY_CONTRACT_VERSION = 1
 SELFIE_QUERY_PROCESSOR_TYPE = "selfie_query"
@@ -211,10 +222,36 @@ def complete_search_attempt(
         else:
             try:
                 query = _query_from_result(search, result)
-                ranked = rank_search(search, query)
+                if SelfieSearchCandidate.objects.filter(search=search).exists():
+                    ranked = rank_search(search, query)
+                    has_eligible_candidates = True
+                    eligible_photo_count = search.eligible_photo_count
+                    eligible_face_count = search.eligible_face_count
+                    load_ms = rank_ms = None
+                else:
+                    cohort_started_at = perf_counter()
+                    candidates = compatible_search_candidates(search)
+                    cohort_loaded_at = perf_counter()
+                    ranked = rank_embeddings(search, query, candidates)
+                    ranked_at = perf_counter()
+                    has_eligible_candidates = bool(candidates)
+                    eligible_photo_count = len({candidate.photo_id for candidate in candidates})
+                    eligible_face_count = len(candidates)
+                    load_ms = round((cohort_loaded_at - cohort_started_at) * 1_000)
+                    rank_ms = round((ranked_at - cohort_loaded_at) * 1_000)
             except QueryVectorError:
                 raise
             except RankingError:
+                _emit_ranking_finished(
+                    search=search,
+                    attempt=attempt,
+                    outcome="incompatible",
+                    eligible_photo_count=search.eligible_photo_count,
+                    eligible_face_count=search.eligible_face_count,
+                    matched_photo_count=0,
+                    load_ms=None,
+                    rank_ms=None,
+                )
                 _terminal_attempt(
                     attempt,
                     status=str(SelfieSearchAttempt.Status.FAILED),
@@ -241,9 +278,19 @@ def complete_search_attempt(
                 completion = SearchAttemptCompletion(attempt=attempt)
                 needs_cleanup = True
             else:
+                _emit_ranking_finished(
+                    search=search,
+                    attempt=attempt,
+                    outcome="succeeded",
+                    eligible_photo_count=eligible_photo_count,
+                    eligible_face_count=eligible_face_count,
+                    matched_photo_count=len(ranked),
+                    load_ms=load_ms,
+                    rank_ms=rank_ms,
+                )
                 intended_status = str(
                     SelfieSearch.Status.SEARCH_UNAVAILABLE
-                    if not SelfieSearchCandidate.objects.filter(search=search).exists()
+                    if not has_eligible_candidates
                     else SelfieSearch.Status.READY
                 )
                 _terminal_attempt(
@@ -653,6 +700,63 @@ def _confirm_cleanup(
                 "matched_photo_count",
             ]
         )
+        transaction.on_commit(lambda: _emit_search_terminal(search=search, job=_job, now=now))
+
+
+def _emit_ranking_finished(
+    *,
+    search: SelfieSearch,
+    attempt: SelfieSearchAttempt,
+    outcome: str,
+    eligible_photo_count: int,
+    eligible_face_count: int,
+    matched_photo_count: int,
+    load_ms: int | None,
+    rank_ms: int | None,
+) -> None:
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.RANKING_FINISHED,
+        event_id=search.event_id,
+        search_id=search.id,
+        attempt_id=attempt.id,
+        outcome=outcome,
+        eligible_photo_count=eligible_photo_count,
+        eligible_face_count=eligible_face_count,
+        matched_photo_count=matched_photo_count,
+        load_ms=load_ms,
+        rank_ms=rank_ms,
+        configuration_hash=(
+            search.configuration_hash
+            if len(search.configuration_hash) == 64
+            else _canonical_hash(search.configuration)
+        ),
+    )
+
+
+def _emit_search_terminal(
+    *, search: SelfieSearch, job: SelfieSearchJob, now: timezone.datetime
+) -> None:
+    try:
+        elapsed_ms = max(0, round((now - search.created_at).total_seconds() * 1_000))
+        emit_selfie_event(
+            logger,
+            event=SelfieEventName.SEARCH_TERMINAL,
+            event_id=search.event_id,
+            search_id=search.id,
+            status=search.status,
+            matched_photo_count=search.matched_photo_count,
+            attempt_count=_terminal_attempt_count(job),
+            elapsed_ms=elapsed_ms,
+            failure_code=search.failure_code,
+            cleanup_confirmed=True,
+        )
+    except Exception:
+        emit_selfie_observability_failure(logger)
+
+
+def _terminal_attempt_count(job: SelfieSearchJob) -> int:
+    return SelfieSearchAttempt.objects.filter(job=job).count()
 
 
 def _existing_completion(

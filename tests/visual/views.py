@@ -1,10 +1,12 @@
 """Deterministic, database-free fixture views for visual review."""
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
 
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.test import override_settings
@@ -48,6 +50,18 @@ class FixtureEvent:
 
 
 @dataclass(frozen=True)
+class FixtureUnfinishedUpload:
+    id: str
+    event_id: str
+    event_name: str
+    created_at: datetime
+    last_activity_at: datetime
+    expected_count: int
+    confirmed_count: int
+    unresolved_count: int
+
+
+@dataclass(frozen=True)
 class FixturePhoto:
     photo_id: str
     image: str
@@ -83,6 +97,11 @@ class FixtureSelfieSearch:
     matched_photo_count: int = 0
 
 
+@dataclass(frozen=True)
+class FixtureSelfieSearchResult:
+    pk: str
+
+
 EVENTS = (
     FixtureEvent(
         "London 10K",
@@ -110,6 +129,19 @@ EVENTS = (
         "Портреты участников и финишные кадры из expo-зоны.",
         "Доступ по коду",
         FixtureImage("/static/images/run-expo-3125.png"),
+    ),
+)
+
+UNFINISHED_UPLOADS = (
+    FixtureUnfinishedUpload(
+        id="batch-resume-1",
+        event_id="london-10k",
+        event_name="London 10K",
+        created_at=datetime(2026, 6, 8, 10, 0),
+        last_activity_at=datetime(2026, 6, 9, 14, 30),
+        expected_count=2,
+        confirmed_count=1,
+        unresolved_count=1,
     ),
 )
 
@@ -260,8 +292,14 @@ UPLOAD_LIMITS = MappingProxyType(
         "max_file_megabytes": 50,
         "registration_chunk": 100,
         "concurrency": 4,
-        "queue_window": 20,
     }
+)
+
+QUEUE_GROUPS = (
+    ("needs_attention", "Требуют внимания", True),
+    ("uploading", "Загружаются", True),
+    ("waiting", "Ожидают", False),
+    ("uploaded", "Загружены", False),
 )
 
 ACTIVE_UPLOAD_QUEUE = (
@@ -391,7 +429,11 @@ def event_gallery_populated(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "catalog/event_detail.html",
-        {"event": EVENTS[0], "gallery_photos": GALLERY_PHOTOS},
+        {
+            "event": EVENTS[0],
+            "gallery_photos": GALLERY_PHOTOS,
+            "gallery_page": Paginator(GALLERY_PHOTOS, 3).page(1),
+        },
     )
 
 
@@ -411,6 +453,22 @@ def event_selfie_search(request: HttpRequest) -> HttpResponse:
             "event": EVENTS[0],
             "gallery_photos": GALLERY_PHOTOS,
             "selfie_search_form": SelfieSearchUploadForm(),
+        },
+    )
+
+
+def event_selfie_search_rejected(request: HttpRequest) -> HttpResponse:
+    form = SelfieSearchUploadForm(
+        files={"selfie": SimpleUploadedFile("selfie.gif", b"GIF89a", content_type="image/gif")}
+    )
+    form.is_valid()
+    return _render(
+        request,
+        "catalog/event_detail.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": GALLERY_PHOTOS,
+            "selfie_search_form": form,
         },
     )
 
@@ -462,15 +520,75 @@ def selfie_search_error(request: HttpRequest) -> HttpResponse:
 
 
 def selfie_search_ready(request: HttpRequest) -> HttpResponse:
+    photos = GALLERY_PHOTOS[:3]
+    results = tuple(
+        FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
+        for index in range(1, 4)
+    )
     return _render(
         request,
         "selfie_search/result.html",
         {
             "event": EVENTS[0],
-            "gallery_photos": GALLERY_PHOTOS[:3],
+            "gallery_photos": photos,
+            "gallery_result_items": tuple(zip(results, photos, strict=True)),
+            "selfie_search_page": Paginator(photos, 2).page(1),
             "is_terminal": True,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
             "status_url": "",
+        },
+    )
+
+
+def selfie_search_feedback_problem(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "selfie_search/result.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": (),
+            "gallery_result_items": (),
+            "is_terminal": True,
+            "public_token_digest": "a" * 64,
+            "search": FixtureSelfieSearch("no_face"),
+            "status_url": "",
+            "feedback": {
+                "variant": "problem",
+                "visible_result_count": 0,
+                "url": "/__visual__/feedback/",
+                "preview": True,
+            },
+            "selfie_feedback_enabled": True,
+        },
+    )
+
+
+def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
+    photos = GALLERY_PHOTOS[:3]
+    results = tuple(
+        FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000000{index}")
+        for index in range(1, 4)
+    )
+    return _render(
+        request,
+        "selfie_search/result.html",
+        {
+            "event": EVENTS[0],
+            "gallery_photos": photos,
+            "gallery_result_items": tuple(zip(results, photos, strict=True)),
+            "selfie_search_page": Paginator(photos, 2).page(1),
+            "is_terminal": True,
+            "public_token_digest": "b" * 64,
+            "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
+            "status_url": "",
+            "feedback": {
+                "variant": "result_labels",
+                "visible_result_count": 3,
+                "url": "/__visual__/feedback/",
+                "preview": True,
+                "open_initial": True,
+            },
+            "selfie_feedback_enabled": True,
         },
     )
 
@@ -505,6 +623,7 @@ def _upload(
     state: str,
     summary: dict[str, int | str],
     queue: tuple[MappingProxyType[str, Any], ...] = (),
+    unfinished_uploads: tuple[FixtureUnfinishedUpload, ...] = (),
 ) -> HttpResponse:
     request.user = FixtureUser("Анна Смирнова")
     with override_settings(PHOTO_UPLOAD_ENABLED=True):
@@ -516,9 +635,43 @@ def _upload(
                 "upload_limits": UPLOAD_LIMITS,
                 "upload_state": state,
                 "upload_summary": summary,
-                "upload_queue": queue,
+                "upload_queue_groups": _upload_queue_groups(queue),
+                "unfinished_batches": unfinished_uploads,
             },
         )
+
+
+def _upload_queue_groups(
+    queue: tuple[MappingProxyType[str, Any], ...],
+) -> tuple[MappingProxyType[str, Any], ...]:
+    if not queue:
+        return ()
+
+    grouped = {key: [] for key, _, _ in QUEUE_GROUPS}
+    for item in queue:
+        status_class = item["status_class"]
+        if status_class in {"failed", "needs_attention"}:
+            key = "needs_attention"
+        elif status_class == "active":
+            key = "uploading"
+        elif status_class == "uploaded":
+            key = "uploaded"
+        else:
+            key = "waiting"
+        grouped[key].append(item)
+
+    return tuple(
+        MappingProxyType(
+            {
+                "key": key,
+                "label": label,
+                "expanded": expanded,
+                "count": len(grouped[key]),
+                "items": tuple(grouped[key]),
+            }
+        )
+        for key, label, expanded in QUEUE_GROUPS
+    )
 
 
 def upload_empty(request: HttpRequest) -> HttpResponse:
@@ -526,6 +679,7 @@ def upload_empty(request: HttpRequest) -> HttpResponse:
         request,
         state="empty",
         summary={"progress": 0, "total": 0, "uploaded": 0, "failed": 0, "bytes": "0 Б"},
+        unfinished_uploads=UNFINISHED_UPLOADS if request.GET.get("resume") else (),
     )
 
 

@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from photo_worker.client import ApiError, DownloadError
+from photo_worker.client import ApiError, CallbackResult, DownloadError
 from photo_worker.contracts import (
     FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
     PROCESSOR_TYPE,
@@ -97,6 +97,7 @@ def make_claim(
                 ),
                 **(
                     {
+                        "event_id": "17",
                         "search_id": "00000000-0000-0000-0000-000000000013",
                         "input_fingerprint": {
                             "temporary_key": "selfie-search/0123456789abcdef0123456789abcdef",
@@ -170,12 +171,19 @@ class Client:
     def refresh_download(self, _attempt_id: str) -> str:
         return "https://storage.example.test/refreshed?secret"
 
-    def complete(self, attempt_id: str, payload: dict[str, object], **_: object) -> None:
+    def complete(self, attempt_id: str, payload: dict[str, object], **_: object) -> CallbackResult:
         assert attempt_id == "00000000-0000-0000-0000-000000000012"
         self.completed.append(payload)
+        return CallbackResult(attempt_id, "succeeded", idempotent=False, stale=False)
 
-    def fail(self, _attempt_id: str, payload: dict[str, object], **_: object) -> None:
+    def fail(self, _attempt_id: str, payload: dict[str, object], **_: object) -> CallbackResult:
         self.failed.append(payload)
+        return CallbackResult(
+            "00000000-0000-0000-0000-000000000012",
+            "failed",
+            idempotent=False,
+            stale=False,
+        )
 
 
 class SchedulingClient(Client):
@@ -605,6 +613,251 @@ def test_worker_submits_typed_selfie_result_without_logging_vector(
     assert client.completed[0]["result"]["model"] == "sface"
     assert len(client.completed[0]["result"]["embedding"]) == 128
     assert "0.088388" not in caplog.text
+
+
+def test_selfie_success_callback_emits_one_bounded_attempt_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO")
+    client = Client(make_claim(processor_type=PROCESSOR_TYPE_SELFIE_QUERY))
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_selfie_embedding",
+        lambda *_args, **_kwargs: make_selfie_embedding_result(),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_types=(PROCESSOR_TYPE_SELFIE_QUERY,),
+        ),
+    ).run_once()
+
+    events = [
+        json.loads(record.message) for record in caplog.records if record.message.startswith("{")
+    ]
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "selfie_worker_attempt_finished"
+    assert event["search_id"] == "00000000-0000-0000-0000-000000000013"
+    assert event["job_id"] == "00000000-0000-0000-0000-000000000011"
+    assert event["attempt_id"] == "00000000-0000-0000-0000-000000000012"
+    assert event["outcome"] == "succeeded"
+    assert "photo_id" not in event
+
+
+def test_selfie_idempotent_success_callback_does_not_duplicate_the_attempt_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class IdempotentClient(Client):
+        def complete(
+            self, attempt_id: str, payload: dict[str, object], **kwargs: object
+        ) -> CallbackResult:
+            super().complete(attempt_id, payload, **kwargs)
+            return CallbackResult(attempt_id, "succeeded", idempotent=True, stale=False)
+
+    caplog.set_level("INFO")
+    client = IdempotentClient(make_claim(processor_type=PROCESSOR_TYPE_SELFIE_QUERY))
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_selfie_embedding",
+        lambda *_args, **_kwargs: make_selfie_embedding_result(),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_types=(PROCESSOR_TYPE_SELFIE_QUERY,),
+        ),
+    ).run_once()
+
+    assert client.completed
+    assert not [record for record in caplog.records if record.message.startswith("{")]
+
+
+def test_selfie_callback_without_completion_metadata_is_rejected_without_an_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class MissingMetadataClient(Client):
+        def complete(self, attempt_id: str, payload: dict[str, object], **kwargs: object) -> None:
+            super().complete(attempt_id, payload, **kwargs)
+
+    caplog.set_level("INFO")
+    client = MissingMetadataClient(make_claim(processor_type=PROCESSOR_TYPE_SELFIE_QUERY))
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_selfie_embedding",
+        lambda *_args, **_kwargs: make_selfie_embedding_result(),
+    )
+
+    with pytest.raises(ApiError, match="invalid_api_response"):
+        Worker(
+            client,
+            WorkerConfig(
+                worker_build="worker-test",
+                lease_seconds=60,
+                temp_dir=tmp_path,
+                processor_types=(PROCESSOR_TYPE_SELFIE_QUERY,),
+            ),
+        ).run_once()
+
+    assert client.completed
+    assert not [record for record in caplog.records if record.message.startswith("{")]
+
+
+def test_selfie_transport_retry_then_idempotent_acceptance_emits_no_duplicate_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class RetryingClient(Client):
+        def __init__(self, claim: Claim) -> None:
+            super().__init__(claim)
+            self.callback_calls = 0
+
+        def complete(
+            self, attempt_id: str, payload: dict[str, object], **kwargs: object
+        ) -> CallbackResult:
+            self.callback_calls += 1
+            if self.callback_calls == 1:
+                raise ApiError("network_interruption", retryable=True)
+            super().complete(attempt_id, payload, **kwargs)
+            return CallbackResult(attempt_id, "succeeded", idempotent=True, stale=False)
+
+    caplog.set_level("INFO")
+    client = RetryingClient(make_claim(processor_type=PROCESSOR_TYPE_SELFIE_QUERY))
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_selfie_embedding",
+        lambda *_args, **_kwargs: make_selfie_embedding_result(),
+    )
+    worker = Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_types=(PROCESSOR_TYPE_SELFIE_QUERY,),
+        ),
+    )
+
+    with pytest.raises(ApiError, match="network_interruption"):
+        worker.run_once()
+    worker.run_once()
+
+    assert client.callback_calls == 2
+    assert not [record for record in caplog.records if record.message.startswith("{")]
+
+
+def test_selfie_idempotent_failure_callback_does_not_duplicate_the_attempt_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class IdempotentFailureClient(Client):
+        def fail(
+            self, attempt_id: str, payload: dict[str, object], **kwargs: object
+        ) -> CallbackResult:
+            super().fail(attempt_id, payload, **kwargs)
+            return CallbackResult(attempt_id, "failed", idempotent=True, stale=False)
+
+    caplog.set_level("INFO")
+    client = IdempotentFailureClient(make_claim(processor_type=PROCESSOR_TYPE_SELFIE_QUERY))
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_selfie_embedding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FaceEmbeddingError("no_face_detected")),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_types=(PROCESSOR_TYPE_SELFIE_QUERY,),
+        ),
+    ).run_once()
+
+    assert client.failed
+    assert not [record for record in caplog.records if record.message.startswith("{")]
+
+
+def test_selfie_logging_failure_preserves_the_retryable_callback_disposition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = Client(make_claim(processor_type=PROCESSOR_TYPE_SELFIE_QUERY))
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_selfie_embedding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FaceEmbeddingError("model_inference_timeout")
+        ),
+    )
+    monkeypatch.setattr(
+        "photo_worker.runner.LOGGER.log",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("logger unavailable")),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_types=(PROCESSOR_TYPE_SELFIE_QUERY,),
+        ),
+    ).run_once()
+
+    assert len(client.failed) == 1
+    assert client.failed[0]["error_code"] == "model_inference_timeout"
+    assert client.failed[0]["retryable"] is True
+
+
+@pytest.mark.parametrize(
+    ("error_code", "retryable"),
+    [
+        ("decode_failed", False),
+        ("fingerprint_mismatch", False),
+        ("input_too_large", False),
+        ("model_inference_error", False),
+        ("model_inference_timeout", True),
+        ("network_interruption", True),
+        ("no_face_detected", False),
+        ("multiple_faces_detected", False),
+        ("quality_rejected", False),
+        ("storage_unavailable", True),
+        ("unsupported_input", False),
+    ],
+)
+def test_selfie_failure_families_emit_one_bounded_event_at_the_disposition_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    error_code: str,
+    retryable: bool,
+) -> None:
+    caplog.set_level("INFO")
+    client = Client(make_claim(processor_type=PROCESSOR_TYPE_SELFIE_QUERY))
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_selfie_embedding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FaceEmbeddingError(error_code)),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_types=(PROCESSOR_TYPE_SELFIE_QUERY,),
+        ),
+    ).run_once()
+
+    records = [record for record in caplog.records if record.message.startswith("{")]
+    assert len(records) == 1
+    event = json.loads(records[0].message)
+    assert event["outcome"] == "failed"
+    assert event["reason_code"] == error_code
+    assert event["retryable"] is retryable
+    assert records[0].levelname == ("WARNING" if retryable else "INFO")
+    assert set(event).isdisjoint({"photo_id", "download_url", "embedding"})
 
 
 def test_worker_configuration_parses_plural_processors_and_legacy_singular(

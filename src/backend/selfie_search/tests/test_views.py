@@ -1,16 +1,27 @@
 import hashlib
+import json
+import logging
 from datetime import date
+from io import BytesIO
+from pathlib import Path
+from struct import pack
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock, call, patch
 from urllib.parse import quote
 from uuid import uuid4
+from zlib import crc32
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError
+from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from ingestion.storage import ObjectMissing, StorageError
+from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.models import Event, Photo
+from PIL import Image
 from processing.models import (
     EventProcessingRun,
     FaceProcessingAttemptArtifact,
@@ -18,7 +29,13 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
-from selfie_search.models import SelfieSearch, SelfieSearchResult
+from selfie_search.models import (
+    SelfieSearch,
+    SelfieSearchFeedback,
+    SelfieSearchJob,
+    SelfieSearchResult,
+)
+from selfie_search.observability import OBSERVABILITY_FAILURE_MARKER
 
 type ChoiceValue = str | tuple[str, str]
 
@@ -70,10 +87,19 @@ class PublicSelfieSearchMarkupTests(TestCase):
                 self.assertContains(response, 'enctype="multipart/form-data"')
                 self.assertContains(response, 'name="csrfmiddlewaretoken"')
                 self.assertContains(response, 'name="selfie"')
-                self.assertContains(response, 'accept="image/jpeg,image/png"')
+                self.assertContains(
+                    response,
+                    'accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif"',
+                )
                 self.assertContains(
                     response,
                     "Мы ищем вероятные совпадения только среди фотографий этого события.",
+                )
+                self.assertContains(
+                    response,
+                    "Загрузите чёткую фотографию, где лицо хорошо видно. "
+                    "Лучше использовать фото с дня мероприятия, особенно если на мероприятии "
+                    "вы были в очках или головном уборе.",
                 )
                 self.assertContains(response, "Селфи удаляется после подготовки поиска.")
                 self.assertContains(
@@ -85,6 +111,26 @@ class PublicSelfieSearchMarkupTests(TestCase):
         response = self.client.get(reverse("event_detail", kwargs={"slug": self.draft_event.slug}))
 
         self.assertEqual(response.status_code, 404)
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=False)
+    def test_disabled_feedback_entry_exposes_no_preservation_marker_or_correlation(
+        self,
+    ) -> None:
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.free_event.slug}))
+
+        self.assertContains(response, 'data-selfie-feedback-enabled="false"')
+        self.assertNotContains(response, 'name="feedback_correlation"')
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_enabled_feedback_search_entry_accepts_a_browser_correlation(self) -> None:
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.free_event.slug}))
+
+        self.assertContains(response, 'data-selfie-feedback-enabled="true"')
+        self.assertContains(
+            response,
+            '<input type="hidden" name="feedback_correlation" value="">',
+            html=True,
+        )
 
     def test_unicode_published_event_has_reversible_selfie_urls(self) -> None:
         event = self.make_event(slug="cyclingrace-олимпия", access_type=Event.AccessType.FREE)
@@ -149,6 +195,301 @@ class PublicSelfieSearchMarkupTests(TestCase):
         self.assertEqual(response.context["search"].pk, search.pk)
         self.assertContains(response, "Искать по другому селфи")
         self.assertContains(response, reverse("event_detail", kwargs={"slug": event.slug}))
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_result_exposes_a_valid_redirect_correlation_without_session_binding(self) -> None:
+        token = "correlated-search-token"
+        SelfieSearch.objects.create(
+            event=self.free_event,
+            public_token_digest=hashlib.sha256(token.encode("ascii")).hexdigest(),
+            status=SelfieSearch.Status.NO_FACE,
+            temporary_object_key="",
+            configuration={"public-contract": 1},
+        )
+        correlation = "a" * 32
+
+        response = self.client.get(
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.free_event.slug, "public_token": token},
+            ),
+            {"feedback_correlation": correlation},
+        )
+
+        self.assertContains(response, f'data-feedback-correlation="{correlation}"')
+        invalid = self.client.get(
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.free_event.slug, "public_token": token},
+            ),
+            {"feedback_correlation": "not valid"},
+        )
+        self.assertNotContains(invalid, 'data-feedback-correlation="not valid"')
+
+
+def _view_jpeg_upload() -> SimpleUploadedFile:
+    content = BytesIO()
+    Image.new("RGB", (8, 8), color="white").save(content, format="JPEG")
+    return SimpleUploadedFile("selfie.jpg", content.getvalue(), content_type="image/jpeg")
+
+
+def _view_pixel_limit_upload() -> SimpleUploadedFile:
+    ihdr = pack(">IIBBBBB", 5_001, 5_000, 8, 2, 0, 0, 0)
+    content = b"\x89PNG\r\n\x1a\n" + pack(">I", len(ihdr)) + b"IHDR" + ihdr
+    content += pack(">I", crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
+    content += pack(">I", 0) + b"IEND" + pack(">I", crc32(b"IEND") & 0xFFFFFFFF)
+    return SimpleUploadedFile("selfie.png", content, content_type="image/png")
+
+
+class FailingSubmissionStorage:
+    def put(self, *, key: str, content: bytes, content_type: str):  # noqa: ARG002
+        raise StorageUnavailable()
+
+
+class _CaptureLogger(logging.Logger):
+    def __init__(self) -> None:
+        super().__init__("selfie-submission-capture", logging.DEBUG)
+        self.calls: list[tuple[int, str]] = []
+
+    def log(self, level: int, message: str) -> None:  # type: ignore[override]
+        self.calls.append((level, message))
+
+
+class _FailingLogger(logging.Logger):
+    def __init__(self) -> None:
+        super().__init__("selfie-submission-failing", logging.DEBUG)
+
+    def log(self, _level: int, _message: str) -> None:  # type: ignore[override]
+        raise RuntimeError("logger unavailable")
+
+
+@override_settings(
+    SELFIE_SEARCH_ENABLED=True,
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
+)
+class SelfieSubmissionFeedbackTests(TestCase):
+    def setUp(self) -> None:
+        self.event = Event.objects.create(
+            name="Feedback event",
+            slug="feedback-event",
+            start_date=date(2026, 7, 30),
+            end_date=date(2026, 7, 30),
+            city="Moscow",
+            access_type=Event.AccessType.FREE,
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+        self.url = reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})
+
+    def post(self, upload: SimpleUploadedFile | None) -> HttpResponse:
+        return self.client.post(self.url, {} if upload is None else {"selfie": upload})
+
+    def assert_customer_rejection(
+        self,
+        *,
+        upload: SimpleUploadedFile | None,
+        reason: str,
+        message: str,
+        actual_format: str | None,
+        declared_type: str,
+    ) -> None:
+        before_searches = SelfieSearch.objects.count()
+        before_jobs = SelfieSearchJob.objects.count()
+        with patch("selfie_search.views.TemporarySelfieStorage") as storage_factory:
+            with self.assertLogs("selfie_search.views", level="INFO") as logs:
+                response = self.post(upload)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(SelfieSearch.objects.count(), before_searches)
+        self.assertEqual(SelfieSearchJob.objects.count(), before_jobs)
+        storage_factory.assert_not_called()
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        payload = json.loads(record.getMessage())
+        self.assertEqual(payload["event"], "selfie_submission_finished")
+        self.assertEqual(payload["event_id"], str(self.event.pk))
+        self.assertEqual(payload["outcome"], "rejected")
+        self.assertEqual(payload["reason_code"], reason)
+        self.assertEqual(payload["actual_format"], actual_format)
+        self.assertEqual(payload["declared_type"], declared_type)
+        self.assertContains(response, message, status_code=422)
+        self.assertContains(response, 'id="selfie-search"', status_code=422)
+        self.assertContains(response, 'role="alert"', status_code=422)
+        self.assertContains(
+            response,
+            (
+                f'action="{reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})}'
+                '#selfie-search"'
+            ),
+            status_code=422,
+        )
+        self.assertContains(response, ">Найти мои фото</button>", status_code=422)
+        self.assertNotContains(response, 'type="submit" disabled', status_code=422)
+        self.assertEqual(response.content.count(b'role="alert"'), 1)
+        captured = repr(record.__dict__) + "\n".join(logs.output)
+        for forbidden in (
+            "selfie.jpg",
+            "selfie.bin",
+            "application/octet-stream",
+            "selfie-search/",
+            "signed",
+            "vector",
+            "traceback",
+        ):
+            self.assertNotIn(forbidden, captured)
+
+    def test_customer_correctable_rejections_have_one_safe_event_and_no_side_effects(self) -> None:
+        content = BytesIO()
+        Image.new("RGB", (8, 8), color="white").save(content, format="GIF")
+        cases = (
+            (None, "missing_or_empty", "Выберите фотографию для поиска.", "unknown", "missing"),
+            (
+                SimpleUploadedFile(
+                    "selfie.bin", content.getvalue(), content_type="application/octet-stream"
+                ),
+                "unsupported_format",
+                "Не удалось прочитать фотографию. Выберите JPEG, PNG, HEIC или HEIF.",
+                "unknown",
+                "octet_stream",
+            ),
+            (
+                SimpleUploadedFile("selfie.jpg", b"\xff\xd8\xff", content_type="image/jpeg"),
+                "corrupt_image",
+                "Фотография повреждена. Выберите другой файл.",
+                "unknown",
+                "jpeg",
+            ),
+            (
+                SimpleUploadedFile(
+                    "selfie.jpg", b"x" * (20 * 1024 * 1024 + 1), content_type="image/jpeg"
+                ),
+                "source_too_large",
+                "Размер фотографии не должен превышать 20 МиБ.",
+                "unknown",
+                "jpeg",
+            ),
+            (
+                _view_pixel_limit_upload(),
+                "pixel_limit_exceeded",
+                "Изображение слишком большое. Уменьшите его так, чтобы "
+                "ширина × высота были не больше 25 млн пикселей — "
+                "например, 5000 × 5000.",
+                "png",
+                "png",
+            ),
+        )
+        for upload, reason, message, actual_format, declared_type in cases:
+            with self.subTest(reason=reason):
+                self.assert_customer_rejection(
+                    upload=upload,
+                    reason=reason,
+                    message=message,
+                    actual_format=actual_format,
+                    declared_type=declared_type,
+                )
+
+    def test_normalized_oversize_rejection_is_safe_and_customer_correctable(self) -> None:
+        fixture = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
+        upload = SimpleUploadedFile("iphone.heic", fixture, content_type="image/heic")
+        with override_settings(SELFIE_SEARCH_MAX_UPLOAD_BYTES=len(fixture)):
+            with patch(
+                "selfie_search.images._normalize_heif", return_value=b"x" * (len(fixture) + 1)
+            ):
+                self.assert_customer_rejection(
+                    upload=upload,
+                    reason="normalized_too_large",
+                    message="Размер фотографии не должен превышать 20 МиБ.",
+                    actual_format="heic",
+                    declared_type="heic",
+                )
+
+    def test_storage_failure_is_503_retryable_and_has_no_search_or_job(self) -> None:
+        with patch(
+            "selfie_search.views.TemporarySelfieStorage",
+            return_value=FailingSubmissionStorage(),
+        ):
+            with self.assertLogs("selfie_search.views", level="WARNING") as logs:
+                response = self.post(_view_jpeg_upload())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(SelfieSearch.objects.exists())
+        self.assertFalse(SelfieSearchJob.objects.exists())
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        payload = json.loads(record.getMessage())
+        self.assertEqual(payload["outcome"], "storage_unavailable")
+        self.assertEqual(payload["reason_code"], "storage_unavailable")
+        self.assertEqual(payload["actual_format"], "jpeg")
+        self.assertEqual(payload["declared_type"], "jpeg")
+        self.assertContains(
+            response,
+            "Не удалось загрузить фотографию. Попробуйте ещё раз.",
+            status_code=503,
+        )
+        self.assertContains(response, 'role="alert"', status_code=503)
+        self.assertContains(response, ">Найти мои фото</button>", status_code=503)
+
+    def test_accepted_submission_emits_after_success_with_created_search_id(self) -> None:
+        logger = _CaptureLogger()
+        search_id = uuid4()
+        created = SimpleNamespace(
+            search=SimpleNamespace(pk=search_id), public_token="opaque-public-token"
+        )
+
+        with (
+            patch("selfie_search.views.logger", logger),
+            patch("selfie_search.views.submit_selfie_search", return_value=created),
+        ):
+            response = self.post(_view_jpeg_upload())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(len(logger.calls), 1)
+        level, line = logger.calls[0]
+        payload = json.loads(line)
+        self.assertEqual(level, logging.INFO)
+        self.assertEqual(payload["outcome"], "accepted")
+        self.assertEqual(payload["search_id"], str(search_id))
+        self.assertEqual(payload["actual_format"], "jpeg")
+        self.assertNotIn("opaque-public-token", line)
+
+    def test_database_failure_never_claims_an_accepted_submission(self) -> None:
+        logger = _CaptureLogger()
+        with (
+            patch("selfie_search.views.logger", logger),
+            patch(
+                "selfie_search.views.submit_selfie_search",
+                side_effect=IntegrityError("database failed"),
+            ),
+            self.assertRaises(IntegrityError),
+        ):
+            self.post(_view_jpeg_upload())
+
+        self.assertEqual(logger.calls, [])
+
+    def test_observability_output_failure_keeps_accepted_redirect(self) -> None:
+        created = SimpleNamespace(search=SimpleNamespace(pk=uuid4()), public_token="opaque-token")
+        with (
+            patch("selfie_search.views.logger", _FailingLogger()),
+            patch("selfie_search.views.submit_selfie_search", return_value=created),
+        ):
+            response = self.post(_view_jpeg_upload())
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_observability_serialization_failure_keeps_accepted_redirect(self) -> None:
+        logger = _CaptureLogger()
+        created = SimpleNamespace(search=SimpleNamespace(pk=uuid4()), public_token="opaque-token")
+        with (
+            patch("selfie_search.views.logger", logger),
+            patch("selfie_search.views.submit_selfie_search", return_value=created),
+            patch(
+                "selfie_search.observability.json.dumps",
+                side_effect=RuntimeError("serialization failed"),
+            ),
+        ):
+            response = self.post(_view_jpeg_upload())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(logger.calls, [(logging.ERROR, OBSERVABILITY_FAILURE_MARKER)])
 
 
 @override_settings(
@@ -316,6 +657,17 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
 
+    def test_bearer_result_suppresses_metrika_while_catalog_keeps_one_counter(self) -> None:
+        search, token = self.make_search()
+
+        bearer_response = self.client.get(self.result_url(event=search.event, token=token))
+        catalog_response = self.client.get(reverse("event_catalog"))
+
+        self.assertEqual(bearer_response.status_code, 200)
+        self.assertNotContains(bearer_response, "mc.yandex.ru")
+        self.assertContains(bearer_response, "data-cookie-notice")
+        self.assertEqual(catalog_response.content.count(b'ym(111239706, "init", {'), 1)
+
     def test_page_exposes_each_public_state_with_bearer_headers(self) -> None:
         state_copy = {
             SelfieSearch.Status.QUEUED: "Ищем ваши фотографии…",
@@ -415,7 +767,10 @@ class PublicSelfieResultViewTests(TestCase):
         for photo in (first, second):
             download_url = self.result_download_url(event=search.event, token=token, photo=photo)
             lightbox_download = (
-                f'<a class="gallery-lightbox-download" href="{download_url}">Скачать оригинал</a>'
+                f'<a class="gallery-lightbox-download" href="{download_url}" '
+                'aria-label="Скачать оригинал" title="Скачать оригинал">'
+                '<svg class="icon" aria-hidden="true"><use '
+                'href="/static/ui/icons.svg#download"></use></svg></a>'
             )
             self.assertContains(
                 first_open,
@@ -427,6 +782,85 @@ class PublicSelfieResultViewTests(TestCase):
                 f"data-description='{lightbox_download}'",
             )
         self.assertNotContains(first_open, "gallery-photo-id")
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_terminal_feedback_markup_uses_the_saved_result_membership_and_exact_consent(
+        self,
+    ) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(search.event, photo_id="feedback-result")
+        result = self.add_result(search=search, photo=photo, rank=1)
+
+        response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertContains(response, "data-selfie-feedback")
+        self.assertContains(response, 'data-feedback-variant="result_labels"')
+        self.assertContains(response, f'data-feedback-result-id="{result.pk}"')
+        self.assertContains(response, 'data-feedback-total="1"')
+        self.assertContains(response, "data-feedback-unavailable")
+        self.assertContains(
+            response,
+            "Отзыв об этом поиске можно отправить только из браузера, где он был начат, "
+            "пока локальная копия селфи ещё доступна.",
+        )
+        self.assertContains(response, "Оценить качество поиска")
+        self.assertContains(response, "Размечено 0 из 1 фотографий")
+        self.assertContains(response, "Я есть")
+        self.assertContains(response, "Меня нет")
+        self.assertContains(response, "Контакт для связи")
+        self.assertContains(response, "Телефон, Telegram или email")
+        self.assertContains(
+            response,
+            "К отзыву приложим ваше селфи — то самое, которое вы использовали для этого поиска. "
+            "Повторно выбирать файл не нужно.",
+        )
+        self.assertContains(
+            response,
+            "Я согласен на обработку моего селфи, контактных данных и оценки результатов поиска "
+            "для анализа качества поиска и связи со мной в соответствии с ",
+        )
+        self.assertContains(response, "ui/legal/personal-data-policy.pdf")
+        self.assertNotContains(response, 'type="file"')
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_terminal_problem_feedback_has_no_result_questions(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.NO_FACE)
+
+        response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertContains(response, 'data-feedback-variant="problem"')
+        self.assertContains(response, "Помогите улучшить поиск")
+        self.assertNotContains(response, "Оценить качество поиска")
+        self.assertNotContains(response, "Я есть")
+        self.assertNotContains(response, "Меня нет")
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_terminal_result_confirms_already_submitted_feedback_without_new_form(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.NO_FACE)
+        SelfieSearchFeedback.objects.create(
+            search=search,
+            variant=SelfieSearchFeedback.Variant.PROBLEM,
+            contact="customer@example.test",
+            personal_data_consent=True,
+            consent_text_version="2026-08-04",
+            consented_at=timezone.now(),
+            source_status=search.status,
+            source_configuration=search.configuration,
+            object_key=f"feedback/{uuid4().hex}",
+            object_content_type="image/jpeg",
+            object_size=1,
+            object_uploaded_at=timezone.now(),
+        )
+
+        response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertNotContains(response, "Спасибо, отзыв отправлен.")
+        self.assertContains(response, "data-feedback-cleanup")
+        self.assertContains(response, "data-feedback-cleanup-retry")
+        self.assertNotContains(
+            response,
+            '<section class="selfie-search-feedback" data-selfie-feedback',
+        )
 
     def test_ready_page_omits_removed_member_without_reranking_remaining_members(self) -> None:
         search, token = self.make_search(
@@ -461,7 +895,7 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(response.context["gallery_photos"], ())
         self.assertNotContains(response, photo.pk)
 
-    def test_ready_page_uses_token_bound_cursor_without_expanding_saved_membership(self) -> None:
+    def test_ready_page_uses_numbered_pages_without_reranking_or_expanding_membership(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         photos = [
             self.make_private_photo(search.event, photo_id=f"rank-{index:03}")
@@ -475,50 +909,56 @@ class PublicSelfieResultViewTests(TestCase):
 
         self.assertEqual(
             [item.photo_id for item in first_response.context["gallery_photos"]],
-            [photo.pk for photo in photos[:50]],
+            [photo.pk for photo in photos[:100]],
         )
         self.assertNotContains(first_response, unrelated.pk)
-        next_cursor = first_response.context["selfie_search_next_cursor"]
-        self.assertIsNotNone(next_cursor)
-        self.assertNotContains(first_response, "Показать ещё")
-        self.assertContains(first_response, "data-event-gallery")
+        self.assertContains(first_response, "Страница 1 из 2")
+        self.assertContains(first_response, "?page=2")
+        self.assertContains(first_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(first_response, 'name="page"')
+        self.assertContains(first_response, 'type="number"')
+        self.assertContains(first_response, 'min="1"')
+        self.assertContains(first_response, 'max="2"')
+        self.assertContains(first_response, 'value="1"')
+        self.assertContains(first_response, "Перейти")
 
         later_response = self.client.get(
-            self.result_url(event=search.event, token=token), {"cursor": next_cursor}
+            self.result_url(event=search.event, token=token), {"page": 2}
         )
 
         self.assertEqual(
             [item.photo_id for item in later_response.context["gallery_photos"]],
-            [photo.pk for photo in photos[50:100]],
+            [photos[100].pk],
         )
-        self.assertIsNotNone(later_response.context["selfie_search_next_cursor"])
+        self.assertContains(later_response, "Страница 2 из 2")
+        self.assertContains(later_response, "?page=1")
+        self.assertContains(later_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(later_response, 'name="page"')
+        self.assertContains(later_response, 'type="number"')
+        self.assertContains(later_response, 'min="1"')
+        self.assertContains(later_response, 'max="2"')
+        self.assertContains(later_response, 'value="2"')
+        self.assertContains(later_response, "Перейти")
 
-    def test_ready_page_rejects_cursor_for_another_public_token(self) -> None:
+    def test_ready_page_rejects_invalid_page(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
-        other_search, other_token = self.make_search(status=SelfieSearch.Status.READY)
-        for index in range(101):
-            photo = self.make_private_photo(search.event, photo_id=f"rank-{index:03}")
-            self.add_result(search=search, photo=photo, rank=index + 1)
-
-        cursor = self.client.get(self.result_url(event=search.event, token=token)).context[
-            "selfie_search_next_cursor"
-        ]
-        response = self.client.get(
-            self.result_url(event=other_search.event, token=other_token), {"cursor": cursor}
-        )
-
-        self.assertEqual(response.status_code, 404)
+        for invalid_page in ("bad", "0", "2"):
+            with self.subTest(page=invalid_page):
+                response = self.client.get(
+                    self.result_url(event=search.event, token=token), {"page": invalid_page}
+                )
+                self.assertEqual(response.status_code, 404)
 
     def test_nonready_page_does_not_expose_pagination(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.PROCESSING)
 
         response = self.client.get(
-            self.result_url(event=search.event, token=token), {"cursor": "not-a-cursor"}
+            self.result_url(event=search.event, token=token), {"page": "not-a-page"}
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Показать ещё")
-        self.assertIsNone(response.context["selfie_search_next_cursor"])
+        self.assertNotContains(response, "gallery-pagination")
 
     def test_event_token_mismatch_and_unpublished_event_are_not_resolvable(self) -> None:
         other_event = self.make_event(name="Other Run", slug="other-run")

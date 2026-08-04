@@ -1,0 +1,18 @@
+<nav class="gallery-pagination" aria-label="{{ pagination_label }}">
+  {% if pagination_page.has_previous %}<a href="?page={{ pagination_page.previous_page_number }}">Назад</a>{% endif %}
+  <span class="gallery-pagination-status">Страница {{ pagination_page.number }} из {{ pagination_page.paginator.num_pages }}</span>
+  <form class="gallery-pagination-form" method="get">
+    <label class="visually-hidden" for="gallery-page-number">Номер страницы</label>
+    <input
+      id="gallery-page-number"
+      class="gallery-pagination-input"
+      type="number"
+      name="page"
+      min="1"
+      max="{{ pagination_page.paginator.num_pages }}"
+      value="{{ pagination_page.number }}"
+    >
+    <button class="gallery-pagination-button" type="submit">Перейти</button>
+  </form>
+  {% if pagination_page.has_next %}<a href="?page={{ pagination_page.next_page_number }}">Вперёд</a>{% endif %}
+</nav>

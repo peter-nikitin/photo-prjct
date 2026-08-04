@@ -1,9 +1,34 @@
 # AGENTS.md
 
+## General
+
+- Do not preserve backward compatibility. Remove obsolete paths instead of adding compatibility layers, fallbacks, or migrations.
+- Choose the simplest implementation that fully meets the current requirements. Avoid speculative abstractions, configuration, and indirection.
+- Grow the system in layers. Start from the smallest version that works end to end, and add each new capability on top of a product that already works. Never trade a working product for unfinished complexity.
+- Keep components modular and concerns clearly separated.
+- Prefer established, well-maintained libraries when they reduce overall complexity or improve reliability. Do not reimplement common functionality without a clear reason.
+- Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
+- Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
+
 ## Project
 
 FindMe Photo is an event photo marketplace where customers discover photos from events and
 photographers and operators publish and manage event photos.
+
+## Worktrees and local Python
+
+- Create feature worktrees only through `make worktree NAME=<name> [BASE=<ref>]` from the main
+  checkout. The command creates `.worktrees/<name>` on `codex/<name>`, links the root `.venv`, and
+  creates a local test-safe `.env` without copying root secrets.
+- Run Python tests through `make test` or `make test TESTS="<selectors>"`. Run the complete Python
+  quality suite through `make check`.
+- Do not run Ruff formatting manually before committing. The installed pre-commit hook applies
+  Ruff fixes and formatting to staged Python files. If it changes files, stage those changes and
+  repeat the commit. Use `make hooks` to install or repair the shared hook in an existing checkout.
+- Do not rely on virtual-environment activation or global `python`, `pytest`, `ruff`, or `mypy`.
+  When a direct command is necessary, use the explicit `.venv/bin/...` executable.
+- Do not copy or link the main checkout's `.env` into a worktree. Each worktree owns its ignored
+  local `.env`.
 
 ## Where to find information
 

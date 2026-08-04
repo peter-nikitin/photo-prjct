@@ -8,6 +8,11 @@ urlpatterns = [
     path("uploads/", views.upload_page, name="upload_page"),
     path("uploads/batches/", views.upload_batch_create, name="upload_batch_create"),
     path(
+        "uploads/<uuid:batch>/resume/",
+        views.upload_batch_resume_manifest,
+        name="upload_batch_resume_manifest",
+    ),
+    path(
         "uploads/<uuid:batch>/items/",
         views.upload_items_register,
         name="upload_items_register",

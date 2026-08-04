@@ -1,9 +1,14 @@
 import time
 
 from django.conf import settings
-from prometheus_client import CollectorRegistry, Counter, Histogram
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    generate_latest,
+    multiprocess,
+)
 
-REGISTRY = CollectorRegistry()
 _LABEL_NAMES = ("environment", "route", "method", "status_class")
 _ALLOWED_HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 
@@ -11,14 +16,18 @@ HTTP_REQUESTS = Counter(
     "findme_http_requests",
     "HTTP requests by route, method, and response status class.",
     _LABEL_NAMES,
-    registry=REGISTRY,
 )
 HTTP_REQUEST_DURATION = Histogram(
     "findme_http_request_duration_seconds",
     "HTTP request duration by route, method, and response status class.",
     _LABEL_NAMES,
-    registry=REGISTRY,
 )
+
+
+def generate_metrics() -> bytes:
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry)
+    return generate_latest(registry)
 
 
 class HttpMetricsMiddleware:

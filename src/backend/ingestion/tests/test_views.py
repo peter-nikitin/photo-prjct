@@ -45,22 +45,23 @@ class UploadViewTests(TestCase):
         payload = response.json()
         return UUID(payload["batch"]["id"]), payload
 
-    def register_item(self, batch_id: UUID, client_item_id: UUID | None = None):
+    def register_item(
+        self,
+        batch_id: UUID,
+        client_item_id: UUID | None = None,
+        **resume_metadata: object,
+    ):
         client_item_id = client_item_id or uuid4()
+        item = {
+            "client_item_id": str(client_item_id),
+            "filename": "race.jpg",
+            "content_type": "image/jpeg",
+            "size": 4,
+        }
+        item.update(resume_metadata)
         response = self.client.post(
             reverse("upload_items_register", args=[batch_id]),
-            json.dumps(
-                {
-                    "items": [
-                        {
-                            "client_item_id": str(client_item_id),
-                            "filename": "race.jpg",
-                            "content_type": "image/jpeg",
-                            "size": 4,
-                        }
-                    ]
-                }
-            ),
+            json.dumps({"items": [item]}),
             content_type="application/json",
         )
         return client_item_id, response
@@ -72,6 +73,10 @@ class UploadViewTests(TestCase):
         self.assertEqual(reverse("photographer_logout"), "/photographer/logout/")
         self.assertEqual(reverse("upload_page"), "/photographer/uploads/")
         self.assertEqual(reverse("upload_batch_create"), "/photographer/uploads/batches/")
+        self.assertEqual(
+            reverse("upload_batch_resume_manifest", args=[batch]),
+            f"/photographer/uploads/{batch}/resume/",
+        )
         self.assertEqual(
             reverse("upload_items_register", args=[batch]),
             f"/photographer/uploads/{batch}/items/",
@@ -95,6 +100,104 @@ class UploadViewTests(TestCase):
         self.assertEqual(
             reverse("upload_batch_finalize", args=[batch]),
             f"/photographer/uploads/{batch}/finalize/",
+        )
+
+    def test_resume_manifest_returns_only_safe_matching_metadata(self) -> None:
+        batch_id, _ = self.create_batch(expected=2)
+        _, first = self.register_item(
+            batch_id,
+            filename="race.jpg",
+            last_modified_ms=1_722_500_123_456,
+            ambiguous_sha256="a" * 64,
+        )
+        _, second = self.register_item(
+            batch_id,
+            filename="finish.jpg",
+            last_modified_ms=1_722_500_123_457,
+        )
+        first_id = first.json()["items"][0]["id"]
+        second_id = second.json()["items"][0]["id"]
+        first_item = UploadItem.objects.get(pk=first_id)
+        photo = Photo.objects.create(
+            id=first_item.id.hex,
+            event=self.event,
+            uploaded_by=self.user,
+            original_key=first_item.final_key,
+            original_filename=first_item.original_filename,
+            original_size=first_item.expected_size,
+            original_content_type=first_item.declared_content_type,
+            uploaded_at=timezone.now(),
+        )
+        UploadItem.objects.filter(pk=first_id).update(
+            photo=photo,
+            status=UploadItem.Status.UPLOADED,
+            verified_source_etag="private-etag",
+        )
+
+        response = self.client.get(reverse("upload_batch_resume_manifest", args=[batch_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["batch"],
+            {
+                "id": str(batch_id),
+                "event": {"id": self.event.id, "name": self.event.name},
+                "expected_item_count": 2,
+            },
+        )
+        items = {item["id"]: item for item in response.json()["items"]}
+        self.assertEqual(
+            items[first_id],
+            {
+                "id": first_id,
+                "filename": "race.jpg",
+                "size": 4,
+                "last_modified_ms": 1_722_500_123_456,
+                "ambiguous_sha256": "a" * 64,
+                "status": "uploaded",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(
+            items[second_id],
+            {
+                "id": second_id,
+                "filename": "finish.jpg",
+                "size": 4,
+                "last_modified_ms": 1_722_500_123_457,
+                "ambiguous_sha256": None,
+                "status": "pending",
+                "confirmed": False,
+            },
+        )
+        body = response.content.decode()
+        for forbidden in (
+            "incoming_key",
+            "final_key",
+            "incoming/",
+            "originals/",
+            "etag",
+            "private-etag",
+            "original_key",
+            "photo",
+            "grant",
+            "credential",
+        ):
+            self.assertNotIn(forbidden, body)
+
+    def test_resume_manifest_hides_missing_batches_with_the_sanitized_envelope(self) -> None:
+        response = self.client.get(reverse("upload_batch_resume_manifest", args=[uuid4()]))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            {
+                "error": {
+                    "code": "not_found",
+                    "message": "The upload resource was not found.",
+                    "fields": {},
+                }
+            },
         )
 
     def test_batch_create_returns_exact_public_shape_and_accepts_draft_event(self) -> None:
@@ -127,6 +230,34 @@ class UploadViewTests(TestCase):
         serialized = json.dumps(created.json())
         self.assertNotIn("incoming", serialized)
         self.assertNotIn("originals", serialized)
+
+    def test_registration_accepts_optional_resume_metadata(self) -> None:
+        batch_id, _ = self.create_batch()
+        client_item_id, response = self.register_item(
+            batch_id,
+            last_modified_ms=1_722_500_123_456,
+            ambiguous_sha256="a" * 64,
+        )
+
+        self.assertEqual(response.status_code, 201)
+        item = UploadItem.objects.get(client_item_id=client_item_id)
+        self.assertEqual(item.client_last_modified_ms, 1_722_500_123_456)
+        self.assertEqual(item.ambiguous_sha256, "a" * 64)
+
+    def test_registration_rejects_invalid_resume_metadata(self) -> None:
+        batch_id, _ = self.create_batch()
+        invalid_values = (
+            {"last_modified_ms": -1},
+            {"last_modified_ms": 9_223_372_036_854_775_808},
+            {"last_modified_ms": 1_722_500_123_456, "ambiguous_sha256": "A" * 64},
+            {"ambiguous_sha256": "a" * 64},
+        )
+
+        for values in invalid_values:
+            with self.subTest(values=values):
+                _, response = self.register_item(batch_id, **values)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"]["code"], "validation_error")
 
     @patch("ingestion.views.PrivateUploadStorage")
     def test_authorize_is_only_response_with_signed_form(self, storage_class) -> None:

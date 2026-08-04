@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -11,7 +12,7 @@ from django.db import transaction
 from django.utils import timezone
 from picflow.models import Event
 
-from ingestion.models import UploadBatch, UploadItem
+from ingestion.models import MAX_POSTGRES_BIGINT, UploadBatch, UploadItem
 from ingestion.storage import (
     ObjectChanged,
     ObjectMismatch,
@@ -57,6 +58,8 @@ class ItemInput:
     filename: str
     content_type: str
     size: int
+    last_modified_ms: int | None = None
+    ambiguous_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +162,8 @@ def register_items(
                     original_filename=item_input.filename,
                     declared_content_type=item_input.content_type,
                     expected_size=item_input.size,
+                    client_last_modified_ms=item_input.last_modified_ms,
+                    ambiguous_sha256=item_input.ambiguous_sha256,
                     incoming_key=f"incoming/{batch.id}/{item_id}",
                     final_key=f"originals/{item_id.hex}",
                     last_activity_at=now,
@@ -446,6 +451,29 @@ def _validate_item_inputs(items: Sequence[ItemInput]) -> None:
             or not 1 <= item.size <= 52_428_800
         ):
             raise BatchConflict("invalid_size", "The JPEG file size is outside the allowed range.")
+        if item.last_modified_ms is not None and (
+            isinstance(item.last_modified_ms, bool)
+            or not isinstance(item.last_modified_ms, int)
+            or item.last_modified_ms < 0
+            or item.last_modified_ms > MAX_POSTGRES_BIGINT
+        ):
+            raise BatchConflict(
+                "invalid_last_modified_ms",
+                "The last-modified timestamp must be a non-negative millisecond value.",
+            )
+        if item.ambiguous_sha256 is not None and (
+            not isinstance(item.ambiguous_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", item.ambiguous_sha256) is None
+        ):
+            raise BatchConflict(
+                "invalid_ambiguous_sha256",
+                "The ambiguous-file fingerprint must be a lowercase SHA-256 value.",
+            )
+        if item.ambiguous_sha256 is not None and item.last_modified_ms is None:
+            raise BatchConflict(
+                "missing_last_modified_ms",
+                "A SHA-256 fingerprint requires a last-modified timestamp.",
+            )
 
 
 def _metadata_matches(row: UploadItem, item: ItemInput) -> bool:
@@ -453,6 +481,8 @@ def _metadata_matches(row: UploadItem, item: ItemInput) -> bool:
         row.original_filename == item.filename
         and row.declared_content_type == item.content_type
         and row.expected_size == item.size
+        and row.client_last_modified_ms == item.last_modified_ms
+        and row.ambiguous_sha256 == item.ambiguous_sha256
     )
 
 

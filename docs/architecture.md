@@ -82,6 +82,14 @@ The repository currently contains an early Django application:
   readiness without starting Django's mutating entrypoint. The web service remains stopped for an
   explicit restart after successful validation. This is not the service backup, retention, or
   disaster-recovery strategy.
+- The repository implements the consented selfie-search quality-feedback path governed by
+  [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md): browser-local seven-day selfie
+  preservation, one immutable feedback record per terminal search, optional saved-result labels,
+  explicit consent and contact validation, restricted audited staff inspection, and dedicated
+  private feedback storage with guarded 30-day lifecycle and deployment preflight commands. The
+  implementation is disabled by default (`SELFIE_FEEDBACK_ENABLED=False`); no environment
+  activation, published-policy gate, live bucket/KMS preflight, or customer-outcome evidence is
+  claimed yet.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
 - Staging's normal deployment uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and
   proxy the internal Django service. The canonical apex and `www` names route to that edge, with
@@ -163,8 +171,13 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   managed probe outside Yandex Cloud, as defined by
   [ADR 0018](adr/0018-use-managed-yandex-monitoring.md).
 - The `selfie_search` Django app and the existing worker implement public event-scoped selfie
-  search: the worker returns one transient query embedding, Django searches a frozen event cohort,
-  deletes the temporary selfie before terminal publication, and serves stable bearer-link results.
+  search: submission immediately creates the queued bearer-link result page; after the worker
+  returns one transient query embedding, Django loads and ranks the compatible event cohort once
+  without persisting per-face candidate rows, deletes the temporary selfie before terminal
+  publication, and serves stable immutable results. Searches created before this direct-ranking
+  change remain compatible with their already-persisted candidate rows. The direct path selects
+  only the six identity/vector fields needed for ranking and reads them in bounded database chunks;
+  it does not hydrate the full embedding, detection, attempt, and photo model graph.
   Staging activated this path on 2026-07-31 after applying the one-day `selfie-search/` lifecycle
   rule, passing real-bucket preflight, and verifying a live published Unicode event search,
   original-size result media, and paid-result-only media access. The repository default remains
@@ -176,6 +189,19 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
   signed direct Object Storage redirect transport is implemented for already authorized gallery and
   result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
+- Keep one consented quality-feedback record per terminal selfie search without delaying ADR 0019's
+  temporary-selfie cleanup. The repository implementation retains the selected file locally for
+  seven days, stores immutable feedback/contact/consent/labels in PostgreSQL, and stores one selfie
+  in a dedicated private KMS-encrypted bucket whose 30-day lifecycle is authoritative. Public media
+  routes and the ML worker cannot access feedback media, and staff access is explicit and audited,
+  as defined by [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md). The feature remains
+  disabled by default and has no staging or production activation evidence until its policy, bucket,
+  KMS, and live-preflight gates are satisfied.
+- The browser source boundary accepts JPEG, PNG, HEIC, and HEIF; Django bounds and decodes the
+  source, preserving JPEG/PNG or normalizing HEIC/HEIF to canonical JPEG bytes before temporary
+  storage and worker input. Stored objects and worker configuration remain canonical JPEG/PNG only,
+  with no source metadata propagated. This conforms to ADR 0019; its privacy, event-isolation,
+  bearer, and cleanup boundaries are unchanged.
 - Allow attachment delivery wherever an existing normal-gallery or ready-result context already
   authorizes an original, without adding a free-versus-paid branch or opening a normal paid gallery,
   as defined by [ADR 0021](adr/0021-allow-original-download-for-authorized-photos.md). Verified
@@ -185,6 +211,17 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
   transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
   future work.
+- Present normal galleries and ready selfie-search results as server-rendered numbered pages of at
+  most 100 photos. Normal galleries use original filename then photo ID order; ready results retain
+  persisted rank then photo ID order. [ADR 0022](adr/0022-use-numbered-gallery-pages.md) supersedes
+  only ADR 0020's cursor-pagination follow-up.
+- The deployment repository implements a bounded selfie-search operations slice: exact structured
+  application/worker events, privacy-redacted Nginx routing, persistent host journald policy capped
+  at 14 days and 1 GiB, stable Compose journal tags, and a daily Moscow-time summary timer. The
+  deployment entrypoint reconciles and verifies these managed files with exact rollback. This is
+  repository verification only; staging activation evidence is not yet recorded. Journald is
+  operational evidence, not a product-data backup. Dashboards, alert delivery, central/cloud
+  logging, and biometric-quality benchmarking remain proposed or excluded.
 
 ## Deployment domain assignment — accepted
 
@@ -204,13 +241,13 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Module | Responsibility | Status |
 | --- | --- | --- |
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
-| Ingestion | Photographer permissions, request-driven batch upload, object promotion, upload state | Proposed |
+| Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
 | Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals and preview-first slice; remaining scope proposed |
 | Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed; preview-backed worker input/persistence contract is implemented but not activated |
 | Search | Event-scoped face/bib/time/location queries | Public face search implemented locally with activation pending; remaining modes proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
 | Commerce | Cart, promotions, orders, payment state, download entitlement | Proposed |
-| Operations | Processing visibility, structured logs, health and backups | Proposed |
+| Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
 transactional state. Background processing and specialized ML runtimes may use separate containers
@@ -240,7 +277,11 @@ broker, vector engine, and ML implementations shown for later processing require
 ### Photo ingestion and indexing
 
 1. An authorized photographer creates a batch for any event. The photographer may access only their
-   own batches; superusers retain administrative visibility.
+   own batches; superusers retain administrative visibility. PostgreSQL preserves unfinished batch
+   and item state, so an open upload page can list the photographer's unfinished batches and, after
+   explicit reselection of local files, reconstruct its browser queue while skipping server-confirmed
+   items. Closing the page still stops unfinished browser transfers; it does not retain local-file
+   access or continue transfer in the background.
 2. A browser-managed queue uploads files with bounded concurrency to generated keys in a private
    incoming prefix using constrained 10-minute presigned POST grants.
 3. In a confirmation request, Django verifies the incoming object and binds validation and
@@ -320,6 +361,10 @@ preflight, exact rollout-image smoke, VM capacity smoke, or environment activati
   and the immutable result is accessible through a non-expiring bearer link. Broader consent,
   revocation, suppression, moderation, and incident handling remain required before named
   identity, cross-event matching, or broader biometric reuse.
+- ADR 0023 accepts the narrower feedback-specific consent and retention boundary: one immutable
+  quality report may retain plaintext contact, consent evidence, search labels, and a lifecycle-
+  bounded private feedback selfie. It does not authorize named identity, automated training,
+  cross-event reuse, or a general biometric consent ledger.
 - Face results are probable matches, not identity assertions. Users and operators need removal and
   suppression workflows.
 - Payment callbacks must be authenticated and idempotent; download authorization is derived from

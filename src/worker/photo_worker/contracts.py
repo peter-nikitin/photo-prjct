@@ -604,7 +604,7 @@ class ClaimedJob:
             "download_url",
             "download_expires_at",
         }
-        selfie_fields = photo_fields - {"photo_id", "event_id", "run_id"} | {"search_id"}
+        selfie_fields = photo_fields - {"photo_id", "run_id"} | {"search_id"}
         if not isinstance(value, dict):
             raise ContractError("invalid claimed job")
         version = value.get("contract_version")
@@ -628,6 +628,7 @@ class ClaimedJob:
                 and _uuid_string(value["id"])
                 and _uuid_string(value["attempt_id"])
                 and _uuid_string(value["search_id"])
+                and _photo_identifier(value["event_id"])
                 and limits.max_bytes == selfie_fingerprint.temporary_size
                 and limits.content_type == selfie_fingerprint.temporary_content_type
                 and limits.max_bytes <= SELFIE_MAX_INPUT_BYTES
@@ -636,7 +637,8 @@ class ClaimedJob:
                 and _utc_timestamp(value["download_expires_at"])
                 and _download_url(value["download_url"])
             )
-            photo_id = event_id = run_id = None
+            photo_id = run_id = None
+            event_id = cast(str, value["event_id"])
             search_id = cast(str, value["search_id"])
             fingerprint: InputFingerprint | SelfieInputFingerprint = selfie_fingerprint
         else:

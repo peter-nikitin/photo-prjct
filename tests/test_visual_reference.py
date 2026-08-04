@@ -81,3 +81,7 @@ def test_event_header_routes_preserve_their_pre_gallery_visual_contract() -> Non
 
 def test_visual_settings_allow_local_test_clients() -> None:
     assert {"localhost", "127.0.0.1", "testserver"} <= set(visual_settings.ALLOWED_HOSTS)
+
+
+def test_visual_settings_disable_the_real_metrika_counter() -> None:
+    assert visual_settings.YANDEX_METRIKA_COUNTER_ID is None

@@ -45,20 +45,27 @@
       </div>
     </div>
     {% if selfie_search_form %}
-      <section class="selfie-search" aria-labelledby="selfie-search-title">
+      <section id="selfie-search" class="selfie-search" aria-labelledby="selfie-search-title">
         <h2 id="selfie-search-title">Найти мои фото</h2>
         <p>Мы ищем вероятные совпадения только среди фотографий этого события.</p>
+        <p>Загрузите чёткую фотографию, где лицо хорошо видно. Лучше использовать фото с дня мероприятия, особенно если на мероприятии вы были в очках или головном уборе.</p>
         <ul class="selfie-search-disclosures">
           <li>Селфи удаляется после подготовки поиска.</li>
           <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
         </ul>
-        <form data-selfie-search-form action="{% url 'selfie_search:submit' event_slug=event.slug %}" method="post" enctype="multipart/form-data">
+        <form data-selfie-search-form data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" action="{% url 'selfie_search:submit' event_slug=event.slug %}#selfie-search" method="post" enctype="multipart/form-data">
           {% csrf_token %}
+          {% if selfie_feedback_enabled %}<input type="hidden" name="feedback_correlation" value="">{% endif %}
+          {% if selfie_search_form.non_field_errors or selfie_search_form.selfie.errors %}
+            <div id="selfie-search-error" class="selfie-search-error" data-selfie-search-error role="alert" tabindex="-1">
+              {% for error in selfie_search_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+              {% if not selfie_search_form.non_field_errors %}
+                {% for error in selfie_search_form.selfie.errors %}<p>{{ error }}</p>{% endfor %}
+              {% endif %}
+            </div>
+          {% endif %}
           <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
           {{ selfie_search_form.selfie }}
-          {% if selfie_search_form.selfie.errors %}
-            <div role="alert">{{ selfie_search_form.selfie.errors }}</div>
-          {% endif %}
           <button class="button" type="submit">Найти мои фото</button>
         </form>
       </section>
@@ -72,7 +79,7 @@
         <div class="event-gallery-grid">
           {% for photo in gallery_photos %}
             <figure class="gallery-card">
-              <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" data-type="image" data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}">Скачать оригинал</a>' aria-label="Открыть: {{ photo.alt }}">
+              <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="event-photos" data-type="image" data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал"><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg></a>' aria-label="Открыть: {{ photo.alt }}">
                 {% if forloop.counter <= 4 %}
                   <img src="{{ photo.preview_media_small.url }}" loading="eager" fetchpriority="high" alt="{{ photo.alt }}">
                 {% else %}
@@ -87,8 +94,8 @@
             </figure>
           {% endfor %}
         </div>
-        {% if gallery_next_cursor %}
-          <a class="event-gallery-next" href="{% url 'event_detail' slug=event.slug %}?cursor={{ gallery_next_cursor|urlencode }}" aria-label="Загрузить следующие фотографии"></a>
+        {% if gallery_page.paginator.num_pages > 1 %}
+          {% include "ui/gallery_pagination.html" with pagination_page=gallery_page pagination_label="Страницы галереи" %}
         {% endif %}
       {% else %}
         <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>

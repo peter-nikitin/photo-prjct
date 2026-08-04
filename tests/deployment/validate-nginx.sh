@@ -57,12 +57,14 @@ request_status() {
     request_host="$2"
     request_port="$3"
     request_path="$4"
+    shift 4
 
     curl --silent --insecure --max-time 5 --noproxy '*' \
         --resolve "$request_host:$request_port:127.0.0.1" \
         --dump-header "$header_file" \
         --output /dev/null \
         --write-out '%{http_code}' \
+        "$@" \
         "https://$request_host:$request_port$request_path" || true
 }
 
@@ -76,20 +78,54 @@ exercise_bearer_error_logging() {
     container_log="$runtime_log_dir/container.log"
     bearer_headers="$runtime_log_dir/bearer.headers"
     non_bearer_headers="$runtime_log_dir/non-bearer.headers"
+    submission_headers="$runtime_log_dir/submission.headers"
+    submission_post_headers="$runtime_log_dir/submission-post.headers"
+    status_headers="$runtime_log_dir/status.headers"
+    media_headers="$runtime_log_dir/media.headers"
+    download_headers="$runtime_log_dir/download.headers"
+    bearer_4xx_headers="$runtime_log_dir/bearer-4xx.headers"
+    internal_headers="$runtime_log_dir/internal.headers"
+    event_headers="$runtime_log_dir/event.headers"
+    static_headers="$runtime_log_dir/static.headers"
+    request_body="$runtime_log_dir/request-body.bin"
+    runtime_rendered="$runtime_log_dir/runtime.conf"
     bearer_token="bearer-log-token-$name-$$"
-    bearer_path="/events/runtime/selfie-search/$bearer_token/"
-    non_bearer_path="/runtime-proxy-check-$name"
+    sentinel_client_ip="sentinel-client-ip-$name"
+    sentinel_referrer="https://sentinel-referrer.invalid/$name"
+    sentinel_user_agent="sentinel-user-agent/$name"
+    sentinel_tracking="sentinel-tracking-$name"
+    sentinel_request_body="sentinel-request-body-$name"
+    ordinary_referrer="https://ordinary-referrer.invalid/$name"
+    ordinary_user_agent="ordinary-user-agent/$name"
+    submission_path="/events/runtime/selfie-search/?utm_source=$sentinel_tracking&fbclid=$sentinel_tracking"
+    bearer_result_path="/events/runtime/selfie-search/$bearer_token/?utm_source=$sentinel_tracking"
+    bearer_status_path="/events/runtime/selfie-search/$bearer_token/status/?$sentinel_tracking=1"
+    bearer_media_path="/events/runtime/selfie-search/$bearer_token/media/photo.jpg?download=$sentinel_tracking"
+    bearer_download_path="/events/runtime/selfie-search/$bearer_token/download/original?ref=$sentinel_tracking"
+    ordinary_path="/runtime-proxy-check-$name?ordinary=ordinary-query-$name"
+    internal_path="/internal/photo-processing/"
 
     mkdir -p "$runtime_log_dir"
     : > "$access_log"
     : > "$error_log"
+    printf '%s' "$sentinel_request_body" > "$request_body"
+    dd if=/dev/zero bs=1024 count=64 >> "$request_body" 2>/dev/null
+    awk '
+        index($0, "location ~ ^/events/[^/]+/selfie-search/$ {") ||
+        index($0, "location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {") {
+            print
+            print "        client_max_body_size 1k;"
+            next
+        }
+        { print }
+    ' "$rendered" > "$runtime_rendered"
     runtime_container="nginx-bearer-privacy-$name-$$"
 
     docker run --detach \
         --name "$runtime_container" \
         --add-host web:127.0.0.1 \
         --publish 127.0.0.1::443 \
-        --volume "$rendered:/etc/nginx/conf.d/default.conf:ro" \
+        --volume "$runtime_rendered:/etc/nginx/conf.d/default.conf:ro" \
         --volume "$tmp_dir/letsencrypt:/etc/letsencrypt:ro" \
         --volume "$runtime_log_dir:/var/log/nginx" \
         --entrypoint nginx \
@@ -108,7 +144,9 @@ exercise_bearer_error_logging() {
     bearer_status=""
     attempt=1
     while [ "$attempt" -le 10 ]; do
-        bearer_status="$(request_status "$bearer_headers" findme-photo.ru "$runtime_port" "$bearer_path")"
+        bearer_status="$(request_status "$bearer_headers" findme-photo.ru "$runtime_port" "$bearer_result_path" \
+            --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+            --user-agent "$sentinel_user_agent")"
         if [ "$bearer_status" = 502 ]; then
             break
         fi
@@ -122,7 +160,51 @@ exercise_bearer_error_logging() {
     fi
     assert_no_referrer_header "$bearer_headers"
 
-    non_bearer_status="$(request_status "$non_bearer_headers" findme-photo.ru "$runtime_port" "$non_bearer_path")"
+    submission_status="$(request_status "$submission_headers" findme-photo.ru "$runtime_port" "$submission_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent")"
+    if [ "$submission_status" != 502 ]; then
+        echo "$name exact submission proxy returned $submission_status instead of 502" >&2
+        docker logs "$runtime_container" >&2 || true
+        exit 1
+    fi
+
+    submission_post_status="$(request_status "$submission_post_headers" findme-photo.ru "$runtime_port" "$submission_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent" --request POST --data-binary "@$request_body")"
+    if [ "$submission_post_status" != 413 ]; then
+        echo "$name buffered submission returned $submission_post_status instead of 413" >&2
+        docker logs "$runtime_container" >&2 || true
+        exit 1
+    fi
+
+    bearer_4xx_status="$(request_status "$bearer_4xx_headers" findme-photo.ru "$runtime_port" "$bearer_result_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent" --request POST --data-binary "@$request_body")"
+    if [ "$bearer_4xx_status" != 413 ]; then
+        echo "$name buffered bearer request returned $bearer_4xx_status instead of 413" >&2
+        docker logs "$runtime_container" >&2 || true
+        exit 1
+    fi
+
+    status_status="$(request_status "$status_headers" findme-photo.ru "$runtime_port" "$bearer_status_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent")"
+    media_status="$(request_status "$media_headers" findme-photo.ru "$runtime_port" "$bearer_media_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent")"
+    download_status="$(request_status "$download_headers" findme-photo.ru "$runtime_port" "$bearer_download_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent")"
+    if [ "$status_status" != 502 ] || [ "$media_status" != 502 ] || [ "$download_status" != 502 ]; then
+        echo "$name bearer result/status/media/download did not return 502" >&2
+        docker logs "$runtime_container" >&2 || true
+        exit 1
+    fi
+
+    non_bearer_status="$(request_status "$non_bearer_headers" findme-photo.ru "$runtime_port" "$ordinary_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $ordinary_referrer" \
+        --user-agent "$ordinary_user_agent")"
     if [ "$non_bearer_status" != 502 ]; then
         echo "$name non-bearer proxy returned $non_bearer_status instead of 502" >&2
         docker logs "$runtime_container" >&2 || true
@@ -130,33 +212,134 @@ exercise_bearer_error_logging() {
     fi
     assert_same_origin_referrer_header "$non_bearer_headers"
 
+    event_path="/events/runtime/page/$name?ordinary=event-query-$name"
+    event_status="$(request_status "$event_headers" findme-photo.ru "$runtime_port" "$event_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $ordinary_referrer" \
+        --user-agent "$ordinary_user_agent")"
+    if [ "$event_status" != 502 ]; then
+        echo "$name ordinary event request returned $event_status instead of 502" >&2
+        exit 1
+    fi
+
+    static_path="/static/runtime-check-$name.css?ordinary=static-query-$name"
+    static_status="$(request_status "$static_headers" findme-photo.ru "$runtime_port" "$static_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $ordinary_referrer" \
+        --user-agent "$ordinary_user_agent")"
+    if [ "$static_status" != 502 ]; then
+        echo "$name ordinary static request returned $static_status instead of 502" >&2
+        exit 1
+    fi
+
+    internal_status="$(request_status "$internal_headers" findme-photo.ru "$runtime_port" "$internal_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent")"
+    if [ "$internal_status" != 404 ]; then
+        echo "$name private processing path returned $internal_status instead of 404" >&2
+        exit 1
+    fi
+
     if [ -n "$alias" ]; then
         alias_headers="$runtime_log_dir/alias.headers"
-        alias_status="$(request_status "$alias_headers" "$alias" "$runtime_port" "$bearer_path")"
+        alias_status="$(request_status "$alias_headers" "$alias" "$runtime_port" "$bearer_result_path" \
+            --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+            --user-agent "$sentinel_user_agent")"
         if [ "$alias_status" != 308 ]; then
             echo "$name alias bearer redirect returned $alias_status instead of 308" >&2
             exit 1
         fi
-        if ! tr -d '\r' < "$alias_headers" | grep -Fxiq "Location: https://findme-photo.ru$bearer_path"; then
+        if ! tr -d '\r' < "$alias_headers" | grep -Fxiq "Location: https://findme-photo.ru$bearer_result_path"; then
             echo "$name alias bearer redirect changed its canonical target" >&2
             exit 1
         fi
         assert_no_referrer_header "$alias_headers"
+
+        alias_submission_headers="$runtime_log_dir/alias-submission.headers"
+        alias_submission_status="$(request_status "$alias_submission_headers" "$alias" "$runtime_port" "$submission_path" \
+            --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+            --user-agent "$sentinel_user_agent")"
+        if [ "$alias_submission_status" != 308 ]; then
+            echo "$name alias submission redirect returned $alias_submission_status instead of 308" >&2
+            exit 1
+        fi
+        if ! tr -d '\r' < "$alias_submission_headers" | grep -Fxiq "Location: https://findme-photo.ru$submission_path"; then
+            echo "$name alias submission redirect changed its canonical target" >&2
+            exit 1
+        fi
+        assert_no_referrer_header "$alias_submission_headers"
     fi
 
     docker logs "$runtime_container" > "$container_log" 2>&1 || true
 
-    if ! grep -Fq "$non_bearer_path" "$access_log"; then
+    if ! grep -Fq "$ordinary_path" "$access_log"; then
         echo "$name non-bearer request did not use the normal access log" >&2
         exit 1
     fi
-    if ! grep -Fq "$non_bearer_path" "$error_log"; then
+    if ! grep -Fq "$event_path" "$access_log" || ! grep -Fq "$static_path" "$access_log"; then
+        echo "$name ordinary event/static requests did not use the normal access log" >&2
+        exit 1
+    fi
+    if grep -F "$event_path" "$access_log" | grep -Fq '<selfie-search>' || \
+       grep -F "$static_path" "$access_log" | grep -Fq '<selfie-search>'; then
+        echo "$name ordinary event/static requests used the selfie placeholder" >&2
+        exit 1
+    fi
+    if ! grep -Fq "$ordinary_referrer" "$access_log" || \
+       ! grep -Fq "$ordinary_user_agent" "$access_log"; then
+        echo "$name ordinary access log dropped existing referrer or user-agent fields" >&2
+        exit 1
+    fi
+    if ! grep -Fq "$ordinary_path" "$error_log"; then
         echo "$name non-bearer upstream failure did not use the normal error log" >&2
         exit 1
     fi
+
+    selfie_access_log="$runtime_log_dir/selfie-access.log"
+    grep -F '<selfie-search>' "$access_log" > "$selfie_access_log" || true
+    if [ ! -s "$selfie_access_log" ]; then
+        echo "$name did not write redacted selfie access lines" >&2
+        exit 1
+    fi
+    if ! awk '!/^-[[:space:]]+-[[:space:]]+-[[:space:]]+\[/{ exit 1 }' "$selfie_access_log"; then
+        echo "$name selfie access line did not start with fixed client/user placeholders" >&2
+        cat "$selfie_access_log" >&2
+        exit 1
+    fi
+    ordinary_client_address="$(awk -v needle="$ordinary_path" 'index($0, needle) { print $1; exit }' "$access_log")"
+    case "$ordinary_client_address" in
+        ''|'-')
+            echo "$name ordinary access line did not retain a real client address" >&2
+            exit 1
+            ;;
+    esac
+    if grep -Fq "$ordinary_client_address" "$selfie_access_log"; then
+        echo "$name selfie access lines retained the ordinary client address" >&2
+        exit 1
+    fi
+    if grep -E '"(GET|POST) <selfie-search>" [45][0-9]{2} [0-9]+ "-" "-" [0-9]+\.[0-9]{3}$' "$selfie_access_log" >/dev/null; then
+        :
+    else
+        echo "$name selfie access line omitted the fixed fields or request duration" >&2
+        cat "$selfie_access_log" >&2
+        exit 1
+    fi
+    for selfie_log in "$selfie_access_log" "$error_log" "$container_log"; do
+        if grep -Fq "$submission_path" "$selfie_log" || \
+           grep -Fq "$bearer_token" "$selfie_log" || \
+           grep -Fq "$sentinel_tracking" "$selfie_log" || \
+           grep -Fq "$sentinel_referrer" "$selfie_log" || \
+           grep -Fq "$sentinel_user_agent" "$selfie_log" || \
+           grep -Fq "$sentinel_client_ip" "$selfie_log" || \
+           grep -Fq "$sentinel_request_body" "$selfie_log"; then
+            echo "$name persisted private metadata in $(basename "$selfie_log")" >&2
+            cat "$selfie_log" >&2 || true
+            exit 1
+        fi
+    done
     for log_file in "$access_log" "$error_log" "$container_log"; do
-        if grep -Fq "$bearer_token" "$log_file"; then
-            echo "$name persisted a bearer token in $(basename "$log_file")" >&2
+        if grep -Fq "$bearer_token" "$log_file" || \
+           grep -Fq "$sentinel_client_ip" "$log_file" || \
+           grep -Fq "$sentinel_request_body" "$log_file"; then
+            echo "$name persisted a bearer token, client identity, or request body in $(basename "$log_file")" >&2
             exit 1
         fi
     done
@@ -251,22 +434,29 @@ validate_variant() {
         echo "$name private listener must proxy only health and metrics" >&2
         exit 1
     fi
+    grep -Fq 'map $uri $selfie_search_access_client_address {' "$rendered"
+    grep -Fq 'map $uri $selfie_search_access_remote_user {' "$rendered"
     grep -Fq 'map $uri $selfie_search_access_request {' "$rendered"
     grep -Fq 'map $uri $selfie_search_access_referrer {' "$rendered"
     grep -Fq 'map $uri $selfie_search_access_user_agent {' "$rendered"
+    grep -Fq '~^/events/[^/]+/selfie-search/$ "$request_method <selfie-search>";' "$rendered"
     grep -Fq '"$request_method <selfie-search>"' "$rendered"
     grep -Fq 'log_format selfie_search_safe' "$rendered"
+    grep -Fq "log_format selfie_search_safe '\$selfie_search_access_client_address - \$selfie_search_access_remote_user" "$rendered"
+    grep -Fq 'body_bytes_sent' "$rendered"
+    grep -Fq ' $request_time' "$rendered"
     grep -Fq 'proxy_hide_header Referrer-Policy;' "$rendered"
     grep -Fq 'add_header Referrer-Policy "same-origin" always;' "$rendered"
     grep -Fq 'add_header Referrer-Policy "no-referrer" always;' "$rendered"
+    grep -Fq 'location ~ ^/events/[^/]+/selfie-search/$ {' "$rendered"
     grep -Fq 'location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {' "$rendered"
     grep -Fq 'error_log /dev/null emerg;' "$rendered"
     expected_access_logs=5
-    expected_bearer_error_logs=1
+    expected_bearer_error_logs=2
     if [ -n "$alias" ]; then
         grep -Fq "server_name $alias;" "$rendered"
         expected_access_logs=6
-        expected_bearer_error_logs=2
+        expected_bearer_error_logs=4
     elif grep -Fq 'server_name www.findme-photo.ru;' "$rendered"; then
         echo "$name retained the optional alias server" >&2
         exit 1
@@ -293,6 +483,11 @@ validate_variant() {
 
 validate_variant alias www.findme-photo.ru
 validate_variant no-alias ""
+
+docker run --rm \
+    --add-host web:127.0.0.1 \
+    -v "$root_dir/deploy/nginx/staging.conf:/etc/nginx/conf.d/default.conf:ro" \
+    nginx:1.27-alpine nginx -t
 
 expect_render_rejected() {
     name="$1"

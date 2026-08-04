@@ -6,10 +6,30 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}FindMe Photo{% endblock %}</title>
+    <link rel="icon" href="{% static 'ui/favicon.svg' %}" type="image/svg+xml">
     <link rel="stylesheet" href="{% static 'ui/design-system.css' %}">
     {% block extra_css %}{% endblock %}
+    {% if yandex_metrika_counter_id is not None %}
+      <script>
+        (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};m[i].l=1*new Date();for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r){return}}k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})(window, document, "script", "https://mc.yandex.ru/metrika/tag.js?id={{ yandex_metrika_counter_id }}", "ym");
+
+        ym({{ yandex_metrika_counter_id }}, "init", {
+          ssr: true,
+          webvisor: true,
+          clickmap: true,
+          ecommerce: "dataLayer",
+          referrer: document.referrer,
+          url: location.href,
+          accurateTrackBounce: true,
+          trackLinks: true,
+        });
+      </script>
+    {% endif %}
   </head>
   <body class="{% block body_class %}{% endblock %}">
+    {% if yandex_metrika_counter_id is not None %}
+      <noscript><div><img src="https://mc.yandex.ru/watch/{{ yandex_metrika_counter_id }}" style="position:absolute; left:-9999px;" alt=""></div></noscript>
+    {% endif %}
     <a class="skip-link" href="#main-content">Перейти к содержанию</a>
     <div class="site-shell">
       <header class="topbar">
@@ -47,6 +67,12 @@
         {% block content %}{% endblock %}
       </main>
     </div>
+    <aside class="cookie-notice" data-cookie-notice aria-label="Использование файлов cookie">
+      <p>Мы используем файлы cookie, чтобы обеспечить работу нашего сайта и проанализировать его использование. Продолжая использовать этот сайт, вы даете согласие на использование файлов cookie.</p>
+      <a href="{% static 'ui/legal/personal-data-policy.pdf' %}">Политика обработки персональных данных</a>
+      <button class="button" type="button" data-cookie-notice-accept>OK</button>
+    </aside>
+    <script src="{% static 'ui/cookie-notice.js' %}" defer></script>
     {% block extra_js %}{% endblock %}
   </body>
 </html>

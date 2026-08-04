@@ -262,6 +262,42 @@ textarea {
   padding-block: clamp(32px, 6vw, 76px) 72px;
 }
 
+.cookie-notice {
+  position: fixed;
+  z-index: 40;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  width: min(calc(100% - 36px), 720px);
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 18px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.cookie-notice[hidden] {
+  display: none;
+}
+
+.cookie-notice p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.cookie-notice a {
+  width: fit-content;
+  font-weight: 750;
+}
+
+.cookie-notice .button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .eyebrow {
   margin-bottom: 14px;
   color: var(--teal);
@@ -318,6 +354,18 @@ textarea {
 
   .page-shell {
     width: min(100% - 28px, var(--content-width));
+  }
+
+  .cookie-notice {
+    right: 14px;
+    bottom: 14px;
+    width: calc(100% - 28px);
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .cookie-notice .button {
+    width: 100%;
   }
 }
 

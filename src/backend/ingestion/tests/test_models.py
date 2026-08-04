@@ -105,3 +105,29 @@ class UploadModelTests(TestCase):
             item.full_clean()
         with self.assertRaises(IntegrityError), transaction.atomic():
             item.save()
+
+    def test_resume_metadata_persists_when_supplied(self) -> None:
+        batch = self.make_batch()
+        batch.save()
+        item = self.make_item(
+            batch,
+            client_last_modified_ms=1_722_500_123_456,
+            ambiguous_sha256="a" * 64,
+        )
+
+        item.save()
+        item.refresh_from_db()
+
+        self.assertEqual(item.client_last_modified_ms, 1_722_500_123_456)
+        self.assertEqual(item.ambiguous_sha256, "a" * 64)
+
+    def test_legacy_item_allows_null_resume_metadata(self) -> None:
+        batch = self.make_batch()
+        batch.save()
+        item = self.make_item(batch)
+
+        item.save()
+        item.refresh_from_db()
+
+        self.assertIsNone(item.client_last_modified_ms)
+        self.assertIsNone(item.ambiguous_sha256)

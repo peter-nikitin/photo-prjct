@@ -2,14 +2,16 @@ import hashlib
 import json
 from datetime import date
 from io import BytesIO
+from pathlib import Path
 from struct import pack
 from unittest.mock import patch
 from zlib import crc32
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import IntegrityError
+from django.db import IntegrityError, connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import StorageUnavailable
@@ -31,8 +33,21 @@ from processing.services.enrollment import (
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
 )
+from selfie_search.images import PreparedSelfie, prepare_selfie_image
 from selfie_search.models import SelfieSearch, SelfieSearchCandidate, SelfieSearchJob
-from selfie_search.services.submission import resolve_public_search, submit_selfie_search
+from selfie_search.services.jobs import (
+    ClaimedSearchJob,
+    claim_search_job,
+    complete_search_attempt,
+)
+from selfie_search.services.submission import (
+    _configuration as submission_configuration,
+)
+from selfie_search.services.submission import (
+    compatible_search_candidates,
+    resolve_public_search,
+    submit_selfie_search,
+)
 
 
 class RecordingStorage:
@@ -60,6 +75,17 @@ def valid_upload() -> SimpleUploadedFile:
     content = BytesIO()
     Image.new("RGB", (8, 8), color="white").save(content, format="JPEG")
     return SimpleUploadedFile("selfie.jpg", content.getvalue(), content_type="image/jpeg")
+
+
+def valid_selfie() -> PreparedSelfie:
+    return prepare_selfie_image(valid_upload())
+
+
+def heic_selfie() -> PreparedSelfie:
+    content = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
+    return prepare_selfie_image(
+        SimpleUploadedFile("iphone.heic", content, content_type="image/heic")
+    )
 
 
 def decompression_bomb_upload() -> SimpleUploadedFile:
@@ -103,6 +129,7 @@ class SubmissionTests(TestCase):
         photo_id: str,
         model: str = "sface",
         dimensions: int = 128,
+        vector: list[float] | None = None,
         accepted: bool = True,
         contract_version: int = CONTRACT_VERSION,
         processor_version: int = FACE_EMBEDDING_PROCESSOR_VERSION,
@@ -173,12 +200,15 @@ class SubmissionTests(TestCase):
             artifact=artifact, attempt=attempt, face_index=0, status=PhotoFaceDetection.Status.KEPT
         )
         return FaceEmbedding.objects.create(
-            detection=detection, model_version=model, vector=[0.0] * dimensions, metadata={}
+            detection=detection,
+            model_version=model,
+            vector=vector if vector is not None else [0.0] * dimensions,
+            metadata={},
         )
 
-    def test_published_free_and_paid_events_freeze_both_approved_face_generations(self) -> None:
-        legacy = self.make_eligible_embedding(event=self.event, photo_id="legacy")
-        preview = self.make_eligible_embedding(
+    def test_published_free_and_paid_events_queue_without_freezing_face_candidates(self) -> None:
+        self.make_eligible_embedding(event=self.event, photo_id="legacy")
+        self.make_eligible_embedding(
             event=self.event,
             photo_id="preview",
             contract_version=PREVIEW_CONTRACT_VERSION,
@@ -215,20 +245,14 @@ class SubmissionTests(TestCase):
         self.make_eligible_embedding(event=self.paid_event, photo_id="e")
         storage = RecordingStorage()
 
-        created = submit_selfie_search(event=self.event, upload=valid_upload(), storage=storage)
-        paid = submit_selfie_search(event=self.paid_event, upload=valid_upload(), storage=storage)
+        created = submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
+        paid = submit_selfie_search(event=self.paid_event, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(SelfieSearchJob.objects.filter(search=created.search).count(), 1)
-        self.assertCountEqual(
-            list(
-                SelfieSearchCandidate.objects.filter(search=created.search).values_list(
-                    "embedding_id", flat=True
-                )
-            ),
-            [legacy.id, preview.id],
-        )
-        self.assertEqual(created.search.eligible_photo_count, 2)
-        self.assertEqual(created.search.eligible_face_count, 2)
+        self.assertFalse(SelfieSearchCandidate.objects.filter(search=created.search).exists())
+        self.assertFalse(SelfieSearchCandidate.objects.filter(search=paid.search).exists())
+        self.assertEqual(created.search.eligible_photo_count, 0)
+        self.assertEqual(created.search.eligible_face_count, 0)
         generations = created.search.configuration["gallery_face_embedding_generations"]
         self.assertEqual(
             [
@@ -261,11 +285,101 @@ class SubmissionTests(TestCase):
         self.assertEqual(created.search.configuration["embedding_dimensions"], 128)
         self.assertEqual(paid.search.event_id, self.paid_event.id)
 
+    def test_successful_worker_callback_ranks_without_persisting_candidates(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="async-candidate",
+            vector=[1.0] + [0.0] * 127,
+        )
+        storage = RecordingStorage()
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="a" * 64,
+            temporary_object_key="selfie-search/async-callback",
+            configuration=submission_configuration(
+                content_type="image/jpeg",
+                content_size=1024,
+            ),
+        )
+        SelfieSearchJob.objects.create(search=search, configuration=search.configuration)
+        claimed = claim_search_job(
+            contract_version=1,
+            processor_type="selfie_query",
+            processor_version=1,
+            worker_build="worker-test",
+        )
+        self.assertIsInstance(claimed, ClaimedSearchJob)
+        assert isinstance(claimed, ClaimedSearchJob)
+
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            complete_search_attempt(
+                claimed.attempt.id,
+                result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
+                storage=storage,
+            )
+        search.refresh_from_db()
+
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.eligible_photo_count, 1)
+        self.assertEqual(search.eligible_face_count, 1)
+        self.assertFalse(search.candidates.exists())
+        self.assertEqual(
+            list(search.results.values_list("detection__embedding", flat=True)),
+            [embedding.id],
+        )
+        self.assertEqual(search.matched_photo_count, 1)
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
+        self.assertEqual(ranking["eligible_photo_count"], 1)
+        self.assertEqual(ranking["eligible_face_count"], 1)
+        self.assertEqual(ranking["matched_photo_count"], 1)
+
+    def test_stores_only_prepared_canonical_bytes_and_type_for_a_heic_source(self) -> None:
+        selfie = heic_selfie()
+        source = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
+        storage = RecordingStorage()
+
+        created = submit_selfie_search(event=self.event, selfie=selfie, storage=storage)
+
+        self.assertEqual(storage.objects[next(iter(storage.objects))], selfie.content)
+        self.assertNotEqual(storage.objects[next(iter(storage.objects))], source)
+        self.assertEqual(created.search.configuration["content_type"], "image/jpeg")
+        self.assertEqual(created.search.configuration["content_size"], len(selfie.content))
+        configuration = json.dumps(created.search.configuration)
+        self.assertNotIn("source_format", configuration)
+        self.assertNotIn("source_size", configuration)
+        self.assertNotIn("image/heic", configuration)
+
+    def test_compatible_cohort_selects_only_fields_needed_for_ranking(self) -> None:
+        self.make_eligible_embedding(
+            event=self.event,
+            photo_id="lightweight-candidate",
+            vector=[1.0] + [0.0] * 127,
+        )
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="f" * 64,
+            temporary_object_key="selfie-search/lightweight",
+            configuration=submission_configuration(content_type="image/jpeg", content_size=1),
+            configuration_hash="f" * 64,
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            candidates = compatible_search_candidates(search)
+
+        cohort_sql = next(
+            query["sql"] for query in queries if 'FROM "processing_faceembedding"' in query["sql"]
+        )
+        self.assertNotIn('"processing_faceembedding"."metadata"', cohort_sql)
+        self.assertNotIn('"processing_photofacedetection"."geometry"', cohort_sql)
+        self.assertNotIn('"processing_processingattempt"."input_fingerprint"', cohort_sql)
+        self.assertEqual(candidates[0].photo_id, "lightweight-candidate")
+
     def test_draft_event_is_rejected_without_upload_or_search(self) -> None:
         storage = RecordingStorage()
 
         with self.assertRaises(ValueError):
-            submit_selfie_search(event=self.draft, upload=valid_upload(), storage=storage)
+            submit_selfie_search(event=self.draft, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(storage.objects, {})
         self.assertFalse(SelfieSearch.objects.filter(event=self.draft).exists())
@@ -273,7 +387,7 @@ class SubmissionTests(TestCase):
     def test_stores_only_a_sha256_digest_of_a_random_bearer_token(self) -> None:
         storage = RecordingStorage()
 
-        created = submit_selfie_search(event=self.event, upload=valid_upload(), storage=storage)
+        created = submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(len(created.public_token), 43)
         self.assertEqual(len(created.search.public_token_digest), 64)
@@ -291,7 +405,7 @@ class SubmissionTests(TestCase):
             side_effect=IntegrityError,
         ):
             with self.assertRaises(IntegrityError):
-                submit_selfie_search(event=self.event, upload=valid_upload(), storage=storage)
+                submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(storage.objects, {})
         self.assertEqual(len(storage.deleted), 1)
@@ -309,6 +423,32 @@ class SubmissionTests(TestCase):
             response["Location"], rf"^/events/{self.event.slug}/selfie-search/[A-Za-z0-9_-]{{43}}/$"
         )
 
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_simultaneous_tabs_keep_independent_browser_correlations_without_session_state(
+        self,
+    ) -> None:
+        correlations = ("a" * 32, "b" * 32)
+        storage = RecordingStorage()
+
+        with patch("selfie_search.views.TemporarySelfieStorage", return_value=storage):
+            responses = tuple(
+                self.client.post(
+                    reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug}),
+                    {"selfie": valid_upload(), "feedback_correlation": correlation},
+                )
+                for correlation in correlations
+            )
+
+        for response, correlation in zip(responses, correlations, strict=True):
+            self.assertEqual(response.status_code, 302)
+            self.assertRegex(
+                response["Location"],
+                rf"^/events/{self.event.slug}/selfie-search/[A-Za-z0-9_-]{{43}}/"
+                rf"\?feedback_correlation={correlation}$",
+            )
+        self.assertNotIn("selfie_feedback_correlations", self.client.session)
+        self.assertNotIn("selfie_feedback_result_correlations", self.client.session)
+
     def test_invalid_post_stays_on_the_published_event_page(self) -> None:
         response = self.client.post(
             reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug}),
@@ -319,10 +459,14 @@ class SubmissionTests(TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, self.event.name)
-        self.assertContains(response, "Файл повреждён. Выберите другое селфи.")
-        self.assertContains(response, 'name="selfie"')
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, self.event.name, status_code=422)
+        self.assertContains(
+            response,
+            "Фотография повреждена. Выберите другой файл.",
+            status_code=422,
+        )
+        self.assertContains(response, 'name="selfie"', status_code=422)
 
     def test_decompression_bomb_post_creates_no_search_job_or_temporary_object(self) -> None:
         storage = RecordingStorage()
@@ -332,8 +476,14 @@ class SubmissionTests(TestCase):
                 {"selfie": decompression_bomb_upload()},
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "25 000 000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(
+            response,
+            "Изображение слишком большое. Уменьшите его так, чтобы "
+            "ширина × высота были не больше 25 млн пикселей — "
+            "например, 5000 × 5000.",
+            status_code=422,
+        )
         self.assertFalse(SelfieSearch.objects.filter(event=self.event).exists())
         self.assertFalse(SelfieSearchJob.objects.exists())
         self.assertEqual(storage.objects, {})
@@ -345,7 +495,11 @@ class SubmissionTests(TestCase):
                 {"selfie": valid_upload()},
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, self.event.name)
-        self.assertContains(response, "Не удалось загрузить селфи. Попробуйте ещё раз.")
-        self.assertContains(response, 'name="selfie"')
+        self.assertEqual(response.status_code, 503)
+        self.assertContains(response, self.event.name, status_code=503)
+        self.assertContains(
+            response,
+            "Не удалось загрузить фотографию. Попробуйте ещё раз.",
+            status_code=503,
+        )
+        self.assertContains(response, 'name="selfie"', status_code=503)

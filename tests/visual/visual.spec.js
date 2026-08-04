@@ -11,10 +11,12 @@ const desktopPages = [
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-selfie-search', '/__visual__/event/selfie-search/'],
+  ['event-selfie-search-rejected', '/__visual__/event/selfie-search/rejected/'],
   ['selfie-search-processing', '/__visual__/event/selfie-search/processing/'],
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
   ['reference-dashboard', '/__visual__/reference/dashboard/'],
@@ -36,10 +38,13 @@ const mobilePages = [
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-selfie-search', '/__visual__/event/selfie-search/'],
+  ['event-selfie-search-rejected', '/__visual__/event/selfie-search/rejected/'],
   ['selfie-search-processing', '/__visual__/event/selfie-search/processing/'],
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
+  ['selfie-search-feedback-marking', '/__visual__/event/selfie-search/feedback-marking/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
   ['upload-empty', '/__visual__/upload/empty/'],
@@ -86,9 +91,22 @@ async function settlePage(page) {
   });
 }
 
-async function capturePage(page, { path, snapshot, viewport }) {
+async function preloadCookieAcknowledgement(page) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('findme_cookie_notice', '2026-08-02');
+  });
+}
+
+async function capturePage(page, { path, snapshot, viewport, cookieAcknowledged = true }) {
   const { failures, resources } = collectBrowserFailures(page);
   await page.setViewportSize(viewport);
+  if (cookieAcknowledged) {
+    await preloadCookieAcknowledgement(page);
+  } else {
+    await page.addInitScript(() => {
+      window.localStorage.removeItem('findme_cookie_notice');
+    });
+  }
 
   const response = await page.goto(path);
   expect(response, `Expected a document response for ${path}`).not.toBeNull();
@@ -112,7 +130,6 @@ async function capturePage(page, { path, snapshot, viewport }) {
     resources.filter(({ status }) => status >= 400),
     `CSS, sprite, and images on ${path} must load successfully`,
   ).toEqual([]);
-
   await expect(page).toHaveScreenshot(snapshot, {
     animations: 'disabled',
     fullPage: true,
@@ -134,14 +151,30 @@ async function installUploadStubs(
   let activeTransfers = 0;
   let maxActiveTransfers = 0;
   const controlCalls = [];
+  const storageCalls = [];
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.route('**/photographer/uploads/**', async (route) => {
     const request = route.request();
-    if (request.method() !== 'POST') {
-      return route.continue();
-    }
     const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname.endsWith('/batch-resume-1/resume/')) {
+      return route.fulfill({
+        json: {
+          batch: { id: 'batch-resume-1', event: { id: 'london-10k', name: 'London 10K' } },
+          items: [
+            {
+              id: 'confirmed', filename: 'confirmed.jpg', size: 9, last_modified_ms: null,
+              ambiguous_sha256: null, status: 'uploaded', confirmed: true,
+            },
+            {
+              id: 'pending', filename: 'pending.jpg', size: 7, last_modified_ms: null,
+              ambiguous_sha256: null, status: 'pending', confirmed: false,
+            },
+          ],
+        },
+      });
+    }
+    if (request.method() !== 'POST') return route.continue();
     const body = request.postDataJSON();
     controlCalls.push({ path: url.pathname, body });
     if (url.pathname.endsWith('/batches/')) {
@@ -158,7 +191,7 @@ async function installUploadStubs(
         },
       });
     }
-    const item = url.pathname.match(/items\/(item-\d+)\//)?.[1];
+    const item = url.pathname.match(/items\/([^/]+)\//)?.[1];
     if (url.pathname.endsWith('/retry/') && retryFailureStatus) {
       return route.fulfill({
         status: retryFailureStatus,
@@ -194,6 +227,7 @@ async function installUploadStubs(
     return route.abort();
   });
   await page.route('http://storage.test/**', async (route) => {
+    storageCalls.push(new URL(route.request().url()).pathname);
     activeTransfers += 1;
     maxActiveTransfers = Math.max(maxActiveTransfers, activeTransfers);
     if (storageDelay) {
@@ -207,7 +241,7 @@ async function installUploadStubs(
       headers: { 'access-control-allow-origin': '*' },
     });
   });
-  return { controlCalls, pageErrors, getMaxActiveTransfers: () => maxActiveTransfers };
+  return { controlCalls, storageCalls, pageErrors, getMaxActiveTransfers: () => maxActiveTransfers };
 }
 
 test.describe('desktop visual regression', () => {
@@ -234,6 +268,160 @@ test.describe('mobile visual regression', () => {
   }
 });
 
+test('desktop marking mode renders every control beside its original download action from a neutral viewport', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  const response = await page.goto('/__visual__/event/selfie-search/feedback-marking/');
+  expect(response).not.toBeNull();
+  expect(response.status()).toBeLessThan(400);
+  await settlePage(page);
+
+  const layout = await page.evaluate(() => ({
+    scrollY: window.scrollY,
+    activeTag: document.activeElement?.tagName,
+    cards: Array.from(document.querySelectorAll('.gallery-card-actions')).map((actions) => {
+      const controls = actions.querySelector('[data-feedback-card-controls]');
+      const download = actions.querySelector('.gallery-download');
+      const controlRect = controls?.getBoundingClientRect();
+      const downloadRect = download?.getBoundingClientRect();
+      return {
+        controlsVisible: Boolean(controls && !controls.hidden),
+        controlsBeforeDownload: Boolean(controlRect && downloadRect && controlRect.right <= downloadRect.left),
+      };
+    }),
+  }));
+
+  expect(layout.scrollY).toBe(0);
+  expect(layout.activeTag).toBe('BODY');
+  expect(layout.cards).toHaveLength(3);
+  expect(layout.cards.every(({ controlsVisible }) => controlsVisible)).toBe(true);
+  expect(layout.cards.every(({ controlsBeforeDownload }) => controlsBeforeDownload)).toBe(true);
+  await page.addStyleTag({
+    content: '.topbar { position: static !important; } .skip-link { display: none !important; }',
+  });
+  await expect(page).toHaveScreenshot('desktop-selfie-search-feedback-marking.png', {
+    animations: 'disabled',
+    fullPage: true,
+    timeout: 15_000,
+  });
+});
+
+test('marking mode keeps the original cards operable and updates optional progress', async ({ page }) => {
+  await page.goto('/__visual__/event/selfie-search/feedback-marking/');
+
+  const firstPresent = page.getByRole('button', { name: 'На фотографии 1: я есть' });
+  await expect(firstPresent).toBeVisible();
+  await expect(page.locator('.gallery-download')).toHaveCount(3);
+  await firstPresent.click();
+  await expect(firstPresent).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('[data-feedback-progress]')).toHaveText('Размечено 1 из 3 фотографий');
+  await firstPresent.click();
+  await expect(firstPresent).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('[data-feedback-progress]')).toHaveText('Размечено 0 из 3 фотографий');
+  await expect(page.locator('.glightbox-container')).toHaveCount(0);
+});
+
+test('cookie notice is visible and usable on a fresh desktop profile', async ({ page }) => {
+  await capturePage(page, {
+    path: '/__visual__/legal/',
+    snapshot: 'desktop-cookie-notice.png',
+    viewport: DESKTOP_VIEWPORT,
+    cookieAcknowledged: false,
+  });
+
+  const notice = page.locator('[data-cookie-notice]');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText(
+    'Мы используем файлы cookie, чтобы обеспечить работу нашего сайта и проанализировать его',
+  );
+  await expect(notice.getByRole('link')).toHaveAttribute('href', /personal-data-policy\.pdf$/);
+  await expect(notice.getByRole('button', { name: 'OK' })).toBeVisible();
+});
+
+test('cookie notice is readable without overflow on a fresh mobile profile', async ({ page }) => {
+  await capturePage(page, {
+    path: '/__visual__/legal/',
+    snapshot: 'mobile-cookie-notice.png',
+    viewport: MOBILE_VIEWPORT,
+    cookieAcknowledged: false,
+  });
+
+  await expect(page.locator('[data-cookie-notice]')).toBeVisible();
+});
+
+test('cookie notice stores acknowledgement before hiding and persists across reloads', async ({ page }) => {
+  await page.goto('/__visual__/legal/');
+  const notice = page.locator('[data-cookie-notice]');
+  const accept = notice.getByRole('button', { name: 'OK' });
+
+  await expect(notice).toBeVisible();
+  await accept.click();
+  await expect(notice).toBeHidden();
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem('findme_cookie_notice')))
+    .toBe('2026-08-02');
+  await page.reload();
+  await expect(notice).toBeHidden();
+});
+
+test('cookie notice reappears for a stale acknowledgement', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('findme_cookie_notice', 'stale-version');
+  });
+  await page.goto('/__visual__/legal/');
+
+  await expect(page.locator('[data-cookie-notice]')).toBeVisible();
+});
+
+test('cookie notice remains operable when localStorage read or write throws', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem() {
+          throw new Error('read blocked');
+        },
+        setItem() {
+          throw new Error('write blocked');
+        },
+      },
+    });
+  });
+  await page.goto('/__visual__/legal/');
+
+  const notice = page.locator('[data-cookie-notice]');
+  await expect(notice).toBeVisible();
+  await notice.getByRole('button', { name: 'OK' }).click();
+  await expect(notice).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
+test('cookie notice accept button works from the keyboard', async ({ page }) => {
+  await page.goto('/__visual__/legal/');
+  const notice = page.locator('[data-cookie-notice]');
+  const accept = notice.getByRole('button', { name: 'OK' });
+
+  await accept.focus();
+  await page.keyboard.press('Enter');
+  await expect(notice).toBeHidden();
+});
+
+test('visual pages do not request Yandex Metrika', async ({ page }) => {
+  const metrikaRequests = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).hostname === 'mc.yandex.ru') {
+      metrikaRequests.push(request.url());
+    }
+  });
+
+  await page.goto('/__visual__/legal/');
+  await settlePage(page);
+
+  expect(metrikaRequests).toEqual([]);
+});
+
 test('all links on live production pages resolve', async ({ page, request }) => {
   for (const path of ['/', '/legal/']) {
     await page.goto(path);
@@ -247,6 +435,21 @@ test('all links on live production pages resolve', async ({ page, request }) => 
         400,
       );
     }
+  }
+});
+
+test('legal contacts and documents are keyboard reachable', async ({ page, request }) => {
+  await page.goto('/legal/');
+
+  const links = page.locator('.legal-content a');
+  await expect(links).toHaveCount(4);
+  await links.nth(0).focus();
+  await expect(links.nth(0)).toBeFocused();
+
+  for (const index of [1, 2, 3]) {
+    const href = await links.nth(index).getAttribute('href');
+    const response = await request.get(href);
+    expect(response.status(), `${href} must resolve successfully`).toBeLessThan(400);
   }
 });
 
@@ -347,8 +550,27 @@ test('selfie search form keeps its native multipart fallback without JavaScript'
     const form = page.locator('[data-selfie-search-form]');
     await expect(form).toHaveAttribute('method', 'post');
     await expect(form).toHaveAttribute('enctype', 'multipart/form-data');
-    await expect(form.locator('input[type="file"]')).toHaveAttribute('accept', 'image/jpeg,image/png');
+    await expect(form.locator('input[type="file"]')).toHaveAttribute(
+      'accept',
+      'image/jpeg,image/png,image/heic,image/heif,.heic,.heif',
+    );
     await expect(form.getByRole('button', { name: 'Найти мои фото' })).toBeEnabled();
+  } finally {
+    await context.close();
+  }
+});
+
+test('selfie search rejection keeps correction controls visible without JavaScript', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    const response = await page.goto('/__visual__/event/selfie-search/rejected/');
+    expect(response?.status()).toBeLessThan(400);
+    await expect(page.locator('[data-selfie-search-error]')).toHaveText(
+      'Не удалось прочитать фотографию. Выберите JPEG, PNG, HEIC или HEIF.',
+    );
+    await expect(page.locator('input[type="file"]')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Найти мои фото' })).toBeEnabled();
   } finally {
     await context.close();
   }
@@ -364,8 +586,50 @@ test('ready selfie result reuses keyboard-accessible gallery lightbox', async ({
   await expect(firstCard).toBeFocused();
 });
 
+test('gallery and ready result lightboxes keep original download as a compact icon action', async ({
+  page,
+}) => {
+  for (const [path, cardSelector, viewport, snapshot, expectedColor] of [
+    [
+      '/__visual__/event/gallery-populated/',
+      '.gallery-card-link',
+      DESKTOP_VIEWPORT,
+      'desktop-gallery-lightbox-download.png',
+      null,
+    ],
+    [
+      '/__visual__/event/selfie-search/ready/',
+      '.selfie-search-results .gallery-card-link',
+      MOBILE_VIEWPORT,
+      'mobile-selfie-search-result-lightbox-download.png',
+      'rgb(104, 111, 119)',
+    ],
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(path);
+    await page.locator(cardSelector).first().click();
+
+    const description = page.locator('.glightbox-container .gslide.current .gslide-description');
+    const download = description.getByRole('link', { name: 'Скачать оригинал' });
+    await expect(download).toBeVisible();
+    await expect(download.locator('svg use')).toHaveAttribute('href', /#download$/);
+    await expect(download).toHaveText('');
+    await expect(download).toHaveCSS('width', '44px');
+    await expect(download).toHaveCSS('height', '44px');
+    await expect(description).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(description).toHaveCSS('height', '44px');
+    if (expectedColor) {
+      await expect(download).toHaveCSS('color', expectedColor);
+    }
+    await expect(page).toHaveScreenshot(snapshot, { animations: 'disabled' });
+
+    await page.keyboard.press('Escape');
+  }
+});
+
 test('browser coordinator completes a successful upload and announces progress', async ({ page }) => {
   const stubs = await installUploadStubs(page);
+  await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
   await page.locator('#upload-files').setInputFiles([
@@ -376,9 +640,161 @@ test('browser coordinator completes a successful upload and announces progress',
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
   await expect(page.locator('[data-summary-message]')).toContainText('2 из 2');
   await expect(page.getByRole('status')).toContainText('2 из 2');
+  const uploadedToggle = page.locator('[data-queue-group-toggle="uploaded"]');
+  await expect(uploadedToggle).toHaveAttribute('aria-expanded', 'false');
+  await uploadedToggle.click();
   await expect(page.locator('[data-upload-queue] .queue-item')).toHaveCount(2);
   expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/confirm/'))).toHaveLength(2);
   expect(stubs.pageErrors).toEqual([]);
+});
+
+test('upload queue prioritizes groups, discloses them from the keyboard, and pages ten thousand files', async ({ page }) => {
+  await page.goto('/__visual__/upload/empty/');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    const coordinator = root.uploadCoordinator;
+    coordinator.items = [
+      {
+        clientItemId: 'failed', file: { name: 'failed.jpg', size: 10 }, status: 'failed', progress: 50,
+        error: 'Файл требует повторной отправки.',
+      },
+      {
+        clientItemId: 'active', file: { name: 'active.jpg', size: 10 }, status: 'uploading', progress: 68,
+        error: '',
+      },
+      ...Array.from({ length: 2 }, (_, index) => ({
+        clientItemId: `waiting-${index}`, file: { name: `waiting-${index}.jpg`, size: 10 },
+        status: 'waiting', progress: 0, error: '',
+      })),
+      ...Array.from({ length: 9_996 }, (_, index) => ({
+        clientItemId: `uploaded-${index}`, file: { name: `uploaded-${index}.jpg`, size: 10 },
+        status: 'uploaded', progress: 100, error: '',
+      })),
+    ];
+    window.FindMeUpload.renderPage(root, coordinator);
+  });
+
+  const groups = page.locator('[data-upload-queue] > [data-queue-group]');
+  await expect(groups).toHaveCount(4);
+  expect(await groups.evaluateAll((nodes) => nodes.map((node) => node.dataset.queueGroup))).toEqual([
+    'needs_attention',
+    'uploading',
+    'waiting',
+    'uploaded',
+  ]);
+  await expect(page.locator('[data-queue-group="needs_attention"]')).toContainText('failed.jpg');
+  await expect(page.locator('[data-queue-group="uploading"]')).toContainText('active.jpg');
+  await expect(page.locator('[data-queue-group-toggle="needs_attention"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('[data-queue-group-toggle="uploading"]')).toHaveAttribute('aria-expanded', 'true');
+  const waitingToggle = page.locator('[data-queue-group-toggle="waiting"]');
+  await expect(waitingToggle).toHaveAttribute('aria-expanded', 'false');
+  await waitingToggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(waitingToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('[data-queue-group="waiting"] .queue-item')).toHaveCount(2);
+
+  const uploadedToggle = page.locator('[data-queue-group-toggle="uploaded"]');
+  await uploadedToggle.focus();
+  await page.keyboard.press('Space');
+  await expect(uploadedToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('[data-queue-group="uploaded"] .queue-item')).toHaveCount(20);
+  await uploadedToggle.evaluate((button) => button.closest('[data-queue-group]').querySelector('[data-queue-next-page]').click());
+  await expect(page.locator('[data-queue-group="uploaded"]')).toContainText('uploaded-20.jpg');
+  await expect(page.locator('[data-queue-group="uploaded"] .queue-item')).toHaveCount(20);
+});
+
+test('desktop upload summary keeps controls, geometry, and every metric visible as counters gain digits', async ({ page }) => {
+  await page.goto('/__visual__/upload/empty/');
+  const measurements = await page.evaluate(() => {
+    const controls = document.querySelector('.upload-controls');
+    const summary = document.querySelector('.upload-summary');
+    const countNodes = document.querySelectorAll(
+      '[data-total-count], [data-uploaded-count], [data-failed-count], [data-total-bytes]',
+    );
+    const measureMetrics = () => {
+      const metrics = document.querySelector('.summary-metrics').getBoundingClientRect().toJSON();
+      const values = Array.from(document.querySelectorAll('.summary-metrics dt, .summary-metrics dd'))
+        .map((node) => ({ text: node.textContent, box: node.getBoundingClientRect().toJSON() }));
+      return { metrics, values };
+    };
+    return [9, 10, 999, 1_000].map((count) => {
+      countNodes.forEach((node, index) => {
+        node.textContent = index === 3 ? '2,1 из 5,8 ГБ' : count.toLocaleString('ru-RU');
+      });
+      return {
+        controls: controls.getBoundingClientRect().toJSON(),
+        summary: summary.getBoundingClientRect().toJSON(),
+        metricVisibility: measureMetrics(),
+        fontVariantNumeric: getComputedStyle(summary.querySelector('[data-total-count]')).fontVariantNumeric,
+        widths: [document.documentElement.clientWidth, document.documentElement.scrollWidth],
+      };
+    });
+  });
+
+  for (const measurement of measurements.slice(1)) {
+    expect(measurement.controls).toEqual(measurements[0].controls);
+    expect(measurement.summary).toEqual(measurements[0].summary);
+    expect(measurement.widths[1]).toBeLessThanOrEqual(measurement.widths[0]);
+  }
+  for (const measurement of measurements) {
+    expect(measurement.metricVisibility.values).toHaveLength(8);
+    for (const { text, box } of measurement.metricVisibility.values) {
+      expect(text).not.toBe('');
+      expect(box.top).toBeGreaterThanOrEqual(measurement.metricVisibility.metrics.top);
+      expect(box.bottom).toBeLessThanOrEqual(measurement.metricVisibility.metrics.bottom);
+    }
+  }
+  expect(measurements[0].fontVariantNumeric).toContain('tabular-nums');
+});
+
+test('mobile upload summary reserves separate metric and message rows', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await page.goto('/__visual__/upload/active/');
+  const boxes = await page.evaluate(() => {
+    const metrics = document.querySelector('.summary-metrics').getBoundingClientRect().toJSON();
+    const message = document.querySelector('[data-summary-message]').getBoundingClientRect().toJSON();
+    return { metrics, message };
+  });
+
+  expect(boxes.message.y).toBeGreaterThanOrEqual(boxes.metrics.y + boxes.metrics.height);
+});
+
+test('returning photographer resumes only the unfinished item from an owned batch', async ({ page }) => {
+  const stubs = await installUploadStubs(page);
+  await page.goto('/__visual__/upload/empty/?resume=1');
+
+  await page.getByRole('button', { name: 'Продолжить загрузку' }).click();
+  await expect(page.locator('#upload-event')).toHaveValue('london-10k');
+  await expect(page.locator('#upload-event')).toBeDisabled();
+  await page.locator('#resume-upload-files').setInputFiles([
+    { name: 'confirmed.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('confirmed') },
+    { name: 'pending.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('pending') },
+  ]);
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  expect(stubs.controlCalls.filter(({ path }) => path.includes('/items/confirmed/'))).toHaveLength(0);
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/items/pending/authorize/'))).toHaveLength(1);
+  expect(stubs.storageCalls).toEqual(['/upload/pending']);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
+test('incomplete resumed selections tell the photographer what action is needed', async ({ page }) => {
+  await page.goto('/__visual__/upload/empty/');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    const coordinator = root.uploadCoordinator;
+    coordinator.active = false;
+    coordinator.items = [
+      { clientItemId: 'waiting', file: { name: 'missing.jpg', size: 4 }, status: 'waiting', progress: 0 },
+      { clientItemId: 'attention', file: { name: 'extra.jpg', size: 4 }, status: 'needs_attention', progress: 0 },
+    ];
+    window.FindMeUpload.renderPage(root, coordinator);
+  });
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Требуется действие');
+  await expect(page.locator('[data-summary-message]')).toHaveText(
+    'Загрузка не завершена: выберите недостающие файлы и проверьте файлы, требующие внимания.',
+  );
 });
 
 test('browser coordinator accepts a dropped JPEG when the browser omits its MIME type', async ({
@@ -452,6 +868,7 @@ test('slow upload has an active close warning and visible cancel control', async
 
 test('cancel is visible during authorization and aborts the pending control request', async ({ page }) => {
   const stubs = await installUploadStubs(page, { authorizeDelay: 1000 });
+  await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
   await page.locator('#upload-files').setInputFiles({
@@ -522,6 +939,10 @@ test('failed file can be retried from the keyboard without losing its row', asyn
   await page.keyboard.press('Enter');
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  const uploadedToggle = page.locator('[data-queue-group-toggle="uploaded"]');
+  await expect(uploadedToggle).toHaveAttribute('aria-expanded', 'false');
+  await uploadedToggle.focus();
+  await page.keyboard.press('Enter');
   await expect(page.locator('[data-upload-queue] .queue-item')).toHaveCount(1);
   expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/retry/'))).toHaveLength(1);
   expect(stubs.pageErrors).toEqual([]);
@@ -532,6 +953,7 @@ test('manual retry 503 remains retryable without leaking an unhandled page error
     retryFailureStatus: 503,
     storageStatuses: [400],
   });
+  await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
   await page.locator('#upload-files').setInputFiles({
@@ -557,6 +979,7 @@ test('manual retry confirm failure is contained without an unhandled page error'
     confirmFailureStatus: 503,
     storageStatuses: [400, 204],
   });
+  await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
   await page.locator('#upload-files').setInputFiles({

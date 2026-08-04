@@ -17,6 +17,11 @@ urlpatterns = [
         name="status",
     ),
     path(
+        "events/<str:event_slug>/selfie-search/<str:public_token>/feedback/",
+        views.feedback,
+        name="feedback",
+    ),
+    path(
         "events/<str:event_slug>/selfie-search/<str:public_token>/photos/<str:photo_id>/media/<str:variant>/",
         views.result_media,
         name="result_media",

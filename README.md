@@ -29,6 +29,30 @@ each directory needs its own ignored `.env` file. Both configurations expose Pos
 `5432` and Django on port `8000`; stop one before starting the other unless you intentionally change
 the port mappings.
 
+Create a feature worktree from the main checkout with the supported bootstrap command:
+
+```bash
+make worktree NAME=my-change
+cd .worktrees/my-change
+```
+
+`BASE` defaults to `origin/main`; override it with `BASE=<ref>` when necessary. The command creates
+branch `codex/<name>`, links the main checkout's ignored `.venv`, creates a worktree-local `.env`
+from `.env.example` with safe host-test values, installs the shared pre-commit hook, and verifies
+Python, pytest, and Django settings. It never reads or copies the main checkout's `.env`.
+
+Run a focused or full Python test selection without activating the virtual environment or manually
+supplying Django settings:
+
+```bash
+make test TESTS="tests/test_repository_foundation.py"
+make test
+make check
+```
+
+`make check` runs the CI-equivalent Python formatting, lint, type, coverage, Django, and migration
+checks. PostgreSQL must be available on `localhost:5432`, matching CI.
+
 ### Verify public selfie search locally
 
 Public selfie search and its processing dependencies are opt-in. Tracked defaults keep
@@ -75,6 +99,73 @@ Then apply and verify the exact `selfie-search/` lifecycle, run the explicit scr
 preflight, and execute the staging smoke and capacity measurements in the
 [public selfie-search rollout](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout),
 and only then set `SELFIE_SEARCH_ENABLED=True`.
+
+### Verify selfie-search feedback storage on staging
+
+Selfie-search feedback is implemented but remains disabled by default. After the dedicated private
+bucket, KMS key, and web-only credentials have been provisioned, run the explicit preflight while
+the deployed `.env` still has `SELFIE_FEEDBACK_ENABLED=False`; export the bucket, access-key,
+secret-key, and KMS-key variables for the command as the deployment workflow does:
+
+```bash
+cd /opt/photo-prjct
+test "$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)" = False
+docker compose --project-name photo-prjct-staging \
+  --env-file .env \
+  -f docker-compose.prod.yml \
+  -f docker-compose.https.yml \
+  exec -T \
+  -e SELFIE_FEEDBACK_ENABLED=True \
+  -e SELFIE_FEEDBACK_S3_BUCKET \
+  -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID \
+  -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY \
+  -e SELFIE_FEEDBACK_KMS_KEY_ID \
+  web python manage.py verify_selfie_feedback_storage --confirm-real-storage
+```
+
+The command checks the dedicated bucket contract and removes its generated scratch object. It is
+covered by the repository's automated storage/deployment tests; passing it does not enable feedback
+or replace the separate policy, lifecycle-mutation, staging smoke, and activation gates.
+
+### Operate selfie-search observability
+
+Before the first observability rollout, or whenever its host package changes, an operator with
+existing root access installs the reviewed package and the narrow `deploy` sudo rule:
+
+```bash
+DEPLOY_ROOT=/opt/photo-prjct sh deploy/bootstrap-selfie-observability.sh
+```
+
+The bootstrap copies all executable inputs to root-owned paths. Routine deployments can then invoke
+only the fixed helper actions `install`, `verify`, `rollback`, `commit`, and the UUID-validated
+`verify-probe`; they never execute files
+from the deploy-owned checkout as root. The supported deployment entrypoint installs and verifies a persistent system journal capped by
+`MaxRetentionSec=14day` and `SystemMaxUse=1G`, stable `web`, `worker`, and `nginx` tags, and the
+`selfie-search-summary.timer`. The cap can shorten effective history under heavy log volume; the
+journal is operational evidence, not a backup.
+
+Inspect bounded events and the latest summary without printing unrelated logs:
+
+```bash
+journalctl -u docker.service \
+  CONTAINER_TAG='findme.service=web findme.environment=staging' \
+  --since '24 hours ago' --grep '"event":"selfie_' -o cat
+journalctl -u selfie-search-summary.service --since '14 days ago' -o cat \
+  | grep '"event":"selfie_search_daily_summary"'
+systemctl status selfie-search-summary.timer
+```
+
+Recompute one Moscow calendar date without changing application or database state:
+
+```bash
+sudo /usr/local/lib/findme-selfie-observability/run-daily-summary.sh 2026-08-03
+```
+
+The root helper verifies effective policy and timer state; the unprivileged
+`deploy/verify-selfie-observability.sh` verifies Compose tags and an emitted probe. Do not paste raw journal output into tickets;
+record only the bounded summary and sanitized diagnostics.
+
+For the complete incident workflow, use the [selfie-search log-analysis runbook](docs/runbooks/selfie-search-log-analysis.md).
 
 ### Prepare Node.js
 
@@ -277,15 +368,17 @@ python src/backend/manage.py check
 python src/backend/manage.py makemigrations --check --dry-run
 ```
 
-Install fast local hooks with:
+New worktrees install fast local hooks automatically. Install or repair the shared hook in an
+existing checkout with:
 
 ```bash
-pre-commit install
-pre-commit run --all-files
+make hooks
 ```
 
-The hooks format and lint Python files. CI remains authoritative and also runs types, tests, Django
-checks, migration drift detection, and repository skill-structure tests.
+The hook formats and lints staged Python files. If it changes a file, stage the result and repeat the
+commit. Run `.venv/bin/pre-commit run --all-files` only when intentionally checking the whole
+repository. CI remains authoritative and also runs types, tests, Django checks, migration drift
+detection, and repository skill-structure tests.
 
 ## Deployment
 

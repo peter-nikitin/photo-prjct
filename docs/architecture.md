@@ -189,6 +189,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
   signed direct Object Storage redirect transport is implemented for already authorized gallery and
   result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
+- Allow a currently rendered gallery photo with exactly one current compatible accepted face to
+  start the same event-scoped exact ranking directly from its existing embedding. This creates an
+  immediately ready immutable bearer result without a temporary image, stored query vector, or
+  worker job, as defined by [ADR 0024](adr/0024-use-gallery-face-as-search-query.md).
 - Keep one consented quality-feedback record per terminal selfie search without delaying ADR 0019's
   temporary-selfie cleanup. The repository implementation retains the selected file locally for
   seven days, stores immutable feedback/contact/consent/labels in PostgreSQL, and stores one selfie
@@ -310,9 +314,11 @@ broker, vector engine, and ML implementations shown for later processing require
 ### Search
 
 1. The customer selects an event before searching.
-2. A bib query matches confirmed numbers first and automated candidates second. A face query creates
-   a temporary query embedding through the existing worker, then Django performs exact comparison
-   and deletes the selfie before publishing an immutable probable-match snapshot.
+2. A bib query matches confirmed numbers first and automated candidates second. A face query either
+   creates a temporary query embedding through the existing worker or uses the single current
+   compatible accepted embedding of an existing gallery photo. Django then performs exact
+   comparison and publishes an immutable probable-match snapshot; the selfie path deletes its
+   temporary image before publication.
 3. Every query filters by `event_id`; time and location further narrow results.
 4. Face results are ordered by ascending cosine distance with stable photo-ID tie breaking and are
    exposed through the non-expiring public bearer link accepted by ADR 0019. Results from other
@@ -361,6 +367,9 @@ preflight, exact rollout-image smoke, VM capacity smoke, or environment activati
   and the immutable result is accessible through a non-expiring bearer link. Broader consent,
   revocation, suppression, moderation, and incident handling remain required before named
   identity, cross-event matching, or broader biometric reuse.
+- ADR 0024 accepts public reuse of one existing gallery face embedding as an event-scoped query
+  only when the photo has exactly one current compatible accepted face. It adds no stored query
+  vector, temporary image, named identity, cross-event matching, or new media authorization.
 - ADR 0023 accepts the narrower feedback-specific consent and retention boundary: one immutable
   quality report may retain plaintext contact, consent evidence, search labels, and a lifecycle-
   bounded private feedback selfie. It does not authorize named identity, automated training,

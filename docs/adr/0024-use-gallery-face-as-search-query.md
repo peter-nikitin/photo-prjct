@@ -1,6 +1,6 @@
 # 0024: Use a gallery face as a search query
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-04
 - Deciders: project maintainers
 - Supersedes: none

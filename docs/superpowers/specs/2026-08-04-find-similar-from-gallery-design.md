@@ -8,10 +8,11 @@ Approved on 2026-08-04.
 - Related architecture: [`docs/architecture.md`](../../architecture.md), public event-scoped selfie
   search and gallery presentation.
 - Related ADR: [ADR 0019](../../adr/0019-use-public-event-selfie-search.md).
-- ADR impact: requires a focused ADR accepting an existing gallery face embedding as a second
-  public query source under ADR 0019's event-scoped exact-ranking and immutable-bearer-result
-  boundary. It does not change result media authorization, event publication rules, or existing
-  gallery availability.
+- ADR impact: conforms to accepted
+  [ADR 0024](../../adr/0024-use-gallery-face-as-search-query.md), which accepts an existing gallery
+  face embedding as a second public query source under ADR 0019's event-scoped exact-ranking and
+  immutable-bearer-result boundary. It does not change result media authorization, event
+  publication rules, or existing gallery availability.
 
 ## Goal
 

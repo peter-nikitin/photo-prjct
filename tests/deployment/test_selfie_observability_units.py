@@ -48,7 +48,7 @@ def test_summary_units_are_root_owned_and_run_at_exactly_0010_moscow() -> None:
     assert timer["Install"]["WantedBy"] == "timers.target"
 
 
-def test_host_runner_uses_exact_moscow_window_tags_and_marks_explicit_recompute(
+def test_host_runner_uses_unambiguous_utc_window_tags_and_marks_explicit_recompute(
     tmp_path: Path,
 ) -> None:
     fake_bin = tmp_path / "bin"
@@ -78,9 +78,9 @@ def test_host_runner_uses_exact_moscow_window_tags_and_marks_explicit_recompute(
     arguments = (tmp_path / "journal-args").read_text(encoding="utf-8").splitlines()
     assert arguments == [
         "--since",
-        "2026-08-03 00:00:00 Europe/Moscow",
+        "2026-08-02T21:00:00Z",
         "--until",
-        "2026-08-04 00:00:00 Europe/Moscow",
+        "2026-08-03T21:00:00Z",
         "--output=cat",
         "CONTAINER_TAG=findme.service=web findme.environment=staging",
         "+",

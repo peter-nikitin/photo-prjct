@@ -321,6 +321,60 @@ def test_valid_probe_is_ignored_but_malformed_claimed_probe_marks_integrity() ->
     assert summary.submissions["total"] == 0
 
 
+def test_migration_output_with_selfie_search_name_is_not_counted_as_malformed() -> None:
+    summarize = _load_module()
+    malformed_json = '{"schema_version":1,"event":"selfie_submission_finished"'
+
+    summary = summarize.summarize_jsonl(
+        ["Apply all migrations: admin, auth, selfie_search", malformed_json],
+        report_date=date(2026, 8, 3),
+    )
+
+    assert summary.integrity["malformed_events"] == 1
+
+
+def test_worker_level_prefix_is_normalized_and_truncated_json_stays_malformed() -> None:
+    summarize = _load_module()
+    worker = _event(
+        "selfie_worker_attempt_finished",
+        "2026-08-03T10:00:00Z",
+        event_id="17",
+        search_id="00000000-0000-0000-0000-000000000001",
+        job_id="00000000-0000-0000-0000-000000000002",
+        attempt_id="00000000-0000-0000-0000-000000000003",
+        outcome="succeeded",
+        reason_code="",
+        retryable=False,
+        download_ms=4,
+        compute_ms=7,
+        total_ms=11,
+    )
+    truncated = 'INFO {"schema_version":1,"event":"selfie_worker_attempt_finished"'
+
+    summary = summarize.summarize_jsonl(
+        [f"INFO {worker}", truncated],
+        report_date=date(2026, 8, 3),
+    )
+
+    assert summary.worker_attempts["total"] == 1
+    assert summary.integrity["malformed_events"] == 1
+
+
+def test_observability_failure_markers_are_counted_but_migration_prose_is_ignored() -> None:
+    summarize = _load_module()
+
+    summary = summarize.summarize_jsonl(
+        [
+            "selfie_observability_emit_failed",
+            "ERROR selfie_observability_emit_failed",
+            "Apply all migrations: admin, auth, selfie_search",
+        ],
+        report_date=date(2026, 8, 3),
+    )
+
+    assert summary.integrity["malformed_events"] == 2
+
+
 def test_claimed_events_with_unbounded_reason_id_or_fields_are_malformed_and_never_leak() -> None:
     summarize = _load_module()
     arbitrary_reason = _submission(

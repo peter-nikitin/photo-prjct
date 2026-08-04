@@ -1,6 +1,6 @@
 # Device-local Saved Selfie-search Results Design
 
-- **Status:** Approved in conversation on 2026-08-04; awaiting written review
+- **Status:** Approved in conversation and written review on 2026-08-04
 - **Date:** 2026-08-04
 - **Owner:** FindMe Photo
 - **Related architecture:** [`docs/architecture.md`](../../architecture.md), current public

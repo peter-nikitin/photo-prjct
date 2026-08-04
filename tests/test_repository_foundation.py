@@ -404,6 +404,7 @@ def test_public_edges_sanitize_bearer_access_logs_and_split_referrer_policies() 
     for relative_path in ("deploy/nginx/https.conf.template", "deploy/nginx/staging.conf"):
         source = (ROOT / relative_path).read_text(encoding="utf-8")
 
+        assert "map $uri $selfie_search_access_client_address {" in source
         assert "map $uri $selfie_search_access_request {" in source
         assert "map $uri $selfie_search_access_referrer {" in source
         assert "map $uri $selfie_search_access_user_agent {" in source
@@ -411,8 +412,10 @@ def test_public_edges_sanitize_bearer_access_logs_and_split_referrer_policies() 
             '~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "$request_method <selfie-search>";'
             in source
         )
+        assert '~^/events/[^/]+/selfie-search/$ "$request_method <selfie-search>";' in source
         assert '"$selfie_search_access_referrer"' in source
         assert '"$selfie_search_access_user_agent"' in source
+        assert "$request_time" in source
         assert "access_log /var/log/nginx/access.log selfie_search_safe;" in source
 
     https = (ROOT / "deploy/nginx/https.conf.template").read_text(encoding="utf-8")
@@ -438,21 +441,32 @@ def test_public_edges_isolate_bearer_upstream_errors_without_changing_proxy_rout
     bearer_location = (
         "location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {\n        error_log /dev/null emerg;"
     )
+    submission_location = (
+        "location ~ ^/events/[^/]+/selfie-search/$ {\n        error_log /dev/null emerg;"
+    )
 
     for relative_path in ("deploy/nginx/https.conf.template", "deploy/nginx/staging.conf"):
         source = (ROOT / relative_path).read_text(encoding="utf-8")
 
         assert bearer_location in source
-        assert source.count("error_log /dev/null emerg;") == 1
+        assert submission_location in source
+        assert source.count("error_log /dev/null emerg;") == 2
         bearer_start = source.index(bearer_location)
+        submission_start = source.index(submission_location)
         internal_start = source.index("location ^~ /internal/photo-processing/ {")
         catchall_start = source.index("location / {", bearer_start)
-        assert internal_start < bearer_start < catchall_start
+        assert internal_start < submission_start < bearer_start < catchall_start
 
         bearer_block = source[bearer_start : source.index("\n    }", bearer_start)]
+        submission_block = source[submission_start : source.index("\n    }", submission_start)]
         catchall_block = source[catchall_start : source.index("\n    }", catchall_start)]
         bearer_proxy_lines = [
             line.strip() for line in bearer_block.splitlines() if line.strip().startswith("proxy_")
+        ]
+        submission_proxy_lines = [
+            line.strip()
+            for line in submission_block.splitlines()
+            if line.strip().startswith("proxy_")
         ]
         catchall_proxy_lines = [
             line.strip()
@@ -460,19 +474,31 @@ def test_public_edges_isolate_bearer_upstream_errors_without_changing_proxy_rout
             if line.strip().startswith("proxy_")
         ]
         assert bearer_proxy_lines == catchall_proxy_lines
+        assert submission_proxy_lines == catchall_proxy_lines
 
     alias = (ROOT / "deploy/nginx/reload-nginx.sh").read_text(encoding="utf-8")
     assert bearer_location in alias
-    assert alias.count("error_log /dev/null emerg;") == 1
+    assert submission_location in alias
+    assert alias.count("error_log /dev/null emerg;") == 2
     alias_bearer_start = alias.index(bearer_location)
+    alias_submission_start = alias.index(submission_location)
     alias_catchall_start = alias.index("location / {", alias_bearer_start)
-    assert alias_bearer_start < alias_catchall_start
+    assert alias_submission_start < alias_bearer_start < alias_catchall_start
     alias_bearer_block = alias[alias_bearer_start : alias.index("\n    }", alias_bearer_start)]
+    alias_submission_block = alias[
+        alias_submission_start : alias.index("\n    }", alias_submission_start)
+    ]
     alias_catchall_block = alias[
         alias_catchall_start : alias.index("\n    }", alias_catchall_start)
     ]
     assert "return 308 https://${PUBLIC_DOMAIN}\\$request_uri;" in alias_bearer_block
+    assert "return 308 https://${PUBLIC_DOMAIN}\\$request_uri;" in alias_submission_block
     assert "return 308 https://${PUBLIC_DOMAIN}\\$request_uri;" in alias_catchall_block
+    assert [
+        line.strip()
+        for line in alias_submission_block.splitlines()
+        if line.strip().startswith("return ")
+    ] == ["return 308 https://${PUBLIC_DOMAIN}\\$request_uri;"]
     assert 'add_header Referrer-Policy "no-referrer" always;' in alias
 
     validator = (ROOT / "tests/deployment/validate-nginx.sh").read_text(encoding="utf-8")
@@ -696,3 +722,26 @@ def test_local_node_version_matches_ci_and_visual_container() -> None:
     assert package["engines"]["node"] == ">=22 <23"
     assert node_setup["with"]["node-version"] == "22"
     assert "FROM node:22-bookworm-slim@sha256:" in dockerfile
+
+
+def test_selfie_observability_is_owned_by_the_supported_deployment_entrypoint() -> None:
+    apply = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+    helper = (ROOT / "deploy/selfie-observability/root-helper.sh").read_text(encoding="utf-8")
+    bootstrap = (ROOT / "deploy/bootstrap-selfie-observability.sh").read_text(encoding="utf-8")
+    verifier = (ROOT / "deploy/verify-selfie-observability.sh").read_text(encoding="utf-8")
+
+    assert apply.index('"$observability_helper" install') < apply.index("compose stop nginx")
+    assert apply.index("verify-selfie-observability.sh") > apply.index("verify-public-edge.sh")
+    assert '"$observability_helper" rollback' in apply
+    for setting in ("Storage=persistent", "MaxRetentionSec=14day", "SystemMaxUse=1G"):
+        assert setting in helper
+    assert "/opt/photo-prjct" not in helper
+    assert "NOPASSWD: ALL" not in bootstrap
+    assert "journalctl --vacuum" not in helper
+    assert "rm -rf" not in helper
+    assert "systemd-analyze cat-config" not in verifier
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "journalctl -u selfie-search-summary.service --since '14 days ago' -o cat" in readme
+    assert '| grep \'"event":"selfie_search_daily_summary"\'' in readme
+    assert " -t selfie-search-daily-summary" not in readme
+    assert "/usr/local/lib/findme-selfie-observability/run-daily-summary.sh" in readme

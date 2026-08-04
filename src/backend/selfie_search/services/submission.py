@@ -21,6 +21,7 @@ from processing.services.enrollment import (
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
 )
 
+from selfie_search.images import PreparedSelfie
 from selfie_search.models import SelfieSearch, SelfieSearchJob
 from selfie_search.services.ranking import CandidateEmbedding
 
@@ -31,16 +32,15 @@ class CreatedSearch:
     public_token: str
 
 
-def submit_selfie_search(*, event: Event, upload, storage) -> CreatedSearch:
+def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage) -> CreatedSearch:
     """Persist one validated selfie submission and its immutable current event cohort."""
     try:
         event = Event.objects.get(pk=event.pk, publication_status=Event.PublicationStatus.PUBLISHED)
     except Event.DoesNotExist:
         raise ValueError("selfie search requires a published event") from None
 
-    content = upload.read()
-    upload.seek(0)
-    content_type = upload.content_type
+    content = selfie.content
+    content_type = selfie.content_type
     key = f"selfie-search/{uuid4().hex}"
     stored = storage.put(key=key, content=content, content_type=content_type)
     public_token = secrets.token_urlsafe(32)

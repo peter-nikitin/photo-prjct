@@ -268,6 +268,16 @@ fi
 overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
 health_port=443
 health_url="https://$PUBLIC_DOMAIN/health/"
+observability_helper=/usr/local/sbin/findme-selfie-observability
+observability_package=/usr/local/lib/findme-selfie-observability-package
+
+verify_observability_bootstrap() {
+    cmp -s "$DEPLOY_ROOT/deploy/selfie-observability/root-helper.sh" "$observability_helper" || return 1
+    for name in journald.conf selfie-search-summary.service selfie-search-summary.timer \
+        run-daily-summary.sh summarize.py; do
+        cmp -s "$DEPLOY_ROOT/deploy/selfie-observability/$name" "$observability_package/$name" || return 1
+    done
+}
 
 compose_with_env_file() {
     compose_env_file="$1"
@@ -348,10 +358,12 @@ recovery_env_tmp=""
 previous_env_tmp=""
 previous_deployment_target_tmp=""
 previous_compose_project_name_tmp=""
+previous_deployed_image_tmp=""
 marker_tmp=""
 mutation_started=0
 deployment_committed=0
 recovery_in_progress=0
+observability_installed=0
 
 cleanup() {
     rm -f \
@@ -360,6 +372,7 @@ cleanup() {
         ${previous_env_tmp:+"$previous_env_tmp"} \
         ${previous_deployment_target_tmp:+"$previous_deployment_target_tmp"} \
         ${previous_compose_project_name_tmp:+"$previous_compose_project_name_tmp"} \
+        ${previous_deployed_image_tmp:+"$previous_deployed_image_tmp"} \
         ${marker_tmp:+"$marker_tmp"}
 }
 
@@ -376,6 +389,12 @@ restore_previous_deployment_markers() {
         previous_compose_project_name_tmp=""
     else
         rm -f "$DEPLOY_ROOT/compose-project-name" || return 1
+    fi
+    if [ "$previous_deployed_image_exists" -eq 1 ]; then
+        mv "$previous_deployed_image_tmp" "$DEPLOY_ROOT/deployed-image" || return 1
+        previous_deployed_image_tmp=""
+    else
+        rm -f "$DEPLOY_ROOT/deployed-image" || return 1
     fi
 }
 
@@ -476,6 +495,10 @@ on_exit() {
                 sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
             fi
         fi
+        if [ "$observability_installed" -eq 1 ]; then
+            sudo -n "$observability_helper" rollback || \
+                echo "Observability managed-file rollback failed" >&2
+        fi
     fi
 
     cleanup
@@ -499,6 +522,7 @@ previous_worker_replicas=1
 previous_env_exists=0
 previous_deployment_target_exists=0
 previous_compose_project_name_exists=0
+previous_deployed_image_exists=0
 has_successful_deployment=0
 if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_env_exists=1
@@ -543,6 +567,9 @@ if [ -f "$DEPLOY_ROOT/compose-project-name" ]; then
 fi
 if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
     has_successful_deployment=1
+    previous_deployed_image_exists=1
+    previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
+    cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
 fi
 
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}web,$PUBLIC_DOMAIN"
@@ -661,7 +688,10 @@ else
     fi
 fi
 
+verify_observability_bootstrap || fail "Selfie observability bootstrap is missing or stale; run deploy/bootstrap-selfie-observability.sh as an operator"
+observability_installed=1
 mutation_started=1
+sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
 mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
 requested_env_tmp=""
 
@@ -784,6 +814,12 @@ fi
 if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
     fail "Requested deployment failed public HTTPS smoke verification"
 fi
+if ! sudo -n "$observability_helper" verify; then
+    fail "Requested deployment failed selfie observability verification"
+fi
+if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
+    fail "Requested deployment failed application observability verification"
+fi
 
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.XXXXXX")"
 printf '%s\n' "$DEPLOYMENT_TARGET" > "$marker_tmp"
@@ -805,4 +841,5 @@ marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.XXXXXX")"
 printf '%s\n' "$requested_image" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
+sudo -n "$observability_helper" commit
 deployment_committed=1

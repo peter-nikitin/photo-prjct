@@ -47,9 +47,13 @@
       return 'image/jpeg';
     }
     if (type === 'image/png') return 'image/png';
+    if (type === 'image/heic') return 'image/heic';
+    if (type === 'image/heif') return 'image/heif';
     const name = typeof file?.name === 'string' ? file.name.toLowerCase() : '';
     if (/\.(jpe?g)$/.test(name)) return 'image/jpeg';
     if (/\.png$/.test(name)) return 'image/png';
+    if (/\.heic$/.test(name)) return 'image/heic';
+    if (/\.heif$/.test(name)) return 'image/heif';
     return '';
   }
 
@@ -667,7 +671,11 @@
         return;
       }
       const data = new FormData();
-      const extension = selfie.mediaType === 'image/png' ? 'png' : 'jpg';
+      const extension = {
+        'image/png': 'png',
+        'image/heic': 'heic',
+        'image/heif': 'heif',
+      }[selfie.mediaType] || 'jpg';
       data.append('selfie', new Blob([selfie.bytes], { type: selfie.mediaType }), `selfie.${extension}`);
       data.append('contact', contact);
       data.append('personal_data_consent', 'true');
@@ -962,6 +970,11 @@
     }
   }
 
+  function focusSelfieSearchError(document) {
+    const error = document.querySelector('[data-selfie-search-error]');
+    if (error && typeof error.focus === 'function') error.focus();
+  }
+
   function startBrowserUi(document, window, options = {}) {
     const storage = options.storage || new BrowserStorageAdapter({
       indexedDB: safeObjectValue(window, 'indexedDB'),
@@ -970,6 +983,7 @@
       crypto: safeObjectValue(window, 'crypto'),
     });
     const form = document.querySelector('[data-selfie-search-form]');
+    focusSelfieSearchError(document);
     const result = document.querySelector('[data-selfie-search-result]');
     const feedbackEnabled = (form || result)?.dataset?.selfieFeedbackEnabled === 'true';
     bindSelfieSearchForm(form, { storage });
@@ -1016,6 +1030,7 @@
     initializeBrowserStorage,
     initializeFeedbackCleanupUi,
     initializeFeedbackUi,
+    focusSelfieSearchError,
     startBrowserUi,
   };
 });

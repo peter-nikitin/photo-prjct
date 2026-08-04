@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from math import sqrt
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -315,7 +316,11 @@ class SearchJobTests(TestCase):
         self.assertEqual(search.matched_photo_count, 0)
 
         self.storage.fail_delete = False
-        replay = complete_search_attempt(claimed.attempt.id, result=payload, storage=self.storage)
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                replay = complete_search_attempt(
+                    claimed.attempt.id, result=payload, storage=self.storage
+                )
         search.refresh_from_db()
 
         self.assertTrue(replay.idempotent)
@@ -324,6 +329,52 @@ class SearchJobTests(TestCase):
         self.assertEqual(search.matched_photo_count, 1)
         self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 1)
         self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
+        self.assertEqual(terminal["status"], SelfieSearch.Status.READY)
+        self.assertTrue(terminal["cleanup_confirmed"])
+
+    def test_terminal_observability_query_failure_cannot_change_the_committed_result(self) -> None:
+        search = self.make_search()
+        claimed = self.claim(search)
+
+        with patch(
+            "selfie_search.services.jobs._terminal_attempt_count",
+            side_effect=RuntimeError("SECRET-QUERY-FAILURE"),
+        ):
+            with self.assertLogs("selfie_search.services.jobs", level="ERROR") as logs:
+                with self.captureOnCommitCallbacks(execute=True):
+                    completion = complete_search_attempt(
+                        claimed.attempt.id, result=self.result(), storage=self.storage
+                    )
+
+        search.refresh_from_db()
+        self.assertFalse(completion.idempotent)
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertIsNotNone(search.cleanup_confirmed_at)
+        self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 1)
+        self.assertEqual(len(logs.output), 1)
+        self.assertTrue(logs.output[0].endswith("selfie_observability_emit_failed"))
+        self.assertNotIn("SECRET-QUERY-FAILURE", logs.output[0])
+
+    def test_terminal_logger_failure_cannot_change_the_committed_result(self) -> None:
+        search = self.make_search()
+        claimed = self.claim(search)
+
+        with patch(
+            "selfie_search.services.jobs.logger.log",
+            side_effect=RuntimeError("logger unavailable"),
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                completion = complete_search_attempt(
+                    claimed.attempt.id, result=self.result(), storage=self.storage
+                )
+
+        search.refresh_from_db()
+        self.assertFalse(completion.idempotent)
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertIsNotNone(search.cleanup_confirmed_at)
+        self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 1)
 
     def test_terminal_callbacks_are_hash_only_idempotent_and_reject_conflicts(self) -> None:
         search = self.make_search()

@@ -583,6 +583,7 @@ def selfie_claim_payload(
         "processor_type": PROCESSOR_TYPE_SELFIE_QUERY,
         "processor_version": 1,
         "configuration": configuration,
+        "event_id": "17",
         "search_id": "00000000-0000-0000-0000-000000000013",
         "input_fingerprint": {
             "temporary_key": "selfie-search/0123456789abcdef0123456789abcdef",
@@ -602,6 +603,7 @@ def test_claim_accepts_only_the_exact_selfie_query_union_variant() -> None:
 
     assert claim.job is not None
     assert claim.job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY
+    assert claim.job.event_id == "17"
     assert claim.job.search_id == "00000000-0000-0000-0000-000000000013"
     assert claim.job.input_fingerprint.temporary_content_type == "image/png"
 

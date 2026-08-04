@@ -1033,6 +1033,7 @@ class SelfieWorkerApiTests(TestCase):
                 "processor_type",
                 "processor_version",
                 "configuration",
+                "event_id",
                 "search_id",
                 "input_fingerprint",
                 "input_limits",
@@ -1043,6 +1044,10 @@ class SelfieWorkerApiTests(TestCase):
         )
         self.assertEqual(job["search_id"], str(self.search.id))
         self.assertNotIn("photo_id", job)
+        self.assertEqual(job["input_limits"], {"max_bytes": 1024, "content_type": "image/jpeg"})
+        self.assertNotIn("source_format", json.dumps(job["configuration"]))
+        self.assertNotIn("source_size", json.dumps(job["configuration"]))
+        self.assertNotIn("image/heic", json.dumps(job["configuration"]))
         self.assertEqual(
             job["input_fingerprint"]["temporary_key"],
             "selfie-search/0123456789abcdef0123456789abcdef",

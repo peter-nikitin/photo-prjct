@@ -142,6 +142,7 @@ def test_production_worker_profile_is_bounded_and_isolated_from_web_configuratio
     assert worker["mem_limit"] == "2g"
     assert worker["pids_limit"] == 64
     assert worker["environment"] == {
+        "DEPLOYMENT_TARGET": "${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}",
         "PHOTO_WORKER_API_URL": "http://web:8000/internal/photo-processing/v1",
         "PHOTO_WORKER_TOKEN": "${PHOTO_PROCESSING_WORKER_TOKEN:-}",
         "PHOTO_WORKER_BUILD": "${PHOTO_WORKER_BUILD:-capture-metadata-v1}",

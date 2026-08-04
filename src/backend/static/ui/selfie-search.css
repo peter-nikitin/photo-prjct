@@ -42,6 +42,20 @@
   max-width: 520px;
 }
 
+.selfie-search-error {
+  margin-bottom: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--coral);
+  border-radius: 9px;
+  background: #fff1ed;
+  color: #7a2d20;
+  font-weight: 750;
+}
+
+.selfie-search-error p {
+  margin: 0;
+}
+
 .selfie-search label {
   font-weight: 800;
 }

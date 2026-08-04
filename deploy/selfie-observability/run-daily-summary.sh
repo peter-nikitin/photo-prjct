@@ -31,17 +31,19 @@ else
     )
     recomputed=False
 fi
-next_date=$(
+window_bounds=$(
     "$PYTHON_BIN" -c \
-        'from datetime import date, timedelta; import sys; print((date.fromisoformat(sys.argv[1]) + timedelta(days=1)).isoformat())' \
+        'import sys; from datetime import date, datetime, time, timedelta, timezone; from zoneinfo import ZoneInfo; report_date=date.fromisoformat(sys.argv[1]); timezone_moscow=ZoneInfo("Europe/Moscow"); print(" ".join(datetime.combine(report_date + timedelta(days=offset), time.min, tzinfo=timezone_moscow).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") for offset in (0, 1)))' \
         "$report_date"
 )
+window_start=${window_bounds% *}
+window_end=${window_bounds#* }
 
 journal_input=$(mktemp)
 trap 'rm -f "$journal_input"' EXIT HUP INT TERM
 journalctl \
-    --since "$report_date 00:00:00 Europe/Moscow" \
-    --until "$next_date 00:00:00 Europe/Moscow" \
+    --since "$window_start" \
+    --until "$window_end" \
     --output=cat \
     "CONTAINER_TAG=findme.service=web findme.environment=$DEPLOYMENT_TARGET" + \
     "CONTAINER_TAG=findme.service=worker findme.environment=$DEPLOYMENT_TARGET" + \

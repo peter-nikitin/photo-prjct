@@ -5,7 +5,7 @@
 > checkbox (`- [ ]`) syntax for tracking.
 
 - Date: 2026-08-04
-- Status: Draft
+- Status: Implementation complete; deployment pending
 - Owner: project maintainer
 - Related specification:
   [`2026-08-04-device-local-saved-selfie-results-design.md`](../superpowers/specs/2026-08-04-device-local-saved-selfie-results-design.md)

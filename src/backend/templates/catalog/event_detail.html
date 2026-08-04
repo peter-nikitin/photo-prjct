@@ -68,6 +68,9 @@
           {{ selfie_search_form.selfie }}
           <button class="button" type="submit">Найти мои фото</button>
         </form>
+        <section class="selfie-search-history" data-selfie-search-history data-event-slug="{{ event.slug }}" hidden>
+          <div data-selfie-search-history-list></div>
+        </section>
       </section>
     {% endif %}
     <section class="event-gallery" data-event-gallery aria-labelledby="gallery-title">
@@ -107,4 +110,5 @@
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
   {% if selfie_search_form %}<script src="{% static 'ui/selfie-search.js' %}"></script>{% endif %}
+  {% if selfie_search_form %}<script src="{% static 'ui/selfie-search-history.js' %}"></script>{% endif %}
 {% endblock %}

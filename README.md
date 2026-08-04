@@ -138,6 +138,8 @@ The root helper verifies effective policy and timer state; the unprivileged
 `deploy/verify-selfie-observability.sh` verifies Compose tags and an emitted probe. Do not paste raw journal output into tickets;
 record only the bounded summary and sanitized diagnostics.
 
+For the complete incident workflow, use the [selfie-search log-analysis runbook](docs/runbooks/selfie-search-log-analysis.md).
+
 ### Prepare Node.js
 
 The repository uses Node 22 for JavaScript unit tests and local npm commands. With

@@ -16,6 +16,7 @@ const desktopPages = [
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
   ['reference-dashboard', '/__visual__/reference/dashboard/'],
@@ -42,6 +43,8 @@ const mobilePages = [
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
+  ['selfie-search-feedback-marking', '/__visual__/event/selfie-search/feedback-marking/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
   ['upload-empty', '/__visual__/upload/empty/'],
@@ -127,7 +130,6 @@ async function capturePage(page, { path, snapshot, viewport, cookieAcknowledged 
     resources.filter(({ status }) => status >= 400),
     `CSS, sprite, and images on ${path} must load successfully`,
   ).toEqual([]);
-
   await expect(page).toHaveScreenshot(snapshot, {
     animations: 'disabled',
     fullPage: true,
@@ -264,6 +266,59 @@ test.describe('mobile visual regression', () => {
       });
     });
   }
+});
+
+test('desktop marking mode renders every control beside its original download action from a neutral viewport', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  const response = await page.goto('/__visual__/event/selfie-search/feedback-marking/');
+  expect(response).not.toBeNull();
+  expect(response.status()).toBeLessThan(400);
+  await settlePage(page);
+
+  const layout = await page.evaluate(() => ({
+    scrollY: window.scrollY,
+    activeTag: document.activeElement?.tagName,
+    cards: Array.from(document.querySelectorAll('.gallery-card-actions')).map((actions) => {
+      const controls = actions.querySelector('[data-feedback-card-controls]');
+      const download = actions.querySelector('.gallery-download');
+      const controlRect = controls?.getBoundingClientRect();
+      const downloadRect = download?.getBoundingClientRect();
+      return {
+        controlsVisible: Boolean(controls && !controls.hidden),
+        controlsBeforeDownload: Boolean(controlRect && downloadRect && controlRect.right <= downloadRect.left),
+      };
+    }),
+  }));
+
+  expect(layout.scrollY).toBe(0);
+  expect(layout.activeTag).toBe('BODY');
+  expect(layout.cards).toHaveLength(3);
+  expect(layout.cards.every(({ controlsVisible }) => controlsVisible)).toBe(true);
+  expect(layout.cards.every(({ controlsBeforeDownload }) => controlsBeforeDownload)).toBe(true);
+  await page.addStyleTag({
+    content: '.topbar { position: static !important; } .skip-link { display: none !important; }',
+  });
+  await expect(page).toHaveScreenshot('desktop-selfie-search-feedback-marking.png', {
+    animations: 'disabled',
+    fullPage: true,
+    timeout: 15_000,
+  });
+});
+
+test('marking mode keeps the original cards operable and updates optional progress', async ({ page }) => {
+  await page.goto('/__visual__/event/selfie-search/feedback-marking/');
+
+  const firstPresent = page.getByRole('button', { name: 'На фотографии 1: я есть' });
+  await expect(firstPresent).toBeVisible();
+  await expect(page.locator('.gallery-download')).toHaveCount(3);
+  await firstPresent.click();
+  await expect(firstPresent).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('[data-feedback-progress]')).toHaveText('Размечено 1 из 3 фотографий');
+  await firstPresent.click();
+  await expect(firstPresent).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('[data-feedback-progress]')).toHaveText('Размечено 0 из 3 фотографий');
+  await expect(page.locator('.glightbox-container')).toHaveCount(0);
 });
 
 test('cookie notice is visible and usable on a fresh desktop profile', async ({ page }) => {

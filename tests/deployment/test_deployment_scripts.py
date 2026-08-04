@@ -1648,6 +1648,97 @@ def test_failed_certificate_renewal_waits_before_next_attempt(
     ]
 
 
+def test_feedback_activation_requires_a_confirmed_storage_preflight_before_mutation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """Feedback must remain disabled if the operator has not confirmed its real-bucket probe."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "PHOTO_PROCESSING_FACE_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "SELFIE_SEARCH_ENABLED": "True",
+            "PRIVATE_MEDIA_S3_BUCKET": "private-search",
+            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "private-access",
+            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "private-secret",
+            "SELFIE_FEEDBACK_ENABLED": "True",
+            "SELFIE_FEEDBACK_S3_BUCKET": "feedback-private",
+            "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "feedback-access",
+            "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "feedback-secret",
+            "SELFIE_FEEDBACK_KMS_KEY_ID": "kms-feedback-key",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
+
+
+def test_confirmed_feedback_activation_persists_web_only_storage_configuration(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """The candidate web environment receives the dedicated bucket, KMS key, and no worker copy."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "PHOTO_PROCESSING_FACE_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "SELFIE_SEARCH_ENABLED": "True",
+            "PRIVATE_MEDIA_S3_BUCKET": "private-search",
+            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "private-access",
+            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "private-secret",
+            "SELFIE_FEEDBACK_ENABLED": "True",
+            "SELFIE_FEEDBACK_S3_BUCKET": "feedback-private",
+            "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "feedback-access",
+            "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "feedback-secret-must-not-be-logged",
+            "SELFIE_FEEDBACK_KMS_KEY_ID": "kms-feedback-key",
+            "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED": "True",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "SELFIE_FEEDBACK_ENABLED=True" in deployed_env
+    assert "SELFIE_FEEDBACK_S3_BUCKET=feedback-private" in deployed_env
+    assert "SELFIE_FEEDBACK_KMS_KEY_ID=kms-feedback-key" in deployed_env
+    assert "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED=True" in deployed_env
+    assert "feedback-secret-must-not-be-logged" not in result.stdout
+    assert "feedback-secret-must-not-be-logged" not in result.stderr
+    assert "feedback-secret-must-not-be-logged" not in "\n".join(_apply_log(tmp_path))
+
+
+def test_feedback_workflow_forwards_web_credentials_and_keeps_them_out_of_worker_compose_env() -> (
+    None
+):
+    """The workflow is the only feedback-credential ingress; worker never gets them."""
+    workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    compose = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+
+    assert "SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}" in workflow
+    assert "SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}" in workflow
+    assert (
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID: "
+        "${{ secrets.SELFIE_FEEDBACK_S3_ACCESS_KEY_ID }}" in workflow
+    )
+    assert (
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY: "
+        "${{ secrets.SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY }}" in workflow
+    )
+    assert "SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}" in workflow
+    assert "verify_selfie_feedback_storage" in workflow
+    worker_section = compose.split("  worker:\n", maxsplit=1)[1]
+    assert "SELFIE_FEEDBACK_" not in worker_section
+
+
 def _observability_install_env(tmp_path: Path, fake_bin: Path) -> dict[str, str]:
     source = tmp_path / "deploy" / "selfie-observability"
     source.mkdir(parents=True)

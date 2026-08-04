@@ -1,0 +1,22 @@
+{% extends "admin/change_form.html" %}
+
+{% block after_field_sets %}
+{{ block.super }}
+{% if sensitive_feedback_action_urls %}
+<fieldset class="module aligned">
+  <h2>Чувствительные данные</h2>
+  <div class="form-row">
+    <form method="post" action="{{ sensitive_feedback_action_urls.contact }}">
+      {% csrf_token %}
+      <button type="submit">Посмотреть контакт</button>
+    </form>
+  </div>
+  <div class="form-row">
+    <form method="post" action="{{ sensitive_feedback_action_urls.selfie }}">
+      {% csrf_token %}
+      <button type="submit">Открыть селфи</button>
+    </form>
+  </div>
+</fieldset>
+{% endif %}
+{% endblock %}

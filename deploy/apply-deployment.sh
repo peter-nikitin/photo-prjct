@@ -26,6 +26,7 @@ requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}"
 requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
 requested_selfie_search_enabled="${SELFIE_SEARCH_ENABLED:-False}"
+requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
 
 case "$requested_worker_replicas" in
@@ -204,6 +205,56 @@ case "$requested_selfie_search_enabled" in
         ;;
     *)
         echo "SELFIE_SEARCH_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+case "$requested_selfie_feedback_enabled" in
+    True)
+        if [ "$requested_selfie_search_enabled" != True ]; then
+            echo "SELFIE_FEEDBACK_ENABLED requires SELFIE_SEARCH_ENABLED=True" >&2
+            exit 2
+        fi
+        : "${SELFIE_FEEDBACK_S3_BUCKET:?Set SELFIE_FEEDBACK_S3_BUCKET}"
+        : "${SELFIE_FEEDBACK_S3_ACCESS_KEY_ID:?Set SELFIE_FEEDBACK_S3_ACCESS_KEY_ID}"
+        : "${SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY:?Set SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY}"
+        : "${SELFIE_FEEDBACK_KMS_KEY_ID:?Set SELFIE_FEEDBACK_KMS_KEY_ID}"
+        case "${SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED:-False}" in
+            True)
+                ;;
+            False)
+                echo "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED must be True before enabling feedback" >&2
+                exit 2
+                ;;
+            *)
+                echo "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED must be True or False" >&2
+                exit 2
+                ;;
+        esac
+        requested_selfie_feedback_endpoint_url="${SELFIE_FEEDBACK_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}"
+        requested_selfie_feedback_region="${SELFIE_FEEDBACK_S3_REGION:-ru-central1}"
+        if [ "$requested_selfie_feedback_endpoint_url" != https://storage.yandexcloud.net ] || \
+            [ "$requested_selfie_feedback_region" != ru-central1 ]; then
+            echo "SELFIE_FEEDBACK_S3 endpoint and region must use Yandex Object Storage" >&2
+            exit 2
+        fi
+        requested_selfie_feedback_bucket="$SELFIE_FEEDBACK_S3_BUCKET"
+        requested_selfie_feedback_access_key_id="$SELFIE_FEEDBACK_S3_ACCESS_KEY_ID"
+        requested_selfie_feedback_secret_access_key="$SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY"
+        requested_selfie_feedback_kms_key_id="$SELFIE_FEEDBACK_KMS_KEY_ID"
+        requested_selfie_feedback_preflight_confirmed=True
+        ;;
+    False)
+        requested_selfie_feedback_endpoint_url=https://storage.yandexcloud.net
+        requested_selfie_feedback_region=ru-central1
+        requested_selfie_feedback_bucket=""
+        requested_selfie_feedback_access_key_id=""
+        requested_selfie_feedback_secret_access_key=""
+        requested_selfie_feedback_kms_key_id=""
+        requested_selfie_feedback_preflight_confirmed=False
+        ;;
+    *)
+        echo "SELFIE_FEEDBACK_ENABLED must be True or False" >&2
         exit 2
         ;;
 esac
@@ -392,7 +443,15 @@ clear_candidate_compose_interpolation() {
         SELFIE_SEARCH_EMBEDDING_DIMENSIONS \
         SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD \
         SELFIE_SEARCH_TEMPORARY_PREFIX \
-        SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS
+        SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS \
+        SELFIE_FEEDBACK_ENABLED \
+        SELFIE_FEEDBACK_S3_BUCKET \
+        SELFIE_FEEDBACK_S3_ACCESS_KEY_ID \
+        SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY \
+        SELFIE_FEEDBACK_S3_ENDPOINT_URL \
+        SELFIE_FEEDBACK_S3_REGION \
+        SELFIE_FEEDBACK_KMS_KEY_ID \
+        SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED
 }
 
 recover_previous_deployment() {
@@ -569,6 +628,14 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD=%s\n' "$requested_selfie_search_cosine_distance_threshold"
     printf 'SELFIE_SEARCH_TEMPORARY_PREFIX=%s\n' "$requested_selfie_search_temporary_prefix"
     printf 'SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS=%s\n' "$requested_selfie_search_lifecycle_max_age_hours"
+    printf 'SELFIE_FEEDBACK_ENABLED=%s\n' "$requested_selfie_feedback_enabled"
+    printf 'SELFIE_FEEDBACK_S3_BUCKET=%s\n' "$requested_selfie_feedback_bucket"
+    printf 'SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=%s\n' "$requested_selfie_feedback_access_key_id"
+    printf 'SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY=%s\n' "$requested_selfie_feedback_secret_access_key"
+    printf 'SELFIE_FEEDBACK_S3_ENDPOINT_URL=%s\n' "$requested_selfie_feedback_endpoint_url"
+    printf 'SELFIE_FEEDBACK_S3_REGION=%s\n' "$requested_selfie_feedback_region"
+    printf 'SELFIE_FEEDBACK_KMS_KEY_ID=%s\n' "$requested_selfie_feedback_kms_key_id"
+    printf 'SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED=%s\n' "$requested_selfie_feedback_preflight_confirmed"
 } > "$requested_env_tmp"
 chmod 600 "$requested_env_tmp"
 

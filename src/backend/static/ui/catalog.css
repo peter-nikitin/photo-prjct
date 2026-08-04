@@ -384,8 +384,42 @@
 
 .gallery-card-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   min-height: 44px;
+}
+
+.gallery-card-feedback-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.gallery-card-feedback-controls[hidden] {
+  display: none;
+}
+
+.gallery-feedback-choice {
+  min-height: 36px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.gallery-feedback-choice:hover,
+.gallery-feedback-choice[aria-pressed="true"] {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: var(--surface);
+}
+
+.gallery-feedback-choice:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .gallery-download {

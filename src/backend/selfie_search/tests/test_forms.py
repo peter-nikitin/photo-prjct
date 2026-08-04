@@ -7,7 +7,11 @@ from zlib import crc32
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase
 from PIL import Image
-from selfie_search.forms import SelfieSearchUploadForm, SelfieUploadObservation
+from selfie_search.forms import (
+    FeedbackSubmissionForm,
+    SelfieSearchUploadForm,
+    SelfieUploadObservation,
+)
 from selfie_search.images import PreparedSelfie, SelfieImageRejected
 
 FIXTURE = Path(__file__).parent / "fixtures" / "iphone-oriented.heic"
@@ -220,3 +224,78 @@ class SelfieSearchUploadFormTests(SimpleTestCase):
         error = form.errors.as_data()["selfie"][0]
         self.assertEqual(error.code, "normalized_too_large")
         self.assertEqual(error.message, "Размер фотографии не должен превышать 20 МиБ.")
+
+
+class FeedbackSubmissionFormTests(SimpleTestCase):
+    """The production breaks caught here are accepting unsafe feedback metadata or media."""
+
+    def make_form(self, *, data=None, upload=None) -> FeedbackSubmissionForm:
+        return FeedbackSubmissionForm(
+            data={
+                "contact": "  person@example.test  ",
+                "personal_data_consent": "on",
+                "labels": '{"00000000-0000-0000-0000-000000000001":"present"}',
+                **(data or {}),
+            },
+            files={"selfie": upload or image_upload(image_format="JPEG")},
+        )
+
+    def test_accepts_valid_multipart_payload_and_uses_server_consent_version(self) -> None:
+        form = self.make_form()
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["contact"], "person@example.test")
+        self.assertEqual(
+            form.cleaned_data["labels"],
+            {"00000000-0000-0000-0000-000000000001": "present"},
+        )
+        self.assertEqual(form.consent_text_version, "2026-08-04")
+
+    def test_accepts_the_same_heic_source_contract_as_search(self) -> None:
+        form = self.make_form(upload=heic_upload(content_type="application/octet-stream"))
+
+        self.assertTrue(form.is_valid(), form.errors)
+        selfie = form.cleaned_data["selfie"]
+        self.assertIsInstance(selfie, PreparedSelfie)
+        self.assertEqual(selfie.content_type, "image/jpeg")
+
+    def test_rejects_unconsented_or_unsafe_contact_and_duplicate_labels(self) -> None:
+        cases = (
+            ({"personal_data_consent": ""}, "personal_data_consent"),
+            ({"contact": " \n "}, "contact"),
+            ({"contact": "x\x00@example.test"}, "contact"),
+            ({"contact": "x" * 255}, "contact"),
+            (
+                {
+                    "labels": (
+                        '{"00000000-0000-0000-0000-000000000001":"present",'
+                        '"00000000-0000-0000-0000-000000000001":"absent"}'
+                    )
+                },
+                "labels",
+            ),
+        )
+        for data, field in cases:
+            with self.subTest(data=data):
+                form = self.make_form(data=data)
+
+                self.assertFalse(form.is_valid())
+                self.assertIn(field, form.errors)
+
+    def test_rejects_unknown_label_value_and_corrupt_or_oversize_image(self) -> None:
+        unknown_label = self.make_form(
+            data={"labels": '{"00000000-0000-0000-0000-000000000001":"maybe"}'}
+        )
+        corrupt = self.make_form(
+            upload=SimpleUploadedFile("selfie.jpg", b"broken", content_type="image/jpeg")
+        )
+        oversize = self.make_form(
+            upload=SimpleUploadedFile(
+                "selfie.jpg", b"x" * (20 * 1024 * 1024 + 1), content_type="image/jpeg"
+            )
+        )
+
+        for form, field in ((unknown_label, "labels"), (corrupt, "selfie"), (oversize, "selfie")):
+            with self.subTest(field=field):
+                self.assertFalse(form.is_valid())
+                self.assertIn(field, form.errors)

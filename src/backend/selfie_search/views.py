@@ -1,5 +1,7 @@
 import logging
+import re
 from time import monotonic
+from urllib.parse import urlencode
 
 from config.views import _public_media_resolver
 from django import forms
@@ -22,9 +24,16 @@ from picflow.gallery import (
 )
 from picflow.models import Event, Photo
 
-from selfie_search.forms import SelfieSearchUploadForm
-from selfie_search.models import SelfieSearch
+from selfie_search.forms import FeedbackSubmissionForm, SelfieSearchUploadForm
+from selfie_search.models import SelfieSearch, SelfieSearchFeedback
 from selfie_search.observability import SelfieEventName, emit_selfie_event
+from selfie_search.services.feedback import (
+    FeedbackInvalid,
+    FeedbackNonTerminal,
+    FeedbackResultChanged,
+    feedback_presentation,
+    submit_search_feedback,
+)
 from selfie_search.services.results import (
     PublicSearchNotFound,
     public_status_payload,
@@ -33,7 +42,14 @@ from selfie_search.services.results import (
     saved_ready_result_photo,
 )
 from selfie_search.services.submission import submit_selfie_search
-from selfie_search.storage import TemporarySelfieStorage
+from selfie_search.storage import FeedbackSelfieStorage, TemporarySelfieStorage
+
+_FEEDBACK_CORRELATION_RE = re.compile(r"\A[A-Za-z0-9_-]{32,64}\Z")
+
+
+def _validated_feedback_correlation(value: str) -> str:
+    return value if _FEEDBACK_CORRELATION_RE.fullmatch(value) else ""
+
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +60,11 @@ def submit(request, event_slug: str):
     event = get_object_or_404(Event.objects.published(), slug=event_slug)
     if not settings.SELFIE_SEARCH_ENABLED:
         raise Http404
+    feedback_correlation = (
+        _validated_feedback_correlation(request.POST.get("feedback_correlation", ""))
+        if settings.SELFIE_FEEDBACK_ENABLED
+        else ""
+    )
     form = SelfieSearchUploadForm(files=request.FILES)
     if not form.is_valid():
         reason_code = form.image_rejection.reason if form.image_rejection else "missing_or_empty"
@@ -91,11 +112,13 @@ def submit(request, event_slug: str):
         started_at=started_at,
         level=logging.INFO,
     )
-    return redirect(
+    result_url = reverse(
         "selfie_search:result",
-        event_slug=event.slug,
-        public_token=created.public_token,
+        kwargs={"event_slug": event.slug, "public_token": created.public_token},
     )
+    if feedback_correlation:
+        result_url = f"{result_url}?{urlencode({'feedback_correlation': feedback_correlation})}"
+    return redirect(result_url)
 
 
 def _emit_submission_finished(
@@ -154,15 +177,49 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         )
         for photo in photos
     )
+    gallery_result_items = (
+        tuple(zip(selfie_search_page.object_list, gallery_photos, strict=True))
+        if selfie_search_page is not None
+        else ()
+    )
+    feedback_context = None
+    feedback_submitted = False
+    feedback_correlation = (
+        _validated_feedback_correlation(request.GET.get("feedback_correlation", ""))
+        if settings.SELFIE_FEEDBACK_ENABLED
+        else ""
+    )
+    if settings.SELFIE_FEEDBACK_ENABLED and search.status in _TERMINAL_SEARCH_STATUSES:
+        feedback_submitted = SelfieSearchFeedback.objects.filter(search=search).exists()
+        if not feedback_submitted:
+            try:
+                presentation = feedback_presentation(search)
+            except FeedbackNonTerminal:
+                presentation = None
+            if presentation is not None:
+                feedback_context = {
+                    "variant": presentation.variant,
+                    "visible_result_count": presentation.visible_result_count,
+                    "url": reverse(
+                        "selfie_search:feedback",
+                        kwargs={"event_slug": search.event.slug, "public_token": public_token},
+                    ),
+                }
     response = render(
         request,
         "selfie_search/result.html",
         {
             "event": search.event,
             "gallery_photos": gallery_photos,
+            "gallery_result_items": gallery_result_items,
+            "feedback": feedback_context,
+            "feedback_submitted": feedback_submitted,
+            "selfie_feedback_enabled": bool(settings.SELFIE_FEEDBACK_ENABLED),
+            "selfie_feedback_correlation": feedback_correlation,
             "selfie_search_page": selfie_search_page,
             "is_terminal": search.status in _TERMINAL_SEARCH_STATUSES,
             "public_token": public_token,
+            "public_token_digest": search.public_token_digest,
             "search": search,
             "status_url": reverse(
                 "selfie_search:status",
@@ -178,6 +235,37 @@ def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # 
     if search is None:
         return _not_found_response()
     return JsonResponse(public_status_payload(search))
+
+
+@require_POST
+def feedback(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
+    if not settings.SELFIE_FEEDBACK_ENABLED:
+        return _not_found_response()
+    search = _public_search(event_slug=event_slug, public_token=public_token)
+    if search is None:
+        return _not_found_response()
+    form = FeedbackSubmissionForm(data=request.POST, files=request.FILES)
+    if not form.is_valid():
+        return JsonResponse({"status": "invalid"}, status=422)
+    try:
+        submission = submit_search_feedback(
+            search_id=search.pk,
+            upload=form.cleaned_data["selfie"],
+            contact=form.cleaned_data["contact"],
+            labels=form.cleaned_data["labels"],
+            storage=FeedbackSelfieStorage(),
+        )
+    except FeedbackInvalid:
+        return JsonResponse({"status": "invalid"}, status=422)
+    except FeedbackNonTerminal:
+        return JsonResponse({"status": "non_terminal"}, status=409)
+    except FeedbackResultChanged:
+        return JsonResponse({"status": "result_changed"}, status=409)
+    except StorageUnavailable:
+        return JsonResponse({"status": "storage_unavailable"}, status=503)
+    status = 201 if submission.created else 200
+    outcome = "submitted" if submission.created else "already_submitted"
+    return JsonResponse({"status": outcome}, status=status)
 
 
 def result_media(

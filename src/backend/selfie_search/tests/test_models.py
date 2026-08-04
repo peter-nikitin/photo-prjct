@@ -1,6 +1,7 @@
 from datetime import date
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -10,6 +11,9 @@ from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAttempt,
     SelfieSearchCandidate,
+    SelfieSearchFeedback,
+    SelfieSearchFeedbackAccessAudit,
+    SelfieSearchFeedbackLabel,
     SelfieSearchJob,
     SelfieSearchResult,
 )
@@ -179,6 +183,204 @@ class SelfieSearchModelTests(TestCase):
             self.assertNotIn("query_vector", fields)
             self.assertNotIn("query_embedding", fields)
             self.assertNotIn("vector", fields)
+
+    def make_result(self, *, search=None, photo=None, other_event: bool = False):
+        search = search or self.search
+        photo = photo or (self.other_photo if other_event else self.photo)
+        return SelfieSearchResult.objects.create(
+            search=search,
+            photo=photo,
+            detection_id=self.make_detection_id(other_event=other_event),
+            rank=1,
+            cosine_distance=0.1,
+        )
+
+    def make_feedback(self, **overrides):
+        values = {
+            "search": self.search,
+            "variant": SelfieSearchFeedback.Variant.PROBLEM,
+            "contact": "person@example.test",
+            "personal_data_consent": True,
+            "consent_text_version": "2026-08-04",
+            "consented_at": timezone.now(),
+            "source_status": SelfieSearch.Status.FAILED,
+            "source_matched_photo_count": 0,
+            "source_visible_result_count": 0,
+            "source_configuration": {"embedding_model": "sface-v1"},
+            "object_key": "feedback/0123456789abcdef0123456789abcdef",
+            "object_content_type": "image/jpeg",
+            "object_size": 1,
+            "object_uploaded_at": timezone.now(),
+        }
+        values.update(overrides)
+        return SelfieSearchFeedback.objects.create(**values)
+
+    def test_feedback_requires_true_personal_data_consent(self) -> None:
+        feedback = SelfieSearchFeedback(
+            **{
+                "search": self.search,
+                "variant": SelfieSearchFeedback.Variant.PROBLEM,
+                "contact": "person@example.test",
+                "personal_data_consent": False,
+                "consent_text_version": "2026-08-04",
+                "consented_at": timezone.now(),
+                "source_status": SelfieSearch.Status.FAILED,
+                "source_configuration": {},
+                "object_key": "feedback/0123456789abcdef0123456789abcdef",
+                "object_content_type": "image/jpeg",
+                "object_size": 1,
+                "object_uploaded_at": timezone.now(),
+            }
+        )
+
+        with self.assertRaises(ValidationError):
+            feedback.full_clean()
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                feedback.save(force_insert=True)
+
+    def test_feedback_is_unique_per_search(self) -> None:
+        self.make_feedback()
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self.make_feedback()
+
+    def test_feedback_variant_matches_terminal_source_snapshot(self) -> None:
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self.make_feedback(
+                    variant=SelfieSearchFeedback.Variant.RESULT_LABELS,
+                    source_status=SelfieSearch.Status.FAILED,
+                    source_visible_result_count=1,
+                )
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self.make_feedback(
+                    variant=SelfieSearchFeedback.Variant.RESULT_LABELS,
+                    source_status=SelfieSearch.Status.READY,
+                    source_visible_result_count=0,
+                )
+
+    def test_problem_feedback_does_not_accept_labels(self) -> None:
+        feedback = self.make_feedback()
+        result = self.make_result()
+        label = SelfieSearchFeedbackLabel(
+            feedback=feedback,
+            result=result,
+            value=SelfieSearchFeedbackLabel.Value.PRESENT,
+        )
+
+        with self.assertRaises(ValidationError):
+            label.full_clean()
+
+    def test_feedback_label_is_unique_per_result_membership(self) -> None:
+        self.search.status = SelfieSearch.Status.READY
+        self.search.save(update_fields=["status"])
+        result = self.make_result()
+        feedback = self.make_feedback(
+            variant=SelfieSearchFeedback.Variant.RESULT_LABELS,
+            source_status=SelfieSearch.Status.READY,
+            source_matched_photo_count=1,
+            source_visible_result_count=1,
+        )
+        SelfieSearchFeedbackLabel.objects.create(
+            feedback=feedback,
+            result=result,
+            value=SelfieSearchFeedbackLabel.Value.PRESENT,
+        )
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                SelfieSearchFeedbackLabel.objects.create(
+                    feedback=feedback,
+                    result=result,
+                    value=SelfieSearchFeedbackLabel.Value.ABSENT,
+                )
+
+    def test_feedback_label_rejects_result_from_another_search(self) -> None:
+        other_search = SelfieSearch.objects.create(
+            event=self.other_event,
+            public_token_digest="b" * 64,
+            temporary_object_key="selfie-search/two.jpg",
+            configuration={"embedding_model": "sface-v1"},
+            status=SelfieSearch.Status.READY,
+        )
+        other_result = self.make_result(search=other_search, other_event=True)
+        feedback = self.make_feedback(
+            variant=SelfieSearchFeedback.Variant.RESULT_LABELS,
+            source_status=SelfieSearch.Status.READY,
+            source_matched_photo_count=1,
+            source_visible_result_count=1,
+        )
+        label = SelfieSearchFeedbackLabel(
+            feedback=feedback,
+            result=other_result,
+            value=SelfieSearchFeedbackLabel.Value.PRESENT,
+        )
+
+        with self.assertRaises(ValidationError):
+            label.full_clean()
+
+    def test_feedback_and_labels_are_immutable_after_creation(self) -> None:
+        feedback = self.make_feedback()
+        feedback.contact = "changed@example.test"
+
+        with self.assertRaises(ValidationError):
+            feedback.save()
+
+        self.search.status = SelfieSearch.Status.READY
+        self.search.save(update_fields=["status"])
+        labels_feedback = self.make_feedback(
+            search=SelfieSearch.objects.create(
+                event=self.other_event,
+                public_token_digest="c" * 64,
+                temporary_object_key="selfie-search/three.jpg",
+                configuration={"embedding_model": "sface-v1"},
+                status=SelfieSearch.Status.READY,
+            ),
+            variant=SelfieSearchFeedback.Variant.RESULT_LABELS,
+            source_status=SelfieSearch.Status.READY,
+            source_matched_photo_count=1,
+            source_visible_result_count=1,
+            object_key="feedback/abcdefabcdefabcdefabcdefabcdefab",
+        )
+        # A label mutation is rejected independently of the feedback row mutation guard.
+        label = SelfieSearchFeedbackLabel.objects.create(
+            feedback=labels_feedback,
+            result=self.make_result(search=labels_feedback.search, other_event=True),
+            value=SelfieSearchFeedbackLabel.Value.PRESENT,
+        )
+        label.value = SelfieSearchFeedbackLabel.Value.ABSENT
+
+        with self.assertRaises(ValidationError):
+            label.save()
+
+    def test_feedback_access_audit_is_append_only(self) -> None:
+        feedback = self.make_feedback()
+        audit = SelfieSearchFeedbackAccessAudit.objects.create(
+            feedback=feedback,
+            staff=self.user,
+            action=SelfieSearchFeedbackAccessAudit.Action.CONTACT_VIEW,
+        )
+        audit.action = SelfieSearchFeedbackAccessAudit.Action.SELFIE_VIEW
+
+        with self.assertRaises(ValidationError):
+            audit.save()
+
+    def test_sensitive_feedback_permission_is_registered(self) -> None:
+        permission = Permission.objects.get(
+            content_type__app_label="selfie_search",
+            codename="view_sensitive_feedback",
+        )
+        self.assertEqual(permission.name, "Can view sensitive selfie search feedback")
+
+    def test_contact_is_not_indexed_or_rendered_in_feedback_string(self) -> None:
+        feedback = self.make_feedback()
+        contact_field = SelfieSearchFeedback._meta.get_field("contact")
+        self.assertFalse(contact_field.db_index)
+        self.assertNotIn(feedback.contact, str(feedback))
 
     def make_embedding_id(self, *, other_event: bool = False):
         from processing.models import (

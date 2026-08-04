@@ -82,6 +82,14 @@ The repository currently contains an early Django application:
   readiness without starting Django's mutating entrypoint. The web service remains stopped for an
   explicit restart after successful validation. This is not the service backup, retention, or
   disaster-recovery strategy.
+- The repository implements the consented selfie-search quality-feedback path governed by
+  [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md): browser-local seven-day selfie
+  preservation, one immutable feedback record per terminal search, optional saved-result labels,
+  explicit consent and contact validation, restricted audited staff inspection, and dedicated
+  private feedback storage with guarded 30-day lifecycle and deployment preflight commands. The
+  implementation is disabled by default (`SELFIE_FEEDBACK_ENABLED=False`); no environment
+  activation, published-policy gate, live bucket/KMS preflight, or customer-outcome evidence is
+  claimed yet.
 - A production Docker image runs migrations, collects static files, and starts Gunicorn.
 - Staging's normal deployment uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and
   proxy the internal Django service. The canonical apex and `www` names route to that edge, with
@@ -177,7 +185,15 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
   signed direct Object Storage redirect transport is implemented for already authorized gallery and
   result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
-  The browser source boundary accepts JPEG, PNG, HEIC, and HEIF; Django bounds and decodes the
+- Keep one consented quality-feedback record per terminal selfie search without delaying ADR 0019's
+  temporary-selfie cleanup. The repository implementation retains the selected file locally for
+  seven days, stores immutable feedback/contact/consent/labels in PostgreSQL, and stores one selfie
+  in a dedicated private KMS-encrypted bucket whose 30-day lifecycle is authoritative. Public media
+  routes and the ML worker cannot access feedback media, and staff access is explicit and audited,
+  as defined by [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md). The feature remains
+  disabled by default and has no staging or production activation evidence until its policy, bucket,
+  KMS, and live-preflight gates are satisfied.
+- The browser source boundary accepts JPEG, PNG, HEIC, and HEIF; Django bounds and decodes the
   source, preserving JPEG/PNG or normalizing HEIC/HEIF to canonical JPEG bytes before temporary
   storage and worker input. Stored objects and worker configuration remain canonical JPEG/PNG only,
   with no source metadata propagated. This conforms to ADR 0019; its privacy, event-isolation,
@@ -341,6 +357,10 @@ preflight, exact rollout-image smoke, VM capacity smoke, or environment activati
   and the immutable result is accessible through a non-expiring bearer link. Broader consent,
   revocation, suppression, moderation, and incident handling remain required before named
   identity, cross-event matching, or broader biometric reuse.
+- ADR 0023 accepts the narrower feedback-specific consent and retention boundary: one immutable
+  quality report may retain plaintext contact, consent evidence, search labels, and a lifecycle-
+  bounded private feedback selfie. It does not authorize named identity, automated training,
+  cross-event reuse, or a general biometric consent ledger.
 - Face results are probable matches, not identity assertions. Users and operators need removal and
   suppression workflows.
 - Payment callbacks must be authenticated and idempotent; download authorization is derived from

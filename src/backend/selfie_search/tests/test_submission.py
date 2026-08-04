@@ -423,6 +423,32 @@ class SubmissionTests(TestCase):
             response["Location"], rf"^/events/{self.event.slug}/selfie-search/[A-Za-z0-9_-]{{43}}/$"
         )
 
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_simultaneous_tabs_keep_independent_browser_correlations_without_session_state(
+        self,
+    ) -> None:
+        correlations = ("a" * 32, "b" * 32)
+        storage = RecordingStorage()
+
+        with patch("selfie_search.views.TemporarySelfieStorage", return_value=storage):
+            responses = tuple(
+                self.client.post(
+                    reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug}),
+                    {"selfie": valid_upload(), "feedback_correlation": correlation},
+                )
+                for correlation in correlations
+            )
+
+        for response, correlation in zip(responses, correlations, strict=True):
+            self.assertEqual(response.status_code, 302)
+            self.assertRegex(
+                response["Location"],
+                rf"^/events/{self.event.slug}/selfie-search/[A-Za-z0-9_-]{{43}}/"
+                rf"\?feedback_correlation={correlation}$",
+            )
+        self.assertNotIn("selfie_feedback_correlations", self.client.session)
+        self.assertNotIn("selfie_feedback_result_correlations", self.client.session)
+
     def test_invalid_post_stays_on_the_published_event_page(self) -> None:
         response = self.client.post(
             reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug}),

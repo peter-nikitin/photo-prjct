@@ -1,6 +1,7 @@
 import json
 from uuid import uuid4
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -8,6 +9,16 @@ from picflow.models import Event, Photo
 from processing.models import FaceEmbedding, PhotoFaceDetection
 
 JSON_MAX_BYTES = 16_384
+FEEDBACK_OBJECT_MAX_BYTES = 20 * 1024 * 1024
+FEEDBACK_CONSENT_TEXT_VERSION = "2026-08-04"
+_TERMINAL_SEARCH_STATUSES = (
+    "ready",
+    "no_face",
+    "multiple_faces",
+    "quality_rejected",
+    "search_unavailable",
+    "failed",
+)
 
 
 def validate_bounded_json(value: object) -> None:
@@ -236,3 +247,227 @@ class SelfieSearchResult(models.Model):  # noqa: DJ008
                 errors["detection"] = "The result detection must belong to the search event."
         if errors:
             raise ValidationError(errors)
+
+
+class SelfieSearchFeedback(models.Model):  # noqa: DJ008
+    class Variant(models.TextChoices):
+        PROBLEM = "problem", "Problem"
+        RESULT_LABELS = "result_labels", "Result labels"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    search = models.OneToOneField(
+        SelfieSearch,
+        on_delete=models.PROTECT,
+        related_name="feedback",
+    )
+    variant = models.CharField(max_length=16, choices=Variant)
+    contact = models.CharField(max_length=254)
+    personal_data_consent = models.BooleanField(default=False)
+    consent_text_version = models.CharField(max_length=32)
+    consented_at = models.DateTimeField()
+    source_status = models.CharField(max_length=24, choices=SelfieSearch.Status)
+    source_matched_photo_count = models.PositiveIntegerField(default=0)
+    source_visible_result_count = models.PositiveIntegerField(default=0)
+    source_configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
+    object_key = models.CharField(max_length=255, unique=True)
+    object_content_type = models.CharField(max_length=100)
+    object_size = models.PositiveBigIntegerField()
+    object_uploaded_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        permissions = [
+            (
+                "view_sensitive_feedback",
+                "Can view sensitive selfie search feedback",
+            )
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(variant__in=("problem", "result_labels")),
+                name="selfie_feedback_variant_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(personal_data_consent=True),
+                name="selfie_feedback_consent_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(source_status__in=_TERMINAL_SEARCH_STATUSES),
+                name="selfie_feedback_source_status_chk",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        variant="problem",
+                        source_status__in=(
+                            "no_face",
+                            "multiple_faces",
+                            "quality_rejected",
+                            "search_unavailable",
+                            "failed",
+                        ),
+                    )
+                    | models.Q(
+                        variant="problem",
+                        source_status="ready",
+                        source_visible_result_count=0,
+                    )
+                    | models.Q(
+                        variant="result_labels",
+                        source_status="ready",
+                        source_visible_result_count__gt=0,
+                    )
+                ),
+                name="selfie_feedback_variant_source_chk",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(contact=""),
+                name="selfie_feedback_contact_nonempty_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(object_content_type__in=("image/jpeg", "image/png")),
+                name="selfie_feedback_object_type_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    object_size__gt=0,
+                    object_size__lte=FEEDBACK_OBJECT_MAX_BYTES,
+                ),
+                name="selfie_feedback_object_size_chk",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Selfie search feedback {self.pk}"
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie search feedback is immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie search feedback is immutable.")
+        super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.contact is not None:
+            self.contact = self.contact.strip()
+            if not self.contact:
+                errors["contact"] = "Contact is required."
+            elif any(ord(char) < 32 or ord(char) == 127 for char in self.contact):
+                errors["contact"] = "Contact must not contain control characters."
+        if not self.personal_data_consent:
+            errors["personal_data_consent"] = "Personal-data consent is required."
+        if not self.consent_text_version:
+            errors["consent_text_version"] = "Consent text version is required."
+        if self.consented_at is None:
+            errors["consented_at"] = "Consent timestamp is required."
+        if self.source_status not in _TERMINAL_SEARCH_STATUSES:
+            errors["source_status"] = "Feedback source must be terminal."
+        if self.variant == self.Variant.RESULT_LABELS and (
+            self.source_status != SelfieSearch.Status.READY or self.source_visible_result_count <= 0
+        ):
+            errors["variant"] = "Result labels require a non-empty ready result."
+        if self.variant == self.Variant.PROBLEM and self.source_status == SelfieSearch.Status.READY:
+            if self.source_visible_result_count > 0:
+                errors["variant"] = "Problem feedback cannot describe visible results."
+        if errors:
+            raise ValidationError(errors)
+
+
+class SelfieSearchFeedbackLabel(models.Model):  # noqa: DJ008
+    class Value(models.TextChoices):
+        PRESENT = "present", "Present"
+        ABSENT = "absent", "Absent"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    feedback = models.ForeignKey(
+        SelfieSearchFeedback,
+        on_delete=models.PROTECT,
+        related_name="labels",
+    )
+    result = models.ForeignKey(
+        SelfieSearchResult,
+        on_delete=models.PROTECT,
+        related_name="feedback_labels",
+    )
+    value = models.CharField(max_length=7, choices=Value)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("feedback", "result"),
+                name="selfie_feedback_label_membership_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(value__in=("present", "absent")),
+                name="selfie_feedback_label_value_chk",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Feedback label {self.pk}"
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie search feedback labels are immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie search feedback labels are immutable.")
+        super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.feedback_id and self.feedback.variant != SelfieSearchFeedback.Variant.RESULT_LABELS:
+            errors["feedback"] = "Only result-label feedback accepts result labels."
+        if self.feedback_id and self.result_id and self.feedback.search_id != self.result.search_id:
+            errors["result"] = "The labelled result must belong to the feedback search."
+        if errors:
+            raise ValidationError(errors)
+
+
+class SelfieSearchFeedbackAccessAudit(models.Model):  # noqa: DJ008
+    class Action(models.TextChoices):
+        CONTACT_VIEW = "contact_view", "Contact view"
+        SELFIE_VIEW = "selfie_view", "Selfie view"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    feedback = models.ForeignKey(
+        SelfieSearchFeedback,
+        on_delete=models.PROTECT,
+        related_name="access_audits",
+    )
+    staff = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="selfie_search_feedback_access_audits",
+    )
+    action = models.CharField(max_length=16, choices=Action)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(action__in=("contact_view", "selfie_view")),
+                name="selfie_feedback_audit_action_chk",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"Feedback access audit {self.pk}"
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie search feedback access audits are append-only.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie search feedback access audits are append-only.")
+        super().delete(*args, **kwargs)

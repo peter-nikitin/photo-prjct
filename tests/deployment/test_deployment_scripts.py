@@ -2116,6 +2116,7 @@ def test_root_helper_verifies_probe_with_privileged_journal_read(
     _write_executable(
         fake_bin / "journalctl",
         """
+printf '%s\n' "$*" >> "$COMMAND_LOG.probe-journal"
 [ "$PROBE_READABLE" = 1 ] || exit 0
 printf '{"probe_id":"00000000-0000-0000-0000-000000000001"}\n'
 """,
@@ -2135,6 +2136,9 @@ printf '{"probe_id":"00000000-0000-0000-0000-000000000001"}\n'
     )
 
     assert (result.returncode == 0) is expected_success, result.stderr
+    journal_calls = (tmp_path / "systemctl.log.probe-journal").read_text(encoding="utf-8")
+    assert "CONTAINER_TAG=findme.service=web findme.environment=staging" in journal_calls
+    assert "CONTAINER_TAG=findme.service=web findme.environment=production" in journal_calls
 
 
 @pytest.mark.parametrize(

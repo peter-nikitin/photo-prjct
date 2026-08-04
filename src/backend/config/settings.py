@@ -171,6 +171,24 @@ else:
 
 LOGIN_URL = "photographer_login"
 
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "selfie_console": {
+            "class": "logging.StreamHandler",
+            "level": "INFO",
+        }
+    },
+    "loggers": {
+        "selfie_search": {
+            "handlers": ["selfie_console"],
+            "level": "INFO",
+            "propagate": False,
+        }
+    },
+}
+
 if env("MEDIA_STORAGE_BACKEND", default="filesystem") == "s3":
     STORAGES["default"] = {
         "BACKEND": "storages.backends.s3.S3Storage",

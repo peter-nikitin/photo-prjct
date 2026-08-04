@@ -51,8 +51,10 @@ email, dashboard, agent, or scheduled probe is live.
    `yc compute instance get epdr5g3p24tdns9890nr`. Then use the dashboard graphs to identify CPU,
    memory, filesystem, or network pressure. Do not stop the VM merely to test an alert.
 4. For VM/host telemetry loss or agent-only failure, check
-   `systemctl is-active unified-agent` on the VM and inspect its status/logs. If public curl and
-   the probe are healthy, treat an agent-only failure as telemetry loss rather than service outage.
+   `systemctl is-active unified_agent` and
+   `/bin/unified_agent --config /etc/yc/unified_agent/config.yml check-config` on the VM, then
+   inspect its status/logs. If public curl and the probe are healthy, treat an agent-only failure as
+   telemetry loss rather than service outage.
 5. For application 5xx degradation or public failure, follow the existing Compose diagnostics on
    the VM (for example, `docker compose ps` and `docker compose logs --tail 100 web nginx`). Use
    the repository deployment/rollback procedure if it applies; monitoring adds no recovery command.

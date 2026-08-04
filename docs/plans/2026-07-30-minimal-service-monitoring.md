@@ -333,7 +333,7 @@ Sequence-specific completion additionally requires:
   API key value as GitHub Environment secret `YANDEX_MONITORING_API_KEY`, and save the folder ID as
   variable `YANDEX_CLOUD_FOLDER_ID`. Never print or commit the key.
 - [ ] Run the manual agent-configuration workflow and verify the installed version,
-  `systemctl is-active unified-agent`, `http://127.0.0.1:8080/metrics/`, and fresh `sys`, `ua`, and
+  `systemctl is-active unified_agent`, `http://127.0.0.1:8080/metrics/`, and fresh `sys`, `ua`, and
   `app` datapoints. Record any standard VM metric unavailable without privileged collection as an
   accepted omission.
 - [ ] Import/create the dashboard, email notification channel, and seven alert definitions from
@@ -396,8 +396,8 @@ Live validation commands are run only after Task 6 approval and are recorded wit
 ```bash
 curl --fail-with-body --silent --show-error https://findme-photo.ru/health/
 curl --fail-with-body --silent --show-error http://127.0.0.1:8080/metrics/
-systemctl is-active unified-agent
-unified_agent --config /etc/yandex/unified_agent/config.yml check-config
+systemctl is-active unified_agent
+/bin/unified_agent --config /etc/yc/unified_agent/config.yml check-config
 ```
 
 Expected outcomes are health JSON, private Prometheus exposition, `active`, and a zero-exit validated

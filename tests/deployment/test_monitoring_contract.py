@@ -139,10 +139,30 @@ def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() ->
         "agent-only failure",
         "curl --fail --silent --show-error https://findme-photo.ru/health/",
         "yc compute instance get",
-        "systemctl is-active unified-agent",
+        "systemctl is-active unified_agent",
+        "/bin/unified_agent --config /etc/yc/unified_agent/config.yml check-config",
         "docker compose",
         "recovery email",
         "controlled failing target",
         "Never remove application or data volumes",
     ):
         assert required in runbook
+    assert "systemctl is-active unified-agent" not in runbook
+    assert "/etc/yandex/unified_agent/config.yml" not in runbook
+
+
+def test_live_monitoring_plan_uses_current_managed_agent_commands() -> None:
+    plan = (ROOT / "docs/plans/2026-07-30-minimal-service-monitoring.md").read_text(
+        encoding="utf-8"
+    )
+
+    live_validation = plan.split("Live validation commands are run only after Task 6 approval", 1)[
+        1
+    ]
+    assert "systemctl is-active unified_agent" in plan
+    assert (
+        "/bin/unified_agent --config /etc/yc/unified_agent/config.yml check-config"
+        in live_validation
+    )
+    assert "systemctl is-active unified-agent" not in live_validation
+    assert "/etc/yandex/unified_agent/config.yml" not in live_validation

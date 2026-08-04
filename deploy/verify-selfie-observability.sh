@@ -25,6 +25,7 @@ for service in web nginx worker; do
     done
 done
 probe_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-compose exec -T web python manage.py shell --no-imports -c "import logging; from selfie_search.observability import SelfieEventName, emit_selfie_event; emit_selfie_event(logging.getLogger('selfie_search'), event=SelfieEventName.OBSERVABILITY_PROBE, probe_id='$probe_id')"
+probe_code="import logging; from selfie_search.observability import SelfieEventName, emit_selfie_event; emit_selfie_event(logging.getLogger('selfie_search'), event=SelfieEventName.OBSERVABILITY_PROBE, probe_id='$probe_id')"
+compose exec -T web sh -c 'python manage.py shell --no-imports -c "$1" 2>/proc/1/fd/2' sh "$probe_code"
 sudo -n "$OBSERVABILITY_HELPER" verify-probe "$probe_id" || { echo "emitted observability probe is unreadable" >&2; exit 1; }
 echo SELFIE_OBSERVABILITY_VERIFIED

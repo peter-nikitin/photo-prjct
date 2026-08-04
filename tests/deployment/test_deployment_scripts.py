@@ -2441,7 +2441,7 @@ case "$*" in
   *"inspect "*nginx-id*)
     printf 'journald|findme.service=nginx findme.environment=staging\n'
     ;;
-  *" exec -T web "*) : ;;
+  *" exec -T web "*) printf '%s\n' "$*" > "$PROBE_COMMAND_LOG" ;;
 esac
 """,
     )
@@ -2480,11 +2480,17 @@ esac
         "SELFIE_OBSERVABILITY_JOURNAL_DIR": str(tmp_path / "journal"),
         "VERIFY_SCENARIO": scenario,
         "EXPECTED_PROBE_LINE": '"probe_id":"00000000-0000-0000-0000-000000000001"',
+        "PROBE_COMMAND_LOG": str(tmp_path / "probe-command.log"),
     }
 
     result = _run("deploy/verify-selfie-observability.sh", env=env)
 
     assert (result.returncode == 0) is expected_success, result.stderr
+    probe_command_log = tmp_path / "probe-command.log"
+    if scenario != "wrong-tag":
+        probe_command = probe_command_log.read_text(encoding="utf-8")
+        assert " exec -T web sh -c " in probe_command
+        assert "2>/proc/1/fd/2" in probe_command
     if scenario == "disabled-timer":
         assert result.stderr == "selfie summary timer is not enabled\n"
     if scenario == "inactive-timer":

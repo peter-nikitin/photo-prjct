@@ -100,6 +100,34 @@ preflight, and execute the staging smoke and capacity measurements in the
 [public selfie-search rollout](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout),
 and only then set `SELFIE_SEARCH_ENABLED=True`.
 
+### Operate selfie-search observability
+
+The supported deployment entrypoint installs and verifies a persistent system journal capped by
+`MaxRetentionSec=14day` and `SystemMaxUse=1G`, stable `web`, `worker`, and `nginx` tags, and the
+`selfie-search-summary.timer`. The cap can shorten effective history under heavy log volume; the
+journal is operational evidence, not a backup.
+
+Inspect bounded events and the latest summary without printing unrelated logs:
+
+```bash
+journalctl -u docker.service \
+  CONTAINER_TAG='findme.service=web findme.environment=staging' \
+  --since '24 hours ago' --grep '"event":"selfie_' -o cat
+journalctl -u selfie-search-summary.service --since '14 days ago' -o cat \
+  | grep '"event":"selfie_search_daily_summary"'
+systemctl status selfie-search-summary.timer
+```
+
+Recompute one Moscow calendar date without changing application or database state:
+
+```bash
+sudo /usr/local/lib/findme-selfie-observability/run-daily-summary.sh 2026-08-03
+```
+
+Use `deploy/verify-selfie-observability.sh` through the deployment workflow for effective policy,
+timer, Compose-tag, and emitted-probe verification. Do not paste raw journal output into tickets;
+record only the bounded summary and sanitized diagnostics.
+
 ### Prepare Node.js
 
 The repository uses Node 22 for JavaScript unit tests and local npm commands. With

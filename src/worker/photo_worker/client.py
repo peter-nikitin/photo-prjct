@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -69,6 +70,14 @@ class DownloadError(ApiError):
 
 class UploadError(ApiError):
     pass
+
+
+@dataclass(frozen=True)
+class CallbackResult:
+    attempt_id: str
+    status: str
+    idempotent: bool
+    stale: bool
 
 
 class HttpClient:
@@ -201,9 +210,13 @@ class HttpClient:
         payload: dict[str, object],
         *,
         response_max_bytes: int = BOOTSTRAP_RESPONSE_MAX_BYTES,
-    ) -> None:
-        self.post_json(
-            f"attempts/{attempt_id}/complete", payload, response_max_bytes=response_max_bytes
+    ) -> CallbackResult:
+        return _callback_result(
+            self.post_json(
+                f"attempts/{attempt_id}/complete", payload, response_max_bytes=response_max_bytes
+            ),
+            attempt_id,
+            expected_status="succeeded",
         )
 
     def fail(
@@ -212,9 +225,13 @@ class HttpClient:
         payload: dict[str, object],
         *,
         response_max_bytes: int = BOOTSTRAP_RESPONSE_MAX_BYTES,
-    ) -> None:
-        self.post_json(
-            f"attempts/{attempt_id}/fail", payload, response_max_bytes=response_max_bytes
+    ) -> CallbackResult:
+        return _callback_result(
+            self.post_json(
+                f"attempts/{attempt_id}/fail", payload, response_max_bytes=response_max_bytes
+            ),
+            attempt_id,
+            expected_status="failed",
         )
 
     def download(
@@ -321,6 +338,47 @@ def _read_bounded(response: Response, maximum: int) -> bytes:
     if len(data) > maximum:
         raise ApiError("invalid_api_response", retryable=True)
     return data
+
+
+def _callback_result(value: object, attempt_id: str, *, expected_status: str) -> CallbackResult:
+    if not isinstance(value, dict):
+        raise _callback_contract_error()
+    attempt = value.get("attempt")
+    if not (
+        set(value) == {"attempt", "idempotent", "stale"}
+        and isinstance(attempt, dict)
+        and set(attempt) == {"id", "status", "lease_expires_at"}
+        and attempt.get("id") == attempt_id
+        and attempt.get("status")
+        in (
+            {"succeeded", "failed", "expired", "stale"}
+            if expected_status == "succeeded"
+            else {"failed", "expired", "stale"}
+        )
+        and (
+            attempt.get("lease_expires_at") is None
+            or _utc_timestamp(attempt.get("lease_expires_at"))
+        )
+        and isinstance(value.get("idempotent"), bool)
+        and isinstance(value.get("stale"), bool)
+    ):
+        raise _callback_contract_error()
+    status = attempt["status"]
+    assert isinstance(status, str)
+    return CallbackResult(
+        attempt_id=attempt_id,
+        status=status,
+        idempotent=value["idempotent"],
+        stale=value["stale"],
+    )
+
+
+def _callback_contract_error() -> ApiError:
+    return ApiError(
+        "invalid_api_response",
+        retryable=False,
+        diagnostic="api:callback_result_contract_mismatch",
+    )
 
 
 def _header(headers: Any, name: str) -> str:

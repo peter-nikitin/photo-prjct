@@ -1033,6 +1033,7 @@ class SelfieWorkerApiTests(TestCase):
                 "processor_type",
                 "processor_version",
                 "configuration",
+                "event_id",
                 "search_id",
                 "input_fingerprint",
                 "input_limits",

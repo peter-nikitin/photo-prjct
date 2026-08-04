@@ -7,7 +7,7 @@ from zlib import crc32
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase
 from PIL import Image
-from selfie_search.forms import SelfieSearchUploadForm
+from selfie_search.forms import SelfieSearchUploadForm, SelfieUploadObservation
 from selfie_search.images import PreparedSelfie, SelfieImageRejected
 
 FIXTURE = Path(__file__).parent / "fixtures" / "iphone-oriented.heic"
@@ -78,6 +78,46 @@ class SelfieSearchUploadFormTests(SimpleTestCase):
         error = form.errors.as_data()["selfie"][0]
         self.assertEqual(error.code, "missing_or_empty")
         self.assertEqual(error.message, "Выберите фотографию для поиска.")
+
+    def test_observation_is_frozen_after_validation_without_rereading_upload(self) -> None:
+        upload = image_upload(image_format="JPEG")
+        form = SelfieSearchUploadForm(files={"selfie": upload})
+
+        self.assertTrue(form.is_valid(), form.errors)
+        upload.file = type(
+            "UnreadableUpload", (), {"read": lambda _self: (_ for _ in ()).throw(AssertionError())}
+        )()
+        with patch.object(
+            upload.file, "read", side_effect=AssertionError("upload read after validation")
+        ):
+            observation = form.observation()
+
+        self.assertEqual(
+            observation,
+            SelfieUploadObservation(
+                actual_format="jpeg", declared_type="jpeg", source_size_bucket="le_1mib"
+            ),
+        )
+
+    def test_observation_uses_unknown_actual_format_when_pillow_cannot_identify_upload(
+        self,
+    ) -> None:
+        form = SelfieSearchUploadForm(
+            files={
+                "selfie": SimpleUploadedFile(
+                    "selfie.jpg", b"not an image", content_type="image/jpeg"
+                )
+            }
+        )
+
+        self.assertFalse(form.is_valid())
+
+        self.assertEqual(
+            form.observation(),
+            SelfieUploadObservation(
+                actual_format="unknown", declared_type="jpeg", source_size_bucket="le_1mib"
+            ),
+        )
 
     def test_rejects_spoofed_content_type_and_extension(self) -> None:
         upload = SimpleUploadedFile("selfie.jpg", b"not an image", content_type="image/gif")

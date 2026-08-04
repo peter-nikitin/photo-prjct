@@ -51,6 +51,11 @@ server {
     add_header Referrer-Policy "no-referrer" always;
 
     # Bearer URLs are secrets. Keep any location-level failure out of persisted logs.
+    location ~ ^/events/[^/]+/selfie-search/$ {
+        error_log /dev/null emerg;
+        return 308 https://${PUBLIC_DOMAIN}\$request_uri;
+    }
+
     location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {
         error_log /dev/null emerg;
         return 308 https://${PUBLIC_DOMAIN}\$request_uri;

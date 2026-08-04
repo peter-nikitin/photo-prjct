@@ -36,6 +36,7 @@ from selfie_search.models import (
     SelfieSearchResult,
 )
 from selfie_search.observability import OBSERVABILITY_FAILURE_MARKER
+from selfie_search.services.submission import GallerySearchFailed, GallerySearchUnavailable
 
 type ChoiceValue = str | tuple[str, str]
 
@@ -261,6 +262,126 @@ class _FailingLogger(logging.Logger):
 
     def log(self, _level: int, _message: str) -> None:  # type: ignore[override]
         raise RuntimeError("logger unavailable")
+
+
+@override_settings(
+    SELFIE_SEARCH_ENABLED=True,
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
+)
+class GalleryPhotoSearchViewTests(TestCase):
+    """The production break caught here is turning a forged gallery request into a search."""
+
+    def setUp(self) -> None:
+        self.owner = get_user_model().objects.create_user(username="gallery-search-owner")
+        self.event = self.make_event(slug="gallery-search")
+        self.photo = self.make_gallery_photo(event=self.event, photo_id="gallery-source")
+
+    def make_event(self, *, slug: str, published: bool = True) -> Event:
+        return Event.objects.create(
+            name=slug.replace("-", " ").title(),
+            slug=slug,
+            start_date=date(2026, 7, 30),
+            end_date=date(2026, 7, 30),
+            city="Moscow",
+            access_type=Event.AccessType.FREE,
+            publication_status=(
+                Event.PublicationStatus.PUBLISHED if published else Event.PublicationStatus.DRAFT
+            ),
+        )
+
+    def make_gallery_photo(self, *, event: Event, photo_id: str) -> Photo:
+        return Photo.objects.create(
+            id=photo_id,
+            event=event,
+            uploaded_by=self.owner,
+            original_key=f"originals/{photo_id}",
+            original_filename=f"{photo_id}.jpg",
+            original_size=1,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+    def url(self, *, event: Event | None = None, photo_id: str | None = None) -> str:
+        event = event or self.event
+        return reverse(
+            "selfie_search:submit_gallery_photo",
+            kwargs={"event_slug": event.slug, "photo_id": photo_id or self.photo.pk},
+        )
+
+    @patch("selfie_search.views.submit_gallery_photo_search")
+    def test_post_only_and_disabled_feature_fail_closed(self, submit_gallery_photo_search) -> None:
+        get_response = self.client.get(self.url())
+        csrf_response = Client(enforce_csrf_checks=True).post(self.url())
+        with override_settings(SELFIE_SEARCH_ENABLED=False):
+            disabled_response = self.client.post(self.url())
+
+        self.assertEqual(get_response.status_code, 405)
+        self.assertEqual(csrf_response.status_code, 403)
+        self.assertEqual(disabled_response.status_code, 404)
+        submit_gallery_photo_search.assert_not_called()
+
+    @patch("selfie_search.views.submit_gallery_photo_search")
+    def test_unpublished_cross_event_and_non_gallery_sources_are_not_submitted(
+        self, submit_gallery_photo_search
+    ) -> None:
+        draft = self.make_event(slug="draft-gallery-search", published=False)
+        other = self.make_event(slug="other-gallery-search")
+        foreign_photo = self.make_gallery_photo(event=other, photo_id="foreign-source")
+        non_gallery_photo = Photo.objects.create(
+            id="not-gallery-source", event=self.event, src="legacy/photo.jpg"
+        )
+
+        responses = (
+            self.client.post(self.url(event=draft, photo_id="anything")),
+            self.client.post(self.url(photo_id=foreign_photo.pk)),
+            self.client.post(self.url(photo_id=non_gallery_photo.pk)),
+        )
+
+        self.assertEqual([response.status_code for response in responses], [404, 404, 404])
+        submit_gallery_photo_search.assert_not_called()
+
+    @patch("selfie_search.views.submit_gallery_photo_search")
+    def test_stale_or_ambiguous_source_evidence_returns_not_found(
+        self, submit_gallery_photo_search
+    ) -> None:
+        submit_gallery_photo_search.side_effect = GallerySearchUnavailable()
+
+        response = self.client.post(self.url())
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.content, b"")
+        submit_gallery_photo_search.assert_called_once_with(event=self.event, photo=self.photo)
+
+    @patch("selfie_search.views.submit_gallery_photo_search")
+    def test_success_redirects_to_the_existing_bearer_result(
+        self, submit_gallery_photo_search
+    ) -> None:
+        submit_gallery_photo_search.return_value = SimpleNamespace(
+            public_token="gallery-bearer-token"
+        )
+
+        response = self.client.post(self.url())
+
+        self.assertRedirects(
+            response,
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.event.slug, "public_token": "gallery-bearer-token"},
+            ),
+            fetch_redirect_response=False,
+        )
+        submit_gallery_photo_search.assert_called_once_with(event=self.event, photo=self.photo)
+
+    @patch("selfie_search.views.submit_gallery_photo_search")
+    def test_service_failure_is_a_sanitized_body_free_503(
+        self, submit_gallery_photo_search
+    ) -> None:
+        submit_gallery_photo_search.side_effect = GallerySearchFailed()
+
+        response = self.client.post(self.url())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.content, b"")
 
 
 @override_settings(

@@ -20,6 +20,7 @@ GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
 MediaUrlBuilder = Callable[[Photo, GalleryVariant], str]
 DownloadUrlBuilder = Callable[[Photo], str]
+SimilarSearchUrlBuilder = Callable[[Photo], str | None]
 GALLERY_PAGE_SIZE: Final = 100
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class GalleryPhoto:
     preview_media_large: GalleryMedia
     download_url: str
     alt: str
+    similar_search_url: str | None = None
 
 
 class GalleryPhotoFactory:
@@ -54,6 +56,7 @@ class GalleryPhotoFactory:
         event_slug: str,
         media_url_builder: MediaUrlBuilder | None = None,
         download_url_builder: DownloadUrlBuilder | None = None,
+        similar_search_url_builder: SimilarSearchUrlBuilder | None = None,
     ) -> GalleryPhoto:
         def media(variant: GalleryVariant) -> GalleryMedia:
             return GalleryMedia(
@@ -81,6 +84,11 @@ class GalleryPhotoFactory:
                 )
             ),
             alt=f"Фото {photo.pk} с события {photo.event.name}",
+            similar_search_url=(
+                similar_search_url_builder(photo)
+                if similar_search_url_builder is not None
+                else None
+            ),
         )
 
 
@@ -102,6 +110,7 @@ def gallery_photo_queryset(*, event: Event) -> QuerySet[Photo]:
         )
         .select_related("event")
         .order_by("original_filename", "id")
+        .distinct()
     )
 
 

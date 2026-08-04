@@ -119,8 +119,8 @@ quickly.
 
 ### PJ-008 — Customer — Find photos by face
 
-When I have an appropriate reference image and the required consent applies, I want to search within
-one event, so I can review probable matches.
+When I have an appropriate selfie or find an eligible one-person gallery photo in a selected event, I
+want to search within that event, so I can review probable matches.
 
 - Status: In progress
 - Evidence: [ADR 0019](adr/0019-use-public-event-selfie-search.md), the
@@ -128,21 +128,39 @@ one event, so I can review probable matches.
   [`tests/processing/test_selfie_search_e2e.py`](../tests/processing/test_selfie_search_e2e.py)
   provide repository evidence plus local real YuNet/SFace inference for the selfie query; accepted
   deterministic gallery fixtures cover both face generations, including a verified preview
-  publication and production enrollment into `2/face_embedding/2`. The evidence covers event
-  isolation, probable matches, selfie cleanup, stable results, and the narrow paid-result media
-  exception. The repository default remains disabled, but staging deployed branch `c62508a` with
-  the feature enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
+  publication and production enrollment into `2/face_embedding/2`. The existing selfie-upload path
+  covers event isolation, probable matches, selfie cleanup, stable results, and the narrow
+  paid-result media exception. The repository default remains disabled, but staging deployed branch
+  `c62508a` with that path enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
   put/head/grant/delete preflight passed; six legacy face jobs produced four accepted event
   embeddings; and a live Unicode event upload reached a stable ready bearer URL with the expected
   original. The temporary selfie was deleted before publication, including from the bucket prefix.
-  A temporary paid-event check kept normal media denied while bearer-result media succeeded.
-  On 2026-08-02, staging deployed immediate queued-result navigation and then direct event-cohort
-  ranking in PRs
-  [#80](https://github.com/peter-nikitin/photo-prjct/pull/80) and
+  A temporary paid-event check kept normal media denied while bearer-result media succeeded. On
+  2026-08-02, staging deployed immediate queued-result navigation and then direct event-cohort
+  ranking in PRs [#80](https://github.com/peter-nikitin/photo-prjct/pull/80) and
   [#82](https://github.com/peter-nikitin/photo-prjct/pull/82). New searches persist only eligible
   counts and matched results instead of one candidate row per eligible face; legacy frozen-candidate
-  searches remain readable. This is staging evidence only; production is not activated.
-- Last updated: 2026-08-02
+  searches remain readable. This is staging evidence for the existing selfie-upload path only;
+  production is not activated.
+
+  The gallery-photo query path is defined by [ADR 0024](adr/0024-use-gallery-face-as-search-query.md)
+  and the approved [gallery-photo search design](superpowers/specs/2026-08-04-find-similar-from-gallery-design.md).
+  Local evidence for that path is: Task 1 service/regression coverage in
+  [`selfie_search/tests/test_submission.py`](../src/backend/selfie_search/tests/test_submission.py),
+  [`selfie_search/tests/test_ranking.py`](../src/backend/selfie_search/tests/test_ranking.py), and
+  [`selfie_search/tests/test_jobs.py`](../src/backend/selfie_search/tests/test_jobs.py) — `33 passed, 9 subtests`
+  with 5 known staticfiles warnings; Task 2 focused gallery presentation/endpoint coverage in
+  [`picflow/tests/test_gallery.py`](../src/backend/picflow/tests/test_gallery.py),
+  [`picflow/tests/test_views.py`](../src/backend/picflow/tests/test_views.py), and
+  [`selfie_search/tests/test_views.py`](../src/backend/selfie_search/tests/test_views.py) — `24 passed`;
+  and Task 2 gallery/result regression coverage in
+  [`picflow/tests/test_gallery.py`](../src/backend/picflow/tests/test_gallery.py),
+  [`picflow/tests/test_views.py`](../src/backend/picflow/tests/test_views.py),
+  [`selfie_search/tests/test_views.py`](../src/backend/selfie_search/tests/test_views.py), and
+  [`selfie_search/tests/test_results.py`](../src/backend/selfie_search/tests/test_results.py) —
+  `105 passed, 64 subtests` with 59 known staticfiles warnings. No staging or production deployment
+  evidence is claimed for this new gallery-photo path.
+- Last updated: 2026-08-04
 
 ### PJ-009 — Visitor — Receive a free-event original
 

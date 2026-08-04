@@ -398,6 +398,34 @@
   display: none;
 }
 
+.gallery-similar-search {
+  margin: 0;
+}
+
+.gallery-similar-search-button {
+  min-height: 44px;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.gallery-similar-search-button:hover {
+  color: var(--charcoal);
+}
+
+.gallery-similar-search-button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .gallery-feedback-choice {
   min-height: 36px;
   padding: 6px 9px;

@@ -87,6 +87,12 @@
                 {% endif %}
               </a>
               <div class="gallery-card-actions">
+                {% if photo.similar_search_url %}
+                  <form class="gallery-similar-search" action="{{ photo.similar_search_url }}" method="post">
+                    {% csrf_token %}
+                    <button class="gallery-similar-search-button" type="submit">Найти похожие фото</button>
+                  </form>
+                {% endif %}
                 <a class="gallery-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал">
                   <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg>
                 </a>

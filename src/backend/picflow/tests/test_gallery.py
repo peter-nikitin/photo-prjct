@@ -42,6 +42,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
             preview_media_small=small,
             preview_media_large=large,
             download_url="/events/city-run/photos/photo-42/download/",
+            similar_search_url="/events/city-run/photos/photo-42/similar-search/",
             alt="Фото photo-42 с события City Run",
         )
 
@@ -49,6 +50,10 @@ class GalleryPresentationContractTests(SimpleTestCase):
         self.assertEqual(gallery_photo.preview_media_small, small)
         self.assertEqual(gallery_photo.preview_media_large, large)
         self.assertEqual(gallery_photo.download_url, "/events/city-run/photos/photo-42/download/")
+        self.assertEqual(
+            gallery_photo.similar_search_url,
+            "/events/city-run/photos/photo-42/similar-search/",
+        )
         self.assertEqual(gallery_photo.alt, "Фото photo-42 с события City Run")
         alt_field = "alt"
         with self.assertRaises(FrozenInstanceError):
@@ -88,6 +93,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
             ),
         )
         self.assertEqual(gallery_photo.download_url, "/events/city-run/photos/photo-42/download/")
+        self.assertIsNone(gallery_photo.similar_search_url)
         self.assertEqual(gallery_photo.alt, "Фото photo-42 с события City Run")
         self.assertEqual(
             reverse.call_args_list,
@@ -156,11 +162,31 @@ class GalleryPresentationContractTests(SimpleTestCase):
             gallery_photo.download_url,
             "/events/city-run/selfie-search/bearer-token/photos/photo-42/download/",
         )
+        self.assertIsNone(gallery_photo.similar_search_url)
         self.assertEqual(
             media_calls,
             [("photo-42", "preview-small"), ("photo-42", "preview-large")],
         )
         self.assertEqual(download_calls, ["photo-42"])
+        boto3_client.assert_not_called()
+
+    @patch("boto3.client")
+    def test_factory_uses_nullable_similar_search_url_builder_without_storage(
+        self, boto3_client
+    ) -> None:
+        event = Event(name="City Run", slug="city-run")
+        photo = Photo(id="photo-42", event=event)
+
+        gallery_photo = GalleryPhotoFactory.from_photo(
+            photo=photo,
+            event_slug=event.slug,
+            similar_search_url_builder=lambda _: "/events/city-run/photos/photo-42/similar-search/",
+        )
+
+        self.assertEqual(
+            gallery_photo.similar_search_url,
+            "/events/city-run/photos/photo-42/similar-search/",
+        )
         boto3_client.assert_not_called()
 
 

@@ -21,6 +21,7 @@ from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhotoFactory,
     GalleryVariant,
+    gallery_photo_queryset,
 )
 from picflow.models import Event, Photo
 
@@ -41,7 +42,12 @@ from selfie_search.services.results import (
     saved_ready_result_page,
     saved_ready_result_photo,
 )
-from selfie_search.services.submission import submit_selfie_search
+from selfie_search.services.submission import (
+    GallerySearchFailed,
+    GallerySearchUnavailable,
+    submit_gallery_photo_search,
+    submit_selfie_search,
+)
 from selfie_search.storage import FeedbackSelfieStorage, TemporarySelfieStorage
 
 _FEEDBACK_CORRELATION_RE = re.compile(r"\A[A-Za-z0-9_-]{32,64}\Z")
@@ -52,6 +58,25 @@ def _validated_feedback_correlation(value: str) -> str:
 
 
 logger = logging.getLogger(__name__)
+
+
+@require_POST
+def submit_gallery_photo(request, event_slug: str, photo_id: str):  # noqa: ARG001
+    if not settings.SELFIE_SEARCH_ENABLED:
+        return _not_found_response()
+    event = get_object_or_404(Event.objects.published(), slug=event_slug)
+    photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
+    try:
+        created = submit_gallery_photo_search(event=event, photo=photo)
+    except GallerySearchUnavailable:
+        return _not_found_response()
+    except GallerySearchFailed:
+        return HttpResponse(status=503)
+    return redirect(
+        "selfie_search:result",
+        event_slug=event.slug,
+        public_token=created.public_token,
+    )
 
 
 @require_POST

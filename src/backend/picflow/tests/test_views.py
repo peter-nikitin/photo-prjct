@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from hashlib import sha256
 from html.parser import HTMLParser
@@ -21,12 +22,23 @@ from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from processing.models import (
+    FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     EventProcessingRun,
+    FaceEmbedding,
+    FaceProcessingAttemptArtifact,
     PhotoDerivative,
+    PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
+)
+from processing.services.enrollment import (
+    CONTRACT_VERSION as FACE_EMBEDDING_CONTRACT_VERSION,
+)
+from processing.services.enrollment import (
+    FACE_EMBEDDING_CONFIGURATION,
+    FACE_EMBEDDING_PROCESSOR_VERSION,
 )
 
 from picflow.models import Event, Photo
@@ -410,6 +422,67 @@ class GalleryPageTests(TestCase):
             accepted_attempt=attempt,
         )
 
+    def publish_current_compatible_faces(self, photo: Photo, *, count: int) -> None:
+        configuration_hash = sha256(
+            json.dumps(FACE_EMBEDDING_CONFIGURATION, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=configuration_hash,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=configuration_hash,
+            input_fingerprint={},
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        PhotoProcessingState.objects.create(
+            photo=photo,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            current_run=run,
+            current_job=job,
+            current_attempt=attempt,
+            accepted_attempt=attempt,
+        )
+        artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
+        for face_index in range(count):
+            detection = PhotoFaceDetection.objects.create(
+                artifact=artifact,
+                attempt=attempt,
+                face_index=face_index,
+                status=PhotoFaceDetection.Status.KEPT,
+            )
+            FaceEmbedding.objects.create(
+                detection=detection,
+                model_version="sface",
+                vector=[1.0] + [0.0] * 127,
+                metadata={},
+            )
+
     @patch("config.views.PrivateUploadStorage")
     def test_event_detail_builds_filename_ordered_gallery_without_storage(
         self, storage_class
@@ -633,6 +706,52 @@ class GalleryPageTests(TestCase):
             else:
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
         self.assertNotContains(response, "gallery-photo-id")
+
+    @override_settings(SELFIE_SEARCH_ENABLED=True)
+    def test_event_detail_renders_similar_search_only_for_one_face(self) -> None:
+        """The production break caught here is offering a direct search for ambiguous evidence."""
+        event = self.make_event()
+        zero_face = self.make_private_photo(event, id="zero-face")
+        one_face = self.make_private_photo(event, id="one-face")
+        two_faces = self.make_private_photo(event, id="two-faces")
+        self.publish_current_compatible_faces(one_face, count=1)
+        self.publish_current_compatible_faces(two_faces, count=2)
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        expected_url = reverse(
+            "selfie_search:submit_gallery_photo",
+            kwargs={"event_slug": event.slug, "photo_id": one_face.pk},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [photo.photo_id for photo in response.context["gallery_photos"]],
+            [one_face.pk, two_faces.pk, zero_face.pk],
+        )
+        self.assertContains(
+            response,
+            f'<form class="gallery-similar-search" action="{expected_url}" method="post">',
+        )
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=2)
+        self.assertContains(response, "Найти похожие фото", count=1)
+        for photo in (zero_face, two_faces):
+            self.assertNotContains(
+                response,
+                reverse(
+                    "selfie_search:submit_gallery_photo",
+                    kwargs={"event_slug": event.slug, "photo_id": photo.pk},
+                ),
+            )
+        for photo in (zero_face, one_face, two_faces):
+            download_url = reverse(
+                "photo_download", kwargs={"slug": event.slug, "photo_id": photo.pk}
+            )
+            self.assertContains(response, f'href="{download_url}"')
+            self.assertContains(
+                response,
+                'data-gallery="event-photos" data-type="image"',
+                count=3,
+            )
 
     def test_event_detail_empty_gallery_is_accessible(self) -> None:
         event = self.make_event()

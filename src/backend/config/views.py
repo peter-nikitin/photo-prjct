@@ -4,6 +4,7 @@ from django.conf import settings
 from django.core.paginator import InvalidPage
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_GET
 from ingestion.storage import (
     ObjectMissing,
@@ -19,9 +20,10 @@ from picflow.gallery import (
     gallery_page,
     gallery_photo_queryset,
 )
-from picflow.models import Event
+from picflow.models import Event, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
 from selfie_search.forms import SelfieSearchUploadForm
+from selfie_search.services.submission import gallery_search_eligible_photo_ids
 
 from config.metrics import generate_metrics
 
@@ -55,9 +57,28 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             gallery_page_data = gallery_page(event=event, page_number=request.GET.get("page"))
         except InvalidPage:
             return HttpResponse(status=404)
+        gallery_page_photos = tuple(gallery_page_data.object_list)
+        eligible_photo_ids = (
+            gallery_search_eligible_photo_ids(event=event, photos=gallery_page_photos)
+            if settings.SELFIE_SEARCH_ENABLED
+            else frozenset()
+        )
+
+        def similar_search_url(photo: Photo) -> str | None:
+            if photo.pk not in eligible_photo_ids:
+                return None
+            return reverse(
+                "selfie_search:submit_gallery_photo",
+                kwargs={"event_slug": event.slug, "photo_id": photo.pk},
+            )
+
         gallery_photos = tuple(
-            GalleryPhotoFactory.from_photo(photo=photo, event_slug=event.slug)
-            for photo in gallery_page_data.object_list
+            GalleryPhotoFactory.from_photo(
+                photo=photo,
+                event_slug=event.slug,
+                similar_search_url_builder=similar_search_url,
+            )
+            for photo in gallery_page_photos
         )
     return render(
         request,

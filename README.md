@@ -102,7 +102,17 @@ and only then set `SELFIE_SEARCH_ENABLED=True`.
 
 ### Operate selfie-search observability
 
-The supported deployment entrypoint installs and verifies a persistent system journal capped by
+Before the first observability rollout, or whenever its host package changes, an operator with
+existing root access installs the reviewed package and the narrow `deploy` sudo rule:
+
+```bash
+DEPLOY_ROOT=/opt/photo-prjct sh deploy/bootstrap-selfie-observability.sh
+```
+
+The bootstrap copies all executable inputs to root-owned paths. Routine deployments can then invoke
+only the fixed helper actions `install`, `verify`, `rollback`, `commit`, and the UUID-validated
+`verify-probe`; they never execute files
+from the deploy-owned checkout as root. The supported deployment entrypoint installs and verifies a persistent system journal capped by
 `MaxRetentionSec=14day` and `SystemMaxUse=1G`, stable `web`, `worker`, and `nginx` tags, and the
 `selfie-search-summary.timer`. The cap can shorten effective history under heavy log volume; the
 journal is operational evidence, not a backup.
@@ -124,8 +134,8 @@ Recompute one Moscow calendar date without changing application or database stat
 sudo /usr/local/lib/findme-selfie-observability/run-daily-summary.sh 2026-08-03
 ```
 
-Use `deploy/verify-selfie-observability.sh` through the deployment workflow for effective policy,
-timer, Compose-tag, and emitted-probe verification. Do not paste raw journal output into tickets;
+The root helper verifies effective policy and timer state; the unprivileged
+`deploy/verify-selfie-observability.sh` verifies Compose tags and an emitted probe. Do not paste raw journal output into tickets;
 record only the bounded summary and sanitized diagnostics.
 
 ### Prepare Node.js

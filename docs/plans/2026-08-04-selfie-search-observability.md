@@ -315,7 +315,8 @@ contracts remain green.
 
 **Files:**
 
-- Create: `deploy/install-selfie-observability.sh`
+- Create: `deploy/bootstrap-selfie-observability.sh`
+- Create: `deploy/selfie-observability/root-helper.sh`
 - Create: `deploy/verify-selfie-observability.sh`
 - Modify: `deploy/apply-deployment.sh`
 - Modify: `tests/deployment/test_deployment_scripts.py`
@@ -340,14 +341,14 @@ contracts remain green.
   Docker daemon configuration, or existing logs.
 - [ ] Run the focused deployment tests and confirm failure because installation and verification
   entrypoints are absent.
-- [ ] Implement `install-selfie-observability.sh` with strict mode, dependency checks, validated
-  source paths, mode/owner checks, same-filesystem temporary backups, atomic replacement, conditional
+- [ ] Implement a one-time operator bootstrap and fixed root-owned helper with strict mode, dependency
+  checks, root-owned package validation, narrow sudo actions, same-filesystem temporary backups, atomic replacement, conditional
   `systemctl daemon-reload`, conditional journald restart, timer enablement, traps, and exact rollback
   status markers. Do not run journal vacuum or delete logs during installation or rollback.
-- [ ] Implement `verify-selfie-observability.sh` to inspect effective journald values, persistence,
-  disk use, oldest selected selfie event when present, systemd unit/timer state, Compose logging
-  driver/tags, and bounded probe readability. A fresh no-event environment is valid; an unreadable
-  emitted probe is not.
+- [ ] Implement fixed root-helper actions to inspect effective journald values, persistence, disk
+  use, oldest selected selfie event when present, systemd unit/timer state, and bounded probe
+  readability. Keep `verify-selfie-observability.sh` unprivileged for Compose logging driver/tags and
+  probe emission. A fresh no-event environment is valid; an unreadable emitted probe is not.
 - [ ] Integrate install before candidate container replacement and verification after container
   health in `apply-deployment.sh`. Preserve the previous managed logging files until all deployment
   checks succeed; invoke their rollback from the existing deployment rollback path.
@@ -403,7 +404,8 @@ export ALLOWED_HOSTS=localhost
   tests/test_repository_foundation.py
 
 bash tests/deployment/validate-nginx.sh
-sh -n deploy/install-selfie-observability.sh
+sh -n deploy/bootstrap-selfie-observability.sh
+sh -n deploy/selfie-observability/root-helper.sh
 sh -n deploy/verify-selfie-observability.sh
 sh -n deploy/selfie-observability/run-daily-summary.sh
 .venv/bin/ruff format --check .

@@ -229,13 +229,6 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
         deploy_dir / "install-upload-cleanup-cron.sh",
     )
     _write_executable(
-        deploy_dir / "install-selfie-observability.sh",
-        """
-printf 'observability-%s\n' "$1" >> "$COMMAND_LOG"
-[ "$APPLY_SCENARIO:$1" != observability-commit-failure:commit ]
-""",
-    )
-    _write_executable(
         deploy_dir / "verify-selfie-observability.sh",
         """
 printf 'verify-selfie-observability\n' >> "$COMMAND_LOG"
@@ -247,13 +240,38 @@ printf 'verify-selfie-observability\n' >> "$COMMAND_LOG"
         """
 printf 'sudo %s\n' "$*" >> "$COMMAND_LOG"
 [ "${1-}" = -n ] && shift
-[ "$APPLY_SCENARIO:$*" != sudo-preflight-failure:true ] || exit 1
+if [ "${1-}" = /usr/local/sbin/findme-selfie-observability ]; then
+  action="${2-}"
+  printf 'observability-%s\n' "$action" >> "$COMMAND_LOG"
+  [ "$APPLY_SCENARIO:$action" != sudo-preflight-failure:install ] || exit 1
+  if [ "$APPLY_SCENARIO:$action" = observability-install-signal:install ]; then
+    kill -TERM "$PPID"
+    exit 143
+  fi
+  [ "${VERIFY_SCENARIO:-}:$action" != unreadable-probe:verify-probe ] || exit 1
+  [ "$APPLY_SCENARIO:$action" != observability-commit-failure:commit ] || exit 1
+  exit 0
+fi
 if [ "${1-}" = env ] && [ "${2-}" = -i ]; then
   shift 2
   case "${1-}" in PATH=*) shift ;; esac
   exec env "$@"
 fi
 exec "$@"
+""",
+    )
+    _write_executable(
+        fake_bin / "cmp",
+        """
+case "$*" in
+  *"/usr/local/sbin/findme-selfie-observability"*)
+    [ "$APPLY_SCENARIO" != stale-observability-helper ]
+    ;;
+  *"/usr/local/lib/findme-selfie-observability-package/"*)
+    [ "$APPLY_SCENARIO" != stale-observability-package ]
+    ;;
+  *) exec /usr/bin/cmp "$@" ;;
+esac
 """,
     )
     _write_executable(
@@ -1639,6 +1657,7 @@ def _observability_install_env(tmp_path: Path, fake_bin: Path) -> dict[str, str]
         "selfie-search-summary.timer",
         "run-daily-summary.sh",
         "summarize.py",
+        "root-helper.sh",
     ):
         shutil.copy2(ROOT / "deploy" / "selfie-observability" / name, source / name)
     _write_executable(
@@ -1697,7 +1716,8 @@ fi
     )
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "DEPLOY_ROOT": str(tmp_path),
+        "SELFIE_OBSERVABILITY_TEST_MODE": "1",
+        "SELFIE_OBSERVABILITY_PACKAGE_DIR": str(source),
         "SELFIE_OBSERVABILITY_STATE_DIR": str(tmp_path / "state"),
         "SELFIE_OBSERVABILITY_SYSTEMD_DIR": str(tmp_path / "systemd"),
         "SELFIE_OBSERVABILITY_JOURNALD_DIR": str(tmp_path / "journald"),
@@ -1721,11 +1741,11 @@ def test_observability_installer_first_install_noop_and_exact_rollback(
     unrelated = systemd / "unrelated.service"
     unrelated.write_text("leave-me\n", encoding="utf-8")
 
-    first = _run("deploy/install-selfie-observability.sh", env=env)
+    first = _run("deploy/selfie-observability/root-helper.sh", env=env)
     noop_env = {**env, "SELFIE_OBSERVABILITY_STATE_DIR": str(tmp_path / "noop-state")}
-    second = _run("deploy/install-selfie-observability.sh", env=noop_env)
+    second = _run("deploy/selfie-observability/root-helper.sh", env=noop_env)
     rollback = subprocess.run(
-        ["sh", ROOT / "deploy/install-selfie-observability.sh", "rollback"],
+        ["sh", ROOT / "deploy/selfie-observability/root-helper.sh", "rollback"],
         env={**os.environ, **env},
         text=True,
         capture_output=True,
@@ -1749,7 +1769,7 @@ def test_observability_installer_rejects_invalid_candidate_before_host_mutation(
     before = sorted(
         path.relative_to(tmp_path) for path in tmp_path.rglob("*") if "bin" not in path.parts
     )
-    result = _run("deploy/install-selfie-observability.sh", env=env)
+    result = _run("deploy/selfie-observability/root-helper.sh", env=env)
     after = sorted(
         path.relative_to(tmp_path) for path in tmp_path.rglob("*") if "bin" not in path.parts
     )
@@ -1785,10 +1805,11 @@ def test_observability_installer_second_file_failure_restores_files_and_disabled
     managed = journald / "60-findme-selfie-observability.conf"
     managed.write_text("prior\n", encoding="utf-8")
 
-    result = _run("deploy/install-selfie-observability.sh", env=env)
+    result = _run("deploy/selfie-observability/root-helper.sh", env=env)
 
     assert result.returncode == 9
     assert managed.read_text(encoding="utf-8") == "prior\n"
+    assert not (tmp_path / "state").exists()
     commands = (tmp_path / "systemctl.log").read_text(encoding="utf-8")
     assert "disable selfie-search-summary.timer" in commands
     assert "stop selfie-search-summary.timer" in commands
@@ -1816,10 +1837,11 @@ def test_observability_installer_signal_after_first_replacement_restores_prior_f
     managed = tmp_path / "journald/60-findme-selfie-observability.conf"
     managed.write_text("prior\n", encoding="utf-8")
 
-    result = _run("deploy/install-selfie-observability.sh", env=env)
+    result = _run("deploy/selfie-observability/root-helper.sh", env=env)
 
     assert result.returncode == 143
     assert managed.read_text(encoding="utf-8") == "prior\n"
+    assert not (tmp_path / "state").exists()
     assert "SELFIE_OBSERVABILITY_ROLLBACK_COMPLETE" in result.stdout
 
 
@@ -1830,7 +1852,7 @@ def test_installed_runner_uses_managed_sibling_after_candidate_changes(
     candidate = tmp_path / "deploy/selfie-observability/summarize.py"
     candidate.write_text("print('managed-summary')\n", encoding="utf-8")
 
-    installed = _run("deploy/install-selfie-observability.sh", env=env)
+    installed = _run("deploy/selfie-observability/root-helper.sh", env=env)
     assert installed.returncode == 0, installed.stderr
     candidate.write_text("print('candidate-summary')\n", encoding="utf-8")
     _write_executable(fake_bin / "journalctl", ":")
@@ -1869,11 +1891,131 @@ def test_observability_rollback_never_claims_complete_when_timer_state_remains_w
         encoding="utf-8",
     )
 
-    result = _run("deploy/install-selfie-observability.sh", env=env)
+    result = _run("deploy/selfie-observability/root-helper.sh", env=env)
 
     assert result.returncode == 9
     assert "SELFIE_OBSERVABILITY_ROLLBACK_COMPLETE" not in result.stdout
     assert "SELFIE_OBSERVABILITY_ROLLBACK_FAILED" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_success"),
+    [
+        ("ok", True),
+        ("oldest", True),
+        ("disabled", False),
+        ("inactive", False),
+        ("disk-failure", False),
+    ],
+)
+def test_root_helper_executes_host_verification(
+    tmp_path: Path, fake_bin: Path, scenario: str, expected_success: bool
+) -> None:
+    env = _observability_install_env(tmp_path, fake_bin)
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    env.update({"SELFIE_OBSERVABILITY_JOURNAL_DIR": str(journal), "VERIFY_SCENARIO": scenario})
+    _write_executable(
+        fake_bin / "systemd-analyze",
+        """
+case "$*" in
+  *cat-config*) printf 'Storage=persistent\nMaxRetentionSec=14day\nSystemMaxUse=1G\n' ;;
+  *) : ;;
+esac
+""",
+    )
+    _write_executable(
+        fake_bin / "systemctl",
+        """
+case "$*" in
+  "is-enabled --quiet selfie-search-summary.timer") [ "$VERIFY_SCENARIO" != disabled ] ;;
+  "is-active --quiet selfie-search-summary.timer") [ "$VERIFY_SCENARIO" != inactive ] ;;
+  *) : ;;
+esac
+""",
+    )
+    _write_executable(
+        fake_bin / "journalctl",
+        """
+case "$*" in
+  *--disk-usage*)
+    [ "$VERIFY_SCENARIO" != disk-failure ] || exit 1
+    printf 'Archived and active journals take up 12.0M in the file system.\n'
+    ;;
+  *"-o short-unix"*) [ "$VERIFY_SCENARIO" != oldest ] || printf '100.000000 first\n' ;;
+  *) : ;;
+esac
+""",
+    )
+
+    result = subprocess.run(
+        ["sh", ROOT / "deploy/selfie-observability/root-helper.sh", "verify"],
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, result.stderr
+    if expected_success:
+        assert "SELFIE_OBSERVABILITY_HOST_VERIFIED" in result.stdout
+    if scenario == "oldest":
+        assert "oldest_selfie_event_realtime=100.000000" in result.stdout
+
+
+@pytest.mark.parametrize(("readable", "expected_success"), [(True, True), (False, False)])
+def test_root_helper_verifies_probe_with_privileged_journal_read(
+    tmp_path: Path, fake_bin: Path, readable: bool, expected_success: bool
+) -> None:
+    env = _observability_install_env(tmp_path, fake_bin)
+    env["PROBE_READABLE"] = "1" if readable else "0"
+    _write_executable(
+        fake_bin / "journalctl",
+        """
+[ "$PROBE_READABLE" = 1 ] || exit 0
+printf '{"probe_id":"00000000-0000-0000-0000-000000000001"}\n'
+""",
+    )
+
+    result = subprocess.run(
+        [
+            "sh",
+            ROOT / "deploy/selfie-observability/root-helper.sh",
+            "verify-probe",
+            "00000000-0000-0000-0000-000000000001",
+        ],
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, result.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["verify-probe", "not-a-uuid"],
+        ["verify-probe", "00000000-0000-0000-0000-000000000001", "extra"],
+    ],
+)
+def test_root_helper_rejects_probe_arguments_before_journal_read(
+    tmp_path: Path, fake_bin: Path, arguments: list[str]
+) -> None:
+    env = _observability_install_env(tmp_path, fake_bin)
+    _write_executable(fake_bin / "journalctl", 'printf called > "$COMMAND_LOG.journal-called"')
+
+    result = subprocess.run(
+        ["sh", ROOT / "deploy/selfie-observability/root-helper.sh", *arguments],
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert not (tmp_path / "systemctl.log.journal-called").exists()
 
 
 def test_apply_rolls_back_observability_when_post_install_verification_fails(
@@ -1892,12 +2034,10 @@ def test_apply_rolls_back_observability_when_post_install_verification_fails(
     sudo_commands = [command for command in commands if command.startswith("sudo ")]
     assert sudo_commands
     assert all("sudo -n " in command and " -E " not in f" {command} " for command in sudo_commands)
-    action_commands = [
-        command
-        for command in sudo_commands
-        if "install-selfie-" in command or "verify-selfie-" in command
-    ]
-    assert action_commands and all(" env -i PATH=" in command for command in action_commands)
+    assert all(
+        "/usr/local/sbin/findme-selfie-observability" in command for command in sudo_commands
+    )
+    assert all("/opt/photo-prjct" not in command for command in sudo_commands)
     assert all(
         "new-secret" not in command and "password" not in command for command in sudo_commands
     )
@@ -1928,9 +2068,187 @@ def test_observability_sudo_preflight_fails_before_deployment_mutation(
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
     commands = _apply_log(tmp_path)
-    assert "sudo -n true" in commands
+    assert "sudo -n /usr/local/sbin/findme-selfie-observability install" in commands
+    assert "observability-install" in commands
+    assert not any(" stop nginx" in command for command in commands)
+
+
+def test_apply_rolls_back_when_interrupted_at_observability_install_boundary(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="observability-install-signal"),
+    )
+
+    assert result.returncode != 0
+    commands = _apply_log(tmp_path)
+    assert "observability-install" in commands
+    assert "observability-rollback" in commands
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not any(" stop nginx" in command for command in commands)
+
+
+def test_apply_uses_only_the_fixed_root_helper_and_no_general_sudo_probe(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """The deployment user must call only the narrow, bootstrapped helper."""
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    assert not any(command == "sudo -n true" for command in commands)
+    helper_commands = [
+        command for command in commands if "/usr/local/sbin/findme-selfie-observability" in command
+    ]
+    assert helper_commands[0] == "sudo -n /usr/local/sbin/findme-selfie-observability install"
+    assert "sudo -n /usr/local/sbin/findme-selfie-observability verify" in helper_commands
+    assert helper_commands[-1] == "sudo -n /usr/local/sbin/findme-selfie-observability commit"
+    assert all("/opt/photo-prjct/deploy" not in command for command in helper_commands)
+
+
+def test_bootstrap_installs_root_owned_helper_and_narrow_sudoers_rule(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """The one-time operator step installs immutable helper assets and no broad sudo rule."""
+    source = tmp_path / "deploy" / "selfie-observability"
+    source.mkdir(parents=True)
+    for name in (
+        "journald.conf",
+        "selfie-search-summary.service",
+        "selfie-search-summary.timer",
+        "run-daily-summary.sh",
+        "summarize.py",
+    ):
+        shutil.copy2(ROOT / "deploy" / "selfie-observability" / name, source / name)
+    helper_source = ROOT / "deploy" / "selfie-observability" / "root-helper.sh"
+    if helper_source.exists():
+        shutil.copy2(helper_source, source / "root-helper.sh")
+    _write_executable(
+        fake_bin / "sudo",
+        """
+printf 'sudo %s\n' "$*" >> "$BOOTSTRAP_LOG"
+[ "${1-}" = -n ] && shift
+case "${1-}" in
+  install)
+    shift
+    source_path=""
+    target_path=""
+    is_dir=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -d) is_dir=1 ;;
+        -o|-g|-m) shift ;;
+        -*) ;;
+        *)
+          if [ -z "$source_path" ] && [ "$is_dir" -eq 0 ]; then source_path="$1";
+          else target_path="$1"; fi
+          ;;
+      esac
+      shift
+    done
+    case "$target_path" in
+      /usr/local/lib/findme-selfie-observability-package*)
+        target_path="$BOOTSTRAP_ROOT/package${target_path#/usr/local/lib/findme-selfie-observability-package}"
+        ;;
+      /usr/local/sbin/findme-selfie-observability.new)
+        target_path="$BOOTSTRAP_ROOT/helper.new"
+        ;;
+      /etc/sudoers.d/findme-selfie-observability.new)
+        target_path="$BOOTSTRAP_ROOT/sudoers.d/findme-selfie-observability.new"
+        ;;
+    esac
+    if [ "$is_dir" -eq 1 ]; then
+      mkdir -p "$target_path"
+    else
+      mkdir -p "$(dirname "$target_path")"
+      cp "$source_path" "$target_path"
+    fi
+    ;;
+  mv)
+    source_path="$2"
+    target_path="$3"
+    case "$source_path:$target_path" in
+      /usr/local/lib/findme-selfie-observability-package/*:*)
+        source_path="$BOOTSTRAP_ROOT/package${source_path#/usr/local/lib/findme-selfie-observability-package}"
+        ;;
+      /usr/local/sbin/findme-selfie-observability.new:*)
+        source_path="$BOOTSTRAP_ROOT/helper.new"
+        ;;
+      /etc/sudoers.d/findme-selfie-observability.new:*)
+        source_path="$BOOTSTRAP_ROOT/sudoers.d/findme-selfie-observability.new"
+        ;;
+    esac
+    case "$target_path" in
+      /usr/local/lib/findme-selfie-observability-package/*)
+        target_path="$BOOTSTRAP_ROOT/package${target_path#/usr/local/lib/findme-selfie-observability-package}"
+        ;;
+      /usr/local/sbin/findme-selfie-observability)
+        target_path="$BOOTSTRAP_ROOT/helper"
+        ;;
+      /etc/sudoers.d/findme-selfie-observability)
+        target_path="$BOOTSTRAP_ROOT/sudoers.d/findme-selfie-observability"
+        ;;
+    esac
+    mkdir -p "$(dirname "$target_path")"
+    mv "$source_path" "$target_path"
+    ;;
+  visudo) ;;
+  *) exit 99 ;;
+esac
+""",
+    )
+    _write_executable(fake_bin / "systemd-analyze", ":")
+    env = {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "BOOTSTRAP_LOG": str(tmp_path / "bootstrap.log"),
+        "DEPLOY_ROOT": str(tmp_path),
+        "BOOTSTRAP_ROOT": str(tmp_path),
+    }
+
+    result = _run("deploy/bootstrap-selfie-observability.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    log = (tmp_path / "bootstrap.log").read_text(encoding="utf-8")
+    assert "helper" in log
+    assert "sudoers" in log
+    sudoers = (tmp_path / "sudoers.d/findme-selfie-observability").read_text(encoding="utf-8")
+    assert "NOPASSWD: /usr/local/sbin/findme-selfie-observability install" in sudoers
+    assert "NOPASSWD: /usr/local/sbin/findme-selfie-observability rollback" in sudoers
+    assert "NOPASSWD: /usr/local/sbin/findme-selfie-observability commit" in sudoers
+    assert "NOPASSWD: /usr/local/sbin/findme-selfie-observability verify-probe *" in sudoers
+    assert "NOPASSWD:ALL" not in sudoers
+    assert "/opt/photo-prjct/deploy/install-selfie-observability.sh" not in sudoers
+
+
+@pytest.mark.parametrize("scenario", ["stale-observability-helper", "stale-observability-package"])
+def test_apply_rejects_stale_observability_bootstrap_before_host_mutation(
+    tmp_path: Path, fake_bin: Path, scenario: str
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh", env=_apply_env(tmp_path, fake_bin, scenario=scenario)
+    )
+
+    assert result.returncode != 0
+    assert "bootstrap is missing or stale" in result.stderr
+    commands = _apply_log(tmp_path)
     assert "observability-install" not in commands
     assert not any(" stop nginx" in command for command in commands)
+
+
+def test_root_helper_reads_only_the_root_owned_package() -> None:
+    helper = (ROOT / "deploy/selfie-observability/root-helper.sh").read_text(encoding="utf-8")
+
+    assert "/opt/photo-prjct" not in helper
+    assert "/usr/local/lib/findme-selfie-observability-package" in helper
+    assert "deploy/selfie-observability" not in helper
+    assert "systemd-analyze cat-config systemd/journald.conf" in helper
+    assert "systemctl is-enabled --quiet selfie-search-summary.timer" in helper
+    assert "systemctl is-active --quiet selfie-search-summary.timer" in helper
+    assert "journalctl --disk-usage" in helper
 
 
 @pytest.mark.parametrize(
@@ -1938,12 +2256,8 @@ def test_observability_sudo_preflight_fails_before_deployment_mutation(
     [
         ("ok", True),
         ("no-event", True),
-        ("ordered-oldest", True),
         ("wrong-tag", False),
         ("unreadable-probe", False),
-        ("disabled-timer", False),
-        ("inactive-timer", False),
-        ("disk-failure", False),
     ],
 )
 def test_observability_verifier_checks_caps_timer_driver_tags_and_probe(
@@ -2000,6 +2314,16 @@ esac
     )
     # Deterministic UUID makes the journal harness independent of secret or random output.
     _write_executable(fake_bin / "python3", "printf '00000000-0000-0000-0000-000000000001\n'")
+    _write_executable(
+        fake_bin / "sudo",
+        """
+[ "${1-}" = -n ] && shift
+[ "${1-}" = /usr/local/sbin/findme-selfie-observability ] || exit 2
+[ "${2-}" = verify-probe ] || exit 2
+[ "${3-}" = 00000000-0000-0000-0000-000000000001 ] || exit 2
+[ "$VERIFY_SCENARIO" != unreadable-probe ]
+""",
+    )
     env = {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DEPLOY_ROOT": str(tmp_path),
@@ -2013,11 +2337,6 @@ esac
     result = _run("deploy/verify-selfie-observability.sh", env=env)
 
     assert (result.returncode == 0) is expected_success, result.stderr
-    if scenario == "ok":
-        assert "journal_disk_usage=12.0M" in result.stdout
-        assert "oldest_selfie_event_realtime=none" in result.stdout
-    if scenario == "ordered-oldest":
-        assert "oldest_selfie_event_realtime=100.000000" in result.stdout
     if scenario == "disabled-timer":
         assert result.stderr == "selfie summary timer is not enabled\n"
     if scenario == "inactive-timer":

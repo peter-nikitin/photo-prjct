@@ -275,7 +275,10 @@ def test_refresh_accepts_the_exact_django_response_with_utc_offset() -> None:
     )
 
 
-@pytest.mark.parametrize(("method", "status"), [("complete", "succeeded"), ("fail", "failed")])
+@pytest.mark.parametrize(
+    ("method", "status"),
+    [("complete", "succeeded"), ("complete", "failed"), ("fail", "failed")],
+)
 def test_terminal_callbacks_return_the_exact_validated_completion_metadata(
     method: str, status: str
 ) -> None:

@@ -349,7 +349,12 @@ def _callback_result(value: object, attempt_id: str, *, expected_status: str) ->
         and isinstance(attempt, dict)
         and set(attempt) == {"id", "status", "lease_expires_at"}
         and attempt.get("id") == attempt_id
-        and attempt.get("status") in {expected_status, "expired", "stale"}
+        and attempt.get("status")
+        in (
+            {"succeeded", "failed", "expired", "stale"}
+            if expected_status == "succeeded"
+            else {"failed", "expired", "stale"}
+        )
         and (
             attempt.get("lease_expires_at") is None
             or _utc_timestamp(attempt.get("lease_expires_at"))

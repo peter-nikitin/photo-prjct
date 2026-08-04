@@ -4,6 +4,7 @@ import configparser
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -65,7 +66,7 @@ def test_host_runner_uses_exact_moscow_window_tags_and_marks_explicit_recompute(
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "DEPLOY_ROOT": str(ROOT),
             "DEPLOYMENT_TARGET": "staging",
-            "PYTHON_BIN": str(ROOT.parents[1] / ".venv" / "bin" / "python"),
+            "PYTHON_BIN": sys.executable,
             "JOURNAL_ARGS": str(tmp_path / "journal-args"),
         },
         text=True,
@@ -108,7 +109,7 @@ def test_host_runner_propagates_journal_failure_without_emitting_an_empty_summar
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "DEPLOY_ROOT": str(ROOT),
             "DEPLOYMENT_TARGET": "staging",
-            "PYTHON_BIN": str(ROOT.parents[1] / ".venv" / "bin" / "python"),
+            "PYTHON_BIN": sys.executable,
         },
         text=True,
         capture_output=True,

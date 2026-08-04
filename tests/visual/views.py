@@ -586,7 +586,6 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
                 "visible_result_count": 3,
                 "url": "/__visual__/feedback/",
                 "preview": True,
-                "open_initial": True,
             },
             "selfie_feedback_enabled": True,
         },

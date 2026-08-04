@@ -268,7 +268,7 @@ test.describe('mobile visual regression', () => {
   }
 });
 
-test('desktop marking mode renders every control beside its original download action from a neutral viewport', async ({ page }) => {
+test('desktop feedback marking keeps gallery full width and terminal actions equal', async ({ page }) => {
   await page.setViewportSize(DESKTOP_VIEWPORT);
   await preloadCookieAcknowledgement(page);
   const response = await page.goto('/__visual__/event/selfie-search/feedback-marking/');
@@ -279,6 +279,30 @@ test('desktop marking mode renders every control beside its original download ac
   const layout = await page.evaluate(() => ({
     scrollY: window.scrollY,
     activeTag: document.activeElement?.tagName,
+    terminal: (() => {
+      const actions = document.querySelector('.selfie-search-terminal-actions');
+      const newSearch = actions?.querySelector(':scope > .button');
+      const feedback = actions?.querySelector(':scope > .selfie-search-terminal-feedback');
+      const actionsRect = actions?.getBoundingClientRect();
+      const newSearchRect = newSearch?.getBoundingClientRect();
+      const feedbackRect = feedback?.getBoundingClientRect();
+      const galleryRect = document.querySelector('.selfie-search-results')?.getBoundingClientRect();
+      return {
+        display: actions ? getComputedStyle(actions).display : '',
+        columns: actions ? getComputedStyle(actions).gridTemplateColumns : '',
+        newSearchBeforeFeedback: Boolean(newSearch && feedback && newSearchRect && feedbackRect && newSearchRect.left < feedbackRect.left),
+        equalColumns: Boolean(actionsRect && newSearchRect && feedbackRect && Math.abs(newSearchRect.width - feedbackRect.width) < 1),
+        galleryWidth: galleryRect?.width ?? 0,
+        actionsWidth: actionsRect?.width ?? 0,
+      };
+    })(),
+    form: (() => {
+      const form = document.querySelector('[data-feedback-form]');
+      return {
+        visible: Boolean(form && !form.hidden),
+        hasDisclosureAttributes: Boolean(form?.hasAttribute('data-feedback-open') || form?.hasAttribute('data-feedback-close') || form?.hasAttribute('data-feedback-opt-out')),
+      };
+    })(),
     cards: Array.from(document.querySelectorAll('.gallery-card-actions')).map((actions) => {
       const controls = actions.querySelector('[data-feedback-card-controls]');
       const download = actions.querySelector('.gallery-download');
@@ -293,6 +317,13 @@ test('desktop marking mode renders every control beside its original download ac
 
   expect(layout.scrollY).toBe(0);
   expect(layout.activeTag).toBe('BODY');
+  expect(layout.terminal.display).toBe('grid');
+  expect(layout.terminal.columns).toMatch(/^\d+(?:\.\d+)?px \d+(?:\.\d+)?px$/);
+  expect(layout.terminal.newSearchBeforeFeedback).toBe(true);
+  expect(layout.terminal.equalColumns).toBe(true);
+  expect(layout.terminal.actionsWidth).toBe(layout.terminal.galleryWidth);
+  expect(layout.form.visible).toBe(true);
+  expect(layout.form.hasDisclosureAttributes).toBe(false);
   expect(layout.cards).toHaveLength(3);
   expect(layout.cards.every(({ controlsVisible }) => controlsVisible)).toBe(true);
   expect(layout.cards.every(({ controlsBeforeDownload }) => controlsBeforeDownload)).toBe(true);
@@ -304,6 +335,33 @@ test('desktop marking mode renders every control beside its original download ac
     fullPage: true,
     timeout: 15_000,
   });
+});
+
+test('mobile feedback marking stacks the new-search action before the form', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  const response = await page.goto('/__visual__/event/selfie-search/feedback-marking/');
+  expect(response).not.toBeNull();
+  expect(response.status()).toBeLessThan(400);
+  await settlePage(page);
+
+  const layout = await page.evaluate(() => {
+    const actions = document.querySelector('.selfie-search-terminal-actions');
+    const newSearch = actions?.querySelector(':scope > .button');
+    const feedback = actions?.querySelector(':scope > .selfie-search-terminal-feedback');
+    const actionsRect = actions?.getBoundingClientRect();
+    const newSearchRect = newSearch?.getBoundingClientRect();
+    const feedbackRect = feedback?.getBoundingClientRect();
+    return {
+      columns: actions ? getComputedStyle(actions).gridTemplateColumns : '',
+      stacked: Boolean(newSearchRect && feedbackRect && newSearchRect.top < feedbackRect.top),
+      fullWidth: Boolean(actionsRect && newSearchRect && feedbackRect && Math.abs(newSearchRect.width - actionsRect.width) < 1 && Math.abs(feedbackRect.width - actionsRect.width) < 1),
+    };
+  });
+
+  expect(layout.columns).toMatch(/^\d+(?:\.\d+)?px$/);
+  expect(layout.stacked).toBe(true);
+  expect(layout.fullWidth).toBe(true);
 });
 
 test('marking mode keeps the original cards operable and updates optional progress', async ({ page }) => {

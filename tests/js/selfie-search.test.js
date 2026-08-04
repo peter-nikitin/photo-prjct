@@ -5,8 +5,6 @@ const test = require('node:test');
 
 const {
   BrowserStorageAdapter,
-  FEEDBACK_OPT_OUT_KEY,
-  FEEDBACK_OPT_OUT_VALUE,
   FEEDBACK_PENDING_KEY,
   FeedbackUiController,
   FeedbackMarkStore,
@@ -97,7 +95,6 @@ function makeAdapter({ now = 1_000, randomUUID = () => 'handle-1', ...overrides 
   return new BrowserStorageAdapter({
     db: new MemoryDatabase(),
     sessionStorage: new MemoryStorage(),
-    localStorage: new MemoryStorage(),
     now: () => now,
     randomUUID,
     ...overrides,
@@ -177,10 +174,6 @@ function makeFeedbackFixture({
   const submitError = new FakeElement({ hidden: true });
   const submitButton = new FakeElement();
   const csrf = new FakeElement({ value: 'csrf-token' });
-  const openButton = new FakeElement();
-  const closeButton = new FakeElement();
-  const optOutButton = new FakeElement();
-  const storageWarning = new FakeElement({ hidden: true });
   const controls = [new FakeElement({ hidden }), new FakeElement({ hidden })];
   const labelButtons = [
     new FakeElement({ dataset: { feedbackLabel: 'present', feedbackResultId: 'photo-a' } }),
@@ -196,14 +189,9 @@ function makeFeedbackFixture({
   root.queries.set('[data-feedback-consent-error]', consentError);
   root.queries.set('[data-feedback-submit-error]', submitError);
   root.queries.set('[data-feedback-submit]', submitButton);
-  root.queries.set('[data-feedback-open]', openButton);
-  root.queries.set('[data-feedback-close]', closeButton);
-  root.queries.set('[data-feedback-opt-out]', optOutButton);
   form.queries.set('[name=csrfmiddlewaretoken]', csrf);
   form.queries.set('[name="csrfmiddlewaretoken"]', csrf);
   form.queries.set('[data-feedback-submit]', submitButton);
-  root.parentElement = new FakeElement();
-  root.parentElement.queries.set('[data-feedback-storage-warning]', storageWarning);
 
   const document = {
     queries: new Map(),
@@ -228,10 +216,6 @@ function makeFeedbackFixture({
     consentError,
     submitError,
     submitButton,
-    openButton,
-    closeButton,
-    optOutButton,
-    storageWarning,
     controls,
     labelButtons,
     document,
@@ -330,7 +314,6 @@ test('preserves the exact selected bytes with bounded canonical metadata and a t
   const storage = new BrowserStorageAdapter({
     db,
     sessionStorage,
-    localStorage: new MemoryStorage(),
     now: () => 10_000,
     randomUUID: () => 'handle-1',
   });
@@ -443,7 +426,6 @@ test('failed search page clears its pending selfie and unrelated result cannot c
   const storage = new BrowserStorageAdapter({
     db,
     sessionStorage,
-    localStorage: new MemoryStorage(),
     now: () => 100,
     randomUUID: () => 'failed-search',
   });
@@ -475,7 +457,6 @@ test('associates a pending selfie only when the successful redirect correlation 
   const storage = new BrowserStorageAdapter({
     db,
     sessionStorage: new MemoryStorage(),
-    localStorage: new MemoryStorage(),
     now: () => 100,
     randomUUID: () => 'matching-search',
   });
@@ -500,14 +481,12 @@ test('keeps simultaneous tab pending handles associated with their own result di
   const first = new BrowserStorageAdapter({
     db,
     sessionStorage: new MemoryStorage(),
-    localStorage: new MemoryStorage(),
     now: () => 100,
     randomUUID: () => 'first-handle',
   });
   const second = new BrowserStorageAdapter({
     db,
     sessionStorage: new MemoryStorage(),
-    localStorage: new MemoryStorage(),
     now: () => 100,
     randomUUID: () => 'second-handle',
   });
@@ -529,7 +508,6 @@ test('opportunistically deletes records at the seven-day expiry boundary', async
   const storage = new BrowserStorageAdapter({
     db,
     sessionStorage: new MemoryStorage(),
-    localStorage: new MemoryStorage(),
     now: () => now,
     randomUUID: () => 'expired-handle',
   });
@@ -548,7 +526,6 @@ test('successful feedback cleanup removes the associated local selfie', async ()
   const storage = new BrowserStorageAdapter({
     db,
     sessionStorage: new MemoryStorage(),
-    localStorage: new MemoryStorage(),
     now: () => 100,
     randomUUID: () => 'feedback-handle',
   });
@@ -569,44 +546,6 @@ test('feedback cleanup treats a successfully inspected empty database as already
   assert.equal(cleaned, true);
 });
 
-test('active opt-out prevents preservation and never writes selfie bytes to browser key-value storage', async () => {
-  const db = new MemoryDatabase();
-  const sessionStorage = new MemoryStorage();
-  const localStorage = new MemoryStorage({ [FEEDBACK_OPT_OUT_KEY]: FEEDBACK_OPT_OUT_VALUE });
-  const storage = new BrowserStorageAdapter({
-    db,
-    sessionStorage,
-    localStorage,
-    now: () => 100,
-    randomUUID: () => 'never-written',
-  });
-
-  const result = await storage.preserveSelectedSelfie(makeFile(new Uint8Array([4, 5])));
-
-  assert.deepEqual(result, { stored: false, reason: 'opted_out' });
-  assert.equal((await db.getAll()).length, 0);
-  assert.equal(sessionStorage.values.size, 0);
-  assert.equal(localStorage.values.get(FEEDBACK_OPT_OUT_KEY), FEEDBACK_OPT_OUT_VALUE);
-});
-
-test('localStorage read failure fails closed for preservation', async () => {
-  const db = new MemoryDatabase();
-  const storage = makeAdapter({
-    db,
-    localStorage: {
-      getItem() {
-        throw new Error('blocked');
-      },
-    },
-  });
-
-  const result = await storage.preserveSelectedSelfie(makeFile());
-
-  assert.equal(result.stored, false);
-  assert.equal(result.reason, 'storage_unavailable');
-  assert.equal((await db.getAll()).length, 0);
-});
-
 test('IndexedDB write failure does not block the ordinary search path', async () => {
   const storage = makeAdapter({
     db: {
@@ -623,36 +562,6 @@ test('IndexedDB write failure does not block the ordinary search path', async ()
   assert.equal(result.reason, 'storage_unavailable');
 });
 
-test('opt-out clears local state even when the browser preference write fails', async () => {
-  const db = new MemoryDatabase();
-  const sessionStorage = new MemoryStorage();
-  const localStorage = {
-    getItem() {
-      return null;
-    },
-    setItem() {
-      throw new Error('blocked');
-    },
-  };
-  const storage = new BrowserStorageAdapter({
-    db,
-    sessionStorage,
-    localStorage,
-    now: () => 100,
-    randomUUID: () => 'to-clear',
-  });
-  await storage.preserveSelectedSelfie(makeFile());
-  const staleMarksKey = `${'findme_selfie_feedback_marks:'}${'a'.repeat(64)}`;
-  sessionStorage.setItem(staleMarksKey, '{"result":"present"}');
-
-  const result = await storage.disableFeedbackPrompts();
-
-  assert.equal(result.saved, false);
-  assert.equal((await db.getAll()).length, 0);
-  assert.equal(storage.getPendingHandle(), null);
-  assert.equal(sessionStorage.getItem(staleMarksKey), null);
-});
-
 test('association read failure leaves the tab pending handle available for a later retry', async () => {
   const sessionStorage = new MemoryStorage({ [FEEDBACK_PENDING_KEY]: 'pending' });
   const storage = new BrowserStorageAdapter({
@@ -662,7 +571,6 @@ test('association read failure leaves the tab pending handle available for a lat
       },
     },
     sessionStorage,
-    localStorage: new MemoryStorage(),
     now: () => 100,
   });
 
@@ -753,35 +661,6 @@ test('a repeated submit is prevented while preservation is pending and produces 
   await secondSubmit;
 
   assert.equal(nativeSubmitCount, 1);
-});
-
-test('active opt-out clears pending and associated local selfies before terminal association', async () => {
-  let nextHandle = 0;
-  const db = new MemoryDatabase();
-  const sessionStorage = new MemoryStorage();
-  const localStorage = new MemoryStorage();
-  const storage = new BrowserStorageAdapter({
-    db,
-    sessionStorage,
-    localStorage,
-    now: () => 100,
-    randomUUID: () => `handle-${++nextHandle}`,
-  });
-
-  await storage.preserveSelectedSelfie(makeFile(new Uint8Array([1])), { correlation: 'b'.repeat(32) });
-  await storage.associatePendingSelfie({ resultDigest: 'b'.repeat(64), correlation: 'b'.repeat(32) });
-  await storage.preserveSelectedSelfie(makeFile(new Uint8Array([2])));
-  localStorage.setItem(FEEDBACK_OPT_OUT_KEY, FEEDBACK_OPT_OUT_VALUE);
-
-  const startup = await initializeBrowserStorage({
-    storage,
-    result: { dataset: { resultDigest: 'a'.repeat(64) } },
-    window: {},
-  });
-
-  assert.deepEqual(startup, { available: true, optedOut: true });
-  assert.equal((await db.getAll()).length, 0);
-  assert.equal(sessionStorage.getItem(FEEDBACK_PENDING_KEY), null);
 });
 
 test('keeps optional result marks keyed by digest across numbered result pages and clears an active choice', () => {
@@ -1055,30 +934,12 @@ function makeSubmittedStartupFixture({ storage }) {
   return { error, pending, retry, success };
 }
 
-test('active opt-out submitted result still completes cleanup instead of remaining pending', async () => {
+test('submitted result completes cleanup before revealing confirmation', async () => {
   let cleanupAttempts = 0;
   const fixture = makeSubmittedStartupFixture({
     storage: {
-      getOptOutState() { return { available: true, active: true }; },
       async cleanupExpired() {},
       async clearAll() {},
-      async clearAssociatedSelfie() { cleanupAttempts += 1; return true; },
-    },
-  });
-
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.equal(cleanupAttempts, 1);
-  assert.equal(fixture.pending.hidden, true);
-  assert.equal(fixture.success.hidden, false);
-});
-
-test('submitted cleanup still inspects IndexedDB when localStorage read fails', async () => {
-  let cleanupAttempts = 0;
-  const fixture = makeSubmittedStartupFixture({
-    storage: {
-      getOptOutState() { return { available: false, active: false, error: new Error('blocked') }; },
-      async cleanupExpired() {},
       async clearAssociatedSelfie() { cleanupAttempts += 1; return true; },
     },
   });
@@ -1143,33 +1004,37 @@ test('keeps contact and selected labels available after validation, server, and 
   assert.deepEqual(controller.marks.getMarks(), { 'photo-a': 'present' });
 });
 
-test('opens and closes marking mode and honours opt-out without sending feedback', async () => {
+test('feedback marking is initialized expanded without disclosure controls', () => {
   const fixture = makeFeedbackFixture();
-  let optOutCalls = 0;
   const controller = new FeedbackUiController({
     root: fixture.root,
     resultDigest: fixture.resultDigest,
     document: fixture.document,
-    storage: {
-      async disableFeedbackPrompts() {
-        optOutCalls += 1;
-        return { saved: true };
-      },
-    },
+    storage: {},
     window: { sessionStorage: new MemoryStorage() },
   });
   controller.bind();
 
-  await fixture.openButton.trigger('click');
   assert.equal(fixture.form.hidden, false);
   assert.equal(fixture.controls.every((control) => !control.hidden), true);
-  assert.equal(fixture.contact.focusCount, 1);
+  assert.equal(controller.open, undefined);
+  assert.equal(controller.close, undefined);
+  assert.equal(controller.optOut, undefined);
+});
 
-  await fixture.closeButton.trigger('click');
-  assert.equal(fixture.form.hidden, true);
-  assert.equal(fixture.controls.every((control) => control.hidden), true);
+test('feedback storage initialization uses no browser preference', async () => {
+  const storage = {
+    async cleanupExpired() {},
+    async associatePendingSelfie() {
+      return { associated: true };
+    },
+  };
 
-  await fixture.optOutButton.trigger('click');
-  assert.equal(optOutCalls, 1);
-  assert.equal(fixture.root.hidden, true);
+  const state = await initializeBrowserStorage({
+    storage,
+    result: { dataset: { resultDigest: 'a'.repeat(64) } },
+    window: {},
+  });
+
+  assert.deepEqual(state, { available: true });
 });

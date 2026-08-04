@@ -8,8 +8,6 @@
   const ACTIVE_STATES = new Set(['queued', 'processing', 'cleanup_pending']);
   const POLL_DELAY_MS = 2000;
   const MAX_BACKOFF_MS = 30000;
-  const FEEDBACK_OPT_OUT_KEY = 'findme_selfie_feedback_prompt';
-  const FEEDBACK_OPT_OUT_VALUE = 'disabled:2026-08-04';
   const FEEDBACK_PENDING_KEY = 'findme_selfie_feedback_pending';
   const FEEDBACK_MARKS_PREFIX = 'findme_selfie_feedback_marks:';
   const FEEDBACK_DB_NAME = 'findme-photo-feedback';
@@ -146,7 +144,6 @@
       db = null,
       indexedDB = safeGlobalValue('indexedDB'),
       sessionStorage = safeGlobalValue('sessionStorage'),
-      localStorage = safeGlobalValue('localStorage'),
       crypto = safeGlobalValue('crypto'),
       now = browserNow,
       randomUUID = null,
@@ -156,7 +153,6 @@
       this.db = db;
       this.indexedDB = indexedDB;
       this.sessionStorage = sessionStorage;
-      this.localStorage = localStorage;
       this.crypto = crypto;
       this.now = now;
       this.randomUUID = randomUUID || (() => randomHandle(this.crypto));
@@ -165,33 +161,8 @@
       this._databasePromise = null;
     }
 
-    getOptOutState() {
-      if (!this.localStorage || typeof this.localStorage.getItem !== 'function') {
-        return { active: false, available: false };
-      }
-      try {
-        return {
-          active: this.localStorage.getItem(FEEDBACK_OPT_OUT_KEY) === FEEDBACK_OPT_OUT_VALUE,
-          available: true,
-        };
-      } catch (error) {
-        return { active: false, available: false, error };
-      }
-    }
-
     createFeedbackCorrelation() {
       return normalizedFeedbackCorrelation(this.randomUUID());
-    }
-
-    readOptOut() {
-      const state = this.getOptOutState();
-      if (!state.available) throw state.error || new Error('localStorage is unavailable.');
-      return state.active;
-    }
-
-    isFeedbackOptedOut() {
-      const state = this.getOptOutState();
-      return state.available ? state.active : null;
     }
 
     getPendingHandle() {
@@ -289,9 +260,6 @@
     }
 
     async preserveSelectedSelfie(file, { correlation = '' } = {}) {
-      const optOut = this.getOptOutState();
-      if (!optOut.available) return { stored: false, reason: 'storage_unavailable' };
-      if (optOut.active) return { stored: false, reason: 'opted_out' };
       if (!file) return { stored: false, reason: 'no_file' };
 
       let bytes;
@@ -480,24 +448,6 @@
       return cleared;
     }
 
-    async disableFeedbackPrompts() {
-      let saved = true;
-      let error = null;
-      if (!this.localStorage || typeof this.localStorage.setItem !== 'function') {
-        saved = false;
-        error = new Error('localStorage is unavailable.');
-      } else {
-        try {
-          this.localStorage.setItem(FEEDBACK_OPT_OUT_KEY, FEEDBACK_OPT_OUT_VALUE);
-        } catch (writeError) {
-          saved = false;
-          error = writeError;
-        }
-      }
-      const cleared = await this.clearAll();
-      return { saved, cleared, error };
-    }
-
   }
 
   class FeedbackMarkStore {
@@ -568,9 +518,6 @@
       this.window = window;
       this.document = document || root.ownerDocument;
       this.form = root.querySelector?.('[data-feedback-form]');
-      this.open = root.querySelector?.('[data-feedback-open]');
-      this.close = root.querySelector?.('[data-feedback-close]');
-      this.optOut = root.querySelector?.('[data-feedback-opt-out]');
       this.progress = root.querySelector?.('[data-feedback-progress]');
       this.contact = root.querySelector?.('[name="contact"]');
       this.consent = root.querySelector?.('[name="personal_data_consent"]');
@@ -585,17 +532,11 @@
       });
     }
 
-    _cardControls() {
-      return this.document?.querySelectorAll?.('[data-feedback-card-controls]') || [];
-    }
-
     _labelButtons() {
       return this.document?.querySelectorAll?.('[data-feedback-label]') || [];
     }
 
     bind() {
-      this.open?.addEventListener('click', () => this.setMarking(true));
-      this.close?.addEventListener('click', () => this.setMarking(false));
       this.form?.addEventListener('submit', (event) => this.submit(event));
       this._labelButtons().forEach((button) => {
         button.addEventListener('click', (event) => {
@@ -605,31 +546,7 @@
           this.renderMarks();
         });
       });
-      this.optOut?.addEventListener('click', async () => {
-        const result = await this.storage.disableFeedbackPrompts();
-        this.marks.clear();
-        this.setMarking(false);
-        this.root.hidden = true;
-        if (!result.saved) {
-          const target = this.root.parentElement?.querySelector?.('[data-feedback-storage-warning]');
-          if (target) {
-            target.textContent = 'Не удалось сохранить настройку. На следующих страницах вопрос может появиться снова.';
-            target.hidden = false;
-          }
-        }
-      });
       this.renderMarks();
-    }
-
-    setMarking(active, { focus = true } = {}) {
-      if (this.variant !== 'result_labels') return;
-      if (this.open) this.open.hidden = active;
-      this.form.hidden = !active;
-      this._cardControls().forEach((controls) => {
-        if (active) controls.removeAttribute('hidden');
-        else controls.setAttribute('hidden', '');
-      });
-      if (active && focus) this.contact?.focus();
     }
 
     renderMarks() {
@@ -731,6 +648,7 @@
       const selfie = await storage.getAssociatedSelfie(resultDigest);
       if (!selfie) {
         if (unavailable) unavailable.hidden = false;
+        root.hidden = true;
         return null;
       }
     }
@@ -738,7 +656,6 @@
     root.hidden = false;
     const controller = new FeedbackUiController({ root, storage, resultDigest, window, document });
     controller.bind();
-    if (root.dataset.feedbackOpenInitial === 'true') controller.setMarking(true, { focus: false });
     return controller;
   }
 
@@ -890,17 +807,7 @@
   }
 
   async function initializeBrowserStorage({ storage, result, window }) {
-    const state = storage.getOptOutState();
     if (typeof storage.cleanupExpired === 'function') await storage.cleanupExpired();
-    if (!state.available) return { available: false, optedOut: false };
-    if (state.active) {
-      try {
-        if (typeof storage.clearAll === 'function') await storage.clearAll();
-      } catch (_error) {
-        // Opt-out remains fail-closed even if local cleanup is temporarily unavailable.
-      }
-      return { available: true, optedOut: true };
-    }
     if (result) {
       const association = await storage.associatePendingSelfie(resultIdentity(result, window));
       if (!association.associated && typeof storage.discardPendingSelfie === 'function') {
@@ -909,7 +816,7 @@
     } else if (typeof storage.discardPendingSelfie === 'function') {
       await storage.discardPendingSelfie();
     }
-    return { available: true, optedOut: state.active };
+    return { available: true };
   }
 
   class SelfieSearchPoller {
@@ -979,7 +886,6 @@
     const storage = options.storage || new BrowserStorageAdapter({
       indexedDB: safeObjectValue(window, 'indexedDB'),
       sessionStorage: safeObjectValue(window, 'sessionStorage'),
-      localStorage: safeObjectValue(window, 'localStorage'),
       crypto: safeObjectValue(window, 'crypto'),
     });
     const form = document.querySelector('[data-selfie-search-form]');
@@ -994,12 +900,11 @@
     const storageReady = feedbackEnabled
       ? initializeBrowserStorage({ storage, result, window }).catch(() => ({
           available: false,
-          optedOut: false,
         }))
-      : Promise.resolve({ available: false, optedOut: false });
+      : Promise.resolve({ available: false });
     if (feedbackEnabled) storageReady.then((state) => {
       initializeFeedbackCleanupUi({ document, window, storage, result }).catch(() => {});
-      if (state.available && !state.optedOut) {
+      if (state.available) {
         initializeFeedbackUi({ document, window, storage, result }).catch(() => {});
       }
     });
@@ -1018,8 +923,6 @@
 
   return {
     BrowserStorageAdapter,
-    FEEDBACK_OPT_OUT_KEY,
-    FEEDBACK_OPT_OUT_VALUE,
     FEEDBACK_PENDING_KEY,
     FeedbackMarkStore,
     FeedbackCleanupUiController,

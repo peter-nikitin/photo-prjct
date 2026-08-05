@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block content %}
-  <article class="selfie-search-result" aria-labelledby="selfie-search-result-title" data-selfie-search-result data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" data-gallery-origin="{{ is_gallery_origin|yesno:'true,false' }}" data-result-digest="{{ public_token_digest }}"{% if selfie_feedback_correlation %} data-feedback-correlation="{{ selfie_feedback_correlation }}"{% endif %}{% if not is_terminal %} data-status-url="{{ status_url }}"{% endif %}>
+  <article class="selfie-search-result" aria-labelledby="selfie-search-result-title" data-selfie-search-result data-event-slug="{{ event.slug }}" data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" data-gallery-origin="{{ is_gallery_origin|yesno:'true,false' }}" data-result-digest="{{ public_token_digest }}"{% if selfie_feedback_correlation %} data-feedback-correlation="{{ selfie_feedback_correlation }}"{% endif %}{% if not is_terminal %} data-status-url="{{ status_url }}"{% endif %}>
     <h1 id="selfie-search-result-title">{{ event.name }}</h1>
     {% if is_gallery_origin %}
       <p class="selfie-search-lead">Поиск показывает вероятные совпадения среди фотографий этого события. Результат увидит любой, у кого есть эта ссылка.</p>
@@ -124,4 +124,5 @@
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
   <script src="{% static 'ui/selfie-search.js' %}"></script>
+  <script src="{% static 'ui/selfie-search-history.js' %}"></script>
 {% endblock %}

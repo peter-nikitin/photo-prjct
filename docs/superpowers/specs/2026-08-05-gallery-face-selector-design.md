@@ -42,10 +42,10 @@ stored embedding without new inference or a face-crop asset pipeline.
 ### Included
 
 - Replace the one-face text action under gallery cards with compact circular face thumbnails.
-- Start the existing direct search immediately when a photo has exactly one usable face.
+- Open a queued result tab immediately when a photo has exactly one usable face.
 - Show an overlapping face stack when a photo has multiple usable faces.
 - Show all usable faces in a compact chooser anchored to that card's footer.
-- Start direct event-scoped ranking from the explicitly selected detection.
+- Start queued event-scoped ranking from the explicitly selected detection in that result tab.
 - Use the existing preview image and persisted bounding boxes for visual crops.
 - Preserve the existing result page, bearer token, ranking model and threshold, result media
   authorization, pagination, and feedback behavior.
@@ -97,7 +97,8 @@ interactive target even when the visible crop is smaller.
 Behavior by usable face count:
 
 - **One:** render one circular submit button. Its accessible name is
-  `Найти похожие фото этого человека`. Activating it submits the selected detection immediately.
+  `Найти похожие фото этого человека`. Activating it opens a new tab and submits the selected
+  detection there immediately.
 - **Two or three:** render all face circles as an overlapping, left-to-right stack. The stack is one
   chooser trigger; clicking any visible part opens the chooser and does not start a search.
 - **More than three:** render the first two face circles and a third summary circle labelled
@@ -126,27 +127,38 @@ uses the same padded crop rule as its footer thumbnail.
 
 Opening keeps focus on the stack, so disclosure does not change the page's scroll position or imply
 that the first face is selected. Escape and a click outside close the chooser and keep or return
-focus to the stack. Opening another chooser closes the previous one. Selecting a tile submits the
-form; no intermediate selected state or confirmation button is required. These enhancements must
-not remove the native `<details>` no-JavaScript path.
+focus to the stack. Opening another chooser closes the previous one. Selecting a tile opens a new
+tab and submits the form there; no intermediate selected state or confirmation button is required.
+These enhancements must not remove the native `<details>` no-JavaScript path.
 
-### Selected-face submission and ranking
+### Selected-face submission and queued ranking
 
 The POST contract identifies the published event, source photo, and selected detection. The
 existing gallery-photo submission route and service evolve from requiring a unique source face to
 requiring the exact selected face. Presentation is never authority.
 
-Inside the existing atomic direct-ranking boundary, Django:
+At gallery-form submission, Django:
 
 1. Re-resolves the published event and current gallery-eligible source photo.
 2. Re-resolves the selected detection through the same current compatible accepted predicate used
    by gallery presentation and candidate ranking.
 3. Verifies the detection belongs to the source photo and event and that its vector remains usable.
-4. Uses only that embedding transiently as the query vector for exact ranking against the current
-   event cohort.
-5. Requires the selected detection's source photo to appear in the ranked result.
-6. Creates the immediately ready immutable `SelfieSearch` and ordered result rows, then redirects
-   to the existing bearer result page.
+4. Creates a queued `SelfieSearch` with no result rows, worker job, temporary media, or persisted
+   query vector, then redirects the new tab to its bearer result page.
+
+The queued result page exposes a CSRF-protected nested POST form only for a gallery-origin queued
+search. Its browser controller retries rejected and non-success requests with a bounded delay and
+no parallel request; the existing status polling remains responsible for terminal reload. A visible
+no-JavaScript submit control starts the same server-rendered POST. Inside the locked process boundary,
+Django:
+
+1. Revalidates the current published event, gallery source, selected detection, and usable vector.
+2. Uses the selected embedding transiently for exact ranking against the current event cohort.
+3. Requires the selected detection's source photo to appear in the ranked result.
+4. Atomically publishes the immutable ready `SelfieSearch` and ordered rows. A repeated process
+   request is a no-op; a source that turns stale after queued creation publishes a terminal
+   unavailable result without rows, while ranking/invariant failure publishes terminal failure.
+   Database failure remains queued for browser retry.
 
 The stored search configuration records the gallery query kind, source photo ID, and source
 detection ID plus the existing model/generation/threshold evidence. It does not store the vector,
@@ -159,10 +171,11 @@ per result photo.
 ### Failure semantics
 
 - Non-POST submissions use the route's normal method rejection.
-- A forged, cross-event, stale, rejected, incompatible, malformed, or no-longer-current detection
-  returns the existing sanitized `404` and creates no search.
-- Ranking/vector/invariant or database persistence failures return the existing body-free `503`
-  after transaction rollback.
+- A forged, cross-event, rejected, incompatible, malformed, or no-longer-current detection at
+  submission returns the existing sanitized `404` and creates no search. If it becomes stale after
+  queued creation, processing publishes a terminal unavailable result without rows.
+- Ranking/vector/invariant failure after queued creation publishes a terminal failure without rows;
+  database persistence failure returns body-free `503` and leaves the queued search retryable.
 - A preview that cannot be loaded follows the existing gallery media `404`/`503` behavior; the UI
   does not fall back to originals or create a new media authorization path.
 - If JavaScript fails, the one-face POST and multi-face native disclosure/forms remain usable.
@@ -193,8 +206,9 @@ Focused behavior tests must prove:
   presented or accepted;
 - page-level face loading stays bounded for a 100-photo gallery page and does not load vectors for
   presentation;
-- selecting each face uses that exact embedding, remains event-scoped, includes the source photo,
-  and preserves atomic ready-result semantics;
+- selecting each face queues the exact source without a result, then uses that exact embedding in
+  the locked event-scoped process operation, includes the source photo, and preserves atomic
+  ready-result semantics;
 - forged IDs fail closed with no persisted search, vector, job, attempt, temporary object, or crop;
 - face controls do not open the lightbox and the download action remains unchanged;
 - chooser focus, Escape, outside click, single-open behavior, and the no-JavaScript path work;
@@ -212,7 +226,7 @@ registry's existing rules.
 
 - Every rendered gallery card with at least one current compatible accepted face and valid preview
   geometry shows the compact face control; cards with none do not.
-- One face starts the existing ready-result search in one activation.
+- One face opens the queued bearer result in one activation; the result tab starts processing it.
 - Multiple faces open the anchored chooser; selecting any tile starts the search from that exact
   detection.
 - More than three faces show exactly two crops and `+ N`, while the chooser contains every usable

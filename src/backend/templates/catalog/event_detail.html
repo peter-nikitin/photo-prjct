@@ -91,7 +91,7 @@
                   <div class="gallery-face-control">
                     {% if photo.faces|length == 1 %}
                       {% with face=photo.faces.0 %}
-                        <form class="gallery-face-search" action="{{ face.search_url }}" method="post">
+                        <form class="gallery-face-search" action="{{ face.search_url }}" method="post" target="_blank">
                           {% csrf_token %}
                           <button class="gallery-face-button gallery-face-button--direct" type="submit" aria-label="Найти похожие фото этого человека">
                             <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
@@ -122,7 +122,7 @@
                         <div class="gallery-face-chooser-popover" role="dialog" aria-label="Кого искать?">
                           <div class="gallery-face-grid">
                             {% for face in photo.faces %}
-                              <form class="gallery-face-search" action="{{ face.search_url }}" method="post">
+                              <form class="gallery-face-search" action="{{ face.search_url }}" method="post" target="_blank">
                                 {% csrf_token %}
                                 <button class="gallery-face-button" type="submit" data-face-choice aria-label="Найти похожие фото человека {{ face.face_number }}">
                                   <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">

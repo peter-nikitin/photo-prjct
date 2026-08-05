@@ -45,6 +45,7 @@ from selfie_search.services.results import (
 from selfie_search.services.submission import (
     GallerySearchFailed,
     GallerySearchUnavailable,
+    process_gallery_photo_search,
     submit_gallery_photo_search,
     submit_selfie_search,
 )
@@ -176,6 +177,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     search = _public_search(event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
+    is_gallery_origin = search.configuration.get("processor") == "gallery_photo_query"
     selfie_search_page = None
     if search.status == SelfieSearch.Status.READY:
         try:
@@ -214,7 +216,11 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         if settings.SELFIE_FEEDBACK_ENABLED
         else ""
     )
-    if settings.SELFIE_FEEDBACK_ENABLED and search.status in _TERMINAL_SEARCH_STATUSES:
+    if (
+        settings.SELFIE_FEEDBACK_ENABLED
+        and not is_gallery_origin
+        and search.status in _TERMINAL_SEARCH_STATUSES
+    ):
         feedback_submitted = SelfieSearchFeedback.objects.filter(search=search).exists()
         if not feedback_submitted:
             try:
@@ -239,7 +245,10 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "gallery_result_items": gallery_result_items,
             "feedback": feedback_context,
             "feedback_submitted": feedback_submitted,
-            "selfie_feedback_enabled": bool(settings.SELFIE_FEEDBACK_ENABLED),
+            "selfie_feedback_enabled": bool(
+                settings.SELFIE_FEEDBACK_ENABLED and not is_gallery_origin
+            ),
+            "is_gallery_origin": is_gallery_origin,
             "selfie_feedback_correlation": feedback_correlation,
             "selfie_search_page": selfie_search_page,
             "is_terminal": search.status in _TERMINAL_SEARCH_STATUSES,
@@ -255,6 +264,30 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     return response
 
 
+@require_POST
+def process_gallery_search(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa: ARG001
+    if not settings.SELFIE_SEARCH_ENABLED:
+        return _not_found_response()
+    search = _public_search(event_slug=event_slug, public_token=public_token)
+    if (
+        search is None
+        or search.status != SelfieSearch.Status.QUEUED
+        or search.configuration.get("processor") != "gallery_photo_query"
+    ):
+        return _not_found_response()
+    try:
+        process_gallery_photo_search(search=search)
+    except GallerySearchUnavailable:
+        return _not_found_response()
+    except GallerySearchFailed:
+        return HttpResponse(status=503)
+    return redirect(
+        "selfie_search:result",
+        event_slug=search.event.slug,
+        public_token=public_token,
+    )
+
+
 def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
     search = _public_search(event_slug=event_slug, public_token=public_token)
     if search is None:
@@ -267,7 +300,7 @@ def feedback(request, event_slug: str, public_token: str) -> HttpResponseBase:  
     if not settings.SELFIE_FEEDBACK_ENABLED:
         return _not_found_response()
     search = _public_search(event_slug=event_slug, public_token=public_token)
-    if search is None:
+    if search is None or search.configuration.get("processor") == "gallery_photo_query":
         return _not_found_response()
     form = FeedbackSubmissionForm(data=request.POST, files=request.FILES)
     if not form.is_valid():

@@ -56,15 +56,23 @@ eligibility, event membership, accepted processing generation, preview geometry,
 embedding. Presentation is never sufficient authority. Legacy detections without explicit preview
 coordinates are not presented by this control and receive no compatibility fallback.
 
-Django uses that embedding transiently as the query vector for ADR 0019's exact cosine ranking.
-The candidate cohort remains limited to the source photo's event, keeps one best detection per
-photo, and uses the accepted model generations and distance threshold. The source photo must be a
-member of the saved result; otherwise the transaction fails without publishing a result.
+Django validates the exact source at submission, persists a queued bearer result, then uses the
+stored embedding transiently for ADR 0019's exact cosine ranking when the new result tab issues
+its protected process request. The candidate cohort remains limited to the source photo's event,
+keeps one best detection per photo, and uses the accepted model generations and distance threshold.
+The source photo must be a member of the saved result; otherwise the transaction fails without
+publishing results.
 
-The selected embedding is used only transiently. The search and ordered result rows are stored
-atomically as an immediately ready immutable
-snapshot. Django stores the query source and ranking configuration but not the query vector. This
-path creates no temporary media object, selfie-search worker job, worker attempt, or cleanup work.
+The selected embedding is used only transiently. The gallery form opens its bearer result in a new
+tab, which renders a CSRF-protected POST process form only while its gallery-origin search remains
+queued. Browser code retries rejected and non-success process requests without parallel calls until
+a successful response, while the existing status poller reloads terminal results. The locked process
+operation is idempotent: it publishes the ordered rows and ready snapshot atomically; an irreversible
+stale-source or ranking failure instead publishes a terminal failure without rows, while an ambiguous
+database failure remains queued for retry. The no-JavaScript form has an explicit submit control.
+Django stores the query source and ranking configuration but not
+the query vector. This path creates no temporary media object, selfie-search worker job, worker
+attempt, or cleanup work.
 
 The result uses ADR 0019's existing non-expiring bearer URL, probable-match presentation, current
 publication checks, and result media authorization. This decision introduces no event access-type
@@ -90,24 +98,25 @@ access.
   malformed still offer no control for the affected faces.
 - Each activation creates a new durable snapshot; it does not deduplicate identical source-photo
   searches.
-- Exact ranking runs synchronously in the submission request and inherits the measured cohort-size
+- Exact ranking runs from the result tab's process request and inherits the measured cohort-size
   limits of the existing direct ranking implementation.
 
 ### Follow-up
 
 - Revisit the compact chooser only if real gallery use shows that dense group photos exceed its
   accepted 32-face presentation bound.
-- Revisit synchronous exact ranking only when measured request latency or event size violates an
-  accepted bound.
+- Revisit browser-triggered exact ranking only when measured request latency or event size violates
+  an accepted bound.
 - Revisit bearer retention and abuse controls with the broader ADR 0019 governance triggers.
 
 ## Validation and rollback
 
 Validate control eligibility for zero, one, and multiple faces; exact selected-detection submission
-and submission-time revalidation; deterministic crop geometry; event isolation; deterministic
-ranking; mandatory source-photo membership; atomic immutable persistence; absence of stored query
-vectors, crop objects, temporary objects, and worker jobs; unchanged result media authorization;
-and keyboard, no-JavaScript, desktop, and mobile chooser behavior.
+and processing-time revalidation; deterministic crop geometry; event isolation; deterministic
+ranking; mandatory source-photo membership; queued creation without rows or jobs; locked idempotent
+atomic publication; absence of stored query vectors, crop objects, temporary objects, and worker
+jobs; unchanged result media authorization; and keyboard, no-JavaScript, desktop, and mobile
+chooser behavior.
 
 Roll back by removing or disabling the gallery action and its submission route. Existing ready
 snapshots remain readable under ADR 0019's bearer semantics. Reconsider the decision if public

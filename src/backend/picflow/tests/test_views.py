@@ -838,6 +838,8 @@ class GalleryPageTests(TestCase):
             count=1,
         )
         self.assertContains(response, 'name="csrfmiddlewaretoken"', count=11)
+        self.assertContains(response, 'class="gallery-face-search"', count=10)
+        self.assertContains(response, 'target="_blank"', count=10)
         for photo, face_count in ((one_face, 1), (two_faces, 2), (three_faces, 3), (four_faces, 4)):
             for detection in PhotoFaceDetection.objects.filter(attempt__photo=photo).order_by(
                 "face_index"

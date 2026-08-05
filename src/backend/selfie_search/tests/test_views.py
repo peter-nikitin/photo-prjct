@@ -319,6 +319,22 @@ class GalleryPhotoSearchViewTests(TestCase):
             },
         )
 
+    def process_url(self, *, token: str) -> str:
+        return reverse(
+            "selfie_search:process_gallery_search",
+            kwargs={"event_slug": self.event.slug, "public_token": token},
+        )
+
+    def make_queued_gallery_search(
+        self, *, token: str, configuration: dict[str, object]
+    ) -> SelfieSearch:
+        return SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest=hashlib.sha256(token.encode()).hexdigest(),
+            temporary_object_key="",
+            configuration=configuration,
+        )
+
     @patch("selfie_search.views.submit_gallery_photo_search")
     def test_post_only_and_disabled_feature_fail_closed(self, submit_gallery_photo_search) -> None:
         get_response = self.client.get(self.url())
@@ -398,6 +414,159 @@ class GalleryPhotoSearchViewTests(TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.content, b"")
+
+    @patch("selfie_search.views.process_gallery_photo_search")
+    def test_queued_gallery_bearer_processes_only_via_csrf_post(
+        self, process_gallery_photo_search
+    ) -> None:
+        token = "queued-gallery-token"
+        search = self.make_queued_gallery_search(
+            token=token,
+            configuration={
+                "processor": "gallery_photo_query",
+                "query_source": {
+                    "kind": "gallery_photo",
+                    "photo_id": self.photo.pk,
+                    "detection_id": str(self.detection_id),
+                },
+            },
+        )
+        process_gallery_photo_search.return_value = search
+
+        get_response = self.client.get(self.process_url(token=token))
+        csrf_response = Client(enforce_csrf_checks=True).post(self.process_url(token=token))
+        response = self.client.post(self.process_url(token=token))
+
+        self.assertEqual(get_response.status_code, 405)
+        self.assertEqual(csrf_response.status_code, 403)
+        self.assertRedirects(
+            response,
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.event.slug, "public_token": token},
+            ),
+            fetch_redirect_response=False,
+        )
+        process_gallery_photo_search.assert_called_once_with(search=search)
+
+    @patch("selfie_search.views.process_gallery_photo_search")
+    def test_non_gallery_or_nonqueued_bearer_cannot_invoke_processing(
+        self, process_gallery_photo_search
+    ) -> None:
+        selfie_token = "queued-selfie-token"
+        ready_token = "ready-gallery-token"
+        self.make_queued_gallery_search(
+            token=selfie_token, configuration={"processor": "selfie_query"}
+        )
+        ready = self.make_queued_gallery_search(
+            token=ready_token,
+            configuration={"processor": "gallery_photo_query"},
+        )
+        ready.status = SelfieSearch.Status.READY
+        ready.save(update_fields=["status"])
+
+        responses = (
+            self.client.post(self.process_url(token=selfie_token)),
+            self.client.post(self.process_url(token=ready_token)),
+        )
+
+        self.assertEqual([response.status_code for response in responses], [404, 404])
+        process_gallery_photo_search.assert_not_called()
+
+    def test_only_queued_gallery_result_renders_the_process_form(self) -> None:
+        token = "queued-gallery-markup"
+        selfie_token = "queued-selfie-markup"
+        self.make_queued_gallery_search(
+            token=token,
+            configuration={
+                "processor": "gallery_photo_query",
+                "query_source": {"kind": "gallery_photo"},
+            },
+        )
+        self.make_queued_gallery_search(
+            token=selfie_token, configuration={"processor": "selfie_query"}
+        )
+
+        gallery = self.client.get(
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.event.slug, "public_token": token},
+            )
+        )
+        selfie = self.client.get(
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.event.slug, "public_token": selfie_token},
+            )
+        )
+
+        self.assertContains(gallery, "data-gallery-search-process")
+        self.assertContains(gallery, 'name="csrfmiddlewaretoken"')
+        self.assertContains(gallery, self.process_url(token=token))
+        self.assertContains(gallery, "Начать поиск похожих фотографий")
+        self.assertNotContains(selfie, "data-gallery-search-process")
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_ready_gallery_result_has_no_selfie_copy_feedback_or_feedback_post(self) -> None:
+        token = "ready-gallery-feedback"
+        search = self.make_queued_gallery_search(
+            token=token,
+            configuration={
+                "processor": "gallery_photo_query",
+                "query_source": {"kind": "gallery_photo"},
+            },
+        )
+        search.status = SelfieSearch.Status.READY
+        search.terminal_at = timezone.now()
+        search.cleanup_confirmed_at = timezone.now()
+        search.save(update_fields=["status", "terminal_at", "cleanup_confirmed_at"])
+        result_url = reverse(
+            "selfie_search:result",
+            kwargs={"event_slug": self.event.slug, "public_token": token},
+        )
+        feedback_url = reverse(
+            "selfie_search:feedback",
+            kwargs={"event_slug": self.event.slug, "public_token": token},
+        )
+
+        response = self.client.get(result_url)
+        feedback = self.client.post(feedback_url)
+
+        self.assertContains(
+            response, "Поиск показывает вероятные совпадения среди фотографий этого события."
+        )
+        self.assertContains(response, 'data-gallery-origin="true"')
+        self.assertNotContains(response, "Селфи удаляется после подготовки поиска")
+        self.assertNotContains(response, "data-selfie-feedback ")
+        self.assertNotContains(response, "Я согласен на обработку моего селфи")
+        self.assertEqual(feedback.status_code, 404)
+
+    def test_failed_gallery_result_uses_gallery_specific_error_copy(self) -> None:
+        token = "failed-gallery-copy"
+        search = self.make_queued_gallery_search(
+            token=token,
+            configuration={
+                "processor": "gallery_photo_query",
+                "query_source": {"kind": "gallery_photo"},
+            },
+        )
+        search.status = SelfieSearch.Status.FAILED
+        search.terminal_at = timezone.now()
+        search.cleanup_confirmed_at = timezone.now()
+        search.save(update_fields=["status", "terminal_at", "cleanup_confirmed_at"])
+
+        response = self.client.get(
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.event.slug, "public_token": token},
+            )
+        )
+
+        self.assertContains(
+            response,
+            "Поиск похожих фотографий сейчас недоступен. Попробуйте выбрать другую фотографию.",
+        )
+        self.assertNotContains(response, "Попробуйте другое селфи")
 
 
 @override_settings(

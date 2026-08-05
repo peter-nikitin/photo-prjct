@@ -42,7 +42,6 @@ from selfie_search.models import (
     SelfieSearchAttempt,
     SelfieSearchCandidate,
     SelfieSearchJob,
-    SelfieSearchResult,
 )
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
@@ -55,6 +54,7 @@ from selfie_search.services.submission import (
     GallerySearchUnavailable,
     compatible_search_candidates,
     gallery_search_faces_by_photo,
+    process_gallery_photo_search,
     resolve_public_search,
     submit_gallery_photo_search,
     submit_selfie_search,
@@ -772,7 +772,34 @@ class GalleryPhotoSubmissionTests(TestCase):
                     )
                 self.assertEqual(SelfieSearch.objects.count(), 0)
 
-    def test_creates_an_immediately_ready_event_scoped_immutable_result(self) -> None:
+    def test_submission_queues_gallery_search_without_results_or_worker_job(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=source,
+            detection_id=source_embedding.detection_id,
+        ).search
+
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(search.temporary_object_key, "")
+        self.assertEqual(search.results.count(), 0)
+        self.assertFalse(SelfieSearchJob.objects.filter(search=search).exists())
+        self.assertEqual(
+            search.configuration["query_source"],
+            {
+                "kind": "gallery_photo",
+                "photo_id": source.id,
+                "detection_id": str(source_embedding.detection_id),
+            },
+        )
+
+    def test_processing_queued_gallery_search_publishes_exact_immutable_result_once(self) -> None:
         source_embedding = self.make_eligible_embedding(
             event=self.event,
             photo_id="source",
@@ -800,15 +827,19 @@ class GalleryPhotoSubmissionTests(TestCase):
         )
         now = timezone.now()
 
-        created = submit_gallery_photo_search(
+        search = submit_gallery_photo_search(
             event=self.event,
             photo=source,
             detection_id=source_embedding.detection_id,
             now=now,
-        )
-        search = created.search
+        ).search
+        processed = process_gallery_photo_search(search=search, now=now)
+        replay = process_gallery_photo_search(search=search, now=now)
+        search.refresh_from_db()
         rows = list(search.results.order_by("rank"))
 
+        self.assertEqual(processed.pk, search.pk)
+        self.assertEqual(replay.pk, search.pk)
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertEqual(search.temporary_object_key, "")
         self.assertEqual(search.eligible_photo_count, 3)
@@ -869,6 +900,8 @@ class GalleryPhotoSubmissionTests(TestCase):
             photo=source,
             detection_id=second.detection_id,
         ).search
+        process_gallery_photo_search(search=first_search)
+        process_gallery_photo_search(search=second_search)
 
         self.assertEqual(
             first_search.results.get(photo=source).detection_id,
@@ -911,13 +944,14 @@ class GalleryPhotoSubmissionTests(TestCase):
             photo=source,
             detection_id=source_embedding.detection_id,
         ).search
+        process_gallery_photo_search(search=search)
 
         self.assertEqual(
             search.results.get(photo_id="equal-distance").detection_id,
             expected_detection_id,
         )
 
-    def test_ranking_or_result_persistence_failure_rolls_back(self) -> None:
+    def test_ranking_failure_transitions_gallery_search_to_terminal_failure(self) -> None:
         source_embedding = self.make_eligible_embedding(
             event=self.event,
             photo_id="source",
@@ -925,20 +959,57 @@ class GalleryPhotoSubmissionTests(TestCase):
         )
         source = source_embedding.detection.attempt.photo
 
-        for target, error in (
-            ("selfie_search.services.submission.rank_embeddings", RankingError("broken ranking")),
-            (
-                "selfie_search.services.submission.SelfieSearchResult.objects.bulk_create",
-                IntegrityError,
-            ),
+        with patch(
+            "selfie_search.services.submission.rank_embeddings",
+            side_effect=RankingError("broken ranking"),
         ):
-            with self.subTest(target=target):
-                with patch(target, side_effect=error):
-                    with self.assertRaises(GallerySearchFailed):
-                        submit_gallery_photo_search(
-                            event=self.event,
-                            photo=source,
-                            detection_id=source_embedding.detection_id,
-                        )
-                self.assertEqual(SelfieSearch.objects.count(), 0)
-                self.assertEqual(SelfieSearchResult.objects.count(), 0)
+            search = submit_gallery_photo_search(
+                event=self.event, photo=source, detection_id=source_embedding.detection_id
+            ).search
+            process_gallery_photo_search(search=search)
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.FAILED)
+        self.assertEqual(search.results.count(), 0)
+
+    def test_database_failure_leaves_gallery_search_queued_for_retry(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+        search = submit_gallery_photo_search(
+            event=self.event, photo=source, detection_id=source_embedding.detection_id
+        ).search
+
+        with patch(
+            "selfie_search.services.submission.SelfieSearchResult.objects.bulk_create",
+            side_effect=IntegrityError,
+        ):
+            with self.assertRaises(GallerySearchFailed):
+                process_gallery_photo_search(search=search)
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(search.results.count(), 0)
+
+    def test_processing_stale_source_fails_closed_without_results(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=source,
+            detection_id=source_embedding.detection_id,
+        ).search
+        PhotoProcessingState.objects.filter(photo=source).update(accepted_attempt=None)
+
+        process_gallery_photo_search(search=search)
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual(search.results.count(), 0)

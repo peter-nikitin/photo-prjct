@@ -73,6 +73,7 @@ class ClusterRunResult:
     finished_at: datetime
     durations: Mapping[str, float]
     dependency_versions: Mapping[str, str]
+    peak_memory_bytes: int
 
 
 class ClusterArtifactWriter:
@@ -529,6 +530,7 @@ def _manifest(
             "copy": materialization["copy"],
             "hard_link": materialization["hard_link"],
         },
+        "peak_memory_bytes": result.peak_memory_bytes,
         "platform": platform.platform(),
         "python_version": platform.python_version(),
         "started_at": _timestamp(result.started_at),

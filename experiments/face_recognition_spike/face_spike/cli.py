@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import tempfile
+import tracemalloc
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -127,8 +128,32 @@ class FinalizeBenchmarkConfig:
     output: Path
 
 
+@dataclass(frozen=True)
+class EvaluateClusterExpansionConfig:
+    benchmark: Path
+    index: Path
+    cluster_run: Path
+    output: Path
+    direct_threshold: float
+    anchor_threshold: float
+    configuration_hash: str
+
+
 class BenchmarkConfigurationError(Exception):
     """A fatal benchmark setup error that prevents publication."""
+
+
+@dataclass(frozen=True)
+class _StrictClusterRunArtifact:
+    """One parsed, schema-validated cluster corpus for benchmark consumers."""
+
+    benchmark_run: Any
+    source_faces: Mapping[str, _BenchmarkSourceFace]
+    source_manifest: Mapping[str, object]
+    clusters: tuple[Any, ...]
+    corpus_build_duration_ms: int
+    corpus_build_peak_memory_bytes: int
+    corpus_evidence_sha256: str
 
 
 @dataclass(frozen=True)
@@ -221,6 +246,9 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
     writer = ClusterArtifactWriter(config.output, config.photos)
     started_at = datetime.now(UTC)
     processing_start = perf_counter()
+    tracing_was_active = tracemalloc.is_tracing()
+    if not tracing_was_active:
+        tracemalloc.start()
     try:
         analyses = analyze_event_photo_inventory(
             inventory,
@@ -245,6 +273,7 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
             distance_block_size=config.distance_block_size,
         )
         clustering_seconds = perf_counter() - clustering_start
+        _current, peak_memory_bytes = tracemalloc.get_traced_memory()
         result = ClusterRunResult(
             photos=config.photos,
             yunet_model=config.yunet_model,
@@ -275,12 +304,16 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
                 "opencv": _dependency_version("cv2"),
                 "pillow": _dependency_version("PIL.Image"),
             },
+            peak_memory_bytes=peak_memory_bytes,
         )
         writer.finish(result)
         return result
     except BaseException as failure:
         abort_preserving_exception(writer, failure)
         raise
+    finally:
+        if not tracing_was_active:
+            tracemalloc.stop()
 
 
 def run_build_index(config: BuildIndexConfig) -> None:
@@ -405,12 +438,15 @@ def _validate_completed_run_manifest(manifest: Mapping[str, object]) -> None:
         "model_hashes",
         "parameters",
         "photo_materialization",
+        "peak_memory_bytes",
         "platform",
         "python_version",
         "started_at",
     }
     if set(manifest) != expected:
         raise BuildIndexConfigurationError("source run manifest schema is incompatible")
+    if not isinstance(manifest["peak_memory_bytes"], int) or manifest["peak_memory_bytes"] < 1:
+        raise BuildIndexConfigurationError("source run peak memory is invalid")
     _index_parameters(manifest)
     model_hashes = _mapping(manifest["model_hashes"])
     if set(model_hashes) != {"sface", "yunet"} or any(
@@ -658,6 +694,12 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -681,12 +723,13 @@ def run_build_benchmark(config: BuildBenchmarkConfig) -> None:
     from .inventory import InventoryError, load_event_photo_inventory
 
     _validate_build_benchmark_config(config)
-    run, source_faces, source_manifest = _load_benchmark_run(config.run)
+    artifact = _load_benchmark_run(config.run)
+    run = artifact.benchmark_run
     try:
         index = load_face_index(config.index)
     except (OSError, TypeError, ValueError):
         raise BenchmarkConfigurationError("benchmark index is invalid") from None
-    _validate_benchmark_index(run, source_faces, source_manifest, index)
+    _validate_benchmark_index(run, artifact.source_faces, artifact.source_manifest, index)
     try:
         inventory = load_event_photo_inventory(config.photos)
     except (InventoryError, OSError, ValueError):
@@ -727,6 +770,50 @@ def run_finalize_benchmark(config: FinalizeBenchmarkConfig) -> None:
     finally:
         if not os.path.lexists(config.output):
             writer.abort()
+
+
+def run_evaluate_cluster_expansion(config: EvaluateClusterExpansionConfig) -> None:
+    """Publish an aggregate-only held-out evaluation from immutable artifacts."""
+    from .benchmark_artifacts import load_final_benchmark
+    from .cluster_expansion import (
+        ClusterExpansionConfiguration,
+        evaluate_cluster_expansion,
+        stable_evaluation_source,
+        write_evaluation_report,
+    )
+    from .index_artifacts import load_face_index
+
+    _validate_evaluate_cluster_expansion_config(config)
+    try:
+        benchmark = load_final_benchmark(config.benchmark)
+        index = load_face_index(config.index)
+        artifact = _load_benchmark_run(config.cluster_run)
+        _validate_benchmark_index(
+            artifact.benchmark_run, artifact.source_faces, artifact.source_manifest, index
+        )
+        report = evaluate_cluster_expansion(
+            benchmark,
+            index,
+            artifact.clusters,
+            ClusterExpansionConfiguration(
+                config.direct_threshold,
+                config.anchor_threshold,
+                config.configuration_hash,
+            ),
+            corpus_build_duration_ms=artifact.corpus_build_duration_ms,
+            corpus_build_peak_memory_bytes=artifact.corpus_build_peak_memory_bytes,
+            cluster_parameters=_mapping(artifact.source_manifest["parameters"]),
+            source_identities=stable_evaluation_source(
+                benchmark,
+                index,
+                artifact.clusters,
+                _mapping(artifact.source_manifest["parameters"]),
+                corpus_evidence_sha256=artifact.corpus_evidence_sha256,
+            ),
+        )
+        write_evaluation_report(config.output, report)
+    except (OSError, TypeError, ValueError, KeyError):
+        raise BenchmarkConfigurationError("cluster expansion cannot be evaluated") from None
 
 
 def run_smoke_search_command(config: SmokeSearchConfig) -> None:
@@ -962,11 +1049,29 @@ def _validate_finalize_benchmark_config(config: FinalizeBenchmarkConfig) -> None
         raise BenchmarkConfigurationError("output path already exists")
 
 
+def _validate_evaluate_cluster_expansion_config(config: EvaluateClusterExpansionConfig) -> None:
+    if not isinstance(config, EvaluateClusterExpansionConfig):
+        raise TypeError("config must be an EvaluateClusterExpansionConfig")
+    try:
+        from .cluster_expansion import ClusterExpansionConfiguration
+
+        ClusterExpansionConfiguration(
+            config.direct_threshold,
+            config.anchor_threshold,
+            config.configuration_hash,
+        )
+    except ValueError:
+        raise BenchmarkConfigurationError("cluster expansion configuration is invalid") from None
+    if os.path.lexists(config.output):
+        raise BenchmarkConfigurationError("output path already exists")
+
+
 def _load_benchmark_run(
     run_root: Path,
-) -> tuple[Any, Mapping[str, _BenchmarkSourceFace], Mapping[str, object]]:
+) -> _StrictClusterRunArtifact:
     from .analysis import BoundingBox, face_crop_path
     from .benchmark import BenchmarkFace, BenchmarkRun
+    from .cluster_expansion import ClusterMember, FaceCluster
     from .index import SourceFaceRecord
 
     try:
@@ -976,7 +1081,9 @@ def _load_benchmark_run(
         clusters = _load_benchmark_clusters(run_root / "clusters.json")
         source_faces = _benchmark_source_faces(faces_bytes, source_records)
         accepted_ids = {record.face_id for record in source_records if record.status == "ok"}
-        memberships = _validate_benchmark_clusters(clusters, source_faces, accepted_ids)
+        memberships, typed_clusters = _validate_benchmark_clusters(
+            clusters, source_faces, accepted_ids, ClusterMember, FaceCluster
+        )
         faces = tuple(
             BenchmarkFace(
                 face_id=face.face_id,
@@ -991,10 +1098,22 @@ def _load_benchmark_run(
             for face in sorted(source_faces.values(), key=lambda item: item.face_id)
             if face.face_id in accepted_ids
         )
-        return (
-            BenchmarkRun(_sha256_bytes(manifest_bytes), _sha256_bytes(faces_bytes), faces),
-            source_faces,
-            manifest,
+        duration_seconds = _finite_number(manifest["duration_seconds"])
+        peak_memory_bytes = manifest["peak_memory_bytes"]
+        if duration_seconds < 0 or not isinstance(peak_memory_bytes, int) or peak_memory_bytes < 1:
+            raise BenchmarkConfigurationError("benchmark run resource evidence is invalid")
+        return _StrictClusterRunArtifact(
+            benchmark_run=BenchmarkRun(
+                _sha256_bytes(manifest_bytes), _sha256_bytes(faces_bytes), faces
+            ),
+            source_faces=source_faces,
+            source_manifest=manifest,
+            clusters=typed_clusters,
+            corpus_build_duration_ms=max(0, round(duration_seconds * 1_000)),
+            corpus_build_peak_memory_bytes=peak_memory_bytes,
+            corpus_evidence_sha256=_stable_corpus_evidence_sha256(
+                manifest, _sha256_bytes(faces_bytes), typed_clusters
+            ),
         )
     except (BuildIndexConfigurationError, OSError, TypeError, ValueError, KeyError):
         raise BenchmarkConfigurationError("benchmark run is invalid") from None
@@ -1061,7 +1180,9 @@ def _validate_benchmark_clusters(
     payload: object,
     source_faces: Mapping[str, _BenchmarkSourceFace],
     accepted_ids: set[str],
-) -> Mapping[str, str]:
+    cluster_member_type: Any,
+    face_cluster_type: Any,
+) -> tuple[Mapping[str, str], tuple[Any, ...]]:
     root = _mapping(payload)
     clusters = root.get("clusters")
     if set(root) != {"clusters"} or not isinstance(clusters, list):
@@ -1069,6 +1190,7 @@ def _validate_benchmark_clusters(
     memberships: dict[str, str] = {}
     cluster_ids: set[str] = set()
     ordered_cluster_ids: list[str] = []
+    typed_clusters: list[Any] = []
     for raw_cluster in clusters:
         cluster = _mapping(raw_cluster)
         if set(cluster) != {"cluster_id", "members", "representative_face_id"}:
@@ -1088,6 +1210,7 @@ def _validate_benchmark_clusters(
         cluster_ids.add(cluster_id)
         ordered_cluster_ids.append(cluster_id)
         member_ids: set[str] = set()
+        typed_members: list[Any] = []
         for raw_member in members:
             member = _mapping(raw_member)
             if set(member) != {"distance_to_representative", "face_id", "face_index", "filename"}:
@@ -1112,13 +1235,45 @@ def _validate_benchmark_clusters(
                 raise BenchmarkConfigurationError("benchmark cluster membership is invalid")
             member_ids.add(face_id)
             memberships[face_id] = cluster_id
+            typed_members.append(cluster_member_type(face_id, source.filename, float(distance)))
         if representative not in member_ids:
             raise BenchmarkConfigurationError("benchmark cluster representative is invalid")
+        typed_clusters.append(face_cluster_type(cluster_id, representative, tuple(typed_members)))
     if ordered_cluster_ids != [f"person-{number:04d}" for number in range(1, len(cluster_ids) + 1)]:
         raise BenchmarkConfigurationError("benchmark cluster IDs are invalid")
     if set(memberships) != accepted_ids:
         raise BenchmarkConfigurationError("benchmark cluster membership is incomplete")
-    return memberships
+    return memberships, tuple(typed_clusters)
+
+
+def _stable_corpus_evidence_sha256(
+    manifest: Mapping[str, object], faces_sha256: str, clusters: Sequence[Any]
+) -> str:
+    """Hash only durable corpus inputs, excluding timestamps and measured resources."""
+    membership = [
+        {
+            "cluster_id": cluster.cluster_id,
+            "representative_face_id": cluster.representative_face_id,
+            "members": [
+                {
+                    "face_id": member.face_id,
+                    "filename": member.filename,
+                    "distance_to_representative": member.distance_to_representative,
+                }
+                for member in cluster.members
+            ],
+        }
+        for cluster in clusters
+    ]
+    normalized = {
+        "schema_version": 1,
+        "source_faces_sha256": faces_sha256,
+        "model_hashes": dict(sorted(_mapping(manifest["model_hashes"]).items())),
+        "parameters": dict(sorted(_mapping(manifest["parameters"]).items())),
+        "dependency_versions": dict(sorted(_mapping(manifest["dependency_versions"]).items())),
+        "membership_sha256": _sha256_bytes(_canonical_json(membership)),
+    }
+    return _sha256_bytes(_canonical_json(normalized))
 
 
 def _validate_benchmark_index(
@@ -1267,6 +1422,14 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_benchmark.add_argument("--proposal", type=Path, required=True)
     finalize_benchmark.add_argument("--annotations-csv", type=Path, required=True)
     finalize_benchmark.add_argument("--output", type=Path, required=True)
+    evaluate_cluster_expansion = commands.add_parser("evaluate-cluster-expansion")
+    evaluate_cluster_expansion.add_argument("--benchmark", type=Path, required=True)
+    evaluate_cluster_expansion.add_argument("--index", type=Path, required=True)
+    evaluate_cluster_expansion.add_argument("--cluster-run", type=Path, required=True)
+    evaluate_cluster_expansion.add_argument("--output", type=Path, required=True)
+    evaluate_cluster_expansion.add_argument("--direct-threshold", type=float, required=True)
+    evaluate_cluster_expansion.add_argument("--anchor-threshold", type=float, required=True)
+    evaluate_cluster_expansion.add_argument("--configuration-hash", required=True)
     smoke_search = commands.add_parser("smoke-search")
     smoke_search.add_argument("--proposal", type=Path, required=True)
     smoke_search.add_argument("--index", type=Path, required=True)
@@ -1322,6 +1485,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 proposal=arguments.proposal,
                 annotations_csv=arguments.annotations_csv,
                 output=arguments.output,
+            )
+        elif arguments.command == "evaluate-cluster-expansion":
+            evaluate_cluster_expansion_config = EvaluateClusterExpansionConfig(
+                benchmark=arguments.benchmark,
+                index=arguments.index,
+                cluster_run=arguments.cluster_run,
+                output=arguments.output,
+                direct_threshold=arguments.direct_threshold,
+                anchor_threshold=arguments.anchor_threshold,
+                configuration_hash=arguments.configuration_hash,
             )
         elif arguments.command == "smoke-search":
             smoke_search_config = SmokeSearchConfig(
@@ -1379,6 +1552,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "finalize-benchmark":
             try:
                 run_finalize_benchmark(finalize_benchmark_config)
+            except Exception:
+                return 2
+        elif arguments.command == "evaluate-cluster-expansion":
+            try:
+                run_evaluate_cluster_expansion(evaluate_cluster_expansion_config)
             except Exception:
                 return 2
         elif arguments.command == "smoke-search":

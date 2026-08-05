@@ -10,8 +10,10 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
+from selfie_search.services.submission import _face_embedding_generations
 
 from processing.models import (
+    EventFaceClusterActivation,
     EventProcessingRun,
     FaceClusterCorpus,
     FaceEmbedding,
@@ -22,7 +24,10 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.enrollment import FACE_EMBEDDING_CONFIGURATION
-from processing.services.face_cluster_corpora import build_face_cluster_corpus
+from processing.services.face_cluster_corpora import (
+    activate_face_cluster_corpus,
+    build_face_cluster_corpus,
+)
 from processing.services.face_cohort import (
     CompatibleFaceEmbedding,
     load_compatible_face_embeddings,
@@ -149,6 +154,14 @@ class FaceClusterCorpusTests(TestCase):
             metadata={},
         )
 
+    def make_runtime_compatible(self, corpus: FaceClusterCorpus) -> FaceClusterCorpus:
+        FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
+            configuration={"face_embedding_generations": list(_face_embedding_generations())},
+            model_version="sface",
+            embedding_dimensions=128,
+        )
+        return FaceClusterCorpus.objects.get(pk=corpus.pk)
+
     def test_shared_loader_is_event_and_generation_scoped(self) -> None:
         accepted = self.make_embedding(event=self.event, photo_id="accepted", vector=[1.0, 0.0])
         preview = self.make_embedding(
@@ -237,3 +250,126 @@ class FaceClusterCorpusTests(TestCase):
         self.assertEqual(corpus.status, FaceClusterCorpus.Status.FAILED)
         self.assertIsNone(corpus.published_at)
         self.assertFalse(corpus.clusters.exists())
+
+    def test_activation_replaces_only_the_event_pointer_after_explicit_review(self) -> None:
+        self.make_embedding(event=self.event, photo_id="activate", vector=[1.0, 0.0])
+        first = build_face_cluster_corpus(
+            event=self.event,
+            version=1,
+            generations=self.generations[:1],
+            dimensions=2,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+        second = build_face_cluster_corpus(
+            event=self.event,
+            version=2,
+            generations=self.generations[:1],
+            dimensions=2,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+        first = self.make_runtime_compatible(first)
+        second = self.make_runtime_compatible(second)
+        old = activate_face_cluster_corpus(
+            event=self.event,
+            corpus=first,
+            configuration_hash=first.configuration_hash,
+            anchor_threshold=0.05,
+            evaluation_report_hash="a" * 64,
+            numeric_gates_reviewed=True,
+        )
+
+        activation = activate_face_cluster_corpus(
+            event=self.event,
+            corpus=second,
+            configuration_hash=second.configuration_hash,
+            anchor_threshold=0.05,
+            evaluation_report_hash="b" * 64,
+            numeric_gates_reviewed=True,
+        )
+
+        old.refresh_from_db()
+        self.assertFalse(old.active)
+        self.assertIsNotNone(old.deactivated_at)
+        self.assertTrue(activation.active)
+        self.assertEqual(
+            activation.configuration,
+            {"direct_threshold": 0.363, "anchor_threshold": 0.05},
+        )
+        active = EventFaceClusterActivation.objects.filter(event=self.event, active=True).get()
+        self.assertEqual(active, activation)
+
+    def test_activation_denies_unpublished_mismatched_or_unreviewed_inputs(self) -> None:
+        self.make_embedding(event=self.event, photo_id="deny", vector=[1.0, 0.0])
+        corpus = build_face_cluster_corpus(
+            event=self.event,
+            version=1,
+            generations=self.generations[:1],
+            dimensions=2,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+        with self.assertRaises(ValueError):
+            activate_face_cluster_corpus(
+                event=self.event,
+                corpus=corpus,
+                configuration_hash="0" * 64,
+                anchor_threshold=0.05,
+                evaluation_report_hash="a" * 64,
+                numeric_gates_reviewed=True,
+            )
+        with self.assertRaises(ValueError):
+            activate_face_cluster_corpus(
+                event=self.event,
+                corpus=corpus,
+                configuration_hash=corpus.configuration_hash,
+                anchor_threshold=0.05,
+                evaluation_report_hash="a" * 64,
+                numeric_gates_reviewed=False,
+            )
+        with self.assertRaises(ValueError):
+            activate_face_cluster_corpus(
+                event=self.event,
+                corpus=corpus,
+                configuration_hash=corpus.configuration_hash,
+                anchor_threshold=1.0,
+                evaluation_report_hash="a" * 64,
+                numeric_gates_reviewed=True,
+            )
+        with self.assertRaises(ValueError):
+            activate_face_cluster_corpus(
+                event=self.event,
+                corpus=corpus,
+                configuration_hash=corpus.configuration_hash,
+                anchor_threshold=0.05,
+                evaluation_report_hash="a" * 64,
+                numeric_gates_reviewed=1,  # type: ignore[arg-type]
+            )
+        with self.assertRaises(ValueError):
+            activate_face_cluster_corpus(
+                event=self.event,
+                corpus=corpus,
+                configuration_hash=corpus.configuration_hash,
+                anchor_threshold=0.05,
+                evaluation_report_hash="a" * 64,
+                numeric_gates_reviewed=True,
+            )
+        FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
+            status=FaceClusterCorpus.Status.FAILED
+        )
+        with self.assertRaises(ValueError):
+            activate_face_cluster_corpus(
+                event=self.event,
+                corpus=corpus,
+                configuration_hash=corpus.configuration_hash,
+                anchor_threshold=0.05,
+                evaluation_report_hash="a" * 64,
+                numeric_gates_reviewed=True,
+            )

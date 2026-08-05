@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from time import monotonic
 from typing import Any
@@ -15,6 +16,7 @@ from picflow.models import Event
 
 from processing.models import (
     FACE_EMBEDDING_PROCESSOR,
+    EventFaceClusterActivation,
     FaceCluster,
     FaceClusterCorpus,
     FaceClusterMember,
@@ -23,6 +25,62 @@ from processing.services.face_clustering import ClusterFace, build_face_clusters
 from processing.services.face_cohort import CompatibleFaceEmbedding, load_compatible_face_embeddings
 
 ALGORITHM_VERSION = "guarded-graph-v1"
+
+
+def activate_face_cluster_corpus(
+    *,
+    event: Event,
+    corpus: FaceClusterCorpus,
+    configuration_hash: str,
+    anchor_threshold: float,
+    evaluation_report_hash: str,
+    numeric_gates_reviewed: bool,
+) -> EventFaceClusterActivation:
+    """Atomically replace one event's explicit corpus-selection pointer.
+
+    Building and evaluating corpora never call this function.  The operator must provide the
+    reviewed report identity, the exact immutable corpus configuration hash, and a separately
+    calibrated strong-anchor threshold for every activation.
+    """
+    direct_threshold = getattr(settings, "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD", None)
+    if (
+        numeric_gates_reviewed is not True
+        or not _is_sha256(configuration_hash)
+        or not _is_sha256(evaluation_report_hash)
+        or isinstance(anchor_threshold, bool)
+        or not isinstance(anchor_threshold, (int, float))
+        or not math.isfinite(anchor_threshold)
+        or not 0 <= anchor_threshold <= 2
+        or isinstance(direct_threshold, bool)
+        or not isinstance(direct_threshold, (int, float))
+        or not math.isfinite(direct_threshold)
+        or not anchor_threshold < direct_threshold
+    ):
+        raise ValueError("invalid corpus activation")
+    with transaction.atomic():
+        locked_corpus = FaceClusterCorpus.objects.select_for_update().get(pk=corpus.pk)
+        if (
+            locked_corpus.event_id != event.pk
+            or locked_corpus.status != FaceClusterCorpus.Status.PUBLISHED
+            or locked_corpus.configuration_hash != configuration_hash
+            or not _runtime_compatible(locked_corpus)
+        ):
+            raise ValueError("corpus cannot be activated")
+        EventFaceClusterActivation.objects.select_for_update().filter(
+            event=event, active=True
+        ).update(active=False, deactivated_at=timezone.now())
+        return EventFaceClusterActivation.objects.create(
+            event=event,
+            corpus=locked_corpus,
+            active=True,
+            anchor_threshold=float(anchor_threshold),
+            configuration={
+                "direct_threshold": float(direct_threshold),
+                "anchor_threshold": float(anchor_threshold),
+            },
+            configuration_hash=configuration_hash,
+            approved_evaluation_report_hash=evaluation_report_hash,
+        )
 
 
 def build_face_cluster_corpus(
@@ -297,3 +355,23 @@ def _hash_json(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _runtime_compatible(corpus: FaceClusterCorpus) -> bool:
+    from selfie_search.services.submission import _face_embedding_generations
+
+    generations = list(_face_embedding_generations())
+    return (
+        corpus.model_version == getattr(settings, "SELFIE_SEARCH_EMBEDDING_MODEL", None)
+        and corpus.embedding_dimensions
+        == getattr(settings, "SELFIE_SEARCH_EMBEDDING_DIMENSIONS", None)
+        and corpus.configuration.get("face_embedding_generations") == generations
+    )

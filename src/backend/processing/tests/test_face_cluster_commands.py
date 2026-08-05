@@ -21,6 +21,7 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.enrollment import FACE_EMBEDDING_CONFIGURATION
+from processing.services.face_cluster_corpora import build_face_cluster_corpus
 
 
 class FaceClusterCommandTests(TestCase):
@@ -151,3 +152,32 @@ class FaceClusterCommandTests(TestCase):
                     stdout=output,
                 )
         self.assertNotIn("secret-photo-id", output.getvalue())
+
+    def test_activation_command_requires_explicit_confirmation_and_prints_only_uuid(self) -> None:
+        from io import StringIO
+
+        corpus = build_face_cluster_corpus(
+            event=self.event,
+            version=1,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+        arguments = [
+            "activate_face_cluster_corpus",
+            str(self.event.pk),
+            "--corpus",
+            str(corpus.pk),
+            "--configuration-hash",
+            corpus.configuration_hash,
+            "--anchor-threshold",
+            "0.05",
+            "--evaluation-report-hash",
+            "a" * 64,
+        ]
+        with self.assertRaises(CommandError):
+            call_command(*arguments)
+        output = StringIO()
+        call_command(*arguments, "--confirm-numeric-gates-reviewed", stdout=output)
+        self.assertRegex(output.getvalue().strip(), re.compile(r"^[0-9a-f-]{36}$"))

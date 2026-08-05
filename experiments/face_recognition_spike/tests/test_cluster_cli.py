@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -273,6 +274,10 @@ def test_run_cluster_orchestrates_unlabelled_all_face_pipeline(
     ]
     assert (output / "report.html").is_file()
     assert not (output / "retrieval.csv").exists()
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert isinstance(manifest["peak_memory_bytes"], int)
+    assert manifest["peak_memory_bytes"] == result.peak_memory_bytes
+    assert result.peak_memory_bytes > 0
 
 
 def test_model_initialization_failure_is_fatal_without_staging(

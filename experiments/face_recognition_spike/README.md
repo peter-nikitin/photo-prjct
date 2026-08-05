@@ -286,6 +286,37 @@ This is a bounded qualitative smoke test, not an accuracy measurement. Do not in
 precision, recall, F1, calibration, a production identity claim, or approval for public-selfie
 processing.
 
+## Closed cluster-expansion evaluation
+
+After a reviewer has finalized the person-split benchmark, compare direct search with strict-anchor
+cluster expansion on that same immutable benchmark. The command consumes the final benchmark, its
+reconciled private index, and the immutable cluster run; it writes one aggregate JSON report only.
+The held-out source photo is excluded for every query, direct photos remain first, and expanded
+photos are unique additions. Calibration and evaluation metrics remain separate.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike \
+.venv/bin/python -m face_spike evaluate-cluster-expansion \
+  --benchmark /absolute/benchmarks/final \
+  --index /absolute/indexes/event-index \
+  --cluster-run /absolute/runs/all-people-run-001 \
+  --output /absolute/evaluations/cluster-expansion-001.json \
+  --direct-threshold "$APPROVED_DIRECT_THRESHOLD" \
+  --anchor-threshold "$APPROVED_STRONG_ANCHOR_THRESHOLD" \
+  --configuration-hash "$CORPUS_CONFIGURATION_HASH"
+```
+
+Set the two threshold variables to explicitly reviewed numeric values and
+`CORPUS_CONFIGURATION_HASH` to the lowercase SHA-256 from the corpus proposed for activation. The
+report records direct/final recall, source-separated labelled precision, incremental correct and
+incorrect photos, helped/harmed searches, false merge evidence, fragmentation/singletons, and
+bounded resource measurements. It contains no query crop, photo, face, cluster, embedding, or
+customer identity.
+
+Keep every input and report outside Git. An evaluation report does not activate anything: activation
+requires a separately reviewed operator action with the exact report hash, configuration hash, and
+numeric gates confirmation.
+
 ## Honest interpretation
 
 Peakshot is a useful silver-label reference, not ground truth. Differences in

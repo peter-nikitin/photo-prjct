@@ -1,4 +1,4 @@
-.PHONY: check db-clone-staging hooks test worktree
+.PHONY: check db-clone-staging hooks test test-clone-staging worktree
 
 BASE ?= origin/main
 TESTS ?=
@@ -11,15 +11,18 @@ hooks:
 	.venv/bin/pre-commit install
 
 test:
-	sh scripts/run-in-test-env.sh .venv/bin/pytest $(TESTS)
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -m "not clone_staging_slow" $(TESTS)
 
 check:
 	.venv/bin/ruff format --check .
 	.venv/bin/ruff check .
 	.venv/bin/mypy
-	sh scripts/run-in-test-env.sh .venv/bin/pytest --cov --cov-report=term-missing
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -m "not clone_staging_slow" --cov --cov-report=term-missing
 	sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py check
 	sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py makemigrations --check --dry-run
+
+test-clone-staging:
+	sh scripts/run-in-test-env.sh .venv/bin/pytest tests/deployment/test_clone_staging_database.py
 
 db-clone-staging:
 	sh scripts/clone-staging-db.sh

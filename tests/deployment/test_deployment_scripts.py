@@ -144,6 +144,12 @@ case "$*" in
 esac
 """,
     )
+    _write_executable(
+        fake_bin / "sleep",
+        """
+printf 'sleep %s\n' "$*" >> "$COMMAND_LOG"
+""",
+    )
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "curl.log"),
@@ -178,10 +184,10 @@ def test_public_smoke_checks_canonical_edge_and_optional_alias(
 
 
 @pytest.mark.parametrize(
-    ("overrides", "message"),
+    ("overrides", "message", "expected_sleeps"),
     [
-        ({"canonical_location": "https://findme-photo.ru/wrong"}, "Location"),
-        ({"health_code": "503"}, "HTTPS health"),
+        ({"canonical_location": "https://findme-photo.ru/wrong"}, "Location", 0),
+        ({"health_code": "503"}, "HTTPS health", 12),
     ],
 )
 def test_public_smoke_rejects_wrong_redirect_or_unhealthy_https(
@@ -189,6 +195,7 @@ def test_public_smoke_rejects_wrong_redirect_or_unhealthy_https(
     fake_bin: Path,
     overrides: dict[str, str],
     message: str,
+    expected_sleeps: int,
 ) -> None:
     result = _run(
         "deploy/verify-public-edge.sh",
@@ -197,6 +204,8 @@ def test_public_smoke_rejects_wrong_redirect_or_unhealthy_https(
 
     assert result.returncode != 0
     assert message in result.stderr
+    commands = (tmp_path / "curl.log").read_text(encoding="utf-8")
+    assert commands.count("sleep 5") == expected_sleeps
 
 
 def _apply_env(

@@ -108,6 +108,51 @@ class PublicSelfieSearchMarkupTests(TestCase):
                     "Любой, у кого есть ссылка на результат, сможет его открыть.",
                 )
 
+    def test_published_events_expose_only_empty_nonsecret_saved_history_markup(self) -> None:
+        token = "saved-history-bearer-token"
+        result_path = f"/events/{self.free_event.slug}/selfie-search/{token}/"
+        for event in (self.free_event, self.paid_event):
+            with self.subTest(event=event.slug):
+                response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+                self.assertContains(response, "data-selfie-search-history")
+                self.assertContains(response, "data-selfie-search-history-list")
+                self.assertContains(response, f'data-event-slug="{event.slug}"')
+                self.assertContains(response, 'src="/static/ui/selfie-search-history.js"')
+                self.assertContains(response, "hidden")
+                self.assertNotContains(response, token)
+                self.assertNotContains(response, result_path)
+                self.assertNotContains(response, "Открыть результат")
+                self.assertNotContains(response, "Удалить с устройства")
+
+    def test_every_public_result_state_exposes_only_event_slug_for_saved_history(self) -> None:
+        for status in SelfieSearch.Status.values:
+            with self.subTest(status=status):
+                token = f"history-{status}-token"
+                SelfieSearch.objects.create(
+                    event=self.free_event,
+                    public_token_digest=hashlib.sha256(token.encode("ascii")).hexdigest(),
+                    status=status,
+                    temporary_object_key="",
+                    configuration={"public-contract": 1},
+                )
+                response = self.client.get(
+                    reverse(
+                        "selfie_search:result",
+                        kwargs={"event_slug": self.free_event.slug, "public_token": token},
+                    )
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, "data-selfie-search-result")
+                self.assertContains(response, f'data-event-slug="{self.free_event.slug}"')
+                self.assertContains(response, 'src="/static/ui/selfie-search-history.js"')
+                self.assertNotContains(
+                    response, f'data-result-path="/events/{self.free_event.slug}'
+                )
+                self.assertNotContains(response, f'data-public-token="{token}"')
+                self.assertNotContains(response, "data-selfie-search-history-list")
+
     def test_draft_event_has_no_public_selfie_form(self) -> None:
         response = self.client.get(reverse("event_detail", kwargs={"slug": self.draft_event.slug}))
 

@@ -189,6 +189,14 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
   signed direct Object Storage redirect transport is implemented for already authorized gallery and
   result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
+- The repository implements browser-local reopening of existing selfie-search results: a result
+  page saves only its canonical path, event slug, and open timestamp in versioned `localStorage`,
+  and the matching event page renders that browser's list after JavaScript reads it. This adds no
+  account, server-side history, synchronization, or request carrying history data. Before an
+  explicit local button navigation, the event page keeps a bearer path out of its DOM, analytics,
+  and background or history requests; it sends no local history list to Django. ADR 0019's bearer
+  authorization, retention, event isolation, selfie cleanup, and query-vector boundaries are
+  unchanged.
 - Keep one consented quality-feedback record per terminal selfie search without delaying ADR 0019's
   temporary-selfie cleanup. The repository implementation retains the selected file locally for
   seven days, stores immutable feedback/contact/consent/labels in PostgreSQL, and stores one selfie

@@ -341,7 +341,13 @@ class SearchJobTests(TestCase):
         )
         claimed = self.claim(search)
 
-        complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_search_attempt(
+                    claimed.attempt.id,
+                    result=self.result(),
+                    storage=self.storage,
+                )
 
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.READY)
@@ -356,8 +362,85 @@ class SearchJobTests(TestCase):
                 ("integration-member", "face_cluster_expansion"),
             ],
         )
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking_event = next(
+            event for event in events if event["event"] == "selfie_ranking_finished"
+        )
+        terminal_event = next(
+            event for event in events if event["event"] == "selfie_search_terminal"
+        )
+        self.assertEqual(ranking_event["schema_version"], 2)
+        self.assertEqual(ranking_event["direct_matched_photo_count"], 1)
+        self.assertEqual(ranking_event["cluster_expanded_photo_count"], 1)
+        self.assertEqual(ranking_event["final_matched_photo_count"], 2)
+        self.assertEqual(ranking_event["cluster_expansion_outcome"], "expanded")
+        self.assertEqual(terminal_event["schema_version"], 2)
+        self.assertEqual(terminal_event["direct_matched_photo_count"], 1)
+        self.assertEqual(terminal_event["cluster_expanded_photo_count"], 1)
+        self.assertEqual(terminal_event["cluster_corpus_version"], 1)
+        self.assertEqual(terminal_event["cluster_configuration_hash"], "c" * 64)
         evidence_count = SelfieSearchClusterEvidence.objects.filter(result__search=search).count()
         self.assertEqual(evidence_count, 2)
+
+    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    def test_empty_direct_cohort_clears_identity_for_non_ready_observability(self) -> None:
+        search = self.make_search(with_candidate=False)
+        generations = search.configuration["gallery_face_embedding_generations"]
+        corpus = FaceClusterCorpus.objects.create(
+            event=self.event,
+            version=1,
+            status=FaceClusterCorpus.Status.BUILDING,
+            algorithm_version="guarded-graph-v1",
+            configuration={"face_embedding_generations": generations},
+            configuration_hash="b" * 64,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            model_version="sface",
+            embedding_dimensions=128,
+            edge_threshold=0.2,
+            representative_threshold=0.2,
+            distance_block_size=1,
+            max_candidate_edges=1,
+        )
+        FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
+            status=FaceClusterCorpus.Status.PUBLISHED,
+            published_at=timezone.now(),
+        )
+        EventFaceClusterActivation.objects.create(
+            event=self.event,
+            corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
+            active=True,
+            anchor_threshold=0.2,
+            configuration={},
+            configuration_hash="c" * 64,
+            approved_evaluation_report_hash="d" * 64,
+        )
+        claimed = self.claim(search)
+
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_search_attempt(
+                    claimed.attempt.id,
+                    result=self.result(),
+                    storage=self.storage,
+                )
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
+        terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
+        self.assertEqual(ranking["cluster_expansion_outcome"], "no_strong_anchor")
+        self.assertIsNone(ranking["cluster_corpus_version"])
+        self.assertIsNone(ranking["cluster_configuration_hash"])
+        self.assertIsNone(ranking["cluster_expansion_ms"])
+        self.assertEqual(terminal["status"], SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual(terminal["matched_photo_count"], 0)
+        self.assertEqual(terminal["direct_matched_photo_count"], 0)
+        self.assertEqual(terminal["cluster_expanded_photo_count"], 0)
+        self.assertIsNone(terminal["cluster_corpus_version"])
+        self.assertIsNone(terminal["cluster_configuration_hash"])
 
     @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
     def test_member_read_database_error_keeps_outer_completion_transaction_usable(self) -> None:
@@ -582,6 +665,31 @@ class SearchJobTests(TestCase):
         terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
         self.assertEqual(terminal["status"], SelfieSearch.Status.READY)
         self.assertTrue(terminal["cleanup_confirmed"])
+
+    def test_successful_completion_emits_v2_ranking_and_terminal_source_counts(self) -> None:
+        search = self.make_search()
+        claimed = self.claim(search)
+
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_search_attempt(
+                    claimed.attempt.id,
+                    result=self.result(),
+                    storage=self.storage,
+                )
+
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
+        terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
+        assert ranking["schema_version"] == 2
+        assert ranking["direct_matched_photo_count"] == 1
+        assert ranking["cluster_expanded_photo_count"] == 0
+        assert ranking["final_matched_photo_count"] == 1
+        assert ranking["cluster_expansion_outcome"] == "disabled"
+        assert terminal["schema_version"] == 2
+        assert terminal["matched_photo_count"] == 1
+        assert terminal["direct_matched_photo_count"] == 1
+        assert terminal["cluster_expanded_photo_count"] == 0
 
     def test_terminal_observability_query_failure_cannot_change_the_committed_result(self) -> None:
         search = self.make_search()

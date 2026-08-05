@@ -21,11 +21,11 @@ def _load_module():
     return module
 
 
-def _event(name: str, occurred_at: str, **fields: object) -> str:
+def _event(name: str, occurred_at: str, *, schema_version: int = 1, **fields: object) -> str:
     service = "worker" if name == "selfie_worker_attempt_finished" else "web"
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": schema_version,
             "event": name,
             "occurred_at": occurred_at,
             "service": service,
@@ -78,6 +78,95 @@ def _terminal(
         failure_code=failure,
         cleanup_confirmed=True,
     )
+
+
+def _ranking_v2(
+    search_id: str,
+    *,
+    outcome: str = "succeeded",
+    direct: int = 1,
+    expanded: int = 0,
+    final: int | None = None,
+    anchors: int = 0,
+    clusters: int = 0,
+    eligible_photo_count: int = 5,
+    eligible_face_count: int = 7,
+    corpus_version: int | None = None,
+    configuration_hash: str | None = None,
+    expansion_ms: int | None = None,
+    cluster_outcome: str | None = None,
+    attempt_id: str | None = None,
+    occurred_at: str = "2026-08-03T10:00:00Z",
+) -> str:
+    if cluster_outcome is None:
+        if outcome == "incompatible":
+            cluster_outcome = "corpus_incompatible"
+        elif expanded > 0:
+            cluster_outcome = "expanded"
+        elif anchors > 0:
+            cluster_outcome = "no_new_photos"
+        else:
+            cluster_outcome = "no_strong_anchor" if corpus_version is not None else "disabled"
+    return _event(
+        "selfie_ranking_finished",
+        occurred_at,
+        schema_version=2,
+        event_id="17",
+        search_id=search_id,
+        attempt_id=attempt_id or search_id,
+        outcome=outcome,
+        eligible_photo_count=eligible_photo_count,
+        eligible_face_count=eligible_face_count,
+        matched_photo_count=direct + expanded if final is None else final,
+        load_ms=5,
+        rank_ms=9,
+        direct_matched_photo_count=direct,
+        cluster_expanded_photo_count=expanded,
+        final_matched_photo_count=direct + expanded if final is None else final,
+        strong_anchor_count=anchors,
+        expanded_cluster_count=clusters,
+        cluster_corpus_version=corpus_version,
+        cluster_configuration_hash=configuration_hash,
+        cluster_expansion_ms=expansion_ms,
+        cluster_expansion_outcome=cluster_outcome,
+        configuration_hash="a" * 64,
+    )
+
+
+def _terminal_v2(
+    search_id: str,
+    *,
+    status: str = "ready",
+    direct: int = 1,
+    expanded: int = 0,
+    matched: int | None = None,
+    corpus_version: int | None = None,
+    configuration_hash: str | None = None,
+    occurred_at: str = "2026-08-03T10:01:00Z",
+) -> str:
+    return _event(
+        "selfie_search_terminal",
+        occurred_at,
+        schema_version=2,
+        event_id="17",
+        search_id=search_id,
+        status=status,
+        matched_photo_count=direct + expanded if matched is None else matched,
+        direct_matched_photo_count=direct,
+        cluster_expanded_photo_count=expanded,
+        cluster_corpus_version=corpus_version,
+        cluster_configuration_hash=configuration_hash,
+        attempt_count=1,
+        elapsed_ms=100,
+        failure_code="failed"
+        if status == "failed"
+        else (status if status in {"no_face", "multiple_faces", "quality_rejected"} else ""),
+        cleanup_confirmed=True,
+    )
+
+
+def _search_id(number: int) -> str:
+    return f"00000000-0000-0000-0000-{number:012d}"
 
 
 def test_daily_summary_counts_the_critical_funnel_and_integrity_boundaries() -> None:
@@ -278,6 +367,9 @@ def test_daily_summary_counts_the_critical_funnel_and_integrity_boundaries() -> 
         "malformed_events": 1,
         "unknown_schema_or_event": 2,
         "late_events": 1,
+        "ranking_without_terminal": 0,
+        "terminal_without_ranking": 0,
+        "ranking_terminal_mismatches": 0,
     }
     assert payload["complete"] is False
     serialized = json.dumps(payload, sort_keys=True)
@@ -419,3 +511,227 @@ def test_cli_emits_one_compact_recomputed_line_and_rejects_an_invalid_date() -> 
     assert ": " not in valid.stdout
     assert json.loads(valid.stdout)["recomputed"] is True
     assert invalid.returncode != 0
+
+
+def test_daily_summary_aggregates_expansion_and_reconciles_v2_pairs() -> None:
+    summarize = _load_module()
+    expanded = _search_id(101)
+    no_anchor = _search_id(102)
+    no_new = _search_id(103)
+    disabled = _search_id(104)
+    incompatible = _search_id(105)
+    corpus_hash = "b" * 64
+    lines = [
+        _submission(expanded),
+        _submission(no_anchor),
+        _submission(no_new),
+        _submission(disabled),
+        _submission(incompatible),
+        _ranking_v2(
+            expanded,
+            direct=1,
+            expanded=2,
+            final=3,
+            anchors=1,
+            clusters=1,
+            corpus_version=7,
+            configuration_hash=corpus_hash,
+            expansion_ms=12,
+            attempt_id=_search_id(201),
+        ),
+        _terminal_v2(
+            expanded,
+            direct=1,
+            expanded=2,
+            corpus_version=7,
+            configuration_hash=corpus_hash,
+        ),
+        _ranking_v2(
+            no_anchor,
+            direct=1,
+            anchors=0,
+            clusters=0,
+            corpus_version=7,
+            configuration_hash=corpus_hash,
+            expansion_ms=4,
+            attempt_id=_search_id(202),
+        ),
+        _terminal_v2(
+            no_anchor,
+            direct=1,
+            corpus_version=7,
+            configuration_hash=corpus_hash,
+        ),
+        _ranking_v2(
+            no_new,
+            direct=1,
+            anchors=1,
+            clusters=0,
+            corpus_version=7,
+            configuration_hash=corpus_hash,
+            expansion_ms=5,
+            attempt_id=_search_id(203),
+        ),
+        _terminal_v2(
+            no_new,
+            direct=1,
+            corpus_version=7,
+            configuration_hash=corpus_hash,
+        ),
+        _ranking_v2(
+            disabled,
+            direct=1,
+            anchors=0,
+            clusters=0,
+            expansion_ms=None,
+            attempt_id=_search_id(204),
+        ),
+        _terminal_v2(disabled, direct=1),
+        _ranking_v2(
+            incompatible,
+            outcome="incompatible",
+            direct=0,
+            expanded=0,
+            final=0,
+            anchors=0,
+            clusters=0,
+            attempt_id=_search_id(205),
+        ),
+        _terminal_v2(incompatible, status="failed", direct=0, expanded=0),
+    ]
+
+    summary = summarize.summarize_jsonl(lines, report_date=date(2026, 8, 3))
+    expansion = summary.to_dict()["expansion"]
+
+    assert expansion["eligible_searches"] == 3
+    assert expansion["searches_with_cluster_photos"] == 1
+    assert expansion["direct_matched_photo_count"] == 3
+    assert expansion["cluster_expanded_photo_count"] == 2
+    assert expansion["final_matched_photo_count"] == 5
+    assert expansion["strong_anchor_count"] == 2
+    assert expansion["expanded_cluster_count"] == 1
+    assert expansion["added_photos"] == {"count": 3, "p50": 0, "p95": 2}
+    assert expansion["expansion_ms"] == {"count": 3, "p50": 5, "p95": 12}
+    assert expansion["outcomes"] == {
+        "expanded": 1,
+        "no_strong_anchor": 1,
+        "no_new_photos": 1,
+        "corpus_unavailable": 0,
+        "corpus_incompatible": 1,
+        "disabled": 1,
+    }
+    assert expansion["corpus_versions"] == {"7": 3}
+    assert expansion["configuration_hashes"] == {corpus_hash: 3}
+    assert expansion["searches_helped_rate"] == {"numerator": 1, "denominator": 3, "rate": 1 / 3}
+    assert expansion["incremental_photo_rate"] == {"numerator": 2, "denominator": 5, "rate": 2 / 5}
+    assert summary.complete is True
+
+
+def test_search_unavailable_pair_clears_identity_without_mismatch() -> None:
+    summarize = _load_module()
+    search_id = _search_id(250)
+    lines = [
+        _submission(search_id),
+        _ranking_v2(
+            search_id,
+            direct=0,
+            expanded=0,
+            final=0,
+            eligible_photo_count=0,
+            eligible_face_count=0,
+            corpus_version=None,
+            configuration_hash=None,
+            expansion_ms=None,
+            cluster_outcome="no_strong_anchor",
+            attempt_id=_search_id(251),
+        ),
+        _terminal_v2(
+            search_id,
+            status="search_unavailable",
+            direct=0,
+            expanded=0,
+            corpus_version=None,
+            configuration_hash=None,
+        ),
+    ]
+
+    summary = summarize.summarize_jsonl(lines, report_date=date(2026, 8, 3))
+
+    assert summary.complete is True
+    assert summary.expansion["eligible_searches"] == 0
+    assert summary.expansion["outcomes"]["no_strong_anchor"] == 1
+    assert summary.integrity["ranking_terminal_mismatches"] == 0
+    assert summary.integrity["ranking_without_terminal"] == 0
+    assert summary.integrity["terminal_without_ranking"] == 0
+
+
+def test_historical_v1_ranking_and_terminal_metrics_are_not_available() -> None:
+    summarize = _load_module()
+    search_id = _search_id(301)
+    ranking = _event(
+        "selfie_ranking_finished",
+        "2026-08-03T10:00:00Z",
+        event_id="17",
+        search_id=search_id,
+        attempt_id=_search_id(302),
+        outcome="succeeded",
+        eligible_photo_count=5,
+        eligible_face_count=7,
+        matched_photo_count=1,
+        load_ms=5,
+        rank_ms=8,
+        configuration_hash="a" * 64,
+    )
+    terminal = _terminal(search_id, status="ready", matches=1)
+
+    expansion = summarize.summarize_jsonl(
+        [_submission(search_id), ranking, terminal],
+        report_date=date(2026, 8, 3),
+    ).to_dict()["expansion"]
+
+    assert expansion["eligible_searches"] == "not_available"
+    assert expansion["cluster_expanded_photo_count"] == "not_available"
+    assert expansion["searches_helped_rate"] == "not_available"
+
+
+def test_v2_reconciliation_mismatch_duplicate_and_malformed_event_make_summary_incomplete() -> None:
+    summarize = _load_module()
+    search_id = _search_id(401)
+    ranking = _ranking_v2(
+        search_id,
+        direct=1,
+        expanded=2,
+        final=3,
+        anchors=1,
+        clusters=1,
+        corpus_version=7,
+        configuration_hash="b" * 64,
+        expansion_ms=12,
+        attempt_id=_search_id(402),
+    )
+    malformed = json.loads(ranking)
+    malformed["cluster_configuration_hash"] = "SECRET-SENTINEL"
+    mismatch = _terminal_v2(
+        search_id,
+        direct=1,
+        expanded=1,
+        matched=2,
+        corpus_version=7,
+        configuration_hash="b" * 64,
+    )
+    summary = summarize.summarize_jsonl(
+        [
+            _submission(search_id),
+            ranking,
+            ranking,
+            mismatch,
+            json.dumps(malformed),
+        ],
+        report_date=date(2026, 8, 3),
+    )
+
+    assert summary.complete is False
+    assert summary.integrity["duplicate_logical_events"] == 1
+    assert summary.integrity["ranking_terminal_mismatches"] == 1
+    assert summary.integrity["malformed_events"] == 1
+    assert "SECRET-SENTINEL" not in json.dumps(summary.to_dict(), sort_keys=True)

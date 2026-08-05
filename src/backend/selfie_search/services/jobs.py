@@ -250,6 +250,7 @@ def complete_search_attempt(
                     matched_photo_count=0,
                     load_ms=None,
                     rank_ms=None,
+                    expansion=None,
                 )
                 _terminal_attempt(
                     attempt,
@@ -277,6 +278,11 @@ def complete_search_attempt(
                 completion = SearchAttemptCompletion(attempt=attempt)
                 needs_cleanup = True
             else:
+                intended_status = str(
+                    SelfieSearch.Status.SEARCH_UNAVAILABLE
+                    if not has_eligible_candidates
+                    else SelfieSearch.Status.READY
+                )
                 expansion = _expand_direct_ranking(search=search, ranked=ranked, query=query)
                 _emit_ranking_finished(
                     search=search,
@@ -287,11 +293,8 @@ def complete_search_attempt(
                     matched_photo_count=expansion.final_matched_photo_count,
                     load_ms=load_ms,
                     rank_ms=rank_ms,
-                )
-                intended_status = str(
-                    SelfieSearch.Status.SEARCH_UNAVAILABLE
-                    if not has_eligible_candidates
-                    else SelfieSearch.Status.READY
+                    expansion=expansion,
+                    retain_expansion_snapshot=intended_status == str(SelfieSearch.Status.READY),
                 )
                 _terminal_attempt(
                     attempt,
@@ -688,7 +691,7 @@ def _prepare_cleanup(
     *,
     intended_status: str,
     failure_code: str,
-    expansion: RankedPhotoExpansion | None,
+    expansion: RankedPhotoExpansion | None = None,
     now: timezone.datetime,
 ) -> None:
     if search.status == SelfieSearch.Status.CLEANUP_PENDING:
@@ -825,7 +828,42 @@ def _emit_ranking_finished(
     matched_photo_count: int,
     load_ms: int | None,
     rank_ms: int | None,
+    expansion: RankedPhotoExpansion | None,
+    retain_expansion_snapshot: bool = True,
 ) -> None:
+    if expansion is None:
+        direct_matched_photo_count = 0
+        cluster_expanded_photo_count = 0
+        final_matched_photo_count = 0
+        strong_anchor_count = 0
+        expanded_cluster_count = 0
+        cluster_corpus_version = None
+        cluster_configuration_hash = None
+        cluster_expansion_ms = None
+        cluster_expansion_outcome = (
+            "disabled"
+            if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True
+            else "corpus_unavailable"
+        )
+    else:
+        direct_matched_photo_count = expansion.direct_matched_photo_count
+        cluster_expanded_photo_count = expansion.cluster_expanded_photo_count
+        final_matched_photo_count = expansion.final_matched_photo_count
+        strong_anchor_count = expansion.strong_anchor_count
+        expanded_cluster_count = expansion.expanded_cluster_count
+        cluster_corpus_version = (
+            expansion.cluster_corpus_version if retain_expansion_snapshot else None
+        )
+        cluster_configuration_hash = (
+            expansion.cluster_configuration_hash if retain_expansion_snapshot else None
+        )
+        cluster_expansion_ms = (
+            expansion.duration_ms
+            if retain_expansion_snapshot
+            and expansion.outcome in {"expanded", "no_strong_anchor", "no_new_photos"}
+            else None
+        )
+        cluster_expansion_outcome = expansion.outcome
     emit_selfie_event(
         logger,
         event=SelfieEventName.RANKING_FINISHED,
@@ -838,6 +876,15 @@ def _emit_ranking_finished(
         matched_photo_count=matched_photo_count,
         load_ms=load_ms,
         rank_ms=rank_ms,
+        direct_matched_photo_count=direct_matched_photo_count,
+        cluster_expanded_photo_count=cluster_expanded_photo_count,
+        final_matched_photo_count=final_matched_photo_count,
+        strong_anchor_count=strong_anchor_count,
+        expanded_cluster_count=expanded_cluster_count,
+        cluster_corpus_version=cluster_corpus_version,
+        cluster_configuration_hash=cluster_configuration_hash,
+        cluster_expansion_ms=cluster_expansion_ms,
+        cluster_expansion_outcome=cluster_expansion_outcome,
         configuration_hash=(
             search.configuration_hash
             if len(search.configuration_hash) == 64
@@ -851,6 +898,7 @@ def _emit_search_terminal(
 ) -> None:
     try:
         elapsed_ms = max(0, round((now - search.created_at).total_seconds() * 1_000))
+        ready = search.status == SelfieSearch.Status.READY
         emit_selfie_event(
             logger,
             event=SelfieEventName.SEARCH_TERMINAL,
@@ -862,6 +910,10 @@ def _emit_search_terminal(
             elapsed_ms=elapsed_ms,
             failure_code=search.failure_code,
             cleanup_confirmed=True,
+            direct_matched_photo_count=(search.direct_matched_photo_count or 0) if ready else 0,
+            cluster_expanded_photo_count=(search.cluster_expanded_photo_count or 0) if ready else 0,
+            cluster_corpus_version=search.cluster_corpus_version if ready else None,
+            cluster_configuration_hash=search.cluster_configuration_hash if ready else None,
         )
     except Exception:
         emit_selfie_observability_failure(logger)

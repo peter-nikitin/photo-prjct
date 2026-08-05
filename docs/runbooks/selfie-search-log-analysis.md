@@ -79,7 +79,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
     payload = json.load(source)
 allowed = (
     "report_date", "window_start", "window_end", "recomputed", "submissions", "terminals",
-    "worker_attempts", "durations_ms", "cohort", "integrity",
+    "worker_attempts", "expansion", "durations_ms", "cohort", "integrity",
 )
 safe = {key: payload[key] for key in allowed}
 safe["parser_complete"] = payload["complete"]
@@ -95,7 +95,20 @@ PY
   окна или после journal eviction.
 - Ненулевое любое поле `integrity` означает parser `complete=false`: `accepted_without_terminal`,
   `terminal_without_accepted`, `duplicate_logical_events`, `malformed_events`,
-  `unknown_schema_or_event`, `late_events`.
+  `unknown_schema_or_event`, `late_events`, `ranking_without_terminal`,
+  `terminal_without_ranking`, `ranking_terminal_mismatches`.
+- `expansion` агрегирует только ranking/terminal schema v2: `eligible_searches` включает
+  `expanded`, `no_strong_anchor` и `no_new_photos`, но исключает `disabled`,
+  `corpus_unavailable` и `corpus_incompatible`. `added_photos` и `expansion_ms` содержат
+  `count`/`p50`/`p95`; `searches_helped_rate` и `incremental_photo_rate` всегда показывают
+  целочисленные `numerator`/`denominator` рядом с вычисленным `rate`.
+- Пустой direct cohort завершает search как `search_unavailable`: ranking может сохранить
+  `no_strong_anchor`, но schema v2 очищает corpus identity и duration в обоих событиях. Нулевые
+  source counts и совпадающие `null` identity — валидная пара, не mismatch и не eligible sample.
+- Исторические ranking/terminal schema v1 не имеют источника расширения: их expansion-метрики
+  выводятся как `not_available`, а не как нули. Пустой день без исторических событий допускает
+  нулевой bounded-агрегат. Не интерпретируйте `rate=null` при нулевом знаменателе как нулевую
+  эффективность.
 - В отчёте инцидента называйте это `parser_complete`. Отдельно выставляйте
   `coverage_complete=true` только для закрытого дня, когда host verifier прошёл и
   `oldest_selfie_event_realtime` покрывает начало окна; `none`, journal eviction или неизвестный
@@ -154,7 +167,10 @@ fields = (
     "event", "occurred_at", "service", "outcome", "status", "reason_code", "retryable",
     "attempt_count", "matched_photo_count", "eligible_photo_count", "eligible_face_count",
     "duration_ms", "download_ms", "compute_ms", "total_ms", "load_ms", "rank_ms", "elapsed_ms",
-    "failure_code", "cleanup_confirmed", "configuration_hash",
+    "failure_code", "cleanup_confirmed", "configuration_hash", "direct_matched_photo_count",
+    "cluster_expanded_photo_count", "final_matched_photo_count", "strong_anchor_count",
+    "expanded_cluster_count", "cluster_corpus_version", "cluster_configuration_hash",
+    "cluster_expansion_ms", "cluster_expansion_outcome",
 )
 for raw in sys.stdin:
     line = raw.strip()
@@ -197,8 +213,8 @@ ranking/terminal до того, как worker attempt event станет вид�
 | --- | --- | --- |
 | `selfie_submission_finished` | `outcome`, `reason_code`, формат, size bucket, `duration_ms` | До создания search; `accepted` содержит opaque `search_id`. |
 | `selfie_worker_attempt_finished` | `outcome`, bounded `reason_code`, `retryable`, download/compute/total ms | Один worker attempt; service `worker`. |
-| `selfie_ranking_finished` | `eligible_photo_count`, `eligible_face_count`, matches, load/rank ms, `configuration_hash` | Cohort/index и ranking; service `web`. |
-| `selfie_search_terminal` | `status`, matches, attempt count, elapsed, failure code, `cleanup_confirmed` | Финальное состояние после cleanup. |
+| `selfie_ranking_finished` (v2) | Cohort/ranking fields plus direct/expanded/final counts, strong anchors, selected clusters, bounded corpus version/hash, expansion ms/outcome | Ranking and optional expansion; `final = direct + expanded`; service `web`. |
+| `selfie_search_terminal` (v2) | `status`, final matches, direct/expanded counts, corpus version/hash, attempt count, elapsed, failure code, `cleanup_confirmed` | Published source counts after cleanup; non-ready statuses have zero source counts. Empty-cohort `search_unavailable` clears corpus identity in both v2 events and is not an eligible expansion sample. |
 
 Разбирайте «результатов нет» сверху вниз:
 
@@ -227,6 +243,13 @@ ranking/terminal до того, как worker attempt event станет вид�
 `ready_zero` и `ready_positive` нельзя смешивать с no-face, quality rejection или storage failure.
 `ready` не является идентификацией человека; это только опубликованный результат поиска.
 
+7. **Expansion.** Сначала проверьте `expansion` и его целостность. `searches_helped_rate` — доля
+   eligible searches с `cluster_expanded_photo_count > 0`; `incremental_photo_rate` — добавленные
+   cluster photos к опубликованному final count. Это operational aggregate, а не precision/recall
+   и не доказательство личности. `expanded` требует положительного добавленного объёма; остальные
+   outcomes не добавляют фото. `cluster_corpus_version` и hash — bounded opaque identities; не
+   пытайтесь сопоставлять их с фото, лицом, кластером или bearer result.
+
 ## 5. Cohort, index и latency
 
 - `cohort.eligible_photo_min/max` и `eligible_face_min/max` — диапазон frozen cohort, не весь
@@ -236,6 +259,10 @@ ranking/terminal до того, как worker attempt event станет вид�
   не нулевую задержку.
 - `worker_attempts.total/succeeded/failed/retryable_failed` и `failure_reasons` отделяют transient
   retry от permanent input/model paths.
+- `expansion.eligible_searches`, `searches_with_cluster_photos`, direct/expanded/final totals,
+  anchor/cluster totals, outcome counts, observed corpus versions/hashes и p50/p95 `added_photos`
+  / `expansion_ms` описывают только bounded operational volume. Schema v1 history is
+  `not_available`, not zero; `rate` is null when its denominator is zero.
 - Не задавайте SLA или threshold по одному отчёту: это indicators для сравнения, не benchmark
   biometric quality. Малый `count` отмечайте как низкую статистическую надёжность.
 
@@ -299,9 +326,11 @@ hypothesis-only section и сначала разбирайте integrity/retenti
 - submissions: total=<>, accepted=<>, outcomes=<...>, rejection_reasons=<...>
 - terminals: statuses=<...>, ready_zero=<>, ready_positive=<>
 - worker attempts: total=<>, succeeded=<>, failed=<>, retryable_failed=<>, reasons=<...>
+- expansion: eligible=<>, helped=<>, direct=<>, cluster_expanded=<>, final=<>,
+  helped_rate=<numerator>/<denominator>, incremental_rate=<numerator>/<denominator>, outcomes=<...>
 - cohort: eligible_photo_min/max=<>, eligible_face_min/max=<>
 - latency p50/p95 ms: submission=<>, worker_total=<>, cohort_load=<>, ranking=<>, search_lifetime=<>
-- integrity: accepted_without_terminal=<>, terminal_without_accepted=<>, duplicate_logical_events=<>, malformed_events=<>, unknown_schema_or_event=<>, late_events=<>
+- integrity: accepted_without_terminal=<>, terminal_without_accepted=<>, duplicate_logical_events=<>, malformed_events=<>, unknown_schema_or_event=<>, late_events=<>, ranking_without_terminal=<>, terminal_without_ranking=<>, ranking_terminal_mismatches=<>
 
 ### Correlation and assessment
 

@@ -16,6 +16,8 @@ from enum import StrEnum
 from uuid import UUID
 
 SCHEMA_VERSION = 1
+RANKING_SCHEMA_VERSION = 2
+TERMINAL_SCHEMA_VERSION = 2
 SERVICE = "web"
 MAX_BOUNDED_INTEGER = 2**31 - 1
 _ENVIRONMENTS = frozenset({"local", "test", "staging", "production"})
@@ -73,7 +75,61 @@ _TERMINAL_FAILURE_BY_STATUS = {
     "search_unavailable": "",
     "failed": "failed",
 }
+_CLUSTER_EXPANSION_OUTCOMES = frozenset(
+    {
+        "expanded",
+        "no_strong_anchor",
+        "no_new_photos",
+        "corpus_unavailable",
+        "corpus_incompatible",
+        "disabled",
+    }
+)
 OBSERVABILITY_FAILURE_MARKER = "selfie_observability_emit_failed"
+
+_RANKING_FIELDS_V1 = frozenset(
+    {
+        "event_id",
+        "search_id",
+        "attempt_id",
+        "outcome",
+        "eligible_photo_count",
+        "eligible_face_count",
+        "matched_photo_count",
+        "load_ms",
+        "rank_ms",
+        "configuration_hash",
+    }
+)
+_RANKING_FIELDS_V2 = _RANKING_FIELDS_V1 | {
+    "direct_matched_photo_count",
+    "cluster_expanded_photo_count",
+    "final_matched_photo_count",
+    "strong_anchor_count",
+    "expanded_cluster_count",
+    "cluster_corpus_version",
+    "cluster_configuration_hash",
+    "cluster_expansion_ms",
+    "cluster_expansion_outcome",
+}
+_TERMINAL_FIELDS_V1 = frozenset(
+    {
+        "event_id",
+        "search_id",
+        "status",
+        "matched_photo_count",
+        "attempt_count",
+        "elapsed_ms",
+        "failure_code",
+        "cleanup_confirmed",
+    }
+)
+_TERMINAL_FIELDS_V2 = _TERMINAL_FIELDS_V1 | {
+    "direct_matched_photo_count",
+    "cluster_expanded_photo_count",
+    "cluster_corpus_version",
+    "cluster_configuration_hash",
+}
 
 _EVENT_FIELDS: dict[SelfieEventName, frozenset[str]] = {
     SelfieEventName.OBSERVABILITY_PROBE: frozenset({"probe_id"}),
@@ -89,32 +145,8 @@ _EVENT_FIELDS: dict[SelfieEventName, frozenset[str]] = {
             "duration_ms",
         }
     ),
-    SelfieEventName.RANKING_FINISHED: frozenset(
-        {
-            "event_id",
-            "search_id",
-            "attempt_id",
-            "outcome",
-            "eligible_photo_count",
-            "eligible_face_count",
-            "matched_photo_count",
-            "load_ms",
-            "rank_ms",
-            "configuration_hash",
-        }
-    ),
-    SelfieEventName.SEARCH_TERMINAL: frozenset(
-        {
-            "event_id",
-            "search_id",
-            "status",
-            "matched_photo_count",
-            "attempt_count",
-            "elapsed_ms",
-            "failure_code",
-            "cleanup_confirmed",
-        }
-    ),
+    SelfieEventName.RANKING_FINISHED: _RANKING_FIELDS_V2,
+    SelfieEventName.SEARCH_TERMINAL: _TERMINAL_FIELDS_V2,
 }
 
 
@@ -212,7 +244,15 @@ def _event_name(value: object) -> SelfieEventName:
 
 def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dict[str, object]:
     expected = _EVENT_FIELDS[event]
-    if set(fields) != expected:
+    if set(fields) == expected:
+        schema_version = (
+            TERMINAL_SCHEMA_VERSION
+            if event is SelfieEventName.SEARCH_TERMINAL
+            else RANKING_SCHEMA_VERSION
+            if event is SelfieEventName.RANKING_FINISHED
+            else SCHEMA_VERSION
+        )
+    else:
         raise SelfieEventContractError("event fields do not match the contract")
     normalized: dict[str, object]
     if event is SelfieEventName.OBSERVABILITY_PROBE:
@@ -220,11 +260,11 @@ def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dic
     elif event is SelfieEventName.SUBMISSION_FINISHED:
         normalized = _submission_fields(fields)
     elif event is SelfieEventName.RANKING_FINISHED:
-        normalized = _ranking_fields(fields)
+        normalized = _ranking_fields_v2(fields)
     else:
-        normalized = _terminal_fields(fields)
+        normalized = _terminal_fields_v2(fields)
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "event": event.value,
         "occurred_at": _timestamp(),
         "service": SERVICE,
@@ -269,7 +309,7 @@ def _worker_like_ids(fields: dict[str, object], names: tuple[str, ...]) -> dict[
     return {name: _opaque_id(fields[name], allow_integer=name == "event_id") for name in names}
 
 
-def _ranking_fields(fields: dict[str, object]) -> dict[str, object]:
+def _ranking_fields_v1(fields: dict[str, object]) -> dict[str, object]:
     outcome = fields["outcome"]
     if outcome not in _RANKING_OUTCOMES:
         raise SelfieEventContractError("invalid ranking outcome")
@@ -285,7 +325,78 @@ def _ranking_fields(fields: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _terminal_fields(fields: dict[str, object]) -> dict[str, object]:
+def _ranking_fields_v2(fields: dict[str, object]) -> dict[str, object]:
+    normalized = _ranking_fields_v1(fields)
+    direct = _bounded_int(fields["direct_matched_photo_count"], nullable=False)
+    expanded = _bounded_int(fields["cluster_expanded_photo_count"], nullable=False)
+    final = _bounded_int(fields["final_matched_photo_count"], nullable=False)
+    strong_anchors = _bounded_int(fields["strong_anchor_count"], nullable=False)
+    expanded_clusters = _bounded_int(fields["expanded_cluster_count"], nullable=False)
+    assert direct is not None and expanded is not None and final is not None
+    assert strong_anchors is not None and expanded_clusters is not None
+    if normalized["outcome"] == "incompatible":
+        if normalized["matched_photo_count"] != 0 or any(
+            (direct, expanded, final, strong_anchors, expanded_clusters)
+        ):
+            raise SelfieEventContractError("incompatible ranking must have zero source counts")
+    elif final != direct + expanded or normalized["matched_photo_count"] != final:
+        raise SelfieEventContractError("ranking result counts do not reconcile")
+    expansion_outcome = _enum(
+        fields["cluster_expansion_outcome"],
+        _CLUSTER_EXPANSION_OUTCOMES,
+        "cluster expansion outcome",
+    )
+    if expanded > 0 and expansion_outcome != "expanded":
+        raise SelfieEventContractError("expanded ranking has an invalid outcome")
+    if expansion_outcome == "expanded" and (expanded <= 0 or expanded_clusters <= 0):
+        raise SelfieEventContractError("expanded outcome requires added photos and a cluster")
+    if expansion_outcome == "no_strong_anchor" and (strong_anchors != 0 or expanded_clusters != 0):
+        raise SelfieEventContractError("no-strong-anchor outcome has anchors")
+    if expansion_outcome == "no_new_photos" and strong_anchors <= 0:
+        raise SelfieEventContractError("no-new outcome requires a strong anchor")
+    if expansion_outcome in {"disabled", "corpus_unavailable", "corpus_incompatible"} and (
+        expanded != 0 or strong_anchors != 0 or expanded_clusters != 0
+    ):
+        raise SelfieEventContractError("direct-only outcome has expansion counts")
+    version = _positive_bounded_int(fields["cluster_corpus_version"], nullable=True)
+    configuration_hash = _nullable_hash(fields["cluster_configuration_hash"])
+    expansion_ms = _bounded_int(fields["cluster_expansion_ms"], nullable=True)
+    if (version is None) != (configuration_hash is None):
+        raise SelfieEventContractError("corpus version and configuration hash must be paired")
+    requires_corpus = expansion_outcome in {"expanded", "no_strong_anchor", "no_new_photos"}
+    empty_cohort_no_anchor = (
+        expansion_outcome == "no_strong_anchor"
+        and fields["eligible_photo_count"] == 0
+        and fields["eligible_face_count"] == 0
+        and fields["matched_photo_count"] == 0
+        and version is None
+        and configuration_hash is None
+        and expansion_ms is None
+    )
+    if requires_corpus and (
+        (version is None or configuration_hash is None or expansion_ms is None)
+        and not empty_cohort_no_anchor
+    ):
+        raise SelfieEventContractError("eligible expansion requires corpus identity and duration")
+    if not requires_corpus and (
+        version is not None or configuration_hash is not None or expansion_ms is not None
+    ):
+        raise SelfieEventContractError("unavailable expansion must not expose corpus identity")
+    return {
+        **normalized,
+        "direct_matched_photo_count": direct,
+        "cluster_expanded_photo_count": expanded,
+        "final_matched_photo_count": final,
+        "strong_anchor_count": strong_anchors,
+        "expanded_cluster_count": expanded_clusters,
+        "cluster_corpus_version": version,
+        "cluster_configuration_hash": configuration_hash,
+        "cluster_expansion_ms": expansion_ms,
+        "cluster_expansion_outcome": expansion_outcome,
+    }
+
+
+def _terminal_fields_v1(fields: dict[str, object]) -> dict[str, object]:
     status = fields["status"]
     if status not in _TERMINAL_STATUSES:
         raise SelfieEventContractError("invalid terminal status")
@@ -307,6 +418,33 @@ def _terminal_fields(fields: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _terminal_fields_v2(fields: dict[str, object]) -> dict[str, object]:
+    normalized = _terminal_fields_v1(fields)
+    direct = _bounded_int(fields["direct_matched_photo_count"], nullable=False)
+    expanded = _bounded_int(fields["cluster_expanded_photo_count"], nullable=False)
+    assert direct is not None and expanded is not None
+    if normalized["status"] == "ready":
+        if normalized["matched_photo_count"] != direct + expanded:
+            raise SelfieEventContractError("terminal result counts do not reconcile")
+    elif normalized["matched_photo_count"] != 0 or direct != 0 or expanded != 0:
+        raise SelfieEventContractError("non-ready terminal must have zero source counts")
+    version = _positive_bounded_int(fields["cluster_corpus_version"], nullable=True)
+    configuration_hash = _nullable_hash(fields["cluster_configuration_hash"])
+    if (version is None) != (configuration_hash is None):
+        raise SelfieEventContractError("corpus version and configuration hash must be paired")
+    if normalized["status"] != "ready" and (version is not None or configuration_hash is not None):
+        raise SelfieEventContractError("non-ready terminal must not expose corpus identity")
+    if expanded > 0 and (version is None or configuration_hash is None):
+        raise SelfieEventContractError("expanded terminal requires corpus identity")
+    return {
+        **normalized,
+        "direct_matched_photo_count": direct,
+        "cluster_expanded_photo_count": expanded,
+        "cluster_corpus_version": version,
+        "cluster_configuration_hash": configuration_hash,
+    }
+
+
 def _enum(value: object, allowed: frozenset[str], label: str) -> str:
     if not isinstance(value, str) or value not in allowed:
         raise SelfieEventContractError(f"invalid {label}")
@@ -324,6 +462,13 @@ def _bounded_int(value: object, *, nullable: bool) -> int | None:
     ):
         raise SelfieEventContractError("integer is outside the bounded contract")
     return value
+
+
+def _positive_bounded_int(value: object, *, nullable: bool) -> int | None:
+    normalized = _bounded_int(value, nullable=nullable)
+    if normalized is not None and normalized < 1:
+        raise SelfieEventContractError("integer must be positive")
+    return normalized
 
 
 def _opaque_id(value: object, *, nullable: bool = False, allow_integer: bool = True) -> str | None:
@@ -350,6 +495,12 @@ def _hash(value: object) -> str:
     if not isinstance(value, str) or not _HASH_PATTERN.fullmatch(value):
         raise SelfieEventContractError("invalid configuration hash")
     return value.lower()
+
+
+def _nullable_hash(value: object) -> str | None:
+    if value is None:
+        return None
+    return _hash(value)
 
 
 def _timestamp() -> str:

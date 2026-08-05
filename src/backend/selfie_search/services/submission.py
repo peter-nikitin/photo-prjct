@@ -199,7 +199,7 @@ def process_gallery_photo_search(
             expansion = _expand_gallery_ranking(
                 search=locked_search,
                 ranked=ranked,
-                query=tuple(source_candidate.vector),
+                query=source_candidate.vector,
             )
             _persist_gallery_results(search=locked_search, expansion=expansion)
             locked_search.status = SelfieSearch.Status.READY
@@ -528,7 +528,7 @@ def _is_usable_gallery_query(*, search: SelfieSearch, vector: object) -> bool:
 
 
 def _expand_gallery_ranking(
-    *, search: SelfieSearch, ranked: tuple, query: tuple[float, ...]
+    *, search: SelfieSearch, ranked: tuple, query: object
 ) -> RankedPhotoExpansion:
     if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
         return direct_only_ranked_photos(ranked, outcome="disabled")

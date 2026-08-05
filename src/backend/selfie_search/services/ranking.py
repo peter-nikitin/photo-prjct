@@ -69,6 +69,7 @@ def rank_embeddings(
             error_type=RankingError,
         )
         distance = 1.0 - math.fsum(left * right for left, right in zip(query, gallery, strict=True))
+        distance = min(2.0, max(0.0, distance))
         if distance > configuration.threshold:
             continue
         ranked = RankedPhoto(

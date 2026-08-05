@@ -111,7 +111,7 @@ class SelfieSearchResultProvenanceDataMigrationTests(TransactionTestCase):
             photo=photo,
             detection=detection,
             rank=1,
-            cosine_distance=0.125,
+            cosine_distance=-9.589174565505232e-08,
         )
 
         forward_executor = MigrationExecutor(connection)
@@ -124,7 +124,7 @@ class SelfieSearchResultProvenanceDataMigrationTests(TransactionTestCase):
 
         self.assertEqual(migrated_result.primary_source, "direct")
         self.assertEqual(evidence.detection_id, detection.pk)
-        self.assertEqual(evidence.cosine_distance, 0.125)
+        self.assertEqual(evidence.cosine_distance, 0.0)
         self.assertIsNone(migrated_result.search.cluster_corpus_id)
         self.assertIsNone(migrated_result.search.direct_matched_photo_count)
         self.assertIsNone(migrated_result.search.final_matched_photo_count)

@@ -87,6 +87,26 @@ class RankingTests(TestCase):
         self.assertAlmostEqual(ranked[2].cosine_distance, 0.363)
         self.assertEqual(len({row.photo_id for row in ranked}), len(ranked))
 
+    def test_rank_search_clamps_floating_point_distance_to_cosine_bounds(self) -> None:
+        vector = [float((index % 17) - 8) for index in range(128)]
+        norm = sqrt(sum(item * item for item in vector))
+        normalized = [item / norm for item in vector]
+        self.candidates.append(
+            CandidateEmbedding(
+                model_version="sface",
+                vector=normalized,
+                detection_id=uuid4(),
+                photo_id="identical",
+                photo_event_id=self.event.id,
+                attempt_event_id=self.event.id,
+                attempt_photo_id="identical",
+            )
+        )
+
+        ranked = rank_embeddings(self.search, normalized, self.candidates)
+
+        self.assertEqual(ranked[0].cosine_distance, 0.0)
+
     def test_rank_embeddings_rejects_non_finite_or_non_normalized_query_vectors(self) -> None:
         self.add_candidate(photo_id="valid", distance=0.1)
 

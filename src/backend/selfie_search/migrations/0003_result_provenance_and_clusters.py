@@ -4,14 +4,21 @@ import uuid
 import django.db.models.deletion
 from django.db import migrations, models
 
+_DISTANCE_TOLERANCE = 1e-6
+
 
 def _copy_direct_evidence(apps, schema_editor) -> None:  # noqa: ARG001
     Result = apps.get_model("selfie_search", "SelfieSearchResult")
     DirectEvidence = apps.get_model("selfie_search", "SelfieSearchDirectEvidence")
     for result in Result.objects.all().iterator():
         distance = float(result.cosine_distance)
-        if not math.isfinite(distance) or not 0 <= distance <= 2:
+        if (
+            not math.isfinite(distance)
+            or distance < -_DISTANCE_TOLERANCE
+            or distance > 2 + _DISTANCE_TOLERANCE
+        ):
             raise RuntimeError("Cannot convert a result with an invalid cosine distance.")
+        distance = min(2.0, max(0.0, distance))
         if not result.detection_id:
             raise RuntimeError("Cannot convert a result without truthful detection evidence.")
         DirectEvidence.objects.create(

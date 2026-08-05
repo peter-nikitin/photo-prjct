@@ -26,7 +26,11 @@ from selfie_search.models import (
     SelfieSearchFeedback,
     SelfieSearchResult,
 )
-from selfie_search.services.feedback import feedback_presentation, submit_search_feedback
+from selfie_search.services.feedback import (
+    feedback_presentation,
+    feedback_result_source,
+    submit_search_feedback,
+)
 
 
 def selfie_upload() -> SimpleUploadedFile:
@@ -275,6 +279,30 @@ class FeedbackSubmissionTests(TestCase):
                 self.assertEqual(response.json(), {"status": "invalid"})
                 self.assertFalse(SelfieSearchFeedback.objects.filter(search=search).exists())
                 storage.put.assert_not_called()
+
+    def test_customer_cannot_submit_or_mutate_result_provenance(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        result = self.make_result(search=search)
+        original_source = result.primary_source
+        self.assertEqual(feedback_result_source(result), "direct")
+        storage = Mock()
+
+        with patch("selfie_search.views.FeedbackSelfieStorage", return_value=storage):
+            response = self.csrf_post(
+                self.feedback_url(token=token),
+                self.submission_data(
+                    labels=(
+                        f'{{"{result.id}":{{"value":"present",'
+                        '"primary_source":"face_cluster_expansion"}}}}'
+                    )
+                ),
+            )
+
+        self.assertEqual(response.status_code, 422)
+        result.refresh_from_db()
+        self.assertEqual(result.primary_source, original_source)
+        self.assertFalse(SelfieSearchFeedback.objects.filter(search=search).exists())
+        storage.put.assert_not_called()
 
     def test_database_failure_after_upload_deletes_the_exact_uploaded_object(self) -> None:
         search, _ = self.make_search()

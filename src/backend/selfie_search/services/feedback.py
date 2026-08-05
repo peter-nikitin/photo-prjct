@@ -50,6 +50,20 @@ class FeedbackSubmission:
     created: bool
 
 
+def feedback_result_source(result: SelfieSearchResult) -> str:
+    """Return the immutable server-derived source used for feedback reporting.
+
+    Customer input contains only a label value.  The source is resolved from the saved result
+    primary source and immutable cluster evidence, so a submitted label can never choose or
+    mutate provenance.
+    """
+    if result.primary_source == SelfieSearchResult.PrimarySource.DIRECT:
+        if result.cluster_evidence.exists():
+            return "dual_evidence"
+        return "direct"
+    return "expanded"
+
+
 def feedback_presentation(search: SelfieSearch) -> FeedbackPresentation:
     """Derive the feedback variant from the same current public-result membership as the page."""
     if search.status not in _TERMINAL_SEARCH_STATUSES:

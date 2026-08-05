@@ -36,11 +36,12 @@ from processing.services.enrollment import (
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
 )
+from processing.services.face_cohort import load_compatible_face_embeddings
 from selfie_search.images import PreparedSelfie, prepare_selfie_image
 from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAttempt,
-    SelfieSearchCandidate,
+    SelfieSearchDirectEvidence,
     SelfieSearchJob,
 )
 from selfie_search.services.jobs import (
@@ -281,8 +282,6 @@ class SubmissionTests(TestCase):
         paid = submit_selfie_search(event=self.paid_event, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(SelfieSearchJob.objects.filter(search=created.search).count(), 1)
-        self.assertFalse(SelfieSearchCandidate.objects.filter(search=created.search).exists())
-        self.assertFalse(SelfieSearchCandidate.objects.filter(search=paid.search).exists())
         self.assertEqual(created.search.eligible_photo_count, 0)
         self.assertEqual(created.search.eligible_face_count, 0)
         generations = created.search.configuration["gallery_face_embedding_generations"]
@@ -354,9 +353,8 @@ class SubmissionTests(TestCase):
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertEqual(search.eligible_photo_count, 1)
         self.assertEqual(search.eligible_face_count, 1)
-        self.assertFalse(search.candidates.exists())
         self.assertEqual(
-            list(search.results.values_list("detection__embedding", flat=True)),
+            list(search.results.values_list("direct_evidence__detection__embedding", flat=True)),
             [embedding.id],
         )
         self.assertEqual(search.matched_photo_count, 1)
@@ -406,6 +404,33 @@ class SubmissionTests(TestCase):
         self.assertNotIn('"processing_photofacedetection"."geometry"', cohort_sql)
         self.assertNotIn('"processing_processingattempt"."input_fingerprint"', cohort_sql)
         self.assertEqual(candidates[0].photo_id, "lightweight-candidate")
+
+    def test_direct_cohort_uses_the_shared_processing_eligibility_loader(self) -> None:
+        self.make_eligible_embedding(
+            event=self.event,
+            photo_id="shared-loader-candidate",
+            vector=[1.0] + [0.0] * 127,
+        )
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="g" * 64,
+            temporary_object_key="selfie-search/shared-loader",
+            configuration=submission_configuration(content_type="image/jpeg", content_size=1),
+            configuration_hash="g" * 64,
+        )
+
+        expected = load_compatible_face_embeddings(
+            self.event,
+            search.configuration["gallery_face_embedding_generations"],
+            128,
+        )
+
+        candidates = compatible_search_candidates(search)
+
+        self.assertEqual(
+            [candidate.detection_id for candidate in candidates],
+            [row.detection_id for row in expected],
+        )
 
     def test_draft_event_is_rejected_without_upload_or_search(self) -> None:
         storage = RecordingStorage()
@@ -860,23 +885,25 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.assertNotIn(source.original_filename, configuration)
         self.assertNotIn(source.original_key, configuration)
         self.assertEqual(
-            [(row.rank, row.photo_id, row.detection_id) for row in rows],
+            [(row.rank, row.photo_id, row.direct_evidence.detection_id) for row in rows],
             [
                 (1, source.id, source_embedding.detection_id),
                 (2, a_embedding.detection.attempt.photo_id, a_embedding.detection_id),
                 (3, b_embedding.detection.attempt.photo_id, b_best_embedding.detection_id),
             ],
         )
-        self.assertAlmostEqual(rows[0].cosine_distance, 0.0)
-        self.assertAlmostEqual(rows[1].cosine_distance, 0.01)
-        self.assertAlmostEqual(rows[2].cosine_distance, 0.01)
-        self.assertNotEqual(rows[2].detection_id, b_embedding.detection_id)
+        self.assertAlmostEqual(rows[0].direct_evidence.cosine_distance, 0.0)
+        self.assertAlmostEqual(rows[1].direct_evidence.cosine_distance, 0.01)
+        self.assertAlmostEqual(rows[2].direct_evidence.cosine_distance, 0.01)
+        self.assertNotEqual(rows[2].direct_evidence.detection_id, b_embedding.detection_id)
         self.assertFalse(SelfieSearchJob.objects.filter(search=search).exists())
         self.assertFalse(SelfieSearchAttempt.objects.exists())
-        self.assertFalse(SelfieSearchCandidate.objects.filter(search=search).exists())
-        rows[0].cosine_distance = 0.1
+        self.assertEqual(
+            SelfieSearchDirectEvidence.objects.filter(result__search=search).count(), 3
+        )
+        rows[0].direct_evidence.cosine_distance = 0.1
         with self.assertRaises(ValidationError):
-            rows[0].save()
+            rows[0].direct_evidence.save()
 
     def test_each_selected_face_uses_its_own_query_embedding(self) -> None:
         first = self.make_eligible_embedding(
@@ -904,11 +931,11 @@ class GalleryPhotoSubmissionTests(TestCase):
         process_gallery_photo_search(search=second_search)
 
         self.assertEqual(
-            first_search.results.get(photo=source).detection_id,
+            first_search.results.get(photo=source).direct_evidence.detection_id,
             first.detection_id,
         )
         self.assertEqual(
-            second_search.results.get(photo=source).detection_id,
+            second_search.results.get(photo=source).direct_evidence.detection_id,
             second.detection_id,
         )
         self.assertEqual(
@@ -947,7 +974,7 @@ class GalleryPhotoSubmissionTests(TestCase):
         process_gallery_photo_search(search=search)
 
         self.assertEqual(
-            search.results.get(photo_id="equal-distance").detection_id,
+            search.results.get(photo_id="equal-distance").direct_evidence.detection_id,
             expected_detection_id,
         )
 

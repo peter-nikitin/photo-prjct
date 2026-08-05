@@ -1,4 +1,5 @@
 import json
+from math import isfinite
 from uuid import uuid4
 
 from django.conf import settings
@@ -6,7 +7,12 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 from picflow.models import Event, Photo
-from processing.models import FaceEmbedding, PhotoFaceDetection
+from processing.models import (
+    FaceCluster,
+    FaceClusterCorpus,
+    FaceClusterMember,
+    PhotoFaceDetection,
+)
 
 JSON_MAX_BYTES = 16_384
 FEEDBACK_OBJECT_MAX_BYTES = 20 * 1024 * 1024
@@ -18,6 +24,14 @@ _TERMINAL_SEARCH_STATUSES = (
     "quality_rejected",
     "search_unavailable",
     "failed",
+)
+_CLUSTER_EXPANSION_OUTCOMES = (
+    "expanded",
+    "no_strong_anchor",
+    "no_new_photos",
+    "corpus_unavailable",
+    "corpus_incompatible",
+    "disabled",
 )
 
 
@@ -39,6 +53,14 @@ class SelfieSearch(models.Model):  # noqa: DJ008
         SEARCH_UNAVAILABLE = "search_unavailable", "Search unavailable"
         FAILED = "failed", "Failed"
 
+    class ClusterExpansionOutcome(models.TextChoices):
+        EXPANDED = "expanded", "Expanded"
+        NO_STRONG_ANCHOR = "no_strong_anchor", "No strong anchor"
+        NO_NEW_PHOTOS = "no_new_photos", "No new photos"
+        CORPUS_UNAVAILABLE = "corpus_unavailable", "Corpus unavailable"
+        CORPUS_INCOMPATIBLE = "corpus_incompatible", "Corpus incompatible"
+        DISABLED = "disabled", "Disabled"
+
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="selfie_searches")
     public_token_digest = models.CharField(max_length=64, unique=True)
@@ -50,6 +72,28 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     eligible_photo_count = models.PositiveIntegerField(default=0)
     eligible_face_count = models.PositiveIntegerField(default=0)
     matched_photo_count = models.PositiveIntegerField(default=0)
+    final_matched_photo_count = models.PositiveIntegerField(null=True, blank=True)
+    cluster_corpus = models.ForeignKey(
+        FaceClusterCorpus,
+        on_delete=models.PROTECT,
+        related_name="selfie_searches",
+        null=True,
+        blank=True,
+    )
+    cluster_corpus_version = models.PositiveSmallIntegerField(null=True, blank=True)
+    cluster_configuration_hash = models.CharField(  # noqa: DJ001
+        max_length=64, null=True, blank=True
+    )
+    direct_matched_photo_count = models.PositiveIntegerField(null=True, blank=True)
+    cluster_expanded_photo_count = models.PositiveIntegerField(null=True, blank=True)
+    strong_anchor_count = models.PositiveIntegerField(null=True, blank=True)
+    expanded_cluster_count = models.PositiveIntegerField(null=True, blank=True)
+    cluster_expansion_outcome = models.CharField(  # noqa: DJ001
+        max_length=24,
+        choices=ClusterExpansionOutcome,
+        null=True,
+        blank=True,
+    )
     failure_code = models.CharField(max_length=64, blank=True, default="")
     intended_terminal_status = models.CharField(max_length=24, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -89,46 +133,62 @@ class SelfieSearch(models.Model):  # noqa: DJ008
                 ),
                 name="selfie_search_intended_status_chk",
             ),
+            models.CheckConstraint(
+                condition=models.Q(cluster_corpus_version__isnull=True)
+                | models.Q(cluster_corpus_version__gte=1),
+                name="selfie_search_cluster_version_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(cluster_expansion_outcome__isnull=True)
+                | models.Q(cluster_expansion_outcome__in=_CLUSTER_EXPANSION_OUTCOMES),
+                name="selfie_search_cluster_outcome_chk",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(direct_matched_photo_count__isnull=True)
+                    | models.Q(cluster_expanded_photo_count__isnull=True)
+                    | models.Q(
+                        final_matched_photo_count=models.F("direct_matched_photo_count")
+                        + models.F("cluster_expanded_photo_count")
+                    )
+                ),
+                name="selfie_search_result_count_identity_chk",
+            ),
         ]
         indexes = [models.Index(fields=["event", "status"], name="selfie_search_event_status_idx")]
-
-
-class SelfieSearchCandidate(models.Model):  # noqa: DJ008
-    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
-    search = models.ForeignKey(SelfieSearch, on_delete=models.PROTECT, related_name="candidates")
-    embedding = models.ForeignKey(
-        FaceEmbedding, on_delete=models.PROTECT, related_name="selfie_candidates"
-    )
-    photo = models.ForeignKey(Photo, on_delete=models.PROTECT, related_name="selfie_candidates")
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("search", "embedding"), name="selfie_candidate_embedding_uniq"
-            )
-        ]
-
-    def save(self, *args, **kwargs) -> None:
-        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
-            raise ValidationError("Selfie search candidates are append-only.")
-        super().save(*args, **kwargs)
-
-    def delete(self, *args, **kwargs) -> None:
-        raise ValidationError("Selfie search candidates are append-only.")
 
     def clean(self) -> None:
         super().clean()
         errors = {}
-        if self.search_id and self.photo_id and self.search.event_id != self.photo.event_id:
-            errors["photo"] = "The candidate photo must belong to the search event."
-        if self.search_id and self.embedding_id:
-            embedding_photo_id = self.embedding.detection.attempt.photo_id
-            embedding_event_id = self.embedding.detection.attempt.event_id
-            if embedding_event_id != self.search.event_id:
-                errors["embedding"] = "The candidate embedding must belong to the search event."
-            if self.photo_id and embedding_photo_id != self.photo_id:
-                errors["embedding"] = "The candidate embedding must belong to the candidate photo."
+        if self.cluster_corpus_id:
+            if self.cluster_corpus.event_id != self.event_id:
+                errors["cluster_corpus"] = "The selected corpus must belong to the search event."
+            if self.cluster_corpus_version != self.cluster_corpus.version:
+                errors["cluster_corpus_version"] = (
+                    "The corpus version must match the selected corpus."
+                )
+        elif self.cluster_corpus_version is not None:
+            errors["cluster_corpus_version"] = "A corpus version requires a selected corpus."
+        if self.cluster_expansion_outcome == self.ClusterExpansionOutcome.EXPANDED:
+            if self.cluster_expanded_photo_count is None or self.cluster_expanded_photo_count <= 0:
+                errors["cluster_expanded_photo_count"] = (
+                    "Expanded searches require at least one cluster photo."
+                )
+        elif (
+            self.cluster_expansion_outcome in _CLUSTER_EXPANSION_OUTCOMES
+            and self.cluster_expanded_photo_count is not None
+            and self.cluster_expanded_photo_count != 0
+        ):
+            errors["cluster_expanded_photo_count"] = (
+                "Non-expanded outcomes cannot add cluster photos."
+            )
+        if (
+            self.direct_matched_photo_count is not None
+            and self.cluster_expanded_photo_count is not None
+            and self.final_matched_photo_count
+            != self.direct_matched_photo_count + self.cluster_expanded_photo_count
+        ):
+            errors["final_matched_photo_count"] = "Search result counts must reconcile."
         if errors:
             raise ValidationError(errors)
 
@@ -213,40 +273,275 @@ class SelfieSearchAttempt(models.Model):  # noqa: DJ008
 
 
 class SelfieSearchResult(models.Model):  # noqa: DJ008
+    class PrimarySource(models.TextChoices):
+        DIRECT = "direct", "Direct"
+        FACE_CLUSTER_EXPANSION = "face_cluster_expansion", "Face-cluster expansion"
+
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     search = models.ForeignKey(SelfieSearch, on_delete=models.PROTECT, related_name="results")
     photo = models.ForeignKey(Photo, on_delete=models.PROTECT, related_name="selfie_results")
-    detection = models.ForeignKey(
-        PhotoFaceDetection, on_delete=models.PROTECT, related_name="selfie_results"
+    primary_source = models.CharField(
+        max_length=32,
+        choices=PrimarySource,
+        default=PrimarySource.DIRECT,
     )
     rank = models.PositiveIntegerField()
-    cosine_distance = models.FloatField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=("search", "photo"), name="selfie_result_photo_uniq"),
             models.UniqueConstraint(fields=("search", "rank"), name="selfie_result_rank_uniq"),
+            models.CheckConstraint(
+                condition=models.Q(primary_source__in=("direct", "face_cluster_expansion")),
+                name="selfie_result_primary_source_chk",
+            ),
         ]
         indexes = [models.Index(fields=["search", "rank"], name="selfie_result_search_rank_idx")]
 
     def save(self, *args, **kwargs) -> None:
-        if self.pk and self.__class__.objects.filter(pk=self.pk, search__status="ready").exists():
-            raise ValidationError("Ready selfie search results are immutable.")
+        if (
+            self.pk
+            and self.__class__.objects.filter(
+                pk=self.pk, search__status__in=_TERMINAL_SEARCH_STATUSES
+            ).exists()
+        ):
+            raise ValidationError("Terminal selfie search results are immutable.")
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if (
+            self.pk
+            and self.__class__.objects.filter(
+                pk=self.pk, search__status__in=_TERMINAL_SEARCH_STATUSES
+            ).exists()
+        ):
+            raise ValidationError("Terminal selfie search results are immutable.")
+        return super().delete(*args, **kwargs)
 
     def clean(self) -> None:
         super().clean()
         errors = {}
         if self.search_id and self.photo_id and self.search.event_id != self.photo.event_id:
             errors["photo"] = "The result photo must belong to the search event."
-        if self.photo_id and self.detection_id and self.detection.attempt.photo_id != self.photo_id:
-            errors["detection"] = "The result detection must belong to the result photo."
-        if self.search_id and self.detection_id:
-            if self.detection.attempt.event_id != self.search.event_id:
-                errors["detection"] = "The result detection must belong to the search event."
         if errors:
             raise ValidationError(errors)
+
+
+class SelfieSearchDirectEvidence(models.Model):  # noqa: DJ008
+    """Immutable direct-match evidence for one saved result."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    result = models.OneToOneField(
+        SelfieSearchResult,
+        on_delete=models.PROTECT,
+        related_name="direct_evidence",
+    )
+    detection = models.ForeignKey(
+        PhotoFaceDetection,
+        on_delete=models.PROTECT,
+        related_name="selfie_search_direct_evidence",
+    )
+    cosine_distance = models.FloatField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(cosine_distance__gte=0, cosine_distance__lte=2),
+                name="selfie_direct_evidence_distance_chk",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["detection"], name="selfie_direct_evidence_det_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie direct evidence is immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie direct evidence is immutable.")
+        return super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        try:
+            distance = float(self.cosine_distance)
+        except (TypeError, ValueError):
+            distance = None
+        if distance is None or not isfinite(distance) or not 0 <= distance <= 2:
+            errors["cosine_distance"] = "Cosine distance must be finite and between 0 and 2."
+        if self.result_id and self.result.primary_source != SelfieSearchResult.PrimarySource.DIRECT:
+            errors["result"] = "Direct evidence requires a direct-primary result."
+        if self.result_id and self.detection_id:
+            detection = self.detection
+            if detection.attempt.event_id != self.result.search.event_id:
+                errors["detection"] = "The direct detection must belong to the search event."
+            if detection.attempt.photo_id != self.result.photo_id:
+                errors["detection"] = "The direct detection must belong to the result photo."
+        if errors:
+            raise ValidationError(errors)
+
+
+class SelfieSearchClusterEvidence(models.Model):  # noqa: DJ008
+    """Immutable face-cluster source evidence for one saved result."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    result = models.ForeignKey(
+        SelfieSearchResult,
+        on_delete=models.PROTECT,
+        related_name="cluster_evidence",
+    )
+    corpus = models.ForeignKey(
+        FaceClusterCorpus,
+        on_delete=models.PROTECT,
+        related_name="selfie_search_evidence",
+    )
+    cluster = models.ForeignKey(
+        FaceCluster,
+        on_delete=models.PROTECT,
+        related_name="selfie_search_evidence",
+    )
+    anchor_result = models.ForeignKey(
+        SelfieSearchResult,
+        on_delete=models.PROTECT,
+        related_name="cluster_anchor_evidence",
+    )
+    anchor_detection = models.ForeignKey(
+        PhotoFaceDetection,
+        on_delete=models.PROTECT,
+        related_name="selfie_search_anchor_evidence",
+    )
+    member_detection = models.ForeignKey(
+        PhotoFaceDetection,
+        on_delete=models.PROTECT,
+        related_name="selfie_search_member_evidence",
+    )
+    representative_distance = models.FloatField()
+    source_order = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("result", "corpus", "cluster"),
+                name="selfie_cluster_evidence_result_cluster_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    representative_distance__gte=0,
+                    representative_distance__lte=2,
+                ),
+                name="selfie_cluster_evidence_distance_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(source_order__gte=1),
+                name="selfie_cluster_evidence_order_chk",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["result", "source_order"], name="selfie_cl_evidence_order_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie cluster evidence is immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie cluster evidence is immutable.")
+        return super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        try:
+            representative_distance = float(self.representative_distance)
+        except (TypeError, ValueError):
+            representative_distance = None
+        if (
+            representative_distance is None
+            or not isfinite(representative_distance)
+            or not 0 <= representative_distance <= 2
+        ):
+            errors["representative_distance"] = (
+                "Representative distance must be finite and between 0 and 2."
+            )
+        if self.source_order is None or self.source_order < 1:
+            errors["source_order"] = "Source order must be positive."
+        if self.result_id and self.anchor_result_id:
+            if self.anchor_result.search_id != self.result.search_id:
+                errors["anchor_result"] = "The anchor result must belong to the same search."
+            if self.anchor_result.primary_source != SelfieSearchResult.PrimarySource.DIRECT:
+                errors["anchor_result"] = "The anchor result must be direct-primary."
+            try:
+                anchor_evidence_detection_id = self.anchor_result.direct_evidence.detection_id
+            except SelfieSearchDirectEvidence.DoesNotExist:
+                anchor_evidence_detection_id = None
+            if anchor_evidence_detection_id != self.anchor_detection_id:
+                errors["anchor_detection"] = "The anchor detection must match direct evidence."
+        if self.result_id and self.corpus_id:
+            if self.corpus.event_id != self.result.search.event_id:
+                errors["corpus"] = "The evidence corpus must belong to the search event."
+            if self.corpus.status != FaceClusterCorpus.Status.PUBLISHED:
+                errors["corpus"] = "Cluster evidence requires a published corpus."
+        if self.cluster_id and self.corpus_id:
+            if self.cluster.corpus_id != self.corpus_id:
+                errors["cluster"] = "The evidence cluster must belong to the corpus."
+            if self.cluster.event_id != self.corpus.event_id:
+                errors["cluster"] = "The evidence cluster must belong to the corpus event."
+        if self.result_id and self.anchor_detection_id:
+            if self.anchor_detection.attempt.event_id != self.result.search.event_id:
+                errors["anchor_detection"] = "The anchor detection must belong to the search event."
+        if self.result_id and self.member_detection_id:
+            member_detection = self.member_detection
+            if member_detection.attempt.event_id != self.result.search.event_id:
+                errors["member_detection"] = "The member detection must belong to the search event."
+            if member_detection.attempt.photo_id != self.result.photo_id:
+                errors["member_detection"] = "The member detection must belong to the result photo."
+        if self.corpus_id and self.cluster_id and self.member_detection_id:
+            member = FaceClusterMember.objects.filter(
+                corpus_id=self.corpus_id,
+                cluster_id=self.cluster_id,
+                detection_id=self.member_detection_id,
+            ).first()
+            if member is None:
+                errors["member_detection"] = "The member detection must be in the selected cluster."
+            elif representative_distance is not None:
+                member_distance = float(member.distance_to_representative)
+                if (
+                    not isfinite(member_distance)
+                    or abs(member_distance - representative_distance) > 1e-9
+                ):
+                    errors["representative_distance"] = (
+                        "The representative distance must match the frozen member evidence."
+                    )
+        if self.corpus_id and self.cluster_id and self.anchor_detection_id:
+            if not FaceClusterMember.objects.filter(
+                corpus_id=self.corpus_id,
+                cluster_id=self.cluster_id,
+                detection_id=self.anchor_detection_id,
+            ).exists():
+                errors["anchor_detection"] = "The anchor detection must be in the selected cluster."
+        if errors:
+            raise ValidationError(errors)
+
+    @property
+    def strong_anchor_result(self) -> SelfieSearchResult:
+        return self.anchor_result
+
+    @property
+    def strong_anchor_detection(self) -> PhotoFaceDetection:
+        return self.anchor_detection
+
+    @property
+    def expanded_member_detection(self) -> PhotoFaceDetection:
+        return self.member_detection
 
 
 class SelfieSearchFeedback(models.Model):  # noqa: DJ008

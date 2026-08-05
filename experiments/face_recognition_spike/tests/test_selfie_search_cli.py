@@ -35,6 +35,7 @@ def _write_run(run: Path, yunet: Path, sface: Path) -> None:
         "cluster_threshold": 0.363,
         "detection_threshold": 0.0,
         "distance_block_size": 512,
+        "max_candidate_edges": 100_000,
         "image_limit": None,
         "input_photos_basename": "photos",
         "max_image_dimension": 12000,
@@ -53,6 +54,7 @@ def _write_run(run: Path, yunet: Path, sface: Path) -> None:
                 "counts": {"images": 1},
                 "dependency_versions": {"numpy": "test", "opencv": "test", "pillow": "test"},
                 "duration_seconds": 1.0,
+                "peak_memory_bytes": 123,
                 "durations_seconds": {"clustering": 0.5, "decode_detection_embedding": 0.5},
                 "finished_at": "2026-07-28T10:00:00Z",
                 "model_hashes": {"sface": _sha256(sface), "yunet": _sha256(yunet)},
@@ -295,6 +297,58 @@ def test_build_benchmark_and_finalize_benchmark_configs_are_frozen_and_expose_pu
     assert finalize_args.command == "finalize-benchmark"
 
 
+def test_evaluate_cluster_expansion_requires_every_threshold_and_dispatches_immutable_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    arguments = [
+        "evaluate-cluster-expansion",
+        "--benchmark",
+        str(tmp_path / "benchmark"),
+        "--index",
+        str(tmp_path / "index"),
+        "--cluster-run",
+        str(tmp_path / "cluster-run"),
+        "--output",
+        str(tmp_path / "report.json"),
+        "--direct-threshold",
+        "0.1",
+        "--anchor-threshold",
+        "0.05",
+        "--configuration-hash",
+        "a" * 64,
+        "--generations-json",
+        str(tmp_path / "generations.json"),
+    ]
+    parsed = cli.build_parser().parse_args(arguments)
+    assert parsed.command == "evaluate-cluster-expansion"
+    assert [field.name for field in fields(cli.EvaluateClusterExpansionConfig)] == [
+        "benchmark",
+        "index",
+        "cluster_run",
+        "output",
+        "direct_threshold",
+        "anchor_threshold",
+        "configuration_hash",
+        "generations_json",
+    ]
+    called: list[cli.EvaluateClusterExpansionConfig] = []
+    monkeypatch.setattr(cli, "run_evaluate_cluster_expansion", called.append)
+
+    assert cli.main(arguments) == 0
+    assert called == [
+        cli.EvaluateClusterExpansionConfig(
+            tmp_path / "benchmark",
+            tmp_path / "index",
+            tmp_path / "cluster-run",
+            tmp_path / "report.json",
+            0.1,
+            0.05,
+            "a" * 64,
+            tmp_path / "generations.json",
+        )
+    ]
+
+
 def _smoke_search_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path]:
     from face_spike.benchmark import BenchmarkRun, build_benchmark_proposal
     from face_spike.index import FaceIndex
@@ -520,9 +574,38 @@ def test_build_benchmark_accepts_recoverable_zero_dimension_image_evidence(tmp_p
     )
     (run / "faces.json").write_text(json.dumps(payload), encoding="utf-8")
 
-    benchmark_run, _, _ = cli._load_benchmark_run(run)
+    benchmark_run = cli._load_benchmark_run(run).benchmark_run
 
     assert [face.face_id for face in benchmark_run.faces] == ["photo.jpg#face-001"]
+
+
+def test_strict_cluster_run_loader_returns_validated_membership_and_resource_evidence(
+    tmp_path: Path,
+) -> None:
+    run, _, _, _, _ = _ready_inputs(tmp_path)
+    _write_singleton_clusters(run)
+
+    artifact = cli._load_benchmark_run(run)
+
+    assert [cluster.cluster_id for cluster in artifact.clusters] == ["person-0001"]
+    assert artifact.clusters[0].members[0].face_id == "photo.jpg#face-001"
+    assert artifact.corpus_build_duration_ms == 1000
+    assert artifact.corpus_build_peak_memory_bytes == 123
+    assert len(artifact.corpus_evidence_sha256) == 64
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "duration_seconds": 9.0,
+            "peak_memory_bytes": 999,
+            "started_at": "2026-08-06T00:00:00Z",
+            "finished_at": "2026-08-06T00:00:09Z",
+        }
+    )
+    (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    independently_measured = cli._load_benchmark_run(run)
+
+    assert independently_measured.corpus_evidence_sha256 == artifact.corpus_evidence_sha256
 
 
 def test_build_benchmark_rejects_index_with_incompatible_models_or_processing_metadata(
@@ -534,7 +617,10 @@ def test_build_benchmark_rejects_index_with_incompatible_models_or_processing_me
 
     run_root, _, yunet, sface, _ = _ready_inputs(tmp_path)
     _write_singleton_clusters(run_root)
-    benchmark_run, source_faces, source_manifest = cli._load_benchmark_run(run_root)
+    artifact = cli._load_benchmark_run(run_root)
+    benchmark_run = artifact.benchmark_run
+    source_faces = artifact.source_faces
+    source_manifest = artifact.source_manifest
     source = source_faces["photo.jpg#face-001"]
     index = FaceIndex(
         (
@@ -602,7 +688,7 @@ def test_build_benchmark_accepts_representative_distance_roundoff(tmp_path: Path
     payload["clusters"][0]["members"][0]["distance_to_representative"] = 1.1102230246251565e-16
     clusters_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    benchmark_run, _, _ = cli._load_benchmark_run(run)
+    benchmark_run = cli._load_benchmark_run(run).benchmark_run
 
     assert benchmark_run.faces[0].cluster_id == "person-0001"
 
@@ -756,7 +842,7 @@ def test_build_index_requires_each_public_path_argument(
 
 
 @pytest.mark.parametrize(
-    "broken", ["missing_manifest", "malformed_faces", "incompatible_parameters"]
+    "broken", ["missing_manifest", "malformed_faces", "incompatible_parameters", "missing_peak"]
 )
 def test_build_index_rejects_missing_or_incompatible_source_run(
     tmp_path: Path, broken: str, capsys: pytest.CaptureFixture[str]
@@ -766,9 +852,13 @@ def test_build_index_rejects_missing_or_incompatible_source_run(
         (run / "manifest.json").unlink()
     elif broken == "malformed_faces":
         (run / "faces.json").write_text("{", encoding="utf-8")
-    else:
+    elif broken == "incompatible_parameters":
         manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
         del manifest["parameters"]["min_face_px"]
+        (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    else:
+        manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+        del manifest["peak_memory_bytes"]
         (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     assert cli.main(_arguments(run, photos, yunet, sface, output)) == 2

@@ -21,6 +21,12 @@ EVENT_NAMES = {
     "selfie_ranking_finished",
     "selfie_search_terminal",
 }
+EVENT_SCHEMA_VERSIONS = {
+    "selfie_submission_finished": frozenset({1}),
+    "selfie_worker_attempt_finished": frozenset({1}),
+    "selfie_ranking_finished": frozenset({1, 2}),
+    "selfie_search_terminal": frozenset({1, 2}),
+}
 PROBE_EVENT = "selfie_observability_probe"
 OBSERVABILITY_FAILURE_MARKER = "selfie_observability_emit_failed"
 LOG_LEVEL_PREFIXES = ("DEBUG ", "INFO ", "WARNING ", "ERROR ", "CRITICAL ")
@@ -76,56 +82,81 @@ WORKER_RETRYABLE_CODES = {
     "network_interruption",
     "storage_unavailable",
 }
-EVENT_FIELDS = {
-    "selfie_submission_finished": COMMON_FIELDS
-    | {
-        "event_id",
-        "outcome",
-        "reason_code",
-        "search_id",
-        "actual_format",
-        "declared_type",
-        "source_size_bucket",
-        "duration_ms",
+_SUBMISSION_FIELDS = {
+    "event_id",
+    "outcome",
+    "reason_code",
+    "search_id",
+    "actual_format",
+    "declared_type",
+    "source_size_bucket",
+    "duration_ms",
+}
+_WORKER_FIELDS = {
+    "event_id",
+    "search_id",
+    "job_id",
+    "attempt_id",
+    "outcome",
+    "reason_code",
+    "retryable",
+    "download_ms",
+    "compute_ms",
+    "total_ms",
+}
+_RANKING_FIELDS_V1 = {
+    "event_id",
+    "search_id",
+    "attempt_id",
+    "outcome",
+    "eligible_photo_count",
+    "eligible_face_count",
+    "matched_photo_count",
+    "load_ms",
+    "rank_ms",
+    "configuration_hash",
+}
+_RANKING_FIELDS_V2 = _RANKING_FIELDS_V1 | {
+    "direct_matched_photo_count",
+    "cluster_expanded_photo_count",
+    "final_matched_photo_count",
+    "strong_anchor_count",
+    "expanded_cluster_count",
+    "cluster_corpus_version",
+    "cluster_configuration_hash",
+    "cluster_expansion_ms",
+    "cluster_expansion_outcome",
+}
+_TERMINAL_FIELDS_V1 = {
+    "event_id",
+    "search_id",
+    "status",
+    "matched_photo_count",
+    "attempt_count",
+    "elapsed_ms",
+    "failure_code",
+    "cleanup_confirmed",
+}
+_TERMINAL_FIELDS_V2 = _TERMINAL_FIELDS_V1 | {
+    "direct_matched_photo_count",
+    "cluster_expanded_photo_count",
+    "cluster_corpus_version",
+    "cluster_configuration_hash",
+}
+EVENT_FIELDS_BY_VERSION = {
+    "selfie_submission_finished": {1: COMMON_FIELDS | _SUBMISSION_FIELDS},
+    "selfie_worker_attempt_finished": {1: COMMON_FIELDS | _WORKER_FIELDS},
+    "selfie_ranking_finished": {
+        1: COMMON_FIELDS | _RANKING_FIELDS_V1,
+        2: COMMON_FIELDS | _RANKING_FIELDS_V2,
     },
-    "selfie_worker_attempt_finished": COMMON_FIELDS
-    | {
-        "event_id",
-        "search_id",
-        "job_id",
-        "attempt_id",
-        "outcome",
-        "reason_code",
-        "retryable",
-        "download_ms",
-        "compute_ms",
-        "total_ms",
-    },
-    "selfie_ranking_finished": COMMON_FIELDS
-    | {
-        "event_id",
-        "search_id",
-        "attempt_id",
-        "outcome",
-        "eligible_photo_count",
-        "eligible_face_count",
-        "matched_photo_count",
-        "load_ms",
-        "rank_ms",
-        "configuration_hash",
-    },
-    "selfie_search_terminal": COMMON_FIELDS
-    | {
-        "event_id",
-        "search_id",
-        "status",
-        "matched_photo_count",
-        "attempt_count",
-        "elapsed_ms",
-        "failure_code",
-        "cleanup_confirmed",
+    "selfie_search_terminal": {
+        1: COMMON_FIELDS | _TERMINAL_FIELDS_V1,
+        2: COMMON_FIELDS | _TERMINAL_FIELDS_V2,
     },
 }
+# Kept as a descriptive alias for operators/tests that inspect the parser contract directly.
+EVENT_FIELDS = EVENT_FIELDS_BY_VERSION
 HASH_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 INTEGER_PATTERN = re.compile(r"^[1-9][0-9]{0,9}$")
 DURATION_NAMES = (
@@ -136,6 +167,14 @@ DURATION_NAMES = (
     "cohort_load",
     "ranking",
     "search_lifetime",
+)
+EXPANSION_OUTCOMES = (
+    "expanded",
+    "no_strong_anchor",
+    "no_new_photos",
+    "corpus_unavailable",
+    "corpus_incompatible",
+    "disabled",
 )
 
 
@@ -151,6 +190,7 @@ class DailySummary:
     submissions: dict[str, Any]
     terminals: dict[str, Any]
     worker_attempts: dict[str, Any]
+    expansion: dict[str, Any]
     durations_ms: dict[str, dict[str, int | None]]
     cohort: dict[str, int | None]
     integrity: dict[str, int]
@@ -196,6 +236,17 @@ class _State:
             "retryable_failed": 0,
             "failure_reasons": {},
         }
+        self.expansion_rankings: dict[str, dict[str, Any]] = {}
+        self.expansion_terminals: dict[str, dict[str, Any]] = {}
+        self.v2_ranking_count = 0
+        self.v2_terminal_count = 0
+        self.historical_v1_ranking_count = 0
+        self.historical_v1_terminal_count = 0
+        self.expansion_durations: list[int] = []
+        self.expansion_outcomes = _zeroes(EXPANSION_OUTCOMES)
+        self.expansion_corpus_versions: dict[str, int] = {}
+        self.expansion_configuration_hashes: dict[str, int] = {}
+        self.expansion_integrity_seen = False
         self.duration_samples: dict[str, list[int]] = {name: [] for name in DURATION_NAMES}
         self.eligible_photos: list[int] = []
         self.eligible_faces: list[int] = []
@@ -209,6 +260,9 @@ class _State:
             "malformed_events": 0,
             "unknown_schema_or_event": 0,
             "late_events": 0,
+            "ranking_without_terminal": 0,
+            "terminal_without_ranking": 0,
+            "ranking_terminal_mismatches": 0,
         }
 
     def summary(
@@ -216,6 +270,7 @@ class _State:
     ) -> DailySummary:
         self.integrity["accepted_without_terminal"] = len(self.accepted_ids - self.terminal_ids)
         self.integrity["terminal_without_accepted"] = len(self.terminal_ids - self.accepted_ids)
+        self._reconcile_expansion()
         durations = {name: _percentiles(values) for name, values in self.duration_samples.items()}
         cohort = {
             "eligible_photo_min": min(self.eligible_photos) if self.eligible_photos else None,
@@ -223,6 +278,7 @@ class _State:
             "eligible_face_min": min(self.eligible_faces) if self.eligible_faces else None,
             "eligible_face_max": max(self.eligible_faces) if self.eligible_faces else None,
         }
+        expansion = self._expansion_summary()
         return DailySummary(
             schema_version=1,
             event="selfie_search_daily_summary",
@@ -234,11 +290,98 @@ class _State:
             submissions=self.submissions,
             terminals=self.terminals,
             worker_attempts=self.worker_attempts,
+            expansion=expansion,
             durations_ms=durations,
             cohort=cohort,
             integrity=self.integrity,
             complete=not any(self.integrity.values()),
         )
+
+    def _reconcile_expansion(self) -> None:
+        if not self.expansion_integrity_seen:
+            return
+        ranking_without_terminal = sum(
+            search_id not in self.expansion_terminals for search_id in self.expansion_rankings
+        )
+        terminal_without_ranking = sum(
+            search_id not in self.expansion_rankings
+            and (
+                terminal["status"] == "ready"
+                or terminal["matched_photo_count"]
+                or terminal["direct_matched_photo_count"]
+                or terminal["cluster_expanded_photo_count"]
+            )
+            for search_id, terminal in self.expansion_terminals.items()
+        )
+        mismatches = 0
+        for search_id, ranking in self.expansion_rankings.items():
+            terminal = self.expansion_terminals.get(search_id)
+            if terminal is None:
+                continue
+            if (
+                terminal["event_id"] != ranking["event_id"]
+                or terminal["matched_photo_count"] != ranking["final_matched_photo_count"]
+                or terminal["direct_matched_photo_count"] != ranking["direct_matched_photo_count"]
+                or terminal["cluster_expanded_photo_count"]
+                != ranking["cluster_expanded_photo_count"]
+                or terminal["cluster_corpus_version"] != ranking["cluster_corpus_version"]
+                or terminal["cluster_configuration_hash"] != ranking["cluster_configuration_hash"]
+            ):
+                mismatches += 1
+        self.integrity["ranking_without_terminal"] = ranking_without_terminal
+        self.integrity["terminal_without_ranking"] = terminal_without_ranking
+        self.integrity["ranking_terminal_mismatches"] = mismatches
+
+    def _expansion_summary(self) -> dict[str, Any]:
+        if self.v2_ranking_count == 0:
+            if self.historical_v1_ranking_count or self.historical_v1_terminal_count:
+                return _not_available_expansion()
+            return {
+                "eligible_searches": 0,
+                "searches_with_cluster_photos": 0,
+                "direct_matched_photo_count": 0,
+                "cluster_expanded_photo_count": 0,
+                "final_matched_photo_count": 0,
+                "strong_anchor_count": 0,
+                "expanded_cluster_count": 0,
+                "added_photos": _percentiles([]),
+                "expansion_ms": _percentiles([]),
+                "outcomes": _zeroes(EXPANSION_OUTCOMES),
+                "corpus_versions": {},
+                "configuration_hashes": {},
+                "searches_helped_rate": _rate(0, 0),
+                "incremental_photo_rate": _rate(0, 0),
+            }
+        eligible = [
+            ranking
+            for ranking in self.expansion_rankings.values()
+            if ranking["ranking_outcome"] == "succeeded"
+            and ranking["outcome"] in {"expanded", "no_strong_anchor", "no_new_photos"}
+            and ranking["cluster_corpus_version"] is not None
+            and ranking["cluster_configuration_hash"] is not None
+        ]
+        direct_total = sum(row["direct_matched_photo_count"] for row in eligible)
+        expanded_total = sum(row["cluster_expanded_photo_count"] for row in eligible)
+        final_total = sum(row["final_matched_photo_count"] for row in eligible)
+        strong_anchor_total = sum(row["strong_anchor_count"] for row in eligible)
+        cluster_total = sum(row["expanded_cluster_count"] for row in eligible)
+        helped = sum(row["cluster_expanded_photo_count"] > 0 for row in eligible)
+        return {
+            "eligible_searches": len(eligible),
+            "searches_with_cluster_photos": helped,
+            "direct_matched_photo_count": direct_total,
+            "cluster_expanded_photo_count": expanded_total,
+            "final_matched_photo_count": final_total,
+            "strong_anchor_count": strong_anchor_total,
+            "expanded_cluster_count": cluster_total,
+            "added_photos": _percentiles([row["cluster_expanded_photo_count"] for row in eligible]),
+            "expansion_ms": _percentiles(self.expansion_durations),
+            "outcomes": dict(self.expansion_outcomes),
+            "corpus_versions": dict(self.expansion_corpus_versions),
+            "configuration_hashes": dict(self.expansion_configuration_hashes),
+            "searches_helped_rate": _rate(helped, len(eligible)),
+            "incremental_photo_rate": _rate(expanded_total, final_total),
+        }
 
 
 def _consume_line(
@@ -281,7 +424,13 @@ def _consume_line(
                 pass
             else:
                 return None
-    if value.get("schema_version") != 1 or event not in EVENT_NAMES:
+    schema_version = value.get("schema_version")
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or event not in EVENT_SCHEMA_VERSIONS
+        or schema_version not in EVENT_SCHEMA_VERSIONS[event]
+    ):
         state.integrity["unknown_schema_or_event"] += 1
         return
     try:
@@ -312,7 +461,12 @@ def _consume_line(
 
 def _validate_envelope(value: dict[str, Any]) -> None:
     event = _required_string(value, "event")
-    if set(value) != EVENT_FIELDS[event]:
+    schema_version = value.get("schema_version")
+    expected_by_version = EVENT_FIELDS_BY_VERSION[event]
+    if (
+        schema_version not in expected_by_version
+        or set(value) != expected_by_version[schema_version]
+    ):
         raise ValueError("event fields do not match the contract")
     _required_string(value, "occurred_at")
     expected_service = "worker" if event == "selfie_worker_attempt_finished" else "web"
@@ -323,6 +477,7 @@ def _validate_envelope(value: dict[str, Any]) -> None:
 
 def _validate_event(value: dict[str, Any]) -> None:
     event = value["event"]
+    schema_version = value["schema_version"]
     if event == "selfie_submission_finished":
         _opaque_id(value.get("event_id"))
         outcome = _choice(value, "outcome", SUBMISSION_OUTCOMES)
@@ -378,6 +533,8 @@ def _validate_event(value: dict[str, Any]) -> None:
             configuration_hash
         ):
             raise ValueError("invalid configuration hash")
+        if schema_version == 2:
+            _validate_ranking_v2(value)
     else:
         _opaque_id(value.get("event_id"))
         if not _uuid_id(value.get("search_id")):
@@ -391,6 +548,81 @@ def _validate_event(value: dict[str, Any]) -> None:
             or value.get("failure_code") != TERMINAL_FAILURE_BY_STATUS[status]
         ):
             raise ValueError("invalid terminal event")
+        if schema_version == 2:
+            _validate_terminal_v2(value)
+
+
+def _validate_ranking_v2(value: dict[str, Any]) -> None:
+    direct = _duration(value, "direct_matched_photo_count")
+    expanded = _duration(value, "cluster_expanded_photo_count")
+    final = _duration(value, "final_matched_photo_count")
+    strong_anchors = _duration(value, "strong_anchor_count")
+    expanded_clusters = _duration(value, "expanded_cluster_count")
+    assert direct is not None and expanded is not None and final is not None
+    assert strong_anchors is not None and expanded_clusters is not None
+    if value["outcome"] == "incompatible":
+        if value["matched_photo_count"] != 0 or any(
+            (direct, expanded, final, strong_anchors, expanded_clusters)
+        ):
+            raise ValueError("incompatible ranking has source counts")
+    elif final != direct + expanded or value["matched_photo_count"] != final:
+        raise ValueError("ranking count identity mismatch")
+    outcome = _choice(value, "cluster_expansion_outcome", EXPANSION_OUTCOMES)
+    if expanded > 0 and outcome != "expanded":
+        raise ValueError("expanded count has an invalid outcome")
+    if outcome == "expanded" and (expanded <= 0 or expanded_clusters <= 0):
+        raise ValueError("expanded outcome has no added photos or selected cluster")
+    if outcome == "no_strong_anchor" and (strong_anchors != 0 or expanded_clusters != 0):
+        raise ValueError("no-strong-anchor outcome has anchors")
+    if outcome == "no_new_photos" and strong_anchors <= 0:
+        raise ValueError("no-new outcome has no anchor")
+    if outcome in {"disabled", "corpus_unavailable", "corpus_incompatible"} and (
+        expanded != 0 or strong_anchors != 0 or expanded_clusters != 0
+    ):
+        raise ValueError("direct-only outcome has expansion counts")
+    version = _positive_version(value.get("cluster_corpus_version"))
+    configuration_hash = _nullable_hash(value.get("cluster_configuration_hash"))
+    expansion_ms = _duration(value, "cluster_expansion_ms", nullable=True)
+    if (version is None) != (configuration_hash is None):
+        raise ValueError("corpus version and configuration hash must be paired")
+    requires_corpus = outcome in {"expanded", "no_strong_anchor", "no_new_photos"}
+    empty_cohort_no_anchor = (
+        outcome == "no_strong_anchor"
+        and value["eligible_photo_count"] == 0
+        and value["eligible_face_count"] == 0
+        and value["matched_photo_count"] == 0
+        and version is None
+        and configuration_hash is None
+        and expansion_ms is None
+    )
+    if requires_corpus and (
+        (version is None or configuration_hash is None or expansion_ms is None)
+        and not empty_cohort_no_anchor
+    ):
+        raise ValueError("eligible expansion lacks bounded identity")
+    if not requires_corpus and (
+        version is not None or configuration_hash is not None or expansion_ms is not None
+    ):
+        raise ValueError("unavailable expansion exposes bounded identity")
+
+
+def _validate_terminal_v2(value: dict[str, Any]) -> None:
+    direct = _duration(value, "direct_matched_photo_count")
+    expanded = _duration(value, "cluster_expanded_photo_count")
+    assert direct is not None and expanded is not None
+    if value["status"] == "ready":
+        if value["matched_photo_count"] != direct + expanded:
+            raise ValueError("terminal count identity mismatch")
+    elif value["matched_photo_count"] != 0 or direct != 0 or expanded != 0:
+        raise ValueError("non-ready terminal has source counts")
+    version = _positive_version(value.get("cluster_corpus_version"))
+    configuration_hash = _nullable_hash(value.get("cluster_configuration_hash"))
+    if (version is None) != (configuration_hash is None):
+        raise ValueError("corpus version and configuration hash must be paired")
+    if value["status"] != "ready" and (version is not None or configuration_hash is not None):
+        raise ValueError("non-ready terminal exposes corpus identity")
+    if expanded > 0 and (version is None or configuration_hash is None):
+        raise ValueError("expanded terminal lacks corpus identity")
 
 
 def _logical_key(value: dict[str, Any]) -> tuple[str, str] | None:
@@ -439,6 +671,47 @@ def _ranking_event(value: dict[str, Any], state: _State) -> None:
     state.eligible_faces.append(value["eligible_face_count"])
     _append_duration(state, "cohort_load", value["load_ms"])
     _append_duration(state, "ranking", value["rank_ms"])
+    if value["schema_version"] == 1:
+        state.historical_v1_ranking_count += 1
+        return
+    state.v2_ranking_count += 1
+    state.expansion_integrity_seen = True
+    expansion_outcome = value["cluster_expansion_outcome"]
+    state.expansion_outcomes[expansion_outcome] += 1
+    eligible_outcome = {
+        "expanded",
+        "no_strong_anchor",
+        "no_new_photos",
+    }
+    if value["outcome"] == "succeeded" and expansion_outcome in eligible_outcome:
+        if value["cluster_corpus_version"] is not None:
+            version = str(value["cluster_corpus_version"])
+            state.expansion_corpus_versions[version] = (
+                state.expansion_corpus_versions.get(version, 0) + 1
+            )
+        if value["cluster_configuration_hash"] is not None:
+            configuration_hash = value["cluster_configuration_hash"].lower()
+            state.expansion_configuration_hashes[configuration_hash] = (
+                state.expansion_configuration_hashes.get(configuration_hash, 0) + 1
+            )
+        if value["cluster_expansion_ms"] is not None:
+            state.expansion_durations.append(value["cluster_expansion_ms"])
+    state.expansion_rankings[value["search_id"]] = {
+        "event_id": value["event_id"],
+        "ranking_outcome": value["outcome"],
+        "outcome": value["cluster_expansion_outcome"],
+        "direct_matched_photo_count": value["direct_matched_photo_count"],
+        "cluster_expanded_photo_count": value["cluster_expanded_photo_count"],
+        "final_matched_photo_count": value["final_matched_photo_count"],
+        "strong_anchor_count": value["strong_anchor_count"],
+        "expanded_cluster_count": value["expanded_cluster_count"],
+        "cluster_corpus_version": value["cluster_corpus_version"],
+        "cluster_configuration_hash": (
+            value["cluster_configuration_hash"].lower()
+            if value["cluster_configuration_hash"] is not None
+            else None
+        ),
+    }
 
 
 def _terminal_event(value: dict[str, Any], state: _State) -> None:
@@ -450,6 +723,24 @@ def _terminal_event(value: dict[str, Any], state: _State) -> None:
         state.terminals["ready_positive" if matches else "ready_zero"] += 1
     state.terminal_ids.add(value["search_id"])
     state.duration_samples["search_lifetime"].append(value["elapsed_ms"])
+    if value["schema_version"] == 1:
+        state.historical_v1_terminal_count += 1
+        return
+    state.v2_terminal_count += 1
+    state.expansion_integrity_seen = True
+    state.expansion_terminals[value["search_id"]] = {
+        "event_id": value["event_id"],
+        "status": value["status"],
+        "matched_photo_count": value["matched_photo_count"],
+        "direct_matched_photo_count": value["direct_matched_photo_count"],
+        "cluster_expanded_photo_count": value["cluster_expanded_photo_count"],
+        "cluster_corpus_version": value["cluster_corpus_version"],
+        "cluster_configuration_hash": (
+            value["cluster_configuration_hash"].lower()
+            if value["cluster_configuration_hash"] is not None
+            else None
+        ),
+    }
 
 
 def _append_duration(state: _State, name: str, value: int | None) -> None:
@@ -465,6 +756,34 @@ def _percentiles(values: list[int]) -> dict[str, int | None]:
         "count": len(ordered),
         "p50": ordered[math.ceil(0.50 * len(ordered)) - 1],
         "p95": ordered[math.ceil(0.95 * len(ordered)) - 1],
+    }
+
+
+def _rate(numerator: int, denominator: int) -> dict[str, int | float | None]:
+    return {
+        "numerator": numerator,
+        "denominator": denominator,
+        "rate": numerator / denominator if denominator else None,
+    }
+
+
+def _not_available_expansion() -> dict[str, Any]:
+    unavailable = "not_available"
+    return {
+        "eligible_searches": unavailable,
+        "searches_with_cluster_photos": unavailable,
+        "direct_matched_photo_count": unavailable,
+        "cluster_expanded_photo_count": unavailable,
+        "final_matched_photo_count": unavailable,
+        "strong_anchor_count": unavailable,
+        "expanded_cluster_count": unavailable,
+        "added_photos": unavailable,
+        "expansion_ms": unavailable,
+        "outcomes": unavailable,
+        "corpus_versions": unavailable,
+        "configuration_hashes": unavailable,
+        "searches_helped_rate": unavailable,
+        "incremental_photo_rate": unavailable,
     }
 
 
@@ -503,6 +822,27 @@ def _duration(value: dict[str, Any], field: str, *, nullable: bool = False) -> i
     ):
         raise ValueError(f"invalid {field}")
     return candidate
+
+
+def _positive_version(value: object) -> int | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 1
+        or value > MAX_BOUNDED_INTEGER
+    ):
+        raise ValueError("invalid cluster corpus version")
+    return value
+
+
+def _nullable_hash(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not HASH_PATTERN.fullmatch(value):
+        raise ValueError("invalid cluster configuration hash")
+    return value.lower()
 
 
 def _uuid_id(value: object) -> bool:

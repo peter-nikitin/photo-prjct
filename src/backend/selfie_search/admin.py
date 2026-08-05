@@ -5,9 +5,13 @@ from django.urls import path, reverse
 from ingestion.storage import ObjectMissing, StorageUnavailable
 
 from selfie_search.models import (
+    SelfieSearch,
+    SelfieSearchClusterEvidence,
+    SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
     SelfieSearchFeedbackAccessAudit,
     SelfieSearchFeedbackLabel,
+    SelfieSearchResult,
 )
 from selfie_search.storage import FeedbackSelfieStorage
 
@@ -36,6 +40,60 @@ class FeedbackAccessAuditInline(ReadOnlyInline):
     model = SelfieSearchFeedbackAccessAudit
     fields = ("staff", "action", "created_at")
     readonly_fields = fields
+
+
+class ProvenanceReadOnlyAdmin(admin.ModelAdmin):
+    """Expose only bounded provenance summaries; never expose biometric identities."""
+
+    actions = None
+    search_fields = ()
+
+    def has_add_permission(self, request, obj=None) -> bool:  # noqa: ARG002
+        return False
+
+    def has_change_permission(self, request, obj=None) -> bool:  # noqa: ARG002
+        return False
+
+    def has_delete_permission(self, request, obj=None) -> bool:  # noqa: ARG002
+        return False
+
+
+@admin.register(SelfieSearch)
+class SelfieSearchAdmin(ProvenanceReadOnlyAdmin):
+    list_display = (
+        "status",
+        "matched_photo_count",
+        "final_matched_photo_count",
+        "direct_matched_photo_count",
+        "cluster_expanded_photo_count",
+        "cluster_expansion_outcome",
+        "created_at",
+    )
+    list_filter = ("status", "cluster_expansion_outcome")
+    readonly_fields = list_display
+    fields = readonly_fields
+
+
+@admin.register(SelfieSearchResult)
+class SelfieSearchResultAdmin(ProvenanceReadOnlyAdmin):
+    list_display = ("primary_source", "rank", "created_at")
+    list_filter = ("primary_source",)
+    readonly_fields = list_display
+    fields = readonly_fields
+
+
+@admin.register(SelfieSearchDirectEvidence)
+class SelfieSearchDirectEvidenceAdmin(ProvenanceReadOnlyAdmin):
+    list_display = ("created_at",)
+    readonly_fields = list_display
+    fields = readonly_fields
+
+
+@admin.register(SelfieSearchClusterEvidence)
+class SelfieSearchClusterEvidenceAdmin(ProvenanceReadOnlyAdmin):
+    list_display = ("created_at",)
+    readonly_fields = list_display
+    fields = readonly_fields
 
 
 @admin.register(SelfieSearchFeedback)

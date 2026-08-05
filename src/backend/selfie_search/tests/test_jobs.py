@@ -1,27 +1,41 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, timedelta
 from math import sqrt
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.db import IntegrityError, connection
+from django.test import TestCase, override_settings
 from django.utils import timezone
+from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from processing.models import (
+    EventFaceClusterActivation,
     EventProcessingRun,
+    FaceCluster,
+    FaceClusterCorpus,
+    FaceClusterMember,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
+    PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
+)
+from processing.services.enrollment import (
+    CONTRACT_VERSION,
+    FACE_EMBEDDING_CONFIGURATION,
+    FACE_EMBEDDING_PROCESSOR_VERSION,
 )
 from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAttempt,
-    SelfieSearchCandidate,
+    SelfieSearchClusterEvidence,
+    SelfieSearchDirectEvidence,
     SelfieSearchJob,
     SelfieSearchResult,
 )
@@ -80,7 +94,12 @@ class SearchJobTests(TestCase):
             self.add_candidate(search=search, photo_id=f"candidate-{ordinal}", distance=0.1)
         return search
 
-    def add_candidate(self, *, search: SelfieSearch, photo_id: str, distance: float) -> None:
+    def add_candidate(
+        self, *, search: SelfieSearch, photo_id: str, distance: float
+    ) -> PhotoFaceDetection:
+        configuration_hash = hashlib.sha256(
+            json.dumps(FACE_EMBEDDING_CONFIGURATION, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         photo = Photo.objects.create(
             id=photo_id,
             event=self.event,
@@ -93,21 +112,21 @@ class SearchJobTests(TestCase):
         )
         run = EventProcessingRun.objects.create(
             event=self.event,
-            contract_version=1,
+            contract_version=CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=1,
-            configuration={},
-            configuration_hash="a" * 64,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=configuration_hash,
         )
         job = ProcessingJob.objects.create(
             event=self.event,
             run=run,
             photo=photo,
-            contract_version=1,
+            contract_version=CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=1,
-            configuration={},
-            configuration_hash="a" * 64,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=configuration_hash,
             input_fingerprint={},
         )
         attempt = ProcessingAttempt.objects.create(
@@ -115,10 +134,10 @@ class SearchJobTests(TestCase):
             run=run,
             job=job,
             photo=photo,
-            contract_version=1,
+            contract_version=CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=1,
-            configuration={},
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
             input_fingerprint={},
             status=ProcessingAttempt.Status.SUCCEEDED,
             terminal_at=timezone.now(),
@@ -131,13 +150,23 @@ class SearchJobTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        embedding = FaceEmbedding.objects.create(
+        FaceEmbedding.objects.create(
             detection=detection,
             model_version="sface",
             vector=[1.0 - distance, sqrt(1 - (1.0 - distance) ** 2)] + [0.0] * 126,
             metadata={},
         )
-        SelfieSearchCandidate.objects.create(search=search, embedding=embedding, photo=photo)
+        PhotoProcessingState.objects.create(
+            photo=photo,
+            processor_type="face_embedding",
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            current_run=run,
+            current_job=job,
+            current_attempt=attempt,
+            accepted_attempt=attempt,
+            succeeded_at=timezone.now(),
+        )
+        return detection
 
     def claim(self, search: SelfieSearch, *, now=None):
         return claim_search_job(
@@ -259,42 +288,365 @@ class SearchJobTests(TestCase):
         self.assertTrue(repeated.stale)
         self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 0)
 
-    def test_corrupt_frozen_candidate_fails_closed_then_deletes_the_selfie(self) -> None:
-        search = self.make_search()
-        candidate = SelfieSearchCandidate.objects.get(search=search)
-        foreign_event = Event.objects.create(
-            name="Foreign candidate event",
-            slug="foreign-candidate-event",
-            start_date=date(2026, 7, 30),
-            end_date=date(2026, 7, 30),
-            city="Moscow",
+    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    def test_enabled_completion_persists_direct_and_cluster_provenance_before_cleanup(self) -> None:
+        search = self.make_search(with_candidate=False)
+        anchor = self.add_candidate(search=search, photo_id="integration-anchor", distance=0.1)
+        member = self.add_candidate(search=search, photo_id="integration-member", distance=0.4)
+        generations = search.configuration["gallery_face_embedding_generations"]
+        corpus = FaceClusterCorpus.objects.create(
+            event=self.event,
+            version=1,
+            status=FaceClusterCorpus.Status.BUILDING,
+            algorithm_version="guarded-graph-v1",
+            configuration={"face_embedding_generations": generations},
+            configuration_hash="b" * 64,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            model_version="sface",
+            embedding_dimensions=128,
+            edge_threshold=0.2,
+            representative_threshold=0.2,
+            distance_block_size=1,
+            max_candidate_edges=1,
         )
-        foreign_photo = Photo.objects.create(
-            id="foreign-candidate-photo",
-            event=foreign_event,
-            uploaded_by=self.user,
-            original_key="originals/abcdefabcdefabcdefabcdefabcdefab",
-            original_filename="foreign.jpg",
-            original_size=1,
-            original_content_type="image/jpeg",
-            uploaded_at=timezone.now(),
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster_key="integration",
+            representative_detection=anchor,
+            member_count=2,
         )
-        # Simulate a database-level corruption which model validation normally prevents.
-        SelfieSearchCandidate.objects.filter(pk=candidate.pk).update(photo_id=foreign_photo.id)
+        for index, detection in enumerate((anchor, member)):
+            FaceClusterMember.objects.create(
+                event=self.event,
+                corpus=corpus,
+                cluster=cluster,
+                detection=detection,
+                member_index=index,
+                distance_to_representative=index / 10,
+            )
+        FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
+            status=FaceClusterCorpus.Status.PUBLISHED,
+            published_at=timezone.now(),
+        )
+        EventFaceClusterActivation.objects.create(
+            event=self.event,
+            corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
+            active=True,
+            anchor_threshold=0.2,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
+            approved_evaluation_report_hash="d" * 64,
+        )
         claimed = self.claim(search)
 
-        completion = complete_search_attempt(
-            claimed.attempt.id,
-            result=self.result(),
-            storage=self.storage,
-        )
-        search.refresh_from_db()
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_search_attempt(
+                    claimed.attempt.id,
+                    result=self.result(),
+                    storage=self.storage,
+                )
 
-        self.assertEqual(completion.attempt.status, SelfieSearchAttempt.Status.FAILED)
-        self.assertEqual(search.status, SelfieSearch.Status.FAILED)
-        self.assertEqual(search.failure_code, "failed")
-        self.assertEqual(search.temporary_object_key, "")
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.direct_matched_photo_count, 1)
+        self.assertEqual(search.cluster_expanded_photo_count, 1)
+        self.assertEqual(search.final_matched_photo_count, 2)
+        self.assertEqual(search.cluster_expansion_outcome, "expanded")
+        self.assertEqual(
+            list(search.results.values_list("photo_id", "primary_source")),
+            [
+                ("integration-anchor", "direct"),
+                ("integration-member", "face_cluster_expansion"),
+            ],
+        )
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking_event = next(
+            event for event in events if event["event"] == "selfie_ranking_finished"
+        )
+        terminal_event = next(
+            event for event in events if event["event"] == "selfie_search_terminal"
+        )
+        self.assertEqual(ranking_event["schema_version"], 2)
+        self.assertEqual(ranking_event["direct_matched_photo_count"], 1)
+        self.assertEqual(ranking_event["cluster_expanded_photo_count"], 1)
+        self.assertEqual(ranking_event["final_matched_photo_count"], 2)
+        self.assertEqual(ranking_event["cluster_expansion_outcome"], "expanded")
+        self.assertEqual(terminal_event["schema_version"], 2)
+        self.assertEqual(terminal_event["direct_matched_photo_count"], 1)
+        self.assertEqual(terminal_event["cluster_expanded_photo_count"], 1)
+        self.assertEqual(terminal_event["cluster_corpus_version"], 1)
+        self.assertEqual(
+            terminal_event["cluster_configuration_hash"],
+            cluster_expansion_policy_hash("b" * 64, 0.363, 0.2),
+        )
+        evidence_count = SelfieSearchClusterEvidence.objects.filter(result__search=search).count()
+        self.assertEqual(evidence_count, 2)
+
+    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    def test_empty_direct_cohort_clears_identity_for_non_ready_observability(self) -> None:
+        search = self.make_search(with_candidate=False)
+        generations = search.configuration["gallery_face_embedding_generations"]
+        corpus = FaceClusterCorpus.objects.create(
+            event=self.event,
+            version=1,
+            status=FaceClusterCorpus.Status.BUILDING,
+            algorithm_version="guarded-graph-v1",
+            configuration={"face_embedding_generations": generations},
+            configuration_hash="b" * 64,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            model_version="sface",
+            embedding_dimensions=128,
+            edge_threshold=0.2,
+            representative_threshold=0.2,
+            distance_block_size=1,
+            max_candidate_edges=1,
+        )
+        FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
+            status=FaceClusterCorpus.Status.PUBLISHED,
+            published_at=timezone.now(),
+        )
+        EventFaceClusterActivation.objects.create(
+            event=self.event,
+            corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
+            active=True,
+            anchor_threshold=0.2,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
+            approved_evaluation_report_hash="d" * 64,
+        )
+        claimed = self.claim(search)
+
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_search_attempt(
+                    claimed.attempt.id,
+                    result=self.result(),
+                    storage=self.storage,
+                )
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
+        terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
+        self.assertEqual(ranking["cluster_expansion_outcome"], "no_strong_anchor")
+        self.assertIsNone(ranking["cluster_corpus_version"])
+        self.assertIsNone(ranking["cluster_configuration_hash"])
+        self.assertIsNone(ranking["cluster_expansion_ms"])
+        self.assertEqual(terminal["status"], SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual(terminal["matched_photo_count"], 0)
+        self.assertEqual(terminal["direct_matched_photo_count"], 0)
+        self.assertEqual(terminal["cluster_expanded_photo_count"], 0)
+        self.assertIsNone(terminal["cluster_corpus_version"])
+        self.assertIsNone(terminal["cluster_configuration_hash"])
+
+    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    def test_member_read_database_error_keeps_outer_completion_transaction_usable(self) -> None:
+        search = self.make_search(with_candidate=False)
+        anchor = self.add_candidate(search=search, photo_id="member-error-anchor", distance=0.1)
+        member = self.add_candidate(search=search, photo_id="member-error-member", distance=0.4)
+        corpus = FaceClusterCorpus.objects.create(
+            event=self.event,
+            version=1,
+            status=FaceClusterCorpus.Status.BUILDING,
+            algorithm_version="guarded-graph-v1",
+            configuration={
+                "face_embedding_generations": search.configuration[
+                    "gallery_face_embedding_generations"
+                ]
+            },
+            configuration_hash="a" * 64,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            model_version="sface",
+            embedding_dimensions=128,
+            edge_threshold=0.2,
+            representative_threshold=0.2,
+            distance_block_size=1,
+            max_candidate_edges=1,
+        )
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster_key="member-error",
+            representative_detection=anchor,
+            member_count=2,
+        )
+        for index, detection in enumerate((anchor, member)):
+            FaceClusterMember.objects.create(
+                event=self.event,
+                corpus=corpus,
+                cluster=cluster,
+                detection=detection,
+                member_index=index,
+                distance_to_representative=index / 10,
+            )
+        FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
+            status=FaceClusterCorpus.Status.PUBLISHED,
+            published_at=timezone.now(),
+        )
+        EventFaceClusterActivation.objects.create(
+            event=self.event,
+            corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
+            active=True,
+            anchor_threshold=0.2,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
+            approved_evaluation_report_hash="j" * 64,
+        )
+        claimed = self.claim(search)
+
+        def broken_gallery_queryset(*_args, **_kwargs):
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT * FROM missing_cluster_member_relation")
+            raise AssertionError("the database query must fail")
+
+        with patch(
+            "selfie_search.services.cluster_expansion.gallery_photo_queryset",
+            side_effect=broken_gallery_queryset,
+        ):
+            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.direct_matched_photo_count, 1)
+        self.assertEqual(search.cluster_expanded_photo_count, 0)
+        self.assertEqual(search.final_matched_photo_count, 1)
+        self.assertEqual(search.cluster_expansion_outcome, "corpus_unavailable")
+        self.assertEqual(
+            list(search.results.values_list("photo_id", "primary_source")),
+            [("member-error-anchor", "direct")],
+        )
+        self.assertEqual(
+            SelfieSearchDirectEvidence.objects.filter(result__search=search).count(), 1
+        )
+        self.assertEqual(
+            SelfieSearchClusterEvidence.objects.filter(result__search=search).count(), 0
+        )
         self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])
+
+    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    def test_cluster_evidence_persistence_failure_rolls_back_accepted_callback(self) -> None:
+        search = self.make_search(with_candidate=False)
+        anchor = self.add_candidate(search=search, photo_id="rollback-anchor", distance=0.1)
+        member = self.add_candidate(search=search, photo_id="rollback-member", distance=0.4)
+        corpus = FaceClusterCorpus.objects.create(
+            event=self.event,
+            version=1,
+            status=FaceClusterCorpus.Status.BUILDING,
+            algorithm_version="guarded-graph-v1",
+            configuration={
+                "face_embedding_generations": search.configuration[
+                    "gallery_face_embedding_generations"
+                ]
+            },
+            configuration_hash="e" * 64,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            model_version="sface",
+            embedding_dimensions=128,
+            edge_threshold=0.2,
+            representative_threshold=0.2,
+            distance_block_size=1,
+            max_candidate_edges=1,
+        )
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster_key="rollback",
+            representative_detection=anchor,
+            member_count=2,
+        )
+        for index, detection in enumerate((anchor, member)):
+            FaceClusterMember.objects.create(
+                event=self.event,
+                corpus=corpus,
+                cluster=cluster,
+                detection=detection,
+                member_index=index,
+                distance_to_representative=index / 10,
+            )
+        FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
+            status=FaceClusterCorpus.Status.PUBLISHED,
+            published_at=timezone.now(),
+        )
+        EventFaceClusterActivation.objects.create(
+            event=self.event,
+            corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
+            active=True,
+            anchor_threshold=0.2,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
+            approved_evaluation_report_hash="g" * 64,
+        )
+        claimed = self.claim(search)
+        observed: dict[str, int] = {}
+
+        def reject_cluster_evidence(*_args, **_kwargs) -> None:
+            observed["results"] = SelfieSearchResult.objects.filter(search=search).count()
+            observed["direct_evidence"] = SelfieSearchDirectEvidence.objects.filter(
+                result__search=search
+            ).count()
+            raise IntegrityError("cluster evidence persistence failed")
+
+        with patch(
+            "selfie_search.services.jobs.SelfieSearchClusterEvidence.objects.bulk_create",
+            side_effect=reject_cluster_evidence,
+        ):
+            with self.assertRaises(IntegrityError):
+                complete_search_attempt(
+                    claimed.attempt.id, result=self.result(), storage=self.storage
+                )
+
+        self.assertEqual(observed, {"results": 2, "direct_evidence": 1})
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.PROCESSING)
+        self.assertEqual(search.intended_terminal_status, "")
+        self.assertIsNone(search.final_matched_photo_count)
+        self.assertIsNone(search.direct_matched_photo_count)
+        self.assertIsNone(search.cluster_expanded_photo_count)
+        self.assertIsNone(search.strong_anchor_count)
+        self.assertIsNone(search.expanded_cluster_count)
+        self.assertIsNone(search.cluster_corpus_id)
+        self.assertIsNone(search.cluster_corpus_version)
+        self.assertIsNone(search.cluster_configuration_hash)
+        self.assertIsNone(search.cluster_expansion_outcome)
+        self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 0)
+        self.assertEqual(
+            SelfieSearchDirectEvidence.objects.filter(result__search=search).count(), 0
+        )
+        self.assertEqual(
+            SelfieSearchClusterEvidence.objects.filter(result__search=search).count(), 0
+        )
+        self.assertEqual(self.storage.deleted, [])
 
     def test_cleanup_failure_keeps_progress_then_an_identical_callback_publishes_once(self) -> None:
         search = self.make_search()
@@ -313,6 +665,10 @@ class SearchJobTests(TestCase):
             "selfie-search/0123456789abcdef0123456789abcdef",
         )
         self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 1)
+        self.assertEqual(
+            list(search.results.values_list("primary_source", flat=True)),
+            ["direct"],
+        )
         self.assertEqual(search.matched_photo_count, 0)
 
         self.storage.fail_delete = False
@@ -333,6 +689,31 @@ class SearchJobTests(TestCase):
         terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
         self.assertEqual(terminal["status"], SelfieSearch.Status.READY)
         self.assertTrue(terminal["cleanup_confirmed"])
+
+    def test_successful_completion_emits_v2_ranking_and_terminal_source_counts(self) -> None:
+        search = self.make_search()
+        claimed = self.claim(search)
+
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_search_attempt(
+                    claimed.attempt.id,
+                    result=self.result(),
+                    storage=self.storage,
+                )
+
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
+        terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
+        assert ranking["schema_version"] == 2
+        assert ranking["direct_matched_photo_count"] == 1
+        assert ranking["cluster_expanded_photo_count"] == 0
+        assert ranking["final_matched_photo_count"] == 1
+        assert ranking["cluster_expansion_outcome"] == "disabled"
+        assert terminal["schema_version"] == 2
+        assert terminal["matched_photo_count"] == 1
+        assert terminal["direct_matched_photo_count"] == 1
+        assert terminal["cluster_expanded_photo_count"] == 0
 
     def test_terminal_observability_query_failure_cannot_change_the_committed_result(self) -> None:
         search = self.make_search()
@@ -423,6 +804,7 @@ class SearchJobTests(TestCase):
         )
         failure_search.refresh_from_db()
 
+        PhotoProcessingState.objects.update(accepted_attempt=None)
         empty_search = self.make_search(with_candidate=False)
         empty_claim = self.claim(empty_search)
         ready = complete_search_attempt(

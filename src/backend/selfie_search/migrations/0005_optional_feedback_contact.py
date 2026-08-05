@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("selfie_search", "0002_selfiesearchfeedback_and_more"),
+        ("selfie_search", "0004_remove_selfie_search_candidate"),
     ]
 
     operations = [

@@ -31,4 +31,3 @@ Draft labels remain browser-local after validation, network, or storage failures
 ## Verification
 
 Focused tests must cover multiple labels in one submission, labels retained across result pages, a blank contact accepted, an unsafe non-empty contact rejected, and the immutable post-submission state. Desktop and mobile feedback snapshots must cover the collapsed optional-contact control and multi-photo marking state.
-

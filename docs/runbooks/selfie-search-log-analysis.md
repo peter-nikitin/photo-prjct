@@ -20,6 +20,173 @@ root-owned daily summary. PostgreSQL остаётся источником ис�
 - Для point-корреляции используйте только opaque `search_id`, а наружу выводите только bounded
   технические поля. Отклонённая submission до создания search индивидуального selector-а не имеет.
 
+## Face-cluster expansion: build, evaluate, report, and rollback
+
+Этот раздел описывает только поставленные интерфейсы репозитория. Все corpus/benchmark/index/media
+пути ниже должны указывать на заранее разрешённый локальный или host-owned каталог вне Git; не
+сохраняйте в репозитории селфи, crops, vectors, labels или JSON-отчёты. Не source-ьте `.env` и не
+передавайте секреты в эти команды. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` остаётся
+default: успешная сборка или evaluation не включает expansion и не доказывает customer outcome.
+
+### 1. Build one immutable event corpus
+
+Сначала подтвердите закрытый benchmark и явно выбранные thresholds вне этого репозитория. Build
+команда требует все quality/resource inputs, публикует только полный corpus и печатает его opaque
+UUID; она не активирует event pointer или environment gate:
+
+```bash
+set -eu
+cd /opt/photo-prjct
+compose() {
+  local DEPLOYMENT_TARGET=staging
+  export DEPLOYMENT_TARGET
+  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.prod.yml \
+    -f /opt/photo-prjct/docker-compose.https.yml "$@"
+}
+: "${EVENT_REF:?set an approved event primary key or slug}"
+: "${CORPUS_VERSION:?set the next immutable version}"
+: "${CLUSTER_EDGE_THRESHOLD:?set the reviewed cluster-edge threshold}"
+: "${REPRESENTATIVE_THRESHOLD:?set the reviewed component-guard threshold}"
+: "${DISTANCE_BLOCK_SIZE:?set the reviewed bounded block size}"
+: "${MAX_CANDIDATE_EDGES:?set the reviewed candidate-edge limit}"
+: "${EMBEDDING_DIMENSIONS:?set the reviewed embedding dimension}"
+compose exec -T web python manage.py build_face_cluster_corpus "$EVENT_REF" \
+  --version "$CORPUS_VERSION" \
+  --edge-threshold "$CLUSTER_EDGE_THRESHOLD" \
+  --representative-threshold "$REPRESENTATIVE_THRESHOLD" \
+  --distance-block-size "$DISTANCE_BLOCK_SIZE" \
+  --max-candidate-edges "$MAX_CANDIDATE_EDGES" \
+  --dimensions "$EMBEDDING_DIMENSIONS"
+```
+
+The command's UUID is a database reference, not a photo/face/cluster identity for tickets. A failed
+or incomplete build is not selectable. Do not infer quality thresholds from this output.
+
+### 2. Run the private held-out benchmark
+
+Run the existing experiment CLI against one immutable person-split benchmark, reconciled index, and
+cluster run. Keep every input and the aggregate output in the private directory configured by the
+maintainer. The report is evaluation evidence only and never enables Django:
+
+```bash
+set -eu
+: "${BENCHMARK_DIR:?set the private final benchmark directory}"
+: "${INDEX_DIR:?set the private reconciled index directory}"
+: "${CLUSTER_RUN_DIR:?set the private immutable cluster run directory}"
+: "${REPORT_FILE:?set the private aggregate report path}"
+: "${DIRECT_THRESHOLD:?set the reviewed direct threshold}"
+: "${ANCHOR_THRESHOLD:?set the separately reviewed strong-anchor threshold}"
+: "${CONFIGURATION_HASH:?set the lowercase corpus configuration SHA-256}"
+: "${GENERATIONS_JSON:?set the private normalized face-embedding generations JSON}"
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+  .venv/bin/python -m face_spike evaluate-cluster-expansion \
+  --benchmark "$BENCHMARK_DIR" \
+  --index "$INDEX_DIR" \
+  --cluster-run "$CLUSTER_RUN_DIR" \
+  --output "$REPORT_FILE" \
+  --direct-threshold "$DIRECT_THRESHOLD" \
+  --anchor-threshold "$ANCHOR_THRESHOLD" \
+  --configuration-hash "$CONFIGURATION_HASH" \
+  --generations-json "$GENERATIONS_JSON"
+```
+
+Review direct/final recall, source-separated precision, incremental correct/incorrect photos,
+helped/harmed searches, false merges, fragmentation/singletons, build/search resources, and
+latency. Activation remains blocked until numeric gates and every observed false merge receive
+explicit approval. Never commit the benchmark inputs or generated report.
+
+### 3. Produce the durable aggregate report
+
+After a closed Moscow-day window, use the Django command for aggregate-only retrospective evidence.
+It accepts a closed-open date range and optional event filter but never prints the event identity or
+individual result/member fields:
+
+```bash
+set -eu
+cd /opt/photo-prjct
+compose() {
+  local DEPLOYMENT_TARGET=staging
+  export DEPLOYMENT_TARGET
+  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.prod.yml \
+    -f /opt/photo-prjct/docker-compose.https.yml "$@"
+}
+: "${REPORT_START:?set the closed-open Moscow start date YYYY-MM-DD}"
+: "${REPORT_END:?set the closed-open Moscow end date YYYY-MM-DD}"
+REPORT_EVENT_ARGS=()
+if [ -n "${EVENT_ID:-}" ]; then REPORT_EVENT_ARGS=(--event "$EVENT_ID"); fi
+compose exec -T web python manage.py report_face_cluster_expansion \
+  --start "$REPORT_START" \
+  --end "$REPORT_END" \
+  "${REPORT_EVENT_ARGS[@]}"
+```
+
+`REPORT_START` and `REPORT_END` are `YYYY-MM-DD`; `EVENT_ID` is an approved numeric event selector
+when needed. Keep output bounded and redact it to the aggregate fields before sharing. Historical
+searches with no expansion snapshot are `not_available`, not zero; `Я есть`/`Меня нет` remains
+customer-provided evidence and is not verified identity.
+
+### 4. Guarded activation (not authorized by this branch)
+
+Only after a published compatible corpus, reviewed numeric gates, and the exact lowercase SHA-256
+of both configuration and evaluation report are approved may an operator replace one event's
+activation pointer:
+
+```bash
+set -eu
+cd /opt/photo-prjct
+compose() {
+  local DEPLOYMENT_TARGET=staging
+  export DEPLOYMENT_TARGET
+  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.prod.yml \
+    -f /opt/photo-prjct/docker-compose.https.yml "$@"
+}
+: "${EVENT_REF:?set the approved event primary key or slug}"
+: "${CORPUS_UUID:?set the published corpus UUID}"
+: "${CONFIGURATION_HASH:?set the exact corpus configuration SHA-256}"
+: "${DIRECT_THRESHOLD:?set the reviewed direct threshold frozen in the policy}"
+: "${ANCHOR_THRESHOLD:?set the approved strong-anchor threshold}"
+: "${REPORT_FILE:?set the private aggregate evaluation report path}"
+REPORT_HASH="$(python3 -c \
+  'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+  "$REPORT_FILE")"
+POLICY_HASH="$(compose exec -T web python -c \
+  'from face_cluster_contract import cluster_expansion_policy_hash; import sys; print(cluster_expansion_policy_hash(sys.argv[1], float(sys.argv[2]), float(sys.argv[3])))' \
+  "$CONFIGURATION_HASH" "$DIRECT_THRESHOLD" "$ANCHOR_THRESHOLD")"
+compose exec -T web python manage.py activate_face_cluster_corpus "$EVENT_REF" \
+  --corpus "$CORPUS_UUID" \
+  --policy-hash "$POLICY_HASH" \
+  --anchor-threshold "$ANCHOR_THRESHOLD" \
+  --evaluation-report-hash "$REPORT_HASH" \
+  --confirm-numeric-gates-reviewed
+```
+
+This command changes only the event's guarded corpus pointer. It does not set
+`SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED`; this branch performs no activation, staging deployment,
+cloud mutation, or customer rollout. A normal reviewed deployment must separately approve any
+future environment flag change.
+
+### 5. Direct-only rollback
+
+The supported immediate rollback is the fail-closed environment gate. Set it to the exact boolean
+value and redeploy through the normal reviewed deployment path:
+
+```bash
+SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False
+```
+
+With the gate false, new searches use unchanged direct-only ranking even when a corpus pointer
+exists. Existing expanded bearer snapshots, provenance, feedback, and corpora remain immutable and
+readable; do not delete them or reverse migrations destructively. To use a replacement corpus later,
+run the guarded activation command again with a newly reviewed report and matching configuration.
+
+The existing observability verification in §1 and the v2 expansion fields in §2 are the only
+post-change checks: run the host verifier first, then a closed-day summary, and report
+`parser_complete`/`coverage_complete` separately. Never replace these checks with `docker logs` or
+raw journal attachments.
+
 ## 1. Подключение и транспорт
 
 ```bash
@@ -79,7 +246,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
     payload = json.load(source)
 allowed = (
     "report_date", "window_start", "window_end", "recomputed", "submissions", "terminals",
-    "worker_attempts", "durations_ms", "cohort", "integrity",
+    "worker_attempts", "expansion", "durations_ms", "cohort", "integrity",
 )
 safe = {key: payload[key] for key in allowed}
 safe["parser_complete"] = payload["complete"]
@@ -95,7 +262,20 @@ PY
   окна или после journal eviction.
 - Ненулевое любое поле `integrity` означает parser `complete=false`: `accepted_without_terminal`,
   `terminal_without_accepted`, `duplicate_logical_events`, `malformed_events`,
-  `unknown_schema_or_event`, `late_events`.
+  `unknown_schema_or_event`, `late_events`, `ranking_without_terminal`,
+  `terminal_without_ranking`, `ranking_terminal_mismatches`.
+- `expansion` агрегирует только ranking/terminal schema v2: `eligible_searches` включает
+  `expanded`, `no_strong_anchor` и `no_new_photos`, но исключает `disabled`,
+  `corpus_unavailable` и `corpus_incompatible`. `added_photos` и `expansion_ms` содержат
+  `count`/`p50`/`p95`; `searches_helped_rate` и `incremental_photo_rate` всегда показывают
+  целочисленные `numerator`/`denominator` рядом с вычисленным `rate`.
+- Пустой direct cohort завершает search как `search_unavailable`: ranking может сохранить
+  `no_strong_anchor`, но schema v2 очищает corpus identity и duration в обоих событиях. Нулевые
+  source counts и совпадающие `null` identity — валидная пара, не mismatch и не eligible sample.
+- Исторические ranking/terminal schema v1 не имеют источника расширения: их expansion-метрики
+  выводятся как `not_available`, а не как нули. Пустой день без исторических событий допускает
+  нулевой bounded-агрегат. Не интерпретируйте `rate=null` при нулевом знаменателе как нулевую
+  эффективность.
 - В отчёте инцидента называйте это `parser_complete`. Отдельно выставляйте
   `coverage_complete=true` только для закрытого дня, когда host verifier прошёл и
   `oldest_selfie_event_realtime` покрывает начало окна; `none`, journal eviction или неизвестный
@@ -154,7 +334,10 @@ fields = (
     "event", "occurred_at", "service", "outcome", "status", "reason_code", "retryable",
     "attempt_count", "matched_photo_count", "eligible_photo_count", "eligible_face_count",
     "duration_ms", "download_ms", "compute_ms", "total_ms", "load_ms", "rank_ms", "elapsed_ms",
-    "failure_code", "cleanup_confirmed", "configuration_hash",
+    "failure_code", "cleanup_confirmed", "configuration_hash", "direct_matched_photo_count",
+    "cluster_expanded_photo_count", "final_matched_photo_count", "strong_anchor_count",
+    "expanded_cluster_count", "cluster_corpus_version", "cluster_configuration_hash",
+    "cluster_expansion_ms", "cluster_expansion_outcome",
 )
 for raw in sys.stdin:
     line = raw.strip()
@@ -197,8 +380,8 @@ ranking/terminal до того, как worker attempt event станет вид�
 | --- | --- | --- |
 | `selfie_submission_finished` | `outcome`, `reason_code`, формат, size bucket, `duration_ms` | До создания search; `accepted` содержит opaque `search_id`. |
 | `selfie_worker_attempt_finished` | `outcome`, bounded `reason_code`, `retryable`, download/compute/total ms | Один worker attempt; service `worker`. |
-| `selfie_ranking_finished` | `eligible_photo_count`, `eligible_face_count`, matches, load/rank ms, `configuration_hash` | Cohort/index и ranking; service `web`. |
-| `selfie_search_terminal` | `status`, matches, attempt count, elapsed, failure code, `cleanup_confirmed` | Финальное состояние после cleanup. |
+| `selfie_ranking_finished` (v2) | Cohort/ranking fields plus direct/expanded/final counts, strong anchors, selected clusters, bounded corpus version/hash, expansion ms/outcome | Ranking and optional expansion; `final = direct + expanded`; service `web`. |
+| `selfie_search_terminal` (v2) | `status`, final matches, direct/expanded counts, corpus version/hash, attempt count, elapsed, failure code, `cleanup_confirmed` | Published source counts after cleanup; non-ready statuses have zero source counts. Empty-cohort `search_unavailable` clears corpus identity in both v2 events and is not an eligible expansion sample. |
 
 Разбирайте «результатов нет» сверху вниз:
 
@@ -227,6 +410,13 @@ ranking/terminal до того, как worker attempt event станет вид�
 `ready_zero` и `ready_positive` нельзя смешивать с no-face, quality rejection или storage failure.
 `ready` не является идентификацией человека; это только опубликованный результат поиска.
 
+7. **Expansion.** Сначала проверьте `expansion` и его целостность. `searches_helped_rate` — доля
+   eligible searches с `cluster_expanded_photo_count > 0`; `incremental_photo_rate` — добавленные
+   cluster photos к опубликованному final count. Это operational aggregate, а не precision/recall
+   и не доказательство личности. `expanded` требует положительного добавленного объёма; остальные
+   outcomes не добавляют фото. `cluster_corpus_version` и hash — bounded opaque identities; не
+   пытайтесь сопоставлять их с фото, лицом, кластером или bearer result.
+
 ## 5. Cohort, index и latency
 
 - `cohort.eligible_photo_min/max` и `eligible_face_min/max` — диапазон frozen cohort, не весь
@@ -236,6 +426,10 @@ ranking/terminal до того, как worker attempt event станет вид�
   не нулевую задержку.
 - `worker_attempts.total/succeeded/failed/retryable_failed` и `failure_reasons` отделяют transient
   retry от permanent input/model paths.
+- `expansion.eligible_searches`, `searches_with_cluster_photos`, direct/expanded/final totals,
+  anchor/cluster totals, outcome counts, observed corpus versions/hashes и p50/p95 `added_photos`
+  / `expansion_ms` описывают только bounded operational volume. Schema v1 history is
+  `not_available`, not zero; `rate` is null when its denominator is zero.
 - Не задавайте SLA или threshold по одному отчёту: это indicators для сравнения, не benchmark
   biometric quality. Малый `count` отмечайте как низкую статистическую надёжность.
 
@@ -299,9 +493,11 @@ hypothesis-only section и сначала разбирайте integrity/retenti
 - submissions: total=<>, accepted=<>, outcomes=<...>, rejection_reasons=<...>
 - terminals: statuses=<...>, ready_zero=<>, ready_positive=<>
 - worker attempts: total=<>, succeeded=<>, failed=<>, retryable_failed=<>, reasons=<...>
+- expansion: eligible=<>, helped=<>, direct=<>, cluster_expanded=<>, final=<>,
+  helped_rate=<numerator>/<denominator>, incremental_rate=<numerator>/<denominator>, outcomes=<...>
 - cohort: eligible_photo_min/max=<>, eligible_face_min/max=<>
 - latency p50/p95 ms: submission=<>, worker_total=<>, cohort_load=<>, ranking=<>, search_lifetime=<>
-- integrity: accepted_without_terminal=<>, terminal_without_accepted=<>, duplicate_logical_events=<>, malformed_events=<>, unknown_schema_or_event=<>, late_events=<>
+- integrity: accepted_without_terminal=<>, terminal_without_accepted=<>, duplicate_logical_events=<>, malformed_events=<>, unknown_schema_or_event=<>, late_events=<>, ranking_without_terminal=<>, terminal_without_ranking=<>, ranking_terminal_mismatches=<>
 
 ### Correlation and assessment
 

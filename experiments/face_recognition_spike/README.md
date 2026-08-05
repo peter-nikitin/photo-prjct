@@ -35,7 +35,7 @@ Model-independent tests use generated images and adapters; they do not read
 event photos or model files:
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
 .venv/bin/pytest -q experiments/face_recognition_spike/tests -m "not face_models"
 ```
 
@@ -48,7 +48,7 @@ SECRET_KEY=test \
 FACE_SPIKE_YUNET_MODEL=/absolute/models/yunet.onnx \
 FACE_SPIKE_SFACE_MODEL=/absolute/models/sface.onnx \
 FACE_SPIKE_SMOKE_PHOTOS=/absolute/smoke-photos \
-PYTHONPATH=experiments/face_recognition_spike \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
 .venv/bin/pytest -q \
   experiments/face_recognition_spike/tests/test_model_smoke.py -m face_models
 ```
@@ -64,7 +64,7 @@ directories, symlinked images, case-folded filename collisions, and an empty
 inventory are rejected. A run never modifies the sources.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
 .venv/bin/python -m face_spike cluster \
   --photos /absolute/photos \
   --yunet-model /absolute/models/yunet.onnx \
@@ -77,7 +77,8 @@ PYTHONPATH=experiments/face_recognition_spike \
   --minimum-face-sharpness 50 \
   --cluster-threshold 0.363 \
   --representative-threshold 0.363 \
-  --distance-block-size 512
+  --distance-block-size 512 \
+  --max-candidate-edges 100000
 ```
 
 `--detection-threshold` controls which YuNet detections enter the measured
@@ -117,7 +118,7 @@ Calibrate the configured gate against an immutable run and the exported manual
 cluster labels without changing either input:
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
 .venv/bin/python -m face_spike.quality_calibration \
   --run /absolute/runs/all-people-run-001 \
   --cluster-quality-csv /absolute/comparisons/cluster-quality-session-001.csv.csv \
@@ -171,7 +172,7 @@ input, copy embeddings, or copy source photos; its pages link to local media in
 the immutable run.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
 .venv/bin/python -m face_spike review \
   --run /absolute/runs/all-people-run-001 \
   --comparison /absolute/comparisons/all-people-run-001-vs-peakshot \
@@ -229,7 +230,7 @@ completed cluster run and a Peakshot export containing
 exist and must not be inside either input directory.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
 .venv/bin/python -m face_spike compare \
   --run /absolute/runs/all-people-run-001 \
   --peakshot-export /absolute/peakshot-reference-export \
@@ -265,7 +266,7 @@ five query crops come from the proposal; the command recomputes each crop throug
 instead of reusing its gallery vector.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
 .venv/bin/python -m face_spike smoke-search \
   --proposal /absolute/benchmarks/proposal \
   --index /absolute/indexes/event-index \
@@ -285,6 +286,44 @@ query, and each result photo is represented by its best matching face.
 This is a bounded qualitative smoke test, not an accuracy measurement. Do not interpret it as
 precision, recall, F1, calibration, a production identity claim, or approval for public-selfie
 processing.
+
+## Closed cluster-expansion evaluation
+
+After a reviewer has finalized the person-split benchmark, compare direct search with strict-anchor
+cluster expansion on that same immutable benchmark. The command consumes the final benchmark, its
+reconciled private index, and the immutable cluster run; it writes one aggregate JSON report only.
+The held-out source photo is excluded for every query, direct photos remain first, and expanded
+photos are unique additions. Calibration and evaluation metrics remain separate.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+.venv/bin/python -m face_spike evaluate-cluster-expansion \
+  --benchmark /absolute/benchmarks/final \
+  --index /absolute/indexes/event-index \
+  --cluster-run /absolute/runs/all-people-run-001 \
+  --output /absolute/evaluations/cluster-expansion-001.json \
+  --direct-threshold "$APPROVED_DIRECT_THRESHOLD" \
+  --anchor-threshold "$APPROVED_STRONG_ANCHOR_THRESHOLD" \
+  --configuration-hash "$CORPUS_CONFIGURATION_HASH" \
+  --generations-json "$FACE_CLUSTER_GENERATIONS_JSON"
+```
+
+Set the two threshold variables to explicitly reviewed numeric values and
+`CORPUS_CONFIGURATION_HASH` to the lowercase SHA-256 from the corpus proposed for activation. The
+`FACE_CLUSTER_GENERATIONS_JSON` variable must point to the matching private normalized generation
+document outside Git. The
+command independently derives the same canonical corpus configuration identity from the validated
+algorithm, actual normalized generation dictionaries, model/dimension, thresholds, and build limits;
+a supplied hash mismatch rejects publication. Frozen input and cluster-membership identities remain
+separate evidence. The report records direct/final recall, source-separated labelled precision, incremental correct and
+incorrect photos, helped/harmed searches, false merge evidence, fragmentation/singletons, and
+bounded resource measurements. It contains no query crop, photo, face, cluster, embedding, or
+customer identity.
+
+Keep every input and report outside Git. An evaluation report does not activate anything: activation
+requires a separately reviewed operator action with the exact report hash, corpus hash, derived
+policy hash (corpus plus reviewed direct/anchor thresholds), and
+numeric gates confirmation.
 
 ## Honest interpretation
 

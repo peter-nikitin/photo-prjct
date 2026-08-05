@@ -13,6 +13,7 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
     errors = []
     for name in (
         "SELFIE_SEARCH_ENABLED",
+        "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
         "SELFIE_FEEDBACK_ENABLED",
         "PHOTO_PROCESSING_FACE_ENABLED",
     ):
@@ -58,6 +59,13 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
             )
 
     if settings.SELFIE_SEARCH_ENABLED is not True:
+        if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is True:
+            errors.append(
+                Error(
+                    "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED requires SELFIE_SEARCH_ENABLED.",
+                    id="selfie_search.E010",
+                )
+            )
         return errors
 
     expected_values = {

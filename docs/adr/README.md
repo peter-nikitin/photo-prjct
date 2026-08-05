@@ -44,6 +44,7 @@ place, and add the new record to this index.
 | 0022 | [Use numbered gallery pages](0022-use-numbered-gallery-pages.md) | Accepted |
 | 0023 | [Store consented selfie-search quality feedback](0023-store-consented-selfie-search-feedback.md) | Accepted |
 | 0024 | [Use a selected gallery face as a search query](0024-use-gallery-face-as-search-query.md) | Accepted |
+| 0025 | [Expand selfie search with conservative face clusters](0025-expand-selfie-search-with-face-clusters.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -73,6 +74,13 @@ file locally for at most seven days, PostgreSQL stores one immutable feedback/co
 per search, and a dedicated private KMS-encrypted bucket deletes feedback selfies through its
 30-day lifecycle. Feedback media is unavailable to public media routes and the ML worker; sensitive
 staff access is explicit and audited.
+
+[ADR 0025](0025-expand-selfie-search-with-face-clusters.md) extends ADR 0019's direct-only result
+membership with conservative event-scoped face-cluster expansion from calibrated strong direct
+anchors. Direct results remain first; PostgreSQL stores immutable source provenance and counts;
+feedback and bounded observability distinguish direct from expanded results without changing
+clusters automatically. Named identity, cross-event matching, contextual evidence, and persistent
+query vectors remain excluded.
 
 [ADR 0024](0024-use-gallery-face-as-search-query.md) accepts one explicitly selected current
 compatible face embedding of an existing gallery photo as a second event-scoped query source. A

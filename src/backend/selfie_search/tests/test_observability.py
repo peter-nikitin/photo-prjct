@@ -67,28 +67,267 @@ def _ranking_fields(**overrides: object) -> dict[str, Any]:
         "outcome": "succeeded",
         "eligible_photo_count": 2,
         "eligible_face_count": 3,
-        "matched_photo_count": 1,
+        "matched_photo_count": 3,
         "load_ms": 4,
         "rank_ms": 7,
         "configuration_hash": "a" * 64,
+        "direct_matched_photo_count": 1,
+        "cluster_expanded_photo_count": 2,
+        "final_matched_photo_count": 3,
+        "strong_anchor_count": 1,
+        "expanded_cluster_count": 1,
+        "cluster_corpus_version": 7,
+        "cluster_configuration_hash": "b" * 64,
+        "cluster_expansion_ms": 12,
+        "cluster_expansion_outcome": "expanded",
     }
     fields.update(overrides)
     return fields
 
 
 def _terminal_fields(**overrides: object) -> dict[str, Any]:
+    status = overrides.get("status", "ready")
     fields: dict[str, Any] = {
         "event_id": 17,
         "search_id": uuid4(),
         "status": "ready",
-        "matched_photo_count": 1,
+        "matched_photo_count": 3 if status == "ready" else 0,
         "attempt_count": 1,
         "elapsed_ms": 20,
         "failure_code": "",
         "cleanup_confirmed": True,
+        "direct_matched_photo_count": 1 if status == "ready" else 0,
+        "cluster_expanded_photo_count": 2 if status == "ready" else 0,
+        "cluster_corpus_version": 7 if status == "ready" else None,
+        "cluster_configuration_hash": "b" * 64 if status == "ready" else None,
     }
     fields.update(overrides)
     return fields
+
+
+def _ranking_v2_fields(**overrides: object) -> dict[str, Any]:
+    fields = _ranking_fields()
+    fields.update(overrides)
+    return fields
+
+
+def _terminal_v2_fields(**overrides: object) -> dict[str, Any]:
+    fields = _terminal_fields()
+    fields.update(overrides)
+    return fields
+
+
+def test_ranking_v2_emits_only_bounded_expansion_fields_and_reconciles_counts() -> None:
+    logger = _CaptureLogger()
+
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.RANKING_FINISHED,
+        **_ranking_v2_fields(),
+    )
+
+    payload = json.loads(logger.calls[0][1])
+    assert payload["schema_version"] == 2
+    assert payload["final_matched_photo_count"] == 3
+    assert payload["cluster_expansion_outcome"] == "expanded"
+    assert set(payload) == {
+        "schema_version",
+        "event",
+        "occurred_at",
+        "service",
+        "environment",
+        *(_ranking_v2_fields().keys()),
+    }
+
+
+def test_terminal_v2_emits_source_counts_and_reconciles_final_count() -> None:
+    logger = _CaptureLogger()
+
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.SEARCH_TERMINAL,
+        **_terminal_v2_fields(),
+    )
+
+    payload = json.loads(logger.calls[0][1])
+    assert payload["schema_version"] == 2
+    assert payload["matched_photo_count"] == 3
+    assert payload["direct_matched_photo_count"] == 1
+    assert payload["cluster_expanded_photo_count"] == 2
+
+
+def test_search_unavailable_terminal_clears_corpus_identity() -> None:
+    logger = _CaptureLogger()
+
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.SEARCH_TERMINAL,
+        **_terminal_v2_fields(
+            status="search_unavailable",
+            matched_photo_count=0,
+            direct_matched_photo_count=0,
+            cluster_expanded_photo_count=0,
+            cluster_corpus_version=None,
+            cluster_configuration_hash=None,
+        ),
+    )
+
+    payload = json.loads(logger.calls[0][1])
+    assert payload["status"] == "search_unavailable"
+    assert payload["matched_photo_count"] == 0
+    assert payload["direct_matched_photo_count"] == 0
+    assert payload["cluster_expanded_photo_count"] == 0
+    assert payload["cluster_corpus_version"] is None
+    assert payload["cluster_configuration_hash"] is None
+
+
+def test_ranking_v2_allows_empty_cohort_no_anchor_without_identity() -> None:
+    logger = _CaptureLogger()
+
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.RANKING_FINISHED,
+        **_ranking_v2_fields(
+            eligible_photo_count=0,
+            eligible_face_count=0,
+            matched_photo_count=0,
+            direct_matched_photo_count=0,
+            cluster_expanded_photo_count=0,
+            final_matched_photo_count=0,
+            strong_anchor_count=0,
+            expanded_cluster_count=0,
+            cluster_corpus_version=None,
+            cluster_configuration_hash=None,
+            cluster_expansion_ms=None,
+            cluster_expansion_outcome="no_strong_anchor",
+        ),
+    )
+
+    payload = json.loads(logger.calls[0][1])
+    assert payload["cluster_expansion_outcome"] == "no_strong_anchor"
+    assert payload["cluster_corpus_version"] is None
+    assert payload["cluster_configuration_hash"] is None
+    assert payload["cluster_expansion_ms"] is None
+
+
+def test_empty_cohort_no_anchor_rejects_corpus_identity_without_duration() -> None:
+    with pytest.raises(SelfieEventContractError):
+        emit_selfie_event(
+            _CaptureLogger(),
+            event=SelfieEventName.RANKING_FINISHED,
+            **_ranking_v2_fields(
+                eligible_photo_count=0,
+                eligible_face_count=0,
+                matched_photo_count=0,
+                direct_matched_photo_count=0,
+                cluster_expanded_photo_count=0,
+                final_matched_photo_count=0,
+                strong_anchor_count=0,
+                expanded_cluster_count=0,
+                cluster_corpus_version=7,
+                cluster_configuration_hash="b" * 64,
+                cluster_expansion_ms=None,
+                cluster_expansion_outcome="no_strong_anchor",
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        _ranking_v2_fields(final_matched_photo_count=4),
+        _ranking_v2_fields(cluster_expanded_photo_count=0),
+        _ranking_v2_fields(cluster_expansion_outcome="no_strong_anchor", strong_anchor_count=1),
+        _ranking_v2_fields(cluster_expansion_outcome="expanded", cluster_expanded_photo_count=0),
+    ],
+)
+def test_ranking_v2_rejects_invalid_count_or_outcome_relationships(
+    fields: dict[str, Any],
+) -> None:
+    with pytest.raises(SelfieEventContractError):
+        emit_selfie_event(_CaptureLogger(), event=SelfieEventName.RANKING_FINISHED, **fields)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        _terminal_v2_fields(matched_photo_count=4),
+        _terminal_v2_fields(status="no_face", failure_code="no_face"),
+        _terminal_v2_fields(
+            status="no_face",
+            failure_code="no_face",
+            direct_matched_photo_count=1,
+            cluster_expanded_photo_count=0,
+        ),
+        _terminal_v2_fields(
+            status="search_unavailable",
+            matched_photo_count=0,
+            direct_matched_photo_count=0,
+            cluster_expanded_photo_count=0,
+            cluster_corpus_version=7,
+            cluster_configuration_hash="b" * 64,
+        ),
+    ],
+)
+def test_terminal_v2_rejects_mismatched_or_non_ready_source_counts(
+    fields: dict[str, Any],
+) -> None:
+    with pytest.raises(SelfieEventContractError):
+        emit_selfie_event(_CaptureLogger(), event=SelfieEventName.SEARCH_TERMINAL, **fields)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        _ranking_v2_fields(
+            matched_photo_count=1,
+            direct_matched_photo_count=1,
+            cluster_expanded_photo_count=0,
+            final_matched_photo_count=1,
+            strong_anchor_count=0,
+            expanded_cluster_count=0,
+            cluster_expansion_outcome="no_strong_anchor",
+        ),
+        _ranking_v2_fields(
+            matched_photo_count=1,
+            direct_matched_photo_count=1,
+            cluster_expanded_photo_count=0,
+            final_matched_photo_count=1,
+            strong_anchor_count=1,
+            expanded_cluster_count=0,
+            cluster_expansion_outcome="no_new_photos",
+        ),
+        _ranking_v2_fields(
+            matched_photo_count=1,
+            direct_matched_photo_count=1,
+            cluster_expanded_photo_count=0,
+            final_matched_photo_count=1,
+            strong_anchor_count=0,
+            expanded_cluster_count=0,
+            cluster_corpus_version=None,
+            cluster_configuration_hash=None,
+            cluster_expansion_ms=None,
+            cluster_expansion_outcome="disabled",
+        ),
+        _ranking_v2_fields(
+            outcome="incompatible",
+            matched_photo_count=0,
+            direct_matched_photo_count=0,
+            cluster_expanded_photo_count=0,
+            final_matched_photo_count=0,
+            strong_anchor_count=0,
+            expanded_cluster_count=0,
+            cluster_corpus_version=None,
+            cluster_configuration_hash=None,
+            cluster_expansion_ms=None,
+            cluster_expansion_outcome="corpus_incompatible",
+        ),
+    ],
+)
+def test_ranking_v2_accepts_each_bounded_expansion_outcome(fields: dict[str, Any]) -> None:
+    logger = _CaptureLogger()
+    emit_selfie_event(logger, event=SelfieEventName.RANKING_FINISHED, **fields)
+    assert json.loads(logger.calls[0][1])["schema_version"] == 2
 
 
 def test_probe_has_only_the_common_envelope_and_random_non_secret_id() -> None:
@@ -180,6 +419,15 @@ _BACKEND_PRIVACY_CASES = [
                 "load_ms",
                 "rank_ms",
                 "configuration_hash",
+                "direct_matched_photo_count",
+                "cluster_expanded_photo_count",
+                "final_matched_photo_count",
+                "strong_anchor_count",
+                "expanded_cluster_count",
+                "cluster_corpus_version",
+                "cluster_configuration_hash",
+                "cluster_expansion_ms",
+                "cluster_expansion_outcome",
             },
         ),
         (
@@ -194,6 +442,10 @@ _BACKEND_PRIVACY_CASES = [
                 "elapsed_ms",
                 "failure_code",
                 "cleanup_confirmed",
+                "direct_matched_photo_count",
+                "cluster_expanded_photo_count",
+                "cluster_corpus_version",
+                "cluster_configuration_hash",
             },
         ),
     ],
@@ -219,7 +471,7 @@ def test_backend_events_have_exact_compact_envelope_and_event_fields(
         "environment",
         *expected_fields,
     }
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == (1 if event is SelfieEventName.SUBMISSION_FINISHED else 2)
     assert payload["event"] == event.value
     assert payload["service"] == "web"
     assert isinstance(payload["environment"], str)

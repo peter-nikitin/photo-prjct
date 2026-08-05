@@ -169,6 +169,16 @@ Recompute one Moscow calendar date without changing application or database stat
 sudo /usr/local/lib/findme-selfie-observability/run-daily-summary.sh 2026-08-03
 ```
 
+Current submission/probe/worker events remain schema v1; ranking and terminal events are schema v2
+and carry only bounded direct/cluster-expanded/final counts, anchor/cluster totals, opaque corpus
+version/hash, expansion duration, and a fixed outcome. The summary's `expansion` object reports
+eligible/helped searches, p50/p95 added photos and expansion time, outcomes, versions/hashes, and
+rates with explicit integer numerators and denominators. Historical v1 ranking/terminal expansion
+metrics are `not_available`, never fabricated zeroes; mismatches or missing ranking/terminal pairs
+make `complete=false`. A `search_unavailable` search caused by an empty direct cohort clears
+corpus identity and expansion duration in both v2 events together; source counts remain zero and
+that no-cohort observation is excluded from eligible expansion aggregates.
+
 The root helper verifies effective policy and timer state; the unprivileged
 `deploy/verify-selfie-observability.sh` verifies Compose tags and an emitted probe. Do not paste raw journal output into tickets;
 record only the bounded summary and sanitized diagnostics.

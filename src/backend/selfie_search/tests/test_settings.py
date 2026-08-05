@@ -15,6 +15,7 @@ def load_isolated_selfie_settings(**environment_overrides: str) -> dict[str, obj
     environment = os.environ.copy()
     for name in (
         "SELFIE_SEARCH_ENABLED",
+        "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES",
         "SELFIE_SEARCH_MAX_PIXELS",
         "SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS",
@@ -56,6 +57,7 @@ print(json.dumps({name: getattr(settings, name) for name in json.loads(__import_
 """
     names = [
         "SELFIE_SEARCH_ENABLED",
+        "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES",
         "SELFIE_SEARCH_MAX_PIXELS",
         "SELFIE_SEARCH_EMBEDDING_MODEL",
@@ -94,6 +96,7 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         from django.conf import settings
 
         self.assertIs(settings.SELFIE_SEARCH_ENABLED, False)
+        self.assertIs(settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED, False)
         self.assertEqual(settings.SELFIE_SEARCH_MAX_UPLOAD_BYTES, 20 * 1024 * 1024)
         self.assertEqual(settings.SELFIE_SEARCH_MAX_PIXELS, 25_000_000)
         self.assertEqual(settings.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS, 120)
@@ -129,6 +132,7 @@ class SelfieSearchSettingsTests(SimpleTestCase):
             values,
             {
                 "SELFIE_SEARCH_ENABLED": False,
+                "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED": False,
                 "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
                 "SELFIE_SEARCH_MAX_PIXELS": 25_000_000,
                 "SELFIE_SEARCH_EMBEDDING_MODEL": "sface",
@@ -161,6 +165,7 @@ class SelfieSearchSettingsTests(SimpleTestCase):
             values,
             {
                 "SELFIE_SEARCH_ENABLED": False,
+                "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED": False,
                 "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
                 "SELFIE_SEARCH_MAX_PIXELS": 25_000_000,
                 "SELFIE_SEARCH_EMBEDDING_MODEL": "sface",
@@ -219,6 +224,15 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         errors = run_checks(tags=[SELFIE_SEARCH_CHECK_TAG])
 
         self.assertIn("selfie_search.E007", [error.id for error in errors])
+
+    @override_settings(
+        SELFIE_SEARCH_ENABLED=False,
+        SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True,
+    )
+    def test_cluster_expansion_requires_ordinary_selfie_search(self) -> None:
+        errors = run_checks(tags=[SELFIE_SEARCH_CHECK_TAG])
+
+        self.assertIn("selfie_search.E010", [error.id for error in errors])
 
     @override_settings(
         SELFIE_SEARCH_ENABLED=True,

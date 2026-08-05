@@ -230,6 +230,17 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
   transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
   future work.
+- Implement optional event-scoped selfie expansion from an immutable conservative face-cluster
+  corpus. The repository builds and publishes versioned anonymous corpora from compatible accepted
+  gallery embeddings, evaluates them through the private closed-benchmark CLI, records immutable
+  direct/cluster provenance in PostgreSQL, and exposes bounded source-separated feedback and
+  observability aggregates. Direct results remain first; unavailable or incompatible optional data
+  falls back to the unchanged direct snapshot. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` is
+  the repository and worktree default, and no environment or customer activation is evidenced in
+  this branch. The accepted design adds no named identity, cross-event matching, contextual
+  evidence, automatic feedback tuning, persistent query vector, worker credential/configuration
+  expansion, or online vector service, as defined by
+  [ADR 0025](adr/0025-expand-selfie-search-with-face-clusters.md).
 - Present normal galleries and ready selfie-search results as server-rendered numbered pages of at
   most 100 photos. Normal galleries use original filename then photo ID order; ready results retain
   persisted rank then photo ID order. [ADR 0022](adr/0022-use-numbered-gallery-pages.md) supersedes
@@ -262,11 +273,11 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
 | Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals and preview-first slice; remaining scope proposed |
-| Recognition | Face, bib-region, OCR, and image embedding candidates | Proposed; preview-backed worker input/persistence contract is implemented but not activated |
-| Search | Event-scoped face/bib/time/location queries | Public face search implemented locally with activation pending; remaining modes proposed |
+| Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; environment activation and customer outcomes are not evidenced |
+| Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no environment activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
 | Commerce | Cart, promotions, orders, payment state, download entitlement | Proposed |
-| Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
+| Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
 transactional state. Background processing and specialized ML runtimes may use separate containers
@@ -334,7 +345,10 @@ broker, vector engine, and ML implementations shown for later processing require
    worker, or one explicitly selected current compatible accepted embedding from an eligible
    gallery photo. Django performs exact comparison and publishes an immutable probable-match
    snapshot; the selfie path deletes its temporary image before publication, while the gallery path
-   is immediately ready and creates no temporary object or worker job.
+   is immediately ready and creates no temporary object or worker job. When the optional cluster
+   gate is enabled and an explicitly activated compatible corpus exists, either query source may
+   append unique cluster-expanded photos after the unchanged direct results; direct-only fallback
+   remains complete for every missing, failed, or incompatible corpus outcome.
 3. Every query filters by `event_id`; time and location further narrow results.
 4. Face results are ordered by ascending cosine distance with stable photo-ID tie breaking and are
    exposed through the non-expiring public bearer link accepted by ADR 0019. Results from other
@@ -350,6 +364,11 @@ selfie deletion before `ready`, and ready-result media for both generations with
 normal paid gallery. The existing immutable worker image packages pinned public OpenCV Zoo
 YuNet/SFace models and runs a non-root build-time smoke through both `face_embedding` and
 `selfie_query`; the exact rollout image must run that same smoke before activation.
+`SELFIE_SEARCH_ENABLED` and `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED` remain `False` by default. No
+staging lifecycle mutation, real-bucket preflight, exact rollout-image smoke, VM capacity smoke,
+cluster corpus activation, or environment/customer outcome is claimed. Corpus build, private
+benchmark, aggregate report, and guarded activation commands are repository interfaces only until
+the release gate and an explicit later rollout approve them.
 
 The gallery-photo source is locally verified by 145 focused Python tests, 70 JavaScript tests for
 the production markup and chooser behavior, and 83 visual tests covering the zero-, one-, two-,
@@ -388,6 +407,13 @@ source has no staging or production deployment evidence; production is not activ
   and the immutable result is accessible through a non-expiring bearer link. Broader consent,
   revocation, suppression, moderation, and incident handling remain required before named
   identity, cross-event matching, or broader biometric reuse.
+- Face-cluster corpora are anonymous, event-scoped derived recognition data under PostgreSQL
+  authority. They are derived only from compatible accepted gallery face embeddings and store
+  immutable member/provenance references without duplicating gallery vectors; they do not contain a
+  selfie query, query vector, contact, bearer token, person name, participant identifier, or
+  cross-event relationship. The worker boundary is unchanged: it still receives only the transient
+  selfie-query request and no corpus, gallery embedding, database, or permanent Object Storage
+  credential.
 - ADR 0024 accepts public reuse of one explicitly selected existing gallery face embedding as an
   event-scoped query. A one-face card submits directly; a multi-face card requires an explicit
   choice. It adds no stored query vector, temporary image, named identity, cross-event matching,

@@ -41,34 +41,6 @@ class CandidateEmbedding:
     attempt_photo_id: object
 
 
-def rank_search(search: SelfieSearch, query_vector: object) -> tuple[RankedPhoto, ...]:
-    """Return one best direct face match per frozen photo in deterministic order.
-
-    The query remains an argument for the duration of this call only.  No ranking helper writes it
-    to Django state, storage, or logs.
-    """
-    candidates = search.candidates.select_related(
-        "photo",
-        "embedding__detection__attempt",
-    ).order_by("id")
-    return rank_embeddings(
-        search,
-        query_vector,
-        (
-            CandidateEmbedding(
-                vector=candidate.embedding.vector,
-                model_version=candidate.embedding.model_version,
-                detection_id=candidate.embedding.detection_id,
-                photo_id=str(candidate.photo_id),
-                photo_event_id=candidate.photo.event_id,
-                attempt_event_id=candidate.embedding.detection.attempt.event_id,
-                attempt_photo_id=candidate.embedding.detection.attempt.photo_id,
-            )
-            for candidate in candidates
-        ),
-    )
-
-
 def rank_embeddings(
     search: SelfieSearch,
     query_vector: object,
@@ -97,6 +69,7 @@ def rank_embeddings(
             error_type=RankingError,
         )
         distance = 1.0 - math.fsum(left * right for left, right in zip(query, gallery, strict=True))
+        distance = min(2.0, max(0.0, distance))
         if distance > configuration.threshold:
             continue
         ranked = RankedPhoto(

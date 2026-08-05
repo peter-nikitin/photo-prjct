@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 import pytest
+from face_cluster_contract import ClusterFaceValue, build_face_cluster_kernel
 from face_spike.analysis import (
     BoundingBox,
     EventPhotoAnalysis,
@@ -56,6 +57,7 @@ def _snapshot(analyses: tuple[EventPhotoAnalysis, ...], block_size: int) -> tupl
         cluster_threshold=0.2,
         representative_threshold=0.2,
         distance_block_size=block_size,
+        max_candidate_edges=100,
     )
     return tuple(
         (
@@ -78,6 +80,7 @@ def test_clustering_includes_candidate_edges_at_the_threshold_boundary() -> None
         cluster_threshold=1.0,
         representative_threshold=1.0,
         distance_block_size=1,
+        max_candidate_edges=100,
     )
 
     assert [(cluster.cluster_id, cluster.representative_face_id) for cluster in clusters] == [
@@ -120,6 +123,40 @@ def test_clustering_output_is_deterministic_for_repeated_and_reordered_analyses(
     )
 
 
+def test_experiment_adapter_matches_the_shared_production_kernel_exactly() -> None:
+    analyses = _analyses(
+        _face("charlie.jpg#face-001", (0, 1)),
+        _face("alpha.jpg#face-001", (1, 0)),
+        _face("bravo.jpg#face-001", (0.9, math.sqrt(0.19))),
+    )
+    experiment_clusters = cluster_successful_faces(
+        analyses,
+        cluster_threshold=0.2,
+        representative_threshold=0.2,
+        distance_block_size=2,
+        max_candidate_edges=100,
+    )
+    kernel_clusters = build_face_cluster_kernel(
+        (
+            ClusterFaceValue("alpha.jpg#face-001", (1.0, 0.0)),
+            ClusterFaceValue("bravo.jpg#face-001", (0.9, math.sqrt(0.19))),
+            ClusterFaceValue("charlie.jpg#face-001", (0.0, 1.0)),
+        ),
+        edge_threshold=0.2,
+        representative_threshold=0.2,
+        distance_block_size=2,
+        max_candidate_edges=100,
+    )
+
+    assert [
+        (cluster.representative_face_id, tuple(member.face_id for member in cluster.members))
+        for cluster in experiment_clusters
+    ] == [
+        (cluster.representative_face_id, tuple(member.face_id for member in cluster.members))
+        for cluster in kernel_clusters
+    ]
+
+
 def test_clustering_membership_is_independent_of_distance_block_size() -> None:
     faces = (
         _face("echo.jpg#face-001", (0, 1)),
@@ -144,6 +181,7 @@ def test_clustering_retains_successful_singletons_and_excludes_failed_embeddings
         cluster_threshold=0.1,
         representative_threshold=0.1,
         distance_block_size=2,
+        max_candidate_edges=100,
     )
 
     assert [
@@ -173,6 +211,7 @@ def test_representative_guard_rejects_an_obvious_single_link_chain_merge() -> No
         cluster_threshold=0.500001,
         representative_threshold=0.500001,
         distance_block_size=2,
+        max_candidate_edges=100,
     )
 
     assert [
@@ -204,6 +243,7 @@ def test_clustering_uses_the_unique_lowest_mean_distance_as_the_medoid() -> None
         cluster_threshold=1e-12,
         representative_threshold=1e-12,
         distance_block_size=2,
+        max_candidate_edges=100,
     )
 
     assert [
@@ -227,6 +267,7 @@ def test_clustering_rejects_duplicate_successful_face_ids() -> None:
             cluster_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=1,
+            max_candidate_edges=100,
         )
 
 

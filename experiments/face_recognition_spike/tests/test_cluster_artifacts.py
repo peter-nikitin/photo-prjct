@@ -94,6 +94,7 @@ def _run(
         finished_at=started + timedelta(seconds=2),
         durations={"decode_detection_embedding": 1.5, "clustering": 0.5},
         dependency_versions={"numpy": "2.2.6", "opencv": "4.12.0", "pillow": "12.0.0"},
+        peak_memory_bytes=123,
     )
 
 
@@ -206,6 +207,7 @@ def test_cluster_run_publishes_complete_deterministic_artifact_contract(tmp_path
     assert manifest["photo_materialization"] == {"copy": 0, "hard_link": 2}
     assert manifest["parameters"]["input_photos_basename"] == "photos"
     assert set(manifest["model_hashes"]) == {"sface", "yunet"}
+    assert manifest["peak_memory_bytes"] == 123
 
     serialized = "\n".join((output / name).read_text(encoding="utf-8") for name in sorted(required))
     assert str(tmp_path) not in serialized

@@ -910,7 +910,7 @@ for (const [name, viewport] of [
 test('gallery face controls submit directly or through the selected chooser tile', async ({ page }) => {
   const submittedPaths = [];
   await preloadCookieAcknowledgement(page);
-  await page.route('**/events/london-10k/photos/**/similar-search/**', async (route) => {
+  await page.context().route('**/events/london-10k/photos/**/similar-search/**', async (route) => {
     submittedPaths.push(new URL(route.request().url()).pathname);
     await route.fulfill({ status: 204, body: '' });
   });

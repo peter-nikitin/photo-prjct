@@ -7,10 +7,13 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
+from processing.models import FaceCluster, FaceClusterCorpus, FaceClusterMember, PhotoFaceDetection
 from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAttempt,
     SelfieSearchCandidate,
+    SelfieSearchClusterEvidence,
+    SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
     SelfieSearchFeedbackAccessAudit,
     SelfieSearchFeedbackLabel,
@@ -25,6 +28,8 @@ class SelfieSearchModelTests(TestCase):
         self.event = self.make_event("one")
         self.other_event = self.make_event("two")
         self.photo = self.make_photo("one", self.event)
+        self.expanded_photo = self.make_photo("expanded", self.event)
+        self.dual_photo = self.make_photo("dual", self.event)
         self.other_photo = self.make_photo("two", self.other_event)
         self.search = SelfieSearch.objects.create(
             event=self.event,
@@ -123,12 +128,13 @@ class SelfieSearchModelTests(TestCase):
 
     def test_result_photo_and_rank_are_unique_per_search(self) -> None:
         detection_id = self.make_detection_id()
-        SelfieSearchResult.objects.create(
+        result = SelfieSearchResult.objects.create(
             search=self.search,
             photo=self.photo,
-            detection_id=detection_id,
             rank=1,
-            cosine_distance=0.1,
+        )
+        SelfieSearchDirectEvidence.objects.create(
+            result=result, detection_id=detection_id, cosine_distance=0.1
         )
 
         with self.assertRaises(IntegrityError):
@@ -136,46 +142,215 @@ class SelfieSearchModelTests(TestCase):
                 SelfieSearchResult.objects.create(
                     search=self.search,
                     photo=self.photo,
-                    detection_id=detection_id,
                     rank=2,
-                    cosine_distance=0.2,
                 )
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 SelfieSearchResult.objects.create(
                     search=self.search,
                     photo=self.other_photo,
-                    detection_id=detection_id,
                     rank=1,
-                    cosine_distance=0.2,
                 )
 
     def test_result_rejects_cross_event_evidence(self) -> None:
         result = SelfieSearchResult(
             search=self.search,
             photo=self.photo,
-            detection_id=self.make_detection_id(other_event=True),
             rank=1,
+        )
+        result.save()
+        evidence = SelfieSearchDirectEvidence(
+            result=result,
+            detection_id=self.make_detection_id(other_event=True),
             cosine_distance=0.1,
         )
 
         with self.assertRaises(ValidationError):
-            result.full_clean()
+            evidence.full_clean()
 
     def test_ready_result_rows_are_immutable(self) -> None:
-        result = SelfieSearchResult.objects.create(
-            search=self.search,
-            photo=self.photo,
-            detection_id=self.make_detection_id(),
-            rank=1,
-            cosine_distance=0.1,
-        )
+        result = self.make_result()
         self.search.status = SelfieSearch.Status.READY
         self.search.save()
-        result.cosine_distance = 0.2
+        result.rank = 2
 
         with self.assertRaises(ValidationError):
             result.save()
+
+    def test_historical_search_expansion_snapshot_fields_are_null(self) -> None:
+        for field_name in (
+            "cluster_corpus",
+            "cluster_corpus_version",
+            "cluster_configuration_hash",
+            "direct_matched_photo_count",
+            "cluster_expanded_photo_count",
+            "final_matched_photo_count",
+            "strong_anchor_count",
+            "expanded_cluster_count",
+            "cluster_expansion_outcome",
+        ):
+            self.assertIsNone(getattr(self.search, field_name))
+
+    def test_direct_evidence_is_unique_and_keeps_finite_distance(self) -> None:
+        result = self.make_result()
+        evidence = result.direct_evidence
+        self.assertEqual(evidence.detection.attempt.event_id, self.event.id)
+        self.assertEqual(evidence.cosine_distance, 0.1)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                SelfieSearchDirectEvidence.objects.create(
+                    result=result,
+                    detection=evidence.detection,
+                    cosine_distance=0.2,
+                )
+
+        evidence.cosine_distance = float("nan")
+        with self.assertRaises(ValidationError):
+            evidence.full_clean()
+
+    def test_cluster_evidence_supports_expanded_and_dual_results(self) -> None:
+        anchor_result = self.make_result()
+        anchor_evidence = anchor_result.direct_evidence
+        member_detection_id = self.make_detection_id(photo=self.expanded_photo)
+        corpus = self.make_corpus()
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster_key="cluster-1",
+            representative_detection=anchor_evidence.detection,
+            member_count=2,
+        )
+        FaceClusterMember.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster=cluster,
+            detection=anchor_evidence.detection,
+            member_index=0,
+            distance_to_representative=0.0,
+        )
+        member_detection = PhotoFaceDetection.objects.get(pk=member_detection_id)
+        FaceClusterMember.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster=cluster,
+            detection=member_detection,
+            member_index=1,
+            distance_to_representative=0.2,
+        )
+        dual_detection = PhotoFaceDetection.objects.get(
+            pk=self.make_detection_id(photo=self.dual_photo)
+        )
+        FaceClusterMember.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster=cluster,
+            detection=dual_detection,
+            member_index=2,
+            distance_to_representative=0.3,
+        )
+        corpus.status = FaceClusterCorpus.Status.PUBLISHED
+        corpus.published_at = timezone.now()
+        corpus.save(update_fields=["status", "published_at"])
+
+        expanded = SelfieSearchResult.objects.create(
+            search=self.search,
+            photo=self.expanded_photo,
+            rank=2,
+            primary_source=SelfieSearchResult.PrimarySource.FACE_CLUSTER_EXPANSION,
+        )
+        evidence = SelfieSearchClusterEvidence.objects.create(
+            result=expanded,
+            corpus=corpus,
+            cluster=cluster,
+            anchor_result=anchor_result,
+            anchor_detection=anchor_evidence.detection,
+            member_detection=member_detection,
+            representative_distance=0.2,
+            source_order=1,
+        )
+        self.assertEqual(evidence.result.primary_source, "face_cluster_expansion")
+
+        dual = SelfieSearchResult.objects.create(
+            search=self.search,
+            photo=self.dual_photo,
+            rank=3,
+            primary_source=SelfieSearchResult.PrimarySource.DIRECT,
+        )
+        SelfieSearchDirectEvidence.objects.create(
+            result=dual,
+            detection=anchor_evidence.detection,
+            cosine_distance=0.1,
+        )
+        SelfieSearchClusterEvidence.objects.create(
+            result=dual,
+            corpus=corpus,
+            cluster=cluster,
+            anchor_result=anchor_result,
+            anchor_detection=anchor_evidence.detection,
+            member_detection=dual_detection,
+            representative_distance=0.2,
+            source_order=2,
+        )
+        self.assertTrue(dual.direct_evidence)
+        self.assertEqual(dual.cluster_evidence.count(), 1)
+
+    def test_cluster_evidence_rejects_cross_search_and_corpus_members(self) -> None:
+        anchor_result = self.make_result()
+        anchor_detection = anchor_result.direct_evidence.detection
+        corpus = self.make_corpus()
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster_key="cluster-1",
+            representative_detection=anchor_detection,
+            member_count=1,
+        )
+        FaceClusterMember.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster=cluster,
+            detection=anchor_detection,
+            member_index=0,
+            distance_to_representative=0.0,
+        )
+        corpus.status = FaceClusterCorpus.Status.PUBLISHED
+        corpus.published_at = timezone.now()
+        corpus.save(update_fields=["status", "published_at"])
+        other_search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="b" * 64,
+            temporary_object_key="selfie-search/other.jpg",
+            configuration={"embedding_model": "sface-v1"},
+        )
+        result = SelfieSearchResult.objects.create(
+            search=other_search,
+            photo=self.photo,
+            rank=1,
+            primary_source=SelfieSearchResult.PrimarySource.FACE_CLUSTER_EXPANSION,
+        )
+        evidence = SelfieSearchClusterEvidence(
+            result=result,
+            corpus=corpus,
+            cluster=cluster,
+            anchor_result=anchor_result,
+            anchor_detection=anchor_detection,
+            member_detection=anchor_detection,
+            representative_distance=0.0,
+            source_order=1,
+        )
+        with self.assertRaises(ValidationError):
+            evidence.full_clean()
+
+    def test_result_primary_source_is_limited_to_supported_values(self) -> None:
+        result = SelfieSearchResult(
+            search=self.search,
+            photo=self.photo,
+            rank=1,
+            primary_source="sentinel",
+        )
+        with self.assertRaises(ValidationError):
+            result.full_clean()
 
     def test_product_models_do_not_persist_a_query_vector(self) -> None:
         for model in (SelfieSearch, SelfieSearchJob, SelfieSearchAttempt, SelfieSearchResult):
@@ -187,13 +362,17 @@ class SelfieSearchModelTests(TestCase):
     def make_result(self, *, search=None, photo=None, other_event: bool = False):
         search = search or self.search
         photo = photo or (self.other_photo if other_event else self.photo)
-        return SelfieSearchResult.objects.create(
+        result = SelfieSearchResult.objects.create(
             search=search,
             photo=photo,
-            detection_id=self.make_detection_id(other_event=other_event),
             rank=1,
+        )
+        SelfieSearchDirectEvidence.objects.create(
+            result=result,
+            detection_id=self.make_detection_id(other_event=other_event),
             cosine_distance=0.1,
         )
+        return result
 
     def make_feedback(self, **overrides):
         values = {
@@ -382,7 +561,7 @@ class SelfieSearchModelTests(TestCase):
         self.assertFalse(contact_field.db_index)
         self.assertNotIn(feedback.contact, str(feedback))
 
-    def make_embedding_id(self, *, other_event: bool = False):
+    def make_embedding_id(self, *, other_event: bool = False, photo=None):
         from processing.models import (
             EventProcessingRun,
             FaceEmbedding,
@@ -393,7 +572,7 @@ class SelfieSearchModelTests(TestCase):
         )
 
         event = self.other_event if other_event else self.event
-        photo = self.other_photo if other_event else self.photo
+        photo = photo or (self.other_photo if other_event else self.photo)
         run = EventProcessingRun.objects.create(
             event=event,
             contract_version=1,
@@ -428,13 +607,37 @@ class SelfieSearchModelTests(TestCase):
         )
         artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
         detection = PhotoFaceDetection.objects.create(
-            artifact=artifact, attempt=attempt, face_index=0
+            artifact=artifact,
+            attempt=attempt,
+            face_index=0,
+            status=PhotoFaceDetection.Status.KEPT,
         )
         return FaceEmbedding.objects.create(detection=detection).id
 
-    def make_detection_id(self, *, other_event: bool = False):
+    def make_detection_id(self, *, other_event: bool = False, photo=None):
         from processing.models import FaceEmbedding
 
         return FaceEmbedding.objects.get(
-            pk=self.make_embedding_id(other_event=other_event)
+            pk=self.make_embedding_id(other_event=other_event, photo=photo)
         ).detection_id
+
+    def make_corpus(self, *, event=None) -> FaceClusterCorpus:
+        event = event or self.event
+        return FaceClusterCorpus.objects.create(
+            event=event,
+            version=1,
+            status=FaceClusterCorpus.Status.BUILDING,
+            algorithm_version="test-v1",
+            configuration={"edge_threshold": 0.4},
+            configuration_hash="c" * 64,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            model_version="sface",
+            embedding_dimensions=128,
+            edge_threshold=0.4,
+            representative_threshold=0.5,
+            distance_block_size=10,
+            max_candidate_edges=100,
+            published_at=timezone.now(),
+        )

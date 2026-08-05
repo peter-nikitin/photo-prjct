@@ -120,8 +120,8 @@ quickly.
 
 ### PJ-008 — Customer — Find photos by face
 
-When I have an appropriate reference image and the required consent applies, I want to search within
-one event, so I can review probable matches.
+When I have an appropriate selfie or find an eligible gallery face in a selected event, I want to
+search within that event, so I can review probable matches.
 
 - Status: In progress
 - Evidence: [ADR 0019](adr/0019-use-public-event-selfie-search.md), the
@@ -129,21 +129,30 @@ one event, so I can review probable matches.
   [`tests/processing/test_selfie_search_e2e.py`](../tests/processing/test_selfie_search_e2e.py)
   provide repository evidence plus local real YuNet/SFace inference for the selfie query; accepted
   deterministic gallery fixtures cover both face generations, including a verified preview
-  publication and production enrollment into `2/face_embedding/2`. The evidence covers event
-  isolation, probable matches, selfie cleanup, stable results, and the narrow paid-result media
-  exception. The repository default remains disabled, but staging deployed branch `c62508a` with
-  the feature enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
+  publication and production enrollment into `2/face_embedding/2`. The existing selfie-upload path
+  covers event isolation, probable matches, selfie cleanup, stable results, and the narrow
+  paid-result media exception. The repository default remains disabled, but staging deployed branch
+  `c62508a` with that path enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
   put/head/grant/delete preflight passed; six legacy face jobs produced four accepted event
   embeddings; and a live Unicode event upload reached a stable ready bearer URL with the expected
   original. The temporary selfie was deleted before publication, including from the bucket prefix.
-  A temporary paid-event check kept normal media denied while bearer-result media succeeded.
-  On 2026-08-02, staging deployed immediate queued-result navigation and then direct event-cohort
-  ranking in PRs
-  [#80](https://github.com/peter-nikitin/photo-prjct/pull/80) and
+  A temporary paid-event check kept normal media denied while bearer-result media succeeded. On
+  2026-08-02, staging deployed immediate queued-result navigation and then direct event-cohort
+  ranking in PRs [#80](https://github.com/peter-nikitin/photo-prjct/pull/80) and
   [#82](https://github.com/peter-nikitin/photo-prjct/pull/82). New searches persist only eligible
   counts and matched results instead of one candidate row per eligible face; legacy frozen-candidate
-  searches remain readable. This is staging evidence only; production is not activated.
-- Last updated: 2026-08-02
+  searches remain readable. This is staging evidence for the existing selfie-upload path only;
+  production is not activated.
+
+  The gallery-photo query path is defined by [ADR 0024](adr/0024-use-gallery-face-as-search-query.md)
+  and the approved [gallery-photo search design](superpowers/specs/2026-08-05-gallery-face-selector-design.md).
+  Current local evidence for the combined gallery-photo implementation is 145 focused Python tests,
+  70 JavaScript tests for the production markup and chooser behavior, and 83 visual tests covering
+  the zero-, one-, two-, and four-face event-gallery fixture at desktop and 390px mobile widths.
+  The root `make check` also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and
+  clean system/migration checks. These are local repository checks only; no staging or production
+  deployment or customer validation is claimed for the gallery-photo path.
+- Last updated: 2026-08-05
 
 ### PJ-009 — Visitor — Receive a free-event original
 

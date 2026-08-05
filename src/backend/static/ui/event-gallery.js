@@ -9,6 +9,41 @@
 })(typeof globalThis === 'undefined' ? this : globalThis, function buildEventGallery() {
   'use strict';
 
+  function initializeFaceChoosers(root) {
+    if (!root?.querySelectorAll) return;
+    const choosers = [...root.querySelectorAll('[data-face-chooser]')];
+    if (!choosers.length) return;
+    const ownerDocument = root.ownerDocument ?? globalThis.document;
+    let openChooser = null;
+    const closeChooser = (chooser, { restoreFocus = true } = {}) => {
+      if (!chooser || !chooser.open) return;
+      chooser.open = false;
+      if (openChooser === chooser) openChooser = null;
+      if (restoreFocus) chooser.querySelector('[data-face-chooser-trigger]')?.focus();
+    };
+    const closeOpenChooser = (options) => closeChooser(openChooser, options);
+
+    choosers.forEach((chooser) => {
+      chooser.addEventListener('toggle', () => {
+        if (!chooser.open) {
+          if (openChooser === chooser) openChooser = null;
+          return;
+        }
+        if (openChooser && openChooser !== chooser) {
+          closeChooser(openChooser, { restoreFocus: false });
+        }
+        openChooser = chooser;
+      });
+    });
+
+    ownerDocument?.addEventListener('click', (event) => {
+      if (openChooser && !openChooser.contains(event.target)) closeOpenChooser();
+    });
+    ownerDocument?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeOpenChooser();
+    });
+  }
+
   function initializeEventGallery(root, GLightbox) {
     if (!root || typeof GLightbox !== 'function') return null;
     let lastTrigger = null;
@@ -48,12 +83,13 @@
     });
   }
 
-  return { initializeEventGallery };
+  return { initializeEventGallery, initializeFaceChoosers };
 });
 
 if (typeof document !== 'undefined') {
   const start = () => {
     const root = document.querySelector('[data-event-gallery]') ?? document.querySelector('.event-gallery');
+    globalThis.FindMeEventGallery.initializeFaceChoosers(root);
     globalThis.FindMeEventGallery.initializeEventGallery(root, globalThis.GLightbox);
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

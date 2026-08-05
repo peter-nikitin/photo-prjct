@@ -15,6 +15,7 @@ const {
   initializeFeedbackCleanupUi,
   initializeFeedbackUi,
   startBrowserUi,
+  submitGallerySearchProcess,
 } = require('../../src/backend/static/ui/selfie-search.js');
 
 function clock() {
@@ -292,6 +293,70 @@ test('polls queued, processing, and cleanup states every two seconds before term
   assert.equal(timers.scheduled.length, 3);
 });
 
+test('submits a queued gallery process form once while status polling stays active', async () => {
+  const calls = [];
+  const processForm = {
+    action: '/events/run/selfie-search/token/process-gallery/',
+    querySelector(selector) {
+      return selector === '[name="csrfmiddlewaretoken"]' ? { value: 'csrf-token' } : null;
+    },
+  };
+  const result = { dataset: { statusUrl: '/events/run/selfie-search/token/status/' } };
+  const document = {
+    querySelector(selector) {
+      if (selector === '[data-selfie-search-result]') return result;
+      if (selector === '[data-gallery-search-process]') return processForm;
+      return null;
+    },
+  };
+  const window = {
+    fetch: async (url, options = {}) => {
+      calls.push({ url, options });
+      return { ok: true, json: async () => ({ status: 'queued' }) };
+    },
+    setTimeout() { return 1; },
+    clearTimeout() {},
+    location: { reload() {} },
+  };
+
+  startBrowserUi(document, window);
+  await Promise.resolve();
+
+  assert.deepEqual(calls[0], {
+    url: '/events/run/selfie-search/token/process-gallery/',
+    options: {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-CSRFToken': 'csrf-token' },
+    },
+  });
+  assert.equal(calls.filter((call) => call.url.endsWith('/process-gallery/')).length, 1);
+  assert.equal(calls.filter((call) => call.url.endsWith('/status/')).length, 1);
+});
+
+test('retries rejected and 503 gallery process requests until a successful response', async () => {
+  const timers = clock();
+  const calls = [];
+  const processForm = {
+    action: '/events/run/selfie-search/token/process-gallery/',
+    querySelector() { return { value: 'csrf-token' }; },
+  };
+  const outcomes = [Promise.reject(new Error('offline')), { ok: false, status: 503 }, { ok: true }];
+  const fetch = (url, options = {}) => {
+    calls.push({ url, options });
+    return outcomes.shift();
+  };
+
+  submitGallerySearchProcess(processForm, fetch, timers.setTimeout);
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
+  await timers.scheduled[0].callback();
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
+  await timers.scheduled[1].callback();
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
+
+  assert.equal(calls.length, 3);
+});
+
 test('backs off after a network failure without creating duplicate polling timers', async () => {
   const timers = clock();
   const poller = new SelfieSearchPoller({
@@ -372,6 +437,30 @@ test('disabled feedback clears stale local records and submits search without pr
   assert.equal(cleared, 1);
   assert.equal(preserved, 0);
   assert.equal(nativeSubmitCount, 1);
+});
+
+test('gallery-origin result keeps unrelated retained selfie feedback storage intact', async () => {
+  let cleared = 0;
+  const result = {
+    dataset: {
+      selfieFeedbackEnabled: 'false',
+      galleryOrigin: 'true',
+    },
+  };
+  const storage = {
+    async clearAll() { cleared += 1; },
+  };
+  const document = {
+    querySelector(selector) {
+      if (selector === '[data-selfie-search-result]') return result;
+      return null;
+    },
+  };
+
+  startBrowserUi(document, {}, { storage });
+  await Promise.resolve();
+
+  assert.equal(cleared, 0);
 });
 
 test('simultaneous search tabs generate and preserve independent browser correlations', async () => {

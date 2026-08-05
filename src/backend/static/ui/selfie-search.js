@@ -7,6 +7,7 @@
 
   const ACTIVE_STATES = new Set(['queued', 'processing', 'cleanup_pending']);
   const POLL_DELAY_MS = 2000;
+  const PROCESS_RETRY_DELAY_MS = 2000;
   const MAX_BACKOFF_MS = 30000;
   const FEEDBACK_PENDING_KEY = 'findme_selfie_feedback_pending';
   const FEEDBACK_MARKS_PREFIX = 'findme_selfie_feedback_marks:';
@@ -873,6 +874,34 @@
     if (error && typeof error.focus === 'function') error.focus();
   }
 
+  function submitGallerySearchProcess(form, fetch, setTimeout) {
+    if (!form || form.gallerySearchProcessStarted || typeof fetch !== 'function') return;
+    form.gallerySearchProcessStarted = true;
+    const csrfToken = form.querySelector?.('[name="csrfmiddlewaretoken"]')?.value || '';
+    let inFlight = false;
+    let completed = false;
+    const retry = () => {
+      if (completed || inFlight) return;
+      inFlight = true;
+      Promise.resolve(
+        fetch(form.action, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'X-CSRFToken': csrfToken },
+        }),
+      )
+        .then((response) => {
+          if (response && response.ok) completed = true;
+        })
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+          if (!completed && typeof setTimeout === 'function') setTimeout(retry, PROCESS_RETRY_DELAY_MS);
+        });
+    };
+    retry();
+  }
+
   function startBrowserUi(document, window, options = {}) {
     const storage = options.storage || new BrowserStorageAdapter({
       indexedDB: safeObjectValue(window, 'indexedDB'),
@@ -882,9 +911,15 @@
     const form = document.querySelector('[data-selfie-search-form]');
     focusSelfieSearchError(document);
     const result = document.querySelector('[data-selfie-search-result]');
+    submitGallerySearchProcess(
+      document.querySelector('[data-gallery-search-process]'),
+      window.fetch?.bind(window),
+      window.setTimeout?.bind(window),
+    );
     const feedbackEnabled = (form || result)?.dataset?.selfieFeedbackEnabled === 'true';
+    const galleryOrigin = result?.dataset?.galleryOrigin === 'true';
     bindSelfieSearchForm(form, { storage });
-    if (!feedbackEnabled) {
+    if (!feedbackEnabled && !galleryOrigin) {
       Promise.resolve(storage.clearAll?.()).catch(() => {});
     }
     if (!feedbackEnabled && (!result || !result.dataset.statusUrl)) return null;
@@ -925,6 +960,7 @@
     initializeFeedbackCleanupUi,
     initializeFeedbackUi,
     focusSelfieSearchError,
+    submitGallerySearchProcess,
     startBrowserUi,
   };
 });

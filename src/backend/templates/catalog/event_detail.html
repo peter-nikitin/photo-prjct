@@ -92,6 +92,56 @@
                 {% endif %}
               </a>
               <div class="gallery-card-actions">
+                {% if photo.faces %}
+                  <div class="gallery-face-control">
+                    {% if photo.faces|length == 1 %}
+                      {% with face=photo.faces.0 %}
+                        <form class="gallery-face-search" action="{{ face.search_url }}" method="post" target="_blank">
+                          {% csrf_token %}
+                          <button class="gallery-face-button gallery-face-button--direct" type="submit" aria-label="Найти похожие фото этого человека">
+                            <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
+                              <img src="{{ photo.preview_media_small.url }}" alt="">
+                            </span>
+                          </button>
+                        </form>
+                      {% endwith %}
+                    {% else %}
+                      <details class="gallery-face-chooser" data-face-chooser>
+                        <summary class="gallery-face-stack" data-face-chooser-trigger aria-label="Выбрать человека для поиска">
+                          {% for face in photo.faces %}
+                            {% if forloop.counter <= 2 %}
+                              <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
+                                <img src="{{ photo.preview_media_small.url }}" alt="">
+                              </span>
+                            {% elif forloop.counter == 3 %}
+                              {% if photo.faces|length > 3 %}
+                                <span class="gallery-face-more" aria-hidden="true">+ {{ photo.faces|length|add:"-2" }}</span>
+                              {% else %}
+                                <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
+                                  <img src="{{ photo.preview_media_small.url }}" alt="">
+                                </span>
+                              {% endif %}
+                            {% endif %}
+                          {% endfor %}
+                        </summary>
+                        <div class="gallery-face-chooser-popover" role="dialog" aria-label="Кого искать?">
+                          <div class="gallery-face-grid">
+                            {% for face in photo.faces %}
+                              <form class="gallery-face-search" action="{{ face.search_url }}" method="post" target="_blank">
+                                {% csrf_token %}
+                                <button class="gallery-face-button" type="submit" data-face-choice aria-label="Найти похожие фото человека {{ face.face_number }}">
+                                  <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
+                                    <img src="{{ photo.preview_media_small.url }}" alt="">
+                                  </span>
+                                </button>
+                              </form>
+                            {% endfor %}
+                          </div>
+                        </div>
+                      </details>
+                    {% endif %}
+                  </div>
+                {% endif %}
                 <a class="gallery-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал">
                   <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg>
                 </a>

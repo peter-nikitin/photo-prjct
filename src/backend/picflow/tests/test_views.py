@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from hashlib import sha256
 from html.parser import HTMLParser
@@ -21,12 +22,23 @@ from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from processing.models import (
+    FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     EventProcessingRun,
+    FaceEmbedding,
+    FaceProcessingAttemptArtifact,
     PhotoDerivative,
+    PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
+)
+from processing.services.enrollment import (
+    CONTRACT_VERSION as FACE_EMBEDDING_CONTRACT_VERSION,
+)
+from processing.services.enrollment import (
+    FACE_EMBEDDING_CONFIGURATION,
+    FACE_EMBEDDING_PROCESSOR_VERSION,
 )
 
 from picflow.models import Event, Photo
@@ -38,15 +50,23 @@ class NavigationMarkupParser(HTMLParser):
         self.anchor_hrefs: set[str] = set()
         self.form_actions: set[str] = set()
         self.input_types: set[str] = set()
+        self.form_inside_anchor = False
+        self._anchor_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
         if tag == "a" and (href := attributes.get("href")):
             self.anchor_hrefs.add(href)
+            self._anchor_depth += 1
         elif tag == "form" and (action := attributes.get("action")):
             self.form_actions.add(action)
+            self.form_inside_anchor = self.form_inside_anchor or self._anchor_depth > 0
         elif tag == "input" and (input_type := attributes.get("type")):
             self.input_types.add(input_type.lower())
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._anchor_depth -= 1
 
 
 @override_settings(
@@ -410,6 +430,73 @@ class GalleryPageTests(TestCase):
             accepted_attempt=attempt,
         )
 
+    def publish_current_compatible_faces(self, photo: Photo, *, count: int) -> None:
+        configuration_hash = sha256(
+            json.dumps(FACE_EMBEDDING_CONFIGURATION, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=configuration_hash,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=configuration_hash,
+            input_fingerprint={},
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        PhotoProcessingState.objects.create(
+            photo=photo,
+            processor_type=FACE_EMBEDDING_PROCESSOR,
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            current_run=run,
+            current_job=job,
+            current_attempt=attempt,
+            accepted_attempt=attempt,
+        )
+        artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
+        for face_index in range(count):
+            detection = PhotoFaceDetection.objects.create(
+                artifact=artifact,
+                attempt=attempt,
+                face_index=face_index,
+                status=PhotoFaceDetection.Status.KEPT,
+                geometry={
+                    "coordinate_space": "preview-small-v1",
+                    "pixel_width": 100,
+                    "pixel_height": 100,
+                    "bbox": [10 + face_index, 20, 20, 20],
+                },
+            )
+            FaceEmbedding.objects.create(
+                detection=detection,
+                model_version="sface",
+                vector=[1.0] + [0.0] * 127,
+                metadata={},
+            )
+
     @patch("config.views.PrivateUploadStorage")
     def test_event_detail_builds_filename_ordered_gallery_without_storage(
         self, storage_class
@@ -633,6 +720,146 @@ class GalleryPageTests(TestCase):
             else:
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
         self.assertNotContains(response, "gallery-photo-id")
+
+    @override_settings(SELFIE_SEARCH_ENABLED=True)
+    def test_event_detail_maps_all_usable_faces_to_exact_submission_urls(self) -> None:
+        """The production break caught here is losing a selectable face or addressing it vaguely."""
+        event = self.make_event()
+        zero_face = self.make_private_photo(event, id="zero-face")
+        one_face = self.make_private_photo(event, id="one-face")
+        two_faces = self.make_private_photo(event, id="two-faces")
+        three_faces = self.make_private_photo(event, id="three-faces")
+        four_faces = self.make_private_photo(event, id="four-faces")
+        self.publish_current_compatible_faces(one_face, count=1)
+        self.publish_current_compatible_faces(two_faces, count=2)
+        self.publish_current_compatible_faces(three_faces, count=3)
+        self.publish_current_compatible_faces(four_faces, count=4)
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        gallery_photos = response.context["gallery_photos"]
+        self.assertEqual(
+            [photo.photo_id for photo in gallery_photos],
+            [four_faces.pk, one_face.pk, three_faces.pk, two_faces.pk, zero_face.pk],
+        )
+        expected_counts = {
+            zero_face.pk: 0,
+            one_face.pk: 1,
+            two_faces.pk: 2,
+            three_faces.pk: 3,
+            four_faces.pk: 4,
+        }
+        for gallery_photo in gallery_photos:
+            self.assertEqual(len(gallery_photo.faces), expected_counts[gallery_photo.photo_id])
+            for face in gallery_photo.faces:
+                self.assertEqual(
+                    face.search_url,
+                    reverse(
+                        "selfie_search:submit_gallery_face",
+                        kwargs={
+                            "event_slug": event.slug,
+                            "photo_id": gallery_photo.photo_id,
+                            "detection_id": face.detection_id,
+                        },
+                    ),
+                )
+        markup = response.content.decode(response.charset)
+        self.assertNotIn("gallery-similar-search", markup)
+        self.assertNotIn("gallery-similar-search-button", markup)
+        for photo in (zero_face, one_face, two_faces, three_faces, four_faces):
+            self.assertNotIn(photo.original_key, markup)
+        self.assertNotIn("vector", markup)
+        for photo in (zero_face, one_face, two_faces, three_faces, four_faces):
+            download_url = reverse(
+                "photo_download", kwargs={"slug": event.slug, "photo_id": photo.pk}
+            )
+            self.assertContains(response, f'href="{download_url}"')
+            self.assertContains(
+                response,
+                'data-gallery="event-photos" data-type="image"',
+                count=5,
+            )
+
+    @override_settings(SELFIE_SEARCH_ENABLED=True)
+    def test_event_detail_renders_gallery_face_controls(self) -> None:
+        """The production break caught here is an ambiguous face starting a direct search."""
+        event = self.make_event()
+        no_face = self.make_private_photo(event, id="no-face")
+        one_face = self.make_private_photo(event, id="one-face")
+        two_faces = self.make_private_photo(event, id="two-faces")
+        three_faces = self.make_private_photo(event, id="three-faces")
+        four_faces = self.make_private_photo(event, id="four-faces")
+        self.publish_current_compatible_faces(one_face, count=1)
+        self.publish_current_compatible_faces(two_faces, count=2)
+        self.publish_current_compatible_faces(three_faces, count=3)
+        self.publish_current_compatible_faces(four_faces, count=4)
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        markup = response.content.decode(response.charset)
+        self.assertNotIn(no_face.pk + "/similar-search/", markup)
+        self.assertContains(
+            response,
+            'class="gallery-face-button gallery-face-button--direct"',
+            count=1,
+        )
+        self.assertContains(
+            response,
+            'aria-label="Найти похожие фото этого человека"',
+            count=1,
+        )
+        self.assertContains(
+            response,
+            '<details class="gallery-face-chooser" data-face-chooser>',
+            count=3,
+        )
+        self.assertContains(
+            response,
+            'data-face-chooser-trigger aria-label="Выбрать человека для поиска"',
+            count=3,
+        )
+        self.assertContains(response, 'role="dialog" aria-label="Кого искать?"', count=3)
+        self.assertContains(response, "+ 2", count=1)
+        self.assertContains(response, 'class="gallery-face-grid"', count=3)
+        self.assertContains(
+            response,
+            'style="--face-left: 8.0; --face-top: 18.0; --face-size: 24.0;"',
+        )
+        self.assertContains(
+            response,
+            'aria-label="Найти похожие фото человека 1"',
+            count=3,
+        )
+        self.assertContains(
+            response,
+            'aria-label="Найти похожие фото человека 4"',
+            count=1,
+        )
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=11)
+        self.assertContains(response, 'class="gallery-face-search"', count=10)
+        self.assertContains(response, 'target="_blank"', count=10)
+        for photo, face_count in ((one_face, 1), (two_faces, 2), (three_faces, 3), (four_faces, 4)):
+            for detection in PhotoFaceDetection.objects.filter(attempt__photo=photo).order_by(
+                "face_index"
+            ):
+                search_url = reverse(
+                    "selfie_search:submit_gallery_face",
+                    kwargs={
+                        "event_slug": event.slug,
+                        "photo_id": photo.pk,
+                        "detection_id": detection.pk,
+                    },
+                )
+                self.assertContains(response, f'action="{search_url}"', count=1)
+            self.assertEqual(
+                PhotoFaceDetection.objects.filter(attempt__photo=photo).count(), face_count
+            )
+        self.assertNotIn("gallery-similar-search", markup)
+        markup_parser = NavigationMarkupParser()
+        markup_parser.feed(markup)
+        self.assertFalse(markup_parser.form_inside_anchor)
 
     def test_event_detail_empty_gallery_is_accessible(self) -> None:
         event = self.make_event()

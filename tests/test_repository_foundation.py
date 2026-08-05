@@ -209,6 +209,9 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     assert _workflow_step(ci, "quality", "Install dependencies")["run"] == (
         "pip install -r requirements-dev.txt -r src/worker/requirements.txt"
     )
+    assert ci["jobs"]["quality"]["env"]["TEST_DB_NAME"] == (
+        "findme_test_${{ github.run_id }}_${{ github.run_attempt }}"
+    )
 
 
 def test_visual_image_publisher_is_main_only_and_dependency_keyed() -> None:

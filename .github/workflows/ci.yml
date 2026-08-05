@@ -37,6 +37,7 @@ jobs:
       DB_PASSWORD: app
       DB_HOST: localhost
       DB_PORT: "5432"
+      TEST_DB_NAME: findme_test_${{ github.run_id }}_${{ github.run_attempt }}
 
     steps:
       - name: Check out repository

@@ -41,8 +41,8 @@ branch `codex/<name>`, links the main checkout's ignored `.venv`, creates a work
 from `.env.example` with safe host-test values, installs the shared pre-commit hook, and verifies
 Python, pytest, and Django settings. It never reads or copies the main checkout's `.env`.
 
-Run a focused or full Python test selection without activating the virtual environment or manually
-supplying Django settings:
+Run a focused or normal local Python test selection without activating the virtual environment or
+manually supplying Django settings:
 
 ```bash
 make test TESTS="tests/test_repository_foundation.py"
@@ -50,8 +50,16 @@ make test
 make check
 ```
 
-`make check` runs the CI-equivalent Python formatting, lint, type, coverage, Django, and migration
-checks. PostgreSQL must be available on `localhost:5432`, matching CI.
+Local `make test` and the pytest portion of `make check` include the critical clone-staging contract
+but skip its exhaustive matrix. Run the exhaustive clone-staging suite separately with:
+
+```bash
+make test-clone-staging
+```
+
+`make check` runs local Python formatting, lint, type, coverage, Django, and migration checks. Its
+pytest portion skips the exhaustive clone-staging matrix; GitHub CI's raw pytest coverage command
+runs the full test selection. PostgreSQL must be available on `localhost:5432`, matching CI.
 
 ### Verify public selfie search locally
 

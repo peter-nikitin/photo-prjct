@@ -255,6 +255,22 @@ an evidence-backed state, and the complete release gate passes before review or 
 
 ## Verification
 
+### Approved layout revision (2026-08-05)
+
+The saved-results behavior is unchanged. Revise only the event-page presentation:
+
+- wrap the existing form and history container in one layout element;
+- when history is visible and the viewport is wide, show the form on the left and the complete
+  history list on the right;
+- when history is hidden, keep a single-column layout without reserving an empty right column;
+- at the existing mobile breakpoint, keep the form followed by history in one column;
+- preserve the existing form, copy, privacy boundary, controls, keyboard behavior, and 44-pixel
+  targets;
+- add a Playwright geometry assertion that fails before the CSS change and proves the desktop
+  history is beside the form while the mobile history remains below it;
+- intentionally update and inspect only the desktop saved-history snapshot unless the mobile
+  pixels change; then run the focused visual suite and the complete required release gate.
+
 Run from the isolated worktree:
 
 ```bash

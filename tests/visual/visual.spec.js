@@ -401,6 +401,39 @@ test('saved selfie-search history has approved desktop and mobile presentation',
   }
 });
 
+test('saved selfie-search history sits beside the form on desktop and below it on mobile', async ({ page }) => {
+  for (const [viewport, expectation] of [
+    [DESKTOP_VIEWPORT, 'beside'],
+    [MOBILE_VIEWPORT, 'below'],
+  ]) {
+    await page.setViewportSize(viewport);
+    const history = await savedSelfieSearchHistory(page);
+    await settlePage(page);
+    await expect(history).toBeVisible();
+
+    const geometry = await page.evaluate(() => {
+      const form = document.querySelector('[data-selfie-search-form]');
+      const history = document.querySelector('[data-selfie-search-history]');
+      const formRect = form?.getBoundingClientRect();
+      const historyRect = history?.getBoundingClientRect();
+      return {
+        historyBesideForm: Boolean(
+          formRect &&
+            historyRect &&
+            historyRect.left >= formRect.right - 1 &&
+            historyRect.top < formRect.bottom &&
+            formRect.top < historyRect.bottom,
+        ),
+        historyBelowForm: Boolean(
+          formRect && historyRect && historyRect.top >= formRect.bottom - 1,
+        ),
+      };
+    });
+
+    expect(geometry[`history${expectation === 'beside' ? 'Beside' : 'Below'}Form`]).toBe(true);
+  }
+});
+
 test('desktop feedback marking keeps gallery full width and terminal actions equal', async ({ page }) => {
   await page.setViewportSize(DESKTOP_VIEWPORT);
   await preloadCookieAcknowledgement(page);

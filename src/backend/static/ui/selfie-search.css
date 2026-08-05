@@ -41,6 +41,10 @@
   max-width: 520px;
 }
 
+.selfie-search-layout {
+  display: grid;
+}
+
 .selfie-search-error {
   margin-bottom: 2px;
   padding: 12px 14px;
@@ -293,5 +297,19 @@
 
   .selfie-search-history-actions button {
     width: 100%;
+  }
+}
+
+@media (min-width: 621px) {
+  .selfie-search-layout:has(> .selfie-search-history:not([hidden])) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: clamp(24px, 4vw, 40px);
+    align-items: start;
+  }
+
+  .selfie-search-layout:has(> .selfie-search-history:not([hidden])) > .selfie-search-history {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
   }
 }

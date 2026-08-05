@@ -44,7 +44,8 @@ The feature succeeds when:
 ### Included
 
 - Automatic device-local saving when a valid result page opens.
-- One event-specific `Мои результаты поиска` list below the existing selfie-search form.
+- One event-specific `Мои результаты поиска` list beside the existing selfie-search form on wide
+  screens and below it on narrow screens.
 - Every saved result for the current event, ordered by most recent open time.
 - A local date and time label for each result.
 - An `Открыть результат` action and an individual `Удалить с устройства` action.
@@ -66,8 +67,10 @@ The feature succeeds when:
 ## Customer experience
 
 The event page keeps the existing search form unchanged. When the current browser has saved
-results for the event, a section titled `Мои результаты поиска` appears below the form. When there
-are none, the section is omitted; no empty-state message adds noise to a first visit.
+results for the event, a section titled `Мои результаты поиска` appears to the right of the form
+on wide screens, reducing the section's vertical height. On narrow screens the section follows the
+form in one column. When there are no saved results, the form uses the available width and the
+history section is omitted; no empty column or empty-state message adds noise to a first visit.
 
 Each row is labelled `Поиск от <local date and time>`, using the browser's locale and timezone.
 Rows are newest first and contain two buttons:

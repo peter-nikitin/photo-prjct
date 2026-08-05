@@ -74,7 +74,7 @@ class FeedbackSubmissionTests(TestCase):
         )
 
     def make_result(
-        self, *, search: SelfieSearch, photo_id: str = "feedback-photo"
+        self, *, search: SelfieSearch, photo_id: str = "feedback-photo", rank: int = 1
     ) -> SelfieSearchResult:
         photo = Photo.objects.create(
             id=photo_id,
@@ -130,7 +130,7 @@ class FeedbackSubmissionTests(TestCase):
         result = SelfieSearchResult.objects.create(
             search=search,
             photo=photo,
-            rank=1,
+            rank=rank,
         )
         SelfieSearchDirectEvidence.objects.create(
             result=result, detection=detection, cosine_distance=0.1
@@ -186,9 +186,37 @@ class FeedbackSubmissionTests(TestCase):
         feedback = SelfieSearchFeedback.objects.get(search=search)
         self.assertEqual(feedback.variant, SelfieSearchFeedback.Variant.RESULT_LABELS)
         self.assertTrue(feedback.personal_data_consent)
-        self.assertEqual(feedback.consent_text_version, "2026-08-04")
+        self.assertEqual(feedback.consent_text_version, "2026-08-05")
         self.assertEqual(
             list(feedback.labels.values_list("result_id", "value")), [(result.id, "present")]
+        )
+
+    def test_post_accepts_empty_contact_and_multiple_labels(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        first = self.make_result(search=search, photo_id="feedback-first")
+        second = self.make_result(search=search, photo_id="feedback-second", rank=2)
+        storage = Mock()
+        storage.put.return_value = Mock(
+            key="0123456789abcdef0123456789abcdef", size=100, content_type="image/jpeg"
+        )
+
+        with patch("selfie_search.views.FeedbackSelfieStorage", return_value=storage):
+            response = self.csrf_post(
+                self.feedback_url(token=token),
+                {
+                    **self.submission_data(
+                        labels=f'{{"{first.id}":"present","{second.id}":"absent"}}'
+                    ),
+                    "contact": "   ",
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        feedback = SelfieSearchFeedback.objects.get(search=search)
+        self.assertEqual(feedback.contact, "")
+        self.assertEqual(
+            set(feedback.labels.values_list("result_id", "value")),
+            {(first.id, "present"), (second.id, "absent")},
         )
 
     def test_post_is_idempotent_and_rejects_invalid_changed_or_nonterminal_results(self) -> None:

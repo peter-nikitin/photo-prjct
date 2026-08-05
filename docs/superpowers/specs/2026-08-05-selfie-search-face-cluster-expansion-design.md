@@ -22,8 +22,8 @@
   [ADR 0017](../../adr/0017-use-django-polled-photo-processing-jobs.md),
   [ADR 0019](../../adr/0019-use-public-event-selfie-search.md),
   [ADR 0023](../../adr/0023-store-consented-selfie-search-feedback.md), and
-  proposed [ADR 0024](../../adr/0024-expand-selfie-search-with-face-clusters.md)
-- **ADR impact:** **Requires acceptance of proposed ADR 0024.** ADR 0019 deliberately excluded cluster and graph expansion
+  [ADR 0024](../../adr/0024-expand-selfie-search-with-face-clusters.md)
+- **ADR impact:** **Conforms to ADR 0024.** ADR 0019 deliberately excluded cluster and graph expansion
   from the first public selfie-search decision and defines direct face matches as the only saved
   result source. This design adds a durable derived identity-cluster corpus and a second result
   membership source. It preserves ADR 0019's event isolation, probable-match language, transient

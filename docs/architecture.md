@@ -211,6 +211,14 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
   transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
   future work.
+- Allow new event-scoped selfie searches to append unique photographs from an explicitly activated,
+  immutable conservative face-cluster corpus only when calibrated strong direct matches select its
+  anonymous fragments. Direct results remain first, PostgreSQL stores immutable source provenance,
+  and structured events plus feedback distinguish direct from expanded results. The accepted design
+  adds no named identity, cross-event matching, contextual evidence, automatic feedback tuning,
+  persistent query vector, or online vector service, as defined by
+  [ADR 0024](adr/0024-expand-selfie-search-with-face-clusters.md). This capability is accepted but
+  not implemented or activated.
 - Present normal galleries and ready selfie-search results as server-rendered numbered pages of at
   most 100 photos. Normal galleries use original filename then photo ID order; ready results retain
   persisted rank then photo ID order. [ADR 0022](adr/0022-use-numbered-gallery-pages.md) supersedes

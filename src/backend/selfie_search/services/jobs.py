@@ -13,7 +13,8 @@ from time import perf_counter
 from typing import Any, Protocol
 from uuid import UUID
 
-from django.db import transaction
+from django.conf import settings
+from django.db import DatabaseError, transaction
 from django.utils import timezone
 from ingestion.storage import StorageUnavailable
 from processing.contracts import SELFIE_ATTEMPT_PREFIX
@@ -21,7 +22,8 @@ from processing.contracts import SELFIE_ATTEMPT_PREFIX
 from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAttempt,
-    SelfieSearchCandidate,
+    SelfieSearchClusterEvidence,
+    SelfieSearchDirectEvidence,
     SelfieSearchJob,
     SelfieSearchResult,
 )
@@ -30,11 +32,15 @@ from selfie_search.observability import (
     emit_selfie_event,
     emit_selfie_observability_failure,
 )
+from selfie_search.services.cluster_expansion import (
+    RankedPhotoExpansion,
+    direct_only_ranked_photos,
+    expand_ranked_photos,
+)
 from selfie_search.services.ranking import (
     QueryVectorError,
     RankingError,
     rank_embeddings,
-    rank_search,
     validate_query_vector,
 )
 from selfie_search.services.submission import compatible_search_candidates
@@ -222,23 +228,16 @@ def complete_search_attempt(
         else:
             try:
                 query = _query_from_result(search, result)
-                if SelfieSearchCandidate.objects.filter(search=search).exists():
-                    ranked = rank_search(search, query)
-                    has_eligible_candidates = True
-                    eligible_photo_count = search.eligible_photo_count
-                    eligible_face_count = search.eligible_face_count
-                    load_ms = rank_ms = None
-                else:
-                    cohort_started_at = perf_counter()
-                    candidates = compatible_search_candidates(search)
-                    cohort_loaded_at = perf_counter()
-                    ranked = rank_embeddings(search, query, candidates)
-                    ranked_at = perf_counter()
-                    has_eligible_candidates = bool(candidates)
-                    eligible_photo_count = len({candidate.photo_id for candidate in candidates})
-                    eligible_face_count = len(candidates)
-                    load_ms = round((cohort_loaded_at - cohort_started_at) * 1_000)
-                    rank_ms = round((ranked_at - cohort_loaded_at) * 1_000)
+                cohort_started_at = perf_counter()
+                candidates = compatible_search_candidates(search)
+                cohort_loaded_at = perf_counter()
+                ranked = rank_embeddings(search, query, candidates)
+                ranked_at = perf_counter()
+                has_eligible_candidates = bool(candidates)
+                eligible_photo_count = len({candidate.photo_id for candidate in candidates})
+                eligible_face_count = len(candidates)
+                load_ms = round((cohort_loaded_at - cohort_started_at) * 1_000)
+                rank_ms = round((ranked_at - cohort_loaded_at) * 1_000)
             except QueryVectorError:
                 raise
             except RankingError:
@@ -272,19 +271,20 @@ def complete_search_attempt(
                     search,
                     intended_status=str(SelfieSearch.Status.FAILED),
                     failure_code="failed",
-                    ranked=(),
+                    expansion=None,
                     now=now,
                 )
                 completion = SearchAttemptCompletion(attempt=attempt)
                 needs_cleanup = True
             else:
+                expansion = _expand_direct_ranking(search=search, ranked=ranked, query=query)
                 _emit_ranking_finished(
                     search=search,
                     attempt=attempt,
                     outcome="succeeded",
                     eligible_photo_count=eligible_photo_count,
                     eligible_face_count=eligible_face_count,
-                    matched_photo_count=len(ranked),
+                    matched_photo_count=expansion.final_matched_photo_count,
                     load_ms=load_ms,
                     rank_ms=rank_ms,
                 )
@@ -311,7 +311,7 @@ def complete_search_attempt(
                     search,
                     intended_status=intended_status,
                     failure_code="",
-                    ranked=ranked,
+                    expansion=expansion,
                     now=now,
                 )
                 completion = SearchAttemptCompletion(attempt=attempt)
@@ -385,7 +385,7 @@ def fail_search_attempt(
                     search,
                     intended_status=intended_status,
                     failure_code=failure_code,
-                    ranked=(),
+                    expansion=None,
                     now=now,
                 )
                 needs_cleanup = True
@@ -625,35 +625,145 @@ def _terminal_attempt(
     )
 
 
+def _expand_direct_ranking(
+    *, search: SelfieSearch, ranked: tuple, query: tuple[float, ...]
+) -> RankedPhotoExpansion:
+    """Keep optional corpus reads inside the Django completion transaction."""
+    if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
+        return direct_only_ranked_photos(ranked, outcome="disabled")
+    try:
+        with transaction.atomic():
+            from processing.models import EventFaceClusterActivation
+
+            activation = (
+                EventFaceClusterActivation.objects.select_related("corpus")
+                .filter(event=search.event, active=True)
+                .first()
+            )
+            return expand_ranked_photos(search, ranked, query, activation)
+    except DatabaseError:
+        return direct_only_ranked_photos(ranked, outcome="corpus_unavailable")
+
+
+def _verify_prepared_result_identity(search: SelfieSearch, expansion: RankedPhotoExpansion) -> None:
+    if (
+        len(expansion.results) != expansion.final_matched_photo_count
+        or expansion.final_matched_photo_count
+        != expansion.direct_matched_photo_count + expansion.cluster_expanded_photo_count
+        or SelfieSearchResult.objects.filter(search=search).count()
+        != expansion.final_matched_photo_count
+        or SelfieSearchDirectEvidence.objects.filter(result__search=search).count()
+        != expansion.direct_matched_photo_count
+        or SelfieSearchResult.objects.filter(
+            search=search,
+            primary_source=SelfieSearchResult.PrimarySource.FACE_CLUSTER_EXPANSION,
+        ).count()
+        != expansion.cluster_expanded_photo_count
+    ):
+        raise SearchCompletionConflict("prepared selfie result identity failed")
+
+
+def _verify_terminal_result_identity(search: SelfieSearch) -> None:
+    if (
+        search.direct_matched_photo_count is None
+        or search.cluster_expanded_photo_count is None
+        or search.final_matched_photo_count is None
+        or search.final_matched_photo_count
+        != search.direct_matched_photo_count + search.cluster_expanded_photo_count
+        or SelfieSearchResult.objects.filter(search=search).count()
+        != search.final_matched_photo_count
+        or SelfieSearchDirectEvidence.objects.filter(result__search=search).count()
+        != search.direct_matched_photo_count
+        or SelfieSearchResult.objects.filter(
+            search=search,
+            primary_source=SelfieSearchResult.PrimarySource.FACE_CLUSTER_EXPANSION,
+        ).count()
+        != search.cluster_expanded_photo_count
+    ):
+        raise SearchCompletionConflict("terminal selfie result identity failed")
+
+
 def _prepare_cleanup(
     search: SelfieSearch,
     *,
     intended_status: str,
     failure_code: str,
-    ranked: tuple,
+    expansion: RankedPhotoExpansion | None,
     now: timezone.datetime,
 ) -> None:
     if search.status == SelfieSearch.Status.CLEANUP_PENDING:
         return
     if intended_status == SelfieSearch.Status.READY:
-        SelfieSearchResult.objects.bulk_create(
+        if expansion is None:
+            raise SearchCompletionConflict("ready cleanup requires ranked results")
+        result_rows = [
+            SelfieSearchResult(
+                search=search,
+                photo_id=row.photo_id,
+                primary_source=row.primary_source,
+                rank=position,
+            )
+            for position, row in enumerate(expansion.results, start=1)
+        ]
+        SelfieSearchResult.objects.bulk_create(result_rows)
+        result_by_photo = {row.photo_id: row for row in result_rows}
+        SelfieSearchDirectEvidence.objects.bulk_create(
             [
-                SelfieSearchResult(
-                    search=search,
-                    photo_id=row.photo_id,
-                    detection_id=row.detection_id,
-                    rank=position,
-                    cosine_distance=row.cosine_distance,
+                SelfieSearchDirectEvidence(
+                    result=result_by_photo[row.photo_id],
+                    detection_id=row.direct.detection_id,
+                    cosine_distance=row.direct.cosine_distance,
                 )
-                for position, row in enumerate(ranked, start=1)
+                for row in expansion.results
+                if row.direct is not None
             ]
         )
+        SelfieSearchClusterEvidence.objects.bulk_create(
+            [
+                SelfieSearchClusterEvidence(
+                    result=result_by_photo[row.photo_id],
+                    corpus_id=expansion.cluster_corpus_id,
+                    cluster_id=evidence.cluster_id,
+                    anchor_result=result_by_photo[evidence.anchor_photo_id],
+                    anchor_detection_id=evidence.anchor_detection_id,
+                    member_detection_id=evidence.member_detection_id,
+                    representative_distance=evidence.representative_distance,
+                    source_order=evidence.source_order,
+                )
+                for row in expansion.results
+                for evidence in row.cluster_evidence
+            ]
+        )
+        _verify_prepared_result_identity(search, expansion)
+        search.final_matched_photo_count = expansion.final_matched_photo_count
+        search.direct_matched_photo_count = expansion.direct_matched_photo_count
+        search.cluster_expanded_photo_count = expansion.cluster_expanded_photo_count
+        search.strong_anchor_count = expansion.strong_anchor_count
+        search.expanded_cluster_count = expansion.expanded_cluster_count
+        search.cluster_corpus_id = expansion.cluster_corpus_id
+        search.cluster_corpus_version = expansion.cluster_corpus_version
+        search.cluster_configuration_hash = expansion.cluster_configuration_hash
+        search.cluster_expansion_outcome = expansion.outcome
     search.status = SelfieSearch.Status.CLEANUP_PENDING
     search.intended_terminal_status = intended_status
     search.failure_code = failure_code
     search.state_changed_at = now
     search.save(
-        update_fields=["status", "intended_terminal_status", "failure_code", "state_changed_at"]
+        update_fields=[
+            "status",
+            "intended_terminal_status",
+            "failure_code",
+            "state_changed_at",
+            "final_matched_photo_count",
+            "direct_matched_photo_count",
+            "cluster_expanded_photo_count",
+            "strong_anchor_count",
+            "expanded_cluster_count",
+            "cluster_corpus",
+            "cluster_corpus_version",
+            "cluster_configuration_hash",
+            "cluster_expansion_outcome",
+        ]
     )
 
 
@@ -685,11 +795,13 @@ def _confirm_cleanup(
         search.cleanup_confirmed_at = now
         search.terminal_at = now
         search.state_changed_at = now
-        search.matched_photo_count = (
-            SelfieSearchResult.objects.filter(search=search).count()
-            if intended_status == SelfieSearch.Status.READY
-            else 0
-        )
+        if intended_status == SelfieSearch.Status.READY:
+            if search.final_matched_photo_count is None:
+                raise SearchCompletionConflict("ready cleanup has no final count")
+            _verify_terminal_result_identity(search)
+            search.matched_photo_count = search.final_matched_photo_count
+        else:
+            search.matched_photo_count = 0
         search.save(
             update_fields=[
                 "status",
@@ -835,7 +947,7 @@ def _transition_retry_or_cleanup(
         search,
         intended_status=str(SelfieSearch.Status.FAILED),
         failure_code="failed",
-        ranked=(),
+        expansion=None,
         now=now,
     )
     return True

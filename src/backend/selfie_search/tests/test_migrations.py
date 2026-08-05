@@ -5,12 +5,8 @@ from django.utils import timezone
 
 
 class SelfieSearchMigrationTests(TransactionTestCase):
-    migrate_from = [
-        ("picflow", "0005_validate_photo_private_original_constraints"),
-        ("processing", "0002_add_face_embedding_schema"),
-        ("selfie_search", "0002_selfiesearchfeedback_and_more"),
-    ]
-    migrate_to = [("selfie_search", "0003_result_provenance_and_clusters")]
+    migrate_from = [("selfie_search", "0002_selfiesearchfeedback_and_more")]
+    migrate_to = [("selfie_search", "0004_remove_selfie_search_candidate")]
 
     def test_schema_migrates_forward_and_back_without_errors(self) -> None:
         executor = MigrationExecutor(connection)
@@ -18,7 +14,6 @@ class SelfieSearchMigrationTests(TransactionTestCase):
         migrated_apps = executor.loader.project_state(self.migrate_to).apps
         for model_name in (
             "selfiesearch",
-            "selfiesearchcandidate",
             "selfiesearchjob",
             "selfiesearchattempt",
             "selfiesearchresult",
@@ -35,15 +30,14 @@ class SelfieSearchMigrationTests(TransactionTestCase):
         self.assertIn("selfie_search", reverted_apps.all_models)
         self.assertNotIn("selfiesearchdirectevidence", reverted_apps.all_models["selfie_search"])
         self.assertNotIn("selfiesearchclusterevidence", reverted_apps.all_models["selfie_search"])
+        self.assertIn("selfiesearchcandidate", reverted_apps.all_models["selfie_search"])
+        restorer = MigrationExecutor(connection)
+        restorer.migrate(restorer.loader.graph.leaf_nodes())
 
 
 class SelfieSearchResultProvenanceDataMigrationTests(TransactionTestCase):
-    migrate_from = [
-        ("picflow", "0005_validate_photo_private_original_constraints"),
-        ("processing", "0002_add_face_embedding_schema"),
-        ("selfie_search", "0002_selfiesearchfeedback_and_more"),
-    ]
-    migrate_to = [("selfie_search", "0003_result_provenance_and_clusters")]
+    migrate_from = [("selfie_search", "0002_selfiesearchfeedback_and_more")]
+    migrate_to = [("selfie_search", "0004_remove_selfie_search_candidate")]
 
     def test_existing_direct_result_is_converted_without_sentinels(self) -> None:
         executor = MigrationExecutor(connection)
@@ -119,8 +113,9 @@ class SelfieSearchResultProvenanceDataMigrationTests(TransactionTestCase):
             cosine_distance=0.125,
         )
 
-        executor.migrate(self.migrate_to)
-        new_apps = executor.loader.project_state(self.migrate_to).apps
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(self.migrate_to)
+        new_apps = forward_executor.loader.project_state(self.migrate_to).apps
         NewResult = new_apps.get_model("selfie_search", "SelfieSearchResult")
         DirectEvidence = new_apps.get_model("selfie_search", "SelfieSearchDirectEvidence")
         migrated_result = NewResult.objects.get(pk=result.pk)
@@ -133,5 +128,3 @@ class SelfieSearchResultProvenanceDataMigrationTests(TransactionTestCase):
         self.assertIsNone(migrated_result.search.direct_matched_photo_count)
         self.assertIsNone(migrated_result.search.final_matched_photo_count)
         self.assertIsNone(migrated_result.search.cluster_expansion_outcome)
-
-        executor.migrate(self.migrate_from)

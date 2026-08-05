@@ -22,6 +22,7 @@ from processing.models import (
 )
 from selfie_search.models import (
     SelfieSearch,
+    SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
     SelfieSearchResult,
 )
@@ -122,13 +123,15 @@ class FeedbackSubmissionTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        return SelfieSearchResult.objects.create(
+        result = SelfieSearchResult.objects.create(
             search=search,
             photo=photo,
-            detection=detection,
             rank=1,
-            cosine_distance=0.1,
         )
+        SelfieSearchDirectEvidence.objects.create(
+            result=result, detection=detection, cosine_distance=0.1
+        )
+        return result
 
     def feedback_url(self, *, token: str) -> str:
         return reverse(

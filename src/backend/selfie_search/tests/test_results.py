@@ -13,7 +13,7 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
-from selfie_search.models import SelfieSearch, SelfieSearchResult
+from selfie_search.models import SelfieSearch, SelfieSearchDirectEvidence, SelfieSearchResult
 from selfie_search.services.results import saved_ready_result_page
 
 
@@ -88,12 +88,13 @@ class SavedReadyResultPageTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        SelfieSearchResult.objects.create(
+        result = SelfieSearchResult.objects.create(
             search=self.search,
             photo=photo,
-            detection=detection,
             rank=rank,
-            cosine_distance=0.1,
+        )
+        SelfieSearchDirectEvidence.objects.create(
+            result=result, detection=detection, cosine_distance=0.1
         )
         return photo
 

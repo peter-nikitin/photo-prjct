@@ -11,7 +11,6 @@ from processing.models import FaceCluster, FaceClusterCorpus, FaceClusterMember,
 from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAttempt,
-    SelfieSearchCandidate,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
@@ -72,59 +71,6 @@ class SelfieSearchModelTests(TestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 SelfieSearchJob.objects.create(search=self.search, configuration={})
-
-    def test_candidate_rejects_photo_from_another_event(self) -> None:
-        candidate = SelfieSearchCandidate(
-            search=self.search,
-            embedding_id=self.make_embedding_id(),
-            photo=self.other_photo,
-        )
-
-        with self.assertRaises(ValidationError):
-            candidate.full_clean()
-
-    def test_candidate_rejects_embedding_from_another_event(self) -> None:
-        candidate = SelfieSearchCandidate(
-            search=self.search,
-            embedding_id=self.make_embedding_id(other_event=True),
-            photo=self.photo,
-        )
-
-        with self.assertRaises(ValidationError):
-            candidate.full_clean()
-
-    def test_candidate_embedding_is_unique_within_a_search(self) -> None:
-        embedding_id = self.make_embedding_id()
-        SelfieSearchCandidate.objects.create(
-            search=self.search, embedding_id=embedding_id, photo=self.photo
-        )
-
-        with self.assertRaises(IntegrityError):
-            with transaction.atomic():
-                SelfieSearchCandidate.objects.create(
-                    search=self.search, embedding_id=embedding_id, photo=self.photo
-                )
-
-    def test_persisted_candidate_identity_is_immutable(self) -> None:
-        candidate = SelfieSearchCandidate.objects.create(
-            search=self.search,
-            embedding_id=self.make_embedding_id(),
-            photo=self.photo,
-        )
-        candidate.photo = self.other_photo
-
-        with self.assertRaises(ValidationError):
-            candidate.save()
-
-    def test_persisted_candidate_cannot_be_deleted_through_the_model(self) -> None:
-        candidate = SelfieSearchCandidate.objects.create(
-            search=self.search,
-            embedding_id=self.make_embedding_id(),
-            photo=self.photo,
-        )
-
-        with self.assertRaises(ValidationError):
-            candidate.delete()
 
     def test_result_photo_and_rank_are_unique_per_search(self) -> None:
         detection_id = self.make_detection_id()

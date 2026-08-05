@@ -31,6 +31,7 @@ from processing.models import (
 )
 from selfie_search.models import (
     SelfieSearch,
+    SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
     SelfieSearchJob,
     SelfieSearchResult,
@@ -611,13 +612,15 @@ class PublicSelfieResultViewTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        return SelfieSearchResult.objects.create(
+        result = SelfieSearchResult.objects.create(
             search=search,
             photo=photo,
-            detection=detection,
             rank=rank,
-            cosine_distance=0.1,
         )
+        SelfieSearchDirectEvidence.objects.create(
+            result=result, detection=detection, cosine_distance=0.1
+        )
+        return result
 
     def result_url(self, *, event: Event, token: str) -> str:
         return reverse(

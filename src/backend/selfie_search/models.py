@@ -11,7 +11,6 @@ from processing.models import (
     FaceCluster,
     FaceClusterCorpus,
     FaceClusterMember,
-    FaceEmbedding,
     PhotoFaceDetection,
 )
 
@@ -190,46 +189,6 @@ class SelfieSearch(models.Model):  # noqa: DJ008
             != self.direct_matched_photo_count + self.cluster_expanded_photo_count
         ):
             errors["final_matched_photo_count"] = "Search result counts must reconcile."
-        if errors:
-            raise ValidationError(errors)
-
-
-class SelfieSearchCandidate(models.Model):  # noqa: DJ008
-    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
-    search = models.ForeignKey(SelfieSearch, on_delete=models.PROTECT, related_name="candidates")
-    embedding = models.ForeignKey(
-        FaceEmbedding, on_delete=models.PROTECT, related_name="selfie_candidates"
-    )
-    photo = models.ForeignKey(Photo, on_delete=models.PROTECT, related_name="selfie_candidates")
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("search", "embedding"), name="selfie_candidate_embedding_uniq"
-            )
-        ]
-
-    def save(self, *args, **kwargs) -> None:
-        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
-            raise ValidationError("Selfie search candidates are append-only.")
-        super().save(*args, **kwargs)
-
-    def delete(self, *args, **kwargs) -> None:
-        raise ValidationError("Selfie search candidates are append-only.")
-
-    def clean(self) -> None:
-        super().clean()
-        errors = {}
-        if self.search_id and self.photo_id and self.search.event_id != self.photo.event_id:
-            errors["photo"] = "The candidate photo must belong to the search event."
-        if self.search_id and self.embedding_id:
-            embedding_photo_id = self.embedding.detection.attempt.photo_id
-            embedding_event_id = self.embedding.detection.attempt.event_id
-            if embedding_event_id != self.search.event_id:
-                errors["embedding"] = "The candidate embedding must belong to the search event."
-            if self.photo_id and embedding_photo_id != self.photo_id:
-                errors["embedding"] = "The candidate embedding must belong to the candidate photo."
         if errors:
             raise ValidationError(errors)
 

@@ -35,7 +35,7 @@ from processing.services.enrollment import (
 )
 from processing.services.face_cohort import load_compatible_face_embeddings
 from selfie_search.images import PreparedSelfie, prepare_selfie_image
-from selfie_search.models import SelfieSearch, SelfieSearchCandidate, SelfieSearchJob
+from selfie_search.models import SelfieSearch, SelfieSearchJob
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
     claim_search_job,
@@ -250,8 +250,6 @@ class SubmissionTests(TestCase):
         paid = submit_selfie_search(event=self.paid_event, selfie=valid_selfie(), storage=storage)
 
         self.assertEqual(SelfieSearchJob.objects.filter(search=created.search).count(), 1)
-        self.assertFalse(SelfieSearchCandidate.objects.filter(search=created.search).exists())
-        self.assertFalse(SelfieSearchCandidate.objects.filter(search=paid.search).exists())
         self.assertEqual(created.search.eligible_photo_count, 0)
         self.assertEqual(created.search.eligible_face_count, 0)
         generations = created.search.configuration["gallery_face_embedding_generations"]
@@ -323,9 +321,8 @@ class SubmissionTests(TestCase):
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertEqual(search.eligible_photo_count, 1)
         self.assertEqual(search.eligible_face_count, 1)
-        self.assertFalse(search.candidates.exists())
         self.assertEqual(
-            list(search.results.values_list("detection__embedding", flat=True)),
+            list(search.results.values_list("direct_evidence__detection__embedding", flat=True)),
             [embedding.id],
         )
         self.assertEqual(search.matched_photo_count, 1)

@@ -1,6 +1,6 @@
 # Selfie Search Face-Cluster Expansion Design
 
-- **Status:** Approved in conversation on 2026-08-05; pending written review
+- **Status:** Approved in conversation and written review on 2026-08-05
 - **Date:** 2026-08-05
 - **Owner:** FindMe Photo
 - **Related architecture:** [`docs/architecture.md`](../../architecture.md), implemented public
@@ -20,9 +20,10 @@
   [ADR 0001](../../adr/0001-django-modular-monolith.md),
   [ADR 0002](../../adr/0002-postgresql-system-of-record.md),
   [ADR 0017](../../adr/0017-use-django-polled-photo-processing-jobs.md),
-  [ADR 0019](../../adr/0019-use-public-event-selfie-search.md), and
-  [ADR 0023](../../adr/0023-store-consented-selfie-search-feedback.md)
-- **ADR impact:** **Requires a new ADR.** ADR 0019 deliberately excluded cluster and graph expansion
+  [ADR 0019](../../adr/0019-use-public-event-selfie-search.md),
+  [ADR 0023](../../adr/0023-store-consented-selfie-search-feedback.md), and
+  proposed [ADR 0024](../../adr/0024-expand-selfie-search-with-face-clusters.md)
+- **ADR impact:** **Requires acceptance of proposed ADR 0024.** ADR 0019 deliberately excluded cluster and graph expansion
   from the first public selfie-search decision and defines direct face matches as the only saved
   result source. This design adds a durable derived identity-cluster corpus and a second result
   membership source. It preserves ADR 0019's event isolation, probable-match language, transient

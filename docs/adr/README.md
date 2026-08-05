@@ -43,6 +43,7 @@ place, and add the new record to this index.
 | 0021 | [Allow original download for authorized photos](0021-allow-original-download-for-authorized-photos.md) | Accepted |
 | 0022 | [Use numbered gallery pages](0022-use-numbered-gallery-pages.md) | Accepted |
 | 0023 | [Store consented selfie-search quality feedback](0023-store-consented-selfie-search-feedback.md) | Accepted |
+| 0024 | [Expand selfie search with conservative face clusters](0024-expand-selfie-search-with-face-clusters.md) | Proposed |
 
 ## Public selfie-search outcome
 

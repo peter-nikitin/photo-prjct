@@ -29,13 +29,13 @@ class PublicSelfieBearerProtectionMiddleware:
         # URL resolution uses path_info. BaseHandler and CsrfViewMiddleware log path,
         # so redact only the latter before an inner handler can turn an exception into a 4xx/5xx.
         request._is_public_selfie_bearer_request = True
-        is_feedback_post = _is_feedback_post(request)
-        if request.method not in _READ_ONLY_METHODS and not is_feedback_post:
+        is_allowed_post = _is_allowed_bearer_post(request)
+        if request.method not in _READ_ONLY_METHODS and not is_allowed_post:
             request.path = _SANITIZED_BEARER_PATH
             request.META["PATH_INFO"] = _SANITIZED_BEARER_PATH
             return _protect_bearer_response(HttpResponseNotAllowed(["GET", "HEAD"]))
         request.path = _SANITIZED_BEARER_PATH
-        if not is_feedback_post:
+        if not is_allowed_post:
             request.META["PATH_INFO"] = _SANITIZED_BEARER_PATH
         response = _protect_bearer_response(self.get_response(request))
         request.path = original_path
@@ -61,10 +61,13 @@ def _protect_bearer_response(response: HttpResponseBase) -> HttpResponseBase:
     return response
 
 
-def _is_feedback_post(request: HttpRequest) -> bool:
+def _is_allowed_bearer_post(request: HttpRequest) -> bool:
     if request.method != "POST":
         return False
     try:
-        return resolve(request.path_info).view_name == "selfie_search:feedback"
+        return resolve(request.path_info).view_name in {
+            "selfie_search:feedback",
+            "selfie_search:process_gallery_search",
+        }
     except Resolver404:
         return False

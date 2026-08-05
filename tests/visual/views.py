@@ -82,12 +82,22 @@ class FixtureGalleryMedia:
 
 
 @dataclass(frozen=True)
+class FixtureGalleryFace:
+    face_number: int
+    left_percent: float
+    top_percent: float
+    size_percent: float
+    search_url: str
+
+
+@dataclass(frozen=True)
 class FixtureGalleryPhoto:
     photo_id: str
     preview_media_small: FixtureGalleryMedia
     preview_media_large: FixtureGalleryMedia
     download_url: str
     alt: str
+    faces: tuple[FixtureGalleryFace, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -195,13 +205,18 @@ PHOTOS = (
 )
 
 
-def _gallery_photo(photo_id: str, image: str) -> FixtureGalleryPhoto:
+def _gallery_photo(
+    photo_id: str,
+    image: str,
+    faces: tuple[FixtureGalleryFace, ...] = (),
+) -> FixtureGalleryPhoto:
     return FixtureGalleryPhoto(
         photo_id=photo_id,
         preview_media_small=FixtureGalleryMedia(image, "preview-small"),
         preview_media_large=FixtureGalleryMedia(image, "preview-large"),
         download_url=f"/__visual__/downloads/{photo_id}/",
         alt=f"Фото {photo_id} с события London 10K",
+        faces=faces,
     )
 
 
@@ -210,6 +225,51 @@ GALLERY_PHOTOS = (
     _gallery_photo("1190", "/static/images/run-track-1190.png"),
     _gallery_photo("1316", "/static/images/run-finish-1842.png"),
     _gallery_photo("3125", "/static/images/run-expo-3125.png"),
+)
+
+
+def _gallery_face(
+    photo_id: str,
+    face_number: int,
+    left_percent: float,
+    top_percent: float,
+    size_percent: float,
+) -> FixtureGalleryFace:
+    detection_id = f"00000000-0000-4000-8000-{int(photo_id):010d}{face_number:02d}"
+    return FixtureGalleryFace(
+        face_number=face_number,
+        left_percent=left_percent,
+        top_percent=top_percent,
+        size_percent=size_percent,
+        search_url=(f"/events/london-10k/photos/{photo_id}/similar-search/{detection_id}/"),
+    )
+
+
+GALLERY_FACE_PHOTOS = (
+    _gallery_photo("1048", "/static/images/run-city-1842.png"),
+    _gallery_photo(
+        "1190",
+        "/static/images/run-track-1190.png",
+        (_gallery_face("1190", 1, 45, 45, 9),),
+    ),
+    _gallery_photo(
+        "1316",
+        "/static/images/run-finish-1842.png",
+        (
+            _gallery_face("1316", 1, 22, 60, 9),
+            _gallery_face("1316", 2, 75, 60, 9),
+        ),
+    ),
+    _gallery_photo(
+        "3125",
+        "/static/images/run-expo-3125.png",
+        (
+            _gallery_face("3125", 1, 22, 60, 9),
+            _gallery_face("3125", 2, 46, 44, 10),
+            _gallery_face("3125", 3, 75, 60, 9),
+            _gallery_face("3125", 4, 70, 41, 8),
+        ),
+    ),
 )
 
 ORDERS = (
@@ -431,8 +491,8 @@ def event_gallery_populated(request: HttpRequest) -> HttpResponse:
         "catalog/event_detail.html",
         {
             "event": EVENTS[0],
-            "gallery_photos": GALLERY_PHOTOS,
-            "gallery_page": Paginator(GALLERY_PHOTOS, 3).page(1),
+            "gallery_photos": GALLERY_FACE_PHOTOS,
+            "gallery_page": Paginator(GALLERY_FACE_PHOTOS, 3).page(1),
         },
     )
 

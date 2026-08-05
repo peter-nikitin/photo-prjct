@@ -10,7 +10,7 @@ from processing.models import FaceEmbedding, PhotoFaceDetection
 
 JSON_MAX_BYTES = 16_384
 FEEDBACK_OBJECT_MAX_BYTES = 20 * 1024 * 1024
-FEEDBACK_CONSENT_TEXT_VERSION = "2026-08-04"
+FEEDBACK_CONSENT_TEXT_VERSION = "2026-08-05"
 _TERMINAL_SEARCH_STATUSES = (
     "ready",
     "no_face",
@@ -261,7 +261,7 @@ class SelfieSearchFeedback(models.Model):  # noqa: DJ008
         related_name="feedback",
     )
     variant = models.CharField(max_length=16, choices=Variant)
-    contact = models.CharField(max_length=254)
+    contact = models.CharField(max_length=254, blank=True)
     personal_data_consent = models.BooleanField(default=False)
     consent_text_version = models.CharField(max_length=32)
     consented_at = models.DateTimeField()
@@ -321,10 +321,6 @@ class SelfieSearchFeedback(models.Model):  # noqa: DJ008
                 name="selfie_feedback_variant_source_chk",
             ),
             models.CheckConstraint(
-                condition=~models.Q(contact=""),
-                name="selfie_feedback_contact_nonempty_chk",
-            ),
-            models.CheckConstraint(
                 condition=models.Q(object_content_type__in=("image/jpeg", "image/png")),
                 name="selfie_feedback_object_type_chk",
             ),
@@ -355,9 +351,7 @@ class SelfieSearchFeedback(models.Model):  # noqa: DJ008
         errors = {}
         if self.contact is not None:
             self.contact = self.contact.strip()
-            if not self.contact:
-                errors["contact"] = "Contact is required."
-            elif any(ord(char) < 32 or ord(char) == 127 for char in self.contact):
+            if self.contact and any(ord(char) < 32 or ord(char) == 127 for char in self.contact):
                 errors["contact"] = "Contact must not contain control characters."
         if not self.personal_data_consent:
             errors["personal_data_consent"] = "Personal-data consent is required."

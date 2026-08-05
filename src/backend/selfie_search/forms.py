@@ -111,7 +111,7 @@ class FeedbackSubmissionForm(forms.Form):
             attrs={"accept": "image/jpeg,image/png,image/heic,image/heif,.heic,.heif"}
         )
     )
-    contact = forms.CharField(max_length=254)
+    contact = forms.CharField(max_length=254, required=False)
     personal_data_consent = forms.BooleanField(required=True)
     labels = forms.CharField(required=False)
 
@@ -127,8 +127,6 @@ class FeedbackSubmissionForm(forms.Form):
 
     def clean_contact(self) -> str:
         contact = self.cleaned_data["contact"].strip()
-        if not contact:
-            raise forms.ValidationError("Укажите контакт для связи.")
         if any(ord(character) < 32 or ord(character) == 127 for character in contact):
             raise forms.ValidationError("Контакт не должен содержать управляющие символы.")
         return contact

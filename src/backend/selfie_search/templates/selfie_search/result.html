@@ -91,13 +91,18 @@
                     <p>Можно отправить отзыв и без полной разметки, но каждая отметка очень поможет улучшить поиск.</p>
                   {% endif %}
                   <p class="selfie-search-feedback-disclosure">К отзыву приложим ваше селфи — то самое, которое вы использовали для этого поиска. Повторно выбирать файл не нужно.</p>
-                  <label for="feedback-contact">Контакт для связи</label>
-                  <input id="feedback-contact" name="contact" type="text" maxlength="254" required aria-describedby="feedback-contact-hint feedback-contact-error">
-                  <small id="feedback-contact-hint">Телефон, Telegram или email</small>
-                  <p id="feedback-contact-error" class="selfie-search-feedback-error" data-feedback-contact-error hidden></p>
+                  <details class="selfie-search-feedback-contact">
+                    <summary>Оставить контакт для связи — необязательно</summary>
+                    <div class="selfie-search-feedback-contact-body">
+                      <label for="feedback-contact">Контакт для связи</label>
+                      <input id="feedback-contact" name="contact" type="text" maxlength="254" aria-describedby="feedback-contact-hint feedback-contact-error">
+                      <small id="feedback-contact-hint">Телефон, Telegram или email</small>
+                      <p id="feedback-contact-error" class="selfie-search-feedback-error" data-feedback-contact-error hidden></p>
+                    </div>
+                  </details>
                   <label class="selfie-search-feedback-consent" for="feedback-consent">
                     <input id="feedback-consent" name="personal_data_consent" type="checkbox" required aria-describedby="feedback-consent-error">
-                    <span>Я согласен на обработку моего селфи, контактных данных и оценки результатов поиска для анализа качества поиска и связи со мной в соответствии с <a href="{% static 'ui/legal/personal-data-policy.pdf' %}">Политикой обработки персональных данных</a>.</span>
+                    <span>Я согласен на обработку моего селфи и оценки результатов поиска для анализа качества поиска, а если оставлю контакт — также контактных данных для связи со мной в соответствии с <a href="{% static 'ui/legal/personal-data-policy.pdf' %}">Политикой обработки персональных данных</a>.</span>
                   </label>
                   <p id="feedback-consent-error" class="selfie-search-feedback-error" data-feedback-consent-error hidden></p>
                   <p class="selfie-search-feedback-lifecycle">Селфи будет автоматически удалено из закрытого хранилища.</p>

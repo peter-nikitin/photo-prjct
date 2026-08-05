@@ -1172,7 +1172,20 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertContains(response, "Размечено 0 из 1 фотографий")
         self.assertContains(response, "Я есть")
         self.assertContains(response, "Меня нет")
-        self.assertContains(response, "Контакт для связи")
+        self.assertContains(
+            response,
+            '<details class="selfie-search-feedback-contact">',
+        )
+        self.assertNotContains(
+            response,
+            '<details class="selfie-search-feedback-contact" open>',
+        )
+        self.assertContains(response, "Оставить контакт для связи — необязательно")
+        self.assertContains(response, '<label for="feedback-contact">Контакт для связи</label>')
+        self.assertNotContains(
+            response,
+            '<input id="feedback-contact" name="contact" type="text" maxlength="254" required',
+        )
         self.assertContains(response, "Телефон, Telegram или email")
         self.assertContains(
             response,
@@ -1181,8 +1194,9 @@ class PublicSelfieResultViewTests(TestCase):
         )
         self.assertContains(
             response,
-            "Я согласен на обработку моего селфи, контактных данных и оценки результатов поиска "
-            "для анализа качества поиска и связи со мной в соответствии с ",
+            "Я согласен на обработку моего селфи и оценки результатов поиска для анализа качества "
+            "поиска, а если оставлю контакт — также контактных данных для связи со мной "
+            "в соответствии с ",
         )
         self.assertContains(response, "ui/legal/personal-data-policy.pdf")
         self.assertNotContains(response, 'type="file"')
@@ -1219,7 +1233,7 @@ class PublicSelfieResultViewTests(TestCase):
             variant=SelfieSearchFeedback.Variant.PROBLEM,
             contact="customer@example.test",
             personal_data_consent=True,
-            consent_text_version="2026-08-04",
+            consent_text_version="2026-08-05",
             consented_at=timezone.now(),
             source_status=search.status,
             source_configuration=search.configuration,

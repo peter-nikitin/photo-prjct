@@ -177,7 +177,7 @@ test('keeps one face chooser open and restores its trigger after outside close o
   first.details.open = true;
   first.details.trigger('toggle');
 
-  assert.equal(first.tile.focusCalls, 1);
+  assert.equal(first.tile.focusCalls, 0);
   assert.equal(second.details.open, false);
 
   second.details.open = true;
@@ -185,7 +185,7 @@ test('keeps one face chooser open and restores its trigger after outside close o
 
   assert.equal(first.details.open, false);
   assert.equal(first.trigger.focusCalls, 0);
-  assert.equal(second.tile.focusCalls, 1);
+  assert.equal(second.tile.focusCalls, 0);
 
   documentListeners.get('click')({ target: {} });
 

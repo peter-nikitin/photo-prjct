@@ -33,7 +33,6 @@
           closeChooser(openChooser, { restoreFocus: false });
         }
         openChooser = chooser;
-        chooser.querySelector('[data-face-choice]')?.focus();
       });
     });
 

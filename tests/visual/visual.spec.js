@@ -675,20 +675,7 @@ for (const [name, viewport] of [
     await chooserTrigger.focus();
     await page.keyboard.press('Enter');
     await expect(details.locator('.gallery-face-chooser-popover')).toBeVisible();
-    await expect(details.locator('[data-face-choice]').first()).toBeFocused();
-    const focusIndicator = await details.locator('[data-face-choice]').first().evaluate((element) => {
-      const style = getComputedStyle(element);
-      return {
-        focusVisible: element.matches(':focus-visible'),
-        outlineColor: style.outlineColor,
-        outlineStyle: style.outlineStyle,
-        outlineWidth: style.outlineWidth,
-      };
-    });
-    expect(focusIndicator.focusVisible).toBe(true);
-    expect(focusIndicator.outlineStyle).toBe('solid');
-    expect(focusIndicator.outlineWidth).not.toBe('0px');
-    expect(focusIndicator.outlineColor).not.toBe('rgba(0, 0, 0, 0)');
+    await expect(chooserTrigger).toBeFocused();
 
     const popoverBounds = await details.locator('.gallery-face-chooser-popover').boundingBox();
     expect(popoverBounds).not.toBeNull();

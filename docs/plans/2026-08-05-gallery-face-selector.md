@@ -206,9 +206,10 @@ interfering with GLightbox.
 - [ ] Add failing markup assertions for one direct circle; two/three overlapping summary crops;
   two crops plus exact remainder for more than three; all chooser tiles/forms; accessible names;
   `<details>`/`<summary>`/dialog labelling; and separation from `.gallery-card-link`.
-- [ ] Extend Node tests with small DOM fakes for: opening one chooser closes another; opening focuses
-  its first tile; Escape and outside click close and restore trigger focus; a face-form click is not
-  treated as a lightbox trigger; and initialization remains safe when no chooser or GLightbox exists.
+- [ ] Extend Node tests with small DOM fakes for: opening one chooser closes another while focus
+  stays on its trigger; Escape and outside click close and restore trigger focus; a face-form click
+  is not treated as a lightbox trigger; and initialization remains safe when no chooser or GLightbox
+  exists.
 - [ ] Run
   `make test TESTS="src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_renders_gallery_face_controls"`
   and `npm run test:js`. Expect markup and chooser tests to fail before implementation.

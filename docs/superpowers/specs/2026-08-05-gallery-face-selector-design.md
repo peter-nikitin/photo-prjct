@@ -124,7 +124,8 @@ a separate CSRF-protected submit button with the accessible name
 scrollable; a maximum of 32 faces is already enforced by the accepted processing contract. A tile
 uses the same padded crop rule as its footer thumbnail.
 
-Opening moves focus to the first face tile. Escape and a click outside close the chooser and return
+Opening keeps focus on the stack, so disclosure does not change the page's scroll position or imply
+that the first face is selected. Escape and a click outside close the chooser and keep or return
 focus to the stack. Opening another chooser closes the previous one. Selecting a tile submits the
 form; no intermediate selected state or confirmation button is required. These enhancements must
 not remove the native `<details>` no-JavaScript path.

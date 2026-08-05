@@ -43,6 +43,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
 | PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-04 |
+| PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
 
 ## Job details
 
@@ -200,6 +201,26 @@ future feedback prompts in my browser.
   real customer-outcome evidence is claimed.
 - Last updated: 2026-08-04
 
+### PJ-014 — Customer — Return to saved selfie-search results
+
+When I have previously searched for photos by selfie on this device, I want to see my saved
+results on the event page, so I can reopen the result I need without selecting and uploading the
+selfie again.
+
+- Status: In progress
+- Evidence: Repository-only implementation adds a versioned browser `localStorage` list of
+  canonical event-scoped result paths and timestamps, with Django rendering only a non-secret
+  event slug and an initially hidden container. [`tests/js/selfie-search-history.test.js`](../tests/js/selfie-search-history.test.js)
+  passed 16/16 cases; focused
+  [`src/backend/selfie_search/tests/test_views.py`](../src/backend/selfie_search/tests/test_views.py)
+  and [`src/backend/picflow/tests/test_views.py`](../src/backend/picflow/tests/test_views.py)
+  passed 81 cases; `npm run test:js` passed 84/84 cases; `make check` passed 1,239 tests with
+  3 skipped at 83.20% coverage, plus Ruff, configured mypy, Django system, and migration-drift
+  checks; and `npm run test:visual` passed 81/81 cases. Existing non-expiring bearer-result URLs
+  remain governed by [ADR 0019](adr/0019-use-public-event-selfie-search.md). No deployment,
+  customer, or validated delivery evidence is recorded.
+- Last updated: 2026-08-04
+
 Visual design-reference screens are not delivery evidence.
 
 ## Status log
@@ -229,3 +250,5 @@ This log is append-only.
 | 2026-08-04 | PJ-013 | Not recorded | Candidate | Approved product design recorded in the selfie-search quality feedback specification; implementation planning awaits explicit acceptance of the required privacy/retention ADR. |
 | 2026-08-04 | PJ-013 | Candidate | Planned | ADR 0023 was explicitly accepted and the decision-complete selfie-search quality feedback implementation plan was approved for execution. |
 | 2026-08-04 | PJ-013 | Planned | In progress | Repository implementation and automated release-gate evidence are complete; the feature remains disabled by default and has no staging/production activation or real customer-outcome evidence. |
+| 2026-08-04 | PJ-014 | Not recorded | Candidate | Approved product design proposes a device-local list of saved bearer results on each event page; implementation planning has not started. |
+| 2026-08-04 | PJ-014 | Candidate | In progress | Repository-only implementation and reconciled release-gate evidence: 16/16 device-local history JS cases, 81 focused Django selfie-search/event-view cases, 84/84 full JavaScript cases, `make check` with 1,239 passed and 3 skipped at 83.20% coverage, and 81/81 visual cases passed. No deployment or customer-outcome evidence is claimed. |

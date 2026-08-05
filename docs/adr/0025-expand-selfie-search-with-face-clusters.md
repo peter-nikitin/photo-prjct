@@ -1,4 +1,4 @@
-# 0024: Expand selfie search with conservative face clusters
+# 0025: Expand selfie search with conservative face clusters
 
 - Status: Accepted
 - Date: 2026-08-05

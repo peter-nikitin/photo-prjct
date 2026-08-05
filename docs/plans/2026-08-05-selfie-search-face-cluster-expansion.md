@@ -23,8 +23,8 @@
   [ADR 0017](../adr/0017-use-django-polled-photo-processing-jobs.md),
   [ADR 0019](../adr/0019-use-public-event-selfie-search.md),
   [ADR 0023](../adr/0023-store-consented-selfie-search-feedback.md), and
-  [ADR 0024](../adr/0024-expand-selfie-search-with-face-clusters.md)
-- ADR impact: Conforms to accepted ADR 0024 while preserving ADRs 0019 and 0023.
+  [ADR 0025](../adr/0025-expand-selfie-search-with-face-clusters.md)
+- ADR impact: Conforms to accepted ADR 0025 while preserving ADRs 0019 and 0023.
 
 **Goal:** Implement disabled-by-default event-scoped face-cluster expansion that appends additional
 unique photographs after unchanged direct selfie-search results, preserves immutable source
@@ -94,7 +94,7 @@ task, and the complete `make check` release gate before branch review.
 
 **Specification:** Conservative anonymous face clusters; Evaluation and activation gate.
 
-**Depends on:** Accepted ADR 0024.
+**Depends on:** Accepted ADR 0025.
 
 **Produces:**
 
@@ -409,7 +409,7 @@ Acceptance criteria, and Rejected alternatives.
 - Final operator commands for build, private benchmark, report, guarded activation, direct-only
   rollback, and observability verification without secrets or raw biometric artifacts.
 - No worker credential/configuration expansion and no environment activation in this branch.
-- One recorded reconciliation outcome: implementation conforms to accepted ADR 0024 and preserves
+- One recorded reconciliation outcome: implementation conforms to accepted ADR 0025 and preserves
   ADRs 0019/0023; any discovered contradiction blocks delivery instead of editing accepted ADRs.
 
 - [x] Compare every delivered interface and behavior with all 20 specification acceptance criteria;
@@ -485,11 +485,11 @@ against real result data.
 
 ## Architecture and ADR reconciliation
 
-- Accepted ADR 0024 is the authoritative cluster-expansion decision.
+- Accepted ADR 0025 is the authoritative cluster-expansion decision.
 - ADR 0019 remains authoritative for query processing, cleanup, event isolation, bearer access, and
   probable-match semantics.
 - ADR 0023 remains authoritative for consented feedback and prohibits automatic feedback tuning.
-- Task 8 evidence confirms the repository implementation conforms to ADR 0024 and preserves ADRs
+- Task 8 evidence confirms the repository implementation conforms to ADR 0025 and preserves ADRs
   0019/0023: direct-first immutable snapshots, transient query processing and cleanup-before-
   publication remain unchanged; feedback is evaluation evidence only. The capability is implemented
   but disabled by default, and no environment activation or customer outcome is claimed.

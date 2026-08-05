@@ -10,14 +10,24 @@
 {% endblock %}
 
 {% block content %}
-  <article class="selfie-search-result" aria-labelledby="selfie-search-result-title" data-selfie-search-result data-event-slug="{{ event.slug }}" data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" data-result-digest="{{ public_token_digest }}"{% if selfie_feedback_correlation %} data-feedback-correlation="{{ selfie_feedback_correlation }}"{% endif %}{% if not is_terminal %} data-status-url="{{ status_url }}"{% endif %}>
+  <article class="selfie-search-result" aria-labelledby="selfie-search-result-title" data-selfie-search-result data-event-slug="{{ event.slug }}" data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" data-gallery-origin="{{ is_gallery_origin|yesno:'true,false' }}" data-result-digest="{{ public_token_digest }}"{% if selfie_feedback_correlation %} data-feedback-correlation="{{ selfie_feedback_correlation }}"{% endif %}{% if not is_terminal %} data-status-url="{{ status_url }}"{% endif %}>
     <h1 id="selfie-search-result-title">{{ event.name }}</h1>
-    <p class="selfie-search-lead">Поиск показывает вероятные совпадения. Селфи удаляется после подготовки поиска, а результат увидит любой, у кого есть эта ссылка.</p>
+    {% if is_gallery_origin %}
+      <p class="selfie-search-lead">Поиск показывает вероятные совпадения среди фотографий этого события. Результат увидит любой, у кого есть эта ссылка.</p>
+    {% else %}
+      <p class="selfie-search-lead">Поиск показывает вероятные совпадения. Селфи удаляется после подготовки поиска, а результат увидит любой, у кого есть эта ссылка.</p>
+    {% endif %}
 
     {% if search.status == "queued" or search.status == "processing" or search.status == "cleanup_pending" %}
       <section class="selfie-search-state" aria-labelledby="selfie-search-state-title">
         <h2 id="selfie-search-state-title">Ищем ваши фотографии…</h2>
         <p role="status" aria-live="polite">Страница обновится автоматически, когда результат будет готов.</p>
+        {% if search.status == "queued" and search.configuration.processor == "gallery_photo_query" %}
+          <form method="post" action="{% url 'selfie_search:process_gallery_search' event_slug=event.slug public_token=public_token %}" data-gallery-search-process>
+            {% csrf_token %}
+            <noscript><button class="button" type="submit">Начать поиск похожих фотографий</button></noscript>
+          </form>
+        {% endif %}
       </section>
     {% elif search.status == "ready" %}
       <section class="event-gallery selfie-search-results" data-event-gallery aria-labelledby="selfie-search-matches-title">
@@ -60,12 +70,12 @@
     {% elif search.status == "search_unavailable" %}
       <p class="selfie-search-state" role="alert">Для этого события пока нет подходящих фотографий.</p>
     {% else %}
-      <p class="selfie-search-state" role="alert">Поиск сейчас недоступен. Попробуйте другое селфи.</p>
+      <p class="selfie-search-state" role="alert">{% if is_gallery_origin %}Поиск похожих фотографий сейчас недоступен. Попробуйте выбрать другую фотографию.{% else %}Поиск сейчас недоступен. Попробуйте другое селфи.{% endif %}</p>
     {% endif %}
 
     {% if is_terminal %}
       <div class="selfie-search-terminal-actions">
-        <a class="button" href="{% url 'event_detail' slug=event.slug %}">Искать по другому селфи</a>
+        <a class="button" href="{% url 'event_detail' slug=event.slug %}">{% if is_gallery_origin %}Искать другие фотографии{% else %}Искать по другому селфи{% endif %}</a>
         {% if feedback or feedback_submitted %}
           <div class="selfie-search-terminal-feedback">
             {% if feedback %}

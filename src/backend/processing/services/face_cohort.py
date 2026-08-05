@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from django.db.models import F, Q
+from django.db.models import F, Q, QuerySet
 from picflow.models import Event
 
 from processing.models import FACE_EMBEDDING_PROCESSOR, FaceEmbedding, PhotoProcessingState
@@ -50,6 +50,65 @@ def load_compatible_face_embeddings(
     if not generations:
         raise ValueError("face-embedding generations are required")
 
+    embeddings = compatible_face_embedding_queryset(event, generations)
+
+    rows: list[CompatibleFaceEmbedding] = []
+    for (
+        vector,
+        model_version,
+        detection_id,
+        photo_id,
+        photo_event_id,
+        attempt_event_id,
+        attempt_id,
+        contract_version,
+        processor_version,
+        configuration_hash,
+    ) in embeddings.values_list(
+        "vector",
+        "model_version",
+        "detection_id",
+        "detection__attempt__photo_id",
+        "detection__attempt__photo__event_id",
+        "detection__attempt__event_id",
+        "detection__attempt_id",
+        "detection__attempt__contract_version",
+        "detection__attempt__processor_version",
+        "detection__attempt__run__configuration_hash",
+    ).iterator(chunk_size=2_000):
+        if not isinstance(vector, list) or len(vector) != dimensions:
+            continue
+        if not isinstance(model_version, str) or not isinstance(detection_id, UUID):
+            continue
+        if not isinstance(photo_id, str) or not isinstance(attempt_id, UUID):
+            continue
+        rows.append(
+            CompatibleFaceEmbedding(
+                vector=tuple(vector),
+                model_version=model_version,
+                detection_id=detection_id,
+                photo_id=photo_id,
+                photo_event_id=photo_event_id,
+                attempt_event_id=attempt_event_id,
+                attempt_photo_id=photo_id,
+                attempt_id=attempt_id,
+                contract_version=contract_version,
+                processor_version=processor_version,
+                configuration_hash=(
+                    configuration_hash if isinstance(configuration_hash, str) else ""
+                ),
+            )
+        )
+    return tuple(rows)
+
+
+def compatible_face_embedding_queryset(
+    event: Event,
+    generations: Sequence[Mapping[str, object]],
+) -> QuerySet[FaceEmbedding]:
+    """Return the shared current accepted cohort before bounded field projection."""
+    if not generations:
+        raise ValueError("face-embedding generations are required")
     compatible_generation = Q()
     for generation in generations:
         if not isinstance(generation, Mapping):
@@ -82,7 +141,7 @@ def load_compatible_face_embeddings(
             detection__attempt__run__configuration_hash=generation["configuration_hash"],
         )
 
-    embeddings = (
+    return (
         FaceEmbedding.objects.filter(
             detection__status="kept",
             detection__attempt__event=event,
@@ -98,55 +157,5 @@ def load_compatible_face_embeddings(
             detection__attempt__photo__original_size__isnull=False,
         )
         .filter(compatible_generation)
-        .values_list(
-            "vector",
-            "model_version",
-            "detection_id",
-            "detection__attempt__photo_id",
-            "detection__attempt__photo__event_id",
-            "detection__attempt__event_id",
-            "detection__attempt_id",
-            "detection__attempt__contract_version",
-            "detection__attempt__processor_version",
-            "detection__attempt__run__configuration_hash",
-        )
         .order_by("detection_id")
     )
-
-    rows: list[CompatibleFaceEmbedding] = []
-    for (
-        vector,
-        model_version,
-        detection_id,
-        photo_id,
-        photo_event_id,
-        attempt_event_id,
-        attempt_id,
-        contract_version,
-        processor_version,
-        configuration_hash,
-    ) in embeddings.iterator(chunk_size=2_000):
-        if not isinstance(vector, list) or len(vector) != dimensions:
-            continue
-        if not isinstance(model_version, str) or not isinstance(detection_id, UUID):
-            continue
-        if not isinstance(photo_id, str) or not isinstance(attempt_id, UUID):
-            continue
-        rows.append(
-            CompatibleFaceEmbedding(
-                vector=tuple(vector),
-                model_version=model_version,
-                detection_id=detection_id,
-                photo_id=photo_id,
-                photo_event_id=photo_event_id,
-                attempt_event_id=attempt_event_id,
-                attempt_photo_id=photo_id,
-                attempt_id=attempt_id,
-                contract_version=contract_version,
-                processor_version=processor_version,
-                configuration_hash=(
-                    configuration_hash if isinstance(configuration_hash, str) else ""
-                ),
-            )
-        )
-    return tuple(rows)

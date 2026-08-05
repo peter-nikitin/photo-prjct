@@ -170,18 +170,25 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   low-cardinality Django HTTP metrics. Check the canonical public HTTPS health endpoint through a
   managed probe outside Yandex Cloud, as defined by
   [ADR 0018](adr/0018-use-managed-yandex-monitoring.md).
-- The `selfie_search` Django app and the existing worker implement public event-scoped selfie
-  search: submission immediately creates the queued bearer-link result page; after the worker
-  returns one transient query embedding, Django loads and ranks the compatible event cohort once
-  without persisting per-face candidate rows, deletes the temporary selfie before terminal
-  publication, and serves stable immutable results. Searches created before this direct-ranking
-  change remain compatible with their already-persisted candidate rows. The direct path selects
-  only the six identity/vector fields needed for ranking and reads them in bounded database chunks;
-  it does not hydrate the full embedding, detection, attempt, and photo model graph.
-  Staging activated this path on 2026-07-31 after applying the one-day `selfie-search/` lifecycle
-  rule, passing real-bucket preflight, and verifying a live published Unicode event search,
-  original-size result media, and paid-result-only media access. The repository default remains
-  disabled and production is not activated.
+- The `selfie_search` Django app implements two public event-scoped face-query sources. An uploaded
+  selfie immediately creates the queued bearer-link result page; the existing worker returns one
+  transient query embedding, Django loads and ranks the compatible event cohort once without
+  persisting per-face candidate rows, deletes the temporary selfie before terminal publication,
+  and serves a stable immutable result. An eligible gallery photo with one or more current
+  compatible accepted faces exposes a direct one-face action or an explicit multi-face choice;
+  Django uses the selected existing embedding to create an immediately ready immutable result
+  without a temporary image, persisted query vector, or worker job. Both sources retain event
+  isolation, the existing bearer/result-media rules, and the direct path's
+  bounded field-only cohort reads; searches created before the direct-ranking change remain
+  compatible with their already-persisted candidate rows. The direct path selects only the six
+  identity/vector fields needed for ranking and does not hydrate the full embedding, detection,
+  attempt, and photo model graph.
+  Staging activated the existing selfie-upload path on 2026-07-31 after applying the one-day
+  `selfie-search/` lifecycle rule, passing real-bucket preflight, and verifying a live published
+  Unicode event search, original-size result media, and paid-result-only media access. The
+  repository default remains disabled and production is not activated. The gallery-photo query
+  path has local focused test evidence only; no staging or production deployment evidence is
+  claimed for it.
 - Allow public event-scoped selfie searches to use the existing worker for temporary query
   embedding and Django for exact search, then publish immutable non-expiring bearer-link results
   only after deleting the selfie. A valid result link may deliver its matched originals for a
@@ -189,6 +196,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0019](adr/0019-use-public-event-selfie-search.md), which supersedes ADR 0015. Verified
   signed direct Object Storage redirect transport is implemented for already authorized gallery and
   result media under [ADR 0020](adr/0020-use-signed-direct-object-storage-media-delivery.md).
+- Allow a currently rendered gallery photo with one or more current compatible accepted faces to
+  start the same event-scoped exact ranking from the one face directly or from an explicitly
+  selected face in a compact chooser. This creates an immediately ready immutable bearer result
+  without a temporary image, stored query vector, or worker job, as defined by [ADR 0024](adr/0024-use-gallery-face-as-search-query.md).
 - The repository implements browser-local reopening of existing selfie-search results: a result
   page saves only its canonical path, event slug, and open timestamp in versioned `localStorage`,
   and the matching event page renders that browser's list after JavaScript reads it. This adds no
@@ -229,7 +240,7 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   this branch. The accepted design adds no named identity, cross-event matching, contextual
   evidence, automatic feedback tuning, persistent query vector, worker credential/configuration
   expansion, or online vector service, as defined by
-  [ADR 0024](adr/0024-expand-selfie-search-with-face-clusters.md).
+  [ADR 0025](adr/0025-expand-selfie-search-with-face-clusters.md).
 - Present normal galleries and ready selfie-search results as server-rendered numbered pages of at
   most 100 photos. Normal galleries use original filename then photo ID order; ready results retain
   persisted rank then photo ID order. [ADR 0022](adr/0022-use-numbered-gallery-pages.md) supersedes
@@ -329,23 +340,26 @@ broker, vector engine, and ML implementations shown for later processing require
 ### Search
 
 1. The customer selects an event before searching.
-2. A bib query matches confirmed numbers first and automated candidates second. A face query creates
-   a temporary query embedding through the existing worker, then Django performs exact comparison
-   and deletes the selfie before publishing an immutable probable-match snapshot. When the optional
-   cluster gate is enabled and an explicitly activated compatible corpus exists, Django may append
-   unique cluster-expanded photos after the unchanged direct results; the default gate remains false
-   and direct-only fallback is complete for every missing, failed, or incompatible corpus outcome.
+2. A bib query matches confirmed numbers first and automated candidates second. A face query uses
+   either an uploaded selfie, which creates a temporary query embedding through the existing
+   worker, or one explicitly selected current compatible accepted embedding from an eligible
+   gallery photo. Django performs exact comparison and publishes an immutable probable-match
+   snapshot; the selfie path deletes its temporary image before publication, while the gallery path
+   is immediately ready and creates no temporary object or worker job. When the optional cluster
+   gate is enabled and an explicitly activated compatible corpus exists, either query source may
+   append unique cluster-expanded photos after the unchanged direct results; direct-only fallback
+   remains complete for every missing, failed, or incompatible corpus outcome.
 3. Every query filters by `event_id`; time and location further narrow results.
 4. Face results are ordered by ascending cosine distance with stable photo-ID tie breaking and are
    exposed through the non-expiring public bearer link accepted by ADR 0019. Results from other
    events never enter the snapshot.
 
-The public face-search path is implemented in the repository and locally verified with real
-YuNet/SFace inference for the submitted selfie query. The gallery side of that E2E uses deterministic
-accepted embedding fixtures for both face generations (`1/face_embedding/1` and
+The worker-backed selfie source is implemented in the repository and locally verified with real
+YuNet/SFace inference for the submitted selfie query. The existing selfie E2E's gallery side uses
+deterministic accepted embedding fixtures for both face generations (`1/face_embedding/1` and
 `2/face_embedding/2`); its preview-first member is production-reachable through an accepted,
 verified `2/generate_preview/1` derivative and the resulting enrollment into `2/face_embedding/2`.
-The evidence covers a published paid event, frozen event-only candidates, stable ranked results,
+That evidence covers a published paid event, frozen event-only candidates, stable ranked results,
 selfie deletion before `ready`, and ready-result media for both generations without opening the
 normal paid gallery. The existing immutable worker image packages pinned public OpenCV Zoo
 YuNet/SFace models and runs a non-root build-time smoke through both `face_embedding` and
@@ -356,12 +370,19 @@ cluster corpus activation, or environment/customer outcome is claimed. Corpus bu
 benchmark, aggregate report, and guarded activation commands are repository interfaces only until
 the release gate and an explicit later rollout approve them.
 
+The gallery-photo source is locally verified by 145 focused Python tests, 70 JavaScript tests for
+the production markup and chooser behavior, and 83 visual tests covering the zero-, one-, two-,
+and four-face event-gallery fixture at desktop and 390px mobile widths. The root `make check`
+also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and clean system/migration
+checks. `SELFIE_SEARCH_ENABLED` remains `False` by default in the repository. The gallery-photo
+source has no staging or production deployment evidence; production is not activated.
+
 ### Purchase and download
 
 1. The cart contains event photos, prices, and any validated promotion.
 2. A payment transition creates or updates an order idempotently.
 3. For paid events, successful payment grants entitlement to generated exports; the normal paid
-   gallery never makes originals public. ADR 0019 temporarily permits only a ready selfie-result
+   gallery never makes originals public. ADR 0019 temporarily permits only a ready face-search-result
    bearer link to deliver originals saved in that result until protected derivatives exist.
 4. Downloads use short-lived signed access or an authenticated application response and are audited.
 
@@ -372,7 +393,7 @@ the release gate and an explicit later rollout approve them.
   activation; the free-event tile route uses the published derivative while the large route retains
   controlled inline original delivery under the policy now governed by ADR 0019. Until activation,
   explicit legacy photos use the original for both variants. The normal paid gallery remains
-  unavailable; ADR 0019 permits only a valid ready selfie-result bearer link to deliver a saved
+  unavailable; ADR 0019 permits only a valid ready face-search-result bearer link to deliver a saved
   free- or paid-event member. Watermarks, purchases, and exports remain unresolved. Neither route
   exposes a permanent storage key, but original delivery still gives an eligible recipient complete
   unsanitized bytes that can be saved or redistributed.
@@ -393,6 +414,10 @@ the release gate and an explicit later rollout approve them.
   cross-event relationship. The worker boundary is unchanged: it still receives only the transient
   selfie-query request and no corpus, gallery embedding, database, or permanent Object Storage
   credential.
+- ADR 0024 accepts public reuse of one explicitly selected existing gallery face embedding as an
+  event-scoped query. A one-face card submits directly; a multi-face card requires an explicit
+  choice. It adds no stored query vector, temporary image, named identity, cross-event matching,
+  or new media authorization.
 - ADR 0023 accepts the narrower feedback-specific consent and retention boundary: one immutable
   quality report may retain plaintext contact, consent evidence, search labels, and a lifecycle-
   bounded private feedback selfie. It does not authorize named identity, automated training,
@@ -445,7 +470,7 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Bib-region detection/OCR implementation and model licensing.
 - Payment provider, callback contract, refunds, and download entitlement policy.
 - Paid-event previews, entitlements, and broader attachment/download policy beyond ADR 0019's
-  narrow saved-selfie-result original-delivery exception.
+  narrow saved face-search-result original-delivery exception.
 - Monitoring retention; backup targets; retention; RPO/RTO; encryption-at-rest policy; media
   recovery; and disaster-recovery procedures.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.

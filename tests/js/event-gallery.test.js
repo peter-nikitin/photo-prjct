@@ -122,6 +122,111 @@ test('restores focus to the pointer-opened card after close', () => {
   assert.equal(focusCalls, 1);
 });
 
+function makeFaceChooser() {
+  const listeners = new Map();
+  const trigger = {
+    focusCalls: 0,
+    focus() {
+      this.focusCalls += 1;
+    },
+  };
+  const tile = {
+    focusCalls: 0,
+    focus() {
+      this.focusCalls += 1;
+    },
+  };
+  const details = {
+    open: false,
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    querySelector(selector) {
+      if (selector === '[data-face-chooser-trigger]') return trigger;
+      if (selector === '[data-face-choice]') return tile;
+      return null;
+    },
+    contains(target) {
+      return target === details || target === trigger || target === tile;
+    },
+    trigger(type) {
+      listeners.get(type)?.({ target: details });
+    },
+  };
+  return { details, tile, trigger };
+}
+
+test('keeps one face chooser open and restores its trigger after outside close or Escape', () => {
+  const documentListeners = new Map();
+  const first = makeFaceChooser();
+  const second = makeFaceChooser();
+  const root = {
+    ownerDocument: {
+      addEventListener(type, listener) {
+        documentListeners.set(type, listener);
+      },
+    },
+    querySelectorAll(selector) {
+      assert.equal(selector, '[data-face-chooser]');
+      return [first.details, second.details];
+    },
+  };
+  const { initializeFaceChoosers } = loadGalleryModule();
+
+  initializeFaceChoosers(root);
+  first.details.open = true;
+  first.details.trigger('toggle');
+
+  assert.equal(first.tile.focusCalls, 0);
+  assert.equal(second.details.open, false);
+
+  second.details.open = true;
+  second.details.trigger('toggle');
+
+  assert.equal(first.details.open, false);
+  assert.equal(first.trigger.focusCalls, 0);
+  assert.equal(second.tile.focusCalls, 0);
+
+  documentListeners.get('click')({ target: {} });
+
+  assert.equal(second.details.open, false);
+  assert.equal(second.trigger.focusCalls, 1);
+
+  first.details.open = true;
+  first.details.trigger('toggle');
+  documentListeners.get('keydown')({ key: 'Escape' });
+
+  assert.equal(first.details.open, false);
+  assert.equal(first.trigger.focusCalls, 1);
+});
+
+test('leaves a face form click outside the GLightbox trigger', () => {
+  const clickListeners = [];
+  let options;
+  const root = {
+    addEventListener(type, listener) {
+      if (type === 'click') clickListeners.push(listener);
+    },
+  };
+  const glightbox = (receivedOptions) => {
+    options = receivedOptions;
+    return {};
+  };
+  const eventGallery = loadGalleryModule({ root, glightbox });
+  const faceFormControl = {
+    closest(selector) {
+      assert.equal(selector, '.gallery-card-link');
+      return null;
+    },
+  };
+
+  eventGallery.initializeEventGallery(root, glightbox);
+  clickListeners.forEach((listener) => listener({ target: faceFormControl }));
+  options.onClose();
+
+  assert.equal(options.onClose(), undefined);
+});
+
 test('does nothing without root or GLightbox', () => {
   const calls = [];
 

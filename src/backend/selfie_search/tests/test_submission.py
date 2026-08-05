@@ -4,10 +4,13 @@ from datetime import date
 from io import BytesIO
 from pathlib import Path
 from struct import pack
+from typing import cast
 from unittest.mock import patch
+from uuid import UUID, uuid4
 from zlib import crc32
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, connection
 from django.test import TestCase, override_settings
@@ -35,19 +38,30 @@ from processing.services.enrollment import (
 )
 from processing.services.face_cohort import load_compatible_face_embeddings
 from selfie_search.images import PreparedSelfie, prepare_selfie_image
-from selfie_search.models import SelfieSearch, SelfieSearchJob
+from selfie_search.models import (
+    SelfieSearch,
+    SelfieSearchAttempt,
+    SelfieSearchDirectEvidence,
+    SelfieSearchJob,
+)
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
     claim_search_job,
     complete_search_attempt,
 )
+from selfie_search.services.ranking import RankingError
 from selfie_search.services.submission import (
-    _configuration as submission_configuration,
+    GallerySearchFailed,
+    GallerySearchUnavailable,
+    compatible_search_candidates,
+    gallery_search_faces_by_photo,
+    process_gallery_photo_search,
+    resolve_public_search,
+    submit_gallery_photo_search,
+    submit_selfie_search,
 )
 from selfie_search.services.submission import (
-    compatible_search_candidates,
-    resolve_public_search,
-    submit_selfie_search,
+    _configuration as submission_configuration,
 )
 
 
@@ -128,6 +142,7 @@ class SubmissionTests(TestCase):
         *,
         event: Event,
         photo_id: str,
+        photo: Photo | None = None,
         model: str = "sface",
         dimensions: int = 128,
         vector: list[float] | None = None,
@@ -136,6 +151,8 @@ class SubmissionTests(TestCase):
         processor_version: int = FACE_EMBEDDING_PROCESSOR_VERSION,
         configuration: dict[str, object] | None = None,
         configuration_hash: str | None = None,
+        detection_id: UUID | None = None,
+        geometry: dict[str, object] | None = None,
     ) -> FaceEmbedding:
         configuration = configuration if configuration is not None else FACE_EMBEDDING_CONFIGURATION
         configuration_hash = (
@@ -144,7 +161,7 @@ class SubmissionTests(TestCase):
                 json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()
         )
-        photo = Photo.objects.create(
+        photo = photo or Photo.objects.create(
             id=photo_id,
             event=event,
             uploaded_by=self.user,
@@ -197,8 +214,23 @@ class SubmissionTests(TestCase):
             accepted_attempt=attempt if accepted else None,
         )
         artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
+        detection_kwargs = {"id": detection_id} if detection_id is not None else {}
         detection = PhotoFaceDetection.objects.create(
-            artifact=artifact, attempt=attempt, face_index=0, status=PhotoFaceDetection.Status.KEPT
+            **detection_kwargs,
+            artifact=artifact,
+            attempt=attempt,
+            face_index=0,
+            status=PhotoFaceDetection.Status.KEPT,
+            geometry=(
+                geometry
+                if geometry is not None
+                else {
+                    "coordinate_space": "preview-small-v1",
+                    "pixel_width": 100,
+                    "pixel_height": 100,
+                    "bbox": [20, 20, 40, 40],
+                }
+            ),
         )
         return FaceEmbedding.objects.create(
             detection=detection,
@@ -528,3 +560,483 @@ class SubmissionTests(TestCase):
             status_code=503,
         )
         self.assertContains(response, 'name="selfie"', status_code=503)
+
+
+@override_settings(
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+)
+@override_settings(SELFIE_SEARCH_ENABLED=True, SELFIE_SEARCH_EMBEDDING_MODEL="sface")
+class GalleryPhotoSubmissionTests(TestCase):
+    """The production break caught here is accepting stale or ambiguous gallery face evidence."""
+
+    make_event = SubmissionTests.make_event
+    make_eligible_embedding = SubmissionTests.make_eligible_embedding
+
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="gallery-search-owner")
+        self.event = self.make_event("gallery", "free")
+        self.other_event = self.make_event("other-gallery", "free")
+
+    def make_photo(self, *, event: Event, photo_id: str) -> Photo:
+        return Photo.objects.create(
+            id=photo_id,
+            event=event,
+            uploaded_by=self.user,
+            original_key=f"originals/{photo_id:0>32}"[-42:],
+            original_filename=f"{photo_id}.jpg",
+            original_size=1,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+    def make_additional_face(
+        self,
+        *,
+        embedding: FaceEmbedding,
+        vector: list[float],
+        detection_id: UUID | None = None,
+        geometry: dict[str, object] | None = None,
+    ) -> FaceEmbedding:
+        detection_kwargs = {"id": detection_id} if detection_id is not None else {}
+        detection = PhotoFaceDetection.objects.create(
+            **detection_kwargs,
+            artifact=embedding.detection.artifact,
+            attempt=embedding.detection.attempt,
+            face_index=embedding.detection.face_index + 1,
+            status=PhotoFaceDetection.Status.KEPT,
+            geometry=(
+                geometry
+                if geometry is not None
+                else {
+                    "coordinate_space": "preview-small-v1",
+                    "pixel_width": 100,
+                    "pixel_height": 100,
+                    "bbox": [20, 20, 40, 40],
+                }
+            ),
+        )
+        return FaceEmbedding.objects.create(
+            detection=detection,
+            model_version=embedding.model_version,
+            vector=vector,
+            metadata={},
+        )
+
+    def test_gallery_presentation_returns_all_current_compatible_faces_for_page_photos(
+        self,
+    ) -> None:
+        zero = self.make_photo(event=self.event, photo_id="zero")
+        one_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="one",
+            vector=[1.0] + [0.0] * 127,
+        )
+        one = one_embedding.detection.attempt.photo
+        two = self.make_photo(event=self.event, photo_id="two")
+        two_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="two",
+            photo=two,
+            vector=[1.0] + [0.0] * 127,
+        )
+        second = self.make_additional_face(embedding=two_embedding, vector=[1.0] + [0.0] * 127)
+        rejected_embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="rejected", accepted=False
+        )
+        rejected = rejected_embedding.detection.attempt.photo
+        stale_embedding = self.make_eligible_embedding(event=self.event, photo_id="stale")
+        stale = stale_embedding.detection.attempt.photo
+        PhotoProcessingState.objects.filter(photo=stale).update(accepted_attempt=None)
+        stale_generation_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="stale-generation",
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION + 1,
+        )
+        stale_generation = stale_generation_embedding.detection.attempt.photo
+        legacy_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="legacy-coordinates",
+            geometry={
+                "coordinate_space": "original-v1",
+                "pixel_width": 100,
+                "pixel_height": 100,
+                "bbox": [20, 20, 40, 40],
+            },
+        )
+        legacy = legacy_embedding.detection.attempt.photo
+        malformed_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="malformed",
+            geometry={
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 100,
+                "pixel_height": 100,
+                "bbox": [20, 20, 40],
+            },
+        )
+        malformed = malformed_embedding.detection.attempt.photo
+        foreign_embedding = self.make_eligible_embedding(event=self.other_event, photo_id="foreign")
+        foreign = foreign_embedding.detection.attempt.photo
+        wrong_length = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="wrong-length",
+            vector=[1.0] + [0.0] * 126,
+        ).detection.attempt.photo
+        nonnumeric = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="nonnumeric",
+            vector=cast(list[float], ["not-a-number"] + [0.0] * 127),
+        ).detection.attempt.photo
+        non_normalized = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="non-normalized",
+            vector=[0.5] + [0.0] * 127,
+        ).detection.attempt.photo
+        zero_vector = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="zero-vector",
+            vector=[0.0] * 128,
+        ).detection.attempt.photo
+        off_page = self.make_eligible_embedding(event=self.event, photo_id="off-page")
+
+        with CaptureQueriesContext(connection) as queries:
+            faces_by_photo = gallery_search_faces_by_photo(
+                event=self.event,
+                photos=(
+                    zero,
+                    one,
+                    two,
+                    rejected,
+                    stale,
+                    stale_generation,
+                    legacy,
+                    malformed,
+                    foreign,
+                    wrong_length,
+                    nonnumeric,
+                    non_normalized,
+                    zero_vector,
+                ),
+            )
+
+        self.assertEqual(len(queries), 1)
+        select_clause = queries[0]["sql"].lower().split(" from ", maxsplit=1)[0]
+        self.assertNotIn('"vector"', select_clause)
+        self.assertEqual(set(faces_by_photo), {one.id, two.id})
+        self.assertEqual(len(faces_by_photo[one.id]), 1)
+        self.assertEqual(
+            [face.detection_id for face in faces_by_photo[two.id]],
+            [str(two_embedding.detection_id), str(second.detection_id)],
+        )
+        self.assertEqual([face.face_number for face in faces_by_photo[two.id]], [1, 2])
+        self.assertNotIn(off_page.detection.attempt.photo_id, faces_by_photo)
+
+    def test_unavailable_selected_detection_creates_no_search(self) -> None:
+        zero = self.make_photo(event=self.event, photo_id="zero")
+        selected = self.make_eligible_embedding(
+            event=self.event, photo_id="selected", vector=[1.0] + [0.0] * 127
+        )
+        source = selected.detection.attempt.photo
+        rejected_embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="rejected", accepted=False
+        )
+        rejected = rejected_embedding.detection.attempt.photo
+        stale_embedding = self.make_eligible_embedding(event=self.event, photo_id="stale")
+        stale = stale_embedding.detection.attempt.photo
+        PhotoProcessingState.objects.filter(photo=stale).update(accepted_attempt=None)
+        stale_generation_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="stale-generation",
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION + 1,
+        )
+        stale_generation = stale_generation_embedding.detection.attempt.photo
+        legacy_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="legacy-coordinates",
+            geometry={
+                "coordinate_space": "original-v1",
+                "pixel_width": 100,
+                "pixel_height": 100,
+                "bbox": [20, 20, 40, 40],
+            },
+        )
+        legacy = legacy_embedding.detection.attempt.photo
+        malformed_geometry_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="malformed-geometry",
+            geometry={
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 100,
+                "pixel_height": 100,
+                "bbox": [20, 20, 40],
+            },
+        )
+        malformed_geometry = malformed_geometry_embedding.detection.attempt.photo
+        malformed_embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="malformed", vector=[0.0] * 128
+        )
+        malformed = malformed_embedding.detection.attempt.photo
+        foreign_embedding = self.make_eligible_embedding(event=self.other_event, photo_id="foreign")
+
+        for invalid_source, detection_id in (
+            (zero, uuid4()),
+            (rejected, rejected_embedding.detection_id),
+            (stale, stale_embedding.detection_id),
+            (stale_generation, stale_generation_embedding.detection_id),
+            (legacy, legacy_embedding.detection_id),
+            (malformed_geometry, malformed_geometry_embedding.detection_id),
+            (malformed, malformed_embedding.detection_id),
+            (source, foreign_embedding.detection_id),
+        ):
+            with self.subTest(source=invalid_source.id, detection_id=detection_id):
+                with self.assertRaises(GallerySearchUnavailable):
+                    submit_gallery_photo_search(
+                        event=self.event,
+                        photo=invalid_source,
+                        detection_id=detection_id,
+                    )
+                self.assertEqual(SelfieSearch.objects.count(), 0)
+
+    def test_submission_queues_gallery_search_without_results_or_worker_job(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=source,
+            detection_id=source_embedding.detection_id,
+        ).search
+
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(search.temporary_object_key, "")
+        self.assertEqual(search.results.count(), 0)
+        self.assertFalse(SelfieSearchJob.objects.filter(search=search).exists())
+        self.assertEqual(
+            search.configuration["query_source"],
+            {
+                "kind": "gallery_photo",
+                "photo_id": source.id,
+                "detection_id": str(source_embedding.detection_id),
+            },
+        )
+
+    def test_processing_queued_gallery_search_publishes_exact_immutable_result_once(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+        a_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="a-match",
+            vector=[0.99, 0.14106735979665894] + [0.0] * 126,
+        )
+        b_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="b-match",
+            vector=[0.98, 0.198997487421324] + [0.0] * 126,
+        )
+        b_best_embedding = self.make_additional_face(
+            embedding=b_embedding,
+            vector=[0.99, 0.14106735979665894] + [0.0] * 126,
+        )
+        self.make_eligible_embedding(
+            event=self.other_event,
+            photo_id="other-event",
+            vector=[1.0] + [0.0] * 127,
+        )
+        now = timezone.now()
+
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=source,
+            detection_id=source_embedding.detection_id,
+            now=now,
+        ).search
+        processed = process_gallery_photo_search(search=search, now=now)
+        replay = process_gallery_photo_search(search=search, now=now)
+        search.refresh_from_db()
+        rows = list(search.results.order_by("rank"))
+
+        self.assertEqual(processed.pk, search.pk)
+        self.assertEqual(replay.pk, search.pk)
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.temporary_object_key, "")
+        self.assertEqual(search.eligible_photo_count, 3)
+        self.assertEqual(search.eligible_face_count, 4)
+        self.assertEqual(search.matched_photo_count, 3)
+        self.assertEqual(search.terminal_at, now)
+        self.assertEqual(search.cleanup_confirmed_at, now)
+        self.assertEqual(
+            search.configuration["query_source"],
+            {
+                "kind": "gallery_photo",
+                "photo_id": source.id,
+                "detection_id": str(source_embedding.detection_id),
+            },
+        )
+        configuration = json.dumps(search.configuration)
+        self.assertNotIn("vector", configuration)
+        self.assertNotIn(source.original_filename, configuration)
+        self.assertNotIn(source.original_key, configuration)
+        self.assertEqual(
+            [(row.rank, row.photo_id, row.direct_evidence.detection_id) for row in rows],
+            [
+                (1, source.id, source_embedding.detection_id),
+                (2, a_embedding.detection.attempt.photo_id, a_embedding.detection_id),
+                (3, b_embedding.detection.attempt.photo_id, b_best_embedding.detection_id),
+            ],
+        )
+        self.assertAlmostEqual(rows[0].direct_evidence.cosine_distance, 0.0)
+        self.assertAlmostEqual(rows[1].direct_evidence.cosine_distance, 0.01)
+        self.assertAlmostEqual(rows[2].direct_evidence.cosine_distance, 0.01)
+        self.assertNotEqual(rows[2].direct_evidence.detection_id, b_embedding.detection_id)
+        self.assertFalse(SelfieSearchJob.objects.filter(search=search).exists())
+        self.assertFalse(SelfieSearchAttempt.objects.exists())
+        self.assertEqual(
+            SelfieSearchDirectEvidence.objects.filter(result__search=search).count(), 3
+        )
+        rows[0].direct_evidence.cosine_distance = 0.1
+        with self.assertRaises(ValidationError):
+            rows[0].direct_evidence.save()
+
+    def test_each_selected_face_uses_its_own_query_embedding(self) -> None:
+        first = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        second = self.make_additional_face(
+            embedding=first,
+            vector=[0.0, 1.0] + [0.0] * 126,
+        )
+        source = first.detection.attempt.photo
+
+        first_search = submit_gallery_photo_search(
+            event=self.event,
+            photo=source,
+            detection_id=first.detection_id,
+        ).search
+        second_search = submit_gallery_photo_search(
+            event=self.event,
+            photo=source,
+            detection_id=second.detection_id,
+        ).search
+        process_gallery_photo_search(search=first_search)
+        process_gallery_photo_search(search=second_search)
+
+        self.assertEqual(
+            first_search.results.get(photo=source).direct_evidence.detection_id,
+            first.detection_id,
+        )
+        self.assertEqual(
+            second_search.results.get(photo=source).direct_evidence.detection_id,
+            second.detection_id,
+        )
+        self.assertEqual(
+            first_search.configuration["query_source"]["detection_id"], str(first.detection_id)
+        )
+        self.assertEqual(
+            second_search.configuration["query_source"]["detection_id"], str(second.detection_id)
+        )
+
+    def test_equal_distance_faces_select_the_lowest_detection_id_deterministically(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+        first_detection_id = UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+        expected_detection_id = UUID("00000000-0000-0000-0000-000000000001")
+        match_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="equal-distance",
+            vector=[0.99, 0.14106735979665894] + [0.0] * 126,
+            detection_id=first_detection_id,
+        )
+        self.make_additional_face(
+            embedding=match_embedding,
+            vector=[0.99, 0.14106735979665894] + [0.0] * 126,
+            detection_id=expected_detection_id,
+        )
+
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=source,
+            detection_id=source_embedding.detection_id,
+        ).search
+        process_gallery_photo_search(search=search)
+
+        self.assertEqual(
+            search.results.get(photo_id="equal-distance").direct_evidence.detection_id,
+            expected_detection_id,
+        )
+
+    def test_ranking_failure_transitions_gallery_search_to_terminal_failure(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+
+        with patch(
+            "selfie_search.services.submission.rank_embeddings",
+            side_effect=RankingError("broken ranking"),
+        ):
+            search = submit_gallery_photo_search(
+                event=self.event, photo=source, detection_id=source_embedding.detection_id
+            ).search
+            process_gallery_photo_search(search=search)
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.FAILED)
+        self.assertEqual(search.results.count(), 0)
+
+    def test_database_failure_leaves_gallery_search_queued_for_retry(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+        search = submit_gallery_photo_search(
+            event=self.event, photo=source, detection_id=source_embedding.detection_id
+        ).search
+
+        with patch(
+            "selfie_search.services.submission.SelfieSearchResult.objects.bulk_create",
+            side_effect=IntegrityError,
+        ):
+            with self.assertRaises(GallerySearchFailed):
+                process_gallery_photo_search(search=search)
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(search.results.count(), 0)
+
+    def test_processing_stale_source_fails_closed_without_results(self) -> None:
+        source_embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        source = source_embedding.detection.attempt.photo
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=source,
+            detection_id=source_embedding.detection_id,
+        ).search
+        PhotoProcessingState.objects.filter(photo=source).update(accepted_attempt=None)
+
+        process_gallery_photo_search(search=search)
+
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual(search.results.count(), 0)

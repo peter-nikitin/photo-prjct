@@ -35,6 +35,7 @@ def _write_run(run: Path, yunet: Path, sface: Path) -> None:
         "cluster_threshold": 0.363,
         "detection_threshold": 0.0,
         "distance_block_size": 512,
+        "max_candidate_edges": 100_000,
         "image_limit": None,
         "input_photos_basename": "photos",
         "max_image_dimension": 12000,
@@ -315,6 +316,8 @@ def test_evaluate_cluster_expansion_requires_every_threshold_and_dispatches_immu
         "0.05",
         "--configuration-hash",
         "a" * 64,
+        "--generations-json",
+        str(tmp_path / "generations.json"),
     ]
     parsed = cli.build_parser().parse_args(arguments)
     assert parsed.command == "evaluate-cluster-expansion"
@@ -326,6 +329,7 @@ def test_evaluate_cluster_expansion_requires_every_threshold_and_dispatches_immu
         "direct_threshold",
         "anchor_threshold",
         "configuration_hash",
+        "generations_json",
     ]
     called: list[cli.EvaluateClusterExpansionConfig] = []
     monkeypatch.setattr(cli, "run_evaluate_cluster_expansion", called.append)
@@ -340,6 +344,7 @@ def test_evaluate_cluster_expansion_requires_every_threshold_and_dispatches_immu
             0.1,
             0.05,
             "a" * 64,
+            tmp_path / "generations.json",
         )
     ]
 

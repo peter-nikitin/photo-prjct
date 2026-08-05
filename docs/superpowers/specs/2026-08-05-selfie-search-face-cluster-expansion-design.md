@@ -287,7 +287,7 @@ event/search correlation, cohort, configuration, and duration fields:
 | `strong_anchor_count` | Direct face matches allowed to seed expansion |
 | `expanded_cluster_count` | Unique selected non-singleton clusters |
 | `cluster_corpus_version` | Bounded opaque version or null when unavailable/disabled |
-| `cluster_configuration_hash` | Hash-only immutable expansion configuration identity or null |
+| `cluster_configuration_hash` | Hash-only reviewed expansion-policy identity (corpus identity plus direct and anchor thresholds) or null |
 | `cluster_expansion_ms` | Non-negative bounded expansion duration or null |
 | `cluster_expansion_outcome` | One allowed bounded outcome |
 
@@ -339,7 +339,7 @@ retention contract. It is not the long-term product analytics store.
 
 The new schema of `selfie_search_terminal` retains `matched_photo_count` as the final published
 count and adds `direct_matched_photo_count`, `cluster_expanded_photo_count`,
-`cluster_corpus_version`, and `cluster_configuration_hash`. The terminal event is emitted only after
+`cluster_corpus_version`, and the policy-valued `cluster_configuration_hash`. The terminal event is emitted only after
 selfie cleanup and therefore confirms the source counts that became publicly visible. Its count
 identity must match the successful ranking event and durable search snapshot. Non-ready terminal
 states have zero direct and expanded counts.

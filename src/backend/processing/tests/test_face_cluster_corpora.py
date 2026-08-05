@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from datetime import date
 from math import sqrt
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
+import numpy as np
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
+from face_cluster_contract import cluster_expansion_policy_hash
 from picflow.models import Event, Photo
 from selfie_search.services.submission import _face_embedding_generations
 
@@ -232,6 +237,117 @@ class FaceClusterCorpusTests(TestCase):
         self.assertEqual(first.configuration_hash, second.configuration_hash)
         self.assertEqual(first.membership_hash, second.membership_hash)
 
+    def test_configuration_identity_is_independent_of_frozen_input_and_membership(self) -> None:
+        self.make_embedding(event=self.event, photo_id="identity-one", vector=[1.0, 0.0])
+        first = build_face_cluster_corpus(
+            event=self.event,
+            version=1,
+            generations=self.generations[:1],
+            dimensions=2,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+        self.make_embedding(event=self.event, photo_id="identity-two", vector=[0.0, 1.0])
+        second = build_face_cluster_corpus(
+            event=self.event,
+            version=2,
+            generations=self.generations[:1],
+            dimensions=2,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+
+        self.assertEqual(first.configuration_hash, second.configuration_hash)
+        self.assertNotEqual(first.input_hash, second.input_hash)
+        self.assertNotEqual(first.membership_hash, second.membership_hash)
+
+    def test_django_corpus_hash_matches_evaluator_projection_for_the_same_fixture(self) -> None:
+        experiment_root = (
+            Path(__file__).resolve().parents[4] / "experiments" / "face_recognition_spike"
+        )
+        sys.path.insert(0, str(experiment_root))
+        try:
+            from face_spike.analysis import BoundingBox
+            from face_spike.cluster_expansion import production_corpus_configuration_hash
+            from face_spike.index import FaceIndex, FaceIndexEntry
+            from face_spike.index_artifacts import FaceIndexManifest
+            from face_spike.quality import FaceQuality
+
+            self._assert_django_corpus_hash_matches_evaluator_projection(
+                BoundingBox,
+                FaceIndex,
+                FaceIndexEntry,
+                FaceIndexManifest,
+                FaceQuality,
+                production_corpus_configuration_hash,
+            )
+        finally:
+            sys.path.remove(str(experiment_root))
+
+    def _assert_django_corpus_hash_matches_evaluator_projection(
+        self,
+        bounding_box_type: Any,
+        face_index_type: Any,
+        face_index_entry_type: Any,
+        face_index_manifest_type: Any,
+        face_quality_type: Any,
+        evaluator_projection: Any,
+    ) -> None:
+        self.make_embedding(event=self.event, photo_id="projection", vector=[1.0, 0.0])
+        thresholds: dict[str, int | float] = {
+            "cluster_threshold": 0.1,
+            "representative_threshold": 0.1,
+            "distance_block_size": 2,
+            "max_candidate_edges": 100,
+        }
+        corpus = build_face_cluster_corpus(
+            event=self.event,
+            version=1,
+            generations=self.generations[:1],
+            dimensions=2,
+            edge_threshold=float(thresholds["cluster_threshold"]),
+            representative_threshold=float(thresholds["representative_threshold"]),
+            distance_block_size=int(thresholds["distance_block_size"]),
+            max_candidate_edges=int(thresholds["max_candidate_edges"]),
+        )
+        index = face_index_type(
+            (
+                face_index_entry_type(
+                    "projection.jpg#face-001",
+                    "projection.jpg",
+                    1,
+                    bounding_box_type(0, 0, 10, 10),
+                    "faces/projection.jpg#face-001.png",
+                    face_quality_type(0.9, 10.0, 0.1, 100.0, "accepted", ()),
+                ),
+            ),
+            np.asarray([[1.0, 0.0]], dtype=np.float32),
+            face_index_manifest_type(
+                "a" * 64,
+                "b" * 64,
+                {"basename": "yunet.onnx", "size": 1, "sha256": "c" * 64},
+                {"basename": "sface.onnx", "size": 1, "sha256": "d" * 64},
+                thresholds,
+                {"numpy": "test"},
+                1,
+                2,
+                "2026-08-05T00:00:00Z",
+            ),
+        )
+
+        self.assertEqual(
+            corpus.configuration_hash,
+            evaluator_projection(
+                index,
+                source_parameters=thresholds,
+                generations=self.generations[:1],
+            ),
+        )
+
     def test_candidate_edge_limit_leaves_failed_non_selectable_corpus(self) -> None:
         self.make_embedding(event=self.event, photo_id="limit-one", vector=[1.0, 0.0])
         self.make_embedding(event=self.event, photo_id="limit-two", vector=[1.0, 0.0])
@@ -249,6 +365,29 @@ class FaceClusterCorpusTests(TestCase):
         corpus = FaceClusterCorpus.objects.get(event=self.event, version=1)
         self.assertEqual(corpus.status, FaceClusterCorpus.Status.FAILED)
         self.assertIsNone(corpus.published_at)
+        self.assertFalse(corpus.clusters.exists())
+
+    def test_loader_failure_leaves_a_durable_failed_corpus(self) -> None:
+        from unittest.mock import patch
+
+        with patch(
+            "processing.services.face_cluster_corpora.load_compatible_face_embeddings",
+            side_effect=ValueError("loader unavailable"),
+        ):
+            with self.assertRaises(ValueError):
+                build_face_cluster_corpus(
+                    event=self.event,
+                    version=1,
+                    generations=self.generations[:1],
+                    dimensions=2,
+                    edge_threshold=0.1,
+                    representative_threshold=0.1,
+                    distance_block_size=2,
+                    max_candidate_edges=100,
+                )
+
+        corpus = FaceClusterCorpus.objects.get(event=self.event, version=1)
+        self.assertEqual(corpus.status, FaceClusterCorpus.Status.FAILED)
         self.assertFalse(corpus.clusters.exists())
 
     def test_activation_replaces_only_the_event_pointer_after_explicit_review(self) -> None:
@@ -278,7 +417,7 @@ class FaceClusterCorpusTests(TestCase):
         old = activate_face_cluster_corpus(
             event=self.event,
             corpus=first,
-            configuration_hash=first.configuration_hash,
+            configuration_hash=cluster_expansion_policy_hash(first.configuration_hash, 0.363, 0.05),
             anchor_threshold=0.05,
             evaluation_report_hash="a" * 64,
             numeric_gates_reviewed=True,
@@ -287,7 +426,9 @@ class FaceClusterCorpusTests(TestCase):
         activation = activate_face_cluster_corpus(
             event=self.event,
             corpus=second,
-            configuration_hash=second.configuration_hash,
+            configuration_hash=cluster_expansion_policy_hash(
+                second.configuration_hash, 0.363, 0.05
+            ),
             anchor_threshold=0.05,
             evaluation_report_hash="b" * 64,
             numeric_gates_reviewed=True,
@@ -299,10 +440,56 @@ class FaceClusterCorpusTests(TestCase):
         self.assertTrue(activation.active)
         self.assertEqual(
             activation.configuration,
-            {"direct_threshold": 0.363, "anchor_threshold": 0.05},
+            {
+                "policy_id": "face-cluster-expansion-policy-v1",
+                "corpus_configuration_hash": second.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.05,
+            },
         )
         active = EventFaceClusterActivation.objects.filter(event=self.event, active=True).get()
         self.assertEqual(active, activation)
+
+    def test_activation_hash_is_a_policy_identity_not_the_corpus_hash(self) -> None:
+        from processing.services.face_cluster_corpora import cluster_expansion_policy_hash
+
+        self.make_embedding(event=self.event, photo_id="policy", vector=[1.0, 0.0])
+        corpus = self.make_runtime_compatible(
+            build_face_cluster_corpus(
+                event=self.event,
+                version=1,
+                generations=self.generations[:1],
+                dimensions=2,
+                edge_threshold=0.1,
+                representative_threshold=0.1,
+                distance_block_size=2,
+                max_candidate_edges=100,
+            )
+        )
+        expected = cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.05)
+        self.assertNotEqual(
+            expected,
+            cluster_expansion_policy_hash(corpus.configuration_hash, 0.362, 0.05),
+        )
+        self.assertNotEqual(
+            expected,
+            cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.04),
+        )
+
+        activation = activate_face_cluster_corpus(
+            event=self.event,
+            corpus=corpus,
+            configuration_hash=expected,
+            anchor_threshold=0.05,
+            evaluation_report_hash="a" * 64,
+            numeric_gates_reviewed=True,
+        )
+
+        self.assertEqual(activation.configuration_hash, expected)
+        self.assertNotEqual(activation.configuration_hash, corpus.configuration_hash)
+        self.assertEqual(
+            activation.configuration["corpus_configuration_hash"], corpus.configuration_hash
+        )
 
     def test_activation_denies_unpublished_mismatched_or_unreviewed_inputs(self) -> None:
         self.make_embedding(event=self.event, photo_id="deny", vector=[1.0, 0.0])

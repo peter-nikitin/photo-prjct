@@ -16,6 +16,51 @@ from processing.services.face_clustering import (
 )
 
 
+def test_dependency_neutral_kernel_matches_django_wrapper_exactly() -> None:
+    from face_cluster_contract import ClusterFaceValue, build_face_cluster_kernel
+
+    faces = (
+        _face(3, (0.0, 1.0)),
+        _face(1, (1.0, 0.0)),
+        _face(2, (0.9, math.sqrt(0.19))),
+    )
+    wrapper = build_face_clusters(
+        faces,
+        edge_threshold=0.2,
+        representative_threshold=0.2,
+        distance_block_size=2,
+        max_candidate_edges=100,
+    )
+    kernel = build_face_cluster_kernel(
+        tuple(ClusterFaceValue(face.face_id.hex, face.vector) for face in faces),
+        edge_threshold=0.2,
+        representative_threshold=0.2,
+        distance_block_size=2,
+        max_candidate_edges=100,
+    )
+
+    assert [
+        (
+            cluster.cluster_key,
+            cluster.representative_face_id,
+            tuple(
+                (member.face_id, member.distance_to_representative) for member in cluster.members
+            ),
+        )
+        for cluster in kernel
+    ] == [
+        (
+            cluster.cluster_key,
+            cluster.representative_face_id.hex,
+            tuple(
+                (member.face_id.hex, member.distance_to_representative)
+                for member in cluster.members
+            ),
+        )
+        for cluster in wrapper
+    ]
+
+
 def _id(number: int) -> UUID:
     return UUID(f"00000000-0000-0000-0000-{number:012d}")
 
@@ -187,7 +232,7 @@ def test_invalid_configuration_is_rejected(kwargs: dict[str, float | int], match
 
 
 def test_distance_work_is_bounded_by_requested_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
-    import processing.services.face_clustering as module
+    import face_cluster_contract as module
 
     seen: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
     original = module._cosine_distance_block

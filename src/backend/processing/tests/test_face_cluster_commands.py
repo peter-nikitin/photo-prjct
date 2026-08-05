@@ -9,6 +9,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
+from face_cluster_contract import cluster_expansion_policy_hash
 from picflow.models import Event, Photo
 
 from processing.models import (
@@ -169,8 +170,8 @@ class FaceClusterCommandTests(TestCase):
             str(self.event.pk),
             "--corpus",
             str(corpus.pk),
-            "--configuration-hash",
-            corpus.configuration_hash,
+            "--policy-hash",
+            cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.05),
             "--anchor-threshold",
             "0.05",
             "--evaluation-report-hash",

@@ -12,13 +12,26 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
+from typing import TypedDict, cast
 
 import numpy as np
+from face_cluster_contract import (
+    ClusterFaceValue,
+    build_face_cluster_kernel,
+    corpus_configuration_hash,
+)
 
 from .benchmark import BenchmarkQuery, FinalBenchmark
 from .index import FaceIndex
 
 _SHA256_LENGTH = 64
+
+
+class _HeldOutParameters(TypedDict):
+    edge_threshold: float
+    representative_threshold: float
+    distance_block_size: int
+    max_candidate_edges: int
 
 
 @dataclass(frozen=True)
@@ -117,6 +130,86 @@ class ClusterExpansionEvaluationReport:
         )
 
 
+def build_held_out_clusters(
+    index: FaceIndex,
+    *,
+    query_filename: str,
+    edge_threshold: float,
+    representative_threshold: float,
+    distance_block_size: int,
+    max_candidate_edges: int,
+) -> tuple[FaceCluster, ...]:
+    """Rebuild the exact graph corpus after removing a query's entire source photo.
+
+    The evaluator deliberately does not filter a pre-built cluster after the fact: a held-out face
+    can alter an accepted merge or a component medoid.  This is the same guarded graph policy used
+    by the production corpus builder, applied to the exact normalized embeddings being evaluated.
+    """
+    if not _valid_threshold(edge_threshold) or not _valid_threshold(representative_threshold):
+        raise ValueError("invalid cluster thresholds")
+    if (
+        isinstance(distance_block_size, bool)
+        or not isinstance(distance_block_size, int)
+        or distance_block_size < 1
+        or isinstance(max_candidate_edges, bool)
+        or not isinstance(max_candidate_edges, int)
+        or max_candidate_edges < 1
+    ):
+        raise ValueError("invalid clustering limits")
+    return tuple(
+        FaceCluster(
+            cluster.cluster_key,
+            cluster.representative_face_id,
+            tuple(
+                ClusterMember(
+                    member.face_id,
+                    next(
+                        entry.filename for entry in index.entries if entry.face_id == member.face_id
+                    ),
+                    member.distance_to_representative,
+                )
+                for member in cluster.members
+            ),
+        )
+        for cluster in build_face_cluster_kernel(
+            tuple(
+                ClusterFaceValue(
+                    entry.face_id, tuple(float(value) for value in index.embeddings[position])
+                )
+                for position, entry in enumerate(index.entries)
+                if entry.filename != query_filename
+            ),
+            edge_threshold=edge_threshold,
+            representative_threshold=representative_threshold,
+            distance_block_size=distance_block_size,
+            max_candidate_edges=max_candidate_edges,
+        )
+    )
+
+
+def production_corpus_configuration_hash(
+    index: FaceIndex,
+    *,
+    source_parameters: Mapping[str, object],
+    generations: Sequence[Mapping[str, object]],
+) -> str:
+    """Project a strictly validated run onto the production corpus-hash contract.
+
+    This function has no Django dependency. It uses the actual normalized production generation
+    dictionaries plus the algorithm thresholds and bounded-build limits, exactly as Django does.
+    """
+    parameters = _held_out_parameters(source_parameters)
+    return corpus_configuration_hash(
+        algorithm_version="guarded-graph-v1",
+        generations=generations,
+        dimensions=index.manifest.embedding_dimension,
+        edge_threshold=parameters["edge_threshold"],
+        representative_threshold=parameters["representative_threshold"],
+        distance_block_size=parameters["distance_block_size"],
+        max_candidate_edges=parameters["max_candidate_edges"],
+    )
+
+
 def rank_cluster_expansion(
     query: object,
     benchmark: FinalBenchmark,
@@ -132,7 +225,7 @@ def rank_cluster_expansion(
         raise ValueError("query is not in the final benchmark")
     if not isinstance(configuration, ClusterExpansionConfiguration):
         raise TypeError("configuration must be a ClusterExpansionConfiguration")
-    memberships = _membership_by_face(clusters, index)
+    memberships = _membership_by_face(clusters, index, require_complete=False)
     positions = {entry.face_id: position for position, entry in enumerate(index.entries)}
     query_position = positions.get(query.query_face_id)
     if query_position is None:
@@ -240,25 +333,37 @@ def evaluate_cluster_expansion(
         tracemalloc.start()
     direct_times: dict[str, list[float]] = defaultdict(list)
     expansion_times: dict[str, list[float]] = defaultdict(list)
-    by_split: dict[str, list[tuple[BenchmarkQuery, RankedSearch]]] = {
+    by_split: dict[str, list[tuple[BenchmarkQuery, RankedSearch, tuple[FaceCluster, ...]]]] = {
         "calibration": [],
         "evaluation": [],
     }
+    held_out_parameters = _held_out_parameters(cluster_parameters)
     for query in benchmark.queries:
-        result = rank_cluster_expansion(query, benchmark, index, cluster_values, configuration)
+        held_out_clusters = build_held_out_clusters(
+            index,
+            query_filename=query.query_filename,
+            edge_threshold=held_out_parameters["edge_threshold"],
+            representative_threshold=held_out_parameters["representative_threshold"],
+            distance_block_size=held_out_parameters["distance_block_size"],
+            max_candidate_edges=held_out_parameters["max_candidate_edges"],
+        )
+        result = rank_cluster_expansion(query, benchmark, index, held_out_clusters, configuration)
         direct_times[query.split].append(result.direct_ranking_ms)
         expansion_times[query.split].append(result.expansion_ms)
-        by_split[query.split].append((query, result))
+        by_split[query.split].append((query, result, held_out_clusters))
     _current, peak_memory_bytes = tracemalloc.get_traced_memory()
-    splits = {
-        split: _split_metrics(benchmark, results, cluster_values)
-        for split, results in by_split.items()
-    }
+    splits = {split: _split_metrics(benchmark, results) for split, results in by_split.items()}
     source = dict(
         source_identities
         or stable_evaluation_source(benchmark, index, cluster_values, cluster_parameters or {})
     )
-    cluster_metrics = _cluster_metrics(cluster_values, benchmark)
+    cluster_metrics = {
+        "global_intrinsic": _global_intrinsic_cluster_metrics(cluster_values),
+        "held_out": {
+            split: _held_out_cluster_metrics(benchmark, values)
+            for split, values in by_split.items()
+        },
+    }
     resources: dict[str, object] = {
         "corpus_build_duration_ms": corpus_build_duration_ms,
         "corpus_build_peak_memory_bytes": corpus_build_peak_memory_bytes,
@@ -394,8 +499,7 @@ def write_evaluation_report(path: Path, report: ClusterExpansionEvaluationReport
 
 def _split_metrics(
     benchmark: FinalBenchmark,
-    values: Sequence[tuple[BenchmarkQuery, RankedSearch]],
-    clusters: Sequence[FaceCluster],
+    values: Sequence[tuple[BenchmarkQuery, RankedSearch, Sequence[FaceCluster]]],
 ) -> dict[str, object]:
     annotations_by_photo: defaultdict[str, defaultdict[str, set[str]]] = defaultdict(
         lambda: defaultdict(set)
@@ -412,7 +516,7 @@ def _split_metrics(
     direct_labels: Counter[str] = Counter()
     expanded_labels: Counter[str] = Counter()
     helped = harmed = false_merges = 0
-    for query, result in values:
+    for query, result, clusters in values:
         labels = {
             filename: _photo_label(labels)
             for filename, labels in annotations_by_photo[query.query_id].items()
@@ -461,7 +565,7 @@ def _split_metrics(
                     if _photo_label(labels) == "relevant"
                 }
             )
-            for query, _result in values
+            for query, _result, _clusters in values
         ]
     )
     return {
@@ -489,33 +593,44 @@ def _split_metrics(
     }
 
 
-def _cluster_metrics(
-    clusters: Sequence[FaceCluster], benchmark: FinalBenchmark
-) -> dict[str, object]:
+def _global_intrinsic_cluster_metrics(clusters: Sequence[FaceCluster]) -> dict[str, object]:
     sizes = Counter(len(cluster.members) for cluster in clusters)
-    memberships = _membership_by_face(clusters, None)
-    benchmark_faces = benchmark.face_by_id
-    fragments: dict[str, Counter[int]] = {"calibration": Counter(), "evaluation": Counter()}
-    for query in benchmark.queries:
-        relevant_clusters = {memberships[query.query_face_id].cluster_id}
-        relevant_clusters.update(
-            memberships[annotation.candidate_face_id].cluster_id
-            for annotation in benchmark.annotations
-            if annotation.query_id == query.query_id
-            and annotation.label == "relevant"
-            and annotation.candidate_face_id in memberships
-            and benchmark_faces[annotation.candidate_face_id].filename != query.query_filename
-        )
-        if relevant_clusters:
-            fragments[query.split][len(relevant_clusters)] += 1
     return {
         "cluster_count": len(clusters),
         "singleton_count": sizes[1],
         "size_distribution": {str(size): count for size, count in sorted(sizes.items())},
-        "fragmentation": {
-            split: {str(parts): count for parts, count in sorted(values.items())}
-            for split, values in fragments.items()
-        },
+    }
+
+
+def _held_out_cluster_metrics(
+    benchmark: FinalBenchmark,
+    values: Sequence[tuple[BenchmarkQuery, RankedSearch, Sequence[FaceCluster]]],
+) -> dict[str, object]:
+    sizes: Counter[int] = Counter()
+    singleton_count = cluster_count = 0
+    fragments: Counter[int] = Counter()
+    annotations_by_query: defaultdict[str, set[str]] = defaultdict(set)
+    for annotation in benchmark.annotations:
+        if annotation.label == "relevant":
+            annotations_by_query[annotation.query_id].add(annotation.candidate_face_id)
+    for query, _result, clusters in values:
+        memberships = _membership_by_face(clusters, None)
+        cluster_count += len(clusters)
+        sizes.update(len(cluster.members) for cluster in clusters)
+        singleton_count += sum(len(cluster.members) == 1 for cluster in clusters)
+        relevant_clusters = {
+            memberships[face_id].cluster_id
+            for face_id in annotations_by_query[query.query_id]
+            if face_id in memberships
+        }
+        if relevant_clusters:
+            fragments[len(relevant_clusters)] += 1
+    return {
+        "search_count": len(values),
+        "cluster_count": cluster_count,
+        "singleton_count": singleton_count,
+        "size_distribution": {str(size): count for size, count in sorted(sizes.items())},
+        "fragmentation": {str(parts): count for parts, count in sorted(fragments.items())},
     }
 
 
@@ -536,6 +651,33 @@ def _is_false_cluster_merge(
         and any(labels_by_face_id.get(member.face_id) == "relevant" for member in members)
         and any(labels_by_face_id.get(member.face_id) == "different" for member in members)
     )
+
+
+def _held_out_parameters(cluster_parameters: Mapping[str, object] | None) -> _HeldOutParameters:
+    if cluster_parameters is None:
+        raise ValueError("explicit clustering parameters are required")
+    parameters = cluster_parameters
+    edge = parameters.get("cluster_threshold")
+    representative = parameters.get("representative_threshold")
+    block_size = parameters.get("distance_block_size")
+    edge_limit = parameters.get("max_candidate_edges")
+    if (
+        not _valid_threshold(edge)
+        or not _valid_threshold(representative)
+        or isinstance(block_size, bool)
+        or not isinstance(block_size, int)
+        or block_size < 1
+        or isinstance(edge_limit, bool)
+        or not isinstance(edge_limit, int)
+        or edge_limit < 1
+    ):
+        raise ValueError("invalid clustering parameters")
+    return {
+        "edge_threshold": float(cast(int | float, edge)),
+        "representative_threshold": float(cast(int | float, representative)),
+        "distance_block_size": block_size,
+        "max_candidate_edges": edge_limit,
+    }
 
 
 def _cluster_binding(clusters: Sequence[FaceCluster]) -> list[dict[str, object]]:
@@ -563,7 +705,7 @@ class _ClusterMembership:
 
 
 def _membership_by_face(
-    clusters: Sequence[FaceCluster], index: FaceIndex | None
+    clusters: Sequence[FaceCluster], index: FaceIndex | None, *, require_complete: bool = True
 ) -> dict[str, _ClusterMembership]:
     membership: dict[str, _ClusterMembership] = {}
     index_by_id = {entry.face_id: entry for entry in index.entries} if index is not None else None
@@ -588,7 +730,7 @@ def _membership_by_face(
             ):
                 raise ValueError("cluster artifact is invalid")
             membership[member.face_id] = _ClusterMembership(cluster.cluster_id, cluster.members)
-    if index_by_id is not None and set(membership) != set(index_by_id):
+    if index_by_id is not None and require_complete and set(membership) != set(index_by_id):
         raise ValueError("cluster artifact is incompatible with index")
     return membership
 

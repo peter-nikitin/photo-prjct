@@ -21,7 +21,7 @@ class Command(BaseCommand):
         parser.add_argument("event", nargs="?", help="Event primary key or slug")
         parser.add_argument("--event", dest="event_option", help="Event primary key or slug")
         parser.add_argument("--corpus", required=True, help="Published face-cluster corpus UUID")
-        parser.add_argument("--configuration-hash", required=True)
+        parser.add_argument("--policy-hash", dest="configuration_hash", required=True)
         parser.add_argument("--anchor-threshold", type=float, required=True)
         parser.add_argument("--evaluation-report-hash", required=True)
         parser.add_argument("--confirm-numeric-gates-reviewed", action="store_true")

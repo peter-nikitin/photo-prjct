@@ -7,7 +7,9 @@ from math import isfinite
 from time import perf_counter
 from uuid import UUID
 
+from django.conf import settings
 from django.db import DatabaseError
+from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from picflow.gallery import gallery_photo_queryset
 from processing.models import EventFaceClusterActivation, FaceClusterMember
 
@@ -227,6 +229,13 @@ def _compatible_corpus(search: SelfieSearch, activation: EventFaceClusterActivat
         raise ClusterExpansionError("cluster corpus is incompatible")
     threshold = configuration.get("cosine_distance_threshold")
     anchor_threshold = activation.anchor_threshold
+    policy = activation.configuration
+    reviewed_direct_threshold = policy.get("direct_threshold") if isinstance(policy, dict) else None
+    reviewed_anchor_threshold = policy.get("anchor_threshold") if isinstance(policy, dict) else None
+    reviewed_corpus_hash = (
+        policy.get("corpus_configuration_hash") if isinstance(policy, dict) else None
+    )
+    policy_id = policy.get("policy_id") if isinstance(policy, dict) else None
     if (
         not activation.active
         or activation.event_id != search.event_id
@@ -243,6 +252,13 @@ def _compatible_corpus(search: SelfieSearch, activation: EventFaceClusterActivat
         or not isinstance(anchor_threshold, (int, float))
         or not isfinite(anchor_threshold)
         or anchor_threshold >= threshold
+        or policy_id != POLICY_ID
+        or reviewed_direct_threshold != threshold
+        or getattr(settings, "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD", None) != threshold
+        or reviewed_anchor_threshold != anchor_threshold
+        or reviewed_corpus_hash != corpus.configuration_hash
+        or activation.configuration_hash
+        != cluster_expansion_policy_hash(corpus.configuration_hash, threshold, anchor_threshold)
     ):
         raise ClusterExpansionError("cluster corpus is incompatible")
     return corpus

@@ -37,6 +37,13 @@ UUID; она не активирует event pointer или environment gate:
 ```bash
 set -eu
 cd /opt/photo-prjct
+compose() {
+  local DEPLOYMENT_TARGET=staging
+  export DEPLOYMENT_TARGET
+  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.prod.yml \
+    -f /opt/photo-prjct/docker-compose.https.yml "$@"
+}
 : "${EVENT_REF:?set an approved event primary key or slug}"
 : "${CORPUS_VERSION:?set the next immutable version}"
 : "${CLUSTER_EDGE_THRESHOLD:?set the reviewed cluster-edge threshold}"
@@ -44,7 +51,7 @@ cd /opt/photo-prjct
 : "${DISTANCE_BLOCK_SIZE:?set the reviewed bounded block size}"
 : "${MAX_CANDIDATE_EDGES:?set the reviewed candidate-edge limit}"
 : "${EMBEDDING_DIMENSIONS:?set the reviewed embedding dimension}"
-.venv/bin/python src/backend/manage.py build_face_cluster_corpus "$EVENT_REF" \
+compose exec -T web python manage.py build_face_cluster_corpus "$EVENT_REF" \
   --version "$CORPUS_VERSION" \
   --edge-threshold "$CLUSTER_EDGE_THRESHOLD" \
   --representative-threshold "$REPRESENTATIVE_THRESHOLD" \
@@ -71,7 +78,8 @@ set -eu
 : "${DIRECT_THRESHOLD:?set the reviewed direct threshold}"
 : "${ANCHOR_THRESHOLD:?set the separately reviewed strong-anchor threshold}"
 : "${CONFIGURATION_HASH:?set the lowercase corpus configuration SHA-256}"
-PYTHONPATH=experiments/face_recognition_spike \
+: "${GENERATIONS_JSON:?set the private normalized face-embedding generations JSON}"
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
   .venv/bin/python -m face_spike evaluate-cluster-expansion \
   --benchmark "$BENCHMARK_DIR" \
   --index "$INDEX_DIR" \
@@ -79,7 +87,8 @@ PYTHONPATH=experiments/face_recognition_spike \
   --output "$REPORT_FILE" \
   --direct-threshold "$DIRECT_THRESHOLD" \
   --anchor-threshold "$ANCHOR_THRESHOLD" \
-  --configuration-hash "$CONFIGURATION_HASH"
+  --configuration-hash "$CONFIGURATION_HASH" \
+  --generations-json "$GENERATIONS_JSON"
 ```
 
 Review direct/final recall, source-separated precision, incremental correct/incorrect photos,
@@ -96,11 +105,18 @@ individual result/member fields:
 ```bash
 set -eu
 cd /opt/photo-prjct
+compose() {
+  local DEPLOYMENT_TARGET=staging
+  export DEPLOYMENT_TARGET
+  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.prod.yml \
+    -f /opt/photo-prjct/docker-compose.https.yml "$@"
+}
 : "${REPORT_START:?set the closed-open Moscow start date YYYY-MM-DD}"
 : "${REPORT_END:?set the closed-open Moscow end date YYYY-MM-DD}"
 REPORT_EVENT_ARGS=()
 if [ -n "${EVENT_ID:-}" ]; then REPORT_EVENT_ARGS=(--event "$EVENT_ID"); fi
-.venv/bin/python src/backend/manage.py report_face_cluster_expansion \
+compose exec -T web python manage.py report_face_cluster_expansion \
   --start "$REPORT_START" \
   --end "$REPORT_END" \
   "${REPORT_EVENT_ARGS[@]}"
@@ -120,17 +136,28 @@ activation pointer:
 ```bash
 set -eu
 cd /opt/photo-prjct
+compose() {
+  local DEPLOYMENT_TARGET=staging
+  export DEPLOYMENT_TARGET
+  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.prod.yml \
+    -f /opt/photo-prjct/docker-compose.https.yml "$@"
+}
 : "${EVENT_REF:?set the approved event primary key or slug}"
 : "${CORPUS_UUID:?set the published corpus UUID}"
 : "${CONFIGURATION_HASH:?set the exact corpus configuration SHA-256}"
+: "${DIRECT_THRESHOLD:?set the reviewed direct threshold frozen in the policy}"
 : "${ANCHOR_THRESHOLD:?set the approved strong-anchor threshold}"
 : "${REPORT_FILE:?set the private aggregate evaluation report path}"
-REPORT_HASH="$($PWD/.venv/bin/python -c \
+REPORT_HASH="$(python3 -c \
   'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
   "$REPORT_FILE")"
-.venv/bin/python src/backend/manage.py activate_face_cluster_corpus "$EVENT_REF" \
+POLICY_HASH="$(compose exec -T web python -c \
+  'from face_cluster_contract import cluster_expansion_policy_hash; import sys; print(cluster_expansion_policy_hash(sys.argv[1], float(sys.argv[2]), float(sys.argv[3])))' \
+  "$CONFIGURATION_HASH" "$DIRECT_THRESHOLD" "$ANCHOR_THRESHOLD")"
+compose exec -T web python manage.py activate_face_cluster_corpus "$EVENT_REF" \
   --corpus "$CORPUS_UUID" \
-  --configuration-hash "$CONFIGURATION_HASH" \
+  --policy-hash "$POLICY_HASH" \
   --anchor-threshold "$ANCHOR_THRESHOLD" \
   --evaluation-report-hash "$REPORT_HASH" \
   --confirm-numeric-gates-reviewed

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from collections.abc import Mapping, Sequence
 from time import monotonic
@@ -12,6 +10,14 @@ from typing import Any
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from face_cluster_contract import (
+    ALGORITHM_VERSION,
+    POLICY_ID,
+    canonical_json_hash,
+    cluster_expansion_policy_hash,
+    corpus_configuration,
+    is_sha256,
+)
 from picflow.models import Event
 
 from processing.models import (
@@ -23,8 +29,6 @@ from processing.models import (
 )
 from processing.services.face_clustering import ClusterFace, build_face_clusters
 from processing.services.face_cohort import CompatibleFaceEmbedding, load_compatible_face_embeddings
-
-ALGORITHM_VERSION = "guarded-graph-v1"
 
 
 def activate_face_cluster_corpus(
@@ -39,14 +43,14 @@ def activate_face_cluster_corpus(
     """Atomically replace one event's explicit corpus-selection pointer.
 
     Building and evaluating corpora never call this function.  The operator must provide the
-    reviewed report identity, the exact immutable corpus configuration hash, and a separately
-    calibrated strong-anchor threshold for every activation.
+    reviewed report identity, the deterministic policy hash (corpus plus reviewed thresholds), and
+    a separately calibrated strong-anchor threshold for every activation.
     """
     direct_threshold = getattr(settings, "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD", None)
     if (
         numeric_gates_reviewed is not True
-        or not _is_sha256(configuration_hash)
-        or not _is_sha256(evaluation_report_hash)
+        or not is_sha256(configuration_hash)
+        or not is_sha256(evaluation_report_hash)
         or isinstance(anchor_threshold, bool)
         or not isinstance(anchor_threshold, (int, float))
         or not math.isfinite(anchor_threshold)
@@ -62,7 +66,10 @@ def activate_face_cluster_corpus(
         if (
             locked_corpus.event_id != event.pk
             or locked_corpus.status != FaceClusterCorpus.Status.PUBLISHED
-            or locked_corpus.configuration_hash != configuration_hash
+            or configuration_hash
+            != cluster_expansion_policy_hash(
+                locked_corpus.configuration_hash, float(direct_threshold), float(anchor_threshold)
+            )
             or not _runtime_compatible(locked_corpus)
         ):
             raise ValueError("corpus cannot be activated")
@@ -75,6 +82,8 @@ def activate_face_cluster_corpus(
             active=True,
             anchor_threshold=float(anchor_threshold),
             configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": locked_corpus.configuration_hash,
                 "direct_threshold": float(direct_threshold),
                 "anchor_threshold": float(anchor_threshold),
             },
@@ -107,7 +116,7 @@ def build_face_cluster_corpus(
         configured_dimensions = getattr(settings, "SELFIE_SEARCH_EMBEDDING_DIMENSIONS", 128)
         dimensions = configured_dimensions if isinstance(configured_dimensions, int) else 128
     normalized_generations = tuple(dict(generation) for generation in generations)
-    configuration = _configuration(
+    configuration = corpus_configuration(
         algorithm_version=algorithm_version,
         generations=normalized_generations,
         dimensions=dimensions,
@@ -116,7 +125,7 @@ def build_face_cluster_corpus(
         distance_block_size=distance_block_size,
         max_candidate_edges=max_candidate_edges,
     )
-    configuration_hash = _hash_json(configuration)
+    configuration_hash = canonical_json_hash(configuration)
     model_version = _model_version(normalized_generations)
     processor_version = _processor_version(normalized_generations)
     contract_version = _contract_version(normalized_generations)
@@ -245,27 +254,6 @@ def _mark_failed(corpus: FaceClusterCorpus, error: Exception) -> None:
     )
 
 
-def _configuration(
-    *,
-    algorithm_version: str,
-    generations: Sequence[Mapping[str, object]],
-    dimensions: int,
-    edge_threshold: float,
-    representative_threshold: float,
-    distance_block_size: int,
-    max_candidate_edges: int,
-) -> dict[str, object]:
-    return {
-        "algorithm_version": algorithm_version,
-        "embedding_dimensions": dimensions,
-        "face_embedding_generations": [dict(generation) for generation in generations],
-        "edge_threshold": edge_threshold,
-        "representative_threshold": representative_threshold,
-        "distance_block_size": distance_block_size,
-        "max_candidate_edges": max_candidate_edges,
-    }
-
-
 def _default_generations() -> tuple[Mapping[str, object], ...]:
     from processing.services.enrollment import (
         CONTRACT_VERSION,
@@ -275,7 +263,7 @@ def _default_generations() -> tuple[Mapping[str, object], ...]:
         PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
     )
 
-    configuration_hash = _hash_json(FACE_EMBEDDING_CONFIGURATION)
+    configuration_hash = canonical_json_hash(FACE_EMBEDDING_CONFIGURATION)
     return (
         {
             "contract_version": CONTRACT_VERSION,
@@ -330,7 +318,7 @@ def _input_hash(rows: Sequence[CompatibleFaceEmbedding]) -> str:
         }
         for row in rows
     ]
-    return _hash_json(payload)
+    return canonical_json_hash(payload)
 
 
 def _membership_hash(clusters: Sequence[Any]) -> str:
@@ -348,21 +336,7 @@ def _membership_hash(clusters: Sequence[Any]) -> str:
         }
         for cluster in clusters
     ]
-    return _hash_json(payload)
-
-
-def _hash_json(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
+    return canonical_json_hash(payload)
 
 
 def _runtime_compatible(corpus: FaceClusterCorpus) -> bool:

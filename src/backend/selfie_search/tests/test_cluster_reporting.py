@@ -293,6 +293,27 @@ class ClusterExpansionReportTests(TestCase):
         self.assertEqual(report["feedback"]["expanded"]["coverage"]["numerator"], 1)
         self.assertEqual(report["feedback"]["dual_evidence"]["coverage"]["denominator"], 1)
 
+    def test_report_emits_only_policy_hashes_and_aggregate_search_counts(self) -> None:
+        first = self.make_search(
+            created_at=datetime(2026, 8, 5, 9, 0, tzinfo=MOSCOW),
+            direct=1,
+            expanded=0,
+            final=1,
+        )
+        second = self.make_search(
+            created_at=datetime(2026, 8, 5, 10, 0, tzinfo=MOSCOW),
+            direct=1,
+            expanded=0,
+            final=1,
+        )
+        SelfieSearch.objects.filter(pk__in=(first.pk, second.pk)).update(
+            cluster_configuration_hash="a" * 64
+        )
+
+        report = build_cluster_expansion_report(start=date(2026, 8, 5), end=date(2026, 8, 6))
+
+        self.assertEqual(report["policy_hashes"], [{"hash": "a" * 64, "searches": 2}])
+
     def test_report_keeps_unmarked_unknown_and_reports_historical_not_available(self) -> None:
         historical = self.make_search(
             created_at=datetime(2026, 8, 5, 10, 0, tzinfo=MOSCOW),
@@ -378,7 +399,7 @@ class ClusterExpansionReportTests(TestCase):
         )
 
         self.assertEqual(report["searches"]["total"], 0)
-        self.assertNotIn(str(self.event.pk), str(report))
+        self.assertNotIn(self.event_sentinel, str(report))
         self.assertNotIn(self.event_sentinel, str(report))
         self.assertNotIn(self.photo_sentinel, str(report))
         self.assertNotIn(self.contact_sentinel, str(report))

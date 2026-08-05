@@ -10,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, connection
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from processing.models import (
@@ -335,8 +336,13 @@ class SearchJobTests(TestCase):
             corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
             active=True,
             anchor_threshold=0.2,
-            configuration={},
-            configuration_hash="c" * 64,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
             approved_evaluation_report_hash="d" * 64,
         )
         claimed = self.claim(search)
@@ -378,7 +384,10 @@ class SearchJobTests(TestCase):
         self.assertEqual(terminal_event["direct_matched_photo_count"], 1)
         self.assertEqual(terminal_event["cluster_expanded_photo_count"], 1)
         self.assertEqual(terminal_event["cluster_corpus_version"], 1)
-        self.assertEqual(terminal_event["cluster_configuration_hash"], "c" * 64)
+        self.assertEqual(
+            terminal_event["cluster_configuration_hash"],
+            cluster_expansion_policy_hash("b" * 64, 0.363, 0.2),
+        )
         evidence_count = SelfieSearchClusterEvidence.objects.filter(result__search=search).count()
         self.assertEqual(evidence_count, 2)
 
@@ -412,8 +421,13 @@ class SearchJobTests(TestCase):
             corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
             active=True,
             anchor_threshold=0.2,
-            configuration={},
-            configuration_hash="c" * 64,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
             approved_evaluation_report_hash="d" * 64,
         )
         claimed = self.claim(search)
@@ -457,7 +471,7 @@ class SearchJobTests(TestCase):
                     "gallery_face_embedding_generations"
                 ]
             },
-            configuration_hash="h" * 64,
+            configuration_hash="a" * 64,
             contract_version=1,
             processor_type="face_embedding",
             processor_version=1,
@@ -493,8 +507,13 @@ class SearchJobTests(TestCase):
             corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
             active=True,
             anchor_threshold=0.2,
-            configuration={},
-            configuration_hash="i" * 64,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
             approved_evaluation_report_hash="j" * 64,
         )
         claimed = self.claim(search)
@@ -579,8 +598,13 @@ class SearchJobTests(TestCase):
             corpus=FaceClusterCorpus.objects.get(pk=corpus.pk),
             active=True,
             anchor_threshold=0.2,
-            configuration={},
-            configuration_hash="f" * 64,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
             approved_evaluation_report_hash="g" * 64,
         )
         claimed = self.claim(search)

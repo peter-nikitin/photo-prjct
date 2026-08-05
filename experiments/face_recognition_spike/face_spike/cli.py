@@ -65,6 +65,7 @@ class ClusterConfig:
     cluster_threshold: float = 0.363
     representative_threshold: float = 0.363
     distance_block_size: int = 512
+    max_candidate_edges: int = 100_000
     image_limit: int | None = None
     max_image_dimension: int = 12000
     max_image_pixels: int = 100_000_000
@@ -82,6 +83,7 @@ class ClusterConfig:
             or not 0.0 <= self.representative_threshold <= 2.0
             or self.min_face_px < 1
             or self.distance_block_size < 1
+            or self.max_candidate_edges < 1
             or (self.image_limit is not None and self.image_limit < 1)
             or self.max_image_dimension < 1
             or self.max_image_pixels < 1
@@ -137,6 +139,7 @@ class EvaluateClusterExpansionConfig:
     direct_threshold: float
     anchor_threshold: float
     configuration_hash: str
+    generations_json: Path
 
 
 class BenchmarkConfigurationError(Exception):
@@ -271,6 +274,7 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
             cluster_threshold=config.cluster_threshold,
             representative_threshold=config.representative_threshold,
             distance_block_size=config.distance_block_size,
+            max_candidate_edges=config.max_candidate_edges,
         )
         clustering_seconds = perf_counter() - clustering_start
         _current, peak_memory_bytes = tracemalloc.get_traced_memory()
@@ -282,6 +286,7 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
                 "cluster_threshold": config.cluster_threshold,
                 "detection_threshold": config.detection_threshold,
                 "distance_block_size": config.distance_block_size,
+                "max_candidate_edges": config.max_candidate_edges,
                 "image_limit": config.image_limit,
                 "max_image_dimension": config.max_image_dimension,
                 "max_image_pixels": config.max_image_pixels,
@@ -466,6 +471,7 @@ def _index_parameters(manifest: Mapping[str, object]) -> _IndexParameters:
         "cluster_threshold",
         "detection_threshold",
         "distance_block_size",
+        "max_candidate_edges",
         "image_limit",
         "input_photos_basename",
         "max_image_dimension",
@@ -778,6 +784,7 @@ def run_evaluate_cluster_expansion(config: EvaluateClusterExpansionConfig) -> No
     from .cluster_expansion import (
         ClusterExpansionConfiguration,
         evaluate_cluster_expansion,
+        production_corpus_configuration_hash,
         stable_evaluation_source,
         write_evaluation_report,
     )
@@ -791,6 +798,13 @@ def run_evaluate_cluster_expansion(config: EvaluateClusterExpansionConfig) -> No
         _validate_benchmark_index(
             artifact.benchmark_run, artifact.source_faces, artifact.source_manifest, index
         )
+        derived_configuration_hash = production_corpus_configuration_hash(
+            index,
+            source_parameters=_mapping(artifact.source_manifest["parameters"]),
+            generations=_load_face_embedding_generations(config.generations_json),
+        )
+        if config.configuration_hash != derived_configuration_hash:
+            raise ValueError("supplied corpus configuration hash does not match artifact")
         report = evaluate_cluster_expansion(
             benchmark,
             index,
@@ -1064,6 +1078,18 @@ def _validate_evaluate_cluster_expansion_config(config: EvaluateClusterExpansion
         raise BenchmarkConfigurationError("cluster expansion configuration is invalid") from None
     if os.path.lexists(config.output):
         raise BenchmarkConfigurationError("output path already exists")
+    if not config.generations_json.is_file():
+        raise BenchmarkConfigurationError("generation contract is invalid")
+
+
+def _load_face_embedding_generations(path: Path) -> tuple[Mapping[str, object], ...]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list) or not payload:
+            raise ValueError
+        return tuple(_mapping(value) for value in payload)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        raise BenchmarkConfigurationError("generation contract is invalid") from None
 
 
 def _load_benchmark_run(
@@ -1391,6 +1417,7 @@ def build_parser() -> argparse.ArgumentParser:
     cluster.add_argument("--cluster-threshold", type=float, default=0.363)
     cluster.add_argument("--representative-threshold", type=float, default=0.363)
     cluster.add_argument("--distance-block-size", type=int, default=512)
+    cluster.add_argument("--max-candidate-edges", type=int, default=100_000)
     cluster.add_argument("--image-limit", type=int)
     cluster.add_argument("--max-image-dimension", type=int, default=12000)
     cluster.add_argument("--max-image-pixels", type=int, default=100_000_000)
@@ -1430,6 +1457,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_cluster_expansion.add_argument("--direct-threshold", type=float, required=True)
     evaluate_cluster_expansion.add_argument("--anchor-threshold", type=float, required=True)
     evaluate_cluster_expansion.add_argument("--configuration-hash", required=True)
+    evaluate_cluster_expansion.add_argument("--generations-json", type=Path, required=True)
     smoke_search = commands.add_parser("smoke-search")
     smoke_search.add_argument("--proposal", type=Path, required=True)
     smoke_search.add_argument("--index", type=Path, required=True)
@@ -1495,6 +1523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 direct_threshold=arguments.direct_threshold,
                 anchor_threshold=arguments.anchor_threshold,
                 configuration_hash=arguments.configuration_hash,
+                generations_json=arguments.generations_json,
             )
         elif arguments.command == "smoke-search":
             smoke_search_config = SmokeSearchConfig(
@@ -1519,6 +1548,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cluster_threshold=arguments.cluster_threshold,
                 representative_threshold=arguments.representative_threshold,
                 distance_block_size=arguments.distance_block_size,
+                max_candidate_edges=arguments.max_candidate_edges,
                 image_limit=arguments.image_limit,
                 max_image_dimension=arguments.max_image_dimension,
                 max_image_pixels=arguments.max_image_pixels,

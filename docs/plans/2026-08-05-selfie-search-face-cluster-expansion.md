@@ -6,7 +6,7 @@
 > creates one final commit per reviewed task.
 
 - Date: 2026-08-05
-- Status: Implemented pending release gate
+- Status: Implemented
 - Owner: project maintainer
 - Related specification:
   [`2026-08-05-selfie-search-face-cluster-expansion-design.md`](../superpowers/specs/2026-08-05-selfie-search-face-cluster-expansion-design.md)
@@ -416,13 +416,12 @@ Acceptance criteria, and Rejected alternatives.
   the evidence matrix and reconciliation outcome are recorded in
   [`task-8-report.md`](../../.superpowers/sdd/2026-08-05-selfie-search-face-cluster-expansion/task-8-report.md).
   Documentation facts were changed only for interfaces present in the Task 1–7 implementation.
-- [ ] Run `PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests make test TESTS="src/backend/processing/tests src/backend/selfie_search/tests tests/deployment experiments/face_recognition_spike/tests"`; expected GREEN is every affected component suite passing without overlap with another full suite.
-- [ ] Run `npm run test:js`; expected GREEN is the unchanged browser suite passing.
-- [ ] Run `make check`; expected GREEN is Ruff format/check, mypy, complete Python tests with the
-  repository coverage gate, Django checks, and migration drift.
-- [ ] Run `git diff --check` and verify no private benchmark media, vectors, crops, labels, absolute
+- [x] Run `PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend make test TESTS="src/backend/processing/tests src/backend/selfie_search/tests tests/deployment experiments/face_recognition_spike/tests"`; final GREEN: 1043 passed, 3 skipped.
+- [x] Run `npm run test:js`; final post-merge GREEN: 85 passed.
+- [x] Run `make check`; final GREEN: Ruff format/check, mypy over 175 files, 1330 Python tests passed with 3 skipped and 82.37% coverage, Django checks, and migration drift.
+- [x] Run `git diff --check` and verify no private benchmark media, vectors, crops, labels, absolute
   external paths, `.env`, or generated reports are tracked.
-- [ ] Update implemented architecture/jobs and mark this plan `Implemented` only when the complete
+- [x] Update implemented architecture/jobs and mark this plan `Implemented` only when the complete
   release gate and independent whole-branch review pass. Keep environment activation explicitly
   blocked pending an approved real benchmark configuration and report.
 
@@ -437,17 +436,18 @@ Acceptance criteria, and Rejected alternatives.
   the implemented disabled-default capability from environment activation and customer outcomes.
   No `docker-compose.prod.yml`, worker, deployment, credential, cloud, or accepted ADR change was
   required.
-- The complete affected-component tests, `npm run test:js`, `make check`, Docker build, diff/artifact
-  scan, and independent whole-branch review remain release-gate work for the root controller. Do
-  not advance this plan to `Implemented` or enable the environment gate from this documentation
-  update alone.
+- The root release gate passed after merging current `origin/main`: 1043 affected/deployment/
+  experiment tests passed with 3 skipped; JavaScript passed 85 tests; `make check` passed 1330 tests
+  with 3 skipped at 82.37% coverage plus Ruff, mypy, Django checks, and migration drift; the final
+  production Docker image built; diff/artifact scanning found no private biometric artifacts or
+  secrets; and independent whole-branch review approved the final fixes with no findings.
 
 ## Verification
 
 Run task-focused commands exactly as listed after each task. Before final review run:
 
 ```bash
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests make test TESTS="src/backend/processing/tests src/backend/selfie_search/tests tests/deployment experiments/face_recognition_spike/tests"
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend make test TESTS="src/backend/processing/tests src/backend/selfie_search/tests tests/deployment experiments/face_recognition_spike/tests"
 npm run test:js
 make check
 docker build -f Dockerfile --tag photo-prjct-web:face-cluster-test .
@@ -493,9 +493,9 @@ against real result data.
   0019/0023: direct-first immutable snapshots, transient query processing and cleanup-before-
   publication remain unchanged; feedback is evaluation evidence only. The capability is implemented
   but disabled by default, and no environment activation or customer outcome is claimed.
-- Task 8 must update implemented architecture status only after verified behavior exists; the plan
-  remains `Implemented pending release gate` until the root controller completes the full release
-  gate and independent whole-branch review.
+- Task 8 release evidence is complete and independently reviewed, so the repository capability is
+  `Implemented`. Environment activation and customer outcome validation remain separate blocked
+  rollout work.
 - A contradiction requires a new proposed/superseding ADR and explicit maintainer acceptance before
   delivery.
 

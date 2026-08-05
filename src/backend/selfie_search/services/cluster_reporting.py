@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from django.db.models import Q
+from django.db.models import Count, Q
 from picflow.models import Event
 
 from selfie_search.models import SelfieSearch, SelfieSearchFeedbackLabel, SelfieSearchResult
@@ -78,6 +78,7 @@ def build_cluster_expansion_report(
                 "timezone": "Europe/Moscow",
             },
             "searches": search_summary,
+            "policy_hashes": NOT_AVAILABLE if historical_count else [],
             "results": unavailable_results,
             "feedback": unavailable_feedback,
         }
@@ -92,9 +93,20 @@ def build_cluster_expansion_report(
             "timezone": "Europe/Moscow",
         },
         "searches": search_summary,
+        "policy_hashes": _policy_hashes(available_searches),
         "results": result_volume,
         "feedback": feedback,
     }
+
+
+def _policy_hashes(searches) -> list[dict[str, str | int]]:  # noqa: ANN001
+    return [
+        {"hash": row["cluster_configuration_hash"], "searches": row["searches"]}
+        for row in searches.exclude(cluster_configuration_hash__isnull=True)
+        .values("cluster_configuration_hash")
+        .annotate(searches=Count("id"))
+        .order_by("cluster_configuration_hash")
+    ]
 
 
 def _bound(value: date | datetime, *, name: str) -> datetime:

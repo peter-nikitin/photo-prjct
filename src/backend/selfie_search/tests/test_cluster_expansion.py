@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from django.db import DatabaseError
 from django.test import TestCase
 from django.utils import timezone
+from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from picflow.models import Event, Photo
 from processing.models import (
     EventFaceClusterActivation,
@@ -70,8 +71,15 @@ class ClusterExpansionTests(TestCase):
             corpus=self.corpus,
             active=True,
             anchor_threshold=0.2,
-            configuration={},
-            configuration_hash="c" * 64,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": self.corpus.configuration_hash,
+                "direct_threshold": 0.363,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(
+                self.corpus.configuration_hash, 0.363, 0.2
+            ),
             approved_evaluation_report_hash="d" * 64,
         )
 
@@ -244,6 +252,25 @@ class ClusterExpansionTests(TestCase):
 
         self.assertEqual(unreadable.outcome, "corpus_incompatible")
         self.assertEqual([row.photo_id for row in unreadable.results], ["fallback-anchor"])
+
+    def test_runtime_direct_threshold_mismatch_keeps_direct_only_snapshot(self) -> None:
+        self.publish()
+        self.activation.configuration = {
+            "policy_id": "face-cluster-expansion-policy-v1",
+            "corpus_configuration_hash": self.corpus.configuration_hash,
+            "direct_threshold": 0.2,
+            "anchor_threshold": 0.1,
+        }
+        self.activation.anchor_threshold = 0.1
+        self.activation.save(update_fields=["configuration", "anchor_threshold"])
+        direct = (RankedPhoto("fallback-direct", uuid4(), 0.1),)
+
+        expansion = expand_ranked_photos(
+            self.search, direct, (1.0,) + (0.0,) * 127, self.activation
+        )
+
+        self.assertEqual(expansion.outcome, "corpus_incompatible")
+        self.assertEqual([row.photo_id for row in expansion.results], ["fallback-direct"])
 
     def test_frozen_non_singleton_counts_when_only_its_anchor_is_currently_eligible(self) -> None:
         self.corpus.configuration = {"face_embedding_generations": [{"generation": "v1"}]}

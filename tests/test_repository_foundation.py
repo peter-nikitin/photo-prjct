@@ -828,3 +828,40 @@ def test_selfie_observability_is_owned_by_the_supported_deployment_entrypoint() 
     assert '| grep \'"event":"selfie_search_daily_summary"\'' in readme
     assert " -t selfie-search-daily-summary" not in readme
     assert "/usr/local/lib/findme-selfie-observability/run-daily-summary.sh" in readme
+
+
+def test_clone_staging_suite_has_default_and_exhaustive_selection_contract() -> None:
+    def make_dry_run(target: str, tests: str = "") -> list[str]:
+        result = subprocess.run(
+            ["make", "-n", f"TESTS={tests}", target],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    markers = pyproject["tool"]["pytest"]["ini_options"]["markers"]
+    assert any(marker.startswith("clone_staging_slow:") for marker in markers)
+
+    default_pytest = 'sh scripts/run-in-test-env.sh .venv/bin/pytest -m "not clone_staging_slow"'
+    assert make_dry_run("test") == [default_pytest]
+    requested_selector = (
+        "tests/test_repository_foundation.py::test_adr_index_lists_all_accepted_decisions"
+    )
+    assert make_dry_run("test", requested_selector) == [f"{default_pytest} {requested_selector}"]
+    assert make_dry_run("check").count(f"{default_pytest} --cov --cov-report=term-missing") == 1
+
+    clone_pytest = (
+        "sh scripts/run-in-test-env.sh .venv/bin/pytest "
+        "tests/deployment/test_clone_staging_database.py"
+    )
+    assert make_dry_run("test-clone-staging") == [clone_pytest]
+    assert "clone_staging_slow" not in make_dry_run("test-clone-staging")[0]
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "make test-clone-staging" in readme
+    assert "critical clone" in readme.lower()
+    assert "exhaustive clone" in readme.lower()

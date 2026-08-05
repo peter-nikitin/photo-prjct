@@ -389,6 +389,7 @@ def test_guard_stops_when_interactive_confirmation_is_declined(
     _assert_no_remote_or_local_replacement(clone_env)
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize(
     ("config", "expected_message"),
     [
@@ -424,6 +425,7 @@ def test_guard_rejects_unsafe_rendered_local_database_configuration(
     _assert_no_remote_or_local_replacement(clone_env)
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize(
     ("field", "unsafe_value"),
     [
@@ -542,22 +544,24 @@ def test_guard_rejects_remote_docker_endpoint_before_confirmation_dump_or_databa
 @pytest.mark.parametrize(
     "environment",
     [
-        {
-            "DOCKER_CONTEXT": "desktop-linux",
-            "DOCKER_CONTEXT_ENDPOINT": "unix:///Users/developer/.docker/run/docker.sock",
-        },
-        {
-            "DOCKER_CONTEXT": "",
-            "DOCKER_HOST": "tcp://127.25.0.1:2375",
-        },
-        {
-            "DOCKER_CONTEXT": "",
-            "DOCKER_HOST": "tcp://[::1]:2375",
-        },
-        {
-            "DOCKER_CONTEXT": "",
-            "DOCKER_HOST": "tcp://localhost:2375",
-        },
+        pytest.param(
+            {
+                "DOCKER_CONTEXT": "desktop-linux",
+                "DOCKER_CONTEXT_ENDPOINT": "unix:///Users/developer/.docker/run/docker.sock",
+            }
+        ),
+        pytest.param(
+            {"DOCKER_CONTEXT": "", "DOCKER_HOST": "tcp://127.25.0.1:2375"},
+            marks=pytest.mark.clone_staging_slow,
+        ),
+        pytest.param(
+            {"DOCKER_CONTEXT": "", "DOCKER_HOST": "tcp://[::1]:2375"},
+            marks=pytest.mark.clone_staging_slow,
+        ),
+        pytest.param(
+            {"DOCKER_CONTEXT": "", "DOCKER_HOST": "tcp://localhost:2375"},
+            marks=pytest.mark.clone_staging_slow,
+        ),
     ],
     ids=("docker-desktop-unix", "ipv4-loopback", "ipv6-loopback", "localhost"),
 )
@@ -819,6 +823,7 @@ def test_existing_dump_retry_avoids_staging_and_uses_the_guarded_local_restore(
     assert len(list((tmp_path / "backups").glob("*.local-safety.dump"))) == 1
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize(
     ("prepare_dump", "extra_env", "expected_message"),
     [
@@ -902,6 +907,7 @@ def test_migration_validation_uses_one_off_read_only_web_containers(
     )
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize(
     ("database_state", "expected_message"),
     [
@@ -938,6 +944,7 @@ def test_migration_validation_keeps_restored_artifacts_for_actionable_failures(
     assert _commands(clone_env).count('DROP DATABASE IF EXISTS "local_app"') == 1
 
 
+@pytest.mark.clone_staging_slow
 def test_invalid_published_local_safety_dump_aborts_before_database_replacement(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -978,6 +985,7 @@ def test_invalid_published_local_safety_dump_aborts_before_database_replacement(
     assert "pg_restore --exit-on-error" not in commands
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize(
     ("restore_mode", "expected_message"),
     [
@@ -1026,6 +1034,7 @@ def test_signal_during_replacement_recovers_from_retained_safety_dump(
     assert commands.count("pg_restore --exit-on-error") == 1
 
 
+@pytest.mark.clone_staging_slow
 def test_signal_during_connection_termination_does_not_replace_local_database(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1065,6 +1074,7 @@ def test_signal_during_connection_termination_does_not_replace_local_database(
     assert "pg_restore --exit-on-error" not in commands
 
 
+@pytest.mark.clone_staging_slow
 def test_signal_during_django_validation_retains_the_successfully_restored_database(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1126,6 +1136,7 @@ def test_restore_failure_recovers_local_database_from_retained_safety_dump(
     assert _commands(clone_env).count('DROP DATABASE IF EXISTS "local_app"') == 2
 
 
+@pytest.mark.clone_staging_slow
 def test_restore_failure_reports_when_safety_recovery_also_fails(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1149,6 +1160,7 @@ def test_restore_failure_reports_when_safety_recovery_also_fails(
     assert Path(clone_env["PG_RESTORE_COUNT_FILE"]).read_text(encoding="utf-8") == "2\n"
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize(
     ("restore_mode", "expected_message"),
     [
@@ -1193,6 +1205,7 @@ def test_create_failure_after_drop_attempts_exact_safety_dump_recovery_and_stays
     )
 
 
+@pytest.mark.clone_staging_slow
 def test_parallel_clone_fails_on_atomic_project_database_lock_before_ssh_or_sql(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1243,6 +1256,7 @@ def test_parallel_clone_fails_on_atomic_project_database_lock_before_ssh_or_sql(
     assert first_process.returncode == 0, stdout + stderr
 
 
+@pytest.mark.clone_staging_slow
 def test_stale_clone_lock_is_not_removed_automatically(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1762,6 +1776,7 @@ esac
         compose("rm", "-s", "-f", "web", "db", check=False)
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize(
     ("extra_env", "expected_message"),
     [
@@ -1797,6 +1812,7 @@ def test_dump_pre_restore_failure_preserves_the_local_database(
     _assert_local_database_was_not_touched(clone_env)
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize("failed_move", (1, 2, 3))
 def test_dump_publication_rename_failure_leaves_no_partial_artifacts(
     clone_env: dict[str, str], tmp_path: Path, failed_move: int
@@ -1818,6 +1834,7 @@ def test_dump_publication_rename_failure_leaves_no_partial_artifacts(
     _assert_local_database_was_not_touched(clone_env)
 
 
+@pytest.mark.clone_staging_slow
 def test_dump_publication_hup_terminates_without_published_artifacts(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1851,6 +1868,7 @@ def test_dump_publication_hup_terminates_without_published_artifacts(
     _assert_local_database_was_not_touched(clone_env)
 
 
+@pytest.mark.clone_staging_slow
 @pytest.mark.parametrize(
     ("field", "value"),
     [

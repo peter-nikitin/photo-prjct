@@ -8,9 +8,8 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
 from picflow.models import Event
-from processing.models import FACE_EMBEDDING_PROCESSOR, FaceEmbedding, PhotoProcessingState
+from processing.models import FACE_EMBEDDING_PROCESSOR
 from processing.services.enrollment import (
     CONTRACT_VERSION as FACE_EMBEDDING_CONTRACT_VERSION,
 )
@@ -20,6 +19,7 @@ from processing.services.enrollment import (
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
 )
+from processing.services.face_cohort import load_compatible_face_embeddings
 
 from selfie_search.images import PreparedSelfie
 from selfie_search.models import SelfieSearch, SelfieSearchJob
@@ -107,64 +107,20 @@ def _compatible_candidates(*, event: Event, configuration: dict[str, object]):
     if not generations:
         raise ValueError("invalid face-embedding generation")
 
-    compatible_generation = Q()
-    for generation in generations:
-        compatible_generation |= Q(
-            model_version=generation["model"],
-            detection__attempt__contract_version=generation["contract_version"],
-            detection__attempt__processor_type=generation["processor_type"],
-            detection__attempt__processor_version=generation["processor_version"],
-            detection__attempt__configuration=generation["configuration"],
-            detection__attempt__job__contract_version=generation["contract_version"],
-            detection__attempt__job__processor_type=generation["processor_type"],
-            detection__attempt__job__processor_version=generation["processor_version"],
-            detection__attempt__job__configuration=generation["configuration"],
-            detection__attempt__job__configuration_hash=generation["configuration_hash"],
-            detection__attempt__run__contract_version=generation["contract_version"],
-            detection__attempt__run__processor_type=generation["processor_type"],
-            detection__attempt__run__processor_version=generation["processor_version"],
-            detection__attempt__run__configuration=generation["configuration"],
-            detection__attempt__run__configuration_hash=generation["configuration_hash"],
-        )
-    embeddings = (
-        FaceEmbedding.objects.filter(
-            detection__status="kept",
-            detection__attempt__event=event,
-            detection__attempt__status="succeeded",
-            detection__attempt__accepted=True,
-            detection__attempt__accepted_states__processor_type=FACE_EMBEDDING_PROCESSOR,
-            detection__attempt__accepted_states__status=PhotoProcessingState.Status.SUCCEEDED,
-            detection__attempt__photo__event=event,
-            detection__attempt__photo__src="",
-            detection__attempt__photo__original_key__isnull=False,
-            detection__attempt__photo__original_key__gt="",
-            detection__attempt__photo__original_size__isnull=False,
-        )
-        .filter(compatible_generation)
-        .values_list(
-            "vector",
-            "model_version",
-            "detection_id",
-            "detection__attempt__photo_id",
-            "detection__attempt__photo__event_id",
-            "detection__attempt__event_id",
-        )
-    )
     dimensions = configuration["embedding_dimensions"]
+    if isinstance(dimensions, bool) or not isinstance(dimensions, int):
+        raise ValueError("invalid embedding dimensions")
     return [
         CandidateEmbedding(
-            vector=vector,
-            model_version=model_version,
-            detection_id=detection_id,
-            photo_id=str(photo_id),
-            photo_event_id=photo_event_id,
-            attempt_event_id=attempt_event_id,
-            attempt_photo_id=photo_id,
+            vector=row.vector,
+            model_version=row.model_version,
+            detection_id=row.detection_id,
+            photo_id=row.photo_id,
+            photo_event_id=row.photo_event_id,
+            attempt_event_id=row.attempt_event_id,
+            attempt_photo_id=row.attempt_photo_id,
         )
-        for vector, model_version, detection_id, photo_id, photo_event_id, attempt_event_id in (
-            embeddings.iterator(chunk_size=2_000)
-        )
-        if isinstance(vector, list) and len(vector) == dimensions
+        for row in load_compatible_face_embeddings(event, generations, dimensions)
     ]
 
 

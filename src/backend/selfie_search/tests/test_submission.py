@@ -33,6 +33,7 @@ from processing.services.enrollment import (
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
 )
+from processing.services.face_cohort import load_compatible_face_embeddings
 from selfie_search.images import PreparedSelfie, prepare_selfie_image
 from selfie_search.models import SelfieSearch, SelfieSearchCandidate, SelfieSearchJob
 from selfie_search.services.jobs import (
@@ -374,6 +375,33 @@ class SubmissionTests(TestCase):
         self.assertNotIn('"processing_photofacedetection"."geometry"', cohort_sql)
         self.assertNotIn('"processing_processingattempt"."input_fingerprint"', cohort_sql)
         self.assertEqual(candidates[0].photo_id, "lightweight-candidate")
+
+    def test_direct_cohort_uses_the_shared_processing_eligibility_loader(self) -> None:
+        self.make_eligible_embedding(
+            event=self.event,
+            photo_id="shared-loader-candidate",
+            vector=[1.0] + [0.0] * 127,
+        )
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="g" * 64,
+            temporary_object_key="selfie-search/shared-loader",
+            configuration=submission_configuration(content_type="image/jpeg", content_size=1),
+            configuration_hash="g" * 64,
+        )
+
+        expected = load_compatible_face_embeddings(
+            self.event,
+            search.configuration["gallery_face_embedding_generations"],
+            128,
+        )
+
+        candidates = compatible_search_candidates(search)
+
+        self.assertEqual(
+            [candidate.detection_id for candidate in candidates],
+            [row.detection_id for row in expected],
+        )
 
     def test_draft_event_is_rejected_without_upload_or_search(self) -> None:
         storage = RecordingStorage()

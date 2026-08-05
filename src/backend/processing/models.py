@@ -1,4 +1,5 @@
 import json
+from math import isfinite
 from uuid import uuid4
 
 from django.core.exceptions import ValidationError
@@ -459,6 +460,313 @@ class FaceEmbedding(models.Model):  # noqa: DJ008
         errors = {}
         if self.detection_id and self.detection.attempt.status not in _TERMINAL_ATTEMPT_STATUSES:
             errors["detection"] = "Face embeddings are only allowed for terminal attempts."
+        if errors:
+            raise ValidationError(errors)
+
+
+class FaceClusterCorpus(models.Model):  # noqa: DJ008
+    """One immutable, event-scoped offline face-cluster build."""
+
+    class Status(models.TextChoices):
+        BUILDING = "building", "Building"
+        FAILED = "failed", "Failed"
+        PUBLISHED = "published", "Published"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="face_cluster_corpora")
+    version = models.PositiveSmallIntegerField()
+    status = models.CharField(max_length=16, choices=Status, default=Status.BUILDING)
+    algorithm_version = models.CharField(max_length=64)
+    configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
+    configuration_hash = models.CharField(max_length=64)
+    contract_version = models.PositiveSmallIntegerField()
+    processor_type = models.CharField(max_length=64)
+    processor_version = models.PositiveSmallIntegerField()
+    model_version = models.CharField(max_length=64)
+    embedding_dimensions = models.PositiveSmallIntegerField()
+    edge_threshold = models.FloatField()
+    representative_threshold = models.FloatField()
+    distance_block_size = models.PositiveIntegerField()
+    max_candidate_edges = models.PositiveIntegerField()
+    input_count = models.PositiveIntegerField(default=0)
+    cluster_count = models.PositiveIntegerField(default=0)
+    member_count = models.PositiveIntegerField(default=0)
+    singleton_count = models.PositiveIntegerField(default=0)
+    candidate_edge_count = models.PositiveIntegerField(default=0)
+    build_duration_ms = models.PositiveBigIntegerField(null=True, blank=True)
+    peak_memory_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    input_hash = models.CharField(max_length=64, blank=True, default="")
+    membership_hash = models.CharField(max_length=64, blank=True, default="")
+    failure_code = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(status__in=("building", "failed", "published")),
+                name="face_corpus_status_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(version__gte=1),
+                name="face_corpus_version_chk",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(edge_threshold__gte=0, edge_threshold__lte=2)
+                    & models.Q(representative_threshold__gte=0, representative_threshold__lte=2)
+                ),
+                name="face_corpus_threshold_chk",
+            ),
+            models.UniqueConstraint(
+                fields=("event", "version"), name="face_corpus_event_version_uniq"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["event", "status"], name="face_corpus_event_status_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk:
+            previous = (
+                self.__class__.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+            )
+            if previous in {self.Status.FAILED, self.Status.PUBLISHED}:
+                raise ValidationError("Face-cluster corpora are immutable after completion.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Face-cluster corpora are immutable and cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.version < 1:
+            errors["version"] = "Corpus version must be positive."
+        for field_name in ("edge_threshold", "representative_threshold"):
+            value = getattr(self, field_name)
+            if not isfinite(float(value)) or not 0 <= float(value) <= 2:
+                errors[field_name] = "Threshold must be between 0 and 2."
+        if self.embedding_dimensions < 1:
+            errors["embedding_dimensions"] = "Embedding dimensions must be positive."
+        if self.distance_block_size < 1:
+            errors["distance_block_size"] = "Distance block size must be positive."
+        if self.max_candidate_edges < 1:
+            errors["max_candidate_edges"] = "Candidate edge limit must be positive."
+        if self.status == self.Status.PUBLISHED and self.published_at is None:
+            errors["published_at"] = "Published corpora require a publication timestamp."
+        if errors:
+            raise ValidationError(errors)
+
+    @property
+    def input_configuration(self) -> dict[str, object]:
+        """Compatibility name for the immutable normalized build configuration."""
+        return self.configuration
+
+    @input_configuration.setter
+    def input_configuration(self, value: dict[str, object]) -> None:
+        self.configuration = value
+
+
+class FaceCluster(models.Model):  # noqa: DJ008
+    """One anonymous connected component in a face-cluster corpus."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="face_clusters")
+    corpus = models.ForeignKey(FaceClusterCorpus, on_delete=models.PROTECT, related_name="clusters")
+    cluster_key = models.CharField(max_length=64)
+    representative_detection = models.ForeignKey(
+        PhotoFaceDetection,
+        on_delete=models.PROTECT,
+        related_name="representative_face_clusters",
+    )
+    member_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("corpus", "cluster_key"), name="face_cluster_corpus_key_uniq"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["event", "corpus"], name="face_cluster_event_corpus_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        corpus_status = (
+            FaceClusterCorpus.objects.filter(pk=self.corpus_id)
+            .values_list("status", flat=True)
+            .first()
+        )
+        if corpus_status in {
+            FaceClusterCorpus.Status.FAILED,
+            FaceClusterCorpus.Status.PUBLISHED,
+        }:
+            raise ValidationError("Face-cluster rows are immutable after corpus completion.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            corpus_status = (
+                FaceClusterCorpus.objects.filter(pk=self.corpus_id)
+                .values_list("status", flat=True)
+                .first()
+            )
+            if corpus_status in {
+                FaceClusterCorpus.Status.FAILED,
+                FaceClusterCorpus.Status.PUBLISHED,
+            }:
+                raise ValidationError("Face-cluster rows are immutable after corpus completion.")
+        return super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.corpus_id and self.event_id and self.corpus.event_id != self.event_id:
+            errors["corpus"] = "The corpus must belong to the cluster event."
+        if self.representative_detection_id:
+            detection_event_id = self.representative_detection.attempt.event_id
+            if self.event_id and detection_event_id != self.event_id:
+                errors["representative_detection"] = "The representative must belong to the event."
+            if self.representative_detection.status != PhotoFaceDetection.Status.KEPT:
+                errors["representative_detection"] = "The representative must be a kept detection."
+        if errors:
+            raise ValidationError(errors)
+
+
+class FaceClusterMember(models.Model):  # noqa: DJ008
+    """One immutable face detection membership and representative distance."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="face_cluster_members")
+    corpus = models.ForeignKey(FaceClusterCorpus, on_delete=models.PROTECT, related_name="members")
+    cluster = models.ForeignKey(FaceCluster, on_delete=models.PROTECT, related_name="members")
+    detection = models.ForeignKey(
+        PhotoFaceDetection,
+        on_delete=models.PROTECT,
+        related_name="face_cluster_memberships",
+    )
+    member_index = models.PositiveIntegerField()
+    distance_to_representative = models.FloatField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("cluster", "detection"), name="face_member_cluster_detection_uniq"
+            ),
+            models.UniqueConstraint(
+                fields=("corpus", "detection"), name="face_member_corpus_detection_uniq"
+            ),
+            models.UniqueConstraint(
+                fields=("cluster", "member_index"), name="face_member_cluster_index_uniq"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(distance_to_representative__gte=0)
+                & models.Q(distance_to_representative__lte=2),
+                name="face_member_distance_chk",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["event", "corpus", "detection"], name="face_member_lookup_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        corpus_status = (
+            FaceClusterCorpus.objects.filter(pk=self.corpus_id)
+            .values_list("status", flat=True)
+            .first()
+        )
+        if corpus_status in {
+            FaceClusterCorpus.Status.FAILED,
+            FaceClusterCorpus.Status.PUBLISHED,
+        }:
+            raise ValidationError("Face-cluster rows are immutable after corpus completion.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            corpus_status = (
+                FaceClusterCorpus.objects.filter(pk=self.corpus_id)
+                .values_list("status", flat=True)
+                .first()
+            )
+            if corpus_status in {
+                FaceClusterCorpus.Status.FAILED,
+                FaceClusterCorpus.Status.PUBLISHED,
+            }:
+                raise ValidationError("Face-cluster rows are immutable after corpus completion.")
+        return super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.cluster_id:
+            if self.cluster.corpus_id != self.corpus_id:
+                errors["cluster"] = "The cluster must belong to the corpus."
+            if self.cluster.event_id != self.event_id:
+                errors["cluster"] = "The cluster must belong to the event."
+        if self.detection_id:
+            if self.detection.attempt.event_id != self.event_id:
+                errors["detection"] = "The detection must belong to the event."
+            if self.detection.status != PhotoFaceDetection.Status.KEPT:
+                errors["detection"] = "Only kept detections can join a corpus."
+        if (
+            not isfinite(float(self.distance_to_representative))
+            or not 0 <= float(self.distance_to_representative) <= 2
+        ):
+            errors["distance_to_representative"] = "Distance must be between 0 and 2."
+        if errors:
+            raise ValidationError(errors)
+
+
+class EventFaceClusterActivation(models.Model):  # noqa: DJ008
+    """Explicit event pointer to one published corpus and its expansion policy."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.PROTECT,
+        related_name="face_cluster_activations",
+    )
+    corpus = models.ForeignKey(
+        FaceClusterCorpus, on_delete=models.PROTECT, related_name="event_activations"
+    )
+    active = models.BooleanField(default=True)
+    anchor_threshold = models.FloatField()
+    configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
+    configuration_hash = models.CharField(max_length=64)
+    approved_evaluation_report_hash = models.CharField(max_length=64)
+    activated_at = models.DateTimeField(auto_now_add=True)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("event",),
+                condition=models.Q(active=True),
+                name="face_activation_event_active_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(anchor_threshold__gte=0, anchor_threshold__lte=2),
+                name="face_activation_anchor_chk",
+            ),
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.corpus_id and self.event_id and self.corpus.event_id != self.event_id:
+            errors["corpus"] = "The corpus must belong to the activation event."
+        if self.active and self.corpus_id:
+            if self.corpus.status != FaceClusterCorpus.Status.PUBLISHED:
+                errors["corpus"] = "Only a published corpus can be active."
+        if not isfinite(float(self.anchor_threshold)) or not 0 <= float(self.anchor_threshold) <= 2:
+            errors["anchor_threshold"] = "Anchor threshold must be between 0 and 2."
         if errors:
             raise ValidationError(errors)
 

@@ -762,9 +762,9 @@ test('does not expose a feedback form when the associated local selfie is missin
   }
 });
 
-test('submits multipart feedback with CSRF, accepts zero marks, and removes the local selfie on success', async () => {
+test('submits multipart feedback with CSRF, optional contact, multiple marks, and cleanup', async () => {
   const fixture = makeFeedbackFixture();
-  fixture.contact.value = 'telegram: @findme';
+  fixture.contact.value = '   ';
   fixture.consent.checked = true;
   const selfie = { bytes: new Uint8Array([7, 8, 9]), mediaType: 'image/jpeg' };
   let request;
@@ -785,6 +785,8 @@ test('submits multipart feedback with CSRF, accepts zero marks, and removes the 
       },
     },
   });
+  controller.marks.toggle('photo-a', 'present');
+  controller.marks.toggle('photo-b', 'absent');
 
   await controller.submit({ preventDefault() {} });
 
@@ -792,13 +794,13 @@ test('submits multipart feedback with CSRF, accepts zero marks, and removes the 
   assert.equal(request.options.method, 'POST');
   assert.equal(request.options.credentials, 'same-origin');
   assert.equal(request.options.headers['X-CSRFToken'], 'csrf-token');
-  assert.equal(request.options.body.get('contact'), 'telegram: @findme');
+  assert.equal(request.options.body.get('contact'), '');
   assert.equal(request.options.body.get('personal_data_consent'), 'true');
-  assert.equal(request.options.body.get('labels'), '{}');
+  assert.equal(request.options.body.get('labels'), '{"photo-a":"present","photo-b":"absent"}');
   assert.equal(request.options.body.get('csrfmiddlewaretoken'), 'csrf-token');
   assert.equal((await request.options.body.get('selfie').arrayBuffer()).byteLength, 3);
   assert.equal(cleared, 1);
-  assert.match(fixture.root.innerHTML, /Спасибо, отзыв отправлен/);
+  assert.equal(fixture.root.innerHTML, '<p role="status">Спасибо, отзыв отправлен.</p>');
 });
 
 test('does not claim completion until local selfie cleanup succeeds and permits an idempotent retry', async () => {
@@ -955,8 +957,9 @@ test('real associated selfie delete failure reports a cleanup failure', async ()
   assert.equal(cleaned, false);
 });
 
-test('keeps contact and selected labels available after validation, server, and network failures', async () => {
+test('keeps selected labels available after consent, server, and network failures', async () => {
   const fixture = makeFeedbackFixture();
+  fixture.contact.value = 'contact';
   const failures = [
     { json: async () => ({ status: 'invalid' }) },
     new Error('offline'),
@@ -977,10 +980,6 @@ test('keeps contact and selected labels available after validation, server, and 
   });
   controller.marks.toggle('photo-a', 'present');
 
-  await controller.submit({ preventDefault() {} });
-  assert.equal(fixture.contactError.hidden, false);
-
-  fixture.contact.value = 'contact';
   await controller.submit({ preventDefault() {} });
   assert.equal(fixture.consentError.hidden, false);
 

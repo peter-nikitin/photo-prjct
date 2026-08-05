@@ -572,11 +572,6 @@
       event.preventDefault();
       this._clearErrors();
       const contact = this.contact?.value?.trim() || '';
-      if (!contact) {
-        showFeedbackError(this.contactError, 'Укажите контакт для связи.');
-        this.contact?.focus();
-        return;
-      }
       if (!this.consent?.checked) {
         showFeedbackError(this.consentError, 'Нужно согласие на обработку данных.');
         this.consent?.focus();

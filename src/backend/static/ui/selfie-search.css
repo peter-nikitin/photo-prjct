@@ -275,6 +275,54 @@
   font: inherit;
 }
 
+.selfie-search-feedback-contact {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.selfie-search-feedback-contact summary {
+  display: flex;
+  gap: 10px;
+  min-height: 44px;
+  align-items: center;
+  padding: 10px 14px;
+  color: var(--ink);
+  font-weight: 800;
+  cursor: pointer;
+  list-style: none;
+}
+
+.selfie-search-feedback-contact summary::-webkit-details-marker {
+  display: none;
+}
+
+.selfie-search-feedback-contact summary::before {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  content: '';
+  transform: rotate(-45deg);
+}
+
+.selfie-search-feedback-contact[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.selfie-search-feedback-contact summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: -3px;
+}
+
+.selfie-search-feedback-contact-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
 .selfie-search-feedback-consent {
   display: flex;
   gap: 10px;

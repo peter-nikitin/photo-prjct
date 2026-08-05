@@ -249,7 +249,15 @@ class FeedbackSubmissionFormTests(SimpleTestCase):
             form.cleaned_data["labels"],
             {"00000000-0000-0000-0000-000000000001": "present"},
         )
-        self.assertEqual(form.consent_text_version, "2026-08-04")
+        self.assertEqual(form.consent_text_version, "2026-08-05")
+
+    def test_normalizes_blank_and_whitespace_only_contact_to_empty_string(self) -> None:
+        for contact in ("", "   "):
+            with self.subTest(contact=repr(contact)):
+                form = self.make_form(data={"contact": contact})
+
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(form.cleaned_data["contact"], "")
 
     def test_accepts_the_same_heic_source_contract_as_search(self) -> None:
         form = self.make_form(upload=heic_upload(content_type="application/octet-stream"))
@@ -262,7 +270,6 @@ class FeedbackSubmissionFormTests(SimpleTestCase):
     def test_rejects_unconsented_or_unsafe_contact_and_duplicate_labels(self) -> None:
         cases = (
             ({"personal_data_consent": ""}, "personal_data_consent"),
-            ({"contact": " \n "}, "contact"),
             ({"contact": "x\x00@example.test"}, "contact"),
             ({"contact": "x" * 255}, "contact"),
             (

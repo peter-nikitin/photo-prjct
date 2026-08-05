@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
@@ -201,7 +202,7 @@ class SelfieSearchModelTests(TestCase):
             "variant": SelfieSearchFeedback.Variant.PROBLEM,
             "contact": "person@example.test",
             "personal_data_consent": True,
-            "consent_text_version": "2026-08-04",
+            "consent_text_version": "2026-08-05",
             "consented_at": timezone.now(),
             "source_status": SelfieSearch.Status.FAILED,
             "source_matched_photo_count": 0,
@@ -222,7 +223,7 @@ class SelfieSearchModelTests(TestCase):
                 "variant": SelfieSearchFeedback.Variant.PROBLEM,
                 "contact": "person@example.test",
                 "personal_data_consent": False,
-                "consent_text_version": "2026-08-04",
+                "consent_text_version": "2026-08-05",
                 "consented_at": timezone.now(),
                 "source_status": SelfieSearch.Status.FAILED,
                 "source_configuration": {},
@@ -238,6 +239,47 @@ class SelfieSearchModelTests(TestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 feedback.save(force_insert=True)
+
+    def test_feedback_normalizes_optional_contact_and_rejects_unsafe_values(self) -> None:
+        for contact in ("", "   "):
+            with self.subTest(contact=repr(contact)):
+                feedback = SelfieSearchFeedback(
+                    search=self.search,
+                    variant=SelfieSearchFeedback.Variant.PROBLEM,
+                    contact=contact,
+                    personal_data_consent=True,
+                    consent_text_version="2026-08-05",
+                    consented_at=timezone.now(),
+                    source_status=SelfieSearch.Status.FAILED,
+                    source_configuration={"embedding_model": "sface-v1"},
+                    object_key=f"feedback/{uuid4().hex}",
+                    object_content_type="image/jpeg",
+                    object_size=1,
+                    object_uploaded_at=timezone.now(),
+                )
+
+                feedback.full_clean()
+                self.assertEqual(feedback.contact, "")
+
+        for contact in ("x\x00@example.test", "x" * 255):
+            with self.subTest(contact=repr(contact)):
+                feedback = SelfieSearchFeedback(
+                    search=self.search,
+                    variant=SelfieSearchFeedback.Variant.PROBLEM,
+                    contact=contact,
+                    personal_data_consent=True,
+                    consent_text_version="2026-08-05",
+                    consented_at=timezone.now(),
+                    source_status=SelfieSearch.Status.FAILED,
+                    source_configuration={"embedding_model": "sface-v1"},
+                    object_key=f"feedback/{uuid4().hex}",
+                    object_content_type="image/jpeg",
+                    object_size=1,
+                    object_uploaded_at=timezone.now(),
+                )
+
+                with self.assertRaises(ValidationError):
+                    feedback.full_clean()
 
     def test_feedback_is_unique_per_search(self) -> None:
         self.make_feedback()

@@ -2,7 +2,7 @@
 
 ## Status
 
-Design approved on 2026-08-05; written specification awaiting user review.
+Approved on 2026-08-05.
 
 - Related product job: `PJ-008 — Customer — Find photos by face`.
 - Related architecture: [`docs/architecture.md`](../../architecture.md), public event-scoped face
@@ -10,10 +10,9 @@ Design approved on 2026-08-05; written specification awaiting user review.
 - Related ADRs:
   [ADR 0019](../../adr/0019-use-public-event-selfie-search.md) and
   [ADR 0024](../../adr/0024-use-gallery-face-as-search-query.md).
-- ADR impact: **Supersedes ADR 0024**. The design retains ADR 0024's stored-gallery-embedding,
-  event-isolation, direct-ranking, immutable-result, and no-query-vector boundaries, but removes
-  its exactly-one-face restriction and authorizes an explicit public face-selection surface.
-  Planning must include a superseding ADR before implementation is accepted.
+- ADR impact: **Conforms to ADR 0024**. ADR 0024 is expanded in the same unmerged delivery to cover
+  explicit selection of one stored face from a multi-face gallery photo while retaining its
+  event-isolation, direct-ranking, immutable-result, and no-query-vector boundaries.
 
 ## Goal
 
@@ -172,7 +171,7 @@ per result photo.
 The selector exposes crops only from a photo already visible in the current gallery and uses the
 same authorized preview URL. It does not expose biometric vectors or widen media access. Any public
 visitor who can access the gallery may select one of its usable faces and create a bearer result;
-this is the deliberate public biometric-access expansion that requires superseding ADR 0024.
+this is the deliberate public biometric-access expansion accepted by ADR 0024.
 
 Existing uploaded-selfie searches and already-created gallery-origin bearer results remain
 readable without a compatibility layer. New one-face and multi-face searches share one selected-
@@ -223,5 +222,4 @@ registry's existing rules.
   authorization behavior.
 - The controls are keyboard-operable, usable without JavaScript, and visually contained on desktop
   and mobile.
-- A superseding ADR explicitly accepts public selection among multiple stored gallery faces before
-  the implementation is considered architecture-complete.
+- ADR 0024 explicitly accepts public selection among multiple stored gallery faces.

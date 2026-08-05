@@ -6,7 +6,7 @@ from pathlib import Path
 import psycopg
 from psycopg import sql
 
-from scripts.cleanup_stale_test_databases import stale_database_names
+from scripts.cleanup_stale_test_databases import _process_is_alive, stale_database_names
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +25,10 @@ def test_cleanup_reclaims_current_and_dead_test_databases_without_touching_live_
         current_name="findme_test_101",
         process_is_alive=lambda pid: pid in alive_pids,
     ) == ["findme_test_101", "findme_test_303"]
+
+
+def test_cleanup_treats_identifiers_larger_than_a_system_pid_as_not_alive() -> None:
+    assert _process_is_alive(10**100) is False
 
 
 def test_cleanup_reclaims_database_left_by_an_interrupted_run() -> None:

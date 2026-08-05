@@ -33,7 +33,7 @@ def stale_database_names(
 def _process_is_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (OverflowError, ProcessLookupError):
         return False
     except PermissionError:
         return True

@@ -285,9 +285,12 @@ test('reports invalid save and removal requests without touching storage', () =>
 });
 
 class HistoryFakeElement {
-  constructor({ dataset = {}, hidden = false } = {}) {
+  constructor({ tagName = 'DIV', dataset = {}, hidden = false } = {}) {
+    this.tagName = tagName;
     this.dataset = dataset;
     this.hidden = hidden;
+    this.open = false;
+    this.className = '';
     this.textContent = '';
     this.children = [];
     this.attributes = new Map();
@@ -321,6 +324,14 @@ class HistoryFakeElement {
     if (name === 'hidden') this.hidden = true;
   }
 
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  }
+
   removeAttribute(name) {
     this.attributes.delete(name);
     if (name === 'hidden') this.hidden = false;
@@ -328,6 +339,11 @@ class HistoryFakeElement {
 
   focus() {
     this.focusCount += 1;
+  }
+
+  querySelector(selector) {
+    if (selector === 'details') return historyElements(this, 'DETAILS')[0] ?? null;
+    return null;
   }
 }
 
@@ -349,25 +365,38 @@ function historyButtons(element) {
   ]);
 }
 
-function makeHistoryDocument({ eventSlug = '', result = false, submit = false } = {}) {
+function historyElements(element, tagName) {
+  return [
+    ...(element.tagName === tagName ? [element] : []),
+    ...element.children.flatMap((child) => historyElements(child, tagName)),
+  ];
+}
+
+function makeHistoryDocument({ eventSlug = '', result = false, submit = false, spriteHref = null } = {}) {
   const history = new HistoryFakeElement({
     dataset: { eventSlug },
     hidden: !result,
   });
   const list = new HistoryFakeElement();
   const submitButton = submit ? new HistoryFakeElement() : null;
+  const spriteUse = spriteHref ? new HistoryFakeElement({ tagName: 'USE' }) : null;
+  spriteUse?.setAttribute('href', spriteHref);
   history.append(list);
   history.querySelector = (selector) =>
     selector === '[data-selfie-search-history-list]' ? list : null;
   const document = {
-    createElement() {
-      return new HistoryFakeElement();
+    createElement(tagName) {
+      return new HistoryFakeElement({ tagName: tagName.toUpperCase() });
+    },
+    createElementNS(_namespace, tagName) {
+      return new HistoryFakeElement({ tagName: tagName.toUpperCase() });
     },
     querySelector(selector) {
       if (selector === '[data-selfie-search-result]') return result ? history : null;
       if (selector === '[data-selfie-search-history]') return result ? null : history;
       if (selector === '[data-selfie-search-history-list]') return result ? null : list;
       if (selector === '[data-selfie-search-form] button[type="submit"]') return submitButton;
+      if (selector === 'use[href*="icons"][href*="#"]') return spriteUse;
       return null;
     },
   };
@@ -415,7 +444,7 @@ test('result bootstrap saves only the current canonical pathname and ignores una
   assert.equal(unavailableStorageReadAttempted, true);
 });
 
-test('event bootstrap hides an empty list and renders matching entries newest first without token DOM leaks', () => {
+test('event bootstrap hides an empty list and renders a closed counted disclosure without token DOM leaks', () => {
   const firstPath = resultPath('city-run', 'first-token');
   const secondPath = resultPath('city-run', 'second-token');
   const otherPath = resultPath('beach-run', 'other-token');
@@ -436,19 +465,57 @@ test('event bootstrap hides an empty list and renders matching entries newest fi
   });
 
   assert.equal(fixture.history.hidden, false);
+  const details = historyElements(fixture.history, 'DETAILS')[0];
+  const summary = historyElements(fixture.history, 'SUMMARY')[0];
+  assert.ok(details);
+  assert.ok(summary);
+  assert.equal(details.open, false);
+  assert.equal(summary.textContent, 'Мои результаты поиска · 2');
   assert.equal(historyText(fixture.history), [
-    'Мои результаты поиска',
+    'Мои результаты поиска · 2',
     'Ссылки сохранены только в этом браузере. Любой, у кого есть ссылка, сможет открыть результат.',
-    'Поиск от LOCAL 2026-08-04T12:00:00.000Z',
-    'Открыть результат',
-    'Удалить с устройства',
-    'Поиск от LOCAL 2026-08-04T10:00:00.000Z',
-    'Открыть результат',
-    'Удалить с устройства',
+    'LOCAL 2026-08-04T12:00:00.000Z',
+    'LOCAL 2026-08-04T10:00:00.000Z',
   ].join(''));
-  assert.equal(fixture.list.children.length, 4);
+  assert.equal(fixture.list.children.length, 1);
+  assert.equal(historyElements(fixture.list, 'DETAILS').length, 1);
+  assert.equal(historyElements(fixture.list, 'DIV').filter((element) => element.className === 'selfie-search-history-row').length, 2);
   assert.equal(historyText(fixture.history).includes('token'), false);
   assert.equal(historyAttributes(fixture.history).join(' ').includes('token'), false);
+  assert.deepEqual(
+    historyButtons(fixture.history).map((button) => button.getAttribute('aria-label')),
+    [
+      'Открыть результат от LOCAL 2026-08-04T12:00:00.000Z',
+      'Удалить результат с устройства',
+      'Открыть результат от LOCAL 2026-08-04T10:00:00.000Z',
+      'Удалить результат с устройства',
+    ],
+  );
+});
+
+test('delete icons reuse the manifest-hashed shared sprite URL', () => {
+  const storage = new MemoryStorage({
+    [HISTORY_STORAGE_KEY]: JSON.stringify([
+      {
+        eventSlug: 'city-run',
+        resultPath: resultPath('city-run', 'saved-token'),
+        openedAt: '2026-08-04T12:00:00.000Z',
+      },
+    ]),
+  });
+  const fixture = makeHistoryDocument({
+    eventSlug: 'city-run',
+    spriteHref: '/static/ui/icons.abc123.svg#calendar',
+  });
+
+  startSelfieSearchHistory(fixture.document, historyWindow({ pathname: '/', storage }), {
+    formatOpenedAt: (openedAt) => openedAt,
+  });
+
+  const removeButton = historyButtons(fixture.history)[1];
+  const icon = removeButton.children.find((child) => child.tagName === 'SVG');
+  const use = icon?.children.find((child) => child.tagName === 'USE');
+  assert.equal(use?.getAttribute('href'), '/static/ui/icons.abc123.svg#trash');
 });
 
 test('event controls navigate and move deletion focus to next, previous, and form submit controls', () => {
@@ -474,7 +541,7 @@ test('event controls navigate and move deletion focus to next, previous, and for
   assert.equal(window.location.assignedPath, thirdPath);
 
   buttons[1].trigger('click');
-  assert.equal(fixture.list.children.length, 4);
+  assert.equal(fixture.list.children.length, 1);
   buttons = historyButtons(fixture.history);
   assert.equal(buttons[0].focusCount, 1);
   assert.deepEqual(

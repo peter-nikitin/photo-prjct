@@ -41,7 +41,9 @@ On 2026-08-04, terminal selfie-search feedback added explicit compact-problem an
 fixtures at desktop and mobile widths. The snapshots verify the consent form and the lower-left card
 controls alongside the existing lower-right download action.
 
-On 2026-08-05, saved device-local selfie-search history received a responsive layout baseline: the
-history sits beside the form on desktop and below it on mobile. The existing `/__visual__/event/selfie-search/`
-route covers both states with `desktop-event-selfie-search-history.png` and
-`mobile-event-selfie-search-history.png`.
+On 2026-08-05, saved device-local selfie-search history received a compact disclosure baseline:
+the native disclosure is closed by default with a visible chevron; it sits beside the form on
+desktop and below it on mobile. The existing `/__visual__/event/selfie-search/` route captures the
+closed states in `desktop-event-selfie-search-history.png` and `mobile-event-selfie-search-history.png`.
+Playwright interaction and geometry assertions separately open the disclosure to cover the
+privacy copy, visible shared-sprite delete icon, one-line date rows, and 44px controls.

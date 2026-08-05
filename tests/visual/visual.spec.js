@@ -306,13 +306,17 @@ test('saved selfie-search history is private, event-scoped, navigable, and remov
   const history = await savedSelfieSearchHistory(page);
 
   await expect(history).toBeVisible();
-  await expect(history.getByRole('heading', { name: 'Мои результаты поиска' })).toBeVisible();
-  await expect(history.locator('.selfie-search-history-label')).toHaveText([
-    'Поиск от 04.08.2026, 15:34:56',
-    'Поиск от 03.08.2026, 15:34:56',
+  const disclosure = history.locator('details');
+  await expect(disclosure).toHaveCount(1);
+  await expect(disclosure).not.toHaveAttribute('open', '');
+  await expect(disclosure.locator('summary')).toHaveText('Мои результаты поиска · 2');
+  await disclosure.locator('summary').click();
+  await expect(history.locator('.selfie-search-history-open')).toHaveText([
+    '04.08.2026, 15:34:56',
+    '03.08.2026, 15:34:56',
   ]);
-  await expect(history.getByRole('button', { name: 'Открыть результат' })).toHaveCount(2);
-  await expect(history.getByRole('button', { name: 'Удалить с устройства' })).toHaveCount(2);
+  await expect(history.getByRole('button', { name: 'Открыть результат от 04.08.2026, 15:34:56' })).toHaveCount(1);
+  await expect(history.getByRole('button', { name: 'Удалить результат с устройства' })).toHaveCount(2);
   const bodyText = await page.locator('body').textContent();
   const attributeValues = await page
     .locator('*')
@@ -336,7 +340,7 @@ test('saved selfie-search history is private, event-scoped, navigable, and remov
   const navigationRequest = page.waitForRequest(
     (request) => request.isNavigationRequest() && new URL(request.url()).pathname === savedResultPath,
   );
-  const openNewestResult = history.getByRole('button', { name: 'Открыть результат' }).first();
+  const openNewestResult = history.getByRole('button', { name: 'Открыть результат от 04.08.2026, 15:34:56' });
   await openNewestResult.focus();
   await page.keyboard.press('Enter');
   expect(new URL((await navigationRequest).url()).pathname).toBe(savedResultPath);
@@ -344,20 +348,21 @@ test('saved selfie-search history is private, event-scoped, navigable, and remov
 
   await page.goBack();
   const restoredHistory = page.locator('[data-selfie-search-history]');
-  const removeNewestResult = restoredHistory
-    .getByRole('button', { name: 'Удалить с устройства' })
-    .first();
+  const restoredDisclosure = restoredHistory.locator('details');
+  await expect(restoredDisclosure).not.toHaveAttribute('open', '');
+  await restoredDisclosure.locator('summary').click();
+  const removeNewestResult = restoredHistory.getByRole('button', { name: 'Удалить результат с устройства' }).first();
   await removeNewestResult.focus();
   await page.keyboard.press('Space');
-  await expect(restoredHistory.locator('.selfie-search-history-label')).toHaveText([
-    'Поиск от 03.08.2026, 15:34:56',
+  await expect(restoredHistory.locator('.selfie-search-history-open')).toHaveText([
+    '03.08.2026, 15:34:56',
   ]);
-  await expect(restoredHistory.getByRole('button', { name: 'Открыть результат' })).toBeFocused();
+  await expect(restoredHistory.getByRole('button', { name: 'Открыть результат от 03.08.2026, 15:34:56' })).toBeFocused();
   expect(
     await page.evaluate((storageKey) => JSON.parse(window.localStorage.getItem(storageKey)), SELFIE_SEARCH_HISTORY_STORAGE_KEY),
   ).toEqual([SAVED_SELFIE_SEARCH_HISTORY[2], SAVED_SELFIE_SEARCH_HISTORY[1]]);
 
-  await restoredHistory.getByRole('button', { name: 'Удалить с устройства' }).click();
+  await restoredHistory.getByRole('button', { name: 'Удалить результат с устройства' }).click();
   await expect(restoredHistory).toBeHidden();
   await expect(page.getByRole('button', { name: 'Найти мои фото' })).toBeFocused();
   expect(
@@ -374,11 +379,41 @@ test('saved selfie-search history has approved desktop and mobile presentation',
     await page.setViewportSize(viewport);
     const history = await savedSelfieSearchHistory(page);
     await settlePage(page);
-    await expect(history.locator('.selfie-search-history-label')).toHaveText([
-      'Поиск от 04.08.2026, 15:34:56',
-      'Поиск от 03.08.2026, 15:34:56',
+    const disclosure = history.locator('details');
+    await expect(disclosure).not.toHaveAttribute('open', '');
+    const summary = disclosure.locator('summary');
+    const closedAffordance = await summary.evaluate((element) => {
+      const style = getComputedStyle(element, '::before');
+      return { content: style.content, transform: style.transform };
+    });
+    expect(closedAffordance.content).not.toBe('none');
+    await summary.click();
+    const openAffordance = await summary.evaluate((element) => {
+      const style = getComputedStyle(element, '::before');
+      return { content: style.content, transform: style.transform };
+    });
+    expect(openAffordance.content).toBe(closedAffordance.content);
+    expect(openAffordance.transform).not.toBe(closedAffordance.transform);
+    await expect(history.locator('.selfie-search-history-open')).toHaveText([
+      '04.08.2026, 15:34:56',
+      '03.08.2026, 15:34:56',
     ]);
-    const openResult = history.getByRole('button', { name: 'Открыть результат' }).first();
+    const trashIcon = history
+      .getByRole('button', { name: 'Удалить результат с устройства' })
+      .first()
+      .locator('svg.icon use');
+    const trashMetrics = await trashIcon.evaluate((element) => {
+      const box = element.getBBox();
+      return {
+        href: element.getAttribute('href'),
+        width: box.width,
+        height: box.height,
+      };
+    });
+    expect(trashMetrics.href).toMatch(/\/ui\/icons(?:\.[^/]+)?\.svg#trash$/);
+    expect(trashMetrics.width).toBeGreaterThan(0);
+    expect(trashMetrics.height).toBeGreaterThan(0);
+    const openResult = history.getByRole('button', { name: 'Открыть результат от 04.08.2026, 15:34:56' });
     await openResult.focus();
     await expect(openResult).toBeFocused();
     await expect(openResult).toHaveCSS('outline-style', 'solid');
@@ -393,6 +428,8 @@ test('saved selfie-search history has approved desktop and mobile presentation',
     expect(resources.some(({ url }) => url.endsWith('.woff2'))).toBe(true);
     expect(resources.some(({ url }) => url.endsWith('/ui/icons.svg'))).toBe(true);
     expect(resources.filter(({ status }) => status >= 400)).toEqual([]);
+    await summary.click();
+    await expect(disclosure).not.toHaveAttribute('open', '');
     await expect(page).toHaveScreenshot(snapshot, {
       animations: 'disabled',
       fullPage: true,
@@ -410,10 +447,20 @@ test('saved selfie-search history sits beside the form on desktop and below it o
     const history = await savedSelfieSearchHistory(page);
     await settlePage(page);
     await expect(history).toBeVisible();
+    await history.locator('summary').click();
 
     const geometry = await page.evaluate(() => {
       const form = document.querySelector('[data-selfie-search-form]');
       const history = document.querySelector('[data-selfie-search-history]');
+      const rows = Array.from(document.querySelectorAll('.selfie-search-history-row')).map((row) => {
+        const open = row.querySelector('.selfie-search-history-open')?.getBoundingClientRect();
+        const remove = row.querySelector('.selfie-search-history-remove')?.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        return {
+          sameLine: Boolean(open && remove && Math.abs(open.top - remove.top) < 1),
+          compact: rowRect.height <= 64,
+        };
+      });
       const formRect = form?.getBoundingClientRect();
       const historyRect = history?.getBoundingClientRect();
       return {
@@ -427,10 +474,12 @@ test('saved selfie-search history sits beside the form on desktop and below it o
         historyBelowForm: Boolean(
           formRect && historyRect && historyRect.top >= formRect.bottom - 1,
         ),
+        rows,
       };
     });
 
     expect(geometry[`history${expectation === 'beside' ? 'Beside' : 'Below'}Form`]).toBe(true);
+    expect(geometry.rows).toEqual([{ sameLine: true, compact: true }, { sameLine: true, compact: true }]);
   }
 });
 

@@ -202,9 +202,33 @@
   function createElement(document, tagName, { className = '', text = '', type = '' } = {}) {
     const element = document.createElement(tagName);
     if (className) element.className = className;
-    if (text) element.textContent = text;
+    if (text !== '') element.textContent = text;
     if (type) element.type = type;
     return element;
+  }
+
+  function createTrashIcon(document) {
+    const createSvgElement = (tagName) =>
+      document.createElementNS?.('http://www.w3.org/2000/svg', tagName) || document.createElement(tagName);
+    const icon = createSvgElement('svg');
+    icon.setAttribute?.('class', 'icon');
+    icon.setAttribute?.('viewBox', '0 0 24 24');
+    icon.setAttribute?.('aria-hidden', 'true');
+    const use = createSvgElement('use');
+    let spriteHref = '/static/ui/icons.svg';
+    try {
+      const existingHref = document
+        .querySelector?.('use[href*="icons"][href*="#"]')
+        ?.getAttribute?.('href');
+      if (typeof existingHref === 'string' && existingHref.includes('#')) {
+        spriteHref = existingHref.slice(0, existingHref.indexOf('#'));
+      }
+    } catch (_error) {
+      // The shared sprite is optional enhancement state for the history control.
+    }
+    use.setAttribute?.('href', `${spriteHref}#trash`);
+    icon.append(use);
+    return icon;
   }
 
   function startEventHistory(document, window, root, store, format) {
@@ -215,6 +239,8 @@
     let openButtons = [];
     const render = () => {
       const entries = store.list(eventSlug);
+      const previousDetails = list.querySelector?.('details');
+      const wasOpen = Boolean(previousDetails?.open);
       list.replaceChildren?.();
       openButtons = [];
       if (entries.length === 0) {
@@ -223,29 +249,42 @@
       }
 
       root.hidden = false;
-      list.append(
-        createElement(document, 'h2', {
-          text: 'Мои результаты поиска',
-        }),
+      const details = createElement(document, 'details', {
+        className: 'selfie-search-history-disclosure-control',
+      });
+      details.open = wasOpen;
+      const summary = createElement(document, 'summary', {
+        className: 'selfie-search-history-summary',
+        text: `Мои результаты поиска · ${entries.length}`,
+      });
+      const body = createElement(document, 'div', {
+        className: 'selfie-search-history-body',
+      });
+      body.append(
         createElement(document, 'p', {
           className: 'selfie-search-history-disclosure',
           text: 'Ссылки сохранены только в этом браузере. Любой, у кого есть ссылка, сможет открыть результат.',
         }),
       );
+      details.append(summary, body);
+      list.append(details);
 
       entries.forEach((entry, index) => {
         const row = createElement(document, 'div', { className: 'selfie-search-history-row' });
-        const label = createElement(document, 'p', {
-          className: 'selfie-search-history-label',
-          text: `Поиск от ${format(entry.openedAt)}`,
-        });
-        const actions = createElement(document, 'div', { className: 'selfie-search-history-actions' });
-        const open = createElement(document, 'button', { type: 'button', text: 'Открыть результат' });
-        const remove = createElement(document, 'button', {
-          className: 'button-secondary',
+        const label = format(entry.openedAt);
+        const open = createElement(document, 'button', {
+          className: 'selfie-search-history-open',
           type: 'button',
-          text: 'Удалить с устройства',
+          text: label,
         });
+        open.setAttribute?.('aria-label', `Открыть результат от ${label}`);
+        const remove = createElement(document, 'button', {
+          className: 'selfie-search-history-remove',
+          type: 'button',
+        });
+        remove.setAttribute?.('aria-label', 'Удалить результат с устройства');
+        remove.setAttribute?.('title', 'Удалить результат с устройства');
+        remove.append(createTrashIcon(document));
 
         open.addEventListener('click', () => {
           if (!isCanonicalSelfieSearchResultPath(eventSlug, entry.resultPath)) return;
@@ -267,9 +306,8 @@
           document.querySelector?.('[data-selfie-search-form] button[type="submit"]')?.focus?.();
         });
 
-        actions.append(open, remove);
-        row.append(label, actions);
-        list.append(row);
+        row.append(open, remove);
+        body.append(row);
         openButtons.push(open);
       });
     };

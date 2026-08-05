@@ -271,6 +271,21 @@ The saved-results behavior is unchanged. Revise only the event-page presentation
 - intentionally update and inspect only the desktop saved-history snapshot unless the mobile
   pixels change; then run the focused visual suite and the complete required release gate.
 
+### Approved compact-history revision (2026-08-05)
+
+- Render the entire saved-history list inside a native `details` disclosure that starts closed on
+  every event-page load and whose summary is `Мои результаты поиска · <count>`.
+- In the expanded state, replace each separate open button and `Поиск от` label with one compact
+  link-styled date/time button. Keep the bearer path in JavaScript memory rather than an `href` or
+  DOM attribute.
+- Replace the text delete action with an icon-only button named `Удалить результат с устройства`;
+  keep a 44-pixel touch target and visible focus.
+- Keep every desktop row on one line: date-link grows and truncates if necessary, delete remains at
+  the end. Apply the same one-line structure on mobile to minimize height.
+- Keep the privacy disclosure inside the expanded details body. Do not persist disclosure state.
+- Add RED-to-GREEN unit and Playwright evidence for closed-by-default behavior, count, accessible
+  names, navigation/removal, one-line geometry, mobile height, and bearer-token DOM privacy.
+
 Run from the isolated worktree:
 
 ```bash

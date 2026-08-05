@@ -67,21 +67,27 @@ The feature succeeds when:
 ## Customer experience
 
 The event page keeps the existing search form unchanged. When the current browser has saved
-results for the event, a section titled `Мои результаты поиска` appears to the right of the form
-on wide screens, reducing the section's vertical height. On narrow screens the section follows the
-form in one column. When there are no saved results, the form uses the available width and the
-history section is omitted; no empty column or empty-state message adds noise to a first visit.
+results for the event, a closed disclosure titled `Мои результаты поиска · <count>` appears to the
+right of the form on wide screens and below it on narrow screens. It starts closed on every page
+load so returning customers can reach the photo gallery without scrolling through history. When
+there are no saved results, the disclosure is omitted and no empty column is reserved.
 
-Each row is labelled `Поиск от <local date and time>`, using the browser's locale and timezone.
-Rows are newest first and contain two buttons:
+Opening the disclosure reveals compact rows ordered newest first. Each row stays on one line and
+contains two controls:
 
-- `Открыть результат` navigates to the saved bearer result; and
-- `Удалить с устройства` removes only that local entry and immediately removes the row.
+- a link-styled date and time label, formatted in the browser's locale and timezone without the
+  `Поиск от` prefix, navigates to the saved bearer result without adding an `href`; and
+- an icon-only delete button with the accessible name `Удалить результат с устройства` removes
+  only that local entry and immediately removes the row.
+
+On narrow screens the date label truncates with an ellipsis before it can push the delete control
+onto a second line. Controls remain keyboard accessible and keep at least a 44-pixel touch target
+even though their visible treatment is compact.
 
 Removing the final entry hides the section. The action does not delete or revoke the server-side
 result. Clearing site data has the same local effect for the entire list.
 
-The page explains the boundary once below the heading:
+The expanded disclosure explains the boundary once below its summary:
 
 > Ссылки сохранены только в этом браузере. Любой, у кого есть ссылка, сможет открыть результат.
 

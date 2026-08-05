@@ -3,7 +3,9 @@ from __future__ import annotations
 import math
 from uuid import UUID, uuid4
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from processing.services.face_clustering import (
     BuiltFaceCluster,
@@ -165,8 +167,8 @@ def test_cluster_face_rejects_invalid_vectors(vector: tuple[float, ...], match: 
         ({"max_candidate_edges": 0}, "max_candidate_edges"),
     ],
 )
-def test_invalid_configuration_is_rejected(kwargs: dict[str, object], match: str) -> None:
-    configuration = {
+def test_invalid_configuration_is_rejected(kwargs: dict[str, float | int], match: str) -> None:
+    configuration: dict[str, float | int] = {
         "edge_threshold": 0.1,
         "representative_threshold": 0.1,
         "distance_block_size": 2,
@@ -175,7 +177,13 @@ def test_invalid_configuration_is_rejected(kwargs: dict[str, object], match: str
     configuration.update(kwargs)
 
     with pytest.raises(ValueError, match=match):
-        build_face_clusters((_face(1, (1.0, 0.0)),), **configuration)  # type: ignore[arg-type]
+        build_face_clusters(
+            (_face(1, (1.0, 0.0)),),
+            edge_threshold=float(configuration["edge_threshold"]),
+            representative_threshold=float(configuration["representative_threshold"]),
+            distance_block_size=int(configuration["distance_block_size"]),
+            max_candidate_edges=int(configuration["max_candidate_edges"]),
+        )
 
 
 def test_distance_work_is_bounded_by_requested_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,9 +192,9 @@ def test_distance_work_is_bounded_by_requested_blocks(monkeypatch: pytest.Monkey
     seen: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
     original = module._cosine_distance_block
 
-    def bounded(left: object, right: object) -> object:
-        seen.append((left.shape, right.shape))  # type: ignore[union-attr]
-        return original(left, right)  # type: ignore[arg-type]
+    def bounded(left: NDArray[np.float64], right: NDArray[np.float64]) -> NDArray[np.float64]:
+        seen.append((left.shape, right.shape))
+        return original(left, right)
 
     monkeypatch.setattr(module, "_cosine_distance_block", bounded)
     build_face_clusters(

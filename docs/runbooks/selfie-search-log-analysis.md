@@ -20,6 +20,146 @@ root-owned daily summary. PostgreSQL остаётся источником ис�
 - Для point-корреляции используйте только opaque `search_id`, а наружу выводите только bounded
   технические поля. Отклонённая submission до создания search индивидуального selector-а не имеет.
 
+## Face-cluster expansion: build, evaluate, report, and rollback
+
+Этот раздел описывает только поставленные интерфейсы репозитория. Все corpus/benchmark/index/media
+пути ниже должны указывать на заранее разрешённый локальный или host-owned каталог вне Git; не
+сохраняйте в репозитории селфи, crops, vectors, labels или JSON-отчёты. Не source-ьте `.env` и не
+передавайте секреты в эти команды. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` остаётся
+default: успешная сборка или evaluation не включает expansion и не доказывает customer outcome.
+
+### 1. Build one immutable event corpus
+
+Сначала подтвердите закрытый benchmark и явно выбранные thresholds вне этого репозитория. Build
+команда требует все quality/resource inputs, публикует только полный corpus и печатает его opaque
+UUID; она не активирует event pointer или environment gate:
+
+```bash
+set -eu
+cd /opt/photo-prjct
+: "${EVENT_REF:?set an approved event primary key or slug}"
+: "${CORPUS_VERSION:?set the next immutable version}"
+: "${CLUSTER_EDGE_THRESHOLD:?set the reviewed cluster-edge threshold}"
+: "${REPRESENTATIVE_THRESHOLD:?set the reviewed component-guard threshold}"
+: "${DISTANCE_BLOCK_SIZE:?set the reviewed bounded block size}"
+: "${MAX_CANDIDATE_EDGES:?set the reviewed candidate-edge limit}"
+: "${EMBEDDING_DIMENSIONS:?set the reviewed embedding dimension}"
+.venv/bin/python src/backend/manage.py build_face_cluster_corpus "$EVENT_REF" \
+  --version "$CORPUS_VERSION" \
+  --edge-threshold "$CLUSTER_EDGE_THRESHOLD" \
+  --representative-threshold "$REPRESENTATIVE_THRESHOLD" \
+  --distance-block-size "$DISTANCE_BLOCK_SIZE" \
+  --max-candidate-edges "$MAX_CANDIDATE_EDGES" \
+  --dimensions "$EMBEDDING_DIMENSIONS"
+```
+
+The command's UUID is a database reference, not a photo/face/cluster identity for tickets. A failed
+or incomplete build is not selectable. Do not infer quality thresholds from this output.
+
+### 2. Run the private held-out benchmark
+
+Run the existing experiment CLI against one immutable person-split benchmark, reconciled index, and
+cluster run. Keep every input and the aggregate output in the private directory configured by the
+maintainer. The report is evaluation evidence only and never enables Django:
+
+```bash
+set -eu
+: "${BENCHMARK_DIR:?set the private final benchmark directory}"
+: "${INDEX_DIR:?set the private reconciled index directory}"
+: "${CLUSTER_RUN_DIR:?set the private immutable cluster run directory}"
+: "${REPORT_FILE:?set the private aggregate report path}"
+: "${DIRECT_THRESHOLD:?set the reviewed direct threshold}"
+: "${ANCHOR_THRESHOLD:?set the separately reviewed strong-anchor threshold}"
+: "${CONFIGURATION_HASH:?set the lowercase corpus configuration SHA-256}"
+PYTHONPATH=experiments/face_recognition_spike \
+  .venv/bin/python -m face_spike evaluate-cluster-expansion \
+  --benchmark "$BENCHMARK_DIR" \
+  --index "$INDEX_DIR" \
+  --cluster-run "$CLUSTER_RUN_DIR" \
+  --output "$REPORT_FILE" \
+  --direct-threshold "$DIRECT_THRESHOLD" \
+  --anchor-threshold "$ANCHOR_THRESHOLD" \
+  --configuration-hash "$CONFIGURATION_HASH"
+```
+
+Review direct/final recall, source-separated precision, incremental correct/incorrect photos,
+helped/harmed searches, false merges, fragmentation/singletons, build/search resources, and
+latency. Activation remains blocked until numeric gates and every observed false merge receive
+explicit approval. Never commit the benchmark inputs or generated report.
+
+### 3. Produce the durable aggregate report
+
+After a closed Moscow-day window, use the Django command for aggregate-only retrospective evidence.
+It accepts a closed-open date range and optional event filter but never prints the event identity or
+individual result/member fields:
+
+```bash
+set -eu
+cd /opt/photo-prjct
+: "${REPORT_START:?set the closed-open Moscow start date YYYY-MM-DD}"
+: "${REPORT_END:?set the closed-open Moscow end date YYYY-MM-DD}"
+REPORT_EVENT_ARGS=()
+if [ -n "${EVENT_ID:-}" ]; then REPORT_EVENT_ARGS=(--event "$EVENT_ID"); fi
+.venv/bin/python src/backend/manage.py report_face_cluster_expansion \
+  --start "$REPORT_START" \
+  --end "$REPORT_END" \
+  "${REPORT_EVENT_ARGS[@]}"
+```
+
+`REPORT_START` and `REPORT_END` are `YYYY-MM-DD`; `EVENT_ID` is an approved numeric event selector
+when needed. Keep output bounded and redact it to the aggregate fields before sharing. Historical
+searches with no expansion snapshot are `not_available`, not zero; `Я есть`/`Меня нет` remains
+customer-provided evidence and is not verified identity.
+
+### 4. Guarded activation (not authorized by this branch)
+
+Only after a published compatible corpus, reviewed numeric gates, and the exact lowercase SHA-256
+of both configuration and evaluation report are approved may an operator replace one event's
+activation pointer:
+
+```bash
+set -eu
+cd /opt/photo-prjct
+: "${EVENT_REF:?set the approved event primary key or slug}"
+: "${CORPUS_UUID:?set the published corpus UUID}"
+: "${CONFIGURATION_HASH:?set the exact corpus configuration SHA-256}"
+: "${ANCHOR_THRESHOLD:?set the approved strong-anchor threshold}"
+: "${REPORT_FILE:?set the private aggregate evaluation report path}"
+REPORT_HASH="$($PWD/.venv/bin/python -c \
+  'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+  "$REPORT_FILE")"
+.venv/bin/python src/backend/manage.py activate_face_cluster_corpus "$EVENT_REF" \
+  --corpus "$CORPUS_UUID" \
+  --configuration-hash "$CONFIGURATION_HASH" \
+  --anchor-threshold "$ANCHOR_THRESHOLD" \
+  --evaluation-report-hash "$REPORT_HASH" \
+  --confirm-numeric-gates-reviewed
+```
+
+This command changes only the event's guarded corpus pointer. It does not set
+`SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED`; this branch performs no activation, staging deployment,
+cloud mutation, or customer rollout. A normal reviewed deployment must separately approve any
+future environment flag change.
+
+### 5. Direct-only rollback
+
+The supported immediate rollback is the fail-closed environment gate. Set it to the exact boolean
+value and redeploy through the normal reviewed deployment path:
+
+```bash
+SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False
+```
+
+With the gate false, new searches use unchanged direct-only ranking even when a corpus pointer
+exists. Existing expanded bearer snapshots, provenance, feedback, and corpora remain immutable and
+readable; do not delete them or reverse migrations destructively. To use a replacement corpus later,
+run the guarded activation command again with a newly reviewed report and matching configuration.
+
+The existing observability verification in §1 and the v2 expansion fields in §2 are the only
+post-change checks: run the host verifier first, then a closed-day summary, and report
+`parser_complete`/`coverage_complete` separately. Never replace these checks with `docker logs` or
+raw journal attachments.
+
 ## 1. Подключение и транспорт
 
 ```bash

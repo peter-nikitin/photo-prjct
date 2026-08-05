@@ -25,8 +25,9 @@ class SelfieSearchMigrationTests(TransactionTestCase):
         ):
             self.assertIn(model_name, migrated_apps.all_models["selfie_search"])
 
-        executor.migrate(self.migrate_from)
-        reverted_apps = executor.loader.project_state(self.migrate_from).apps
+        reverse_executor = MigrationExecutor(connection)
+        reverse_executor.migrate(self.migrate_from)
+        reverted_apps = reverse_executor.loader.project_state(self.migrate_from).apps
         self.assertIn("selfie_search", reverted_apps.all_models)
         self.assertNotIn("selfiesearchdirectevidence", reverted_apps.all_models["selfie_search"])
         self.assertNotIn("selfiesearchclusterevidence", reverted_apps.all_models["selfie_search"])

@@ -37,12 +37,12 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-005 | Visitor | Browse an event gallery | Validated | 2026-07-19 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
-| PJ-008 | Customer | Find photos by face | In progress | 2026-07-31 |
+| PJ-008 | Customer | Find photos by face | In progress | 2026-08-05 |
 | PJ-009 | Visitor | Receive a free-event original | Candidate | 2026-07-17 |
 | PJ-010 | Customer | Purchase selected photos | Candidate | 2026-07-17 |
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
 | PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
-| PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-04 |
+| PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
 
 ## Job details
 
@@ -141,8 +141,13 @@ one event, so I can review probable matches.
   [#80](https://github.com/peter-nikitin/photo-prjct/pull/80) and
   [#82](https://github.com/peter-nikitin/photo-prjct/pull/82). New searches persist only eligible
   counts and matched results instead of one candidate row per eligible face; legacy frozen-candidate
-  searches remain readable. This is staging evidence only; production is not activated.
-- Last updated: 2026-08-02
+  searches remain readable. Task 8 adds the accepted ADR 0024 path: immutable event-scoped face
+  cluster corpora, strict-anchor direct-first expansion, immutable source provenance, and
+  source-separated aggregate reporting. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains
+  the repository default; no corpus, environment, or customer activation and no measured recall or
+  precision outcome is claimed. The complete release gate is still pending independent whole-branch
+  review.
+- Last updated: 2026-08-05
 
 ### PJ-009 — Visitor — Receive a free-event original
 
@@ -197,8 +202,12 @@ future feedback prompts in my browser.
   [implementation plan](plans/2026-08-04-selfie-search-quality-feedback.md), and
   [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md) define the accepted boundary.
   `SELFIE_FEEDBACK_ENABLED=False` remains the default; no staging or production activation or
-  real customer-outcome evidence is claimed.
-- Last updated: 2026-08-04
+  real customer-outcome evidence is claimed. The face-cluster increment also provides the
+  aggregate-only `report_face_cluster_expansion` command, which derives direct-primary,
+  cluster-primary, dual-evidence, and labelled-sample feedback metrics from immutable server-side
+  provenance without accepting a customer-supplied source field. This is implementation evidence,
+  not evidence that customers have used the expanded path.
+- Last updated: 2026-08-05
 
 Visual design-reference screens are not delivery evidence.
 

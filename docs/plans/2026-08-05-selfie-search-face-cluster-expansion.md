@@ -6,7 +6,7 @@
 > creates one final commit per reviewed task.
 
 - Date: 2026-08-05
-- Status: Approved
+- Status: Implemented pending release gate
 - Owner: project maintainer
 - Related specification:
   [`2026-08-05-selfie-search-face-cluster-expansion-design.md`](../superpowers/specs/2026-08-05-selfie-search-face-cluster-expansion-design.md)
@@ -325,7 +325,7 @@ authorization boundaries.
   expanded, and dual-evidence result volume; explicit-label counts and coverage; source-separated
   `Я есть`/`Меня нет`; and `labelled_sample_precision` with integer numerators/denominators. Date
   bounds use closed-open Europe/Moscow calendar windows.
-- `report_face_cluster_expansion --start YYYY-MM-DD --end YYYY-MM-DD [--event <uuid>]` producing
+- `report_face_cluster_expansion --start YYYY-MM-DD --end YYYY-MM-DD [--event <event-id>]` producing
   one bounded JSON object without individual identifiers or sensitive fields.
 - Historical rows reported as `not_available`; unmarked photos remain unknown; event filtering does
   not expose event identity in output.
@@ -412,9 +412,11 @@ Acceptance criteria, and Rejected alternatives.
 - One recorded reconciliation outcome: implementation conforms to accepted ADR 0024 and preserves
   ADRs 0019/0023; any discovered contradiction blocks delivery instead of editing accepted ADRs.
 
-- [ ] Compare every delivered interface and behavior with all 20 specification acceptance criteria;
-  fix documentation facts only after code evidence exists.
-- [ ] Run `make test TESTS="src/backend/processing/tests src/backend/selfie_search/tests tests/deployment experiments/face_recognition_spike/tests"`; expected GREEN is every affected component suite passing without overlap with another full suite.
+- [x] Compare every delivered interface and behavior with all 20 specification acceptance criteria;
+  the evidence matrix and reconciliation outcome are recorded in
+  [`task-8-report.md`](../../.superpowers/sdd/2026-08-05-selfie-search-face-cluster-expansion/task-8-report.md).
+  Documentation facts were changed only for interfaces present in the Task 1–7 implementation.
+- [ ] Run `PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests make test TESTS="src/backend/processing/tests src/backend/selfie_search/tests tests/deployment experiments/face_recognition_spike/tests"`; expected GREEN is every affected component suite passing without overlap with another full suite.
 - [ ] Run `npm run test:js`; expected GREEN is the unchanged browser suite passing.
 - [ ] Run `make check`; expected GREEN is Ruff format/check, mypy, complete Python tests with the
   repository coverage gate, Django checks, and migration drift.
@@ -424,12 +426,28 @@ Acceptance criteria, and Rejected alternatives.
   release gate and independent whole-branch review pass. Keep environment activation explicitly
   blocked pending an approved real benchmark configuration and report.
 
+### Task 8 documentation evidence — 2026-08-05
+
+- The repository exposes `build_face_cluster_corpus`, `evaluate-cluster-expansion`,
+  `report_face_cluster_expansion`, and `activate_face_cluster_corpus`; command-help verification
+  was run in the task worktree. The operator workflow is recorded in the
+  [selfie-search log-analysis runbook](../runbooks/selfie-search-log-analysis.md) with placeholders
+  only, no secrets or private benchmark paths.
+- `docs/architecture.md`, `docs/product-jobs.md`, and `docs/engineering-jobs.md` now distinguish
+  the implemented disabled-default capability from environment activation and customer outcomes.
+  No `docker-compose.prod.yml`, worker, deployment, credential, cloud, or accepted ADR change was
+  required.
+- The complete affected-component tests, `npm run test:js`, `make check`, Docker build, diff/artifact
+  scan, and independent whole-branch review remain release-gate work for the root controller. Do
+  not advance this plan to `Implemented` or enable the environment gate from this documentation
+  update alone.
+
 ## Verification
 
 Run task-focused commands exactly as listed after each task. Before final review run:
 
 ```bash
-make test TESTS="src/backend/processing/tests src/backend/selfie_search/tests tests/deployment experiments/face_recognition_spike/tests"
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests make test TESTS="src/backend/processing/tests src/backend/selfie_search/tests tests/deployment experiments/face_recognition_spike/tests"
 npm run test:js
 make check
 docker build -f Dockerfile --tag photo-prjct-web:face-cluster-test .
@@ -456,12 +474,14 @@ or any pricing, access, availability, or cloud mutation.
 
 ## Rollback
 
-Disable `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED` or remove the event activation through the guarded
-control-plane command; all new searches then use direct-only ranking. Do not delete published corpus,
-result provenance, feedback, or historical expanded results: they are immutable evidence and
-existing bearer snapshots remain readable. Reverting application code requires a database-compatible
-rollback review because the plan removes obsolete result columns and the candidate model; do not
-reverse migrations destructively against real result data.
+Disable `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED` in the reviewed environment configuration; all
+new searches then use direct-only ranking even when an event pointer exists. The delivered guarded
+activation command can replace an event pointer only with a newly reviewed compatible corpus; this
+branch does not run activation. Do not delete published corpus, result provenance, feedback, or
+historical expanded results: they are immutable evidence and existing bearer snapshots remain
+readable. Reverting application code requires a database-compatible rollback review because the plan
+removes obsolete result columns and the candidate model; do not reverse migrations destructively
+against real result data.
 
 ## Architecture and ADR reconciliation
 
@@ -469,7 +489,13 @@ reverse migrations destructively against real result data.
 - ADR 0019 remains authoritative for query processing, cleanup, event isolation, bearer access, and
   probable-match semantics.
 - ADR 0023 remains authoritative for consented feedback and prohibits automatic feedback tuning.
-- Task 8 must update implemented architecture status only after verified behavior exists.
+- Task 8 evidence confirms the repository implementation conforms to ADR 0024 and preserves ADRs
+  0019/0023: direct-first immutable snapshots, transient query processing and cleanup-before-
+  publication remain unchanged; feedback is evaluation evidence only. The capability is implemented
+  but disabled by default, and no environment activation or customer outcome is claimed.
+- Task 8 must update implemented architecture status only after verified behavior exists; the plan
+  remains `Implemented pending release gate` until the root controller completes the full release
+  gate and independent whole-branch review.
 - A contradiction requires a new proposed/superseding ADR and explicit maintainer acceptance before
   delivery.
 

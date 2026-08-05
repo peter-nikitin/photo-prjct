@@ -274,7 +274,7 @@ class Migration(migrations.Migration):
         migrations.AddIndex(
             model_name="selfiesearchclusterevidence",
             index=models.Index(
-                fields=["result", "source_order"], name="selfie_cluster_evidence_order_idx"
+                fields=["result", "source_order"], name="selfie_cl_evidence_order_idx"
             ),
         ),
         migrations.AddConstraint(

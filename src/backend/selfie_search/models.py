@@ -444,9 +444,7 @@ class SelfieSearchClusterEvidence(models.Model):  # noqa: DJ008
             ),
         ]
         indexes = [
-            models.Index(
-                fields=["result", "source_order"], name="selfie_cluster_evidence_order_idx"
-            ),
+            models.Index(fields=["result", "source_order"], name="selfie_cl_evidence_order_idx"),
         ]
 
     def save(self, *args, **kwargs) -> None:

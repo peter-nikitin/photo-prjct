@@ -119,8 +119,8 @@ quickly.
 
 ### PJ-008 — Customer — Find photos by face
 
-When I have an appropriate selfie or find an eligible one-person gallery photo in a selected event, I
-want to search within that event, so I can review probable matches.
+When I have an appropriate selfie or find an eligible gallery face in a selected event, I want to
+search within that event, so I can review probable matches.
 
 - Status: In progress
 - Evidence: [ADR 0019](adr/0019-use-public-event-selfie-search.md), the
@@ -144,23 +144,14 @@ want to search within that event, so I can review probable matches.
   production is not activated.
 
   The gallery-photo query path is defined by [ADR 0024](adr/0024-use-gallery-face-as-search-query.md)
-  and the approved [gallery-photo search design](superpowers/specs/2026-08-04-find-similar-from-gallery-design.md).
-  Local evidence for that path is: Task 1 service/regression coverage in
-  [`selfie_search/tests/test_submission.py`](../src/backend/selfie_search/tests/test_submission.py),
-  [`selfie_search/tests/test_ranking.py`](../src/backend/selfie_search/tests/test_ranking.py), and
-  [`selfie_search/tests/test_jobs.py`](../src/backend/selfie_search/tests/test_jobs.py) — `33 passed, 9 subtests`
-  with 5 known staticfiles warnings; Task 2 focused gallery presentation/endpoint coverage in
-  [`picflow/tests/test_gallery.py`](../src/backend/picflow/tests/test_gallery.py),
-  [`picflow/tests/test_views.py`](../src/backend/picflow/tests/test_views.py), and
-  [`selfie_search/tests/test_views.py`](../src/backend/selfie_search/tests/test_views.py) — `24 passed`;
-  and Task 2 gallery/result regression coverage in
-  [`picflow/tests/test_gallery.py`](../src/backend/picflow/tests/test_gallery.py),
-  [`picflow/tests/test_views.py`](../src/backend/picflow/tests/test_views.py),
-  [`selfie_search/tests/test_views.py`](../src/backend/selfie_search/tests/test_views.py), and
-  [`selfie_search/tests/test_results.py`](../src/backend/selfie_search/tests/test_results.py) —
-  `105 passed, 64 subtests` with 59 known staticfiles warnings. No staging or production deployment
-  evidence is claimed for this new gallery-photo path.
-- Last updated: 2026-08-04
+  and the approved [gallery-photo search design](superpowers/specs/2026-08-05-gallery-face-selector-design.md).
+  Current local evidence for the combined gallery-photo implementation is 145 focused Python tests,
+  70 JavaScript tests for the production markup and chooser behavior, and 83 visual tests covering
+  the zero-, one-, two-, and four-face event-gallery fixture at desktop and 390px mobile widths.
+  The root `make check` also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and
+  clean system/migration checks. These are local repository checks only; no staging or production
+  deployment or customer validation is claimed for the gallery-photo path.
+- Last updated: 2026-08-05
 
 ### PJ-009 — Visitor — Receive a free-event original
 

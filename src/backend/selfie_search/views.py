@@ -61,13 +61,13 @@ logger = logging.getLogger(__name__)
 
 
 @require_POST
-def submit_gallery_photo(request, event_slug: str, photo_id: str):  # noqa: ARG001
+def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id):  # noqa: ARG001
     if not settings.SELFIE_SEARCH_ENABLED:
         return _not_found_response()
     event = get_object_or_404(Event.objects.published(), slug=event_slug)
     photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
     try:
-        created = submit_gallery_photo_search(event=event, photo=photo)
+        created = submit_gallery_photo_search(event=event, photo=photo, detection_id=detection_id)
     except GallerySearchUnavailable:
         return _not_found_response()
     except GallerySearchFailed:

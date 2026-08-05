@@ -18,11 +18,13 @@ from processing.models import (
 
 from picflow.gallery import (
     CloseableMediaIterator,
+    GalleryFaceCrop,
     GalleryMedia,
     GalleryPhoto,
     GalleryPhotoFactory,
     PublicMediaResolver,
     ResolvedPublicMedia,
+    gallery_face_crop,
 )
 from picflow.models import Event, Photo
 
@@ -42,7 +44,16 @@ class GalleryPresentationContractTests(SimpleTestCase):
             preview_media_small=small,
             preview_media_large=large,
             download_url="/events/city-run/photos/photo-42/download/",
-            similar_search_url="/events/city-run/photos/photo-42/similar-search/",
+            faces=(
+                GalleryFaceCrop(
+                    detection_id="face-42",
+                    face_number=1,
+                    left_percent=10,
+                    top_percent=20,
+                    size_percent=30,
+                    search_url="/events/city-run/photos/photo-42/similar-search/face-42/",
+                ),
+            ),
             alt="Фото photo-42 с события City Run",
         )
 
@@ -51,8 +62,17 @@ class GalleryPresentationContractTests(SimpleTestCase):
         self.assertEqual(gallery_photo.preview_media_large, large)
         self.assertEqual(gallery_photo.download_url, "/events/city-run/photos/photo-42/download/")
         self.assertEqual(
-            gallery_photo.similar_search_url,
-            "/events/city-run/photos/photo-42/similar-search/",
+            gallery_photo.faces,
+            (
+                GalleryFaceCrop(
+                    detection_id="face-42",
+                    face_number=1,
+                    left_percent=10,
+                    top_percent=20,
+                    size_percent=30,
+                    search_url="/events/city-run/photos/photo-42/similar-search/face-42/",
+                ),
+            ),
         )
         self.assertEqual(gallery_photo.alt, "Фото photo-42 с события City Run")
         alt_field = "alt"
@@ -93,7 +113,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
             ),
         )
         self.assertEqual(gallery_photo.download_url, "/events/city-run/photos/photo-42/download/")
-        self.assertIsNone(gallery_photo.similar_search_url)
+        self.assertEqual(gallery_photo.faces, ())
         self.assertEqual(gallery_photo.alt, "Фото photo-42 с события City Run")
         self.assertEqual(
             reverse.call_args_list,
@@ -162,7 +182,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
             gallery_photo.download_url,
             "/events/city-run/selfie-search/bearer-token/photos/photo-42/download/",
         )
-        self.assertIsNone(gallery_photo.similar_search_url)
+        self.assertEqual(gallery_photo.faces, ())
         self.assertEqual(
             media_calls,
             [("photo-42", "preview-small"), ("photo-42", "preview-large")],
@@ -171,23 +191,152 @@ class GalleryPresentationContractTests(SimpleTestCase):
         boto3_client.assert_not_called()
 
     @patch("boto3.client")
-    def test_factory_uses_nullable_similar_search_url_builder_without_storage(
-        self, boto3_client
-    ) -> None:
+    def test_factory_preserves_prepared_face_urls_without_storage(self, boto3_client) -> None:
         event = Event(name="City Run", slug="city-run")
         photo = Photo(id="photo-42", event=event)
+        face = GalleryFaceCrop(
+            detection_id="face-42",
+            face_number=1,
+            left_percent=10,
+            top_percent=20,
+            size_percent=30,
+            search_url="/events/city-run/photos/photo-42/similar-search/face-42/",
+        )
 
         gallery_photo = GalleryPhotoFactory.from_photo(
             photo=photo,
             event_slug=event.slug,
-            similar_search_url_builder=lambda _: "/events/city-run/photos/photo-42/similar-search/",
+            faces=(face,),
+        )
+
+        self.assertEqual(gallery_photo.faces, (face,))
+        boto3_client.assert_not_called()
+
+
+class GalleryFaceCropTests(SimpleTestCase):
+    """The production break caught here is exposing an invalid or distorted face crop."""
+
+    def test_returns_a_padded_normalized_square_for_a_centered_face(self) -> None:
+        geometry = {
+            "coordinate_space": "preview-small-v1",
+            "pixel_width": 100,
+            "pixel_height": 100,
+            "bbox": [40, 40, 20, 20],
+        }
+
+        crop = gallery_face_crop(detection_id="face-1", face_index=0, geometry=geometry)
+
+        self.assertEqual(
+            crop,
+            GalleryFaceCrop(
+                detection_id="face-1",
+                face_number=1,
+                left_percent=38.0,
+                top_percent=38.0,
+                size_percent=24.0,
+            ),
+        )
+        self.assertEqual(
+            geometry,
+            {
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 100,
+                "pixel_height": 100,
+                "bbox": [40, 40, 20, 20],
+            },
+        )
+
+    def test_clips_a_padded_square_to_the_preview_edge_without_distortion(self) -> None:
+        crop = gallery_face_crop(
+            detection_id="face-1",
+            face_index=2,
+            geometry={
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 100,
+                "pixel_height": 60,
+                "bbox": [85, 45, 15, 15],
+            },
         )
 
         self.assertEqual(
-            gallery_photo.similar_search_url,
-            "/events/city-run/photos/photo-42/similar-search/",
+            crop,
+            GalleryFaceCrop(
+                detection_id="face-1",
+                face_number=3,
+                left_percent=82.0,
+                top_percent=70.0,
+                size_percent=18.0,
+            ),
         )
-        boto3_client.assert_not_called()
+
+    def test_pads_a_rectangular_face_from_its_largest_dimension(self) -> None:
+        crop = gallery_face_crop(
+            detection_id="face-1",
+            face_index=0,
+            geometry={
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 200,
+                "pixel_height": 100,
+                "bbox": [80, 20, 20, 40],
+            },
+        )
+        self.assertEqual(
+            crop,
+            GalleryFaceCrop(
+                detection_id="face-1",
+                face_number=1,
+                left_percent=33.0,
+                top_percent=16.0,
+                size_percent=24.0,
+            ),
+        )
+
+    def test_clamps_an_oversized_padded_square_to_the_largest_containing_crop(self) -> None:
+        crop = gallery_face_crop(
+            detection_id="face-1",
+            face_index=0,
+            geometry={
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 100,
+                "pixel_height": 60,
+                "bbox": [10, 0, 50, 60],
+            },
+        )
+
+        self.assertEqual(
+            crop,
+            GalleryFaceCrop(
+                detection_id="face-1",
+                face_number=1,
+                left_percent=5.0,
+                top_percent=0.0,
+                size_percent=60.0,
+            ),
+        )
+
+    def test_rejects_malformed_nonfinite_wrong_space_and_nonpositive_geometry(self) -> None:
+        valid = {
+            "coordinate_space": "preview-small-v1",
+            "pixel_width": 100,
+            "pixel_height": 100,
+            "bbox": [40, 40, 20, 20],
+        }
+        invalid_geometries: tuple[object, ...] = (
+            {},
+            valid | {"bbox": [40, 40, 20]},
+            valid | {"bbox": [40, 40, float("nan"), 20]},
+            valid | {"coordinate_space": "original-v1"},
+            valid | {"pixel_width": 0},
+            valid | {"pixel_height": -1},
+            valid | {"bbox": [-1, 40, 20, 20]},
+            valid | {"bbox": [40, 40, 61, 20]},
+        )
+
+        for geometry in invalid_geometries:
+            with self.subTest(geometry=geometry):
+                self.assertIsNone(
+                    gallery_face_crop(detection_id="face-1", face_index=0, geometry=geometry)
+                )
 
 
 class _ReadableBody:

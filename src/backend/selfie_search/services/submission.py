@@ -10,9 +10,10 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.db import DatabaseError, transaction
-from django.db.models import Q
+from django.db.models import BooleanField, Q, QuerySet
+from django.db.models.expressions import RawSQL
 from django.utils import timezone
-from picflow.gallery import gallery_photo_queryset
+from picflow.gallery import GalleryFaceCrop, gallery_face_crop, gallery_photo_queryset
 from picflow.models import Event, Photo
 from processing.models import FACE_EMBEDDING_PROCESSOR, FaceEmbedding, PhotoProcessingState
 from processing.services.enrollment import (
@@ -42,7 +43,7 @@ class CreatedSearch:
 
 
 class GallerySearchUnavailable(LookupError):
-    """A gallery photo no longer has exactly one usable current face embedding."""
+    """A selected gallery face is no longer usable current evidence."""
 
 
 class GallerySearchFailed(RuntimeError):
@@ -85,36 +86,38 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage) -> Cr
     return CreatedSearch(search=search, public_token=public_token)
 
 
-def gallery_search_eligible_photo_ids(*, event: Event, photos: Iterable[Photo]) -> frozenset[str]:
-    """Return supplied event-photo IDs with one usable current gallery face."""
+def gallery_search_faces_by_photo(
+    *, event: Event, photos: Iterable[Photo]
+) -> dict[str, tuple[GalleryFaceCrop, ...]]:
+    """Return vector-free usable face crops for supplied gallery photos."""
     photo_ids = frozenset(str(photo.pk) for photo in photos if photo.event_id == event.pk)
     if not photo_ids:
-        return frozenset()
+        return {}
     configuration = _gallery_configuration()
-    candidates = _compatible_candidates(
+    faces = _compatible_gallery_embeddings(
         event=event,
         configuration=configuration,
         photo_ids=photo_ids,
-    )
-    candidates_by_photo: dict[str, list[CandidateEmbedding]] = {}
-    for candidate in candidates:
-        candidates_by_photo.setdefault(candidate.photo_id, []).append(candidate)
-    validation_search = SelfieSearch(event=event, configuration=configuration)
-    return frozenset(
-        photo_id
-        for photo_id, photo_candidates in candidates_by_photo.items()
-        if len(photo_candidates) == 1
-        and _is_usable_gallery_query(
-            search=validation_search,
-            vector=photo_candidates[0].vector,
+    ).order_by("detection__attempt__photo_id", "detection__face_index", "detection_id")
+    results: dict[str, list[GalleryFaceCrop]] = {}
+    for detection_id, photo_id, face_index, geometry in faces.values_list(
+        "detection_id",
+        "detection__attempt__photo_id",
+        "detection__face_index",
+        "detection__geometry",
+    ).iterator(chunk_size=2_000):
+        crop = gallery_face_crop(
+            detection_id=str(detection_id), face_index=face_index, geometry=geometry
         )
-    )
+        if crop is not None:
+            results.setdefault(str(photo_id), []).append(crop)
+    return {photo_id: tuple(crops) for photo_id, crops in results.items()}
 
 
 def submit_gallery_photo_search(
-    *, event: Event, photo: Photo, now: datetime | None = None
+    *, event: Event, photo: Photo, detection_id, now: datetime | None = None
 ) -> CreatedSearch:
-    """Create an immediately-ready exact search from one accepted gallery face."""
+    """Create an immediately-ready exact search from one selected gallery face."""
     now = now or timezone.now()
     try:
         with transaction.atomic():
@@ -129,15 +132,54 @@ def submit_gallery_photo_search(
             if photo is None:
                 raise GallerySearchUnavailable() from None
 
-            configuration = _gallery_configuration(photo=photo)
-            source_candidates = _compatible_candidates(
-                event=event,
-                configuration=configuration,
-                photo_ids=(str(photo.pk),),
+            configuration = _gallery_configuration(photo=photo, detection_id=detection_id)
+            source = (
+                _compatible_gallery_embeddings(
+                    event=event,
+                    configuration=configuration,
+                    photo_ids=(str(photo.pk),),
+                )
+                .filter(detection_id=detection_id)
+                .values_list(
+                    "vector",
+                    "model_version",
+                    "detection_id",
+                    "detection__attempt__photo_id",
+                    "detection__attempt__photo__event_id",
+                    "detection__attempt__event_id",
+                    "detection__face_index",
+                    "detection__geometry",
+                )
+                .first()
             )
-            if len(source_candidates) != 1:
+            if source is None:
                 raise GallerySearchUnavailable()
-            source_candidate = source_candidates[0]
+            (
+                vector,
+                model_version,
+                source_detection_id,
+                source_photo_id,
+                photo_event_id,
+                attempt_event_id,
+                face_index,
+                geometry,
+            ) = source
+            if (
+                gallery_face_crop(
+                    detection_id=str(source_detection_id), face_index=face_index, geometry=geometry
+                )
+                is None
+            ):
+                raise GallerySearchUnavailable()
+            source_candidate = CandidateEmbedding(
+                vector=vector,
+                model_version=model_version,
+                detection_id=source_detection_id,
+                photo_id=str(source_photo_id),
+                photo_event_id=photo_event_id,
+                attempt_event_id=attempt_event_id,
+                attempt_photo_id=source_photo_id,
+            )
             validation_search = SelfieSearch(event=event, configuration=configuration)
             if not _is_usable_gallery_query(
                 search=validation_search, vector=source_candidate.vector
@@ -222,7 +264,7 @@ def _configuration(*, content_type: str, content_size: int) -> dict[str, object]
     }
 
 
-def _gallery_configuration(*, photo: Photo | None = None) -> dict[str, object]:
+def _gallery_configuration(*, photo: Photo | None = None, detection_id=None) -> dict[str, object]:
     gallery_generations = _face_embedding_generations()
     gallery_model = gallery_generations[0]["model"]
     if not isinstance(gallery_model, str):
@@ -236,7 +278,11 @@ def _gallery_configuration(*, photo: Photo | None = None) -> dict[str, object]:
         "gallery_face_embedding_generations": list(gallery_generations),
     }
     if photo is not None:
-        configuration["query_source"] = {"kind": "gallery_photo", "photo_id": str(photo.pk)}
+        configuration["query_source"] = {
+            "kind": "gallery_photo",
+            "photo_id": str(photo.pk),
+            "detection_id": str(detection_id),
+        }
     return configuration
 
 
@@ -246,6 +292,109 @@ def _compatible_candidates(
     configuration: dict[str, object],
     photo_ids: Iterable[str] | None = None,
 ):
+    embeddings = _compatible_embeddings(
+        event=event,
+        configuration=configuration,
+        photo_ids=photo_ids,
+    )
+    dimensions = configuration["embedding_dimensions"]
+    return [
+        CandidateEmbedding(
+            vector=vector,
+            model_version=model_version,
+            detection_id=detection_id,
+            photo_id=str(photo_id),
+            photo_event_id=photo_event_id,
+            attempt_event_id=attempt_event_id,
+            attempt_photo_id=photo_id,
+        )
+        for vector, model_version, detection_id, photo_id, photo_event_id, attempt_event_id in (
+            embeddings.order_by("detection_id")
+            .values_list(
+                "vector",
+                "model_version",
+                "detection_id",
+                "detection__attempt__photo_id",
+                "detection__attempt__photo__event_id",
+                "detection__attempt__event_id",
+            )
+            .iterator(chunk_size=2_000)
+        )
+        if isinstance(vector, list) and len(vector) == dimensions
+    ]
+
+
+def _compatible_gallery_embeddings(
+    *,
+    event: Event,
+    configuration: dict[str, object],
+    photo_ids: Iterable[str] | None = None,
+) -> QuerySet[FaceEmbedding]:
+    return _compatible_embeddings(
+        event=event,
+        configuration=configuration,
+        photo_ids=photo_ids,
+    ).filter(
+        _usable_vector_predicate(configuration),
+        detection__geometry__coordinate_space="preview-small-v1",
+        detection__geometry__pixel_width__gt=0,
+        detection__geometry__pixel_height__gt=0,
+        detection__geometry__bbox__isnull=False,
+    )
+
+
+def _usable_vector_predicate(configuration: dict[str, object]) -> RawSQL:
+    dimensions = configuration.get("embedding_dimensions")
+    if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
+        raise ValueError("invalid face-embedding dimensions")
+    vector = f'"{FaceEmbedding._meta.db_table}"."vector"'
+    return RawSQL(
+        f"""
+        jsonb_typeof({vector}) = 'array'
+        AND jsonb_array_length({vector}) = %s
+        AND NOT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements({vector}) AS face_vector(value)
+            WHERE CASE
+                WHEN jsonb_typeof(face_vector.value) = 'number'
+                THEN NOT (
+                    (face_vector.value #>> '{{}}')::double precision
+                    > '-Infinity'::double precision
+                    AND (face_vector.value #>> '{{}}')::double precision
+                    < 'Infinity'::double precision
+                )
+                ELSE TRUE
+            END
+        )
+        AND abs(
+            sqrt(
+                (
+                    SELECT sum(
+                        power(
+                            CASE
+                                WHEN jsonb_typeof(face_vector.value) = 'number'
+                                THEN (face_vector.value #>> '{{}}')::double precision
+                                ELSE 0
+                            END,
+                            2
+                        )
+                    )
+                    FROM jsonb_array_elements({vector}) AS face_vector(value)
+                )
+            ) - 1
+        ) <= %s
+        """,
+        (dimensions, 1e-6),
+        output_field=BooleanField(),
+    )
+
+
+def _compatible_embeddings(
+    *,
+    event: Event,
+    configuration: dict[str, object],
+    photo_ids: Iterable[str] | None = None,
+) -> QuerySet[FaceEmbedding]:
     configured_generations = configuration.get("gallery_face_embedding_generations")
     if not isinstance(configured_generations, list) or not all(
         isinstance(generation, dict) for generation in configured_generations
@@ -274,49 +423,22 @@ def _compatible_candidates(
             detection__attempt__run__configuration=generation["configuration"],
             detection__attempt__run__configuration_hash=generation["configuration_hash"],
         )
-    embeddings = (
-        FaceEmbedding.objects.filter(
-            detection__status="kept",
-            detection__attempt__event=event,
-            detection__attempt__status="succeeded",
-            detection__attempt__accepted=True,
-            detection__attempt__accepted_states__processor_type=FACE_EMBEDDING_PROCESSOR,
-            detection__attempt__accepted_states__status=PhotoProcessingState.Status.SUCCEEDED,
-            detection__attempt__photo__event=event,
-            detection__attempt__photo__src="",
-            detection__attempt__photo__original_key__isnull=False,
-            detection__attempt__photo__original_key__gt="",
-            detection__attempt__photo__original_size__isnull=False,
-        )
-        .filter(compatible_generation)
-        .order_by("detection_id")
-        .values_list(
-            "vector",
-            "model_version",
-            "detection_id",
-            "detection__attempt__photo_id",
-            "detection__attempt__photo__event_id",
-            "detection__attempt__event_id",
-        )
-    )
+    embeddings = FaceEmbedding.objects.filter(
+        detection__status="kept",
+        detection__attempt__event=event,
+        detection__attempt__status="succeeded",
+        detection__attempt__accepted=True,
+        detection__attempt__accepted_states__processor_type=FACE_EMBEDDING_PROCESSOR,
+        detection__attempt__accepted_states__status=PhotoProcessingState.Status.SUCCEEDED,
+        detection__attempt__photo__event=event,
+        detection__attempt__photo__src="",
+        detection__attempt__photo__original_key__isnull=False,
+        detection__attempt__photo__original_key__gt="",
+        detection__attempt__photo__original_size__isnull=False,
+    ).filter(compatible_generation)
     if photo_ids is not None:
         embeddings = embeddings.filter(detection__attempt__photo_id__in=photo_ids)
-    dimensions = configuration["embedding_dimensions"]
-    return [
-        CandidateEmbedding(
-            vector=vector,
-            model_version=model_version,
-            detection_id=detection_id,
-            photo_id=str(photo_id),
-            photo_event_id=photo_event_id,
-            attempt_event_id=attempt_event_id,
-            attempt_photo_id=photo_id,
-        )
-        for vector, model_version, detection_id, photo_id, photo_event_id, attempt_event_id in (
-            embeddings.iterator(chunk_size=2_000)
-        )
-        if isinstance(vector, list) and len(vector) == dimensions
-    ]
+    return embeddings
 
 
 def _is_usable_gallery_query(*, search: SelfieSearch, vector: object) -> bool:

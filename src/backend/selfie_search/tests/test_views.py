@@ -275,6 +275,7 @@ class GalleryPhotoSearchViewTests(TestCase):
         self.owner = get_user_model().objects.create_user(username="gallery-search-owner")
         self.event = self.make_event(slug="gallery-search")
         self.photo = self.make_gallery_photo(event=self.event, photo_id="gallery-source")
+        self.detection_id = uuid4()
 
     def make_event(self, *, slug: str, published: bool = True) -> Event:
         return Event.objects.create(
@@ -301,11 +302,21 @@ class GalleryPhotoSearchViewTests(TestCase):
             uploaded_at=timezone.now(),
         )
 
-    def url(self, *, event: Event | None = None, photo_id: str | None = None) -> str:
+    def url(
+        self,
+        *,
+        event: Event | None = None,
+        photo_id: str | None = None,
+        detection_id=None,
+    ) -> str:
         event = event or self.event
         return reverse(
-            "selfie_search:submit_gallery_photo",
-            kwargs={"event_slug": event.slug, "photo_id": photo_id or self.photo.pk},
+            "selfie_search:submit_gallery_face",
+            kwargs={
+                "event_slug": event.slug,
+                "photo_id": photo_id or self.photo.pk,
+                "detection_id": detection_id or self.detection_id,
+            },
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
@@ -341,16 +352,19 @@ class GalleryPhotoSearchViewTests(TestCase):
         submit_gallery_photo_search.assert_not_called()
 
     @patch("selfie_search.views.submit_gallery_photo_search")
-    def test_stale_or_ambiguous_source_evidence_returns_not_found(
+    def test_forged_or_stale_selected_detection_returns_not_found(
         self, submit_gallery_photo_search
     ) -> None:
         submit_gallery_photo_search.side_effect = GallerySearchUnavailable()
+        forged_detection_id = uuid4()
 
-        response = self.client.post(self.url())
+        response = self.client.post(self.url(detection_id=forged_detection_id))
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.content, b"")
-        submit_gallery_photo_search.assert_called_once_with(event=self.event, photo=self.photo)
+        submit_gallery_photo_search.assert_called_once_with(
+            event=self.event, photo=self.photo, detection_id=forged_detection_id
+        )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
     def test_success_redirects_to_the_existing_bearer_result(
@@ -370,7 +384,9 @@ class GalleryPhotoSearchViewTests(TestCase):
             ),
             fetch_redirect_response=False,
         )
-        submit_gallery_photo_search.assert_called_once_with(event=self.event, photo=self.photo)
+        submit_gallery_photo_search.assert_called_once_with(
+            event=self.event, photo=self.photo, detection_id=self.detection_id
+        )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
     def test_service_failure_is_a_sanitized_body_free_503(

@@ -619,6 +619,117 @@ test('gallery fallback link works without JavaScript', async ({ browser }) => {
   }
 });
 
+for (const [name, viewport] of [
+  ['desktop', DESKTOP_VIEWPORT],
+  ['mobile', MOBILE_VIEWPORT],
+]) {
+  test(`${name} gallery face controls stay contained and show the exact stack remainder`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await preloadCookieAcknowledgement(page);
+    await page.goto('/__visual__/event/gallery-populated/');
+    await settlePage(page);
+
+    const dimensions = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+
+    const cards = page.locator('.event-gallery-grid .gallery-card');
+    await expect(cards).toHaveCount(4);
+    await expect(cards.nth(0).locator('.gallery-face-control')).toHaveCount(0);
+    await expect(cards.nth(1).locator('.gallery-face-button--direct')).toHaveCount(1);
+    await expect(cards.nth(2).locator('.gallery-face-stack .gallery-face-crop')).toHaveCount(2);
+    await expect(cards.nth(3).locator('.gallery-face-stack .gallery-face-crop')).toHaveCount(2);
+    await expect(cards.nth(3).locator('.gallery-face-more')).toHaveText('+ 2');
+    await expect(cards.nth(3).locator('[data-face-choice]')).toHaveCount(4);
+    await expect(page.locator('.gallery-download')).toHaveCount(4);
+
+    for (let index = 0; index < 4; index += 1) {
+      const actionBounds = await cards.nth(index).locator('.gallery-card-actions').boundingBox();
+      const downloadBounds = await cards.nth(index).locator('.gallery-download').boundingBox();
+      expect(actionBounds).not.toBeNull();
+      expect(downloadBounds).not.toBeNull();
+      expect(Math.abs(downloadBounds.x + downloadBounds.width - (actionBounds.x + actionBounds.width))).toBeLessThanOrEqual(1);
+      const faceControl = cards.nth(index).locator('.gallery-face-control');
+      if (await faceControl.count()) {
+        const faceBounds = await faceControl.boundingBox();
+        expect(faceBounds).not.toBeNull();
+        expect(faceBounds.x + faceBounds.width).toBeLessThan(downloadBounds.x);
+      }
+    }
+
+    const fourthCardBounds = await cards.nth(3).boundingBox();
+    const stackBounds = await cards.nth(3).locator('[data-face-chooser-trigger]').boundingBox();
+    expect(fourthCardBounds).not.toBeNull();
+    expect(stackBounds).not.toBeNull();
+    expect(stackBounds.x).toBeGreaterThanOrEqual(fourthCardBounds.x);
+    expect(stackBounds.x + stackBounds.width).toBeLessThanOrEqual(
+      fourthCardBounds.x + fourthCardBounds.width,
+    );
+
+    const details = cards.nth(3).locator('[data-face-chooser]');
+    const chooserTrigger = details.locator('[data-face-chooser-trigger]');
+    await chooserTrigger.focus();
+    await page.keyboard.press('Enter');
+    await expect(details.locator('.gallery-face-chooser-popover')).toBeVisible();
+    await expect(details.locator('[data-face-choice]').first()).toBeFocused();
+    const focusIndicator = await details.locator('[data-face-choice]').first().evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        focusVisible: element.matches(':focus-visible'),
+        outlineColor: style.outlineColor,
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth,
+      };
+    });
+    expect(focusIndicator.focusVisible).toBe(true);
+    expect(focusIndicator.outlineStyle).toBe('solid');
+    expect(focusIndicator.outlineWidth).not.toBe('0px');
+    expect(focusIndicator.outlineColor).not.toBe('rgba(0, 0, 0, 0)');
+
+    const popoverBounds = await details.locator('.gallery-face-chooser-popover').boundingBox();
+    expect(popoverBounds).not.toBeNull();
+    expect(popoverBounds.x).toBeGreaterThanOrEqual(0);
+    expect(popoverBounds.x + popoverBounds.width).toBeLessThanOrEqual(viewport.width);
+    expect(popoverBounds.y).toBeGreaterThanOrEqual(0);
+
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect(page).toHaveScreenshot(`${name}-event-gallery-face-chooser.png`, {
+      animations: 'disabled',
+      fullPage: true,
+      timeout: 15_000,
+    });
+  });
+}
+
+test('gallery face controls submit directly or through the selected chooser tile', async ({ page }) => {
+  const submittedPaths = [];
+  await preloadCookieAcknowledgement(page);
+  await page.route('**/events/london-10k/photos/**/similar-search/**', async (route) => {
+    submittedPaths.push(new URL(route.request().url()).pathname);
+    await route.fulfill({ status: 204, body: '' });
+  });
+  await page.goto('/__visual__/event/gallery-populated/');
+  await settlePage(page);
+
+  await page.locator('.gallery-card').nth(1).locator('.gallery-face-button--direct').click();
+  await expect.poll(() => submittedPaths).toHaveLength(1);
+  expect(submittedPaths[0]).toMatch(
+    /\/events\/london-10k\/photos\/1190\/similar-search\/00000000-0000-4000-8000-000000119001\/$/,
+  );
+
+  const chooser = page.locator('.gallery-card').nth(2).locator('[data-face-chooser]');
+  await chooser.locator('[data-face-chooser-trigger]').click();
+  await chooser.locator('[data-face-choice]').nth(1).click();
+  await expect.poll(() => submittedPaths).toHaveLength(2);
+  expect(submittedPaths[1]).toMatch(
+    /\/events\/london-10k\/photos\/1316\/similar-search\/00000000-0000-4000-8000-000000131602\/$/,
+  );
+});
+
 test('selfie search form keeps its native multipart fallback without JavaScript', async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();

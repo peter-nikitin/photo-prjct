@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date
 
 from django.conf import settings
@@ -23,7 +24,7 @@ from picflow.gallery import (
 from picflow.models import Event, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
 from selfie_search.forms import SelfieSearchUploadForm
-from selfie_search.services.submission import gallery_search_eligible_photo_ids
+from selfie_search.services.submission import gallery_search_faces_by_photo
 
 from config.metrics import generate_metrics
 
@@ -58,25 +59,33 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
         except InvalidPage:
             return HttpResponse(status=404)
         gallery_page_photos = tuple(gallery_page_data.object_list)
-        eligible_photo_ids = (
-            gallery_search_eligible_photo_ids(event=event, photos=gallery_page_photos)
+        faces_by_photo = (
+            gallery_search_faces_by_photo(event=event, photos=gallery_page_photos)
             if settings.SELFIE_SEARCH_ENABLED
-            else frozenset()
+            else {}
         )
 
-        def similar_search_url(photo: Photo) -> str | None:
-            if photo.pk not in eligible_photo_ids:
-                return None
-            return reverse(
-                "selfie_search:submit_gallery_photo",
-                kwargs={"event_slug": event.slug, "photo_id": photo.pk},
+        def faces(photo: Photo):
+            return tuple(
+                replace(
+                    face,
+                    search_url=reverse(
+                        "selfie_search:submit_gallery_face",
+                        kwargs={
+                            "event_slug": event.slug,
+                            "photo_id": photo.pk,
+                            "detection_id": face.detection_id,
+                        },
+                    ),
+                )
+                for face in faces_by_photo.get(photo.pk, ())
             )
 
         gallery_photos = tuple(
             GalleryPhotoFactory.from_photo(
                 photo=photo,
                 event_slug=event.slug,
-                similar_search_url_builder=similar_search_url,
+                faces=faces(photo),
             )
             for photo in gallery_page_photos
         )

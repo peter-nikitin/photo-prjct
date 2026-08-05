@@ -1,4 +1,5 @@
 import logging
+import math
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol, Self
@@ -20,7 +21,6 @@ GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
 MediaUrlBuilder = Callable[[Photo, GalleryVariant], str]
 DownloadUrlBuilder = Callable[[Photo], str]
-SimilarSearchUrlBuilder = Callable[[Photo], str | None]
 GALLERY_PAGE_SIZE: Final = 100
 
 logger = logging.getLogger(__name__)
@@ -39,13 +39,81 @@ class GalleryMedia:
 
 
 @dataclass(frozen=True)
+class GalleryFaceCrop:
+    detection_id: str
+    face_number: int
+    left_percent: float
+    top_percent: float
+    size_percent: float
+    search_url: str = ""
+
+
+def gallery_face_crop(
+    *, detection_id: str, face_index: int, geometry: object
+) -> GalleryFaceCrop | None:
+    """Return a padded square preview crop for one persisted face detection."""
+    if isinstance(face_index, bool) or not isinstance(face_index, int) or face_index < 0:
+        return None
+    if not isinstance(geometry, dict) or geometry.get("coordinate_space") != "preview-small-v1":
+        return None
+    pixel_width = _finite_number(geometry.get("pixel_width"))
+    pixel_height = _finite_number(geometry.get("pixel_height"))
+    bbox = geometry.get("bbox")
+    if pixel_width is None or pixel_height is None or pixel_width <= 0 or pixel_height <= 0:
+        return None
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    x, y, width, height = (_finite_number(value) for value in bbox)
+    if (
+        x is None
+        or y is None
+        or width is None
+        or height is None
+        or width <= 0
+        or height <= 0
+        or x < 0
+        or y < 0
+        or x + width > pixel_width
+        or y + height > pixel_height
+    ):
+        return None
+    minimum_size = max(width, height)
+    maximum_size = min(pixel_width, pixel_height)
+    if minimum_size > maximum_size:
+        return None
+    size = min(minimum_size * 1.2, maximum_size)
+    left = min(max(x + (width - size) / 2, 0), pixel_width - size)
+    top = min(max(y + (height - size) / 2, 0), pixel_height - size)
+    left_percent = left / pixel_width * 100
+    top_percent = top / pixel_height * 100
+    size_percent = size / pixel_width * 100
+    values = (left_percent, top_percent, size_percent)
+    if not all(math.isfinite(value) and 0 <= value <= 100 for value in values):
+        return None
+    return GalleryFaceCrop(
+        detection_id=detection_id,
+        face_number=face_index + 1,
+        left_percent=left_percent,
+        top_percent=top_percent,
+        size_percent=size_percent,
+    )
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+@dataclass(frozen=True)
 class GalleryPhoto:
     photo_id: str
     preview_media_small: GalleryMedia
     preview_media_large: GalleryMedia
     download_url: str
     alt: str
-    similar_search_url: str | None = None
+    faces: tuple[GalleryFaceCrop, ...] = ()
 
 
 class GalleryPhotoFactory:
@@ -56,7 +124,7 @@ class GalleryPhotoFactory:
         event_slug: str,
         media_url_builder: MediaUrlBuilder | None = None,
         download_url_builder: DownloadUrlBuilder | None = None,
-        similar_search_url_builder: SimilarSearchUrlBuilder | None = None,
+        faces: tuple[GalleryFaceCrop, ...] = (),
     ) -> GalleryPhoto:
         def media(variant: GalleryVariant) -> GalleryMedia:
             return GalleryMedia(
@@ -84,11 +152,7 @@ class GalleryPhotoFactory:
                 )
             ),
             alt=f"Фото {photo.pk} с события {photo.event.name}",
-            similar_search_url=(
-                similar_search_url_builder(photo)
-                if similar_search_url_builder is not None
-                else None
-            ),
+            faces=faces,
         )
 
 

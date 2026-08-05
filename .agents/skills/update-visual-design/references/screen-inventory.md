@@ -6,7 +6,7 @@ This inventory is the canonical map from visual concepts to Django templates and
 | --- | --- | --- | --- | --- | --- |
 | Catalog | production | `src/backend/templates/catalog/event_catalog.html` | `/` | `/__visual__/catalog/populated/`, `/__visual__/catalog/empty/` | `desktop-catalog-populated.png`, `desktop-catalog-empty.png`, `mobile-catalog-populated.png`, `mobile-catalog-empty.png` |
 | Event detail | production | `src/backend/templates/catalog/event_detail.html` | `/events/<slug>/` | `/__visual__/event/covered/`, `/__visual__/event/uncovered/` | `desktop-event-covered.png`, `desktop-event-uncovered.png`, `mobile-event-covered.png`, `mobile-event-uncovered.png` |
-| Event gallery | production | `src/backend/templates/catalog/event_detail.html` | `/events/<slug>/` | `/__visual__/event/gallery-populated/`, `/__visual__/event/gallery-empty/` | `desktop-event-gallery-populated.png`, `desktop-event-gallery-empty.png`, `mobile-event-gallery-populated.png`, `mobile-event-gallery-empty.png`, `desktop-gallery-lightbox-download.png` |
+| Event gallery | production | `src/backend/templates/catalog/event_detail.html` | `/events/<slug>/` | `/__visual__/event/gallery-populated/`, `/__visual__/event/gallery-empty/` | `desktop-event-gallery-populated.png`, `desktop-event-gallery-empty.png`, `mobile-event-gallery-populated.png`, `mobile-event-gallery-empty.png`, `desktop-event-gallery-face-chooser.png`, `mobile-event-gallery-face-chooser.png`, `desktop-gallery-lightbox-download.png` |
 | Selfie search entry | production | `src/backend/templates/catalog/event_detail.html` | `/events/<slug>/` | `/__visual__/event/selfie-search/` | `desktop-event-selfie-search.png`, `mobile-event-selfie-search.png` |
 | Selfie search result | production | `src/backend/selfie_search/templates/selfie_search/result.html` | `/events/<slug>/selfie-search/<public-token>/` | `/__visual__/event/selfie-search/processing/`, `/__visual__/event/selfie-search/empty/`, `/__visual__/event/selfie-search/error/`, `/__visual__/event/selfie-search/ready/`, `/__visual__/event/selfie-search/feedback-problem/`, `/__visual__/event/selfie-search/feedback-marking/` | `desktop-selfie-search-processing.png`, `desktop-selfie-search-empty.png`, `desktop-selfie-search-error.png`, `desktop-selfie-search-ready.png`, `desktop-selfie-search-feedback-problem.png`, `desktop-selfie-search-feedback-marking.png`, `mobile-selfie-search-processing.png`, `mobile-selfie-search-empty.png`, `mobile-selfie-search-error.png`, `mobile-selfie-search-ready.png`, `mobile-selfie-search-feedback-problem.png`, `mobile-selfie-search-feedback-marking.png`, `mobile-selfie-search-result-lightbox-download.png` |
 | Legal | production | `src/backend/templates/ui/legal.html` | `/legal/` | `/__visual__/legal/` | `desktop-legal.png`, `mobile-legal.png` |
@@ -40,3 +40,8 @@ to cover the shared page-jump control. No visual route or scenario was added.
 On 2026-08-04, terminal selfie-search feedback added explicit compact-problem and in-gallery-marking
 fixtures at desktop and mobile widths. The snapshots verify the consent form and the lower-left card
 controls alongside the existing lower-right download action.
+
+On 2026-08-05, the production event-gallery fixture added deterministic zero-, one-, two-, and
+four-face cards. The desktop and 390px mobile baselines cover the direct circle, overlapping stack,
+exact `+ 2` remainder, and an opened anchored chooser; the chooser screenshots are
+`desktop-event-gallery-face-chooser.png` and `mobile-event-gallery-face-chooser.png`.

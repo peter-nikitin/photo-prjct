@@ -6,9 +6,9 @@ app_name = "selfie_search"
 
 urlpatterns = [
     path(
-        "events/<str:event_slug>/photos/<str:photo_id>/similar-search/",
-        views.submit_gallery_photo,
-        name="submit_gallery_photo",
+        "events/<str:event_slug>/photos/<str:photo_id>/similar-search/<uuid:detection_id>/",
+        views.submit_gallery_face,
+        name="submit_gallery_face",
     ),
     path("events/<str:event_slug>/selfie-search/", views.submit, name="submit"),
     path(

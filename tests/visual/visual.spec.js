@@ -470,6 +470,25 @@ test('desktop feedback marking keeps gallery full width and terminal actions equ
   });
 });
 
+test('desktop selfie result uses the ordinary gallery content width', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+
+  const resultResponse = await page.goto('/__visual__/event/selfie-search/ready/');
+  expect(resultResponse).not.toBeNull();
+  expect(resultResponse.status()).toBeLessThan(400);
+  await settlePage(page);
+  const resultWidth = await page.locator('.selfie-search-result').evaluate((node) => node.getBoundingClientRect().width);
+
+  const galleryResponse = await page.goto('/__visual__/event/gallery-populated/');
+  expect(galleryResponse).not.toBeNull();
+  expect(galleryResponse.status()).toBeLessThan(400);
+  await settlePage(page);
+  const galleryWidth = await page.locator('.event-gallery').evaluate((node) => node.getBoundingClientRect().width);
+
+  expect(resultWidth).toBe(galleryWidth);
+});
+
 test('mobile feedback marking stacks the new-search action before the form', async ({ page }) => {
   await page.setViewportSize(MOBILE_VIEWPORT);
   await preloadCookieAcknowledgement(page);

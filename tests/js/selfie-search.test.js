@@ -114,6 +114,7 @@ class FakeElement {
     this.attributes = new Map();
     this.queries = new Map();
     this.queryLists = new Map();
+    this.queriedSelectors = [];
     this.focusCount = 0;
   }
 
@@ -130,6 +131,7 @@ class FakeElement {
   }
 
   querySelector(selector) {
+    this.queriedSelectors.push(selector);
     return this.queries.get(selector) || null;
   }
 
@@ -841,7 +843,7 @@ test('does not claim completion until local selfie cleanup succeeds and permits 
   assert.match(fixture.root.innerHTML, /Спасибо, отзыв отправлен/);
 });
 
-test('reload after delete failure retries cleanup before revealing submitted confirmation', async () => {
+test('reload after delete failure reports cleanup error without exposing a retry action', async () => {
   assert.equal(typeof initializeFeedbackCleanupUi, 'function');
   const initial = makeFeedbackFixture();
   initial.contact.value = 'contact';
@@ -873,10 +875,8 @@ test('reload after delete failure retries cleanup before revealing submitted con
 
   const cleanupRoot = new FakeElement();
   const cleanupError = new FakeElement({ hidden: true });
-  const cleanupRetry = new FakeElement({ hidden: true });
   const cleanupSuccess = new FakeElement({ hidden: true });
   cleanupRoot.queries.set('[data-feedback-cleanup-error]', cleanupError);
-  cleanupRoot.queries.set('[data-feedback-cleanup-retry]', cleanupRetry);
   cleanupRoot.queries.set('[data-feedback-cleanup-success]', cleanupSuccess);
   const document = {
     querySelector(selector) {
@@ -886,7 +886,7 @@ test('reload after delete failure retries cleanup before revealing submitted con
   };
   const result = { dataset: { resultDigest: initial.resultDigest } };
 
-  await initializeFeedbackCleanupUi({
+  const cleanupController = await initializeFeedbackCleanupUi({
     document,
     storage,
     result,
@@ -896,14 +896,9 @@ test('reload after delete failure retries cleanup before revealing submitted con
   assert.equal(cleanupAttempts, 2);
   assert.equal(cleanupSuccess.hidden, true);
   assert.equal(cleanupError.hidden, false);
-  assert.equal(cleanupRetry.hidden, false);
-
-  await cleanupRetry.trigger('click');
-
-  assert.equal(cleanupAttempts, 3);
-  assert.equal(cleanupSuccess.hidden, false);
-  assert.equal(cleanupError.hidden, true);
-  assert.equal(cleanupRetry.hidden, true);
+  assert.match(cleanupError.textContent, /Повторите очистку/);
+  assert.equal(cleanupController.retry, undefined);
+  assert.equal(cleanupRoot.queriedSelectors.includes('[data-feedback-cleanup-retry]'), false);
 });
 
 function makeSubmittedStartupFixture({ storage }) {
@@ -911,11 +906,9 @@ function makeSubmittedStartupFixture({ storage }) {
   const cleanupRoot = new FakeElement();
   const pending = new FakeElement();
   const error = new FakeElement({ hidden: true });
-  const retry = new FakeElement({ hidden: true });
   const success = new FakeElement({ hidden: true });
   cleanupRoot.queries.set('[data-feedback-cleanup-pending]', pending);
   cleanupRoot.queries.set('[data-feedback-cleanup-error]', error);
-  cleanupRoot.queries.set('[data-feedback-cleanup-retry]', retry);
   cleanupRoot.queries.set('[data-feedback-cleanup-success]', success);
   const result = new FakeElement({
     dataset: {
@@ -931,7 +924,7 @@ function makeSubmittedStartupFixture({ storage }) {
     },
   };
   startBrowserUi(document, { sessionStorage: new MemoryStorage() }, { storage });
-  return { error, pending, retry, success };
+  return { error, pending, success };
 }
 
 test('submitted result completes cleanup before revealing confirmation', async () => {
@@ -951,7 +944,7 @@ test('submitted result completes cleanup before revealing confirmation', async (
   assert.equal(fixture.success.hidden, false);
 });
 
-test('real associated selfie delete failure keeps submitted cleanup retry available', async () => {
+test('real associated selfie delete failure reports a cleanup failure', async () => {
   const db = new MemoryDatabase();
   await db.put({ handle: 'undeletable', resultTokenDigest: 'f'.repeat(64) });
   db.delete = async () => { throw new Error('transaction failed'); };

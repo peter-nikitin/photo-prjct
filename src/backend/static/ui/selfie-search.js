@@ -666,7 +666,6 @@
       this.resultDigest = normalizedDigest(resultDigest);
       this.pending = root.querySelector?.('[data-feedback-cleanup-pending]');
       this.error = root.querySelector?.('[data-feedback-cleanup-error]');
-      this.retry = root.querySelector?.('[data-feedback-cleanup-retry]');
       this.success = root.querySelector?.('[data-feedback-cleanup-success]');
       this.marks = new FeedbackMarkStore({
         sessionStorage: safeObjectValue(window, 'sessionStorage') || safeGlobalValue('sessionStorage'),
@@ -677,7 +676,6 @@
     async cleanup() {
       if (this.pending) this.pending.hidden = false;
       showFeedbackError(this.error, '');
-      if (this.retry) this.retry.hidden = true;
       if (this.success) this.success.hidden = true;
       const marksCleared = this.marks.clear();
       let selfieCleared = false;
@@ -694,7 +692,6 @@
           this.error,
           'Отзыв отправлен, но локальные данные удалить не удалось. Повторите очистку.',
         );
-        if (this.retry) this.retry.hidden = false;
         return false;
       }
       if (this.pending) this.pending.hidden = true;
@@ -706,7 +703,6 @@
     }
 
     async bind() {
-      this.retry?.addEventListener('click', () => this.cleanup());
       await this.cleanup();
     }
   }

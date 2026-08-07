@@ -109,6 +109,23 @@ The repository currently contains an early Django application:
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
+- Pull-request CI treats every numbered migration already present on the base revision as an
+  immutable identity: modifications, deletions, and renames fail the identity check, while new
+  leaves and explicit merge migrations remain allowed. The staging push workflow classifies changes
+  to the privileged selfie-observability package before building; such a push ends in a named,
+  successful controlled pause with image build and application deployment skipped until the
+  existing operator bootstrap and a manual deployment dispatch. Ordinary pushes retain the
+  automatic SHA-image path.
+- Before `mutation_started=1`, the candidate image performs read-only migration-history validation
+  and prints its migration plan. Deployment emits a bounded `DEPLOY_PHASE` marker sequence and one
+  sanitized `DEPLOY_RESULT`; automatic push failures reconcile one exact-title GitHub issue using a
+  non-blocking, least-privilege notification job. Issue reconciliation is operational metadata,
+  not a monitoring or audit-log replacement, and its failure cannot change deployment or rollback
+  authority. These checks leave the existing SHA-tagged image, GHCR, Docker Compose, single-VM
+  topology, root-owned observability package, and rollback path unchanged, conforming to
+  [ADR 0003](adr/0003-docker-compose-yandex-cloud.md) and
+  [ADR 0005](adr/0005-promote-images-through-staging.md). Repository tests cover this transition;
+  this delivery records no new staging rollout, CI, or notification-drill evidence.
 - Both deployment workflows propagate the existing private-media bucket and credential settings.
   Before environment promotion or any service switch, `apply-deployment.sh` pulls only the candidate
   web image. If no successful `deployed-image` marker exists, it emits the sanitized

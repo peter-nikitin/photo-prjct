@@ -10,6 +10,8 @@ unresolved decisions are documented rather than assumed to be implemented.
   open decisions.
 - [Architecture decisions](docs/adr/README.md) — durable decisions and the ADR template.
 - [Implementation plans](docs/plans/README.md) — delivery-plan conventions and template.
+- [Staging deployment runbook](docs/runbooks/staging-deployment.md) — automatic deployments,
+  controlled privileged-package pauses, retries, rollback, and acceptance checks.
 - [Local photo-processing worker check](docs/local-photo-processing-check.md) — manual real-Object-
   Storage verification before any deployment decision.
 - [Project skills](.agents/skills) — repository-scoped workflows for writing ADRs and plans and for

@@ -109,6 +109,12 @@ Add a CI check that compares migration paths with the pull request base and fail
 
 **Completion evidence:** a fixture or script test demonstrates that the PR #111 shape—removing `0003_optional_feedback_contact.py` and adding the same operations under `0005_optional_feedback_contact.py`—fails, while adding two parallel leaves plus a merge migration passes.
 
+**Repository status: complete.** [`scripts/check_migration_immutability.py`](../../scripts/check_migration_immutability.py),
+[`tests/test_migration_immutability.py`](../../tests/test_migration_immutability.py), the pull-request
+step in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), and the repository-foundation
+contract test cover the prohibited modification, deletion, and rename cases and the additive-leaf /
+merge controls. No PR or CI run link is recorded yet.
+
 ### P0 — require an explicit parallel-migration procedure
 
 Update the engineering guidance for migration conflicts:
@@ -122,6 +128,11 @@ Update the engineering guidance for migration conflicts:
 
 **Completion evidence:** the guidance is referenced by the PR checklist or contributor workflow, and the next parallel migration change includes an upgrade-path test from the base frontier.
 
+**Repository status: incomplete.** The procedure is documented in the
+[migration-conflict runbook](../../runbooks/django-migration-conflicts.md) and linked from EJ-002,
+but this checkout has no PR-checklist or contributor-workflow reference and no subsequent
+base-frontier upgrade-path change to evidence the second requirement.
+
 ### P1 — classify privileged-package changes before deployment
 
 Add a lightweight workflow check that detects changes under `deploy/selfie-observability/` and reports that a privileged host-package update is required. The release should expose a deliberate two-phase sequence:
@@ -132,6 +143,13 @@ Add a lightweight workflow check that detects changes under `deploy/selfie-obser
 Do not weaken the existing root trust boundary by allowing the normal deploy user to install mutable repository files as root automatically.
 
 **Completion evidence:** a test change to `summarize.py` produces an explicit required-action check before the deploy job, and an unchanged package takes the ordinary path without operator work.
+
+**Repository status: partial.** The classifier, controlled-pause conditions, and ordinary-path
+conditions are covered by
+[`test_staging_deployment_pauses_privileged_package_pushes_before_building`](../../tests/test_repository_foundation.py)
+and the workflow contract in [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml).
+The separately reviewed harmless `summarize.py` change and an actual push pause / manual-bootstrap
+run have not been performed, so the stated end-to-end completion evidence is not claimed.
 
 ### P1 — add a read-only pre-deploy phase
 
@@ -145,17 +163,36 @@ The migration check must be read-only. It should make the base-to-candidate tran
 
 **Completion evidence:** workflow output names the failed boundary without requiring the operator to search a combined SSH log, and no preflight mutates the database.
 
+**Repository status: complete.** The read-only command and pre-mutation ordering are covered by
+[`verify_migration_history.py`](../../src/backend/picflow/management/commands/verify_migration_history.py),
+[`test_failed_candidate_migration_history_stops_before_any_deployment_mutation`](../../tests/deployment/test_deployment_scripts.py),
+and [`test_deployment_migration_history_preflight_is_versioned_and_read_only`](../../tests/test_repository_foundation.py).
+No live staging preflight result is recorded.
+
 ### P1 — alert on failed automatic staging deployment
 
 Create a bounded notification or tracked issue for a failed `main` deployment, including the run URL, commit, failed phase, and whether rollback/public health succeeded. Avoid sending secrets or raw logs.
 
 **Completion evidence:** a controlled failed workflow produces one actionable notification and a later successful retry closes or resolves it.
 
+**Repository status: partial.** The standard-library reconciler and its API fixtures cover create,
+deduplication, update, close, validation isolation, and sanitized failures in
+[`tests/test_reconcile_staging_deploy_issue.py`](../../tests/test_reconcile_staging_deploy_issue.py);
+the workflow permissions, phase extraction, and non-authoritative behavior are covered by
+[`test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritative`](../../tests/test_repository_foundation.py).
+No controlled failed deployment, retry, or live notification-drill result is recorded.
+
 ### P2 — improve phase observability in `apply-deployment.sh`
 
 Emit stable sanitized phase markers for package verification, image pull, storage preflight, migration, Compose reconciliation, health, marker commit, and rollback. Preserve the current single-VM Compose architecture and rollback behavior.
 
 **Completion evidence:** deployment-script tests assert the phase and rollback markers for a migration failure and an observability-package mismatch.
+
+**Repository status: partial.** Migration preflight and post-mutation rollback markers are asserted
+by [`test_failed_candidate_migration_history_stops_before_any_deployment_mutation`](../../tests/deployment/test_deployment_scripts.py)
+and [`test_post_mutation_compose_failure_reports_the_recovery_outcome`](../../tests/deployment/test_deployment_scripts.py).
+The stale-observability preflight test asserts the host-mutation boundary but does not assert its
+phase/result marker, so the prevention item is not marked complete. No live phase stream is recorded.
 
 ## Explicit non-actions
 

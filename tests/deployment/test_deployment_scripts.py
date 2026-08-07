@@ -418,6 +418,20 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
     _write_executable(
         fake_bin / "docker",
         """
+if [ "${1-}" = volume ] && [ "${2-}" = inspect ]; then
+  volume_name="${3-}"
+  [ "$volume_name" = "${COMPOSE_PROJECT_NAME}_pgdata" ]
+  printf 'volume-inspect %s\n' "$volume_name" >> "$COMMAND_LOG"
+  if [ "$APPLY_SCENARIO" = volume-inspection-error ]; then
+    printf 'docker socket failure raw detail must stay hidden\n' >&2
+    exit 1
+  fi
+  if [ -f "$DEPLOY_ROOT/.docker-volume-$volume_name" ]; then
+    exit 0
+  fi
+  printf 'Error response from daemon: get %s: no such volume\n' "$volume_name" >&2
+  exit 1
+fi
 compose_env_file=""
 previous_argument=""
 for argument do
@@ -436,16 +450,53 @@ validate_candidate_env() {
   [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
   [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
   [ "$candidate_secret_key" = "$PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" ]
-  if [ "$APPLY_SCENARIO" = fresh-first-deployment ] || \
-     [ "$APPLY_SCENARIO" = fresh-first-health-failure ] || \
-     [ "$APPLY_SCENARIO" = fresh-first-marker-failure ]; then
-    [ ! -e "$DEPLOY_ROOT/.env" ]
-  else
-    cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
-  fi
+  case "${EXPECT_CANONICAL_ENV:-present}:$APPLY_SCENARIO" in
+    absent:*|present:fresh-first-deployment|present:fresh-first-health-failure|present:fresh-first-marker-failure)
+      [ ! -e "$DEPLOY_ROOT/.env" ]
+      ;;
+    *)
+      cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
+      ;;
+  esac
   printf 'candidate-requested-env-with-canonical-untouched\n' >> "$COMMAND_LOG"
 }
+validate_migration_preflight_env() {
+  validate_candidate_env
+  case "$(ls -ld "$compose_env_file")" in
+    -rw-------*) ;;
+    *) exit 1 ;;
+  esac
+  printf 'candidate-migration-env-mode-0600\n' >> "$COMMAND_LOG"
+}
 case " $* " in
+  *" run --rm --no-deps -T --entrypoint python web manage.py verify_migration_history "*)
+    validate_migration_preflight_env
+    case "$APPLY_SCENARIO" in
+      fresh-first-deployment)
+        printf 'unexpected-fresh-migration-history\n' >> "$COMMAND_LOG"
+        exit 99
+        ;;
+      migration-history-missing)
+        [ "$CANDIDATE_MIGRATION_LEDGER" = selfie_search.0003_optional_feedback_contact ]
+        [ "$CANDIDATE_MIGRATION_GRAPH" = picflow.0001_initial ]
+        printf 'candidate-migration-history applied=%s candidate=%s\n' \
+          "$CANDIDATE_MIGRATION_LEDGER" "$CANDIDATE_MIGRATION_GRAPH" >> "$COMMAND_LOG"
+        exit 1
+        ;;
+      migration-history-database-unavailable)
+        printf 'candidate-migration-history database-unavailable\n' >> "$COMMAND_LOG"
+        exit 1
+        ;;
+      *)
+        printf 'candidate-migration-history\n' >> "$COMMAND_LOG"
+        ;;
+    esac
+    ;;
+  *" run --rm --no-deps -T --entrypoint python web manage.py showmigrations --plan "*)
+    validate_candidate_env
+    printf 'candidate-migration-plan\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != migration-plan-failure ]
+    ;;
   *" run --rm --no-deps -T --entrypoint python web manage.py shell"*)
     validate_candidate_env
     for gallery_preflight do :; done
@@ -507,6 +558,15 @@ if [ "$APPLY_SCENARIO" = worker-recovery-disabled ] && \
    case " $* " in *" compose "*" --profile worker rm -sf worker "*) true ;; *) false ;; esac; then
   [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$compose_env_file")" = False ]
   printf 'recovery-removes-worker-from-restored-disabled-environment\n' >> "$COMMAND_LOG"
+fi
+if [ "$APPLY_SCENARIO" = compose-failure ] && \
+   [ "${APP_IMAGE-unset}" = new-image ] && \
+   case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
+  exit 1
+fi
+if [ "$APPLY_SCENARIO" = recovery-failure ] && \
+   case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
+  exit 1
 fi
 case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
@@ -652,6 +712,28 @@ def _apply_log(tmp_path: Path) -> list[str]:
     return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
 
 
+SUCCESS_PHASES = [
+    "validate",
+    "snapshot",
+    "candidate-pull",
+    "private-media-preflight",
+    "migration-preflight",
+    "observability-preflight",
+    "observability-reconcile",
+    "certificate",
+    "compose-reconcile",
+    "local-health",
+    "worker-health",
+    "public-health",
+    "observability-verify",
+    "commit",
+]
+
+
+def _deployment_markers(result: subprocess.CompletedProcess[str]) -> list[str]:
+    return [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_")]
+
+
 def _env_metadata(path: Path) -> tuple[int, int, int, int]:
     metadata = path.stat()
     return (
@@ -733,6 +815,40 @@ def test_apply_rejects_an_unsafe_gunicorn_profile_before_mutation(
 
     assert result.returncode == 2
     assert "GUNICORN_" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
+
+
+@pytest.mark.parametrize(
+    ("configuration", "message"),
+    [("missing-secret-key", "Set SECRET_KEY"), ("invalid-worker-replicas", "must be 1 or 2")],
+)
+def test_validate_failure_emits_one_sanitized_result_before_any_mutation(
+    tmp_path: Path, fake_bin: Path, configuration: str, message: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "DB_PASSWORD": "validate-db-secret-must-not-appear",
+            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "validate-object-secret-must-not-appear",
+        }
+    )
+    if configuration == "missing-secret-key":
+        env["SECRET_KEY"] = ""
+    else:
+        env["PHOTO_WORKER_REPLICAS"] = "3"
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_RESULT=failure phase=validate rollback=not-needed",
+    ]
+    output = f"{result.stdout}\n{result.stderr}"
+    assert "validate-db-secret-must-not-appear" not in output
+    assert "validate-object-secret-must-not-appear" not in output
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert not (tmp_path / "apply.log").exists()
 
@@ -1308,10 +1424,12 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == (
-        "gallery-private-media-preflight-skipped:no-eligible-photo\n"
-        "Removed upload cleanup schedule.\n"
-    )
+    assert "gallery-private-media-preflight-skipped:no-eligible-photo\n" in result.stdout
+    assert "Removed upload cleanup schedule.\n" in result.stdout
+    assert _deployment_markers(result) == [
+        *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
+        "DEPLOY_RESULT=success phase=commit rollback=not-needed",
+    ]
     assert result.stderr == "docker compose up exit status: 0\n"
     commands = _apply_log(tmp_path)
     assert "preflight-filter eligible-private-photo" in commands
@@ -1333,16 +1451,20 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == (
-        "gallery-private-media-preflight-skipped:no-existing-deployment\n"
-        "Removed upload cleanup schedule.\n"
-    )
+    assert "gallery-private-media-preflight-skipped:no-existing-deployment\n" in result.stdout
+    assert "migration-preflight-skipped:no-established-deployment\n" in result.stdout
+    assert "Removed upload cleanup schedule.\n" in result.stdout
+    assert _deployment_markers(result) == [
+        *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
+        "DEPLOY_RESULT=success phase=commit rollback=not-needed",
+    ]
     assert result.stderr == "docker compose up exit status: 0\n"
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
     assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
     assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
     commands = _apply_log(tmp_path)
+    assert commands.count("volume-inspect photo-production_pgdata") == 1
     candidate_pull = next(index for index, command in enumerate(commands) if " pull web" in command)
     promotion = next(
         index
@@ -1351,8 +1473,78 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
     )
     stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
     assert candidate_pull < promotion < stop_nginx
-    assert not any(" run --rm --no-deps" in command for command in commands)
+    assert not any("manage.py shell --no-imports" in command for command in commands)
+    assert not any("candidate-migration-history" in command for command in commands)
+    assert "candidate-migration-plan" not in commands
+    assert "unexpected-fresh-migration-history" not in commands
     assert not any(command.startswith("preflight-") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_retained_postgres_volume_alone_forces_migration_preflight(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="migration-history-database-unavailable")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+    env["EXPECT_CANONICAL_ENV"] = "absent"
+    volume_state = tmp_path / ".docker-volume-photo-production_pgdata"
+    volume_state.write_text("retained\n", encoding="utf-8")
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Candidate migration preflight failed" in result.stderr
+    assert "migration-preflight-skipped:no-established-deployment" not in result.stdout
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_PHASE=snapshot",
+        "DEPLOY_PHASE=candidate-pull",
+        "DEPLOY_PHASE=private-media-preflight",
+        "DEPLOY_PHASE=migration-preflight",
+        "DEPLOY_RESULT=failure phase=migration-preflight rollback=not-needed",
+    ]
+    commands = _apply_log(tmp_path)
+    assert commands.count("volume-inspect photo-production_pgdata") == 1
+    assert (
+        commands.index("volume-inspect photo-production_pgdata")
+        < next(index for index, command in enumerate(commands) if " pull web" in command)
+        < commands.index("candidate-migration-history database-unavailable")
+    )
+    assert "candidate-migration-plan" not in commands
+    assert volume_state.read_text(encoding="utf-8") == "retained\n"
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        assert not (tmp_path / name).exists()
+    assert not any("observability-" in command for command in commands)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_postgres_volume_inspection_error_fails_safely_before_mutation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="volume-inspection-error")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+    env["EXPECT_CANONICAL_ENV"] = "absent"
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "PostgreSQL deployment volume inspection failed" in result.stderr
+    assert "docker socket failure raw detail must stay hidden" not in result.stdout
+    assert "docker socket failure raw detail must stay hidden" not in result.stderr
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_PHASE=snapshot",
+        "DEPLOY_RESULT=failure phase=snapshot rollback=not-needed",
+    ]
+    assert _apply_log(tmp_path) == ["volume-inspect photo-production_pgdata"]
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        assert not (tmp_path / name).exists()
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -1400,9 +1592,8 @@ def test_candidate_private_media_preflight_reads_when_photo_exists(
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == (
-        "gallery-private-media-preflight-ok\nRemoved upload cleanup schedule.\n"
-    )
+    assert "gallery-private-media-preflight-ok\n" in result.stdout
+    assert "Removed upload cleanup schedule.\n" in result.stdout
     assert result.stderr == "docker compose up exit status: 0\n"
     commands = _apply_log(tmp_path)
     assert commands.count("preflight-storage-init") == 1
@@ -1462,7 +1653,9 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
     )
 
     assert result.returncode != 0
-    assert result.stdout == ""
+    assert _deployment_markers(result)[-1] == (
+        "DEPLOY_RESULT=failure phase=private-media-preflight rollback=not-needed"
+    )
     assert result.stderr == (
         "Gallery private-media read prerequisite failed\n"
         "Candidate image failed private-media read prerequisite\n"
@@ -1483,6 +1676,155 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
     assert not any(command.startswith("crontab ") for command in commands)
     assert commands.count("candidate-requested-env-with-canonical-untouched") == 2
     _assert_no_env_temporary_files(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "scenario", ["migration-history-missing", "migration-history-database-unavailable"]
+)
+def test_failed_candidate_migration_history_stops_before_any_deployment_mutation(
+    tmp_path: Path, fake_bin: Path, scenario: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    env.update(
+        {
+            "SECRET_KEY": "fake-secret-must-not-appear",
+            "EXPECTED_REQUESTED_SECRET": "fake-secret-must-not-appear",
+            "DB_PASSWORD": "fake-password-must-not-appear",
+            "PRIVATE_MEDIA_S3_BUCKET": "fake-object-key-must-not-appear",
+            "PUBLIC_DOMAIN": "fake.example/bearer-path-must-not-appear",
+        }
+    )
+    if scenario == "migration-history-missing":
+        env.update(
+            {
+                "CANDIDATE_MIGRATION_LEDGER": "selfie_search.0003_optional_feedback_contact",
+                "CANDIDATE_MIGRATION_GRAPH": "picflow.0001_initial",
+            }
+        )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Candidate migration preflight failed" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
+    assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "old-target\n"
+    assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == "old-project\n"
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_PHASE=snapshot",
+        "DEPLOY_PHASE=candidate-pull",
+        "DEPLOY_PHASE=private-media-preflight",
+        "DEPLOY_PHASE=migration-preflight",
+        "DEPLOY_RESULT=failure phase=migration-preflight rollback=not-needed",
+    ]
+    commands = _apply_log(tmp_path)
+    expected_history = {
+        "migration-history-missing": (
+            "candidate-migration-history "
+            "applied=selfie_search.0003_optional_feedback_contact "
+            "candidate=picflow.0001_initial"
+        ),
+        "migration-history-database-unavailable": (
+            "candidate-migration-history database-unavailable"
+        ),
+    }[scenario]
+    assert expected_history in commands
+    assert "candidate-migration-env-mode-0600" in commands
+    assert "candidate-migration-plan" not in commands
+    assert not any("observability-" in command for command in commands)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
+    output = "\n".join((result.stdout, result.stderr, *commands))
+    for secret in (
+        "fake-secret-must-not-appear",
+        "fake-password-must-not-appear",
+        "fake-object-key-must-not-appear",
+        "fake.example/bearer-path-must-not-appear",
+    ):
+        assert secret not in output
+    _assert_no_env_temporary_files(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("established_signal", "expected_content"),
+    [
+        (".env", PREVIOUS_ENV),
+        ("deployment-target", b"old-target\n"),
+        ("compose-project-name", b"old-project\n"),
+        ("deployed-image", b"old-image\n"),
+    ],
+)
+def test_each_durable_deployment_signal_alone_requires_migration_preflight(
+    tmp_path: Path,
+    fake_bin: Path,
+    established_signal: str,
+    expected_content: bytes,
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="migration-history-database-unavailable")
+    durable_signals = (".env", "deployment-target", "compose-project-name", "deployed-image")
+    for signal in durable_signals:
+        if signal != established_signal:
+            (tmp_path / signal).unlink()
+    if established_signal != ".env":
+        env["EXPECT_CANONICAL_ENV"] = "absent"
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Candidate migration preflight failed" in result.stderr
+    assert "migration-preflight-skipped:no-established-deployment" not in result.stdout
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_PHASE=snapshot",
+        "DEPLOY_PHASE=candidate-pull",
+        "DEPLOY_PHASE=private-media-preflight",
+        "DEPLOY_PHASE=migration-preflight",
+        "DEPLOY_RESULT=failure phase=migration-preflight rollback=not-needed",
+    ]
+    assert (tmp_path / established_signal).read_bytes() == expected_content
+    for signal in durable_signals:
+        assert (tmp_path / signal).exists() is (signal == established_signal)
+    commands = _apply_log(tmp_path)
+    assert commands.count("candidate-migration-history database-unavailable") == 1
+    assert "candidate-migration-plan" not in commands
+    assert not any("observability-" in command for command in commands)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "rollback"),
+    [("compose-failure", "succeeded"), ("recovery-failure", "failed")],
+)
+def test_post_mutation_compose_failure_reports_the_recovery_outcome(
+    tmp_path: Path, fake_bin: Path, scenario: str, rollback: str
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario=scenario),
+    )
+
+    assert result.returncode != 0
+    assert (
+        _deployment_markers(result).count(
+            f"DEPLOY_RESULT=failure phase=compose-reconcile rollback={rollback}"
+        )
+        == 1
+    )
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    commands = _apply_log(tmp_path)
+    assert "observability-install" in commands
+    assert "observability-rollback" in commands
+    if rollback == "succeeded":
+        assert "Previous application and worker profile reconciled" in result.stderr
+    else:
+        assert "Previous deployment recovery failed" in result.stderr
 
 
 def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliation(
@@ -1660,7 +2002,7 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
     assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = _apply_log(tmp_path)
-    assert commands.count("candidate-requested-env-with-canonical-untouched") == 2
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 4
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
     assert sum(" up -d --remove-orphans" in command for command in commands) == 1

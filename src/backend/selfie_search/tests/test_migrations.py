@@ -6,7 +6,7 @@ from django.utils import timezone
 
 class SelfieSearchMigrationTests(TransactionTestCase):
     migrate_from = [("selfie_search", "0002_selfiesearchfeedback_and_more")]
-    migrate_to = [("selfie_search", "0004_remove_selfie_search_candidate")]
+    migrate_to = [("selfie_search", "0005_optional_feedback_contact")]
 
     def test_schema_migrates_forward_and_back_without_errors(self) -> None:
         executor = MigrationExecutor(connection)
@@ -32,6 +32,29 @@ class SelfieSearchMigrationTests(TransactionTestCase):
         self.assertNotIn("selfiesearchdirectevidence", reverted_apps.all_models["selfie_search"])
         self.assertNotIn("selfiesearchclusterevidence", reverted_apps.all_models["selfie_search"])
         self.assertIn("selfiesearchcandidate", reverted_apps.all_models["selfie_search"])
+        restorer = MigrationExecutor(connection)
+        restorer.migrate(restorer.loader.graph.leaf_nodes())
+
+
+class SelfieSearchOptionalContactRecoveryMigrationTests(TransactionTestCase):
+    migrate_from = [("selfie_search", "0003_optional_feedback_contact")]
+    migrate_to = [("selfie_search", "0005_optional_feedback_contact")]
+
+    def test_historical_optional_contact_frontier_upgrades_without_reapplying_its_ddl(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+
+        forward_executor = MigrationExecutor(connection)
+        forward_executor.migrate(self.migrate_to)
+        migrated_apps = forward_executor.loader.project_state(self.migrate_to).apps
+        Feedback = migrated_apps.get_model("selfie_search", "SelfieSearchFeedback")
+
+        self.assertTrue(Feedback._meta.get_field("contact").blank)
+        self.assertNotIn(
+            "selfie_feedback_contact_nonempty_chk",
+            {constraint.name for constraint in Feedback._meta.constraints},
+        )
+
         restorer = MigrationExecutor(connection)
         restorer.migrate(restorer.loader.graph.leaf_nodes())
 

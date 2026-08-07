@@ -418,6 +418,20 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
     _write_executable(
         fake_bin / "docker",
         """
+if [ "${1-}" = volume ] && [ "${2-}" = inspect ]; then
+  volume_name="${3-}"
+  [ "$volume_name" = "${COMPOSE_PROJECT_NAME}_pgdata" ]
+  printf 'volume-inspect %s\n' "$volume_name" >> "$COMMAND_LOG"
+  if [ "$APPLY_SCENARIO" = volume-inspection-error ]; then
+    printf 'docker socket failure raw detail must stay hidden\n' >&2
+    exit 1
+  fi
+  if [ -f "$DEPLOY_ROOT/.docker-volume-$volume_name" ]; then
+    exit 0
+  fi
+  printf 'Error response from daemon: get %s: no such volume\n' "$volume_name" >&2
+  exit 1
+fi
 compose_env_file=""
 previous_argument=""
 for argument do
@@ -1450,6 +1464,7 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
     assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
     assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
     commands = _apply_log(tmp_path)
+    assert commands.count("volume-inspect photo-production_pgdata") == 1
     candidate_pull = next(index for index, command in enumerate(commands) if " pull web" in command)
     promotion = next(
         index
@@ -1463,6 +1478,73 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
     assert "candidate-migration-plan" not in commands
     assert "unexpected-fresh-migration-history" not in commands
     assert not any(command.startswith("preflight-") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_retained_postgres_volume_alone_forces_migration_preflight(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="migration-history-database-unavailable")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+    env["EXPECT_CANONICAL_ENV"] = "absent"
+    volume_state = tmp_path / ".docker-volume-photo-production_pgdata"
+    volume_state.write_text("retained\n", encoding="utf-8")
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Candidate migration preflight failed" in result.stderr
+    assert "migration-preflight-skipped:no-established-deployment" not in result.stdout
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_PHASE=snapshot",
+        "DEPLOY_PHASE=candidate-pull",
+        "DEPLOY_PHASE=private-media-preflight",
+        "DEPLOY_PHASE=migration-preflight",
+        "DEPLOY_RESULT=failure phase=migration-preflight rollback=not-needed",
+    ]
+    commands = _apply_log(tmp_path)
+    assert commands.count("volume-inspect photo-production_pgdata") == 1
+    assert (
+        commands.index("volume-inspect photo-production_pgdata")
+        < next(index for index, command in enumerate(commands) if " pull web" in command)
+        < commands.index("candidate-migration-history database-unavailable")
+    )
+    assert "candidate-migration-plan" not in commands
+    assert volume_state.read_text(encoding="utf-8") == "retained\n"
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        assert not (tmp_path / name).exists()
+    assert not any("observability-" in command for command in commands)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_postgres_volume_inspection_error_fails_safely_before_mutation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="volume-inspection-error")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+    env["EXPECT_CANONICAL_ENV"] = "absent"
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "PostgreSQL deployment volume inspection failed" in result.stderr
+    assert "docker socket failure raw detail must stay hidden" not in result.stdout
+    assert "docker socket failure raw detail must stay hidden" not in result.stderr
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_PHASE=snapshot",
+        "DEPLOY_RESULT=failure phase=snapshot rollback=not-needed",
+    ]
+    assert _apply_log(tmp_path) == ["volume-inspect photo-production_pgdata"]
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        assert not (tmp_path / name).exists()
     _assert_no_env_temporary_files(tmp_path)
 
 

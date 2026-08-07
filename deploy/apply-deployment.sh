@@ -620,6 +620,20 @@ if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
     cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
 fi
 
+postgres_volume="${COMPOSE_PROJECT_NAME}_pgdata"
+if postgres_volume_inspect_error="$(docker volume inspect "$postgres_volume" 2>&1 >/dev/null)"; then
+    has_established_deployment=1
+else
+    case "$postgres_volume_inspect_error" in
+        *": no such volume")
+            ;;
+        *)
+            fail "PostgreSQL deployment volume inspection failed"
+            ;;
+    esac
+fi
+unset postgres_volume_inspect_error
+
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}web,$PUBLIC_DOMAIN"
 if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
     ALLOWED_HOSTS="$ALLOWED_HOSTS,$PUBLIC_DOMAIN_ALIAS"

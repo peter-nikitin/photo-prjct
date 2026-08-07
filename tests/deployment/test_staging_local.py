@@ -92,6 +92,7 @@ case "$*" in
     printf '%s\n' compose-output-sentinel
     printf '%s\n' compose-error-sentinel >&2
     if [ "${DOCKER_COMPOSE_MODE:-}" = wait ]; then
+      trap ': > "$WAIT_CONTINUE"; exit 0' HUP INT TERM
       : > "$WAIT_READY"
       while [ ! -e "$WAIT_CONTINUE" ]; do /bin/sleep 0.01; done
     fi
@@ -404,6 +405,54 @@ def test_cleanup_failure_after_success_is_nonzero_and_never_reports_readiness(
         shutil.rmtree(retained_root, ignore_errors=True)
 
 
+def _terminate_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        return process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return process.communicate(timeout=5)
+
+
+def test_process_group_cleanup_terminates_a_descendant_after_its_leader_exits() -> None:
+    """Would fail if cleanup only followed the make leader and orphaned a pipe-holding child."""
+    process = subprocess.Popen(
+        ["/bin/sh", "-c", "while :; do /bin/sleep 1; done & exit 0"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        assert process.wait(timeout=5) == 0
+        stdout, stderr = _terminate_process_group(process)
+        assert stdout == ""
+        assert stderr == ""
+        with pytest.raises(ProcessLookupError):
+            os.killpg(process.pid, 0)
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _finish_signal_test_process(
+    process: subprocess.Popen[str], environment: dict[str, str]
+) -> tuple[str, str]:
+    Path(environment["WAIT_CONTINUE"]).touch()
+    try:
+        return process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        return _terminate_process_group(process)
+
+
 @pytest.mark.parametrize("signal_number", [signal.SIGHUP, signal.SIGINT, signal.SIGTERM])
 def test_signals_clean_private_material_without_relaying_compose_output(
     local_launcher_environment: dict[str, str], signal_number: int
@@ -421,19 +470,50 @@ def test_signals_clean_private_material_without_relaying_compose_output(
         start_new_session=True,
     )
     ready = Path(local_launcher_environment["WAIT_READY"])
-    for _ in range(100):
-        if ready.exists():
-            break
-        time.sleep(0.01)
-    assert ready.exists()
-    os.killpg(process.pid, signal_number)
-    stdout, stderr = process.communicate(timeout=5)
+    deadline = time.monotonic() + 10
+    try:
+        while not ready.exists():
+            return_code = process.poll()
+            if return_code is not None:
+                stdout, stderr = _terminate_process_group(process)
+                pytest.fail(
+                    "launcher exited before WAIT_READY "
+                    f"(returncode={return_code}, stdout={stdout!r}, stderr={stderr!r})"
+                )
+            if time.monotonic() >= deadline:
+                pytest.fail("launcher did not create WAIT_READY within 10 seconds")
+            time.sleep(0.02)
 
-    assert process.returncode != 0
-    assert stdout == "[staging-local] warning=staging-capable-local-process\n"
-    assert "compose-output-sentinel" not in stdout + stderr
-    assert "compose-error-sentinel" not in stdout + stderr
-    _assert_material_removed(local_launcher_environment)
+        try:
+            os.killpg(process.pid, signal_number)
+        except ProcessLookupError:
+            stdout, stderr = _terminate_process_group(process)
+            pytest.fail(
+                "launcher process group exited before signal delivery "
+                f"(stdout={stdout!r}, stderr={stderr!r})"
+            )
+
+        temporary_roots = _temporary_roots(local_launcher_environment)
+        assert temporary_roots
+        cleanup_deadline = time.monotonic() + 5
+        while any(path.exists() for path in temporary_roots):
+            if time.monotonic() >= cleanup_deadline:
+                stdout, stderr = _terminate_process_group(process)
+                pytest.fail(
+                    "launcher did not remove private material after signal delivery "
+                    f"(stdout={stdout!r}, stderr={stderr!r})"
+                )
+            time.sleep(0.02)
+
+        stdout, stderr = _finish_signal_test_process(process, local_launcher_environment)
+
+        assert process.returncode != 0
+        assert stdout == "[staging-local] warning=staging-capable-local-process\n"
+        assert "compose-output-sentinel" not in stdout + stderr
+        assert "compose-error-sentinel" not in stdout + stderr
+        _assert_material_removed(local_launcher_environment)
+    finally:
+        _finish_signal_test_process(process, local_launcher_environment)
 
 
 @pytest.mark.parametrize(

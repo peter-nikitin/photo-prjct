@@ -1,0 +1,4 @@
+interface:
+  display_name: "Execute Implementation Plan"
+  short_description: "Run reviewed implementation tasks with project subagents"
+  default_prompt: "Use $execute-implementation-plan to deliver this approved plan with implementer and reviewer subagents."

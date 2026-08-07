@@ -63,17 +63,70 @@ def _request_body(request) -> dict[str, str]:
     return json.loads(request.data.decode("utf-8"))
 
 
+def _main_head(sha: str = "a" * 40) -> _Response:
+    return _Response(200, {"commit": {"sha": sha}})
+
+
+def test_obsolete_production_sha_stops_after_main_head_lookup(monkeypatch) -> None:
+    module = _load_module()
+    api = _Api([_main_head("b" * 40)])
+    monkeypatch.setenv("GITHUB_TOKEN", "private-token")
+
+    with patch.object(module.urllib.request, "urlopen", api):
+        assert module.main(_arguments(conclusion="failure")) == 0
+
+    assert len(api.requests) == 1
+    assert api.requests[0][0].full_url == (
+        "https://api.github.com/repos/findme/photo/branches/main"
+    )
+
+
+def test_malformed_main_head_response_is_sanitized_and_stops(monkeypatch, capsys) -> None:
+    module = _load_module()
+    api = _Api([_Response(200, {"commit": {"private": "response body"}})])
+    monkeypatch.setenv("GITHUB_TOKEN", "private-token")
+
+    with patch.object(module.urllib.request, "urlopen", api):
+        assert module.main(_arguments(conclusion="failure")) == 1
+
+    assert len(api.requests) == 1
+    assert api.requests[0][0].full_url.endswith("/branches/main")
+    captured = capsys.readouterr()
+    assert "private-token" not in captured.err
+    assert "response body" not in captured.err
+
+
+def test_validation_mode_stays_isolated_from_main_head_and_production_title(monkeypatch) -> None:
+    module = _load_module()
+    api = _Api([_Response(200, []), _Response(201, {"number": 8})])
+    monkeypatch.setenv("GITHUB_TOKEN", "private-token")
+    arguments = _arguments(conclusion="failure")
+    arguments[arguments.index("--mode") + 1] = "validation"
+
+    with patch.object(module.urllib.request, "urlopen", api):
+        assert module.main(arguments) == 0
+
+    assert [request.full_url for request, _ in api.requests] == [
+        "https://api.github.com/repos/findme/photo/issues?state=open&per_page=100",
+        "https://api.github.com/repos/findme/photo/issues",
+    ]
+    assert _request_body(api.requests[1][0])["title"] == (
+        "[staging deployment validation] notification drill"
+    )
+
+
 def test_first_failure_creates_one_sanitized_production_issue(monkeypatch) -> None:
     module = _load_module()
-    api = _Api([_Response(200, []), _Response(201, {"number": 7})])
+    api = _Api([_main_head(), _Response(200, []), _Response(201, {"number": 7})])
     monkeypatch.setenv("GITHUB_TOKEN", "private-token")
     monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-08-07T00:00:00Z")
 
     with patch.object(module.urllib.request, "urlopen", api):
         assert module.main(_arguments(conclusion="failure")) == 0
 
-    assert len(api.requests) == 2
-    list_request, create_request = (request for request, _timeout in api.requests)
+    assert len(api.requests) == 3
+    head_request, list_request, create_request = (request for request, _timeout in api.requests)
+    assert head_request.full_url == "https://api.github.com/repos/findme/photo/branches/main"
     assert list_request.full_url == (
         "https://api.github.com/repos/findme/photo/issues?state=open&per_page=100"
     )
@@ -97,6 +150,7 @@ def test_repeated_failure_comments_on_the_matching_open_issue(monkeypatch) -> No
     module = _load_module()
     api = _Api(
         [
+            _main_head(),
             _Response(200, [{"number": 7, "title": "[staging deployment] main is not deployed"}]),
             _Response(201, {"id": 9}),
         ]
@@ -107,16 +161,18 @@ def test_repeated_failure_comments_on_the_matching_open_issue(monkeypatch) -> No
         assert module.main(_arguments(conclusion="failure")) == 0
 
     assert [request.full_url for request, _ in api.requests] == [
+        "https://api.github.com/repos/findme/photo/branches/main",
         "https://api.github.com/repos/findme/photo/issues?state=open&per_page=100",
         "https://api.github.com/repos/findme/photo/issues/7/comments",
     ]
-    assert _request_body(api.requests[1][0])["body"].startswith(f"commit={'a' * 40}\n")
+    assert _request_body(api.requests[2][0])["body"].startswith(f"commit={'a' * 40}\n")
 
 
 def test_success_comments_then_closes_the_matching_open_issue(monkeypatch) -> None:
     module = _load_module()
     api = _Api(
         [
+            _main_head(),
             _Response(200, [{"number": 7, "title": "[staging deployment] main is not deployed"}]),
             _Response(201, {"id": 9}),
             _Response(200, {"number": 7, "state": "closed"}),
@@ -127,20 +183,20 @@ def test_success_comments_then_closes_the_matching_open_issue(monkeypatch) -> No
     with patch.object(module.urllib.request, "urlopen", api):
         assert module.main(_arguments(conclusion="success")) == 0
 
-    assert [request.get_method() for request, _ in api.requests] == ["GET", "POST", "PATCH"]
-    assert api.requests[2][0].full_url == "https://api.github.com/repos/findme/photo/issues/7"
-    assert _request_body(api.requests[2][0]) == {"state": "closed"}
+    assert [request.get_method() for request, _ in api.requests] == ["GET", "GET", "POST", "PATCH"]
+    assert api.requests[3][0].full_url == "https://api.github.com/repos/findme/photo/issues/7"
+    assert _request_body(api.requests[3][0]) == {"state": "closed"}
 
 
 def test_success_with_no_open_matching_issue_does_nothing(monkeypatch) -> None:
     module = _load_module()
-    api = _Api([_Response(200, [])])
+    api = _Api([_main_head(), _Response(200, [])])
     monkeypatch.setenv("GITHUB_TOKEN", "private-token")
 
     with patch.object(module.urllib.request, "urlopen", api):
         assert module.main(_arguments(conclusion="success")) == 0
 
-    assert len(api.requests) == 1
+    assert len(api.requests) == 2
 
 
 def test_matching_is_exact_and_bounded_to_first_one_hundred_open_issues(monkeypatch) -> None:
@@ -149,15 +205,15 @@ def test_matching_is_exact_and_bounded_to_first_one_hundred_open_issues(monkeypa
         {"number": number, "title": "[staging deployment] main is not deployed now"}
         for number in range(1, 101)
     ]
-    api = _Api([_Response(200, issues), _Response(201, {"number": 101})])
+    api = _Api([_main_head(), _Response(200, issues), _Response(201, {"number": 101})])
     monkeypatch.setenv("GITHUB_TOKEN", "private-token")
 
     with patch.object(module.urllib.request, "urlopen", api):
         assert module.main(_arguments(conclusion="failure")) == 0
 
-    assert len(api.requests) == 2
-    assert "per_page=100" in api.requests[0][0].full_url
-    assert api.requests[1][0].full_url == "https://api.github.com/repos/findme/photo/issues"
+    assert len(api.requests) == 3
+    assert "per_page=100" in api.requests[1][0].full_url
+    assert api.requests[2][0].full_url == "https://api.github.com/repos/findme/photo/issues"
 
 
 def test_http_errors_fail_without_echoing_token_or_response_body(monkeypatch, capsys) -> None:
@@ -171,9 +227,10 @@ def test_http_errors_fail_without_echoing_token_or_response_body(monkeypatch, ca
         io.BytesIO(b'{"message":"private response body"}'),
     )
 
-    with patch.object(module.urllib.request, "urlopen", side_effect=error):
+    with patch.object(module.urllib.request, "urlopen", side_effect=error) as urlopen:
         assert module.main(_arguments(conclusion="failure")) == 1
 
+    assert urlopen.call_args.args[0].full_url.endswith("/branches/main")
     captured = capsys.readouterr()
     assert "private-token" not in captured.err
     assert "private response body" not in captured.err
@@ -181,7 +238,7 @@ def test_http_errors_fail_without_echoing_token_or_response_body(monkeypatch, ca
 
 def test_malformed_api_responses_fail_without_echoing_the_response(monkeypatch, capsys) -> None:
     module = _load_module()
-    api = _Api([_Response(200, []), _Response(201, {"private": "response body"})])
+    api = _Api([_main_head(), _Response(200, []), _Response(201, {"private": "response body"})])
     monkeypatch.setenv("GITHUB_TOKEN", "private-token")
 
     with patch.object(module.urllib.request, "urlopen", api):

@@ -84,10 +84,20 @@ failed phase, then verify the prior state before deciding on a corrected retry.
 
 ## Deployment issue notification
 
-For an automatic `main` deployment, the workflow maintains at most one open GitHub issue titled
+For an automatic `main` deployment or an explicit manual application retry using `deployment_sha`,
+the workflow maintains at most one open GitHub issue titled
 `[staging deployment] main is not deployed`. The first failed build or deploy creates it; later
-failed runs add a bounded update to the same exact-title issue. A later successful deployment adds
-its update and closes that issue. If there is no matching open issue, success does nothing.
+failed runs add a bounded update to the same exact-title issue. A later successful automatic or
+manual application deployment adds its update and closes that issue. Monitoring-only and
+notification-validation dispatches do not run production reconciliation. If there is no matching
+open issue, success does nothing.
+
+Before reading or changing the production issue, the reconciler reads the repository's current
+`main` head through the GitHub API. If the deployment SHA is no longer that head, the run is stale
+and reconciliation exits successfully after that single lookup. It does not list, create, comment
+on, or close the production issue. This prevents an older workflow that finishes late from
+overwriting the notification state for a newer `main`. A manual retry can close the production
+issue only when its exact `deployment_sha` is still the current `main` head.
 
 The issue is a notification aid, not deployment state. The build and deploy job conclusions,
 `DEPLOY_RESULT` marker, rollback result, and acceptance checks remain authoritative. A notification
@@ -107,7 +117,7 @@ notification path. This route still requires the existing `staging` environment 
 application build and deploy jobs, and receives no VM, database, application, or storage secret.
 It creates, updates, then closes only `[staging deployment validation] notification drill`, and
 finally checks that no issue with that validation title remains open. It never reads or mutates the
-production notification issue.
+production notification issue and does not perform the production `main`-head guard lookup.
 
 If the final validation assertion fails, retain the workflow URL and inspect the validation issue
 manually. Do not use the validation title as evidence that production staging is unhealthy, and do

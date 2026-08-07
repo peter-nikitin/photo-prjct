@@ -141,6 +141,20 @@ def _matching_open_issue(token: str, repository: str, title: str) -> int | None:
     return None
 
 
+def _current_main_sha(token: str, repository: str) -> str:
+    response = _request(
+        token,
+        "GET",
+        f"{API_ROOT}/repos/{repository}/branches/main",
+        None,
+    )
+    commit = response.get("commit") if isinstance(response, dict) else None
+    sha = commit.get("sha") if isinstance(commit, dict) else None
+    if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+        raise ReconciliationError
+    return sha
+
+
 def _body(arguments: argparse.Namespace) -> str:
     return "\n".join(
         (
@@ -160,6 +174,11 @@ def _response_identifier(response: Any, field: str) -> int:
 
 
 def reconcile(arguments: argparse.Namespace, token: str) -> None:
+    if arguments.mode == "production" and _current_main_sha(token, arguments.repository) != (
+        arguments.sha
+    ):
+        return
+
     title = TITLES[arguments.mode]
     issue_number = _matching_open_issue(token, arguments.repository, title)
     body = _body(arguments)

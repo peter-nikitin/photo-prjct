@@ -397,9 +397,9 @@ jobs:
 
   reconcile-staging-deploy-issue:
     name: Reconcile staging deployment issue
-    if: ${{ always() && github.event_name == 'push' }}
+    if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue)) }}
     runs-on: ubuntu-latest
-    needs: [build, deploy]
+    needs: [classify-staging-release, build, deploy]
     permissions:
       actions: read
       contents: read
@@ -447,7 +447,7 @@ jobs:
             --token-env GITHUB_TOKEN \
             --mode production \
             --conclusion "$conclusion" \
-            --sha "$GITHUB_SHA" \
+            --sha "${{ needs.classify-staging-release.outputs.release_sha }}" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --phase "$phase"
       - name: Warn when issue reconciliation fails

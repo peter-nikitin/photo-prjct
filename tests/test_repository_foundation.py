@@ -25,11 +25,19 @@ def _workflow_step(workflow: dict[str, Any], job_name: str, step_name: str) -> d
     return matching_steps[0]
 
 
-def _notification_phase_from_workflow(tmp_path: Path, failed_log: str) -> str:
+def _notification_arguments_from_workflow(
+    tmp_path: Path,
+    *,
+    build_result: str,
+    deploy_result: str,
+    release_sha: str,
+    failed_log: str,
+) -> list[str]:
     workflow = _load_workflow("deploy.yml")
     run = _workflow_step(workflow, "reconcile-staging-deploy-issue", "Reconcile issue state")["run"]
-    run = run.replace("${{ needs.build.result }}", "success")
-    run = run.replace("${{ needs.deploy.result }}", "failure")
+    run = run.replace("${{ needs.build.result }}", build_result)
+    run = run.replace("${{ needs.deploy.result }}", deploy_result)
+    run = run.replace("${{ needs.classify-staging-release.outputs.release_sha }}", release_sha)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(parents=True)
     phase_arguments = tmp_path / "phase-arguments"
@@ -46,12 +54,22 @@ def _notification_phase_from_workflow(tmp_path: Path, failed_log: str) -> str:
         "GH_LOG": failed_log,
         "PHASE_ARGUMENTS": str(phase_arguments),
         "GITHUB_REPOSITORY": "findme/photo",
-        "GITHUB_SHA": "a" * 40,
+        "GITHUB_SHA": "f" * 40,
         "GITHUB_SERVER_URL": "https://github.com",
         "GITHUB_RUN_ID": "42",
     }
     subprocess.run(["/bin/sh", "-c", run], check=True, cwd=ROOT, env=environment)
-    arguments = phase_arguments.read_text(encoding="utf-8").splitlines()
+    return phase_arguments.read_text(encoding="utf-8").splitlines()
+
+
+def _notification_phase_from_workflow(tmp_path: Path, failed_log: str) -> str:
+    arguments = _notification_arguments_from_workflow(
+        tmp_path,
+        build_result="success",
+        deploy_result="failure",
+        release_sha="a" * 40,
+        failed_log=failed_log,
+    )
     return arguments[arguments.index("--phase") + 1]
 
 
@@ -125,8 +143,12 @@ def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritativ
     }
     assert "!inputs.validate_deploy_issue" in build["if"]
     assert "!inputs.validate_deploy_issue" in deploy["if"]
-    assert reconcile["if"] == "${{ always() && github.event_name == 'push' }}"
-    assert reconcile["needs"] == ["build", "deploy"]
+    assert reconcile["if"] == (
+        "${{ always() && (github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
+        "!inputs.validate_deploy_issue)) }}"
+    )
+    assert reconcile["needs"] == ["classify-staging-release", "build", "deploy"]
     assert reconcile["permissions"] == {
         "actions": "read",
         "contents": "read",
@@ -144,7 +166,8 @@ def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritativ
     assert "--token-env GITHUB_TOKEN" in run
     assert "--mode production" in run
     assert '--conclusion "$conclusion"' in run
-    assert '--sha "$GITHUB_SHA"' in run
+    assert '--sha "${{ needs.classify-staging-release.outputs.release_sha }}"' in run
+    assert '--sha "$GITHUB_SHA"' not in run
     assert '--run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"' in run
     assert '--phase "$phase"' in run
     assert 'gh run view "$GITHUB_RUN_ID" --log-failed' in run
@@ -185,6 +208,36 @@ def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritativ
             in step["run"]
         )
     assert "[staging deployment validation] notification drill" in validation_steps[4]["run"]
+
+
+def test_notification_workflow_forwards_exact_sha_for_push_failure_and_manual_success(
+    tmp_path: Path,
+) -> None:
+    release_sha = "a" * 40
+    automatic_failure = _notification_arguments_from_workflow(
+        tmp_path / "automatic-failure",
+        build_result="failure",
+        deploy_result="skipped",
+        release_sha=release_sha,
+        failed_log="",
+    )
+    manual_success = _notification_arguments_from_workflow(
+        tmp_path / "manual-success",
+        build_result="success",
+        deploy_result="success",
+        release_sha=release_sha,
+        failed_log="",
+    )
+
+    def argument(arguments: list[str], name: str) -> str:
+        return arguments[arguments.index(name) + 1]
+
+    assert argument(automatic_failure, "--conclusion") == "failure"
+    assert argument(automatic_failure, "--phase") == "build"
+    assert argument(automatic_failure, "--sha") == release_sha
+    assert argument(manual_success, "--conclusion") == "success"
+    assert argument(manual_success, "--phase") == "commit"
+    assert argument(manual_success, "--sha") == release_sha
 
 
 def test_notification_phase_parser_executes_against_prefixed_failed_logs(tmp_path: Path) -> None:

@@ -47,6 +47,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-014 | Maintainer | Gate consented feedback storage activation | Validated | 2026-08-04 |
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
+| EJ-017 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
 
 ## Job details
 
@@ -270,6 +271,23 @@ gates are approved.
 - Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py), and [`experiments/face_recognition_spike/face_spike/cli.py`](../experiments/face_recognition_spike/face_spike/cli.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance, source-separated reports, privacy-bounded v2 events, and the closed held-out evaluator. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or environment activation change is included.
 - Last updated: 2026-08-05
 
+### EJ-017 — Operator — Cache a frozen private event-original corpus
+
+When I evaluate a new gallery-face generation, I want one complete, verified private local copy of
+the selected published event's originals, so repeated baseline and candidate runs use identical
+bytes without re-reading intact objects from private Object Storage.
+
+The repository provides an explicit event or deterministic latest-published selection, a frozen
+private manifest, conditional streamed reads, atomic local publication, and strict reuse checks.
+It performs database reads plus Object Storage `HeadObject` and conditional `GetObject` only;
+neither credentials nor object keys are emitted in normal command output. Automated tests cover
+the local cache contract. An authorized staging-clone and private-media run is still required
+before this becomes operationally validated.
+
+- Status: Candidate pending an authorized local run.
+- Evidence: [`src/backend/processing/services/event_original_cache.py`](../src/backend/processing/services/event_original_cache.py), [`src/backend/processing/management/commands/cache_event_originals.py`](../src/backend/processing/management/commands/cache_event_originals.py), and [`src/backend/processing/tests/test_event_original_cache.py`](../src/backend/processing/tests/test_event_original_cache.py)
+- Last updated: 2026-08-07
+
 ## Status log
 
 This log is append-only.
@@ -300,3 +318,4 @@ This log is append-only.
 | 2026-08-04 | EJ-014 | Not recorded | Validated | Automated lifecycle, storage-contract, and deployment tests verify the guarded 30-day feedback bucket contract, anonymous denial probes, scratch cleanup, disabled-by-default wiring, and web-only credential propagation. No live bucket/KMS preflight or environment activation is claimed. |
 | 2026-08-04 | EJ-015 | Not recorded | Delivered | Repository verification covers strict bounded events, edge redaction, journald reconciliation and exact rollback, timer/driver/tag checks, probe readability, and deterministic recomputation. Staging activation is not claimed. |
 | 2026-08-05 | EJ-016 | Not recorded | Delivered | Task 1–7 implementation commits and focused contract tests provide the repository capability for immutable event-scoped corpora, direct-first expansion, provenance, source-separated reporting, private evaluation, and guarded activation. The feature gate remains false and the release gate, environment activation, and customer outcomes are not yet evidenced. |
+| 2026-08-07 | EJ-017 | Not recorded | Candidate | The repository now has a focused, read-only event-original cache command and automated local-contract coverage. No authorized staging-clone or private Object Storage invocation is claimed. |

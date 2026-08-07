@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved in conversation on 2026-08-07. Written review is pending.
+Approved in conversation and accepted for implementation on 2026-08-07.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), current GitHub Actions to
   GHCR to Yandex Cloud VM deployment topology, environment-variable configuration, and local Docker

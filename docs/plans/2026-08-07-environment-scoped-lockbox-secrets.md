@@ -1,7 +1,7 @@
 # Environment-scoped Lockbox Secrets Implementation Plan
 
 - Date: 2026-08-07
-- Status: Draft
+- Status: Approved
 - Owner: project maintainer
 - Related specification:
   [`2026-08-07-environment-scoped-lockbox-secrets-design.md`](../superpowers/specs/2026-08-07-environment-scoped-lockbox-secrets-design.md)

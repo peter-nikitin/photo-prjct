@@ -2,6 +2,23 @@
 
 set -eu
 
+deployment_phase=validate
+
+on_exit() {
+    status=$?
+    [ "$status" -ne 0 ] || status=2
+    trap - EXIT INT TERM HUP
+    printf 'DEPLOY_RESULT=failure phase=validate rollback=not-needed\n'
+    exit "$status"
+}
+
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+printf 'DEPLOY_PHASE=validate\n'
+
 : "${DEPLOYMENT_TARGET:?Set DEPLOYMENT_TARGET to staging or production}"
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
@@ -364,7 +381,6 @@ mutation_started=0
 deployment_committed=0
 recovery_in_progress=0
 observability_installed=0
-deployment_phase=validate
 
 cleanup() {
     rm -f \
@@ -541,7 +557,6 @@ phase() {
     esac
 }
 
-phase validate
 install -d -m 0755 "$DEPLOY_ROOT"
 phase snapshot
 previous_upload_enabled="False"
@@ -552,7 +567,9 @@ previous_deployment_target_exists=0
 previous_compose_project_name_exists=0
 previous_deployed_image_exists=0
 has_successful_deployment=0
+has_established_deployment=0
 if [ -f "$DEPLOY_ROOT/.env" ]; then
+    has_established_deployment=1
     previous_env_exists=1
     previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not snapshot previous deployment environment"
     cp -p "$DEPLOY_ROOT/.env" "$previous_env_tmp" || fail "Could not snapshot previous deployment environment"
@@ -584,16 +601,19 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     esac
 fi
 if [ -f "$DEPLOY_ROOT/deployment-target" ]; then
+    has_established_deployment=1
     previous_deployment_target_exists=1
     previous_deployment_target_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.previous.XXXXXX")" || fail "Could not snapshot deployment target marker"
     cp -p "$DEPLOY_ROOT/deployment-target" "$previous_deployment_target_tmp" || fail "Could not snapshot deployment target marker"
 fi
 if [ -f "$DEPLOY_ROOT/compose-project-name" ]; then
+    has_established_deployment=1
     previous_compose_project_name_exists=1
     previous_compose_project_name_tmp="$(mktemp "$DEPLOY_ROOT/.compose-project-name.previous.XXXXXX")" || fail "Could not snapshot compose project marker"
     cp -p "$DEPLOY_ROOT/compose-project-name" "$previous_compose_project_name_tmp" || fail "Could not snapshot compose project marker"
 fi
 if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
+    has_established_deployment=1
     has_successful_deployment=1
     previous_deployed_image_exists=1
     previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
@@ -720,13 +740,17 @@ else
 fi
 
 phase migration-preflight
-if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
-    --entrypoint python web manage.py verify_migration_history; then
-    fail "Candidate migration preflight failed"
-fi
-if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
-    --entrypoint python web manage.py showmigrations --plan; then
-    fail "Candidate migration preflight failed"
+if [ "$has_established_deployment" -eq 0 ]; then
+    echo "migration-preflight-skipped:no-established-deployment"
+else
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py verify_migration_history; then
+        fail "Candidate migration preflight failed"
+    fi
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py showmigrations --plan; then
+        fail "Candidate migration preflight failed"
+    fi
 fi
 
 phase observability-preflight

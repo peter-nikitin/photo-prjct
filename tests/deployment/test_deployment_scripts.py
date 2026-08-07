@@ -436,13 +436,14 @@ validate_candidate_env() {
   [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
   [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
   [ "$candidate_secret_key" = "$PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" ]
-  if [ "$APPLY_SCENARIO" = fresh-first-deployment ] || \
-     [ "$APPLY_SCENARIO" = fresh-first-health-failure ] || \
-     [ "$APPLY_SCENARIO" = fresh-first-marker-failure ]; then
-    [ ! -e "$DEPLOY_ROOT/.env" ]
-  else
-    cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
-  fi
+  case "${EXPECT_CANONICAL_ENV:-present}:$APPLY_SCENARIO" in
+    absent:*|present:fresh-first-deployment|present:fresh-first-health-failure|present:fresh-first-marker-failure)
+      [ ! -e "$DEPLOY_ROOT/.env" ]
+      ;;
+    *)
+      cmp "$DEPLOY_ROOT/.env" "$PREVIOUS_ENV_EXPECTED"
+      ;;
+  esac
   printf 'candidate-requested-env-with-canonical-untouched\n' >> "$COMMAND_LOG"
 }
 validate_migration_preflight_env() {
@@ -457,6 +458,10 @@ case " $* " in
   *" run --rm --no-deps -T --entrypoint python web manage.py verify_migration_history "*)
     validate_migration_preflight_env
     case "$APPLY_SCENARIO" in
+      fresh-first-deployment)
+        printf 'unexpected-fresh-migration-history\n' >> "$COMMAND_LOG"
+        exit 99
+        ;;
       migration-history-missing)
         [ "$CANDIDATE_MIGRATION_LEDGER" = selfie_search.0003_optional_feedback_contact ]
         [ "$CANDIDATE_MIGRATION_GRAPH" = picflow.0001_initial ]
@@ -464,8 +469,8 @@ case " $* " in
           "$CANDIDATE_MIGRATION_LEDGER" "$CANDIDATE_MIGRATION_GRAPH" >> "$COMMAND_LOG"
         exit 1
         ;;
-      migration-history-database-error)
-        printf 'candidate-migration-history database-error\n' >> "$COMMAND_LOG"
+      migration-history-database-unavailable)
+        printf 'candidate-migration-history database-unavailable\n' >> "$COMMAND_LOG"
         exit 1
         ;;
       *)
@@ -796,6 +801,40 @@ def test_apply_rejects_an_unsafe_gunicorn_profile_before_mutation(
 
     assert result.returncode == 2
     assert "GUNICORN_" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
+
+
+@pytest.mark.parametrize(
+    ("configuration", "message"),
+    [("missing-secret-key", "Set SECRET_KEY"), ("invalid-worker-replicas", "must be 1 or 2")],
+)
+def test_validate_failure_emits_one_sanitized_result_before_any_mutation(
+    tmp_path: Path, fake_bin: Path, configuration: str, message: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "DB_PASSWORD": "validate-db-secret-must-not-appear",
+            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "validate-object-secret-must-not-appear",
+        }
+    )
+    if configuration == "missing-secret-key":
+        env["SECRET_KEY"] = ""
+    else:
+        env["PHOTO_WORKER_REPLICAS"] = "3"
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_RESULT=failure phase=validate rollback=not-needed",
+    ]
+    output = f"{result.stdout}\n{result.stderr}"
+    assert "validate-db-secret-must-not-appear" not in output
+    assert "validate-object-secret-must-not-appear" not in output
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert not (tmp_path / "apply.log").exists()
 
@@ -1399,6 +1438,7 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
 
     assert result.returncode == 0, result.stderr
     assert "gallery-private-media-preflight-skipped:no-existing-deployment\n" in result.stdout
+    assert "migration-preflight-skipped:no-established-deployment\n" in result.stdout
     assert "Removed upload cleanup schedule.\n" in result.stdout
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
@@ -1419,8 +1459,9 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
     stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
     assert candidate_pull < promotion < stop_nginx
     assert not any("manage.py shell --no-imports" in command for command in commands)
-    assert commands.count("candidate-migration-history") == 1
-    assert commands.count("candidate-migration-plan") == 1
+    assert not any("candidate-migration-history" in command for command in commands)
+    assert "candidate-migration-plan" not in commands
+    assert "unexpected-fresh-migration-history" not in commands
     assert not any(command.startswith("preflight-") for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
@@ -1556,7 +1597,7 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
 
 
 @pytest.mark.parametrize(
-    "scenario", ["migration-history-missing", "migration-history-database-error"]
+    "scenario", ["migration-history-missing", "migration-history-database-unavailable"]
 )
 def test_failed_candidate_migration_history_stops_before_any_deployment_mutation(
     tmp_path: Path, fake_bin: Path, scenario: str
@@ -1602,7 +1643,9 @@ def test_failed_candidate_migration_history_stops_before_any_deployment_mutation
             "applied=selfie_search.0003_optional_feedback_contact "
             "candidate=picflow.0001_initial"
         ),
-        "migration-history-database-error": "candidate-migration-history database-error",
+        "migration-history-database-unavailable": (
+            "candidate-migration-history database-unavailable"
+        ),
     }[scenario]
     assert expected_history in commands
     assert "candidate-migration-env-mode-0600" in commands
@@ -1620,6 +1663,56 @@ def test_failed_candidate_migration_history_stops_before_any_deployment_mutation
         "fake.example/bearer-path-must-not-appear",
     ):
         assert secret not in output
+    _assert_no_env_temporary_files(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("established_signal", "expected_content"),
+    [
+        (".env", PREVIOUS_ENV),
+        ("deployment-target", b"old-target\n"),
+        ("compose-project-name", b"old-project\n"),
+        ("deployed-image", b"old-image\n"),
+    ],
+)
+def test_each_durable_deployment_signal_alone_requires_migration_preflight(
+    tmp_path: Path,
+    fake_bin: Path,
+    established_signal: str,
+    expected_content: bytes,
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="migration-history-database-unavailable")
+    durable_signals = (".env", "deployment-target", "compose-project-name", "deployed-image")
+    for signal in durable_signals:
+        if signal != established_signal:
+            (tmp_path / signal).unlink()
+    if established_signal != ".env":
+        env["EXPECT_CANONICAL_ENV"] = "absent"
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Candidate migration preflight failed" in result.stderr
+    assert "migration-preflight-skipped:no-established-deployment" not in result.stdout
+    assert _deployment_markers(result) == [
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_PHASE=snapshot",
+        "DEPLOY_PHASE=candidate-pull",
+        "DEPLOY_PHASE=private-media-preflight",
+        "DEPLOY_PHASE=migration-preflight",
+        "DEPLOY_RESULT=failure phase=migration-preflight rollback=not-needed",
+    ]
+    assert (tmp_path / established_signal).read_bytes() == expected_content
+    for signal in durable_signals:
+        assert (tmp_path / signal).exists() is (signal == established_signal)
+    commands = _apply_log(tmp_path)
+    assert commands.count("candidate-migration-history database-unavailable") == 1
+    assert "candidate-migration-plan" not in commands
+    assert not any("observability-" in command for command in commands)
+    assert not any(" stop nginx" in command for command in commands)
+    assert "reconcile-certificate" not in commands
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 

@@ -140,6 +140,22 @@ def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
     assert "PUSH_VISUAL_TEST_IMAGE" not in visual["env"]
 
 
+def test_ci_checks_pull_request_migration_identity_with_full_git_history() -> None:
+    ci = _load_workflow("ci.yml")
+    checkout = _workflow_step(ci, "quality", "Check out repository")
+    immutability = _workflow_step(ci, "quality", "Check migration immutability")
+    migration_drift = _workflow_step(ci, "quality", "Check migration drift")
+
+    assert checkout["with"] == {"fetch-depth": 0}
+    assert immutability["if"] == "github.event_name == 'pull_request'"
+    assert immutability["run"] == (
+        "python scripts/check_migration_immutability.py "
+        "--base ${{ github.event.pull_request.base.sha }} "
+        "--head ${{ github.event.pull_request.head.sha }}"
+    )
+    assert migration_drift["run"] == "python src/backend/manage.py makemigrations --check --dry-run"
+
+
 def test_public_health_monitor_workflow_is_scheduled_and_uses_only_its_monitoring_credentials() -> (
     None
 ):

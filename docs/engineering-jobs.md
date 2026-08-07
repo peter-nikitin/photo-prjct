@@ -63,14 +63,15 @@ contract, so I can reproduce production-relevant behavior locally.
 
 When I update a pull request or `main` advances, I want formatting, lint, types, PostgreSQL tests,
 migrations, Django checks, and visual regression to run automatically, so I can detect regressions
-before merge and validate the integrated branch.
+before merge and validate the integrated branch. Pull requests also protect the identities of base
+migrations, so an environment that already applied them can upgrade safely.
 
 Pull requests run through the `pull_request` trigger, while branch-push validation is limited to
 `main`. Updating a feature branch therefore does not create a duplicate push run alongside its pull
 request run.
 
 - Status: Validated
-- Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json)
+- Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`scripts/check_migration_immutability.py`](../scripts/check_migration_immutability.py), [`tests/test_migration_immutability.py`](../tests/test_migration_immutability.py), [migration conflict runbook](runbooks/django-migration-conflicts.md), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json)
 - Last updated: 2026-07-17
 
 ### EJ-003 — Maintainer — Deploy an immutable image to staging

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from collections.abc import Iterable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypedDict, cast
@@ -221,64 +222,73 @@ class EventOriginalCache:
         manifest_path = event_root / "manifest.json"
         originals = event_root / "originals"
 
-        if manifest_path.exists() or manifest_path.is_symlink():
-            manifest = _load_manifest(manifest_path, event=event, inventory=inventory)
-        else:
-            _validate_local_structure(event_root, expected_filenames=set())
-            files: list[ManifestFile] = []
-            for entry in inventory:
-                remote = self._storage.head(key=entry.key)
-                _assert_remote_matches(entry, remote)
-                files.append(
-                    {
-                        "photo_id": entry.photo_id,
-                        "filename": entry.filename,
-                        "key": entry.key,
-                        "size": entry.size,
-                        "content_type": entry.content_type,
-                        "etag": remote.etag,
-                        "sha256": None,
-                    }
-                )
-            manifest = _new_manifest(event, files)
-            _write_manifest(manifest_path, manifest)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            if manifest_path.exists() or manifest_path.is_symlink():
+                manifest = _load_manifest(manifest_path, event=event, inventory=inventory)
+            else:
+                _validate_local_structure(event_root, expected_filenames=set())
+                files = list(executor.map(self._inspect, inventory))
+                manifest = _new_manifest(event, files)
+                _write_manifest(manifest_path, manifest)
 
-        _validate_local_structure(
-            event_root,
-            expected_filenames={entry["filename"] for entry in manifest["files"]},
-        )
-        downloaded_count = 0
-        reused_count = 0
-        for manifest_entry in manifest["files"]:
-            target = originals / manifest_entry["filename"]
-            partial = target.with_name(f".{target.name}.partial")
-            try:
-                if partial.exists():
-                    partial.unlink()
-            except OSError:
-                raise CacheError("cache directory is invalid") from None
-            if _verified_local_file(target, manifest_entry):
-                reused_count += 1
-                continue
-            manifest_entry["sha256"] = None
-            manifest["complete"] = False
-            manifest["unresolved_count"] = _unresolved_count(manifest["files"])
-            _write_manifest(manifest_path, manifest)
-            inventory_entry = InventoryEntry(
-                photo_id=manifest_entry["photo_id"],
-                filename=manifest_entry["filename"],
-                key=manifest_entry["key"],
-                size=manifest_entry["size"],
-                content_type=manifest_entry["content_type"],
+            _validate_local_structure(
+                event_root,
+                expected_filenames={entry["filename"] for entry in manifest["files"]},
             )
-            remote = self._storage.head(key=inventory_entry.key, if_match=manifest_entry["etag"])
-            _assert_remote_matches(inventory_entry, remote, expected_etag=manifest_entry["etag"])
-            digest = self._download(inventory_entry, etag=manifest_entry["etag"], target=target)
-            manifest_entry["sha256"] = digest
-            manifest["unresolved_count"] = _unresolved_count(manifest["files"])
-            manifest["complete"] = manifest["unresolved_count"] == 0
-            _write_manifest(manifest_path, manifest)
-            downloaded_count += 1
+            reused_count = 0
+            pending: list[tuple[ManifestFile, InventoryEntry, Path]] = []
+            for manifest_entry in manifest["files"]:
+                target = originals / manifest_entry["filename"]
+                partial = target.with_name(f".{target.name}.partial")
+                try:
+                    if partial.exists():
+                        partial.unlink()
+                except OSError:
+                    raise CacheError("cache directory is invalid") from None
+                if _verified_local_file(target, manifest_entry):
+                    reused_count += 1
+                    continue
+                manifest_entry["sha256"] = None
+                inventory_entry = InventoryEntry(
+                    photo_id=manifest_entry["photo_id"],
+                    filename=manifest_entry["filename"],
+                    key=manifest_entry["key"],
+                    size=manifest_entry["size"],
+                    content_type=manifest_entry["content_type"],
+                )
+                pending.append((manifest_entry, inventory_entry, target))
+
+            if pending:
+                manifest["unresolved_count"] = _unresolved_count(manifest["files"])
+                manifest["complete"] = False
+                _write_manifest(manifest_path, manifest)
+
+            downloaded_count = 0
+            first_failure: CacheError | None = None
+            futures: dict[Future[tuple[str, Path]], tuple[ManifestFile, Path]] = {
+                executor.submit(
+                    self._download_partial,
+                    inventory_entry,
+                    etag=manifest_entry["etag"],
+                    target=target,
+                ): (manifest_entry, target)
+                for manifest_entry, inventory_entry, target in pending
+            }
+            for future in as_completed(futures):
+                manifest_entry, target = futures[future]
+                try:
+                    digest, partial = future.result()
+                    _publish_download(partial, target)
+                    manifest_entry["sha256"] = digest
+                    manifest["unresolved_count"] = _unresolved_count(manifest["files"])
+                    manifest["complete"] = manifest["unresolved_count"] == 0
+                    _write_manifest(manifest_path, manifest)
+                    downloaded_count += 1
+                except CacheError as error:
+                    if first_failure is None:
+                        first_failure = error
+            if first_failure is not None:
+                raise first_failure
         return CacheResult(
             event_slug=event.slug,
             downloaded_count=downloaded_count,
@@ -286,18 +296,28 @@ class EventOriginalCache:
             unresolved_count=_unresolved_count(manifest["files"]),
         )
 
-    def _download(self, entry: InventoryEntry, *, etag: str, target: Path) -> str:
+    def _inspect(self, entry: InventoryEntry) -> ManifestFile:
+        remote = self._storage.head(key=entry.key)
+        _assert_remote_matches(entry, remote)
+        return {
+            "photo_id": entry.photo_id,
+            "filename": entry.filename,
+            "key": entry.key,
+            "size": entry.size,
+            "content_type": entry.content_type,
+            "etag": remote.etag,
+            "sha256": None,
+        }
+
+    def _download_partial(
+        self, entry: InventoryEntry, *, etag: str, target: Path
+    ) -> tuple[str, Path]:
         partial = target.with_name(f".{target.name}.partial")
-        try:
-            if partial.exists() or partial.is_symlink():
-                if partial.is_symlink():
-                    raise CacheError("cache contains a symlink")
-                partial.unlink()
-        except OSError:
-            raise CacheError("cache directory is invalid") from None
         body: ReadableBody | None = None
         primary_failure = False
         try:
+            remote = self._storage.head(key=entry.key, if_match=etag)
+            _assert_remote_matches(entry, remote, expected_etag=etag)
             response = self._storage.get(key=entry.key, if_match=etag)
             body = response.body
             _assert_remote_matches(entry, response, expected_etag=etag)
@@ -320,8 +340,7 @@ class EventOriginalCache:
                 os.fsync(destination.fileno())
             if received != entry.size:
                 raise CacheError("private object changed during download")
-            os.replace(partial, target)
-            return digest.hexdigest()
+            return digest.hexdigest(), partial
         except CacheError:
             primary_failure = True
             raise
@@ -335,16 +354,29 @@ class EventOriginalCache:
                     body.close()
                 except (OSError, TypeError, ValueError):
                     close_error = True
-            try:
-                if partial.exists() or partial.is_symlink():
-                    if partial.is_symlink():
-                        raise CacheError("cache contains a symlink")
-                    partial.unlink()
-            except OSError:
-                if not primary_failure:
-                    raise CacheError("cache directory is invalid") from None
+            if primary_failure or close_error:
+                try:
+                    if partial.exists() or partial.is_symlink():
+                        if partial.is_symlink():
+                            raise CacheError("cache contains a symlink")
+                        partial.unlink()
+                except OSError:
+                    if not primary_failure:
+                        raise CacheError("cache directory is invalid") from None
             if close_error and not primary_failure:
                 raise CacheError("private object download failed") from None
+
+
+def _publish_download(partial: Path, target: Path) -> None:
+    try:
+        os.replace(partial, target)
+    except OSError:
+        try:
+            if partial.exists() and not partial.is_symlink():
+                partial.unlink()
+        except OSError:
+            pass
+        raise CacheError("private object download failed") from None
 
 
 def _metadata_from_response(response: dict[str, Any]) -> ObjectMetadata:

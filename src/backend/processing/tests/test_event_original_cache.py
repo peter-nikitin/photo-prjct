@@ -2,11 +2,13 @@ import hashlib
 import io
 import json
 import os
+import threading
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import TypeVar
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -89,6 +91,56 @@ class _Storage:
         )
 
 
+_OperationResult = TypeVar("_OperationResult")
+
+
+class _OperationProbe:
+    def __init__(self) -> None:
+        self._barrier = threading.Barrier(8, timeout=1)
+        self._lock = threading.Lock()
+        self.call_count = 0
+        self.active_count = 0
+        self.max_active_count = 0
+        self.threads: set[threading.Thread] = set()
+
+    def run(self, operation: Callable[[], _OperationResult]) -> _OperationResult:
+        with self._lock:
+            self.call_count += 1
+            call_number = self.call_count
+            self.active_count += 1
+            self.max_active_count = max(self.max_active_count, self.active_count)
+            self.threads.add(threading.current_thread())
+        try:
+            if call_number <= 8:
+                try:
+                    self._barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass
+            return operation()
+        finally:
+            with self._lock:
+                self.active_count -= 1
+
+
+class _ConcurrencyStorage(_Storage):
+    def __init__(self, objects: dict[str, tuple[bytes, str, str]]) -> None:
+        super().__init__(objects)
+        self.initial_head_probe = _OperationProbe()
+        self.get_probe = _OperationProbe()
+
+    def head(self, *, key: str, if_match: str | None = None) -> ObjectMetadata:
+        if if_match is None:
+            return self.initial_head_probe.run(
+                lambda: super(_ConcurrencyStorage, self).head(key=key, if_match=if_match)
+            )
+        return super().head(key=key, if_match=if_match)
+
+    def get(self, *, key: str, if_match: str) -> ObjectResponse:
+        return self.get_probe.run(
+            lambda: super(_ConcurrencyStorage, self).get(key=key, if_match=if_match)
+        )
+
+
 class EventOriginalCacheTests(TestCase):
     def setUp(self) -> None:
         self.user = get_user_model().objects.create_user(username="cache-owner")
@@ -131,6 +183,15 @@ class EventOriginalCacheTests(TestCase):
         return EventOriginalCache(storage=self.storage).cache(
             event=self.event, output_root=self.output_root
         )
+
+    def add_originals(self, count: int) -> None:
+        for index in range(count):
+            photo = self.create_photo(f"cache-photo-{index:02d}", content_type="image/jpeg")
+            self.storage.objects[photo.original_key] = (
+                b"0123456789",
+                f'"etag-{index:02d}"',
+                "image/jpeg",
+            )
 
     def test_selects_latest_published_event_by_dates_then_slug(self) -> None:
         earlier = self.create_event(slug="earlier", publication_status="published")
@@ -224,6 +285,67 @@ class EventOriginalCacheTests(TestCase):
             ).read_bytes(),
             b"jpeg bytes",
         )
+
+    def test_remote_io_reuses_same_eight_workers_while_publication_stays_on_coordinator(
+        self,
+    ) -> None:
+        self.add_originals(9)
+        storage = _ConcurrencyStorage(self.storage.objects)
+        self.storage = storage
+        coordinator_thread = threading.get_ident()
+        publication_threads: list[int] = []
+        real_replace = os.replace
+
+        def record_publication(source: Path, target: Path) -> None:
+            publication_threads.append(threading.get_ident())
+            real_replace(source, target)
+
+        with patch(
+            "processing.services.event_original_cache.os.replace",
+            side_effect=record_publication,
+        ):
+            result = self.cache()
+
+        self.assertEqual(result.downloaded_count, 10)
+        self.assertEqual(storage.initial_head_probe.max_active_count, 8)
+        self.assertEqual(len(storage.initial_head_probe.threads), 8)
+        self.assertEqual(storage.get_probe.max_active_count, 8)
+        self.assertEqual(len(storage.get_probe.threads), 8)
+        self.assertEqual(storage.initial_head_probe.threads, storage.get_probe.threads)
+        self.assertTrue(publication_threads)
+        self.assertEqual(set(publication_threads), {coordinator_thread})
+
+    def test_parallel_failure_publishes_other_files_and_retry_reads_only_missing_object(
+        self,
+    ) -> None:
+        self.add_originals(9)
+        failed_key = self.photo.original_key
+        self.storage.interrupt_key = failed_key
+
+        with self.assertRaisesRegex(CacheError, "download"):
+            self.cache()
+
+        event_root = self.output_root / self.event.slug
+        manifest = json.loads((event_root / "manifest.json").read_text())
+        failed = next(item for item in manifest["files"] if item["key"] == failed_key)
+        completed = [item for item in manifest["files"] if item["key"] != failed_key]
+        self.assertIsNone(failed["sha256"])
+        self.assertTrue(all(item["sha256"] is not None for item in completed))
+        self.assertTrue(
+            all((event_root / "originals" / item["filename"]).is_file() for item in completed)
+        )
+        self.assertFalse(manifest["complete"])
+        self.assertEqual(manifest["unresolved_count"], 1)
+
+        self.storage.interrupt_key = None
+        self.storage.head_calls.clear()
+        self.storage.get_calls.clear()
+        result = self.cache()
+
+        self.assertEqual(result.downloaded_count, 1)
+        self.assertEqual(result.reused_count, 9)
+        self.assertEqual(self.storage.head_calls, [(failed_key, '"etag-jpeg"')])
+        self.assertEqual(self.storage.get_calls, [(failed_key, '"etag-jpeg"')])
 
     def test_verified_file_is_reused_without_s3_calls_and_corrupt_file_is_refetched(self) -> None:
         self.cache()

@@ -609,7 +609,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
         ),
         "PHOTO_WORKER_REPLICAS": "${{ vars.PHOTO_WORKER_REPLICAS || '1' }}",
         "PHOTO_WORKER_PROCESSOR_TYPES": (
@@ -637,7 +637,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
         ),
         "PHOTO_WORKER_PROCESSOR_TYPES": (
             "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
@@ -884,7 +884,7 @@ def test_staging_deployment_forwards_preview_processing_configuration() -> None:
         ),
         "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
         ),
     }
 

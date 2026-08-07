@@ -70,10 +70,13 @@ _SOURCE_FIELDS = {"DateTime", "DateTimeDigitized", "DateTimeOriginal"}
 _V2_FACE_EMBEDDING_MAX_FACES = 32
 _V2_FACE_EMBEDDING_DIMENSIONS = 128
 _EXIF_SOURCE_VALUE = re.compile(r"\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}")
+_EXIF_SOURCE_OFFSET = re.compile(r"[+-]\d{2}:\d{2}")
 _CAPTURE_METADATA_WARNINGS = {
     "capture_time_conflicting",
     "capture_time_malformed",
+    "capture_time_malformed_offset",
     "capture_time_missing",
+    "capture_time_timezone_ambiguous",
 }
 _FACE_RESULT_WARNING_CODES = {
     "all_faces_filtered",
@@ -89,7 +92,7 @@ _FACE_RESULT_WARNING_CODES = {
 _CAPTURE_METADATA_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
-    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
     "network_interruption": (True, "A temporary network interruption occurred."),
     "storage_unavailable": (True, "Object storage is temporarily unavailable."),
@@ -98,7 +101,7 @@ _CAPTURE_METADATA_FAILURES = {
 _FACE_EMBEDDING_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
-    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
     "model_inference_error": (False, "The face model inference failed."),
     "model_inference_timeout": (True, "The face model processing timed out."),
@@ -112,7 +115,7 @@ _FACE_EMBEDDING_FAILURES = {
 _GENERATE_PREVIEW_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
-    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
     "invalid_dimensions": (False, "The image dimensions are invalid."),
     "network_interruption": (True, "A temporary network interruption occurred."),
@@ -125,7 +128,7 @@ _GENERATE_PREVIEW_WARNING_CODES = {"color_profile_missing"}
 _SELFIE_QUERY_FAILURES = {
     "decode_failed": (False, "The selfie could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
-    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
     "model_inference_error": (False, "The face model could not process the selfie."),
     "model_inference_timeout": (True, "The face model processing timed out."),
@@ -955,7 +958,12 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
     ):
         return False
     if outcome == "success":
-        if not _valid_result(data["result"], attempt.processor_type, attempt.contract_version):
+        if not _valid_result(
+            data["result"],
+            attempt.processor_type,
+            attempt.contract_version,
+            attempt.configuration,
+        ):
             return False
         return not (
             attempt.contract_version == PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version
@@ -1068,9 +1076,14 @@ def _valid_selfie_result(value: object, search: SelfieSearch) -> bool:
     )
 
 
-def _valid_result(value: object, processor_type: str, contract_version: int) -> bool:
+def _valid_result(
+    value: object,
+    processor_type: str,
+    contract_version: int,
+    configuration: object,
+) -> bool:
     if processor_type == CAPTURE_METADATA_CONTRACT.processor_type:
-        return _valid_capture_metadata_result(value)
+        return _valid_capture_metadata_result(value, configuration=configuration)
     if processor_type == FACE_EMBEDDING_CONTRACT.processor_type:
         return _valid_face_embedding_result(value, contract_version=contract_version)
     if processor_type == FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_type:
@@ -1080,23 +1093,35 @@ def _valid_result(value: object, processor_type: str, contract_version: int) -> 
     return False
 
 
-def _valid_capture_metadata_result(value: object) -> bool:
+def _valid_capture_metadata_result(value: object, *, configuration: object) -> bool:
     if not isinstance(value, dict) or set(value) != {
         "capture_time",
         "source_field",
         "timezone_state",
         "source_value",
+        "source_offset",
+        "event_timezone",
         "warnings",
     }:
+        return False
+    if not isinstance(configuration, dict):
+        return False
+    capture_configuration = configuration.get("capture_metadata")
+    if not isinstance(capture_configuration, dict):
+        return False
+    event_timezone = capture_configuration.get("event_timezone")
+    if not isinstance(event_timezone, str) or value["event_timezone"] != event_timezone:
         return False
     capture_time = value["capture_time"]
     if capture_time is not None and _parse_timestamp(capture_time) is None:
         return False
     if value["source_field"] is not None and value["source_field"] not in _SOURCE_FIELDS:
         return False
-    if value["timezone_state"] not in {"explicit", "inferred_none", "not_applicable"}:
+    if value["timezone_state"] not in {"explicit", "event_timezone", "not_applicable"}:
         return False
     if value["source_value"] is not None and not _safe_source_value(value["source_value"]):
+        return False
+    if value["source_offset"] is not None and not _safe_source_offset(value["source_offset"]):
         return False
     warnings = value["warnings"]
     valid_warnings = (
@@ -1114,12 +1139,17 @@ def _valid_capture_metadata_result(value: object) -> bool:
         return (
             value["source_field"] is None
             and value["source_value"] is None
+            and value["source_offset"] is None
             and value["timezone_state"] == "not_applicable"
             and "capture_time_missing" in warnings
         )
     return (
         value["source_field"] in _SOURCE_FIELDS
-        and value["timezone_state"] in {"explicit", "inferred_none"}
+        and _safe_source_value(value["source_value"])
+        and (
+            (value["timezone_state"] == "explicit" and value["source_offset"] is not None)
+            or (value["timezone_state"] == "event_timezone" and value["source_offset"] is None)
+        )
         and "capture_time_missing" not in warnings
     )
 
@@ -1389,6 +1419,15 @@ def _safe_source_value(value: object) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _safe_source_offset(value: object) -> bool:
+    if not isinstance(value, str) or _EXIF_SOURCE_OFFSET.fullmatch(value) is None:
+        return False
+    try:
+        return datetime.strptime(value, "%z").tzinfo is not None
+    except ValueError:
+        return False
 
 
 def _safe_error_detail(value: str) -> bool:

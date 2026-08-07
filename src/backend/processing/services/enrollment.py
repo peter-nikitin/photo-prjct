@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import TypedDict
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
@@ -23,7 +26,7 @@ from processing.models import (
 )
 
 CONTRACT_VERSION = 1
-PROCESSOR_VERSION = 1
+CAPTURE_METADATA_PROCESSOR_VERSION = 2
 FACE_EMBEDDING_PROCESSOR_VERSION = 1
 PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
@@ -32,7 +35,7 @@ FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION = 3
 FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION = 1
 FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
 
-CAPTURE_METADATA_CONFIGURATION: dict[str, object] = {
+_CAPTURE_METADATA_CONFIGURATION_BASE: dict[str, object] = {
     "retry_policy": {
         "max_attempts": 3,
         "base_backoff_seconds": 30,
@@ -43,12 +46,6 @@ CAPTURE_METADATA_CONFIGURATION: dict[str, object] = {
     "max_cohort_size": 20,
     "report_max_bytes": REPORT_JSON_MAX_BYTES,
     "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
-    # Immutable processor semantics and worker bounds.  A changed value changes the normalized
-    # run configuration and must be paired with a new processor version when it changes output.
-    "capture_metadata": {
-        "date_field_precedence": ["DateTimeOriginal", "DateTimeDigitized", "DateTime"],
-        "normalization": "utc_assume_utc_if_missing",
-    },
     "worker": {
         "api_response_max_bytes": 16_384,
         "concurrency": 1,
@@ -60,6 +57,24 @@ CAPTURE_METADATA_CONFIGURATION: dict[str, object] = {
         "terminal_result_max_bytes": 8_192,
     },
 }
+
+
+def capture_metadata_configuration(event_timezone: str | None) -> dict[str, object]:
+    """Build the complete immutable capture-metadata v2 configuration for one event."""
+    if not isinstance(event_timezone, str):
+        raise ValueError("event timezone must be a valid IANA timezone")
+    try:
+        ZoneInfo(event_timezone)
+    except (ValueError, ZoneInfoNotFoundError) as error:
+        raise ValueError("event timezone must be a valid IANA timezone") from error
+    configuration = deepcopy(_CAPTURE_METADATA_CONFIGURATION_BASE)
+    configuration["capture_metadata"] = {
+        "date_field_precedence": ["DateTimeOriginal", "DateTimeDigitized", "DateTime"],
+        "normalization": "utc_explicit_offset_or_event_timezone",
+        "event_timezone": event_timezone,
+    }
+    return configuration
+
 
 FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
     "retry_policy": {
@@ -150,19 +165,231 @@ class _ReconciliationProcessorConfig(TypedDict):
     verified_source_etag: str | None
 
 
+@dataclass(frozen=True)
+class CaptureTimeReprocessingEnrollment:
+    photo_count: int
+    created_job_count: int
+    existing_job_count: int
+    run_count: int
+
+
+@dataclass(frozen=True)
+class CaptureTimeReprocessingTarget:
+    event_id: int
+    event_name: str
+    timezone_name: str
+    photo_count: int
+    configuration: dict[str, object]
+
+
+def validate_capture_time_reprocessing_enrollment(
+    event: Event,
+    *,
+    target: CaptureTimeReprocessingTarget,
+) -> dict[str, object]:
+    """Reject mixed or duplicate v2 capture-time evidence without writing any rows."""
+    configuration, _ = _validate_capture_time_reprocessing_target(event, target=target)
+    configuration_hash = _configuration_hash(configuration)
+    jobs = list(
+        ProcessingJob.objects.select_related("run")
+        .filter(
+            event=event,
+            contract_version=CONTRACT_VERSION,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+        )
+        .order_by("photo_id", "created_at", "id")
+    )
+    seen_photo_ids: set[str] = set()
+    for job in jobs:
+        if job.photo_id in seen_photo_ids:
+            raise ValueError("event has duplicate capture-metadata version-2 jobs")
+        seen_photo_ids.add(job.photo_id)
+        if not _is_exact_capture_time_reprocessing_job(
+            job,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
+        ):
+            raise ValueError("event has an unexpected capture-metadata version-2 configuration")
+    return configuration
+
+
+def enroll_event_capture_time_reprocessing(
+    event: Event,
+    *,
+    target: CaptureTimeReprocessingTarget,
+) -> CaptureTimeReprocessingEnrollment:
+    """Enroll one exact event cohort, rotating only its mutable capture-time state pointers."""
+    configuration = validate_capture_time_reprocessing_enrollment(event, target=target)
+    configuration_hash = _configuration_hash(configuration)
+    max_cohort_size = configuration["max_cohort_size"]
+    if not isinstance(max_cohort_size, int) or max_cohort_size < 1:
+        raise ValueError("capture-metadata configuration has an invalid cohort size")
+
+    with transaction.atomic():
+        locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        photos = list(Photo.objects.select_for_update().filter(event=locked_event).order_by("pk"))
+        locked_configuration, locked_photo_count = _validate_capture_time_reprocessing_target(
+            locked_event,
+            target=target,
+            photo_count=len(photos),
+        )
+        if locked_configuration != configuration:
+            raise ValueError("event capture-metadata configuration changed during enrollment")
+        existing_jobs = list(
+            ProcessingJob.objects.select_for_update()
+            .select_related("run")
+            .filter(
+                event=locked_event,
+                contract_version=CONTRACT_VERSION,
+                processor_type=CAPTURE_METADATA_PROCESSOR,
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            )
+            .order_by("photo_id", "created_at", "id")
+        )
+        jobs_by_photo_id: dict[str, ProcessingJob] = {}
+        for job in existing_jobs:
+            if job.photo_id in jobs_by_photo_id:
+                raise ValueError("event has duplicate capture-metadata version-2 jobs")
+            if not _is_exact_capture_time_reprocessing_job(
+                job,
+                configuration=configuration,
+                configuration_hash=configuration_hash,
+            ):
+                raise ValueError("event has an unexpected capture-metadata version-2 configuration")
+            jobs_by_photo_id[job.photo_id] = job
+
+        created_job_count = 0
+        now = timezone.now()
+        run: EventProcessingRun | None = None
+        for photo in photos:
+            job = jobs_by_photo_id.get(photo.pk)
+            if job is None:
+                if run is None or run.jobs.count() >= max_cohort_size:
+                    run = _locked_collecting_run(
+                        event=locked_event,
+                        configuration=configuration,
+                        configuration_hash=configuration_hash,
+                        contract_version=CONTRACT_VERSION,
+                        processor_type=CAPTURE_METADATA_PROCESSOR,
+                        processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+                    )
+                job = ProcessingJob.objects.create(
+                    event=locked_event,
+                    run=run,
+                    photo=photo,
+                    contract_version=CONTRACT_VERSION,
+                    processor_type=CAPTURE_METADATA_PROCESSOR,
+                    processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+                    configuration=configuration,
+                    configuration_hash=configuration_hash,
+                    input_fingerprint=_input_fingerprint(photo, verified_source_etag=None),
+                    status=ProcessingJob.Status.QUEUED,
+                )
+                jobs_by_photo_id[photo.pk] = job
+                created_job_count += 1
+
+            state, _ = PhotoProcessingState.objects.select_for_update().get_or_create(
+                photo=photo,
+                processor_type=CAPTURE_METADATA_PROCESSOR,
+                defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+            )
+            if state.current_job_id != job.id:
+                if job.status != ProcessingJob.Status.QUEUED:
+                    raise ValueError("existing capture-metadata version-2 job is not current")
+                state.status = PhotoProcessingState.Status.QUEUED
+                state.current_run = job.run
+                state.current_job = job
+                state.current_attempt = None
+                state.accepted_attempt = None
+                state.next_attempt_at = None
+                state.queued_at = now
+                state.processing_at = None
+                state.succeeded_at = None
+                state.failed_at = None
+                state.cancelled_at = None
+                state.save(
+                    update_fields=[
+                        "status",
+                        "current_run",
+                        "current_job",
+                        "current_attempt",
+                        "accepted_attempt",
+                        "next_attempt_at",
+                        "queued_at",
+                        "processing_at",
+                        "succeeded_at",
+                        "failed_at",
+                        "cancelled_at",
+                        "updated_at",
+                    ]
+                )
+
+        return CaptureTimeReprocessingEnrollment(
+            photo_count=locked_photo_count,
+            created_job_count=created_job_count,
+            existing_job_count=len(photos) - created_job_count,
+            run_count=len({job.run_id for job in jobs_by_photo_id.values()}),
+        )
+
+
+def _validate_capture_time_reprocessing_target(
+    event: Event,
+    *,
+    target: CaptureTimeReprocessingTarget,
+    photo_count: int | None = None,
+) -> tuple[dict[str, object], int]:
+    if event.pk != target.event_id:
+        raise ValueError("event does not match the approved reprocessing target")
+    if event.name != target.event_name:
+        raise ValueError("event name does not match the approved reprocessing target")
+    if event.publication_status != Event.PublicationStatus.PUBLISHED:
+        raise ValueError("event must be published")
+    if event.timezone_name != target.timezone_name:
+        raise ValueError("event timezone does not match the approved reprocessing target")
+    if photo_count is None:
+        photo_count = event.photos.count()
+    if photo_count != target.photo_count:
+        raise ValueError("event does not have the approved photo count")
+    configuration = capture_metadata_configuration(event.timezone_name)
+    if configuration != target.configuration:
+        raise ValueError("event capture-metadata configuration does not match approval")
+    return configuration, photo_count
+
+
+def _is_exact_capture_time_reprocessing_job(
+    job: ProcessingJob,
+    *,
+    configuration: dict[str, object],
+    configuration_hash: str,
+) -> bool:
+    return bool(
+        job.configuration == configuration
+        and job.configuration_hash == configuration_hash
+        and job.run.contract_version == CONTRACT_VERSION
+        and job.run.processor_type == CAPTURE_METADATA_PROCESSOR
+        and job.run.processor_version == CAPTURE_METADATA_PROCESSOR_VERSION
+        and job.run.configuration == configuration
+        and job.run.configuration_hash == configuration_hash
+    )
+
+
 def request_capture_metadata(
     photo: Photo, *, verified_source_etag: str | None = None
 ) -> PhotoProcessingState:
     """Queue the first compatible capture-metadata job exactly once for an eligible photo."""
-    return request_processor(
-        photo=photo,
-        processor_type=CAPTURE_METADATA_PROCESSOR,
-        contract_version=CONTRACT_VERSION,
-        processor_version=PROCESSOR_VERSION,
-        configuration=CAPTURE_METADATA_CONFIGURATION,
-        verified_source_etag=verified_source_etag,
-        enabled=True,
-    )
+    with transaction.atomic():
+        event = Event.objects.select_for_update().get(pk=photo.event_id)
+        return request_processor(
+            photo=photo,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            contract_version=CONTRACT_VERSION,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            configuration=capture_metadata_configuration(event.timezone_name),
+            verified_source_etag=verified_source_etag,
+            enabled=True,
+            event=event,
+        )
 
 
 def request_face_embedding_enqueue(
@@ -310,6 +537,7 @@ def request_processor(
     verified_source_etag: str | None = None,
     input_fingerprint: dict[str, int | str | None] | None = None,
     enabled: bool = True,
+    event: Event | None = None,
 ) -> PhotoProcessingState:
     """Queue the first compatible job exactly once for an eligible photo."""
     with transaction.atomic():
@@ -328,8 +556,9 @@ def request_processor(
                 verified_source_etag=verified_source_etag,
             )
         # Use the same run -> state ordering as claims to avoid a seal/enroll deadlock.
+        locked_event = event or Event.objects.select_for_update().get(pk=photo.event_id)
         run = _locked_collecting_run(
-            event=Event.objects.select_for_update().get(pk=photo.event_id),
+            event=locked_event,
             configuration=configuration,
             configuration_hash=configuration_hash,
             contract_version=contract_version,
@@ -344,7 +573,7 @@ def request_processor(
         if state.current_job_id is not None:
             return state
         job, _ = ProcessingJob.objects.get_or_create(
-            event=photo.event,
+            event=locked_event,
             run=run,
             photo=photo,
             contract_version=contract_version,
@@ -415,6 +644,8 @@ def _reconcile(
         raise ValueError(f"limit must be between 1 and {MAX_RECONCILIATION_LIMIT}")
 
     photo_ids = _reconcilable_photo_ids(processor_type=processor_type, limit=limit)
+    if processor_type == CAPTURE_METADATA_PROCESSOR:
+        return [request_capture_metadata(Photo.objects.get(pk=photo_id)) for photo_id in photo_ids]
     config = _reconcile_config(processor_type)
     return [
         request_processor(
@@ -440,6 +671,7 @@ def _reconcilable_photo_ids(*, processor_type: str, limit: int) -> list[str]:
     if processor_type == CAPTURE_METADATA_PROCESSOR:
         return list(
             eligible_photos.filter(
+                event__timezone_name__isnull=False,
                 processing_states__processor_type=processor_type,
                 processing_states__status=PhotoProcessingState.Status.NOT_REQUESTED,
                 processing_states__current_job__isnull=True,
@@ -467,13 +699,6 @@ def _reconcilable_photo_ids(*, processor_type: str, limit: int) -> list[str]:
 
 
 def _reconcile_config(processor_type: str) -> _ReconciliationProcessorConfig:
-    if processor_type == CAPTURE_METADATA_PROCESSOR:
-        return {
-            "contract_version": CONTRACT_VERSION,
-            "processor_version": PROCESSOR_VERSION,
-            "configuration": CAPTURE_METADATA_CONFIGURATION,
-            "verified_source_etag": None,
-        }
     if processor_type == FACE_EMBEDDING_PROCESSOR:
         return {
             "contract_version": CONTRACT_VERSION,

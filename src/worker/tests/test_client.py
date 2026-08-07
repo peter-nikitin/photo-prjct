@@ -145,7 +145,7 @@ def test_download_rejects_a_mismatched_available_source_fingerprint(tmp_path: Pa
             headers={"Content-Type": "image/jpeg", "ETag": '"different"'},
         )
 
-    with pytest.raises(DownloadError, match="fingerprint_mismatch"):
+    with pytest.raises(DownloadError, match="fingerprint_mismatch") as raised:
         HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener).download(
             "https://storage.example.test/x",
             destination,
@@ -153,6 +153,7 @@ def test_download_rejects_a_mismatched_available_source_fingerprint(tmp_path: Pa
             expected_size=3,
             expected_etag="expected",
         )
+    assert raised.value.retryable is True
     assert not destination.exists()
 
 
@@ -162,7 +163,7 @@ def test_download_requires_etag_when_the_immutable_fingerprint_supplies_one(tmp_
     def missing(_request, *, timeout: float):
         return Response(b"abc", headers={"Content-Type": "image/jpeg"})
 
-    with pytest.raises(DownloadError, match="fingerprint_mismatch"):
+    with pytest.raises(DownloadError, match="fingerprint_mismatch") as raised:
         HttpClient("https://worker.example.test/v1", "worker-secret", opener=missing).download(
             "https://storage.example.test/x",
             destination,
@@ -170,6 +171,7 @@ def test_download_requires_etag_when_the_immutable_fingerprint_supplies_one(tmp_
             expected_size=3,
             expected_etag="expected",
         )
+    assert raised.value.retryable is True
     assert not destination.exists()
 
     def quoted(_request, *, timeout: float):
@@ -226,10 +228,11 @@ def test_download_rejects_short_or_partial_response_and_unlinks_destination(tmp_
     def short(_request, *, timeout: float):
         return Response(b"abc", headers={"Content-Type": "image/jpeg", "Content-Length": "3"})
 
-    with pytest.raises(DownloadError, match="fingerprint_mismatch"):
+    with pytest.raises(DownloadError, match="fingerprint_mismatch") as raised:
         HttpClient("https://worker.example.test/v1", "worker-secret", opener=short).download(
             "https://storage.example.test/x", destination, max_bytes=6, expected_size=6
         )
+    assert raised.value.retryable is True
     assert not destination.exists()
 
     with pytest.raises(DownloadError, match="network_interruption"):

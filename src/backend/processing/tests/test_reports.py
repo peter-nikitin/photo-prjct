@@ -21,7 +21,8 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.enrollment import (
-    CAPTURE_METADATA_CONFIGURATION,
+    CAPTURE_METADATA_PROCESSOR_VERSION,
+    capture_metadata_configuration,
     request_capture_metadata,
     request_generate_preview,
 )
@@ -40,6 +41,7 @@ class ProcessingRunReportTests(TestCase):
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
+            timezone_name="Europe/Moscow",
         )
 
     def private_photo(self, suffix: str) -> Photo:
@@ -59,7 +61,7 @@ class ProcessingRunReportTests(TestCase):
         return claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-report",
         )
 
@@ -313,7 +315,7 @@ class ProcessingRunReportTests(TestCase):
         retry = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-report",
             now=first_claim.job.available_at,
         )
@@ -468,7 +470,8 @@ class ProcessingRunReportTests(TestCase):
             self.assertNotIn(forbidden, serialized)
 
     def test_capped_cohort_report_preserves_every_row_within_recorded_byte_limit(self) -> None:
-        configured_limit = CAPTURE_METADATA_CONFIGURATION["max_cohort_size"]
+        configuration = capture_metadata_configuration(self.event.timezone_name)
+        configured_limit = configuration["max_cohort_size"]
         assert isinstance(configured_limit, int)
         for number in range(configured_limit):
             request_capture_metadata(self.private_photo(f"bounded-{number}"))
@@ -484,14 +487,15 @@ class ProcessingRunReportTests(TestCase):
 
         run = EventProcessingRun.objects.get(event=self.event)
         serialized = json.dumps(run.report, ensure_ascii=False, separators=(",", ":")).encode()
-        configured_bytes = CAPTURE_METADATA_CONFIGURATION["report_max_bytes"]
+        configured_bytes = configuration["report_max_bytes"]
         assert isinstance(configured_bytes, int)
         self.assertEqual(run.report["cohort_size"], configured_limit)
         self.assertEqual(len(run.report["photos"]), configured_limit)
         self.assertLessEqual(len(serialized), configured_bytes)
 
     def test_worst_case_configured_cohort_always_fits_the_report_limit(self) -> None:
-        configured_limit = CAPTURE_METADATA_CONFIGURATION["max_cohort_size"]
+        configuration = capture_metadata_configuration(self.event.timezone_name)
+        configured_limit = configuration["max_cohort_size"]
         assert isinstance(configured_limit, int)
         for number in range(configured_limit):
             request_capture_metadata(self.private_photo(f"worst-{number}"))
@@ -543,7 +547,7 @@ class ProcessingRunReportTests(TestCase):
         closed = close_run_report(run.id)
 
         assert closed is not None
-        configured_bytes = CAPTURE_METADATA_CONFIGURATION["report_max_bytes"]
+        configured_bytes = configuration["report_max_bytes"]
         assert isinstance(configured_bytes, int)
         serialized = json.dumps(closed.report, ensure_ascii=False, separators=(",", ":")).encode()
         self.assertEqual(len(closed.report["photos"]), configured_limit)

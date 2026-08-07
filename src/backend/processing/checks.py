@@ -4,9 +4,9 @@ from django.conf import settings
 from django.core.checks import Error, register
 
 from processing.services.enrollment import (
-    CAPTURE_METADATA_CONFIGURATION,
     FACE_EMBEDDING_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
+    capture_metadata_configuration,
 )
 
 
@@ -16,7 +16,7 @@ def capture_metadata_terminal_request_limit_check(**_: object) -> list[Error]:
     terminal_maximum = max(
         _terminal_result_maximum(configuration)
         for configuration in (
-            CAPTURE_METADATA_CONFIGURATION,
+            capture_metadata_configuration("Etc/UTC"),
             FACE_EMBEDDING_CONFIGURATION,
             GENERATE_PREVIEW_CONFIGURATION,
         )

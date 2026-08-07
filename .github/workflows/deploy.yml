@@ -300,10 +300,10 @@ jobs:
           PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '131072' }}
           PHOTO_WORKER_BUILD: ${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}
           PHOTO_WORKER_LEASE_SECONDS: ${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}
-          # Preserve the deployed legacy identity unless the separately authorized preview rollout
-          # supplies its complete identity list.  The ordered processor-type contract below still
-          # lets the worker poll its typed defaults, including selfie_query.
-          PHOTO_WORKER_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}
+          # Preserve an explicitly configured identity list; otherwise run capture metadata v2.
+          # The ordered processor-type contract below still lets the worker poll typed defaults,
+          # including selfie_query.
+          PHOTO_WORKER_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}
           PHOTO_WORKER_PROCESSOR_TYPES: ${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || 'selfie_query,face_embedding,capture_metadata,generate_preview' }}
           PHOTO_WORKER_REPLICAS: ${{ vars.PHOTO_WORKER_REPLICAS || '1' }}
           SELFIE_SEARCH_ENABLED: ${{ vars.SELFIE_SEARCH_ENABLED || 'False' }}

@@ -18,6 +18,7 @@ from typing import Protocol
 
 from photo_worker.client import ApiError, CallbackResult, DownloadError, HttpClient, UploadError
 from photo_worker.contracts import (
+    CAPTURE_METADATA_PROCESSOR_VERSION,
     FAILURE_RETRYABLE,
     PREVIEW_CONTRACT_VERSION,
     PROCESSOR_TYPE,
@@ -49,7 +50,7 @@ _PREVIEW_FAILURE_RETRYABLE = {
 }
 _IDENTITY_PARTS = 3
 _SUPPORTED_IDENTITIES = {
-    (1, PROCESSOR_TYPE, 1),
+    (1, PROCESSOR_TYPE, 2),
     (1, PROCESSOR_TYPE_FACE_EMBEDDING, 1),
     (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
     (2, PROCESSOR_TYPE_FACE_EMBEDDING, 2),
@@ -623,11 +624,14 @@ class Worker:
 
     def _run_processor(self, job: ClaimedJob, input_path: Path, preview_path: Path):
         if job.processor_type == PROCESSOR_TYPE:
+            event_timezone = job.configuration.event_timezone
+            assert event_timezone is not None
             return extract_capture_metadata(
                 input_path,
                 max_bytes=job.input_limits.max_bytes,
                 max_pixels=job.configuration.max_pixels,
                 date_field_precedence=job.configuration.date_field_precedence,
+                event_timezone=event_timezone,
             )
         if job.processor_type in {
             PROCESSOR_TYPE_FACE_EMBEDDING,
@@ -809,7 +813,7 @@ def _default_processor_identity(processor_type: str) -> tuple[int, str, int]:
     identity = (
         PREVIEW_CONTRACT_VERSION if processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW else 1,
         processor_type,
-        1,
+        CAPTURE_METADATA_PROCESSOR_VERSION if processor_type == PROCESSOR_TYPE else 1,
     )
     if identity not in _SUPPORTED_IDENTITIES:
         raise ValueError("unsupported processor type")

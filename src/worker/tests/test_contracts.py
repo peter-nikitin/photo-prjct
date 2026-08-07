@@ -362,7 +362,8 @@ def processor_configuration(processor_type: str = PROCESSOR_TYPE) -> dict[str, o
                         "DateTimeDigitized",
                         "DateTime",
                     ],
-                    "normalization": "utc_assume_utc_if_missing",
+                    "normalization": "utc_explicit_offset_or_event_timezone",
+                    "event_timezone": "Europe/Moscow",
                 }
             }
             if processor_type == PROCESSOR_TYPE
@@ -390,7 +391,7 @@ def claim_payload(
         "attempt_id": "00000000-0000-0000-0000-000000000012",
         "contract_version": 1,
         "processor_type": processor_type,
-        "processor_version": 1,
+        "processor_version": 2 if processor_type == PROCESSOR_TYPE else 1,
         "configuration": configuration,
         "photo_id": "photo-1",
         "event_id": "00000000-0000-0000-0000-000000000013",
@@ -420,7 +421,13 @@ def test_claim_accepts_only_the_supported_processor_contract() -> None:
     assert claim.job.input_fingerprint.verified_source_etag == "etag-1"
     assert claim.job.configuration.max_pixels == 100_000_000
     assert claim.job.configuration.lease_duration_seconds == 120
+    assert claim.job.configuration.event_timezone == "Europe/Moscow"
     assert claim.job.run_id == "00000000-0000-0000-0000-000000000014"
+
+
+def test_capture_metadata_v2_claim_rejects_the_superseded_processor_version_one() -> None:
+    with pytest.raises(ContractError):
+        Claim.from_response(claim_payload(processor_version=1))
 
 
 def test_claim_accepts_face_embedding_processor_contract() -> None:
@@ -508,7 +515,7 @@ def test_claim_accepts_face_embedding_configuration_with_legacy_backend_fields()
     [
         {"contract_version": 2},
         {"processor_type": "faces"},
-        {"processor_version": 2},
+        {"processor_version": 1},
         {
             "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING,
             "processor_version": 2,

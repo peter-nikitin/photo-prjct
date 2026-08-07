@@ -46,6 +46,7 @@ class WorkerApiTests(TestCase):
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
+            timezone_name="Europe/Moscow",
         )
         self.headers = {"HTTP_AUTHORIZATION": "Bearer worker-secret"}
 
@@ -79,13 +80,13 @@ class WorkerApiTests(TestCase):
         return {
             "contract_version": 1,
             "processor_type": "capture_metadata",
-            "processor_version": 1,
+            "processor_version": 2,
             "worker_build": "worker-test",
             "lease_seconds": 120,
         } | overrides
 
     def face_claim_body(self, **overrides: object) -> dict[str, object]:
-        return self.claim_body(processor_type="face_embedding", **overrides)
+        return self.claim_body(processor_type="face_embedding", processor_version=1, **overrides)
 
     def preview_claim_body(self, **overrides: object) -> dict[str, object]:
         return self.claim_body(
@@ -100,7 +101,7 @@ class WorkerApiTests(TestCase):
             "capture_metadata": {
                 "decode_failed": False,
                 "download_authorization_expired": True,
-                "fingerprint_mismatch": False,
+                "fingerprint_mismatch": True,
                 "input_too_large": False,
                 "network_interruption": True,
                 "storage_unavailable": True,
@@ -109,7 +110,7 @@ class WorkerApiTests(TestCase):
             "face_embedding": {
                 "decode_failed": False,
                 "download_authorization_expired": True,
-                "fingerprint_mismatch": False,
+                "fingerprint_mismatch": True,
                 "input_too_large": False,
                 "model_inference_error": False,
                 "model_inference_timeout": True,
@@ -124,9 +125,9 @@ class WorkerApiTests(TestCase):
         body = {
             "job_id": job["id"],
             "attempt_id": job["attempt_id"],
-            "contract_version": 1,
-            "processor_type": "capture_metadata",
-            "processor_version": 1,
+            "contract_version": job.get("contract_version", 1),
+            "processor_type": job.get("processor_type", "capture_metadata"),
+            "processor_version": job.get("processor_version", 2),
             "worker_build": "worker-test",
             "started_at": "2026-07-29T10:00:00Z",
             "finished_at": "2026-07-29T10:00:03Z",
@@ -139,6 +140,8 @@ class WorkerApiTests(TestCase):
                 "source_field": None,
                 "timezone_state": "not_applicable",
                 "source_value": None,
+                "source_offset": None,
+                "event_timezone": "Europe/Moscow",
                 "warnings": ["capture_time_missing"],
             },
         } | overrides
@@ -177,7 +180,7 @@ class WorkerApiTests(TestCase):
         request_capture_metadata(photo)
 
         unsupported = self.post(
-            "/internal/photo-processing/v1/claim", self.claim_body(processor_version=2)
+            "/internal/photo-processing/v1/claim", self.claim_body(processor_version=1)
         )
         response = self.post("/internal/photo-processing/v1/claim", self.claim_body())
 
@@ -528,7 +531,7 @@ class WorkerApiTests(TestCase):
         )
         by_version = self.post(
             f"/internal/photo-processing/v1/attempts/{attempt}/complete",
-            self.terminal_body(job, processor_version=2),
+            self.terminal_body(job, processor_version=1),
         )
 
         self.assertEqual(by_type.status_code, 400)
@@ -636,6 +639,31 @@ class WorkerApiTests(TestCase):
                 processor_type="face_embedding",
                 error_code="model_inference_error",
                 retryable=True,
+            ),
+        )
+
+        self.assertEqual(mismatched.status_code, 400)
+        self.assertEqual(mismatched.json()["error"]["code"], "invalid_result")
+        self.assertEqual(
+            ProcessingAttempt.objects.get(pk=attempt).status,
+            ProcessingAttempt.Status.IN_PROGRESS,
+        )
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_capture_fail_rejects_nonretryable_fingerprint_mismatch(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        request_capture_metadata(self.photo())
+        job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+        attempt = job["attempt_id"]
+
+        mismatched = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/fail",
+            self.terminal_body(
+                job,
+                outcome="failure",
+                error_code="fingerprint_mismatch",
+                retryable=False,
             ),
         )
 
@@ -848,6 +876,8 @@ class WorkerApiTests(TestCase):
                     "source_field": "DateTimeOriginal",
                     "timezone_state": "explicit",
                     "source_value": "X-Amz-Signature=secret",
+                    "source_offset": "+03:00",
+                    "event_timezone": "Europe/Moscow",
                     "warnings": [],
                 },
             ),
@@ -866,6 +896,94 @@ class WorkerApiTests(TestCase):
         self.assertNotIn("safe", json.dumps(stored.result))
         self.assertEqual(ProcessingLateReceipt.objects.count(), 0)
         self.assertNotIn("secret", json.dumps(EventProcessingRun.objects.get().report))
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_capture_metadata_v2_accepts_explicit_event_timezone_and_missing_results(
+        self, grant
+    ) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=60)
+        results = (
+            {
+                "capture_time": "2026-07-29T07:00:00Z",
+                "source_field": "DateTimeOriginal",
+                "timezone_state": "explicit",
+                "source_value": "2026:07:29 10:00:00",
+                "source_offset": "+03:00",
+                "event_timezone": "Europe/Moscow",
+                "warnings": [],
+            },
+            {
+                "capture_time": "2026-07-29T07:00:00Z",
+                "source_field": "DateTimeOriginal",
+                "timezone_state": "event_timezone",
+                "source_value": "2026:07:29 10:00:00",
+                "source_offset": None,
+                "event_timezone": "Europe/Moscow",
+                "warnings": ["capture_time_malformed_offset"],
+            },
+            {
+                "capture_time": None,
+                "source_field": None,
+                "timezone_state": "not_applicable",
+                "source_value": None,
+                "source_offset": None,
+                "event_timezone": "Europe/Moscow",
+                "warnings": ["capture_time_timezone_ambiguous", "capture_time_missing"],
+            },
+        )
+
+        for index, result in enumerate(results):
+            request_capture_metadata(
+                self.photo(
+                    f"capture-v2-{index}",
+                    original_key=f"originals/{index + 1:032x}",
+                )
+            )
+            job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+            response = self.post(
+                f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+                self.terminal_body(job, result=result),
+            )
+            self.assertEqual(response.status_code, 200)
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_capture_metadata_v2_rejects_invalid_timezone_provenance(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=60)
+        invalid_results: tuple[dict[str, object], ...] = (
+            {"timezone_state": "inferred_none"},
+            {"event_timezone": "Europe/London"},
+            {"source_value": None},
+            {"source_offset": "0300"},
+            {"source_offset": "+24:00"},
+        )
+
+        for index, overrides in enumerate(invalid_results):
+            request_capture_metadata(
+                self.photo(
+                    f"invalid-capture-v2-{index}",
+                    original_key=f"originals/{index + 10:032x}",
+                )
+            )
+            job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+            result = {
+                "capture_time": "2026-07-29T07:00:00Z",
+                "source_field": "DateTimeOriginal",
+                "timezone_state": "explicit",
+                "source_value": "2026:07:29 10:00:00",
+                "source_offset": "+03:00",
+                "event_timezone": "Europe/Moscow",
+                "warnings": [],
+            } | overrides
+            response = self.post(
+                f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+                self.terminal_body(job, result=result),
+            )
+            self.assertEqual(
+                (response.status_code, response.json()["error"]["code"]),
+                (400, "invalid_result"),
+            )
 
     def test_terminal_missing_attempt_maps_to_not_found(self) -> None:
         response = self.post(

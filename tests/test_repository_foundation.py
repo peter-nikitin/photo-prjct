@@ -98,6 +98,7 @@ def _envs(step: dict[str, Any]) -> set[str]:
 def test_project_skill_ui_configuration_is_valid() -> None:
     for skill_name in (
         "deliver-operational-change",
+        "execute-implementation-plan",
         "manage-yandex-cloud",
         "update-visual-design",
         "write-adr",
@@ -113,6 +114,71 @@ def test_project_skill_ui_configuration_is_valid() -> None:
             "short_description",
             "default_prompt",
         }
+
+
+def test_implementation_plan_harness_has_project_specific_role_contracts() -> None:
+    skill_dir = ROOT / ".agents" / "skills" / "execute-implementation-plan"
+    skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "superpowers:subagent-driven-development" in skill
+    assert "make worktree" in skill
+    assert "working-tree diff" in skill
+    assert "blocking" in skill
+    assert "future" in skill
+    assert "luna_worker" in skill
+    assert "git add" in skill
+
+    for prompt_name, required_fields in {
+        "implementer-prompt.md": {"Worktree", "Task brief", "Report", "Model reason"},
+        "reviewer-prompt.md": {
+            "Task brief",
+            "Implementer report",
+            "Review package",
+            "Risk class",
+        },
+        "re-review-prompt.md": {"Review package", "Prior review", "Fix report"},
+    }.items():
+        prompt = (skill_dir / prompt_name).read_text(encoding="utf-8")
+        assert required_fields <= set(re.findall(r"^([A-Z][A-Za-z ]+):", prompt, re.MULTILINE))
+
+
+def test_implementation_review_package_includes_tracked_and_untracked_files(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repository, check=True)
+
+    tracked.write_text("after\n", encoding="utf-8")
+    (repository / "untracked.txt").write_text("new task file\n", encoding="utf-8")
+    output = repository / "review.md"
+    script = (
+        ROOT
+        / ".agents"
+        / "skills"
+        / "execute-implementation-plan"
+        / "scripts"
+        / "review-package.py"
+    )
+
+    subprocess.run(
+        [sys.executable, str(script), str(output)],
+        cwd=repository,
+        check=True,
+    )
+
+    package = output.read_text(encoding="utf-8")
+    assert "tracked.txt" in package
+    assert "-before" in package
+    assert "+after" in package
+    assert "untracked.txt" in package
+    assert "+new task file" in package
 
 
 def test_deployment_workflows_separate_staging_and_production() -> None:

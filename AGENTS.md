@@ -63,6 +63,10 @@ photographers and operators publish and manage event photos.
 
 ## Subagent delegation
 
+- Execute approved implementation plans through the project `$execute-implementation-plan` skill.
+  Plans and dispatches provide task-specific requirements and paths instead of repeating the stable
+  worktree, Git, review, reporting, and model-selection contract below.
+
 - An implementer subagent must perform its assigned task itself and must not spawn, dispatch, or
   delegate to another agent, including a reviewer.
 - An implementer's self-review means inspecting its own work without creating another agent.

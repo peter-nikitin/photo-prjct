@@ -105,11 +105,16 @@ again.
   missing/corrupt/partial file is fetched again; reject an event/inventory/hash mismatch, unexpected
   extra file, altered manifest, symlink, nested directory, or output path outside the selected event
   root.
+- [ ] Add failing concurrency tests proving metadata checks and downloads use at most eight worker
+  threads, each worker owns only its partial file, manifest publication is serialized by the caller,
+  and one failed future leaves every successful result resumable without marking the cache complete.
 - [ ] Run `make test TESTS="src/backend/processing/tests/test_event_original_cache.py"` and confirm
   failures identify the missing service and command.
 - [ ] Implement the focused cache service with an injectable read-only storage protocol. Reuse the
   existing boto3 configuration but expose only `HeadObject` and conditional streaming `GetObject`;
-  do not reuse upload, copy, delete, or presigned-write methods.
+  do not reuse upload, copy, delete, or presigned-write methods. Use one fixed eight-thread executor
+  for remote metadata and downloads; return immutable worker results to the coordinator and never
+  mutate or publish the manifest from a worker.
 - [ ] Implement `cache_event_originals` with mutually exclusive `--event` and
   `--latest-published`, default root computed from
   `Path.home() / "Documents/Projects/photo-prjct-private/event-corpora"`, and an optional explicit

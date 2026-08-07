@@ -124,6 +124,11 @@ photo identities, safe local filenames, exact Object Storage keys, expected cont
 sizes, ETags, and inventory hash. Local files use generated photo IDs plus a validated content-type
 extension; an uploaded filename never becomes a filesystem path.
 
+Remote metadata checks and object downloads use a fixed pool of eight worker threads. Workers may
+read S3 and write only their own uniquely named partial file. A single coordinator validates worker
+results, atomically publishes completed files, and serializes every manifest update, so concurrent
+execution cannot lose verification evidence or make an incomplete cache appear complete.
+
 Each object is fetched with its frozen ETag precondition into a private partial path while SHA-256
 and byte count are calculated during streaming. A file becomes visible under `originals/` only by
 atomic rename after its size and remote identity match the manifest. The final local SHA-256 is

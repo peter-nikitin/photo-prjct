@@ -59,14 +59,18 @@ yc resource-manager cloud list-access-bindings --id "$cloud_id" --format json
 ```
 
 Confirm the exact folder, secret, service-account, federation, issuer, audience, and staging-only
-subject listed above. Confirm `lockbox.payloadViewer` appears only on the secret for the approved
-human reader(s) and CI service account. If any ID, subject, issuer, audience, or role differs, stop
-for incident/design review; do not create a duplicate secret or broaden a folder role.
+subject listed above. The resolver reads metadata before payload, so confirm both
+`lockbox.viewer` and `lockbox.payloadViewer` appear only on the exact secret for every approved
+reader. `lockbox.viewer` permits metadata and access-binding view, not payload access or secret
+management; `lockbox.payloadViewer` permits the payload read. If any ID, subject, issuer, audience,
+or role differs, stop for incident/design review; do not create a duplicate secret or broaden a
+folder role.
 
 All three key lists are empty. Confirm the CI service account is absent from the folder and cloud
-bindings; the only approved CI grant is the exact-secret `lockbox.payloadViewer` binding. Any key,
-API/access key, inherited folder/cloud role, or other broad grant is an incident/design-review stop,
-not a role to explain away or narrow during this procedure.
+bindings; its only approved CI grants are the two exact-secret reader roles. The CI service account
+and approved human reader already have both roles on the exact secret; that live IAM fact does not
+complete the rollout or Gate C. Any key, API/access key, inherited folder/cloud role, or other broad
+grant is an incident/design-review stop, not a role to explain away or narrow during this procedure.
 
 ### Success evidence
 
@@ -102,9 +106,11 @@ yc lockbox secret list-versions --id e6q85jjl76r45maigtfb --format json
 ```
 
 Compare those names with the migration table and every manifest key and consumer in
-`deploy/environment-secrets/staging.json`. Classify only the six visible configuration names as
-GitHub Environment variables: `ALLOWED_HOSTS`, `DB_NAME`, `DB_USER`, `GHCR_USERNAME`, `VM_HOST`,
-and `VM_USER`. All other migrated names are Lockbox entries.
+`deploy/environment-secrets/staging.json`. Classify the seven visible non-secret configuration
+names as GitHub Environment variables: `ALLOWED_HOSTS`, `DB_NAME`, `DB_USER`, `GHCR_USERNAME`,
+`STAGING_SSH_KNOWN_HOSTS`, `VM_HOST`, and `VM_USER`. `STAGING_SSH_KNOWN_HOSTS` is the reviewed SSH
+host-key record, not a Lockbox entry or migrated GitHub Secret. All other migrated names are
+Lockbox entries.
 
 ### Success evidence
 
@@ -577,10 +583,11 @@ is:
 - `DB_NAME`
 - `DB_USER`
 - `GHCR_USERNAME`
+- `STAGING_SSH_KNOWN_HOSTS`
 - `VM_HOST`
 - `VM_USER`
 
-All six required Environment variables must be present before approval. If any is absent, stop: a
+All seven required Environment variables must be present before approval. If any is absent, stop: a
 future tracked-default change first needs a reviewed inventory and workflow revision. Confirm
 `GITHUB_TOKEN` remains GitHub issued and is not an Environment Secret.
 

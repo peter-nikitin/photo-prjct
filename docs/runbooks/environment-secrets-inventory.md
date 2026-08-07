@@ -34,11 +34,16 @@ The resolver exactly enforces the GitHub OIDC `workflow_ref` claim against this 
 exchanging the OIDC token. A matching path without the reviewed repository or `refs/heads/main`
 is not an authorized workflow identity.
 
-The approved human reader identity is an interactive `yc` identity with a resource-level
-`lockbox.payloadViewer` binding on this exact secret. Do not substitute a folder-wide binding.
-The CI service account receives the same role on this exact secret and no Lockbox-management,
-Compute, IAM, KMS, or Object Storage role. Human account IDs and the federated-credential ID are
-operational evidence, not repository constants.
+The resolver reads this exact secret's metadata before it reads the matching payload. Every reader
+identity therefore needs both resource-level roles on this exact secret: `lockbox.viewer` and
+`lockbox.payloadViewer`. `lockbox.viewer` provides metadata and access-binding view, but grants
+neither payload access nor secret management. `lockbox.payloadViewer` permits the payload read.
+Do not substitute folder-wide bindings.
+
+The CI service account and approved human reader already have both exact-secret roles. This live
+binding readback neither performs an IAM mutation nor declares the rollout complete. CI and human
+readers receive no Lockbox-management, Compute, IAM, KMS, or Object Storage role. Human account IDs
+and the federated-credential ID are operational evidence, not repository constants.
 
 ## Manifest key schema and consumer projections
 
@@ -78,9 +83,9 @@ passes only the selected projection through a mode-0600 file named by the non-se
 
 This table records every former GitHub Actions secret used by staging, with the exact GitHub source
 scope that must be cleaned up. “Owner” is accountable for rotation and incident coordination, not
-necessarily the only person permitted to retrieve the value. The six configuration values below are
-intentionally moved to visible `staging` GitHub Environment variables; they are not Lockbox payload
-entries.
+necessarily the only person permitted to retrieve the value. The six migrated configuration values
+below are intentionally moved to visible `staging` GitHub Environment variables; they are not
+Lockbox payload entries.
 
 | Former GitHub Actions Secret | Source scope | Owner | Destination | Rotation trigger |
 | --- | --- | --- | --- | --- |
@@ -106,6 +111,21 @@ entries.
 
 `GITHUB_TOKEN` is not migrated: GitHub issues it job-scoped for GitHub-native GHCR publication. It
 must not be stored in Lockbox or listed as a repository or GitHub Environment Secret to delete.
+
+## Required non-secret staging Environment variables
+
+The exact required non-secret `staging` GitHub Environment variable-name set is:
+
+- `ALLOWED_HOSTS`
+- `DB_NAME`
+- `DB_USER`
+- `GHCR_USERNAME`
+- `STAGING_SSH_KNOWN_HOSTS`
+- `VM_HOST`
+- `VM_USER`
+
+`STAGING_SSH_KNOWN_HOSTS` is a required non-secret `staging` GitHub Environment variable containing
+the reviewed SSH host-key record. It is neither a Lockbox entry nor a migrated GitHub Secret.
 
 ## Payload-version evidence ledger
 

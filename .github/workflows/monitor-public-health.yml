@@ -21,20 +21,21 @@ jobs:
     environment: staging
     permissions:
       contents: read
-    env:
-      YANDEX_MONITORING_API_KEY: ${{ secrets.YANDEX_MONITORING_API_KEY }}
-      YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
+      id-token: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-
       - name: Probe public health and write metrics
+        env:
+          MONITOR_TARGET: ${{ github.event_name == 'schedule' && 'https://findme-photo.ru/health/' || inputs.target }}
+          MONITOR_ENVIRONMENT: ${{ github.event_name == 'schedule' && 'staging' || 'validation' }}
+          MONITOR_CHECK: ${{ github.event_name == 'schedule' && 'canonical-health' || 'validation-health' }}
+          YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
         run: |
-          python scripts/monitor_public_health.py \
-            --target "${{ github.event_name == 'schedule' && 'https://findme-photo.ru/health/' || inputs.target }}" \
-            --environment "${{ github.event_name == 'schedule' && 'staging' || 'validation' }}" \
-            --check "${{ github.event_name == 'schedule' && 'canonical-health' || 'validation-health' }}" \
-            --folder-id "$YANDEX_CLOUD_FOLDER_ID" \
-            --api-key "$YANDEX_MONITORING_API_KEY"
+          python scripts/run-with-environment-secrets.py \
+            --environment staging \
+            --consumer staging-public-monitor \
+            --identity github-oidc \
+            -- deploy/run-staging-remote.sh public-monitor

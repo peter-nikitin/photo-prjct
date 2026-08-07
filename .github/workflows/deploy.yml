@@ -59,6 +59,8 @@ jobs:
           persist-credentials: false
       - name: Classify staging release
         id: classify
+        env:
+          DEPLOYMENT_SHA: ${{ inputs.deployment_sha }}
         run: |
           set -eu
           release_sha="${{ github.sha }}"
@@ -68,7 +70,7 @@ jobs:
           if [ "${{ github.event_name }}" = workflow_dispatch ] && \
              [ "${{ inputs.configure_monitoring_agent }}" != true ] && \
              [ "${{ inputs.validate_deploy_issue }}" != true ]; then
-            release_sha="${{ inputs.deployment_sha }}"
+            release_sha="$DEPLOYMENT_SHA"
             if [ "${#release_sha}" -ne 40 ] || [ -n "$(printf '%s' "$release_sha" | tr -d '0-9a-fA-F')" ]; then
               echo "deployment_sha must be an exact 40-character commit SHA" >&2
               exit 2

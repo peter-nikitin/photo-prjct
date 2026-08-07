@@ -925,6 +925,10 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
     }
 
     assert classifier["permissions"] == {"contents": "read"}
+    assert classify["env"] == {"DEPLOYMENT_SHA": "${{ inputs.deployment_sha }}"}
+    for job in staging["jobs"].values():
+        for step in job.get("steps", []):
+            assert "${{ inputs.deployment_sha }}" not in step.get("run", "")
     assert classifier["outputs"] == {
         "requires_observability_bootstrap": (
             "${{ steps.classify.outputs.requires_observability_bootstrap }}"
@@ -963,6 +967,61 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
         assert operator_action in classify["run"]
     assert "secrets." not in json.dumps(classifier)
     assert "appleboy/ssh-action" not in json.dumps(classifier)
+
+    classifier_script = classify["run"]
+    for expression, value in {
+        "${{ github.sha }}": "a" * 40,
+        "${{ github.event_name }}": "workflow_dispatch",
+        "${{ inputs.configure_monitoring_agent }}": "false",
+        "${{ inputs.validate_deploy_issue }}": "false",
+        "${{ inputs.verify_paused_observability_release }}": "false",
+        "${{ github.event.before }}": "0" * 40,
+    }.items():
+        classifier_script = classifier_script.replace(expression, value)
+    classifier_bin = tmp_path / "classifier-bin"
+    classifier_bin.mkdir()
+    classifier_git = classifier_bin / "git"
+    classifier_git.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  cat-file) exit 0 ;;\n"
+        "  rev-parse) printf '%s\\n' \"$VALID_COMMIT\" ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    classifier_git.chmod(0o755)
+    classifier_environment = {
+        **os.environ,
+        "PATH": f"{classifier_bin}:{os.environ['PATH']}",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_OUTPUT": str(tmp_path / "classifier-output"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "classifier-summary"),
+        "VALID_COMMIT": "a" * 40,
+    }
+    injected_marker = tmp_path / "deployment-sha-input-executed"
+    malicious_sha = f"$(touch {injected_marker})"
+    result = subprocess.run(
+        ["/bin/sh", "-c", classifier_script],
+        cwd=tmp_path,
+        env={**classifier_environment, "DEPLOYMENT_SHA": malicious_sha},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stderr == "deployment_sha must be an exact 40-character commit SHA\n"
+    assert not injected_marker.exists()
+    result = subprocess.run(
+        ["/bin/sh", "-c", classifier_script],
+        cwd=tmp_path,
+        env={**classifier_environment, "DEPLOYMENT_SHA": "A" * 40},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "release_sha=" + "a" * 40 in (tmp_path / "classifier-output").read_text(encoding="utf-8")
 
     assert stage_release["if"] == (
         "${{ github.event_name == 'push' && "

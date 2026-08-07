@@ -364,6 +364,7 @@ mutation_started=0
 deployment_committed=0
 recovery_in_progress=0
 observability_installed=0
+deployment_phase=validate
 
 cleanup() {
     rm -f \
@@ -479,6 +480,7 @@ recover_previous_deployment() {
 
 on_exit() {
     status=$?
+    rollback_result=not-needed
     set +e
     trap - EXIT INT TERM HUP
 
@@ -487,21 +489,33 @@ on_exit() {
         if [ "$recovery_in_progress" -eq 0 ]; then
             recovery_in_progress=1
             if ! recover_previous_deployment; then
+                rollback_result=failed
                 echo "Previous deployment recovery failed" >&2
                 diagnostics
-            elif [ "${previous_upload_enabled:-False}" = True ]; then
-                sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
             else
-                sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
+                rollback_result=succeeded
+                if [ "${previous_upload_enabled:-False}" = True ]; then
+                    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
+                else
+                    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
+                fi
             fi
         fi
         if [ "$observability_installed" -eq 1 ]; then
             sudo -n "$observability_helper" rollback || \
-                echo "Observability managed-file rollback failed" >&2
+                {
+                    rollback_result=failed
+                    echo "Observability managed-file rollback failed" >&2
+                }
         fi
     fi
 
     cleanup
+    if [ "$deployment_committed" -eq 1 ] && [ "$status" -eq 0 ]; then
+        printf 'DEPLOY_RESULT=success phase=commit rollback=not-needed\n'
+    else
+        printf 'DEPLOY_RESULT=failure phase=%s rollback=%s\n' "$deployment_phase" "$rollback_result"
+    fi
     exit "$status"
 }
 
@@ -515,7 +529,21 @@ fail() {
     exit 1
 }
 
+phase() {
+    case "$1" in
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
+            deployment_phase="$1"
+            printf 'DEPLOY_PHASE=%s\n' "$1"
+            ;;
+        *)
+            exit 2
+            ;;
+    esac
+}
+
+phase validate
 install -d -m 0755 "$DEPLOY_ROOT"
+phase snapshot
 previous_upload_enabled="False"
 previous_processing_enabled="False"
 previous_worker_replicas=1
@@ -640,6 +668,7 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
 } > "$requested_env_tmp"
 chmod 600 "$requested_env_tmp"
 
+phase candidate-pull
 if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     if ! printf '%s\n' "$GHCR_READ_TOKEN" | \
         docker login ghcr.io -u "${GHCR_USERNAME:?Set GHCR_USERNAME}" --password-stdin; then
@@ -680,6 +709,7 @@ else:
         raise SystemExit("Gallery private-media read prerequisite failed") from None
     print("gallery-private-media-preflight-ok")
 '
+phase private-media-preflight
 if [ "$has_successful_deployment" -eq 0 ]; then
     echo "gallery-private-media-preflight-skipped:no-existing-deployment"
 else
@@ -689,13 +719,26 @@ else
     fi
 fi
 
+phase migration-preflight
+if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+    --entrypoint python web manage.py verify_migration_history; then
+    fail "Candidate migration preflight failed"
+fi
+if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+    --entrypoint python web manage.py showmigrations --plan; then
+    fail "Candidate migration preflight failed"
+fi
+
+phase observability-preflight
 verify_observability_bootstrap || fail "Selfie observability bootstrap is missing or stale; run deploy/bootstrap-selfie-observability.sh as an operator"
+phase observability-reconcile
 observability_installed=1
 mutation_started=1
 sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
 mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
 requested_env_tmp=""
 
+phase certificate
 compose stop nginx || true
 if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
     fail "Certificate bootstrap failed"
@@ -705,6 +748,7 @@ if ! compose_with_requested_processing_profile pull; then
     fail "Deployment image pull failed"
 fi
 
+phase compose-reconcile
 compose_up_status=0
 attempt=1
 max_compose_attempts=3
@@ -737,6 +781,7 @@ done
 
 echo "docker compose up exit status: $compose_up_status" >&2
 
+phase local-health
 attempt=1
 max_attempts=12
 while [ "$attempt" -le "$max_attempts" ]; do
@@ -760,6 +805,7 @@ while [ "$attempt" -le "$max_attempts" ]; do
     sleep 5
 done
 
+phase worker-health
 if [ "$requested_processing_enabled" = True ]; then
     worker_containers="$(compose_with_requested_processing_profile ps -q worker)"
     worker_container_count="$(
@@ -812,9 +858,11 @@ if [ "$requested_processing_enabled" = True ]; then
     done
 fi
 
+phase public-health
 if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
     fail "Requested deployment failed public HTTPS smoke verification"
 fi
+phase observability-verify
 if ! sudo -n "$observability_helper" verify; then
     fail "Requested deployment failed selfie observability verification"
 fi
@@ -822,6 +870,7 @@ if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
     fail "Requested deployment failed application observability verification"
 fi
 
+phase commit
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.XXXXXX")"
 printf '%s\n' "$DEPLOYMENT_TARGET" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployment-target"

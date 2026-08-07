@@ -726,6 +726,27 @@ def test_focused_deployment_scripts_are_versioned() -> None:
     assert not (ROOT / "deploy/rollback-deployment.sh").exists()
 
 
+def test_deployment_migration_history_preflight_is_versioned_and_read_only() -> None:
+    command = ROOT / "src/backend/picflow/management/commands/verify_migration_history.py"
+    apply = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+
+    assert command.is_file()
+    assert "MigrationLoader(connection, ignore_no_migrations=True)" in command.read_text(
+        encoding="utf-8"
+    )
+    assert "MigrationRecorder(connection).applied_migrations()" in command.read_text(
+        encoding="utf-8"
+    )
+    assert "migration-history-ok" in command.read_text(encoding="utf-8")
+    assert "manage.py verify_migration_history" in apply
+    assert "manage.py showmigrations --plan" in apply
+    assert apply.index("manage.py verify_migration_history") < apply.index("mutation_started=1")
+    assert apply.index("manage.py showmigrations --plan") < apply.index("mutation_started=1")
+    assert apply.index("manage.py verify_migration_history") < apply.index(
+        "verify_observability_bootstrap ||"
+    )
+
+
 def test_http_edge_fallback_remains_available_for_manual_recovery() -> None:
     staging_compose = yaml.safe_load(
         (ROOT / "docker-compose.staging.yml").read_text(encoding="utf-8")

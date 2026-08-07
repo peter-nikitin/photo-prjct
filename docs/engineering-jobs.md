@@ -48,6 +48,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
 | EJ-017 | Developer | Read environment-scoped secrets consistently | Candidate | 2026-08-07 |
+| EJ-018 | Maintainer | Minimize and recover runtime credentials | Candidate | 2026-08-07 |
 
 ## Job details
 
@@ -311,6 +312,27 @@ failure behavior, migration from existing GitHub Secrets, and rollback before im
   claimed.
 - Last updated: 2026-08-07
 
+### EJ-018 — Maintainer — Minimize and recover runtime credentials
+
+When I operate or recover an application environment, I want each runtime component to retain only
+the credentials it needs through an explicit, recoverable lifecycle, so I can limit credential
+exposure without making restart, rollback, backup, or disaster recovery unreliable.
+
+The candidate capability covers the complete host and container boundary rather than one `.env`
+file: persistent deployment environments, Docker container metadata, Docker group access, registry
+authentication, shell history, TLS private keys, VM metadata and attached service accounts, disk
+snapshots/backups, per-service credential projection, rotation, revocation, recovery, and audit.
+It must begin with a separate specification and architecture reconciliation; this registry entry
+does not select Docker secrets, file-based settings, runtime Lockbox retrieval, an agent, or another
+delivery mechanism.
+
+- Status: Candidate
+- Evidence:
+  [Sanitized staging runtime credential inventory](future-work/2026-08-07-runtime-credential-hygiene.md)
+  records the observed exposure surfaces and the trigger for a separate design. No VM cleanup,
+  credential rotation, runtime redesign, ADR, or implementation plan is claimed.
+- Last updated: 2026-08-07
+
 ## Status log
 
 This log is append-only.
@@ -343,3 +365,4 @@ This log is append-only.
 | 2026-08-05 | EJ-016 | Not recorded | Delivered | Task 1–7 implementation commits and focused contract tests provide the repository capability for immutable event-scoped corpora, direct-first expansion, provenance, source-separated reporting, private evaluation, and guarded activation. The feature gate remains false and the release gate, environment activation, and customer outcomes are not yet evidenced. |
 | 2026-08-07 | EJ-003 | Validated | Delivered | Repository workflow, migration-identity, read-only preflight, deployment-phase, controlled-pause, and bounded issue-reconciliation contracts are implemented and covered by focused tests. No PR/CI/live staging rollout or notification-drill evidence is recorded yet, so the job is not advanced to Validated. |
 | 2026-08-07 | EJ-017 | Not recorded | Candidate | The maintainer requested one managed, environment-scoped source of secrets that authorized local development, CI, and deployed workflows can read without copying payloads into GitHub Secrets or persistent local files. |
+| 2026-08-07 | EJ-018 | Not recorded | Candidate | A sanitized staging audit confirmed persistent host and Docker credential surfaces; the maintainer deferred a comprehensive runtime credential lifecycle design to a separate task rather than expanding EJ-017. |

@@ -100,6 +100,11 @@ The capability succeeds when:
 - Compatibility fallbacks or permanent dual-read behavior between GitHub Secrets and Lockbox.
 - Production-ready multi-environment selection before a second real environment exists.
 - Changing a credential value unless rotation is required to migrate or contain exposure safely.
+- Runtime credential hygiene governed by
+  [`EJ-018`](../../engineering-jobs.md#ej-018--maintainer--minimize-and-recover-runtime-credentials),
+  including replacement of the canonical VM `.env`, Docker container metadata, Docker/sudo access,
+  persistent registry authentication, shell-history containment, TLS-key lifecycle, VM
+  metadata/service-account access, snapshots/backups, and end-to-end runtime recovery.
 
 ## Environment Identity
 
@@ -272,6 +277,11 @@ The VM, Django process, workers, and Compose services do not receive Yandex IAM 
 Lockbox. They continue to receive only their required environment variables through the existing
 deployment contract. `apply-deployment.sh` retains ownership of mode-0600 promotion, candidate
 preflight, service switch, readiness, deployment marker, and rollback.
+
+This specification does not claim that the existing persistent VM environment or Docker metadata
+is the desired long-term runtime secret design. It preserves that boundary only to keep the source
+migration independent. The sanitized staging findings, production gate, and separate design trigger
+are recorded under EJ-018; EJ-017 must not select or partially implement that future mechanism.
 
 This keeps Lockbox availability out of application startup and request handling. A Lockbox outage
 can block a new deployment or local launch but cannot stop an already deployed service.

@@ -30,6 +30,16 @@ on:
         required: true
         default: false
         type: boolean
+      deployment_sha:
+        description: Exact 40-character commit SHA to deploy manually
+        required: false
+        default: ""
+        type: string
+      verify_paused_observability_release:
+        description: Verify the staged privileged package for deployment_sha before deployment
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   classify-staging-release:
@@ -39,6 +49,8 @@ jobs:
       contents: read
     outputs:
       requires_observability_bootstrap: ${{ steps.classify.outputs.requires_observability_bootstrap }}
+      observability_source_manifest_sha256: ${{ steps.classify.outputs.observability_source_manifest_sha256 }}
+      release_sha: ${{ steps.classify.outputs.release_sha }}
     steps:
       - name: Check out push range
         uses: actions/checkout@v4
@@ -48,28 +60,107 @@ jobs:
       - name: Classify staging release
         id: classify
         run: |
+          set -eu
+          release_sha="${{ github.sha }}"
           requires_observability_bootstrap=false
-          if [ "${{ github.event_name }}" != push ]; then
-            :
-          elif [ "${{ github.event.before }}" = 0000000000000000000000000000000000000000 ]; then
-            requires_observability_bootstrap=true
-          elif ! git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- deploy/bootstrap-selfie-observability.sh 'deploy/selfie-observability/**'; then
-            requires_observability_bootstrap=true
+          manifest_sha256=
+          pause_reason=
+          if [ "${{ github.event_name }}" = workflow_dispatch ] && \
+             [ "${{ inputs.configure_monitoring_agent }}" != true ] && \
+             [ "${{ inputs.validate_deploy_issue }}" != true ]; then
+            release_sha="${{ inputs.deployment_sha }}"
+            if [ "${#release_sha}" -ne 40 ] || [ -n "$(printf '%s' "$release_sha" | tr -d '0-9a-fA-F')" ]; then
+              echo "deployment_sha must be an exact 40-character commit SHA" >&2
+              exit 2
+            fi
+            release_sha="$(printf '%s' "$release_sha" | tr 'A-F' 'a-f')"
+            git cat-file -e "$release_sha^{commit}" || {
+              echo "deployment_sha must identify an available commit" >&2
+              exit 2
+            }
+            test "$(git rev-parse "$release_sha^{commit}")" = "$release_sha" || {
+              echo "deployment_sha must identify the commit object exactly" >&2
+              exit 2
+            }
+          elif [ "${{ github.event_name }}" = push ]; then
+            if [ "${{ github.event.before }}" = 0000000000000000000000000000000000000000 ]; then
+              requires_observability_bootstrap=true
+              pause_reason="Privileged package change status is unknown because the push base is unavailable."
+            elif ! git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- deploy/bootstrap-selfie-observability.sh 'deploy/selfie-observability/**'; then
+              requires_observability_bootstrap=true
+              pause_reason="Commit ${GITHUB_SHA} changes the privileged selfie-observability package."
+            fi
           fi
 
+          if [ "$requires_observability_bootstrap" = true ] || \
+             [ "${{ inputs.verify_paused_observability_release }}" = true ]; then
+            git ls-tree -r --name-only "$release_sha" -- \
+              deploy/bootstrap-selfie-observability.sh deploy/selfie-observability \
+              | while IFS= read -r source_path; do
+                  source_digest="$(git show "$release_sha:$source_path" | sha256sum | cut -d ' ' -f 1)"
+                  printf '%s  %s\n' "$source_digest" "$source_path"
+                done \
+              > staging-observability-source.sha256
+            manifest_sha256="$(sha256sum staging-observability-source.sha256 | cut -d ' ' -f 1)"
+          fi
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
           echo "requires_observability_bootstrap=$requires_observability_bootstrap" >> "$GITHUB_OUTPUT"
+          echo "observability_source_manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
           if [ "$requires_observability_bootstrap" = true ]; then
             {
               echo "## Staging release paused"
-              echo "Commit: ${GITHUB_SHA} changes the privileged selfie-observability package."
+              echo "Commit: ${GITHUB_SHA}. ${pause_reason}"
               echo
               echo "An operator must complete these reviewed actions before manually running the Deploy staging workflow:"
-              echo "1. ssh -l petrnikitin 111.88.151.64"
-              echo "2. DEPLOY_ROOT=/opt/photo-prjct sh /opt/photo-prjct/deploy/bootstrap-selfie-observability.sh"
-              echo "3. sudo /usr/local/sbin/findme-selfie-observability verify"
-              echo "4. Run the Deploy staging workflow manually."
+              echo "1. Wait for the Stage paused observability source job to succeed, then run: ssh -l petrnikitin 111.88.151.64"
+              echo "2. cd /opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA}"
+              echo "3. test \"\$(cat staging-observability-release-sha)\" = \"${GITHUB_SHA}\""
+              echo "4. printf '%s  staging-observability-source.sha256\\n' '${manifest_sha256}' | sha256sum --check -"
+              echo "5. sha256sum --check staging-observability-source.sha256"
+              echo "6. DEPLOY_ROOT=/opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA} sh /opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA}/deploy/bootstrap-selfie-observability.sh"
+              echo "7. sudo /usr/local/sbin/findme-selfie-observability verify"
+              echo "8. gh workflow run deploy.yml --ref main -f deployment_sha=${GITHUB_SHA} -f verify_paused_observability_release=true"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  stage-observability-release:
+    name: Stage paused observability source
+    if: ${{ github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' }}
+    runs-on: ubuntu-latest
+    needs: [classify-staging-release]
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - name: Check out paused commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Bind staged source to paused commit
+        run: |
+          set -eu
+          release_sha="${{ github.sha }}"
+          test "$(git rev-parse HEAD)" = "$release_sha"
+          printf '%s\n' "$release_sha" > staging-observability-release-sha
+      - name: Create staged source manifest
+        run: |
+          set -eu
+          git ls-tree -r --name-only "${{ github.sha }}" -- \
+            deploy/bootstrap-selfie-observability.sh deploy/selfie-observability \
+            | while IFS= read -r source_path; do sha256sum "$source_path"; done \
+            > staging-observability-source.sha256
+          manifest_sha256="$(sha256sum staging-observability-source.sha256 | cut -d ' ' -f 1)"
+          test "$manifest_sha256" = "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
+      - name: Stage privileged observability source
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          source: staging-observability-release-sha,staging-observability-source.sha256,deploy/bootstrap-selfie-observability.sh,deploy/selfie-observability
+          target: /opt/photo-prjct/privileged-observability-releases/${{ github.sha }}/
 
   build:
     name: Build immutable image
@@ -85,6 +176,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify-staging-release.outputs.release_sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -94,8 +189,9 @@ jobs:
       - name: Select image references
         id: image
         run: |
-          echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          release_sha="${{ needs.classify-staging-release.outputs.release_sha }}"
+          echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${release_sha}" >> "$GITHUB_OUTPUT"
+          echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" >> "$GITHUB_OUTPUT"
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -123,6 +219,38 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify-staging-release.outputs.release_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify staged paused observability release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_paused_observability_release }}
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          RELEASE_SHA: ${{ needs.classify-staging-release.outputs.release_sha }}
+          OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: RELEASE_SHA,OBSERVABILITY_SOURCE_MANIFEST_SHA256
+          script_stop: true
+          script: |
+            set -eu
+            case "$RELEASE_SHA" in
+              *[!0-9a-f]*|'') echo "invalid staged release SHA" >&2; exit 2 ;;
+            esac
+            test "${#RELEASE_SHA}" -eq 40
+            staged_root="/opt/photo-prjct/privileged-observability-releases/$RELEASE_SHA"
+            cd "$staged_root"
+            test "$(cat staging-observability-release-sha)" = "$RELEASE_SHA"
+            printf '%s  staging-observability-source.sha256\n' "$OBSERVABILITY_SOURCE_MANIFEST_SHA256" | sha256sum --check -
+            sha256sum --check staging-observability-source.sha256
+            cmp -s deploy/selfie-observability/root-helper.sh "/usr/local/sbin/findme-selfie-observability"
+            for name in journald.conf selfie-search-summary.service selfie-search-summary.timer run-daily-summary.sh summarize.py; do
+              cmp -s "deploy/selfie-observability/$name" "/usr/local/lib/findme-selfie-observability-package/$name"
+            done
+            sudo -n /usr/local/sbin/findme-selfie-observability verify
       - name: Copy staging deployment files
         uses: appleboy/scp-action@v0.1.7
         with:

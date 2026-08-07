@@ -1,7 +1,9 @@
+import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -463,7 +465,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
 
     assert build["outputs"]["worker_image"] == "${{ steps.image.outputs.worker_image }}"
     image_step = _workflow_step(staging, "build", "Select image references")
-    assert "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${GITHUB_SHA}" in image_step["run"]
+    assert "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" in image_step["run"]
     worker_build = _workflow_step(staging, "build", "Build and push worker image")
     assert worker_build["with"] == {
         "context": ".",
@@ -828,38 +830,272 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
     assert "sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh" in run["with"]["script"]
 
 
-def test_staging_deployment_pauses_privileged_package_pushes_before_building() -> None:
+def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_building(
+    tmp_path: Path,
+) -> None:
     staging = _load_workflow("deploy.yml")
+    dispatch = staging[True]["workflow_dispatch"]
     classifier = staging["jobs"]["classify-staging-release"]
+    stage_release = staging["jobs"]["stage-observability-release"]
     build = staging["jobs"]["build"]
     deploy = staging["jobs"]["deploy"]
     checkout = _workflow_step(staging, "classify-staging-release", "Check out push range")
     classify = _workflow_step(staging, "classify-staging-release", "Classify staging release")
+    stage_checkout = _workflow_step(
+        staging, "stage-observability-release", "Check out paused commit"
+    )
+    bind_release = _workflow_step(
+        staging, "stage-observability-release", "Bind staged source to paused commit"
+    )
+    manifest_release = _workflow_step(
+        staging, "stage-observability-release", "Create staged source manifest"
+    )
+    copy_release = _workflow_step(
+        staging, "stage-observability-release", "Stage privileged observability source"
+    )
+    build_checkout = _workflow_step(staging, "build", "Checkout repository")
+    select_images = _workflow_step(staging, "build", "Select image references")
+    deploy_checkout = _workflow_step(staging, "deploy", "Checkout repository")
+    verify_staged = _workflow_step(staging, "deploy", "Verify staged paused observability release")
+
+    assert dispatch["inputs"]["deployment_sha"] == {
+        "description": "Exact 40-character commit SHA to deploy manually",
+        "required": False,
+        "default": "",
+        "type": "string",
+    }
+    assert dispatch["inputs"]["verify_paused_observability_release"] == {
+        "description": "Verify the staged privileged package for deployment_sha before deployment",
+        "required": True,
+        "default": False,
+        "type": "boolean",
+    }
 
     assert classifier["permissions"] == {"contents": "read"}
     assert classifier["outputs"] == {
         "requires_observability_bootstrap": (
             "${{ steps.classify.outputs.requires_observability_bootstrap }}"
-        )
+        ),
+        "observability_source_manifest_sha256": (
+            "${{ steps.classify.outputs.observability_source_manifest_sha256 }}"
+        ),
+        "release_sha": "${{ steps.classify.outputs.release_sha }}",
     }
     assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
     assert 'git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- ' in classify["run"]
     assert "deploy/bootstrap-selfie-observability.sh" in classify["run"]
     assert "deploy/selfie-observability/**" in classify["run"]
     assert "0000000000000000000000000000000000000000" in classify["run"]
+    assert "change status is unknown" in classify["run"]
+    assert "deployment_sha must be an exact 40-character commit SHA" in classify["run"]
+    assert 'git cat-file -e "$release_sha^{commit}"' in classify["run"]
     assert "requires_observability_bootstrap=true" in classify["run"]
     assert "requires_observability_bootstrap=false" in classify["run"]
     assert "requires_observability_bootstrap" in classify["run"]
+    assert 'git show "$release_sha:$source_path"' in classify["run"]
     assert "$GITHUB_STEP_SUMMARY" in classify["run"]
     for operator_action in (
         "${GITHUB_SHA}",
         "ssh -l petrnikitin 111.88.151.64",
-        "DEPLOY_ROOT=/opt/photo-prjct sh /opt/photo-prjct/deploy/bootstrap-selfie-observability.sh",
+        "/opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA}",
+        "staging-observability-release-sha",
+        "staging-observability-source.sha256",
+        "sha256sum --check staging-observability-source.sha256",
+        "DEPLOY_ROOT=/opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA}",
         "sudo /usr/local/sbin/findme-selfie-observability verify",
+        "gh workflow run deploy.yml --ref main -f deployment_sha=${GITHUB_SHA} "
+        "-f verify_paused_observability_release=true",
         "Deploy staging",
     ):
         assert operator_action in classify["run"]
     assert "secrets." not in json.dumps(classifier)
+    assert "appleboy/ssh-action" not in json.dumps(classifier)
+
+    assert stage_release["if"] == (
+        "${{ github.event_name == 'push' && "
+        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' }}"
+    )
+    assert stage_release["needs"] == ["classify-staging-release"]
+    assert stage_release["environment"] == "staging"
+    assert stage_release["permissions"] == {"contents": "read"}
+    assert stage_checkout["with"] == {
+        "ref": "${{ github.sha }}",
+        "fetch-depth": 1,
+        "persist-credentials": False,
+    }
+    assert bind_release["run"].startswith("set -eu\n")
+    assert 'release_sha="${{ github.sha }}"' in bind_release["run"]
+    assert 'test "$(git rev-parse HEAD)" = "$release_sha"' in bind_release["run"]
+    assert (
+        "printf '%s\\n' \"$release_sha\" > staging-observability-release-sha" in bind_release["run"]
+    )
+    assert "git ls-tree -r --name-only" in manifest_release["run"]
+    assert "deploy/bootstrap-selfie-observability.sh" in manifest_release["run"]
+    assert "deploy/selfie-observability" in manifest_release["run"]
+    assert "sha256sum" in manifest_release["run"]
+    assert (
+        "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
+        in (manifest_release["run"])
+    )
+    assert copy_release["uses"] == "appleboy/scp-action@v0.1.7"
+    assert set(copy_release["with"]["source"].split(",")) == {
+        "staging-observability-release-sha",
+        "staging-observability-source.sha256",
+        "deploy/bootstrap-selfie-observability.sh",
+        "deploy/selfie-observability",
+    }
+    assert copy_release["with"]["target"] == (
+        "/opt/photo-prjct/privileged-observability-releases/${{ github.sha }}/"
+    )
+    assert set(copy_release["with"]) == {"host", "username", "key", "source", "target"}
+    assert "appleboy/ssh-action" not in json.dumps(stage_release)
+    for prohibited in (
+        "sudo",
+        "/usr/local",
+        "docker compose",
+        "apply-deployment.sh",
+        "deployed-image",
+        "SECRET_KEY",
+        "DB_PASSWORD",
+    ):
+        assert prohibited not in json.dumps(stage_release)
+
+    release_sha_output = "${{ needs.classify-staging-release.outputs.release_sha }}"
+    for exact_checkout in (build_checkout, deploy_checkout):
+        assert exact_checkout["with"] == {
+            "ref": release_sha_output,
+            "fetch-depth": 1,
+            "persist-credentials": False,
+        }
+    assert release_sha_output in select_images["run"]
+    assert "${GITHUB_SHA}" not in select_images["run"]
+    assert verify_staged["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.verify_paused_observability_release }}"
+    )
+    assert verify_staged["env"] == {
+        "RELEASE_SHA": release_sha_output,
+        "OBSERVABILITY_SOURCE_MANIFEST_SHA256": (
+            "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
+        ),
+    }
+    assert verify_staged["with"]["envs"] == ("RELEASE_SHA,OBSERVABILITY_SOURCE_MANIFEST_SHA256")
+    for evidence_check in (
+        'test "$(cat staging-observability-release-sha)" = "$RELEASE_SHA"',
+        "sha256sum --check staging-observability-source.sha256",
+        "cmp -s deploy/selfie-observability/root-helper.sh "
+        '"/usr/local/sbin/findme-selfie-observability"',
+        "sudo -n /usr/local/sbin/findme-selfie-observability verify",
+    ):
+        assert evidence_check in verify_staged["with"]["script"]
+    assert deploy["steps"].index(verify_staged) < deploy["steps"].index(
+        _workflow_step(staging, "deploy", "Copy staging deployment files")
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text('#!/bin/sh\nprintf "%s\\n" "$FAKE_HEAD"\n', encoding="utf-8")
+    fake_git.chmod(0o755)
+    expected_sha = "a" * 40
+    bind_script = bind_release["run"].replace("${{ github.sha }}", expected_sha)
+    environment = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    exact = tmp_path / "exact"
+    exact.mkdir()
+    result = subprocess.run(
+        ["/bin/sh", "-c", bind_script],
+        cwd=exact,
+        env={**environment, "FAKE_HEAD": expected_sha},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (exact / "staging-observability-release-sha").read_text(encoding="utf-8") == (
+        f"{expected_sha}\n"
+    )
+    mismatch = tmp_path / "mismatch"
+    mismatch.mkdir()
+    result = subprocess.run(
+        ["/bin/sh", "-c", bind_script],
+        cwd=mismatch,
+        env={**environment, "FAKE_HEAD": "b" * 40},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert not (mismatch / "staging-observability-release-sha").exists()
+
+    source_root = tmp_path / "manifest"
+    (source_root / "deploy/selfie-observability").mkdir(parents=True)
+    source_files = {
+        "deploy/bootstrap-selfie-observability.sh": b"bootstrap\n",
+        "deploy/selfie-observability/root-helper.sh": b"helper\n",
+        "deploy/selfie-observability/summarize.py": b"summary\n",
+    }
+    for relative_path, content in source_files.items():
+        (source_root / relative_path).write_bytes(content)
+    expected_lines = [
+        f"{hashlib.sha256(content).hexdigest()}  {relative_path}\n"
+        for relative_path, content in source_files.items()
+    ]
+    expected_manifest = "".join(expected_lines)
+    expected_manifest_sha = hashlib.sha256(expected_manifest.encode()).hexdigest()
+    manifest_bin = source_root / "bin"
+    manifest_bin.mkdir()
+    fake_git = manifest_bin / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = ls-tree ]; then\n'
+        + "".join(f"  printf '%s\\n' '{path}'\n" for path in source_files)
+        + "else\n  exit 2\nfi\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    fake_sha256sum = manifest_bin / "sha256sum"
+    fake_sha256sum.write_text(
+        f"#!{sys.executable}\n"
+        "import hashlib\n"
+        "import pathlib\n"
+        "import sys\n"
+        "for source_path in sys.argv[1:]:\n"
+        "    digest = hashlib.sha256(pathlib.Path(source_path).read_bytes()).hexdigest()\n"
+        "    print(f'{digest}  {source_path}')\n",
+        encoding="utf-8",
+    )
+    fake_sha256sum.chmod(0o755)
+    manifest_script = manifest_release["run"].replace("${{ github.sha }}", expected_sha)
+    manifest_script = manifest_script.replace(
+        "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}",
+        expected_manifest_sha,
+    )
+    manifest_environment = {
+        **os.environ,
+        "PATH": f"{manifest_bin}:{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        ["/bin/sh", "-c", manifest_script],
+        cwd=source_root,
+        env=manifest_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (source_root / "staging-observability-source.sha256").read_text(
+        encoding="utf-8"
+    ) == expected_manifest
+    mismatch_script = manifest_script.replace(expected_manifest_sha, "0" * 64)
+    result = subprocess.run(
+        ["/bin/sh", "-c", mismatch_script],
+        cwd=source_root,
+        env=manifest_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
 
     expected_push = (
         "github.event_name == 'push' && "

@@ -8,7 +8,10 @@ observability package is a separate reviewed operator action.
 
 For a `main` push that does not change the privileged observability package, **Deploy staging**
 builds immutable images and applies them automatically. Review the workflow result and perform the
-acceptance checks below. A manual **Deploy staging** dispatch uses the same deployment path; leave
+acceptance checks below. An application deployment dispatched manually must supply an exact
+40-character commit as `deployment_sha`; the workflow rejects a missing, malformed, unavailable,
+or non-commit object instead of silently deploying the moving `main` tip. Leave
+`verify_paused_observability_release=false` for an ordinary manual deployment, and leave
 `configure_monitoring_agent` disabled unless the dispatch is only for that separate operation.
 
 ## Controlled privileged-package pause
@@ -22,28 +25,47 @@ The classifier succeeds and writes the required action to the workflow summary. 
 are intentionally skipped, so this is a visible release pause rather than a failed application
 deployment. The classifier does not read staging secrets, connect to the VM, or install anything.
 
-Before bootstrapping, an operator must ensure `/opt/photo-prjct` contains the reviewed paused
-commit named in the workflow summary. Use the established operator-controlled checkout/update
-procedure and confirm its commit; the automatic paused workflow has deliberately not copied the
-new package to the VM.
+After staging approval, the separate **Stage paused observability source** job checks out the exact
+paused SHA, creates a source checksum manifest, verifies that manifest against the classifier's
+digest, and copies only the bootstrap script, observability package, SHA marker, and checksum
+manifest. It writes them below the SHA-specific path
+`/opt/photo-prjct/privileged-observability-releases/<paused-sha>/`. It does not build an image,
+copy application or Compose files, read application secrets, run SSH commands, install root-owned
+files, change `.env`, or change `deployed-image`.
 
-From a host with existing operator access, perform the reviewed action:
+Wait for that staging job to succeed. Then use the concrete paused SHA and manifest digest printed
+in the classifier's workflow summary; do not substitute the mutable `/opt/photo-prjct/deploy`
+source. The summary provides these exact commands with both placeholders filled:
 
 ```bash
 ssh -l petrnikitin 111.88.151.64
-cd /opt/photo-prjct
-DEPLOY_ROOT=/opt/photo-prjct sh /opt/photo-prjct/deploy/bootstrap-selfie-observability.sh
+cd /opt/photo-prjct/privileged-observability-releases/<paused-sha>
+test "$(cat staging-observability-release-sha)" = "<paused-sha>"
+printf '%s  staging-observability-source.sha256\n' '<manifest-sha256>' | sha256sum --check -
+sha256sum --check staging-observability-source.sha256
+DEPLOY_ROOT=/opt/photo-prjct/privileged-observability-releases/<paused-sha> sh /opt/photo-prjct/privileged-observability-releases/<paused-sha>/deploy/bootstrap-selfie-observability.sh
 sudo /usr/local/sbin/findme-selfie-observability verify
 ```
 
-The bootstrap copies validated inputs to root-owned paths and installs only the narrow helper
-permission. Do not create a temporary SSH key, use the normal deployment user to run the bootstrap
+The SHA check rejects a wrong staged release. The two checksum checks bind the transferred source
+files to the manifest emitted for that exact reviewed commit before the bootstrap copies validated
+inputs to root-owned paths and installs the narrow helper permission. Do not create a temporary SSH
+key, copy a different checkout into the staged path, use the normal deployment job to install files
 as root, or add automatic root installation to GitHub Actions.
 
-After `verify` succeeds, manually dispatch **Deploy staging** with
-`configure_monitoring_agent=false`. That run copies the ordinary deployment files, builds the
-immutable images, and applies the application release. Do not bypass the manual dispatch by
-running `deploy/apply-deployment.sh` outside the workflow.
+After `verify` succeeds, run the exact dispatch command printed in the paused workflow summary:
+
+```bash
+gh workflow run deploy.yml --ref main -f deployment_sha=<paused-sha> -f verify_paused_observability_release=true
+```
+
+The manual workflow validates that `deployment_sha` is the exact commit object, checks it out for
+both build and deploy, tags both images with it, and copies deployment source from it. Before the
+normal copy or any application mutation, the staging SSH preflight verifies the SHA marker,
+classifier manifest digest, staged file checksums, installed root-owned package equality, and
+root-helper health for the same SHA. Do not omit the verification flag for a controlled-pause
+retry, dispatch a branch name instead of the SHA, or bypass the workflow by running
+`deploy/apply-deployment.sh` directly.
 
 ## Migration-preflight or migration failure
 

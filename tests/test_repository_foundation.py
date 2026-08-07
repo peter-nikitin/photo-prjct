@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 import tomllib
@@ -20,6 +21,36 @@ def _workflow_step(workflow: dict[str, Any], job_name: str, step_name: str) -> d
     ]
     assert len(matching_steps) == 1, f"Expected one {step_name!r} step"
     return matching_steps[0]
+
+
+def _notification_phase_from_workflow(tmp_path: Path, failed_log: str) -> str:
+    workflow = _load_workflow("deploy.yml")
+    run = _workflow_step(workflow, "reconcile-staging-deploy-issue", "Reconcile issue state")["run"]
+    run = run.replace("${{ needs.build.result }}", "success")
+    run = run.replace("${{ needs.deploy.result }}", "failure")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    phase_arguments = tmp_path / "phase-arguments"
+    for name, source in {
+        "gh": '#!/bin/sh\nprintf "%s\\n" "$GH_LOG"\n',
+        "python": '#!/bin/sh\nprintf "%s\\n" "$@" > "$PHASE_ARGUMENTS"\n',
+    }.items():
+        executable = fake_bin / name
+        executable.write_text(source, encoding="utf-8")
+        executable.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "GH_LOG": failed_log,
+        "PHASE_ARGUMENTS": str(phase_arguments),
+        "GITHUB_REPOSITORY": "findme/photo",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_RUN_ID": "42",
+    }
+    subprocess.run(["/bin/sh", "-c", run], check=True, cwd=ROOT, env=environment)
+    arguments = phase_arguments.read_text(encoding="utf-8").splitlines()
+    return arguments[arguments.index("--phase") + 1]
 
 
 def test_adr_index_lists_all_accepted_decisions() -> None:
@@ -74,6 +105,133 @@ def test_deployment_workflows_separate_staging_and_production() -> None:
     assert set(production[True]) == {"workflow_dispatch"}
     assert production["jobs"]["promote"]["environment"] == "production"
     assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
+
+
+def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritative() -> None:
+    staging = _load_workflow("deploy.yml")
+    dispatch = staging[True]["workflow_dispatch"]
+    build = staging["jobs"]["build"]
+    deploy = staging["jobs"]["deploy"]
+    reconcile = staging["jobs"]["reconcile-staging-deploy-issue"]
+    validation = staging["jobs"]["validate-staging-deploy-issue"]
+
+    assert dispatch["inputs"]["validate_deploy_issue"] == {
+        "description": "Exercise the bounded staging deployment issue notification drill",
+        "required": True,
+        "default": False,
+        "type": "boolean",
+    }
+    assert "!inputs.validate_deploy_issue" in build["if"]
+    assert "!inputs.validate_deploy_issue" in deploy["if"]
+    assert reconcile["if"] == "${{ always() && github.event_name == 'push' }}"
+    assert reconcile["needs"] == ["build", "deploy"]
+    assert reconcile["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "issues": "write",
+    }
+    assert "environment" not in reconcile
+    assert "secrets." not in json.dumps(reconcile)
+    notification = _workflow_step(
+        staging, "reconcile-staging-deploy-issue", "Reconcile issue state"
+    )
+    assert notification["continue-on-error"] is True
+    assert notification["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
+    run = notification["run"]
+    assert '--repository "$GITHUB_REPOSITORY"' in run
+    assert "--token-env GITHUB_TOKEN" in run
+    assert "--mode production" in run
+    assert '--conclusion "$conclusion"' in run
+    assert '--sha "$GITHUB_SHA"' in run
+    assert '--run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"' in run
+    assert '--phase "$phase"' in run
+    assert 'gh run view "$GITHUB_RUN_ID" --log-failed' in run
+    assert (
+        "DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|"
+        "migration-preflight|observability-preflight|observability-reconcile|certificate|"
+        "compose-reconcile|local-health|worker-health|public-health|observability-verify|"
+        "commit)"
+    ) in run
+    assert "unknown" in run
+    warning = _workflow_step(
+        staging, "reconcile-staging-deploy-issue", "Warn when issue reconciliation fails"
+    )
+    assert warning["if"] == "${{ steps.reconcile.outcome == 'failure' }}"
+    assert "::warning::" in warning["run"]
+
+    assert validation["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue }}"
+    )
+    assert validation["environment"] == "staging"
+    assert validation["permissions"] == {"contents": "read", "issues": "write"}
+    assert "secrets." not in json.dumps(validation)
+    validation_steps = validation["steps"]
+    assert [step["name"] for step in validation_steps] == [
+        "Check out repository",
+        "Create validation issue",
+        "Update validation issue",
+        "Close validation issue",
+        "Assert validation issue is closed",
+    ]
+    for step in validation_steps[1:4]:
+        assert "--mode validation" in step["run"]
+        assert '--repository "$GITHUB_REPOSITORY"' in step["run"]
+        assert "--token-env GITHUB_TOKEN" in step["run"]
+        assert '--sha "$GITHUB_SHA"' in step["run"]
+        assert (
+            '--run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"'
+            in step["run"]
+        )
+    assert "[staging deployment validation] notification drill" in validation_steps[4]["run"]
+
+
+def test_notification_phase_parser_executes_against_prefixed_failed_logs(tmp_path: Path) -> None:
+    prefixed_log = "\n".join(
+        (
+            "deploy\tApply staging deployment\t2026-08-07T10:00:00Z DEPLOY_PHASE=validate",
+            "deploy\tApply staging deployment\t2026-08-07T10:01:00Z DEPLOY_PHASE=compose-reconcile",
+            "deploy\tApply staging deployment\t2026-08-07T10:02:00Z DEPLOY_PHASE=commit-extra",
+            "deploy\tApply staging deployment\t2026-08-07T10:03:00Z ignored DEPLOY_PHASE=commit",
+        )
+    )
+    near_matches_only = "\n".join(
+        (
+            "deploy\tApply staging deployment\tDEPLOY_PHASE=compose-reconcile-extra",
+            "deploy\tApply staging deployment\tprefixDEPLOY_PHASE=commit",
+            "deploy\tApply staging deployment\tDEPLOY_PHASE=unknown",
+        )
+    )
+
+    assert _notification_phase_from_workflow(tmp_path / "prefixed", prefixed_log) == "commit"
+    assert (
+        _notification_phase_from_workflow(tmp_path / "near-matches", near_matches_only) == "unknown"
+    )
+
+
+def test_validation_drill_filter_ignores_pull_requests_with_the_validation_title() -> None:
+    workflow = _load_workflow("deploy.yml")
+    assertion = _workflow_step(
+        workflow, "validate-staging-deploy-issue", "Assert validation issue is closed"
+    )
+    match = re.search(r"--jq '([^']+)'", assertion["run"])
+    assert match is not None
+    response = [
+        {
+            "number": 17,
+            "title": "[staging deployment validation] notification drill",
+            "pull_request": {"url": "https://api.github.com/repos/findme/photo/pulls/17"},
+        },
+        {"number": 18, "title": "[staging deployment validation] notification drill"},
+    ]
+    result = subprocess.run(
+        ["jq", "-r", match.group(1)],
+        check=True,
+        input=json.dumps(response),
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.stdout == "18\n"
 
 
 def test_staging_face_embedding_benchmark_is_manual_and_bounded() -> None:
@@ -651,13 +809,15 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
     assert agent["environment"] == "staging"
     assert (
         agent["if"]
-        == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent }}"
+        == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && "
+        "!inputs.validate_deploy_issue }}"
     )
     assert "needs" not in agent
     assert staging_deploy["if"] == (
         "${{ (github.event_name == 'push' && "
         "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || "
-        "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent) }}"
+        "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
+        "!inputs.validate_deploy_issue) }}"
     )
     assert "configure-monitoring-agent" not in json.dumps(staging_deploy)
     assert "configure-monitoring-agent" not in json.dumps(production)
@@ -706,7 +866,8 @@ def test_staging_deployment_pauses_privileged_package_pushes_before_building() -
         "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false'"
     )
     expected_manual_deploy = (
-        "github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent"
+        "github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
+        "!inputs.validate_deploy_issue"
     )
     expected_condition = f"${{{{ ({expected_push}) || ({expected_manual_deploy}) }}}}"
     for job in (build, deploy):

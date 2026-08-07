@@ -60,6 +60,37 @@ post-mutation failure. A red application deployment is not proof that staging is
 rollback is not proof that the candidate was activated. Preserve the workflow URL and the named
 failed phase, then verify the prior state before deciding on a corrected retry.
 
+## Deployment issue notification
+
+For an automatic `main` deployment, the workflow maintains at most one open GitHub issue titled
+`[staging deployment] main is not deployed`. The first failed build or deploy creates it; later
+failed runs add a bounded update to the same exact-title issue. A later successful deployment adds
+its update and closes that issue. If there is no matching open issue, success does nothing.
+
+The issue is a notification aid, not deployment state. The build and deploy job conclusions,
+`DEPLOY_RESULT` marker, rollback result, and acceptance checks remain authoritative. A notification
+failure emits an Actions warning but cannot make a healthy deployment red or make a failed
+deployment green. The reconciler reads only the first 100 open repository issues and matches the
+fixed title exactly, so unrelated issues and pull requests are not touched.
+
+Issue updates contain only the immutable 40-character commit SHA, Actions run URL, enumerated
+deployment phase, and UTC time. They contain no token, application secret, raw deploy log, VM
+detail, database value, or storage data. Build failures report phase `build`; failed deploys use the
+last exact `DEPLOY_PHASE` marker from the failed log, or `unknown` if no valid marker is available.
+
+## Notification validation drill
+
+Use the manual **Deploy staging** workflow with `validate_deploy_issue=true` to exercise the
+notification path. This route still requires the existing `staging` environment approval, skips the
+application build and deploy jobs, and receives no VM, database, application, or storage secret.
+It creates, updates, then closes only `[staging deployment validation] notification drill`, and
+finally checks that no issue with that validation title remains open. It never reads or mutates the
+production notification issue.
+
+If the final validation assertion fails, retain the workflow URL and inspect the validation issue
+manually. Do not use the validation title as evidence that production staging is unhealthy, and do
+not close the production issue through the drill.
+
 ## Acceptance checks
 
 After an ordinary deployment or corrected manual retry, check the deployed marker, Compose health,

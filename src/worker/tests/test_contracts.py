@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 from photo_worker.contracts import (
+    FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
+    PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_SELFIE_QUERY,
     V2_FACE_EMBEDDING_CONFIGURATION,
     V2_GENERATE_PREVIEW_CONFIGURATION,
@@ -442,6 +444,42 @@ def quality_claim_payload(*, configuration: dict[str, object] | None = None) -> 
     )
 
 
+def quality_preview_claim_payload() -> dict[str, object]:
+    payload = quality_claim_payload()
+    job = payload["job"]
+    assert isinstance(job, dict)
+    job["input_fingerprint"] = {
+        "object_key": (
+            "derivatives/previews/photo-1/preview-small-v1/"
+            "00000000-0000-0000-0000-000000000012-"
+            f"{'a' * 64}.jpg"
+        ),
+        "object_size": 1024,
+        "object_content_type": "image/jpeg",
+        "object_etag": None,
+        "media_kind": "preview-small-v1",
+        "pixel_width": 1600,
+        "pixel_height": 1000,
+    }
+    job["input_geometry"] = {
+        "coordinate_space": "preview-small-v1",
+        "pixel_width": 1600,
+        "pixel_height": 1000,
+        "oriented_source_width": 3200,
+        "oriented_source_height": 2000,
+    }
+    return payload
+
+
+def benchmark_claim_payload() -> dict[str, object]:
+    return claim_payload(
+        processor_type=PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+        contract_version=3,
+        processor_version=1,
+        configuration=FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
+    )
+
+
 def test_v3_quality_face_claim_freezes_the_complete_quality_configuration() -> None:
     claim = Claim.from_response(quality_claim_payload())
 
@@ -451,6 +489,117 @@ def test_v3_quality_face_claim_freezes_the_complete_quality_configuration() -> N
     assert claim.job.configuration.quality_thresholds is not None
     assert claim.job.configuration.quality_thresholds.crop_size == 112
     assert claim.job.configuration.quality_thresholds.minimum_face_px == 20
+    assert claim.job.input_fingerprint.original_key is not None
+    assert claim.job.input_fingerprint.object_key is None
+    assert claim.job.input_geometry is None
+
+
+def test_v3_quality_face_claim_accepts_the_exact_published_preview_identity() -> None:
+    claim = Claim.from_response(quality_preview_claim_payload())
+
+    assert claim.job is not None
+    assert claim.job.contract_version == 3
+    assert claim.job.input_fingerprint.original_key is None
+    assert claim.job.input_fingerprint.media_kind == "preview-small-v1"
+    assert claim.job.input_fingerprint.object_size == 1024
+    assert claim.job.input_geometry == {
+        "coordinate_space": "preview-small-v1",
+        "pixel_width": 1600,
+        "pixel_height": 1000,
+        "oriented_source_width": 3200,
+        "oriented_source_height": 2000,
+    }
+
+
+def test_v3_quality_face_claim_rejects_a_preview_key_for_another_photo() -> None:
+    payload = quality_preview_claim_payload()
+    job = payload["job"]
+    assert isinstance(job, dict)
+    fingerprint = job["input_fingerprint"]
+    assert isinstance(fingerprint, dict)
+    object_key = fingerprint["object_key"]
+    assert isinstance(object_key, str)
+    fingerprint["object_key"] = object_key.replace("/photo-1/", "/photo-2/")
+
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
+
+
+def test_v3_face_embedding_benchmark_accepts_only_the_exact_original_input() -> None:
+    claim = Claim.from_response(benchmark_claim_payload())
+
+    assert claim.job is not None
+    assert claim.job.input_fingerprint.original_key is not None
+    assert claim.job.input_fingerprint.object_key is None
+
+    preview_payload = quality_preview_claim_payload()
+    preview_job = preview_payload["job"]
+    assert isinstance(preview_job, dict)
+    preview_job.update(
+        {
+            "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+            "processor_version": 1,
+            "configuration": FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
+        }
+    )
+    preview_job.pop("input_geometry")
+
+    with pytest.raises(ContractError):
+        Claim.from_response(preview_payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_geometry",
+        "mixed_fingerprint",
+        "preview_declared_as_original",
+        "geometry_dimension_mismatch",
+        "missing_source_identity",
+        "malformed_preview_key",
+        "original_with_geometry",
+        "malformed_original_key",
+    ],
+)
+def test_v3_quality_face_claim_rejects_mixed_or_malformed_input_identity(
+    mutation: str,
+) -> None:
+    payload = quality_preview_claim_payload()
+    job = payload["job"]
+    assert isinstance(job, dict)
+    fingerprint = job["input_fingerprint"]
+    geometry = job["input_geometry"]
+    assert isinstance(fingerprint, dict)
+    assert isinstance(geometry, dict)
+    if mutation == "missing_geometry":
+        job.pop("input_geometry")
+    elif mutation == "mixed_fingerprint":
+        fingerprint["original_key"] = "originals/0123456789abcdef0123456789abcdef"
+    elif mutation == "preview_declared_as_original":
+        fingerprint["media_kind"] = "original"
+    elif mutation == "geometry_dimension_mismatch":
+        geometry["pixel_width"] = 1599
+    elif mutation == "missing_source_identity":
+        geometry.pop("oriented_source_width")
+    elif mutation == "malformed_preview_key":
+        fingerprint["object_key"] = "derivatives/previews/not-an-exact-published-key.jpg"
+    elif mutation == "malformed_original_key":
+        original = quality_claim_payload()
+        original_job = original["job"]
+        assert isinstance(original_job, dict)
+        original_fingerprint = original_job["input_fingerprint"]
+        assert isinstance(original_fingerprint, dict)
+        original_fingerprint["original_key"] = "originals/not-an-exact-original-key"
+        payload = original
+    else:
+        original = quality_claim_payload()
+        original_job = original["job"]
+        assert isinstance(original_job, dict)
+        original_job["input_geometry"] = geometry
+        payload = original
+
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
 
 
 @pytest.mark.parametrize(

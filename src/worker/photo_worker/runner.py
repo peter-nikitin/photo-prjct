@@ -652,6 +652,8 @@ class Worker:
                 if job.input_geometry is None:
                     raise ValueError("preview face claim is missing input geometry")
                 return result.as_payload() | {"input_geometry": job.input_geometry}
+            if job.input_geometry is not None:
+                return result.as_payload() | {"input_geometry": job.input_geometry}
             if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
                 return {
                     "model": result.model,
@@ -683,7 +685,7 @@ class Worker:
     def _download_current(self, job: ClaimedJob, path: Path) -> None:
         expected_etag = (
             getattr(job.input_fingerprint, "object_etag", None)
-            if job.contract_version == PREVIEW_CONTRACT_VERSION
+            if getattr(job.input_fingerprint, "object_key", None) is not None
             else getattr(job.input_fingerprint, "verified_source_etag", None)
         )
         try:
@@ -845,10 +847,10 @@ def _unlink_temporary(path: Path | None) -> None:
 
 
 def _fingerprint_size(job: ClaimedJob) -> int:
-    if job.contract_version == PREVIEW_CONTRACT_VERSION:
-        size = getattr(job.input_fingerprint, "object_size", None)
-    elif job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+    if job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
         size = getattr(job.input_fingerprint, "temporary_size", None)
+    elif getattr(job.input_fingerprint, "object_key", None) is not None:
+        size = getattr(job.input_fingerprint, "object_size", None)
     else:
         size = getattr(job.input_fingerprint, "original_size", None)
     if not isinstance(size, int):

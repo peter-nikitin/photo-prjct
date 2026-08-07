@@ -119,6 +119,12 @@ FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
 }
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _SELFIE_KEY = re.compile(r"selfie-search/[0-9a-f]{32}")
+_ORIGINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
+_PUBLISHED_PREVIEW_KEY = re.compile(
+    r"derivatives/previews/(?P<photo_id>[A-Za-z0-9_-]{1,32})/preview-small-v1/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+    r"[0-9a-f]{64}\.jpg"
+)
 _EXIF_FIELDS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
 FAILURE_RETRYABLE = {
     "decode_failed": False,
@@ -172,17 +178,26 @@ class InputFingerprint:
 
     @classmethod
     def from_value(cls, value: object, *, contract_version: int) -> InputFingerprint:
-        fields = {
+        original_fields = {
             "original_key",
             "original_size",
             "original_content_type",
             "verified_source_etag",
             "version_evidence",
         }
+        generic_fields = {
+            "object_key",
+            "object_size",
+            "object_content_type",
+            "object_etag",
+            "media_kind",
+            "pixel_width",
+            "pixel_height",
+        }
         if not isinstance(value, dict) or not _bounded_json(value):
             raise ContractError("invalid input fingerprint")
-        if contract_version in {CONTRACT_VERSION, 3}:
-            if set(value) != fields:
+        if set(value) == original_fields:
+            if contract_version not in {CONTRACT_VERSION, 3}:
                 raise ContractError("invalid input fingerprint")
             key = value["original_key"]
             size = value["original_size"]
@@ -196,6 +211,10 @@ class InputFingerprint:
                 and evidence in {"verified_source_etag", "unavailable"}
                 and (etag is None or _safe_string(etag, maximum=256))
                 and ((evidence == "verified_source_etag") == isinstance(etag, str))
+                and (
+                    contract_version != 3
+                    or (isinstance(key, str) and _ORIGINAL_KEY.fullmatch(key) is not None)
+                )
             ):
                 raise ContractError("invalid input fingerprint")
             return cls(
@@ -205,16 +224,7 @@ class InputFingerprint:
                 verified_source_etag=etag,
                 version_evidence=evidence,
             )
-        generic_fields = {
-            "object_key",
-            "object_size",
-            "object_content_type",
-            "object_etag",
-            "media_kind",
-            "pixel_width",
-            "pixel_height",
-        }
-        if set(value) != generic_fields:
+        if set(value) != generic_fields or contract_version not in {PREVIEW_CONTRACT_VERSION, 3}:
             raise ContractError("invalid input fingerprint")
         key = value["object_key"]
         size = value["object_size"]
@@ -231,6 +241,15 @@ class InputFingerprint:
             and media_kind in {"original", "preview-small-v1"}
             and _positive_int(width)
             and _positive_int(height)
+            and (
+                contract_version != 3
+                or (
+                    isinstance(key, str)
+                    and _PUBLISHED_PREVIEW_KEY.fullmatch(key) is not None
+                    and etag is None
+                    and media_kind == "preview-small-v1"
+                )
+            )
         ):
             raise ContractError("invalid input fingerprint")
         return cls(
@@ -702,10 +721,16 @@ class ClaimedJob:
                 PROCESSOR_TYPE_FACE_EMBEDDING,
                 PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
             )
+            quality_face = identity == (
+                3,
+                PROCESSOR_TYPE_FACE_EMBEDDING,
+                PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
+            )
+            quality_face_with_geometry = quality_face and "input_geometry" in value
             fields = (
                 photo_fields
                 | ({"output_slots"} if preview else set())
-                | ({"input_geometry"} if preview_face else set())
+                | ({"input_geometry"} if preview_face or quality_face_with_geometry else set())
             )
             if set(value) != fields:
                 raise ContractError("invalid claimed job")
@@ -721,12 +746,12 @@ class ClaimedJob:
             input_geometry = cast(dict[str, int | str] | None, value.get("input_geometry"))
             expected_size = (
                 photo_fingerprint.object_size
-                if version == PREVIEW_CONTRACT_VERSION
+                if photo_fingerprint.object_key is not None
                 else photo_fingerprint.original_size
             )
             expected_content_type = (
                 photo_fingerprint.object_content_type
-                if version == PREVIEW_CONTRACT_VERSION
+                if photo_fingerprint.object_key is not None
                 else photo_fingerprint.original_content_type
             )
             supported_identity = identity in {
@@ -757,6 +782,9 @@ class ClaimedJob:
                 or (
                     identity == (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1)
                     and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK
+                    and photo_fingerprint.original_key is not None
+                    and photo_fingerprint.object_key is None
+                    and input_geometry is None
                 )
                 or (
                     identity
@@ -769,10 +797,17 @@ class ClaimedJob:
                     and configuration.quality_thresholds is None
                 )
                 or (
-                    identity
-                    == (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY)
+                    quality_face
                     and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
                     and configuration.quality_thresholds is not None
+                    and (
+                        (photo_fingerprint.original_key is not None and input_geometry is None)
+                        or (
+                            photo_fingerprint.media_kind == "preview-small-v1"
+                            and _preview_key_matches_photo(photo_fingerprint, value["photo_id"])
+                            and _valid_preview_input_geometry(input_geometry, photo_fingerprint)
+                        )
+                    )
                 )
                 or (
                     preview
@@ -1029,6 +1064,13 @@ def _valid_preview_input_geometry(value: object, fingerprint: InputFingerprint) 
         and _positive_int(value["oriented_source_width"])
         and _positive_int(value["oriented_source_height"])
     )
+
+
+def _preview_key_matches_photo(fingerprint: InputFingerprint, photo_id: object) -> bool:
+    if not isinstance(fingerprint.object_key, str) or not isinstance(photo_id, str):
+        return False
+    match = _PUBLISHED_PREVIEW_KEY.fullmatch(fingerprint.object_key)
+    return match is not None and match.group("photo_id") == photo_id
 
 
 def _safe_string(value: object, *, maximum: int) -> bool:

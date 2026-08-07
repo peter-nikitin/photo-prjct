@@ -20,6 +20,7 @@ from photo_worker.contracts import (
     Claim,
     FaceEmbeddingFace,
     FaceEmbeddingResult,
+    InputFingerprint,
     SelfieEmbeddingResult,
 )
 from photo_worker.face_embedding import FaceEmbeddingError
@@ -525,6 +526,37 @@ def quality_face_claim() -> Claim:
             contract_version=3,
             processor_version=3,
             configuration=replace(claim.job.configuration, quality_thresholds=thresholds),
+        ),
+        suggested_delay_seconds=None,
+    )
+
+
+def quality_preview_face_claim() -> Claim:
+    claim = quality_face_claim()
+    assert claim.job is not None
+    return Claim(
+        job=replace(
+            claim.job,
+            input_fingerprint=InputFingerprint(
+                object_key=(
+                    "derivatives/previews/photo-1/preview-small-v1/"
+                    "00000000-0000-0000-0000-000000000012-"
+                    f"{'a' * 64}.jpg"
+                ),
+                object_size=1024,
+                object_content_type="image/jpeg",
+                object_etag=None,
+                media_kind="preview-small-v1",
+                pixel_width=1600,
+                pixel_height=1000,
+            ),
+            input_geometry={
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+            },
         ),
         suggested_delay_seconds=None,
     )
@@ -1156,6 +1188,36 @@ def test_worker_submits_v3_quality_face_records_and_passes_the_frozen_thresholds
     assert face["status"] == "quality_rejected"
     assert face["quality"]["reasons"] == ["borderline_blur", "low_confidence"]
     assert "embedding" not in face
+
+
+def test_worker_preserves_v3_preview_geometry_through_download_and_terminal_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claim = quality_preview_face_claim()
+    client = Client(claim)
+    monkeypatch.setattr(
+        "photo_worker.runner.extract_face_embeddings",
+        lambda *_args, **_kwargs: quality_face_embedding_result(),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_identities=("3/face_embedding/3",),
+        ),
+    ).run_once()
+
+    assert client.failed == []
+    assert client.completed[0]["result"]["input_geometry"] == {
+        "coordinate_space": "preview-small-v1",
+        "pixel_width": 1600,
+        "pixel_height": 1000,
+        "oriented_source_width": 3200,
+        "oriented_source_height": 2000,
+    }
 
 
 def test_worker_benchmark_runs_face_extraction_but_submits_metrics_only(

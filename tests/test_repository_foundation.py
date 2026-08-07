@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -117,7 +118,7 @@ def test_implementation_review_package_includes_tracked_and_untracked_files(
     )
 
     subprocess.run(
-        [str(ROOT / ".venv" / "bin" / "python"), str(script), str(output)],
+        [sys.executable, str(script), str(output)],
         cwd=repository,
         check=True,
     )

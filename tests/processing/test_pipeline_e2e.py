@@ -169,6 +169,7 @@ class PipelineEndToEndTests(TestCase):
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
+            timezone_name="Etc/UTC",
         )
         self.jpeg = self._jpeg_with_capture_time()
         self._make_completion_stale = False
@@ -357,6 +358,8 @@ class PipelineEndToEndTests(TestCase):
                 "source_field": None,
                 "timezone_state": "not_applicable",
                 "source_value": None,
+                "source_offset": None,
+                "event_timezone": "Etc/UTC",
                 "warnings": ["capture_time_malformed", "capture_time_missing"],
             },
         )

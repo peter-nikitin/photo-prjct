@@ -15,9 +15,10 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.enrollment import (
-    CAPTURE_METADATA_CONFIGURATION,
+    CAPTURE_METADATA_PROCESSOR_VERSION,
     FACE_EMBEDDING_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
+    capture_metadata_configuration,
     reconcile_capture_metadata,
     reconcile_face_embedding,
     request_capture_metadata,
@@ -35,12 +36,19 @@ class CaptureMetadataEnrollmentTests(TestCase):
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
+            timezone_name="Europe/Moscow",
         )
 
-    def private_photo(self, suffix: str, *, content_type: str = "image/jpeg") -> Photo:
+    def private_photo(
+        self,
+        suffix: str,
+        *,
+        content_type: str = "image/jpeg",
+        event: Event | None = None,
+    ) -> Photo:
         return Photo.objects.create(
             id=f"private-{suffix}",
-            event=self.event,
+            event=event or self.event,
             src="",
             uploaded_by=self.user,
             original_key=f"originals/{suffix}",
@@ -137,7 +145,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(run.status, EventProcessingRun.Status.COLLECTING)
         self.assertEqual(run.contract_version, 1)
         self.assertEqual(run.processor_type, "capture_metadata")
-        self.assertEqual(run.processor_version, 1)
+        self.assertEqual(run.processor_version, CAPTURE_METADATA_PROCESSOR_VERSION)
         self.assertEqual(ProcessingJob.objects.filter(run=run).count(), 2)
         for photo in (first, second):
             state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
@@ -145,18 +153,78 @@ class CaptureMetadataEnrollmentTests(TestCase):
             self.assertEqual(state.current_run, run)
             self.assertEqual(state.current_job.status, ProcessingJob.Status.QUEUED)
 
-    def test_v1_configuration_records_worker_and_exif_behavior_immutably(self) -> None:
+    def test_v2_configuration_records_event_timezone_and_exif_behavior_immutably(self) -> None:
         self.assertEqual(
-            CAPTURE_METADATA_CONFIGURATION["capture_metadata"],
+            capture_metadata_configuration("Europe/Moscow")["capture_metadata"],
             {
                 "date_field_precedence": [
                     "DateTimeOriginal",
                     "DateTimeDigitized",
                     "DateTime",
                 ],
-                "normalization": "utc_assume_utc_if_missing",
+                "normalization": "utc_explicit_offset_or_event_timezone",
+                "event_timezone": "Europe/Moscow",
             },
         )
+
+    def test_capture_enrollment_separates_immutable_configurations_by_event_timezone(self) -> None:
+        london = Event.objects.create(
+            name="London enrollment event",
+            slug="london-enrollment-event",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="London",
+            timezone_name="Europe/London",
+        )
+
+        moscow_state = request_capture_metadata(self.private_photo("moscow"))
+        london_state = request_capture_metadata(self.private_photo("london", event=london))
+
+        assert moscow_state.current_job is not None
+        assert london_state.current_job is not None
+        self.assertEqual(moscow_state.current_job.processor_version, 2)
+        self.assertEqual(london_state.current_job.processor_version, 2)
+        self.assertEqual(
+            moscow_state.current_job.configuration,
+            capture_metadata_configuration("Europe/Moscow"),
+        )
+        self.assertEqual(
+            london_state.current_job.configuration,
+            capture_metadata_configuration("Europe/London"),
+        )
+        self.assertNotEqual(
+            moscow_state.current_job.configuration_hash,
+            london_state.current_job.configuration_hash,
+        )
+
+    def test_capture_enrollment_uses_the_locked_current_event_timezone(self) -> None:
+        photo = self.private_photo("locked-timezone")
+        cached_photo = Photo.objects.select_related("event").get(pk=photo.pk)
+        self.assertEqual(cached_photo.event.timezone_name, "Europe/Moscow")
+        Event.objects.filter(pk=self.event.pk).update(timezone_name="Europe/London")
+
+        state = request_capture_metadata(cached_photo)
+
+        assert state.current_job is not None
+        self.assertEqual(
+            state.current_job.configuration,
+            capture_metadata_configuration("Europe/London"),
+        )
+        self.assertEqual(state.current_run.event.timezone_name, "Europe/London")
+
+    def test_capture_enrollment_refuses_missing_or_invalid_event_timezone(self) -> None:
+        self.event.timezone_name = None
+        self.event.save(update_fields=["timezone_name"])
+
+        with self.assertRaisesRegex(ValueError, "event timezone"):
+            request_capture_metadata(self.private_photo("missing-timezone"))
+
+        self.event.timezone_name = "not/a-timezone"
+        self.event.save(update_fields=["timezone_name"])
+        with self.assertRaisesRegex(ValueError, "event timezone"):
+            request_capture_metadata(self.private_photo("invalid-timezone"))
+
+        self.assertEqual(ProcessingJob.objects.count(), 0)
 
     def test_v2_preview_configuration_records_all_output_affecting_rules(self) -> None:
         self.assertEqual(
@@ -259,7 +327,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
             },
         )
         self.assertEqual(
-            CAPTURE_METADATA_CONFIGURATION["worker"],
+            capture_metadata_configuration("Europe/Moscow")["worker"],
             {
                 "concurrency": 1,
                 "api_response_max_bytes": 16_384,

@@ -188,3 +188,37 @@ class PhotoMigrationTests(TransactionTestCase):
         compile(source, "0004_photo_private_original_constraints.py", "exec")
         self.assertIn("import picflow.migration_operations", source)
         self.assertNotIn("import picflow.migrations.0004_", source)
+
+    def test_event_timezone_migration_sets_only_event_nine_to_moscow(self) -> None:
+        executor = MigrationExecutor(connection)
+        leaf_nodes = executor.loader.graph.leaf_nodes()
+        try:
+            executor.migrate([("picflow", "0006_photo_processing_policy")])
+            old_apps = executor.loader.project_state(
+                [("picflow", "0006_photo_processing_policy")]
+            ).apps
+            Event = old_apps.get_model("picflow", "Event")
+            for event_id, name, city in (
+                (9, "Cyclingrace Вечернее Садовое", "Moscow"),
+                (10, "London event", "London"),
+                (11, "Other Moscow event", "Moscow"),
+            ):
+                Event.objects.create(
+                    id=event_id,
+                    name=name,
+                    slug=f"event-{event_id}",
+                    start_date=date.today(),
+                    end_date=date.today(),
+                    city=city,
+                )
+
+            executor = MigrationExecutor(connection)
+            executor.migrate([("picflow", "0007_event_timezone")])
+            apps = executor.loader.project_state([("picflow", "0007_event_timezone")]).apps
+            MigratedEvent = apps.get_model("picflow", "Event")
+
+            self.assertEqual(MigratedEvent.objects.get(pk=9).timezone_name, "Europe/Moscow")
+            self.assertIsNone(MigratedEvent.objects.get(pk=10).timezone_name)
+            self.assertIsNone(MigratedEvent.objects.get(pk=11).timezone_name)
+        finally:
+            MigrationExecutor(connection).migrate(leaf_nodes)

@@ -18,7 +18,7 @@ class EventAdmin(admin.ModelAdmin):
     prepopulated_fields = {"slug": ("name",)}
     fieldsets = (
         ("Content", {"fields": ("name", "slug", "description", "cover")}),
-        ("Schedule", {"fields": ("start_date", "end_date", "city")}),
+        ("Schedule", {"fields": ("start_date", "end_date", "city", "timezone_name")}),
         ("Access and publication", {"fields": ("access_type", "publication_status")}),
     )
 

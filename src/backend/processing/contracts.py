@@ -18,7 +18,7 @@ class ProcessorContract:
 CAPTURE_METADATA_CONTRACT = ProcessorContract(
     processor_type="capture_metadata",
     contract_version=1,
-    processor_version=1,
+    processor_version=2,
 )
 FACE_EMBEDDING_CONTRACT = ProcessorContract(
     processor_type="face_embedding",

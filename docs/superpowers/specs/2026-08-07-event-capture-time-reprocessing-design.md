@@ -2,7 +2,14 @@
 
 ## Status
 
-Approved in conversation on 2026-08-07; written review pending.
+Approved in conversation and written review on 2026-08-07.
+
+The implementation is locally verified: on 2026-08-07 the required combined feature suite passed
+214 tests, and `make check` passed Ruff format/lint, MyPy, 1,368 tests with 3 skips, 43 deselections,
+and 238 warnings, the 75% coverage gate at 82.90%, Django checks, and migration-drift validation.
+No CI, deployment, restored-snapshot, private-original, backfill, or 17,043-photo
+terminal-acceptance evidence is recorded. The gallery time-filter follow-up remains blocked on
+acceptance criteria 11-15.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), current photo-processing
   control plane and the event-scoped search direction
@@ -173,8 +180,8 @@ A dedicated management command is the only supported backfill interface. It:
 - requires an explicit apply confirmation, with dry-run as the default;
 - verifies the event name, published status, timezone `Europe/Moscow`, photo count 17,043, and the
   exact capture-metadata version-2 configuration before writing;
-- creates a new immutable event-scoped run and version-2 job for every event-9 photo, regardless of
-  version-1 state;
+- creates immutable event-scoped runs whose fixed cohorts contain one version-2 job for every
+  event-9 photo, regardless of version-1 state;
 - is idempotent for the same processor identity and does not duplicate already enrolled version-2
   jobs;
 - uses the normal job, lease, exact-object authorization, worker completion, and accepted-result

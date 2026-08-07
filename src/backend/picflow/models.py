@@ -1,5 +1,6 @@
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -44,6 +45,7 @@ class Event(models.Model):
         default=PublicationStatus.DRAFT,
         db_default=PublicationStatus.DRAFT,
     )
+    timezone_name = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001
 
     objects = EventQuerySet.as_manager()
 
@@ -61,8 +63,18 @@ class Event(models.Model):
 
     def clean(self) -> None:
         super().clean()
+        errors = {}
         if self.start_date and self.end_date and self.end_date < self.start_date:
-            raise ValidationError({"end_date": "End date cannot be earlier than start date."})
+            errors["end_date"] = "End date cannot be earlier than start date."
+        if self.timezone_name:
+            try:
+                ZoneInfo(self.timezone_name)
+            except (ValueError, ZoneInfoNotFoundError):
+                errors["timezone_name"] = "Timezone must be a valid IANA timezone identifier."
+        elif self.publication_status == self.PublicationStatus.PUBLISHED:
+            errors["timezone_name"] = "Timezone is required for published events."
+        if errors:
+            raise ValidationError(errors)
 
 
 class Photo(models.Model):

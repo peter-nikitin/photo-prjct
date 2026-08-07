@@ -21,8 +21,9 @@ from processing.models import (
     ProcessingLateReceipt,
 )
 from processing.services.enrollment import (
-    CAPTURE_METADATA_CONFIGURATION,
+    CAPTURE_METADATA_PROCESSOR_VERSION,
     GENERATE_PREVIEW_CONFIGURATION,
+    capture_metadata_configuration,
     request_capture_metadata,
     request_face_embedding_enqueue,
     request_processor,
@@ -47,6 +48,7 @@ class ProcessingJobServiceTests(TestCase):
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
+            timezone_name="Europe/Moscow",
         )
 
     def private_photo(self, suffix: str) -> Photo:
@@ -71,7 +73,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             lease_seconds=120,
         )
@@ -94,7 +96,7 @@ class ProcessingJobServiceTests(TestCase):
         empty = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=2,
+            processor_version=1,
             worker_build="worker-1",
         )
 
@@ -128,7 +130,7 @@ class ProcessingJobServiceTests(TestCase):
         empty = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
 
@@ -285,7 +287,7 @@ class ProcessingJobServiceTests(TestCase):
         first_claim = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
         later = self.private_photo("later")
@@ -305,7 +307,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
         later = self.private_photo("forbidden-membership")
@@ -331,7 +333,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
             lease_seconds=120,
@@ -348,7 +350,7 @@ class ProcessingJobServiceTests(TestCase):
     def test_claim_and_heartbeat_require_the_immutable_run_lease_duration(self) -> None:
         photo = self.private_photo("fixed-lease")
         request_capture_metadata(photo)
-        configured = CAPTURE_METADATA_CONFIGURATION["worker"]
+        configured = capture_metadata_configuration(self.event.timezone_name)["worker"]
         assert isinstance(configured, dict)
         lease_seconds = configured["lease_duration_seconds"]
         assert isinstance(lease_seconds, int)
@@ -358,7 +360,7 @@ class ProcessingJobServiceTests(TestCase):
             claim_job(
                 contract_version=1,
                 processor_type="capture_metadata",
-                processor_version=1,
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
                 worker_build="worker-1",
                 lease_seconds=lease_seconds - 1,
                 now=now,
@@ -368,7 +370,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             lease_seconds=lease_seconds,
             now=now,
@@ -392,7 +394,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
             lease_seconds=120,
@@ -413,7 +415,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
         )
@@ -434,7 +436,7 @@ class ProcessingJobServiceTests(TestCase):
         retry = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=job.available_at,
         )
@@ -448,7 +450,7 @@ class ProcessingJobServiceTests(TestCase):
         final_retry = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=job.available_at,
         )
@@ -471,7 +473,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
 
@@ -489,7 +491,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
             lease_seconds=120,
@@ -514,14 +516,14 @@ class ProcessingJobServiceTests(TestCase):
         first_claim = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
         )
         second_claim = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
         )
@@ -548,7 +550,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
             lease_seconds=120,
@@ -583,7 +585,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
             lease_seconds=120,
@@ -617,7 +619,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
 
@@ -641,7 +643,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
         )
@@ -655,7 +657,7 @@ class ProcessingJobServiceTests(TestCase):
         )
 
         claimed.job.refresh_from_db()
-        policy = CAPTURE_METADATA_CONFIGURATION["retry_policy"]
+        policy = capture_metadata_configuration(self.event.timezone_name)["retry_policy"]
         assert isinstance(policy, dict)
         max_attempts = policy["max_attempts"]
         assert isinstance(max_attempts, int)
@@ -663,7 +665,9 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(max_attempts, MAX_ATTEMPTS)
 
     def test_full_collecting_run_overflows_without_sealing_until_its_first_claim(self) -> None:
-        configured_cohort_limit = CAPTURE_METADATA_CONFIGURATION["max_cohort_size"]
+        configured_cohort_limit = capture_metadata_configuration(self.event.timezone_name)[
+            "max_cohort_size"
+        ]
         assert isinstance(configured_cohort_limit, int)
         cohort_limit = configured_cohort_limit
         for number in range(cohort_limit + 1):
@@ -679,7 +683,7 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
         runs[0].refresh_from_db()
@@ -698,6 +702,7 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
+            timezone_name="Europe/Moscow",
         )
 
     def _photo(self, suffix: str) -> Photo:
@@ -721,13 +726,13 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
         first_claim = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
         second_claim = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
         barrier = Barrier(3)
@@ -774,7 +779,7 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
                     claim_job(
                         contract_version=1,
                         processor_type="capture_metadata",
-                        processor_version=1,
+                        processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
                         worker_build="worker-claim",
                     )
                 )
@@ -805,7 +810,7 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
         )
 
@@ -832,7 +837,7 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
         claimed = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="worker-1",
             now=now,
         )
@@ -844,7 +849,7 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
             photo=photo,
             contract_version=1,
             processor_type="capture_metadata",
-            processor_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             configuration=claimed.job.configuration,
             input_fingerprint=claimed.job.input_fingerprint,
             claimed_at=now,

@@ -110,7 +110,12 @@ class ConfirmationTests(TransactionTestCase):
         self.user = get_user_model().objects.create_user(username="photographer")
         self.other = get_user_model().objects.create_user(username="other")
         self.event = Event.objects.create(
-            name="Finish", slug="finish", start_date=date.today(), end_date=date.today(), city="M"
+            name="Finish",
+            slug="finish",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="M",
+            timezone_name="Europe/Moscow",
         )
         batch = create_batch(
             uploader=self.user,

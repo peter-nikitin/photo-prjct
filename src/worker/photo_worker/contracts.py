@@ -9,10 +9,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CONTRACT_VERSION = 1
 PROCESSOR_TYPE = "capture_metadata"
-PROCESSOR_VERSION = 1
+CAPTURE_METADATA_PROCESSOR_VERSION = 2
+PROCESSOR_VERSION = CAPTURE_METADATA_PROCESSOR_VERSION
 PROCESSOR_TYPE_FACE_EMBEDDING = "face_embedding"
 PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK = "face_embedding_benchmark"
 PROCESSOR_VERSION_FACE_EMBEDDING = 1
@@ -118,7 +120,7 @@ _EXIF_FIELDS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
 FAILURE_RETRYABLE = {
     "decode_failed": False,
     "download_authorization_expired": True,
-    "fingerprint_mismatch": False,
+    "fingerprint_mismatch": True,
     "input_too_large": False,
     "model_inference_error": False,
     "model_inference_timeout": True,
@@ -282,12 +284,15 @@ class ProcessorConfiguration:
     preview_variant: str | None = None
     embedding_dimensions: int = MAX_FACE_EMBEDDING_DIMENSIONS
     minimum_face_px: int = 1
+    event_timezone: str | None = None
 
     @classmethod
     def from_value(cls, value: object) -> ProcessorConfiguration:
         max_faces: object = 1
         face_threshold: object = DEFAULT_FACE_DETECTION_THRESHOLD
         model: object = "sface"
+        event_timezone: str | None = None
+        normalization = "utc_assume_utc_if_missing"
         expected_capture = {
             "retry_policy",
             "max_cohort_size",
@@ -437,12 +442,15 @@ class ProcessorConfiguration:
         elif capture is not None:
             if not (
                 isinstance(capture, dict)
-                and set(capture) == {"date_field_precedence", "normalization"}
+                and set(capture) == {"date_field_precedence", "normalization", "event_timezone"}
                 and isinstance(capture["date_field_precedence"], list)
                 and tuple(capture["date_field_precedence"]) == _EXIF_FIELDS
-                and capture["normalization"] == "utc_assume_utc_if_missing"
+                and capture["normalization"] == "utc_explicit_offset_or_event_timezone"
+                and _valid_event_timezone(capture["event_timezone"])
             ):
                 raise ContractError("invalid processor configuration")
+            event_timezone = cast(str, capture["event_timezone"])
+            normalization = cast(str, capture["normalization"])
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
             model = "sface"
@@ -505,7 +513,7 @@ class ProcessorConfiguration:
         return cls(
             configuration_kind=configuration_kind,
             date_field_precedence=_EXIF_FIELDS,
-            normalization="utc_assume_utc_if_missing",
+            normalization=normalization,
             max_input_bytes=worker["max_input_bytes"],
             max_pixels=worker["max_pixels"],
             heartbeat_interval_seconds=worker["heartbeat_interval_seconds"],
@@ -521,6 +529,7 @@ class ProcessorConfiguration:
             ),
             embedding_dimensions=embedding_dimensions,
             minimum_face_px=minimum_face_px,
+            event_timezone=event_timezone,
         )
 
 
@@ -804,13 +813,18 @@ class CaptureMetadataResult:
     source_field: str | None
     timezone_state: str
     source_value: str | None
+    source_offset: str | None
+    event_timezone: str | None
     warnings: tuple[str, ...]
 
     @classmethod
     def missing(
-        cls, warnings: tuple[str, ...] = ("capture_time_missing",)
+        cls,
+        warnings: tuple[str, ...] = ("capture_time_missing",),
+        *,
+        event_timezone: str | None = None,
     ) -> CaptureMetadataResult:
-        return cls(None, None, "not_applicable", None, warnings)
+        return cls(None, None, "not_applicable", None, None, event_timezone, warnings)
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -818,6 +832,8 @@ class CaptureMetadataResult:
             "source_field": self.source_field,
             "timezone_state": self.timezone_state,
             "source_value": self.source_value,
+            "source_offset": self.source_offset,
+            "event_timezone": self.event_timezone,
             "warnings": list(self.warnings),
         }
 
@@ -952,6 +968,16 @@ def _bounded_probability(value: object) -> bool:
         and math.isfinite(value)
         and 0.0 <= value <= 1.0
     )
+
+
+def _valid_event_timezone(value: object) -> bool:
+    if not _safe_string(value, maximum=255):
+        return False
+    try:
+        ZoneInfo(cast(str, value))
+    except (ValueError, ZoneInfoNotFoundError):
+        return False
+    return True
 
 
 def _processor_version(processor_type: str, contract_version: int = CONTRACT_VERSION) -> int:

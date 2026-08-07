@@ -37,7 +37,7 @@ services:
       PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
       PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
       PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
-      PHOTO_WORKER_PROCESSOR_IDENTITIES: ${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: ${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}
       PHOTO_WORKER_PROCESSOR_TYPES: ${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}
     depends_on:
       - web

@@ -45,7 +45,8 @@ def configuration(
             {
                 "capture_metadata": {
                     "date_field_precedence": ["DateTimeOriginal", "DateTimeDigitized", "DateTime"],
-                    "normalization": "utc_assume_utc_if_missing",
+                    "normalization": "utc_explicit_offset_or_event_timezone",
+                    "event_timezone": "Europe/Moscow",
                 }
             }
             if processor_type == PROCESSOR_TYPE
@@ -90,7 +91,7 @@ def make_claim(
                 "attempt_id": "00000000-0000-0000-0000-000000000012",
                 "contract_version": 1,
                 "processor_type": processor_type,
-                "processor_version": 1,
+                "processor_version": 2 if processor_type == PROCESSOR_TYPE else 1,
                 "configuration": configuration(
                     processor_type=processor_type,
                     heartbeat_interval_seconds=heartbeat_interval_seconds,
@@ -814,7 +815,7 @@ def test_selfie_logging_failure_preserves_the_retryable_callback_disposition(
     ("error_code", "retryable"),
     [
         ("decode_failed", False),
-        ("fingerprint_mismatch", False),
+        ("fingerprint_mismatch", True),
         ("input_too_large", False),
         ("model_inference_error", False),
         ("model_inference_timeout", True),
@@ -871,7 +872,7 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
     )
     monkeypatch.setenv(
         "PHOTO_WORKER_PROCESSOR_IDENTITIES",
-        "1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2",
+        "1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2",
     )
     plural, _client = WorkerConfig.from_env()
     monkeypatch.delenv("PHOTO_WORKER_PROCESSOR_IDENTITIES")
@@ -887,7 +888,7 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
         PROCESSOR_TYPE_GENERATE_PREVIEW,
     )
     assert plural.processor_identities == (
-        "1/capture_metadata/1",
+        "1/capture_metadata/2",
         "1/face_embedding/1",
         "2/generate_preview/1",
         "2/face_embedding/2",
@@ -928,7 +929,7 @@ def test_environment_product_identity_preserves_product_type_fallbacks(
         "PHOTO_WORKER_PROCESSOR_TYPES",
         "selfie_query,face_embedding,capture_metadata,generate_preview",
     )
-    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", "1/capture_metadata/1")
+    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", "1/capture_metadata/2")
 
     config, _client = WorkerConfig.from_env()
     client = Client(Claim.empty(7))
@@ -943,7 +944,7 @@ def test_environment_product_identity_preserves_product_type_fallbacks(
     assert client.claim_identities == [
         (1, PROCESSOR_TYPE_SELFIE_QUERY, 1),
         (1, PROCESSOR_TYPE_FACE_EMBEDDING, 1),
-        (1, PROCESSOR_TYPE, 1),
+        (1, PROCESSOR_TYPE, 2),
         (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
     ]
 
@@ -964,7 +965,10 @@ def test_worker_processes_one_claim_then_submits_typed_result_and_removes_temp_f
     assert delay is None
     assert client.heartbeats == []
     assert client.completed[0]["outcome"] == "success"
-    assert client.completed[0]["result"] == CaptureMetadataResult.missing().as_payload()
+    assert (
+        client.completed[0]["result"]
+        == CaptureMetadataResult.missing(event_timezone="Europe/Moscow").as_payload()
+    )
     assert {
         "job_id",
         "attempt_id",
@@ -988,6 +992,50 @@ def test_worker_processes_one_claim_then_submits_typed_result_and_removes_temp_f
     assert list(tmp_path.iterdir()) == []
     assert "phase=succeeded" in caplog.text
     assert "signature=secret" not in caplog.text
+
+
+def test_capture_metadata_v2_passes_event_timezone_and_serializes_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = Client(make_claim())
+    observed: dict[str, object] = {}
+
+    def parser(path: Path, **kwargs: object) -> CaptureMetadataResult:
+        observed["path"] = path
+        observed.update(kwargs)
+        return CaptureMetadataResult(
+            capture_time="2024-01-02T00:04:05Z",
+            source_field="DateTimeOriginal",
+            timezone_state="explicit",
+            source_value="2024:01:02 03:04:05",
+            source_offset="+03:00",
+            event_timezone="Europe/Moscow",
+            warnings=("capture_time_conflicting",),
+        )
+
+    monkeypatch.setattr("photo_worker.runner.extract_capture_metadata", parser)
+
+    Worker(
+        client, WorkerConfig(worker_build="worker-test", lease_seconds=60, temp_dir=tmp_path)
+    ).run_once()
+
+    assert observed["event_timezone"] == "Europe/Moscow"
+    assert observed["date_field_precedence"] == (
+        "DateTimeOriginal",
+        "DateTimeDigitized",
+        "DateTime",
+    )
+    assert observed["max_bytes"] == 1024
+    assert observed["max_pixels"] == 100_000_000
+    assert client.completed[0]["result"] == {
+        "capture_time": "2024-01-02T00:04:05Z",
+        "source_field": "DateTimeOriginal",
+        "timezone_state": "explicit",
+        "source_value": "2024:01:02 03:04:05",
+        "source_offset": "+03:00",
+        "event_timezone": "Europe/Moscow",
+        "warnings": ["capture_time_conflicting"],
+    }
 
 
 def test_worker_processes_face_embedding_claim_and_submits_typed_result(
@@ -1193,7 +1241,7 @@ def test_worker_polls_configured_exact_identities_round_robin_without_parallel_c
             worker_build="worker-test",
             lease_seconds=60,
             processor_identities=(
-                "1/capture_metadata/1",
+                "1/capture_metadata/2",
                 "2/generate_preview/1",
                 "2/face_embedding/2",
             ),
@@ -1202,10 +1250,10 @@ def test_worker_polls_configured_exact_identities_round_robin_without_parallel_c
 
     assert [worker.run_once() for _ in range(4)] == [3, 3, 3, 3]
     assert client.claim_identities == [
-        (1, "capture_metadata", 1),
+        (1, "capture_metadata", 2),
         (2, "generate_preview", 1),
         (2, "face_embedding", 2),
-        (1, "capture_metadata", 1),
+        (1, "capture_metadata", 2),
     ]
 
 
@@ -1222,7 +1270,7 @@ def test_worker_keeps_explicit_preview_identities_after_public_priority_processo
                 PROCESSOR_TYPE,
             ),
             processor_identities=(
-                "1/capture_metadata/1",
+                "1/capture_metadata/2",
                 "1/face_embedding/1",
                 "2/generate_preview/1",
                 "2/face_embedding/2",
@@ -1235,7 +1283,7 @@ def test_worker_keeps_explicit_preview_identities_after_public_priority_processo
         (1, "selfie_query", 1),
         (1, "face_embedding", 1),
         (2, "face_embedding", 2),
-        (1, "capture_metadata", 1),
+        (1, "capture_metadata", 2),
         (2, "generate_preview", 1),
     ]
 
@@ -1247,7 +1295,7 @@ def test_continuous_selfie_claims_poll_every_photo_identity_within_one_photo_opp
     selfie = (1, PROCESSOR_TYPE_SELFIE_QUERY, 1)
     legacy_face = (1, PROCESSOR_TYPE_FACE_EMBEDDING, 1)
     preview_face = (2, PROCESSOR_TYPE_FACE_EMBEDDING, 2)
-    capture = (1, PROCESSOR_TYPE, 1)
+    capture = (1, PROCESSOR_TYPE, 2)
     preview = (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1)
     client = SchedulingClient({selfie})
     worker = Worker(
@@ -1261,7 +1309,7 @@ def test_continuous_selfie_claims_poll_every_photo_identity_within_one_photo_opp
                 PROCESSOR_TYPE,
             ),
             processor_identities=(
-                "1/capture_metadata/1",
+                "1/capture_metadata/2",
                 "1/face_embedding/1",
                 "2/generate_preview/1",
                 "2/face_embedding/2",

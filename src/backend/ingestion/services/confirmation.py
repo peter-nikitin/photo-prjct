@@ -188,10 +188,11 @@ def confirm_upload_item(
                         else Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
                     ),
                 )
-                request_capture_metadata(
-                    photo,
-                    verified_source_etag=item.verified_source_etag,
-                )
+                if batch.event.timezone_name is not None:
+                    request_capture_metadata(
+                        photo,
+                        verified_source_etag=item.verified_source_etag,
+                    )
                 if preview_geometry is not None:
                     request_generate_preview(
                         photo,

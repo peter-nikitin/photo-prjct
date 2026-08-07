@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
@@ -12,8 +12,10 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.models import UploadItem
-from ingestion.storage import StorageUnavailable, UploadGrant
+from ingestion.storage import ObjectIdentity, ObjectMissing, StorageUnavailable, UploadGrant
 from picflow.models import Event, Photo
+from processing.models import PhotoProcessingState, ProcessingJob
+from processing.services.enrollment import reconcile_capture_metadata
 
 
 @override_settings(PHOTO_UPLOAD_ENABLED=True)
@@ -211,6 +213,72 @@ class UploadViewTests(TestCase):
                     "expected_item_count": 42,
                 }
             },
+        )
+
+    def test_draft_confirmation_succeeds_then_reconciliation_enrolls_after_timezone_assignment(
+        self,
+    ) -> None:
+        """A draft upload must not fail merely because capture time lacks a timezone yet."""
+        self.event.timezone_name = None
+        self.event.save(update_fields=["timezone_name"])
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = UUID(registered.json()["items"][0]["id"])
+        item = UploadItem.objects.get(pk=item_id)
+        UploadItem.objects.filter(pk=item_id).update(
+            status=UploadItem.Status.AUTHORIZED,
+            upload_attempts=1,
+            authorization_expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        objects = {item.incoming_key: (b"\xff\xd8\xff\xd9", '"draft-etag"')}
+
+        def inspect(*, key: str) -> ObjectIdentity:
+            try:
+                content, etag_wire = objects[key]
+            except KeyError:
+                raise ObjectMissing() from None
+            return ObjectIdentity(etag_wire, etag_wire.strip('"'), len(content), "image/jpeg")
+
+        def read_range(*, key: str, etag_wire: str, start: int, end: int) -> bytes:
+            content, actual_etag = objects[key]
+            self.assertEqual(etag_wire, actual_etag)
+            return content[start : end + 1]
+
+        def promote(*, incoming_key: str, final_key: str, etag_wire: str) -> ObjectIdentity:
+            content, actual_etag = objects[incoming_key]
+            self.assertEqual(etag_wire, actual_etag)
+            objects[final_key] = (content, actual_etag)
+            return inspect(key=final_key)
+
+        storage = Mock()
+        storage.inspect.side_effect = inspect
+        storage.read_range.side_effect = read_range
+        storage.promote.side_effect = promote
+        storage.delete.side_effect = lambda *, key: objects.pop(key, None)
+
+        with patch("ingestion.views.PrivateUploadStorage", return_value=storage):
+            response = self.client.post(
+                reverse("upload_item_confirm", args=[batch_id, item_id]),
+                "{}",
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        photo = Photo.objects.get(pk=item_id.hex)
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
+        self.assertEqual(state.status, PhotoProcessingState.Status.NOT_REQUESTED)
+        self.assertIsNone(state.current_job)
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+
+        Event.objects.filter(pk=self.event.pk).update(timezone_name="Europe/Moscow")
+        reconciled = reconcile_capture_metadata(limit=1)
+
+        self.assertEqual([item.photo_id for item in reconciled], [photo.pk])
+        state.refresh_from_db()
+        assert state.current_job is not None
+        self.assertEqual(
+            state.current_job.configuration["capture_metadata"]["event_timezone"],
+            "Europe/Moscow",
         )
 
     def test_registration_returns_201_then_idempotent_200_without_keys(self) -> None:

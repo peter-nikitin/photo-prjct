@@ -33,7 +33,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | --- | --- | --- | --- | --- |
 | EJ-001 | Developer | Reproduce local PostgreSQL development | Validated | 2026-07-17 |
 | EJ-002 | Contributor | Receive complete CI feedback | Validated | 2026-07-17 |
-| EJ-003 | Maintainer | Deploy an immutable image to staging | Validated | 2026-07-17 |
+| EJ-003 | Maintainer | Deploy an immutable image to staging | Delivered | 2026-08-07 |
 | EJ-004 | Operator | Run the current staging HTTPS edge | Validated | 2026-07-17 |
 | EJ-005 | Contributor | Reproduce visual regression | Validated | 2026-07-17 |
 | EJ-006 | Maintainer | Promote the staging-verified image | Validated | 2026-07-17 |
@@ -64,24 +64,43 @@ contract, so I can reproduce production-relevant behavior locally.
 
 When I update a pull request or `main` advances, I want formatting, lint, types, PostgreSQL tests,
 migrations, Django checks, and visual regression to run automatically, so I can detect regressions
-before merge and validate the integrated branch.
+before merge and validate the integrated branch. Pull requests also protect the identities of base
+migrations, so an environment that already applied them can upgrade safely.
 
 Pull requests run through the `pull_request` trigger, while branch-push validation is limited to
 `main`. Updating a feature branch therefore does not create a duplicate push run alongside its pull
 request run.
 
 - Status: Validated
-- Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json)
+- Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`scripts/check_migration_immutability.py`](../scripts/check_migration_immutability.py), [`tests/test_migration_immutability.py`](../tests/test_migration_immutability.py), [migration conflict runbook](runbooks/django-migration-conflicts.md), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json)
 - Last updated: 2026-07-17
 
 ### EJ-003 — Maintainer — Deploy an immutable image to staging
 
 When main advances, I want one SHA-tagged image built and applied to staging, so I can test the exact
-artifact that may later be promoted.
+artifact that may later be promoted. Before any application mutation, the candidate migration ledger
+and plan are checked read-only. Pull requests protect numbered migration identities, privileged
+observability-package changes pause the automatic path until an operator bootstrap and manual
+dispatch, and named deployment phases feed one bounded non-blocking failure issue. The existing
+GHCR image, Docker Compose, root-owned package, and rollback path remain authoritative.
 
-- Status: Validated
-- Evidence: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`Dockerfile`](../Dockerfile), [`docker-compose.prod.yml`](../docker-compose.prod.yml), and [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh)
-- Last updated: 2026-07-17
+- Status: Delivered
+- Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml),
+  [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml),
+  [`scripts/check_migration_immutability.py`](../scripts/check_migration_immutability.py),
+  [`tests/test_migration_immutability.py`](../tests/test_migration_immutability.py),
+  [migration-conflict runbook](runbooks/django-migration-conflicts.md),
+  [`src/backend/picflow/management/commands/verify_migration_history.py`](../src/backend/picflow/management/commands/verify_migration_history.py),
+  [`src/backend/picflow/tests/test_verify_migration_history_command.py`](../src/backend/picflow/tests/test_verify_migration_history_command.py),
+  [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh),
+  [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py),
+  [`scripts/reconcile_staging_deploy_issue.py`](../scripts/reconcile_staging_deploy_issue.py),
+  [`tests/test_reconcile_staging_deploy_issue.py`](../tests/test_reconcile_staging_deploy_issue.py),
+  and [staging deployment runbook](runbooks/staging-deployment.md).
+- Live evidence: no PR, CI, staging-rollout, deployed-image, public-health, or notification-drill
+  result is recorded in this checkout; keep `Delivered` until those acceptance checks establish
+  `Validated`.
+- Last updated: 2026-08-07
 
 ### EJ-004 — Operator — Run the current staging HTTPS edge
 
@@ -319,3 +338,4 @@ This log is append-only.
 | 2026-08-04 | EJ-015 | Not recorded | Delivered | Repository verification covers strict bounded events, edge redaction, journald reconciliation and exact rollback, timer/driver/tag checks, probe readability, and deterministic recomputation. Staging activation is not claimed. |
 | 2026-08-05 | EJ-016 | Not recorded | Delivered | Task 1–7 implementation commits and focused contract tests provide the repository capability for immutable event-scoped corpora, direct-first expansion, provenance, source-separated reporting, private evaluation, and guarded activation. The feature gate remains false and the release gate, environment activation, and customer outcomes are not yet evidenced. |
 | 2026-08-07 | EJ-017 | Not recorded | Candidate | The repository now has a focused, read-only event-original cache command and automated local-contract coverage. No authorized staging-clone or private Object Storage invocation is claimed. |
+| 2026-08-07 | EJ-003 | Validated | Delivered | Repository workflow, migration-identity, read-only preflight, deployment-phase, controlled-pause, and bounded issue-reconciliation contracts are implemented and covered by focused tests. No PR/CI/live staging rollout or notification-drill evidence is recorded yet, so the job is not advanced to Validated. |

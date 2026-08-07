@@ -33,11 +33,35 @@ class EventAdminTests(TestCase):
                 "description": "Created in admin",
                 "access_type": Event.AccessType.FREE,
                 "publication_status": Event.PublicationStatus.PUBLISHED,
+                "timezone_name": "Europe/Moscow",
                 "_save": "Save",
             },
         )
         self.assertEqual(response.status_code, 302)
-        self.assertTrue(Event.objects.published().filter(slug="admin-run").exists())
+        event = Event.objects.published().get(slug="admin-run")
+        self.assertEqual(event.timezone_name, "Europe/Moscow")
+
+    def test_admin_exposes_timezone_field(self) -> None:
+        response = self.client.get(reverse("admin:picflow_event_add"))
+
+        self.assertContains(response, 'name="timezone_name"')
+
+    def test_admin_rejects_published_event_without_timezone(self) -> None:
+        response = self.client.post(
+            reverse("admin:picflow_event_add"),
+            {
+                "name": "Published without timezone",
+                "slug": "published-without-timezone",
+                "start_date": date.today(),
+                "end_date": date.today(),
+                "city": "Moscow",
+                "access_type": Event.AccessType.FREE,
+                "publication_status": Event.PublicationStatus.PUBLISHED,
+            },
+        )
+
+        self.assertContains(response, "Timezone is required for published events")
+        self.assertFalse(Event.objects.filter(slug="published-without-timezone").exists())
 
     def test_admin_rejects_invalid_dates(self) -> None:
         response = self.client.post(

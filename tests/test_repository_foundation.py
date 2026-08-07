@@ -1,4 +1,6 @@
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -21,6 +23,54 @@ def _workflow_step(workflow: dict[str, Any], job_name: str, step_name: str) -> d
     ]
     assert len(matching_steps) == 1, f"Expected one {step_name!r} step"
     return matching_steps[0]
+
+
+def _notification_arguments_from_workflow(
+    tmp_path: Path,
+    *,
+    build_result: str,
+    deploy_result: str,
+    release_sha: str,
+    failed_log: str,
+) -> list[str]:
+    workflow = _load_workflow("deploy.yml")
+    run = _workflow_step(workflow, "reconcile-staging-deploy-issue", "Reconcile issue state")["run"]
+    run = run.replace("${{ needs.build.result }}", build_result)
+    run = run.replace("${{ needs.deploy.result }}", deploy_result)
+    run = run.replace("${{ needs.classify-staging-release.outputs.release_sha }}", release_sha)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    phase_arguments = tmp_path / "phase-arguments"
+    for name, source in {
+        "gh": '#!/bin/sh\nprintf "%s\\n" "$GH_LOG"\n',
+        "python": '#!/bin/sh\nprintf "%s\\n" "$@" > "$PHASE_ARGUMENTS"\n',
+    }.items():
+        executable = fake_bin / name
+        executable.write_text(source, encoding="utf-8")
+        executable.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "GH_LOG": failed_log,
+        "PHASE_ARGUMENTS": str(phase_arguments),
+        "GITHUB_REPOSITORY": "findme/photo",
+        "GITHUB_SHA": "f" * 40,
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_RUN_ID": "42",
+    }
+    subprocess.run(["/bin/sh", "-c", run], check=True, cwd=ROOT, env=environment)
+    return phase_arguments.read_text(encoding="utf-8").splitlines()
+
+
+def _notification_phase_from_workflow(tmp_path: Path, failed_log: str) -> str:
+    arguments = _notification_arguments_from_workflow(
+        tmp_path,
+        build_result="success",
+        deploy_result="failure",
+        release_sha="a" * 40,
+        failed_log=failed_log,
+    )
+    return arguments[arguments.index("--phase") + 1]
 
 
 def test_adr_index_lists_all_accepted_decisions() -> None:
@@ -143,6 +193,168 @@ def test_deployment_workflows_separate_staging_and_production() -> None:
     assert production["jobs"]["promote"]["concurrency"]["group"] == "deploy-production"
 
 
+def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritative() -> None:
+    staging = _load_workflow("deploy.yml")
+    dispatch = staging[True]["workflow_dispatch"]
+    build = staging["jobs"]["build"]
+    deploy = staging["jobs"]["deploy"]
+    reconcile = staging["jobs"]["reconcile-staging-deploy-issue"]
+    validation = staging["jobs"]["validate-staging-deploy-issue"]
+
+    assert dispatch["inputs"]["validate_deploy_issue"] == {
+        "description": "Exercise the bounded staging deployment issue notification drill",
+        "required": True,
+        "default": False,
+        "type": "boolean",
+    }
+    assert "!inputs.validate_deploy_issue" in build["if"]
+    assert "!inputs.validate_deploy_issue" in deploy["if"]
+    assert reconcile["if"] == (
+        "${{ always() && (github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
+        "!inputs.validate_deploy_issue)) }}"
+    )
+    assert reconcile["needs"] == ["classify-staging-release", "build", "deploy"]
+    assert reconcile["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "issues": "write",
+    }
+    assert "environment" not in reconcile
+    assert "secrets." not in json.dumps(reconcile)
+    notification = _workflow_step(
+        staging, "reconcile-staging-deploy-issue", "Reconcile issue state"
+    )
+    assert notification["continue-on-error"] is True
+    assert notification["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
+    run = notification["run"]
+    assert '--repository "$GITHUB_REPOSITORY"' in run
+    assert "--token-env GITHUB_TOKEN" in run
+    assert "--mode production" in run
+    assert '--conclusion "$conclusion"' in run
+    assert '--sha "${{ needs.classify-staging-release.outputs.release_sha }}"' in run
+    assert '--sha "$GITHUB_SHA"' not in run
+    assert '--run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"' in run
+    assert '--phase "$phase"' in run
+    assert 'gh run view "$GITHUB_RUN_ID" --log-failed' in run
+    assert (
+        "DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|"
+        "migration-preflight|observability-preflight|observability-reconcile|certificate|"
+        "compose-reconcile|local-health|worker-health|public-health|observability-verify|"
+        "commit)"
+    ) in run
+    assert "unknown" in run
+    warning = _workflow_step(
+        staging, "reconcile-staging-deploy-issue", "Warn when issue reconciliation fails"
+    )
+    assert warning["if"] == "${{ steps.reconcile.outcome == 'failure' }}"
+    assert "::warning::" in warning["run"]
+
+    assert validation["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue }}"
+    )
+    assert validation["environment"] == "staging"
+    assert validation["permissions"] == {"contents": "read", "issues": "write"}
+    assert "secrets." not in json.dumps(validation)
+    validation_steps = validation["steps"]
+    assert [step["name"] for step in validation_steps] == [
+        "Check out repository",
+        "Create validation issue",
+        "Update validation issue",
+        "Close validation issue",
+        "Assert validation issue is closed",
+    ]
+    for step in validation_steps[1:4]:
+        assert "--mode validation" in step["run"]
+        assert '--repository "$GITHUB_REPOSITORY"' in step["run"]
+        assert "--token-env GITHUB_TOKEN" in step["run"]
+        assert '--sha "$GITHUB_SHA"' in step["run"]
+        assert (
+            '--run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"'
+            in step["run"]
+        )
+    assert "[staging deployment validation] notification drill" in validation_steps[4]["run"]
+
+
+def test_notification_workflow_forwards_exact_sha_for_push_failure_and_manual_success(
+    tmp_path: Path,
+) -> None:
+    release_sha = "a" * 40
+    automatic_failure = _notification_arguments_from_workflow(
+        tmp_path / "automatic-failure",
+        build_result="failure",
+        deploy_result="skipped",
+        release_sha=release_sha,
+        failed_log="",
+    )
+    manual_success = _notification_arguments_from_workflow(
+        tmp_path / "manual-success",
+        build_result="success",
+        deploy_result="success",
+        release_sha=release_sha,
+        failed_log="",
+    )
+
+    def argument(arguments: list[str], name: str) -> str:
+        return arguments[arguments.index(name) + 1]
+
+    assert argument(automatic_failure, "--conclusion") == "failure"
+    assert argument(automatic_failure, "--phase") == "build"
+    assert argument(automatic_failure, "--sha") == release_sha
+    assert argument(manual_success, "--conclusion") == "success"
+    assert argument(manual_success, "--phase") == "commit"
+    assert argument(manual_success, "--sha") == release_sha
+
+
+def test_notification_phase_parser_executes_against_prefixed_failed_logs(tmp_path: Path) -> None:
+    prefixed_log = "\n".join(
+        (
+            "deploy\tApply staging deployment\t2026-08-07T10:00:00Z DEPLOY_PHASE=validate",
+            "deploy\tApply staging deployment\t2026-08-07T10:01:00Z DEPLOY_PHASE=compose-reconcile",
+            "deploy\tApply staging deployment\t2026-08-07T10:02:00Z DEPLOY_PHASE=commit-extra",
+            "deploy\tApply staging deployment\t2026-08-07T10:03:00Z ignored DEPLOY_PHASE=commit",
+        )
+    )
+    near_matches_only = "\n".join(
+        (
+            "deploy\tApply staging deployment\tDEPLOY_PHASE=compose-reconcile-extra",
+            "deploy\tApply staging deployment\tprefixDEPLOY_PHASE=commit",
+            "deploy\tApply staging deployment\tDEPLOY_PHASE=unknown",
+        )
+    )
+
+    assert _notification_phase_from_workflow(tmp_path / "prefixed", prefixed_log) == "commit"
+    assert (
+        _notification_phase_from_workflow(tmp_path / "near-matches", near_matches_only) == "unknown"
+    )
+
+
+def test_validation_drill_filter_ignores_pull_requests_with_the_validation_title() -> None:
+    workflow = _load_workflow("deploy.yml")
+    assertion = _workflow_step(
+        workflow, "validate-staging-deploy-issue", "Assert validation issue is closed"
+    )
+    match = re.search(r"--jq '([^']+)'", assertion["run"])
+    assert match is not None
+    response = [
+        {
+            "number": 17,
+            "title": "[staging deployment validation] notification drill",
+            "pull_request": {"url": "https://api.github.com/repos/findme/photo/pulls/17"},
+        },
+        {"number": 18, "title": "[staging deployment validation] notification drill"},
+    ]
+    result = subprocess.run(
+        ["jq", "-r", match.group(1)],
+        check=True,
+        input=json.dumps(response),
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.stdout == "18\n"
+
+
 def test_staging_face_embedding_benchmark_is_manual_and_bounded() -> None:
     workflow = _load_workflow("staging-face-embedding-benchmark.yml")
     dispatch = workflow[True]["workflow_dispatch"]
@@ -205,6 +417,22 @@ def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
         "VISUAL_TEST_IMAGE_PREFIX": "ghcr.io/${{ github.repository }}-visual-tests"
     }
     assert "PUSH_VISUAL_TEST_IMAGE" not in visual["env"]
+
+
+def test_ci_checks_pull_request_migration_identity_with_full_git_history() -> None:
+    ci = _load_workflow("ci.yml")
+    checkout = _workflow_step(ci, "quality", "Check out repository")
+    immutability = _workflow_step(ci, "quality", "Check migration immutability")
+    migration_drift = _workflow_step(ci, "quality", "Check migration drift")
+
+    assert checkout["with"] == {"fetch-depth": 0}
+    assert immutability["if"] == "github.event_name == 'pull_request'"
+    assert immutability["run"] == (
+        "python scripts/check_migration_immutability.py "
+        "--base ${{ github.event.pull_request.base.sha }} "
+        "--head ${{ github.event.pull_request.head.sha }}"
+    )
+    assert migration_drift["run"] == "python src/backend/manage.py makemigrations --check --dry-run"
 
 
 def test_public_health_monitor_workflow_is_scheduled_and_uses_only_its_monitoring_credentials() -> (
@@ -356,7 +584,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
 
     assert build["outputs"]["worker_image"] == "${{ steps.image.outputs.worker_image }}"
     image_step = _workflow_step(staging, "build", "Select image references")
-    assert "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${GITHUB_SHA}" in image_step["run"]
+    assert "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" in image_step["run"]
     worker_build = _workflow_step(staging, "build", "Build and push worker image")
     assert worker_build["with"] == {
         "context": ".",
@@ -381,7 +609,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
         ),
         "PHOTO_WORKER_REPLICAS": "${{ vars.PHOTO_WORKER_REPLICAS || '1' }}",
         "PHOTO_WORKER_PROCESSOR_TYPES": (
@@ -409,7 +637,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
         ),
         "PHOTO_WORKER_PROCESSOR_TYPES": (
             "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
@@ -656,7 +884,7 @@ def test_staging_deployment_forwards_preview_processing_configuration() -> None:
         ),
         "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/1' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
         ),
     }
 
@@ -702,12 +930,15 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
     assert agent["environment"] == "staging"
     assert (
         agent["if"]
-        == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent }}"
+        == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && "
+        "!inputs.validate_deploy_issue }}"
     )
     assert "needs" not in agent
-    assert (
-        staging_deploy["if"]
-        == "${{ github.event_name == 'push' || !inputs.configure_monitoring_agent }}"
+    assert staging_deploy["if"] == (
+        "${{ (github.event_name == 'push' && "
+        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || "
+        "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
+        "!inputs.validate_deploy_issue) }}"
     )
     assert "configure-monitoring-agent" not in json.dumps(staging_deploy)
     assert "configure-monitoring-agent" not in json.dumps(production)
@@ -716,6 +947,346 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
     assert run["with"]["envs"] == "YANDEX_CLOUD_FOLDER_ID"
     assert "YANDEX_MONITORING_API_KEY" not in json.dumps(agent)
     assert "sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh" in run["with"]["script"]
+
+
+def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_building(
+    tmp_path: Path,
+) -> None:
+    staging = _load_workflow("deploy.yml")
+    dispatch = staging[True]["workflow_dispatch"]
+    classifier = staging["jobs"]["classify-staging-release"]
+    stage_release = staging["jobs"]["stage-observability-release"]
+    build = staging["jobs"]["build"]
+    deploy = staging["jobs"]["deploy"]
+    checkout = _workflow_step(staging, "classify-staging-release", "Check out push range")
+    classify = _workflow_step(staging, "classify-staging-release", "Classify staging release")
+    stage_checkout = _workflow_step(
+        staging, "stage-observability-release", "Check out paused commit"
+    )
+    bind_release = _workflow_step(
+        staging, "stage-observability-release", "Bind staged source to paused commit"
+    )
+    manifest_release = _workflow_step(
+        staging, "stage-observability-release", "Create staged source manifest"
+    )
+    copy_release = _workflow_step(
+        staging, "stage-observability-release", "Stage privileged observability source"
+    )
+    build_checkout = _workflow_step(staging, "build", "Checkout repository")
+    select_images = _workflow_step(staging, "build", "Select image references")
+    deploy_checkout = _workflow_step(staging, "deploy", "Checkout repository")
+    verify_staged = _workflow_step(staging, "deploy", "Verify staged paused observability release")
+
+    assert dispatch["inputs"]["deployment_sha"] == {
+        "description": "Exact 40-character commit SHA to deploy manually",
+        "required": False,
+        "default": "",
+        "type": "string",
+    }
+    assert dispatch["inputs"]["verify_paused_observability_release"] == {
+        "description": "Verify the staged privileged package for deployment_sha before deployment",
+        "required": True,
+        "default": False,
+        "type": "boolean",
+    }
+
+    assert classifier["permissions"] == {"contents": "read"}
+    assert classify["env"] == {"DEPLOYMENT_SHA": "${{ inputs.deployment_sha }}"}
+    for job in staging["jobs"].values():
+        for step in job.get("steps", []):
+            assert "${{ inputs.deployment_sha }}" not in step.get("run", "")
+    assert classifier["outputs"] == {
+        "requires_observability_bootstrap": (
+            "${{ steps.classify.outputs.requires_observability_bootstrap }}"
+        ),
+        "observability_source_manifest_sha256": (
+            "${{ steps.classify.outputs.observability_source_manifest_sha256 }}"
+        ),
+        "release_sha": "${{ steps.classify.outputs.release_sha }}",
+    }
+    assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
+    assert 'git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- ' in classify["run"]
+    assert "deploy/bootstrap-selfie-observability.sh" in classify["run"]
+    assert "deploy/selfie-observability/**" in classify["run"]
+    assert "0000000000000000000000000000000000000000" in classify["run"]
+    assert "change status is unknown" in classify["run"]
+    assert "deployment_sha must be an exact 40-character commit SHA" in classify["run"]
+    assert 'git cat-file -e "$release_sha^{commit}"' in classify["run"]
+    assert "requires_observability_bootstrap=true" in classify["run"]
+    assert "requires_observability_bootstrap=false" in classify["run"]
+    assert "requires_observability_bootstrap" in classify["run"]
+    assert 'git show "$release_sha:$source_path"' in classify["run"]
+    assert "$GITHUB_STEP_SUMMARY" in classify["run"]
+    for operator_action in (
+        "${GITHUB_SHA}",
+        "ssh -l petrnikitin 111.88.151.64",
+        "/opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA}",
+        "staging-observability-release-sha",
+        "staging-observability-source.sha256",
+        "sha256sum --check staging-observability-source.sha256",
+        "DEPLOY_ROOT=/opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA}",
+        "sudo /usr/local/sbin/findme-selfie-observability verify",
+        "gh workflow run deploy.yml --ref main -f deployment_sha=${GITHUB_SHA} "
+        "-f verify_paused_observability_release=true",
+        "Deploy staging",
+    ):
+        assert operator_action in classify["run"]
+    assert "secrets." not in json.dumps(classifier)
+    assert "appleboy/ssh-action" not in json.dumps(classifier)
+
+    classifier_script = classify["run"]
+    for expression, value in {
+        "${{ github.sha }}": "a" * 40,
+        "${{ github.event_name }}": "workflow_dispatch",
+        "${{ inputs.configure_monitoring_agent }}": "false",
+        "${{ inputs.validate_deploy_issue }}": "false",
+        "${{ inputs.verify_paused_observability_release }}": "false",
+        "${{ github.event.before }}": "0" * 40,
+    }.items():
+        classifier_script = classifier_script.replace(expression, value)
+    classifier_bin = tmp_path / "classifier-bin"
+    classifier_bin.mkdir()
+    classifier_git = classifier_bin / "git"
+    classifier_git.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  cat-file) exit 0 ;;\n"
+        "  rev-parse) printf '%s\\n' \"$VALID_COMMIT\" ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    classifier_git.chmod(0o755)
+    classifier_environment = {
+        **os.environ,
+        "PATH": f"{classifier_bin}:{os.environ['PATH']}",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_OUTPUT": str(tmp_path / "classifier-output"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "classifier-summary"),
+        "VALID_COMMIT": "a" * 40,
+    }
+    injected_marker = tmp_path / "deployment-sha-input-executed"
+    malicious_sha = f"$(touch {injected_marker})"
+    result = subprocess.run(
+        ["/bin/sh", "-c", classifier_script],
+        cwd=tmp_path,
+        env={**classifier_environment, "DEPLOYMENT_SHA": malicious_sha},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stderr == "deployment_sha must be an exact 40-character commit SHA\n"
+    assert not injected_marker.exists()
+    result = subprocess.run(
+        ["/bin/sh", "-c", classifier_script],
+        cwd=tmp_path,
+        env={**classifier_environment, "DEPLOYMENT_SHA": "A" * 40},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "release_sha=" + "a" * 40 in (tmp_path / "classifier-output").read_text(encoding="utf-8")
+
+    assert stage_release["if"] == (
+        "${{ github.event_name == 'push' && "
+        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' }}"
+    )
+    assert stage_release["needs"] == ["classify-staging-release"]
+    assert stage_release["environment"] == "staging"
+    assert stage_release["permissions"] == {"contents": "read"}
+    assert stage_checkout["with"] == {
+        "ref": "${{ github.sha }}",
+        "fetch-depth": 1,
+        "persist-credentials": False,
+    }
+    assert bind_release["run"].startswith("set -eu\n")
+    assert 'release_sha="${{ github.sha }}"' in bind_release["run"]
+    assert 'test "$(git rev-parse HEAD)" = "$release_sha"' in bind_release["run"]
+    assert (
+        "printf '%s\\n' \"$release_sha\" > staging-observability-release-sha" in bind_release["run"]
+    )
+    assert "git ls-tree -r --name-only" in manifest_release["run"]
+    assert "deploy/bootstrap-selfie-observability.sh" in manifest_release["run"]
+    assert "deploy/selfie-observability" in manifest_release["run"]
+    assert "sha256sum" in manifest_release["run"]
+    assert (
+        "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
+        in (manifest_release["run"])
+    )
+    assert copy_release["uses"] == "appleboy/scp-action@v0.1.7"
+    assert set(copy_release["with"]["source"].split(",")) == {
+        "staging-observability-release-sha",
+        "staging-observability-source.sha256",
+        "deploy/bootstrap-selfie-observability.sh",
+        "deploy/selfie-observability",
+    }
+    assert copy_release["with"]["target"] == (
+        "/opt/photo-prjct/privileged-observability-releases/${{ github.sha }}/"
+    )
+    assert set(copy_release["with"]) == {"host", "username", "key", "source", "target"}
+    assert "appleboy/ssh-action" not in json.dumps(stage_release)
+    for prohibited in (
+        "sudo",
+        "/usr/local",
+        "docker compose",
+        "apply-deployment.sh",
+        "deployed-image",
+        "SECRET_KEY",
+        "DB_PASSWORD",
+    ):
+        assert prohibited not in json.dumps(stage_release)
+
+    release_sha_output = "${{ needs.classify-staging-release.outputs.release_sha }}"
+    for exact_checkout in (build_checkout, deploy_checkout):
+        assert exact_checkout["with"] == {
+            "ref": release_sha_output,
+            "fetch-depth": 1,
+            "persist-credentials": False,
+        }
+    assert release_sha_output in select_images["run"]
+    assert "${GITHUB_SHA}" not in select_images["run"]
+    assert verify_staged["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.verify_paused_observability_release }}"
+    )
+    assert verify_staged["env"] == {
+        "RELEASE_SHA": release_sha_output,
+        "OBSERVABILITY_SOURCE_MANIFEST_SHA256": (
+            "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
+        ),
+    }
+    assert verify_staged["with"]["envs"] == ("RELEASE_SHA,OBSERVABILITY_SOURCE_MANIFEST_SHA256")
+    for evidence_check in (
+        'test "$(cat staging-observability-release-sha)" = "$RELEASE_SHA"',
+        "sha256sum --check staging-observability-source.sha256",
+        "cmp -s deploy/selfie-observability/root-helper.sh "
+        '"/usr/local/sbin/findme-selfie-observability"',
+        "sudo -n /usr/local/sbin/findme-selfie-observability verify",
+    ):
+        assert evidence_check in verify_staged["with"]["script"]
+    assert deploy["steps"].index(verify_staged) < deploy["steps"].index(
+        _workflow_step(staging, "deploy", "Copy staging deployment files")
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text('#!/bin/sh\nprintf "%s\\n" "$FAKE_HEAD"\n', encoding="utf-8")
+    fake_git.chmod(0o755)
+    expected_sha = "a" * 40
+    bind_script = bind_release["run"].replace("${{ github.sha }}", expected_sha)
+    environment = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    exact = tmp_path / "exact"
+    exact.mkdir()
+    result = subprocess.run(
+        ["/bin/sh", "-c", bind_script],
+        cwd=exact,
+        env={**environment, "FAKE_HEAD": expected_sha},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (exact / "staging-observability-release-sha").read_text(encoding="utf-8") == (
+        f"{expected_sha}\n"
+    )
+    mismatch = tmp_path / "mismatch"
+    mismatch.mkdir()
+    result = subprocess.run(
+        ["/bin/sh", "-c", bind_script],
+        cwd=mismatch,
+        env={**environment, "FAKE_HEAD": "b" * 40},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert not (mismatch / "staging-observability-release-sha").exists()
+
+    source_root = tmp_path / "manifest"
+    (source_root / "deploy/selfie-observability").mkdir(parents=True)
+    source_files = {
+        "deploy/bootstrap-selfie-observability.sh": b"bootstrap\n",
+        "deploy/selfie-observability/root-helper.sh": b"helper\n",
+        "deploy/selfie-observability/summarize.py": b"summary\n",
+    }
+    for relative_path, content in source_files.items():
+        (source_root / relative_path).write_bytes(content)
+    expected_lines = [
+        f"{hashlib.sha256(content).hexdigest()}  {relative_path}\n"
+        for relative_path, content in source_files.items()
+    ]
+    expected_manifest = "".join(expected_lines)
+    expected_manifest_sha = hashlib.sha256(expected_manifest.encode()).hexdigest()
+    manifest_bin = source_root / "bin"
+    manifest_bin.mkdir()
+    fake_git = manifest_bin / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = ls-tree ]; then\n'
+        + "".join(f"  printf '%s\\n' '{path}'\n" for path in source_files)
+        + "else\n  exit 2\nfi\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    fake_sha256sum = manifest_bin / "sha256sum"
+    fake_sha256sum.write_text(
+        f"#!{sys.executable}\n"
+        "import hashlib\n"
+        "import pathlib\n"
+        "import sys\n"
+        "for source_path in sys.argv[1:]:\n"
+        "    digest = hashlib.sha256(pathlib.Path(source_path).read_bytes()).hexdigest()\n"
+        "    print(f'{digest}  {source_path}')\n",
+        encoding="utf-8",
+    )
+    fake_sha256sum.chmod(0o755)
+    manifest_script = manifest_release["run"].replace("${{ github.sha }}", expected_sha)
+    manifest_script = manifest_script.replace(
+        "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}",
+        expected_manifest_sha,
+    )
+    manifest_environment = {
+        **os.environ,
+        "PATH": f"{manifest_bin}:{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        ["/bin/sh", "-c", manifest_script],
+        cwd=source_root,
+        env=manifest_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (source_root / "staging-observability-source.sha256").read_text(
+        encoding="utf-8"
+    ) == expected_manifest
+    mismatch_script = manifest_script.replace(expected_manifest_sha, "0" * 64)
+    result = subprocess.run(
+        ["/bin/sh", "-c", mismatch_script],
+        cwd=source_root,
+        env=manifest_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+
+    expected_push = (
+        "github.event_name == 'push' && "
+        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false'"
+    )
+    expected_manual_deploy = (
+        "github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
+        "!inputs.validate_deploy_issue"
+    )
+    expected_condition = f"${{{{ ({expected_push}) || ({expected_manual_deploy}) }}}}"
+    for job in (build, deploy):
+        assert job["if"] == expected_condition
+        assert "classify-staging-release" in job["needs"]
 
 
 def test_focused_deployment_scripts_are_versioned() -> None:
@@ -728,6 +1299,27 @@ def test_focused_deployment_scripts_are_versioned() -> None:
         assert (ROOT / relative_path).is_file(), f"Missing {relative_path}"
     assert not (ROOT / "deploy/finalize-deployment.sh").exists()
     assert not (ROOT / "deploy/rollback-deployment.sh").exists()
+
+
+def test_deployment_migration_history_preflight_is_versioned_and_read_only() -> None:
+    command = ROOT / "src/backend/picflow/management/commands/verify_migration_history.py"
+    apply = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+
+    assert command.is_file()
+    assert "MigrationLoader(connection, ignore_no_migrations=True)" in command.read_text(
+        encoding="utf-8"
+    )
+    assert "MigrationRecorder(connection).applied_migrations()" in command.read_text(
+        encoding="utf-8"
+    )
+    assert "migration-history-ok" in command.read_text(encoding="utf-8")
+    assert "manage.py verify_migration_history" in apply
+    assert "manage.py showmigrations --plan" in apply
+    assert apply.index("manage.py verify_migration_history") < apply.index("mutation_started=1")
+    assert apply.index("manage.py showmigrations --plan") < apply.index("mutation_started=1")
+    assert apply.index("manage.py verify_migration_history") < apply.index(
+        "verify_observability_bootstrap ||"
+    )
 
 
 def test_http_edge_fallback_remains_available_for_manual_recovery() -> None:

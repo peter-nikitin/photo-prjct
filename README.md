@@ -10,6 +10,8 @@ unresolved decisions are documented rather than assumed to be implemented.
   open decisions.
 - [Architecture decisions](docs/adr/README.md) — durable decisions and the ADR template.
 - [Implementation plans](docs/plans/README.md) — delivery-plan conventions and template.
+- [Staging deployment runbook](docs/runbooks/staging-deployment.md) — automatic deployments,
+  controlled privileged-package pauses, retries, rollback, and acceptance checks.
 - [Local photo-processing worker check](docs/local-photo-processing-check.md) — manual real-Object-
   Storage verification before any deployment decision.
 - [Project skills](.agents/skills) — repository-scoped workflows for writing ADRs and plans and for
@@ -69,7 +71,7 @@ Public selfie search and its processing dependencies are opt-in. Tracked default
 values:
 
 ```dotenv
-PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2
+PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2
 PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview
 ```
 

@@ -4,7 +4,7 @@ from uuid import uuid4
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from picflow.models import Event, Photo
@@ -39,6 +39,64 @@ class EventModelTests(TestCase):
         published = self.make_event(publication_status=Event.PublicationStatus.PUBLISHED)
         self.make_event(name="Draft", slug="draft")
         self.assertEqual(list(Event.objects.published()), [published])
+
+    def test_draft_event_accepts_no_timezone(self) -> None:
+        self.make_event().full_clean()
+
+    def test_published_event_rejects_no_timezone(self) -> None:
+        event = Event(
+            name="Published without timezone",
+            slug="published-without-timezone",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+
+        with self.assertRaises(ValidationError):
+            event.full_clean()
+
+    def test_published_event_rejects_invalid_timezone_identifier(self) -> None:
+        event = Event(
+            name="Published invalid timezone",
+            slug="published-invalid-timezone",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+            timezone_name="Europe/Not-A-Timezone",
+        )
+
+        with self.assertRaises(ValidationError):
+            event.full_clean()
+
+    def test_published_event_rejects_pathlike_timezone_identifier(self) -> None:
+        event = Event(
+            name="Published path timezone",
+            slug="published-path-timezone",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+            timezone_name="../UTC",
+        )
+
+        with self.assertRaises(ValidationError):
+            event.full_clean()
+
+    @override_settings(TIME_ZONE="Pacific/Auckland")
+    def test_published_event_accepts_iana_timezone_independent_of_server_timezone(self) -> None:
+        event = Event(
+            name="Published Moscow timezone",
+            slug="published-moscow-timezone",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+            timezone_name="Europe/Moscow",
+        )
+
+        event.full_clean()
 
     def test_invalid_date_range_fails_validation_and_database_constraint(self) -> None:
         event = Event(

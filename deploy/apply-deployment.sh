@@ -2,6 +2,23 @@
 
 set -eu
 
+deployment_phase=validate
+
+on_exit() {
+    status=$?
+    [ "$status" -ne 0 ] || status=2
+    trap - EXIT INT TERM HUP
+    printf 'DEPLOY_RESULT=failure phase=validate rollback=not-needed\n'
+    exit "$status"
+}
+
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+printf 'DEPLOY_PHASE=validate\n'
+
 : "${DEPLOYMENT_TARGET:?Set DEPLOYMENT_TARGET to staging or production}"
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
@@ -23,7 +40,7 @@ requested_image="$APP_IMAGE"
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
-requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}"
+requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}"
 requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
 requested_selfie_search_enabled="${SELFIE_SEARCH_ENABLED:-False}"
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
@@ -63,7 +80,7 @@ while :; do
             ;;
     esac
     case "$processor_identity" in
-        1/selfie_query/1|1/capture_metadata/1|1/face_embedding/1|2/generate_preview/1|2/face_embedding/2|3/face_embedding_benchmark/1)
+        1/selfie_query/1|1/capture_metadata/2|1/face_embedding/1|2/generate_preview/1|2/face_embedding/2|3/face_embedding_benchmark/1)
             ;;
         *)
             echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
@@ -159,7 +176,7 @@ if [ "$requested_preview_enabled" = True ]; then
         exit 2
     fi
     for required_photo_identity in \
-        1/capture_metadata/1 \
+        1/capture_metadata/2 \
         1/face_embedding/1 \
         2/generate_preview/1 \
         2/face_embedding/2; do
@@ -479,6 +496,7 @@ recover_previous_deployment() {
 
 on_exit() {
     status=$?
+    rollback_result=not-needed
     set +e
     trap - EXIT INT TERM HUP
 
@@ -487,21 +505,33 @@ on_exit() {
         if [ "$recovery_in_progress" -eq 0 ]; then
             recovery_in_progress=1
             if ! recover_previous_deployment; then
+                rollback_result=failed
                 echo "Previous deployment recovery failed" >&2
                 diagnostics
-            elif [ "${previous_upload_enabled:-False}" = True ]; then
-                sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
             else
-                sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
+                rollback_result=succeeded
+                if [ "${previous_upload_enabled:-False}" = True ]; then
+                    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
+                else
+                    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
+                fi
             fi
         fi
         if [ "$observability_installed" -eq 1 ]; then
             sudo -n "$observability_helper" rollback || \
-                echo "Observability managed-file rollback failed" >&2
+                {
+                    rollback_result=failed
+                    echo "Observability managed-file rollback failed" >&2
+                }
         fi
     fi
 
     cleanup
+    if [ "$deployment_committed" -eq 1 ] && [ "$status" -eq 0 ]; then
+        printf 'DEPLOY_RESULT=success phase=commit rollback=not-needed\n'
+    else
+        printf 'DEPLOY_RESULT=failure phase=%s rollback=%s\n' "$deployment_phase" "$rollback_result"
+    fi
     exit "$status"
 }
 
@@ -515,7 +545,20 @@ fail() {
     exit 1
 }
 
+phase() {
+    case "$1" in
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
+            deployment_phase="$1"
+            printf 'DEPLOY_PHASE=%s\n' "$1"
+            ;;
+        *)
+            exit 2
+            ;;
+    esac
+}
+
 install -d -m 0755 "$DEPLOY_ROOT"
+phase snapshot
 previous_upload_enabled="False"
 previous_processing_enabled="False"
 previous_worker_replicas=1
@@ -524,7 +567,9 @@ previous_deployment_target_exists=0
 previous_compose_project_name_exists=0
 previous_deployed_image_exists=0
 has_successful_deployment=0
+has_established_deployment=0
 if [ -f "$DEPLOY_ROOT/.env" ]; then
+    has_established_deployment=1
     previous_env_exists=1
     previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not snapshot previous deployment environment"
     cp -p "$DEPLOY_ROOT/.env" "$previous_env_tmp" || fail "Could not snapshot previous deployment environment"
@@ -556,21 +601,38 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     esac
 fi
 if [ -f "$DEPLOY_ROOT/deployment-target" ]; then
+    has_established_deployment=1
     previous_deployment_target_exists=1
     previous_deployment_target_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.previous.XXXXXX")" || fail "Could not snapshot deployment target marker"
     cp -p "$DEPLOY_ROOT/deployment-target" "$previous_deployment_target_tmp" || fail "Could not snapshot deployment target marker"
 fi
 if [ -f "$DEPLOY_ROOT/compose-project-name" ]; then
+    has_established_deployment=1
     previous_compose_project_name_exists=1
     previous_compose_project_name_tmp="$(mktemp "$DEPLOY_ROOT/.compose-project-name.previous.XXXXXX")" || fail "Could not snapshot compose project marker"
     cp -p "$DEPLOY_ROOT/compose-project-name" "$previous_compose_project_name_tmp" || fail "Could not snapshot compose project marker"
 fi
 if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
+    has_established_deployment=1
     has_successful_deployment=1
     previous_deployed_image_exists=1
     previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
     cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
 fi
+
+postgres_volume="${COMPOSE_PROJECT_NAME}_pgdata"
+if postgres_volume_inspect_error="$(docker volume inspect "$postgres_volume" 2>&1 >/dev/null)"; then
+    has_established_deployment=1
+else
+    case "$postgres_volume_inspect_error" in
+        *": no such volume")
+            ;;
+        *)
+            fail "PostgreSQL deployment volume inspection failed"
+            ;;
+    esac
+fi
+unset postgres_volume_inspect_error
 
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}web,$PUBLIC_DOMAIN"
 if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
@@ -640,6 +702,7 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
 } > "$requested_env_tmp"
 chmod 600 "$requested_env_tmp"
 
+phase candidate-pull
 if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     if ! printf '%s\n' "$GHCR_READ_TOKEN" | \
         docker login ghcr.io -u "${GHCR_USERNAME:?Set GHCR_USERNAME}" --password-stdin; then
@@ -680,6 +743,7 @@ else:
         raise SystemExit("Gallery private-media read prerequisite failed") from None
     print("gallery-private-media-preflight-ok")
 '
+phase private-media-preflight
 if [ "$has_successful_deployment" -eq 0 ]; then
     echo "gallery-private-media-preflight-skipped:no-existing-deployment"
 else
@@ -689,13 +753,30 @@ else
     fi
 fi
 
+phase migration-preflight
+if [ "$has_established_deployment" -eq 0 ]; then
+    echo "migration-preflight-skipped:no-established-deployment"
+else
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py verify_migration_history; then
+        fail "Candidate migration preflight failed"
+    fi
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py showmigrations --plan; then
+        fail "Candidate migration preflight failed"
+    fi
+fi
+
+phase observability-preflight
 verify_observability_bootstrap || fail "Selfie observability bootstrap is missing or stale; run deploy/bootstrap-selfie-observability.sh as an operator"
+phase observability-reconcile
 observability_installed=1
 mutation_started=1
 sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
 mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
 requested_env_tmp=""
 
+phase certificate
 compose stop nginx || true
 if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
     fail "Certificate bootstrap failed"
@@ -705,6 +786,7 @@ if ! compose_with_requested_processing_profile pull; then
     fail "Deployment image pull failed"
 fi
 
+phase compose-reconcile
 compose_up_status=0
 attempt=1
 max_compose_attempts=3
@@ -737,6 +819,7 @@ done
 
 echo "docker compose up exit status: $compose_up_status" >&2
 
+phase local-health
 attempt=1
 max_attempts=12
 while [ "$attempt" -le "$max_attempts" ]; do
@@ -760,6 +843,7 @@ while [ "$attempt" -le "$max_attempts" ]; do
     sleep 5
 done
 
+phase worker-health
 if [ "$requested_processing_enabled" = True ]; then
     worker_containers="$(compose_with_requested_processing_profile ps -q worker)"
     worker_container_count="$(
@@ -812,9 +896,11 @@ if [ "$requested_processing_enabled" = True ]; then
     done
 fi
 
+phase public-health
 if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
     fail "Requested deployment failed public HTTPS smoke verification"
 fi
+phase observability-verify
 if ! sudo -n "$observability_helper" verify; then
     fail "Requested deployment failed selfie observability verification"
 fi
@@ -822,6 +908,7 @@ if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
     fail "Requested deployment failed application observability verification"
 fi
 
+phase commit
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.XXXXXX")"
 printf '%s\n' "$DEPLOYMENT_TARGET" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployment-target"

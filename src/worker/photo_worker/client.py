@@ -262,11 +262,11 @@ class HttpClient:
                     if not content_length.isdecimal() or int(content_length) > max_bytes:
                         raise DownloadError("input_too_large", retryable=False)
                     if int(content_length) != expected_size:
-                        raise DownloadError("fingerprint_mismatch", retryable=False)
+                        raise DownloadError("fingerprint_mismatch", retryable=True)
                 if expected_etag is not None and (
                     not response_etag or response_etag != expected_etag.strip('"')
                 ):
-                    raise DownloadError("fingerprint_mismatch", retryable=False)
+                    raise DownloadError("fingerprint_mismatch", retryable=True)
                 with destination.open("wb") as output:
                     while chunk := response.read(
                         min(DOWNLOAD_CHUNK_BYTES, max_bytes + 1 - written)
@@ -276,7 +276,7 @@ class HttpClient:
                             raise DownloadError("input_too_large", retryable=False)
                         output.write(chunk)
             if written != expected_size:
-                raise DownloadError("fingerprint_mismatch", retryable=False)
+                raise DownloadError("fingerprint_mismatch", retryable=True)
             completed = True
         except HTTPError as error:
             error.close()

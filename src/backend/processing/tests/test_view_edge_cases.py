@@ -285,6 +285,8 @@ class WorkerApiEdgeCases(WorkerApiTests):
                 "source_field": None,
                 "timezone_state": "not_applicable",
                 "source_value": None,
+                "source_offset": None,
+                "event_timezone": "Europe/Moscow",
                 "warnings": ["capture_time_missing"],
             },
         )

@@ -75,6 +75,23 @@ The repository currently contains an early Django application:
   staging-configured nor live-activated. A seven-day staging-prefix lifecycle rule, representative
   original-versus-preview ML comparison, and concurrency-one capacity measurement remain activation
   blockers. No staging or production preview worker is enabled.
+- Events now carry an optional, explicitly entered IANA `timezone_name`; Django validates it with
+  `ZoneInfo`, and publication rejects a missing or invalid value while draft events may remain
+  unset. The capture-time migration assigns `Europe/Moscow` only to the existing event with ID 9;
+  it does not derive a timezone from city text or populate other events.
+- Capture-metadata processor version 2 keeps the existing Django-polled worker boundary and its
+  short-lived exact-object grants. Its event-specific immutable configuration records the event
+  timezone. Within existing byte and pixel bounds, the worker reads JPEG and MPO EXIF metadata,
+  including standards-defined nested capture fields; explicit EXIF offsets take precedence, and
+  offset-less wall times are resolved through the configured event timezone. Successful results
+  retain canonical UTC capture times with bounded source/provenance fields and warnings; new
+  version-2 results never use `inferred_none`.
+- The repository includes strict event-9 capture-time reprocessing and read-only aggregate-report
+  commands. The reprocessing command defaults to dry run, requires an explicit apply, validates
+  the approved event identity/cohort/configuration, and enrolls immutable version-2 work without
+  rewriting prior attempts. The report emits bounded completion, timezone-state, warning, UTC, and
+  event-local-hour aggregates. No restored-snapshot run, deployment, backfill, or customer-facing
+  time filtering is evidenced here.
 - Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the
@@ -109,6 +126,23 @@ The repository currently contains an early Django application:
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
   staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
   after GitHub Environment approval; production infrastructure is not provisioned yet.
+- Pull-request CI treats every numbered migration already present on the base revision as an
+  immutable identity: modifications, deletions, and renames fail the identity check, while new
+  leaves and explicit merge migrations remain allowed. The staging push workflow classifies changes
+  to the privileged selfie-observability package before building; such a push ends in a named,
+  successful controlled pause with image build and application deployment skipped until the
+  existing operator bootstrap and a manual deployment dispatch. Ordinary pushes retain the
+  automatic SHA-image path.
+- Before `mutation_started=1`, the candidate image performs read-only migration-history validation
+  and prints its migration plan. Deployment emits a bounded `DEPLOY_PHASE` marker sequence and one
+  sanitized `DEPLOY_RESULT`; automatic push failures reconcile one exact-title GitHub issue using a
+  non-blocking, least-privilege notification job. Issue reconciliation is operational metadata,
+  not a monitoring or audit-log replacement, and its failure cannot change deployment or rollback
+  authority. These checks leave the existing SHA-tagged image, GHCR, Docker Compose, single-VM
+  topology, root-owned observability package, and rollback path unchanged, conforming to
+  [ADR 0003](adr/0003-docker-compose-yandex-cloud.md) and
+  [ADR 0005](adr/0005-promote-images-through-staging.md). Repository tests cover this transition;
+  this delivery records no new staging rollout, CI, or notification-drill evidence.
 - Both deployment workflows propagate the existing private-media bucket and credential settings.
   Before environment promotion or any service switch, `apply-deployment.sh` pulls only the candidate
   web image. If no successful `deployed-image` marker exists, it emits the sanitized

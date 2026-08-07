@@ -1,0 +1,492 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+MAKE = shutil.which("make")
+DOCKER = shutil.which("docker")
+
+
+def _write_executable(path: Path, body: str) -> None:
+    path.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+@pytest.fixture
+def local_launcher_environment(tmp_path: Path) -> dict[str, str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    root = tmp_path / "checkout"
+    (root / "scripts").mkdir(parents=True)
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / "deploy" / "environment-secrets").mkdir(parents=True)
+    command_log = tmp_path / "commands.log"
+    compose_capture = tmp_path / "compose-capture"
+    compose_capture.mkdir()
+    resolved_environment = tmp_path / "resolved.env"
+    resolved_environment.write_text(
+        "SECRET_KEY=payload-secret\n"
+        "MEDIA_S3_ACCESS_KEY_ID=payload-media-key\n"
+        "MEDIA_S3_SECRET_ACCESS_KEY=payload-media-secret\n"
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID=payload-private-key\n"
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=payload-private-secret\n"
+        "PHOTO_PROCESSING_WORKER_TOKEN=payload-worker-token\n"
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=payload-feedback-key\n"
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY=payload-feedback-secret\n",
+        encoding="utf-8",
+    )
+    (root / ".env").write_text(
+        "ORIGINAL_WORKTREE_ENV=unchanged\n"
+        "VM_SSH_KEY_FILE=deployment-only-ssh-sentinel\n"
+        "GHCR_READ_TOKEN=deployment-only-registry-sentinel\n"
+        "YANDEX_MONITORING_API_KEY=deployment-only-monitoring-sentinel\n"
+        "LETSENCRYPT_EMAIL=deployment-only-email-sentinel\n",
+        encoding="utf-8",
+    )
+
+    _write_executable(
+        fake_bin / "git",
+        r"""
+case "$*" in
+  *'rev-parse --is-inside-work-tree')
+    [ "${GIT_VALID:-yes}" = yes ] || exit 1
+    printf '%s\n' true
+    ;;
+  *'rev-parse --show-toplevel') printf '%s\n' "$FAKE_CHECKOUT" ;;
+  *) exit 94 ;;
+esac
+""",
+    )
+    _write_executable(
+        fake_bin / "docker",
+        r"""
+printf 'docker %s\n' "$*" >> "$COMMAND_LOG"
+case "$*" in
+  'context inspect --format {{json .Endpoints.docker.Host}}')
+    printf '"%s"\n' "${DOCKER_CONTEXT_ENDPOINT:-unix:///var/run/docker.sock}"
+    ;;
+  'compose version') exit 0 ;;
+  *' compose '*|compose\ *)
+    index=0
+    for argument in "$@"; do
+      if [ "$argument" = --env-file ] || [ "$argument" = -f ]; then
+        capture_next=yes
+      elif [ "${capture_next:-}" = yes ]; then
+        cp "$argument" "$COMPOSE_CAPTURE/$index"
+        case "$argument" in
+          *findme-staging-local.*) /usr/bin/stat -f '%Lp %N' "$argument" >> "$MATERIAL_LOG" ;;
+        esac
+        index=$((index + 1))
+        capture_next=
+      fi
+    done
+    printf '%s\n' compose-output-sentinel
+    printf '%s\n' compose-error-sentinel >&2
+    if [ "${DOCKER_COMPOSE_MODE:-}" = wait ]; then
+      : > "$WAIT_READY"
+      while [ ! -e "$WAIT_CONTINUE" ]; do /bin/sleep 0.01; done
+    fi
+    exit "${DOCKER_COMPOSE_EXIT:-0}"
+    ;;
+  *) exit 95 ;;
+esac
+""",
+    )
+    _write_executable(fake_bin / "yc", "exit 0")
+    _write_executable(
+        fake_bin / "mktemp",
+        r"""
+path=$(/usr/bin/mktemp "$@")
+printf '%s\n' "$path" >> "$MKTEMP_LOG"
+printf '%s\n' "$path"
+""",
+    )
+    _write_executable(
+        fake_bin / "rm",
+        r"""
+if [ "${RM_FAIL:-no}" = yes ]; then
+  printf '%s\n' raw-rm-diagnostic-sentinel >&2
+  exit 1
+fi
+/bin/rm "$@"
+""",
+    )
+    _write_executable(
+        root / ".venv" / "bin" / "python",
+        r"""
+if [ "$1" = "$FAKE_CHECKOUT/scripts/run-with-environment-secrets.py" ]; then
+  printf 'resolver %s\n' "$*" >> "$COMMAND_LOG"
+  if [ "${RESOLVER_EXIT:-0}" -ne 0 ]; then
+    printf '%s\n' '[environment-secrets] stage=identity status=error code=identity_failed' >&2
+    exit "$RESOLVER_EXIT"
+  fi
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+  shift
+  export FINDME_ENV_FILE="$RESOLVED_ENV"
+  exec "$@"
+fi
+if [ "$1" = - ] && [ "$#" -eq 5 ] && [ "${LOCAL_PYTHON_MODE:-}" = manifest-fail ]; then
+  exit 1
+fi
+exec "$REAL_PYTHON" "$@"
+""",
+    )
+
+    return {
+        "PATH": f"{fake_bin}{os.pathsep}/bin",
+        "FAKE_CHECKOUT": str(root),
+        "COMMAND_LOG": str(command_log),
+        "COMPOSE_CAPTURE": str(compose_capture),
+        "RESOLVED_ENV": str(resolved_environment),
+        "MATERIAL_LOG": str(tmp_path / "material.log"),
+        "MKTEMP_LOG": str(tmp_path / "mktemp.log"),
+        "WAIT_READY": str(tmp_path / "wait-ready"),
+        "WAIT_CONTINUE": str(tmp_path / "wait-continue"),
+        "REAL_PYTHON": sys.executable,
+        "CHECKOUT": str(root),
+    }
+
+
+def _install_launcher(environment: dict[str, str]) -> Path:
+    root = Path(environment["CHECKOUT"])
+    launcher = root / "scripts" / "staging-local.sh"
+    launcher.write_text((ROOT / "scripts" / "staging-local.sh").read_text(encoding="utf-8"))
+    launcher.chmod(0o755)
+    (root / "scripts" / "run-with-environment-secrets.py").write_text(
+        "# resolver path is asserted by the fake Python boundary\n", encoding="utf-8"
+    )
+    (root / "deploy" / "environment-secrets" / "staging.json").write_text(
+        (ROOT / "deploy" / "environment-secrets" / "staging.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (root / "docker-compose.yml").write_text(
+        (ROOT / "docker-compose.yml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (root / "Makefile").write_text(
+        (ROOT / "Makefile").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    return root
+
+
+def _run_make(environment: dict[str, str], **extra: str) -> subprocess.CompletedProcess[str]:
+    assert MAKE is not None
+    root = _install_launcher(environment)
+    return subprocess.run(
+        [MAKE, "staging-local"],
+        cwd=root,
+        env={**os.environ, **environment, **extra},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _commands(environment: dict[str, str]) -> str:
+    path = Path(environment["COMMAND_LOG"])
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _temporary_roots(environment: dict[str, str]) -> list[Path]:
+    path = Path(environment["MKTEMP_LOG"])
+    return (
+        [Path(value) for value in path.read_text(encoding="utf-8").splitlines()]
+        if path.exists()
+        else []
+    )
+
+
+def _assert_material_removed(environment: dict[str, str]) -> None:
+    roots = _temporary_roots(environment)
+    assert roots
+    assert all(not path.exists() for path in roots)
+
+
+def test_make_staging_local_resolves_the_exact_local_web_projection_and_starts_only_db_and_web(
+    local_launcher_environment: dict[str, str],
+) -> None:
+    """Would fail if the launcher requested another consumer or started a non-local service."""
+    result = _run_make(local_launcher_environment)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "[staging-local] warning=staging-capable-local-process\n"
+        "[staging-local] stage=launch status=ready\n"
+    )
+    assert result.stderr == ""
+    commands = _commands(local_launcher_environment)
+    assert "--environment staging --consumer local-web --identity yc -- " in commands
+    assert "/scripts/staging-local.sh --resolved" in commands
+    assert " up -d db web" in commands
+    assert "worker" not in commands
+    assert "clone-staging" not in commands
+    assert "ssh" not in commands
+    assert "apply-deployment" not in commands
+    assert "upload" not in commands
+    assert "compose-output-sentinel" not in result.stdout + result.stderr
+    assert "compose-error-sentinel" not in result.stdout + result.stderr
+    assert (
+        Path(local_launcher_environment["CHECKOUT"], ".env")
+        .read_text(encoding="utf-8")
+        .startswith("ORIGINAL_WORKTREE_ENV=unchanged\n")
+    )
+    assert _temporary_roots(local_launcher_environment)
+    assert _assert_material_removed(local_launcher_environment) is None
+    assert {
+        line.split(" ", 1)[0]
+        for line in Path(local_launcher_environment["MATERIAL_LOG"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    } == {"600"}
+
+
+def test_real_compose_merge_excludes_checkout_deployment_only_environment(
+    local_launcher_environment: dict[str, str],
+) -> None:
+    """Would fail if base web.env_file survived the local Compose overlay merge."""
+    assert DOCKER is not None
+    result = _run_make(local_launcher_environment)
+    assert result.returncode == 0, result.stderr
+    captures = Path(local_launcher_environment["COMPOSE_CAPTURE"])
+    shutil.copyfile(Path(local_launcher_environment["CHECKOUT"], ".env"), captures / ".env")
+    rendered = subprocess.run(
+        [
+            DOCKER,
+            "compose",
+            "--env-file",
+            str(captures / "0"),
+            "--env-file",
+            str(captures / "1"),
+            "-f",
+            str(captures / "2"),
+            "-f",
+            str(captures / "3"),
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=Path(local_launcher_environment["CHECKOUT"]),
+        env={"PATH": os.environ["PATH"]},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert rendered.returncode == 0, rendered.stderr
+    environment = json.loads(rendered.stdout)["services"]["web"]["environment"]
+    assert environment == {
+        "SECRET_KEY": "payload-secret",
+        "MEDIA_S3_ACCESS_KEY_ID": "payload-media-key",
+        "MEDIA_S3_SECRET_ACCESS_KEY": "payload-media-secret",
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "payload-private-key",
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "payload-private-secret",
+        "PHOTO_PROCESSING_WORKER_TOKEN": "payload-worker-token",
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "payload-feedback-key",
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "payload-feedback-secret",
+        "DEBUG": "True",
+        "ALLOWED_HOSTS": "localhost,127.0.0.1,web",
+        "WEB_BIND_ADDRESS": "127.0.0.1",
+        "DB_NAME": "app",
+        "DB_USER": "app",
+        "DB_PASSWORD": "app",
+        "DB_HOST": "db",
+        "DB_PORT": "5432",
+        "DEPLOYMENT_TARGET": "",
+        "VM_HOST": "",
+    }
+    without_reset = captures / "without-reset.yml"
+    without_reset.write_text(
+        (captures / "3").read_text(encoding="utf-8").replace("    env_file: !reset []\n", ""),
+        encoding="utf-8",
+    )
+    rendered_without_reset = subprocess.run(
+        [
+            DOCKER,
+            "compose",
+            "--env-file",
+            str(captures / "0"),
+            "--env-file",
+            str(captures / "1"),
+            "-f",
+            str(captures / "2"),
+            "-f",
+            str(without_reset),
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=Path(local_launcher_environment["CHECKOUT"]),
+        env={"PATH": os.environ["PATH"]},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert rendered_without_reset.returncode == 0, rendered_without_reset.stderr
+    environment_without_reset = json.loads(rendered_without_reset.stdout)["services"]["web"][
+        "environment"
+    ]
+    assert {
+        key: environment_without_reset[key]
+        for key in (
+            "VM_SSH_KEY_FILE",
+            "GHCR_READ_TOKEN",
+            "YANDEX_MONITORING_API_KEY",
+            "LETSENCRYPT_EMAIL",
+        )
+    } == {
+        "VM_SSH_KEY_FILE": "deployment-only-ssh-sentinel",
+        "GHCR_READ_TOKEN": "deployment-only-registry-sentinel",
+        "YANDEX_MONITORING_API_KEY": "deployment-only-monitoring-sentinel",
+        "LETSENCRYPT_EMAIL": "deployment-only-email-sentinel",
+    }
+
+
+def test_compose_failure_is_sanitized_and_cleans_private_material(
+    local_launcher_environment: dict[str, str],
+) -> None:
+    """Would fail if Compose diagnostics escaped or a failed launch retained temporary files."""
+    result = _run_make(local_launcher_environment, DOCKER_COMPOSE_EXIT="17")
+
+    assert result.returncode != 0
+    assert result.stdout == "[staging-local] warning=staging-capable-local-process\n"
+    assert "[staging-local] stage=launch status=error code=compose_failed" in result.stderr
+    assert "compose-output-sentinel" not in result.stdout + result.stderr
+    assert "compose-error-sentinel" not in result.stdout + result.stderr
+    _assert_material_removed(local_launcher_environment)
+
+
+def test_manifest_failure_after_temporary_creation_cleans_the_partial_materialization(
+    local_launcher_environment: dict[str, str],
+) -> None:
+    """Would fail if a post-mktemp failure left the launcher's private directory behind."""
+    result = _run_make(local_launcher_environment, LOCAL_PYTHON_MODE="manifest-fail")
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "stage=preflight status=error code=manifest_invalid" in result.stderr
+    _assert_material_removed(local_launcher_environment)
+    assert " up -d db web" not in _commands(local_launcher_environment)
+
+
+def test_cleanup_failure_after_success_is_nonzero_and_never_reports_readiness(
+    local_launcher_environment: dict[str, str],
+) -> None:
+    """Would fail if an EXIT trap preserved success after private cleanup reported failure."""
+    result = _run_make(local_launcher_environment, RM_FAIL="yes")
+    retained_root = _temporary_roots(local_launcher_environment).pop().resolve()
+
+    try:
+        assert result.returncode != 0
+        assert result.stdout == "[staging-local] warning=staging-capable-local-process\n"
+        assert result.stderr.splitlines()[0] == (
+            "[staging-local] stage=cleanup status=error code=cleanup_failed "
+            f"retained_path={retained_root}"
+        )
+        assert "stage=launch status=ready" not in result.stdout + result.stderr
+        assert "raw-rm-diagnostic-sentinel" not in result.stdout + result.stderr
+        assert "payload-secret" not in result.stdout + result.stderr
+        assert retained_root.is_dir()
+        assert {path.name: path.stat().st_mode & 0o777 for path in retained_root.iterdir()} == {
+            "overrides.env": 0o600,
+            "compose.yml": 0o600,
+            "governed-names": 0o600,
+        }
+    finally:
+        shutil.rmtree(retained_root, ignore_errors=True)
+
+
+@pytest.mark.parametrize("signal_number", [signal.SIGHUP, signal.SIGINT, signal.SIGTERM])
+def test_signals_clean_private_material_without_relaying_compose_output(
+    local_launcher_environment: dict[str, str], signal_number: int
+) -> None:
+    """Would fail if an interrupt during Compose leaked local material or raw diagnostics."""
+    assert MAKE is not None
+    root = _install_launcher(local_launcher_environment)
+    process = subprocess.Popen(
+        [MAKE, "staging-local"],
+        cwd=root,
+        env={**os.environ, **local_launcher_environment, "DOCKER_COMPOSE_MODE": "wait"},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    ready = Path(local_launcher_environment["WAIT_READY"])
+    for _ in range(100):
+        if ready.exists():
+            break
+        time.sleep(0.01)
+    assert ready.exists()
+    os.killpg(process.pid, signal_number)
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode != 0
+    assert stdout == "[staging-local] warning=staging-capable-local-process\n"
+    assert "compose-output-sentinel" not in stdout + stderr
+    assert "compose-error-sentinel" not in stdout + stderr
+    _assert_material_removed(local_launcher_environment)
+
+
+@pytest.mark.parametrize(
+    ("extra", "marker"),
+    [
+        ({"GIT_VALID": "no"}, "stage=preflight status=error code=repository_invalid"),
+        (
+            {"DOCKER_CONTEXT_ENDPOINT": "ssh://operator@remote-docker.invalid/run/docker.sock"},
+            "stage=preflight status=error code=docker_endpoint_invalid",
+        ),
+    ],
+)
+def test_preflight_failures_are_sanitized_before_secret_resolution(
+    local_launcher_environment: dict[str, str], extra: dict[str, str], marker: str
+) -> None:
+    """Would fail if an invalid checkout or remote Docker endpoint reached the resolver."""
+    result = _run_make(local_launcher_environment, **extra)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert marker in result.stderr
+    assert "remote-docker.invalid" not in result.stderr
+    assert "resolver " not in _commands(local_launcher_environment)
+
+
+def test_missing_yc_fails_before_secret_resolution(
+    local_launcher_environment: dict[str, str],
+) -> None:
+    """Would fail if the launcher deferred a missing local identity tool until after launch."""
+    (Path(local_launcher_environment["PATH"].split(os.pathsep)[0]) / "yc").unlink()
+    result = _run_make(local_launcher_environment)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "stage=preflight status=error code=yc_missing" in result.stderr
+    assert "resolver " not in _commands(local_launcher_environment)
+
+
+def test_expired_yc_failure_stays_sanitized_and_never_starts_compose(
+    local_launcher_environment: dict[str, str],
+) -> None:
+    """Would fail if resolver authentication failure leaked input or still launched Compose."""
+    result = _run_make(
+        local_launcher_environment,
+        RESOLVER_EXIT="2",
+        SECRET_KEY="staging-secret-must-not-appear",
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "[environment-secrets] stage=identity status=error code=identity_failed" in result.stderr
+    assert "staging-secret-must-not-appear" not in result.stderr + _commands(
+        local_launcher_environment
+    )
+    assert "resolver " in _commands(local_launcher_environment)
+    assert " up -d db web" not in _commands(local_launcher_environment)

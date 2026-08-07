@@ -83,6 +83,8 @@ The quality-gated generation succeeds when:
 - Computing and persisting an embedding only for an accepted detection.
 - Exact processor-configuration identity, including quality algorithm and calibrated thresholds.
 - Side-by-side old/new processing of the same frozen photo inputs from the latest published event.
+- A resumable read-only local cache of that event's original objects, stored outside every Git
+  checkout and reused by repeated worker runs.
 - Immutable detection-level and search-level benchmark runs, manual labels, reports, and an
   explicit approval boundary.
 - Explicit compatible-generation selection for new direct searches and new face-cluster corpora.
@@ -104,6 +106,40 @@ The quality-gated generation succeeds when:
   Git.
 - A general-purpose experiment registry, vector database, ANN service, broker, dashboard, or new
   cloud service.
+
+## Private local event corpus
+
+Before repeated quality runs, an operator command materializes one published event's complete
+private-original inventory under
+`~/Documents/Projects/photo-prjct-private/event-corpora/<event-slug>/`. The cache is shared by
+worktrees and is never an application media root, Git input, public resource, or durable backup.
+
+The command accepts an explicit event slug or resolves `--latest-published` deterministically by
+descending event start date, descending end date, then ascending slug. The resolved event identity
+is frozen in the cache manifest. A later change to which event is latest never repoints or mixes an
+existing cache.
+
+Before downloading bytes, the command freezes a private `manifest.json` containing the event and
+photo identities, safe local filenames, exact Object Storage keys, expected content types and
+sizes, ETags, and inventory hash. Local files use generated photo IDs plus a validated content-type
+extension; an uploaded filename never becomes a filesystem path.
+
+Each object is fetched with its frozen ETag precondition into a private partial path while SHA-256
+and byte count are calculated during streaming. A file becomes visible under `originals/` only by
+atomic rename after its size and remote identity match the manifest. The final local SHA-256 is
+then recorded as verification evidence.
+
+On rerun, a file whose size and SHA-256 match the frozen manifest is reused without any Object
+Storage request. A missing, partial, or corrupt file alone is downloaded again. A changed remote
+object, database inventory mismatch, event mismatch, duplicate safe filename, unsupported content
+type, unexpected extra file, or incomplete final inventory fails closed. The command performs only
+database reads plus Object Storage `HeadObject` and conditional `GetObject`; it never writes to the
+database or bucket.
+
+The command uses the existing local private-media configuration supplied outside the worktree. It
+does not copy credentials into the worktree or persist credentials, signed URLs, response headers,
+or secrets in the manifest or logs. Object keys may exist only in the private manifest needed to
+resume exact-object reads; they never enter Git or ordinary logs.
 
 ## Selected design
 
@@ -288,23 +324,24 @@ the candidate generation for a later activation action.
 
 ## Data flow
 
-1. An operator freezes the latest published event's exact photo and input-media inventory for a
-   local comparison.
-2. The existing generation remains the active customer-search generation and supplies immutable
+1. An operator creates or verifies the complete private local original cache for the latest
+   published event.
+2. The cache freezes the exact photo and input-media inventory used by every local comparison run.
+3. The existing generation remains the active customer-search generation and supplies immutable
    baseline evidence.
-3. The candidate generation processes the same input bytes into separate immutable attempts.
-4. For each selected detection, the worker calculates quality evidence and decides acceptance
+4. The candidate generation processes the same cached input bytes into separate immutable attempts.
+5. For each selected detection, the worker calculates quality evidence and decides acceptance
    before SFace embedding.
-5. Django validates and persists accepted or quality-rejected face evidence; only accepted faces
+6. Django validates and persists accepted or quality-rejected face evidence; only accepted faces
    can receive embeddings.
-6. A private immutable benchmark run compares detections, produces review artifacts, and records
+7. A private immutable benchmark run compares detections, produces review artifacts, and records
    manual labels.
-7. The same closed query set runs against baseline and candidate cohorts without changing active
+8. The same closed query set runs against baseline and candidate cohorts without changing active
    search configuration.
-8. A human explicitly approves or rejects the complete immutable benchmark evidence.
-9. A separate activation selects the approved candidate generation for new searches. If cluster
+9. A human explicitly approves or rejects the complete immutable benchmark evidence.
+10. A separate activation selects the approved candidate generation for new searches. If cluster
    expansion is used, a separately built and approved compatible corpus is activated independently.
-10. Existing bearer results and historical processing evidence remain unchanged.
+11. Existing bearer results and historical processing evidence remain unchanged.
 
 ## Failure and rollback semantics
 
@@ -344,6 +381,8 @@ operational logs.
   activation.
 - The candidate has a distinct immutable processor identity and processes exactly the frozen
   baseline media inventory.
+- The private local cache contains exactly one verified file for every frozen original and repeated
+  worker runs reuse it without another Object Storage download.
 - Every valid detection has complete bounded quality evidence and one explicit decision.
 - No quality-rejected detection has an embedding.
 - No accepted detection receives more than one embedding for its attempt.

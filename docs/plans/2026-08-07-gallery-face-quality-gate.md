@@ -58,6 +58,8 @@ confirmed relevant-result losses, and zero unresolved corpus items.
   projections, event activation history, and benchmark approval summaries.
 - `src/backend/processing/services/face_quality.py` owns backend payload validation, generation
   projection publication, benchmark-approval validation, and activation rules.
+- `src/backend/processing/services/event_original_cache.py` owns read-only inventory freezing,
+  resumable exact-object streaming, local verification, and atomic cache publication.
 - `src/backend/processing/services/face_cohort.py` remains the single cohort eligibility seam shared
   by direct search and cluster building.
 - `experiments/face_recognition_spike/face_spike/quality_comparison.py` owns private old/new
@@ -70,6 +72,56 @@ confirmed relevant-result losses, and zero unresolved corpus items.
   creating a second ranking implementation.
 
 ## Implementation
+
+### Task 0: Cache the latest published event originals locally
+
+**Deliverable:** A read-only resumable operator command creates one complete verified private local
+corpus that every baseline and candidate worker run reuses without downloading intact originals
+again.
+
+**Files:**
+
+- Create: `src/backend/processing/services/event_original_cache.py`
+- Create: `src/backend/processing/management/commands/cache_event_originals.py`
+- Create: `src/backend/processing/tests/test_event_original_cache.py`
+- Modify: `docs/engineering-jobs.md`
+
+- **Specification:** Private local event corpus; Frozen comparison cohort; Privacy and
+  authorization.
+- **Depends on:** An authorized local database containing staging event metadata and existing
+  private-media S3 settings supplied outside the worktree.
+- **Produces:**
+  `~/Documents/Projects/photo-prjct-private/event-corpora/<event-slug>/manifest.json` and a complete
+  `originals/` directory whose inventory hash, sizes, ETags, and local SHA-256 values are frozen.
+
+- [ ] Add failing service tests for deterministic latest-published selection by descending
+  `start_date`, descending `end_date`, then ascending `slug`; explicit-slug selection; empty or draft
+  events; duplicate photo IDs; missing original metadata; JPEG/PNG extension mapping; and safe
+  generated local names.
+- [ ] Add failing storage tests for manifest-first publication, conditional `GetObject`, streamed
+  size/SHA-256 validation, body closure, partial cleanup, atomic rename, object change, network
+  interruption, and zero database/S3 writes.
+- [ ] Add failing resume tests proving a verified complete file causes zero S3 calls, while only a
+  missing/corrupt/partial file is fetched again; reject an event/inventory/hash mismatch, unexpected
+  extra file, altered manifest, symlink, nested directory, or output path outside the selected event
+  root.
+- [ ] Run `make test TESTS="src/backend/processing/tests/test_event_original_cache.py"` and confirm
+  failures identify the missing service and command.
+- [ ] Implement the focused cache service with an injectable read-only storage protocol. Reuse the
+  existing boto3 configuration but expose only `HeadObject` and conditional streaming `GetObject`;
+  do not reuse upload, copy, delete, or presigned-write methods.
+- [ ] Implement `cache_event_originals` with mutually exclusive `--event` and
+  `--latest-published`, default root computed from
+  `Path.home() / "Documents/Projects/photo-prjct-private/event-corpora"`, and an optional explicit
+  `--output-root` for tests and authorized alternate storage. Never print object keys, headers,
+  credentials, URLs, or private absolute paths.
+- [ ] Run `make test TESTS="src/backend/processing/tests/test_event_original_cache.py"`.
+  Expected: the complete selected suite passes, a second identical invocation downloads zero bytes,
+  and every failure leaves either the prior complete cache or resumable private partial state.
+- [ ] Run the command against the authorized local staging clone and existing external media
+  configuration. Expected: `manifest.json` reports one verified file per eligible original,
+  `unresolved_count=0`, and the private output directory contains no symlinks, nested input paths, or
+  unexpected files.
 
 ### Task 1: Production recall-first quality decision
 
@@ -89,7 +141,8 @@ confirmed relevant-result losses, and zero unresolved corpus items.
 
 - **Specification:** Quality measurements; Recall-first decision rule; Failure and rollback
   semantics.
-- **Depends on:** None.
+- **Depends on:** Task 0 provides the reusable real corpus; unit implementation itself has no runtime
+  dependency on the cache command.
 - **Produces:** `FaceQualityThresholds`, `FaceQualityEvidence`, and `evaluate_face_quality(...)` in
   `photo_worker.face_quality`; a terminal face record with `status`, `quality`, optional `embedding`,
   and optional technical `error_code`.
@@ -307,15 +360,12 @@ or records that no candidate is safe enough to activate.
 
 - **Specification:** Frozen comparison cohort; Detection-level comparison; Search-level comparison;
   Approval record.
-- **Depends on:** Tasks 1–5 and access to the exact latest-published-event corpus. The corpus is not
-  present in this worktree and must be obtained through the existing authorized private-media
-  workflow before this task can finish.
+- **Depends on:** Tasks 0–5 and the complete verified local corpus produced by Task 0.
 - **Produces:** approved bounded summary plus exact configuration hash, or a rejected benchmark with
   no production configuration change.
 
-- [ ] Resolve the latest published event and freeze its full sorted photo/media inventory. Record the
-  event slug, inventory hash, input-media identities, and zero unresolved items in the private run
-  manifest; do not copy these private identifiers into Git.
+- [ ] Load the complete Task 0 manifest and refuse any photo inventory, media identity, size, ETag,
+  SHA-256, unexpected-file, or completion mismatch before analysis begins.
 - [ ] Produce one baseline run and candidate runs beginning with the historical candidate points
   `confidence=0.82`, `minimum_face_px=32`, `relative_area=0.0009`, and `sharpness=50`, translated to
   the new severe/borderline decision without treating them as approved defaults.
@@ -385,18 +435,20 @@ is not approved or activatable.
 
 ## Operational impact and rollout
 
-1. Merge and deploy code with every event still resolving to its baseline activation.
-2. Process the candidate generation for the selected event without changing active search.
-3. Complete and approve the private local detection/search comparison.
-4. Freeze the approved configuration in the processor identity and rebuild the candidate event
+1. Build and verify the private local event cache without changing remote media or database state.
+2. Merge and deploy code with every event still resolving to its baseline activation.
+3. Process the candidate generation for the selected event without changing active search.
+4. Complete and approve the private local detection/search comparison.
+5. Freeze the approved configuration in the processor identity and rebuild the candidate event
    cohort if the calibrated hash differs from a provisional run.
-5. Build a new compatible face-cluster corpus only if cluster expansion will be used; never reuse or
+6. Build a new compatible face-cluster corpus only if cluster expansion will be used; never reuse or
    mutate the baseline corpus.
-6. Activate the approved event generation through the guarded command in a separately authorized
+7. Activate the approved event generation through the guarded command in a separately authorized
    operational change.
-7. Observe new-search result and quality aggregates before considering another event.
+8. Observe new-search result and quality aggregates before considering another event.
 
-This implementation plan stops before steps 1–7 are performed against staging or production. A
+This implementation plan stops before steps 2–8 are performed against staging or production. Task
+0 is an authorized read-only local operation. A
 merge, deployment, activation, and live verification require separate explicit evidence.
 
 ## Rollback
@@ -417,6 +469,6 @@ immutable generation-bound corpus rules.
 ## Open questions and execution blockers
 
 - Design questions: None.
-- Execution blocker for Task 6: the exact latest-published-event corpus is not present in this
-  worktree. Obtain it through an authorized private-media workflow before the real local comparison;
-  never substitute a different corpus or silently accept an incomplete inventory.
+- Execution blocker for Task 0: the worktree intentionally has a test-safe `.env`. The real download
+  requires an authorized local staging database clone and existing external read credentials; do
+  not copy or link the main checkout's `.env` into this worktree.

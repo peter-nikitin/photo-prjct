@@ -10,6 +10,7 @@ from uuid import uuid4
 from config import views
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
+from django.core.paginator import Paginator
 from django.test import (
     RequestFactory,
     SimpleTestCase,
@@ -1005,6 +1006,70 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertEqual(SelfieSearch.objects.count(), selfies_before)
         self.assertEqual(ProcessingJob.objects.count(), jobs_before)
         self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
+
+    @override_settings(SELFIE_SEARCH_ENABLED=True)
+    def test_manual_time_discovery_renders_event_local_controls_and_invalid_errors(self) -> None:
+        """Invalid input must retain correction controls, not broad gallery results."""
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": ""},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="gallery"')
+        self.assertContains(response, "Найти свои фото")
+        self.assertContains(response, "Поиск по селфи")
+        self.assertContains(response, "Ручной поиск")
+        self.assertContains(response, "Даты события: 10.06.2026–12.06.2026")
+        self.assertContains(response, 'name="from"')
+        self.assertContains(response, 'min="2026-06-10T00:00"')
+        self.assertContains(response, 'max="2026-06-12T23:59"')
+        self.assertNotContains(response, 'name="page"')
+        self.assertContains(response, "Укажите время начала.")
+        reset_url = f"{reverse('event_detail', kwargs={'slug': self.event.slug})}#gallery"
+        self.assertContains(response, f'href="{reset_url}"')
+        self.assertNotContains(response, 'class="event-gallery"')
+
+    @patch("config.views.gallery_page")
+    def test_filtered_pagination_preserves_valid_times_while_unfiltered_pagination_stays_clean(
+        self, gallery_page_mock
+    ) -> None:
+        """A page turn must neither drop a valid filter nor invent one."""
+        photo = self.photo("pagination", filename="pagination.jpg")
+        pages = Paginator((photo, photo), 1)
+        gallery_page_mock.side_effect = lambda **kwargs: pages.page(int(kwargs["page_number"] or 1))
+        url = reverse("event_detail", kwargs={"slug": self.event.slug})
+
+        filtered = self.client.get(
+            url,
+            {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01", "page": "1"},
+        )
+        unfiltered = self.client.get(url, {"page": "1"})
+
+        self.assertContains(
+            filtered,
+            'href="?from=2026-06-10T10%3A00&amp;to=2026-06-10T10%3A01&amp;page=2"',
+        )
+        filtered_pager = filtered.content.decode(filtered.charset).split(
+            'class="gallery-pagination-form"', 1
+        )[1]
+        self.assertIn('name="from" value="2026-06-10T10:00"', filtered_pager)
+        self.assertIn('name="to" value="2026-06-10T10:01"', filtered_pager)
+        unfiltered_pager = unfiltered.content.decode(unfiltered.charset).split(
+            'class="gallery-pagination-form"', 1
+        )[1]
+        self.assertNotIn('name="from"', unfiltered_pager)
+        self.assertNotIn('name="to"', unfiltered_pager)
+
+    def test_valid_zero_match_renders_filtered_empty_state(self) -> None:
+        """An empty valid filter must not look like unpublished photos."""
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01"},
+        )
+
+        self.assertContains(response, "За выбранное время фотографий не найдено.")
+        self.assertNotContains(response, "Фотографии пока не опубликованы.")
 
 
 class GalleryMediaViewTests(TransactionTestCase):

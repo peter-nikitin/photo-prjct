@@ -22,6 +22,7 @@ from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from processing.models import (
+    CAPTURE_METADATA_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     EventProcessingRun,
@@ -40,6 +41,7 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_CONFIGURATION,
     FACE_EMBEDDING_PROCESSOR_VERSION,
 )
+from selfie_search.models import SelfieSearch
 
 from picflow.models import Event, Photo
 
@@ -872,6 +874,137 @@ class GalleryPageTests(TestCase):
         self.assertContains(response, 'id="gallery-title"')
         self.assertContains(response, 'class="event-gallery-count">0 фото</span>')
         self.assertContains(response, "Фотографии пока не опубликованы")
+
+
+@override_settings(
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+)
+@modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
+class EventDetailManualTimeFilterTests(TestCase):
+    """The production break caught here is an invalid filter quietly rendering a broad gallery."""
+
+    def setUp(self) -> None:
+        Event.objects.update(publication_status=Event.PublicationStatus.DRAFT)
+        self.user = get_user_model().objects.create_user(username="manual-time-view")
+        self.event = Event.objects.create(
+            name="Manual time event",
+            slug="manual-time-event",
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 12),
+            city="London",
+            timezone_name="Europe/London",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+
+    def photo(self, photo_id: str, *, filename: str) -> Photo:
+        return Photo.objects.create(
+            id=photo_id,
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/{photo_id}",
+            original_filename=filename,
+            original_size=4,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+    def capture_evidence(self, photo: Photo, *, capture_time: str) -> None:
+        configuration = {"capture_metadata": {"event_timezone": self.event.timezone_name}}
+        run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            configuration_hash=uuid4().hex + uuid4().hex,
+        )
+        job = ProcessingJob.objects.create(
+            event=self.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+            result={"capture_time": capture_time},
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=CAPTURE_METADATA_PROCESSOR
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.save()
+
+    def test_no_manual_parameters_keeps_the_existing_unfiltered_gallery(self) -> None:
+        photo = self.photo("unfiltered", filename="unfiltered.jpg")
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item.photo_id for item in response.context["gallery_photos"]], [photo.pk])
+        self.assertFalse(response.context["manual_time_filter_form"].is_requested)
+        self.assertFalse(response.context["manual_time_filter_invalid"])
+
+    def test_valid_manual_filter_uses_only_matching_current_evidence_before_paging(self) -> None:
+        matching = self.photo("matching", filename="a.jpg")
+        outside = self.photo("outside", filename="b.jpg")
+        self.capture_evidence(matching, capture_time="2026-06-10T09:00:00Z")
+        self.capture_evidence(outside, capture_time="2026-06-10T10:00:00Z")
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01", "page": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item.photo_id for item in response.context["gallery_photos"]], [matching.pk]
+        )
+        self.assertTrue(response.context["manual_time_filter_form"].is_valid())
+        self.assertFalse(response.context["manual_time_filter_invalid"])
+
+    def test_invalid_manual_values_return_200_without_gallery_or_saved_search_side_effects(
+        self,
+    ) -> None:
+        photo = self.photo("would-be-unfiltered", filename="would-be-unfiltered.jpg")
+        selfies_before = SelfieSearch.objects.count()
+        jobs_before = ProcessingJob.objects.count()
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            [("from", ""), ("from", "2026-06-10T10:00")],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("from", response.context["manual_time_filter_form"].errors)
+        self.assertTrue(response.context["manual_time_filter_invalid"])
+        self.assertEqual(response.context["gallery_photos"], ())
+        self.assertIsNone(response.context["gallery_page"])
+        self.assertEqual(SelfieSearch.objects.count(), selfies_before)
+        self.assertEqual(ProcessingJob.objects.count(), jobs_before)
+        self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
 
 
 class GalleryMediaViewTests(TransactionTestCase):

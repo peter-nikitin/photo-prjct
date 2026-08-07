@@ -1,13 +1,17 @@
 from dataclasses import FrozenInstanceError
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TestCase
+from django.core.paginator import Paginator
+from django.db import connection
+from django.http import QueryDict
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, OpenedObject
 from processing.models import (
+    CAPTURE_METADATA_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     EventProcessingRun,
     PhotoDerivative,
@@ -16,6 +20,7 @@ from processing.models import (
     ProcessingJob,
 )
 
+from picflow.forms import EventGalleryTimeFilterForm
 from picflow.gallery import (
     CloseableMediaIterator,
     GalleryFaceCrop,
@@ -25,6 +30,7 @@ from picflow.gallery import (
     PublicMediaResolver,
     ResolvedPublicMedia,
     gallery_face_crop,
+    gallery_photo_queryset,
 )
 from picflow.models import Event, Photo
 
@@ -386,6 +392,326 @@ class _DownloadFinalObjectStorage:
     def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str:
         self.signed_requests.append((key, attachment_filename))
         return f"https://storage.example.test/{key}?signature=secret"
+
+
+class EventGalleryTimeFilterFormTests(SimpleTestCase):
+    """The production breaks caught here are broad or timezone-dependent time searches."""
+
+    def make_event(self, **overrides) -> Event:
+        values = {
+            "name": "Summer festival",
+            "slug": "summer-festival",
+            "start_date": date(2026, 6, 10),
+            "end_date": date(2026, 6, 12),
+            "city": "London",
+            "timezone_name": "Europe/London",
+        }
+        values.update(overrides)
+        return Event(**values)
+
+    def form(self, event: Event, query: str) -> EventGalleryTimeFilterForm:
+        return EventGalleryTimeFilterForm(event, QueryDict(query))
+
+    def test_unfiltered_request_has_no_bounds(self) -> None:
+        form = self.form(self.make_event(), "")
+
+        self.assertFalse(form.is_requested)
+        self.assertTrue(form.is_valid())
+        self.assertIsNone(form.utc_bounds)
+
+    def test_from_is_required_when_a_manual_filter_is_requested(self) -> None:
+        form = self.form(self.make_event(), "to=2026-06-10T12:00")
+
+        self.assertTrue(form.is_requested)
+        self.assertFalse(form.is_valid())
+        self.assertIn("from", form.errors)
+
+    def test_to_can_be_blank_and_uses_the_exclusive_midnight_after_event_end(self) -> None:
+        event = self.make_event()
+        form = self.form(event, "from=2026-06-11T23:50&to=")
+
+        self.assertTrue(form.is_valid())
+        self.assertEqual(
+            form.utc_bounds,
+            (
+                datetime(2026, 6, 11, 22, 40, tzinfo=UTC),
+                datetime(2026, 6, 12, 23, 10, tzinfo=UTC),
+            ),
+        )
+
+    def test_uses_event_timezone_not_server_or_browser_timezone(self) -> None:
+        event = self.make_event()
+        with override_settings(TIME_ZONE="Pacific/Auckland"):
+            form = self.form(event, "from=2026-06-10T12:03&to=2026-06-10T12:04")
+            self.assertTrue(form.is_valid())
+
+        self.assertEqual(
+            form.utc_bounds,
+            (
+                datetime(2026, 6, 10, 10, 53, tzinfo=UTC),
+                datetime(2026, 6, 10, 11, 14, tzinfo=UTC),
+            ),
+        )
+
+    def test_accepts_event_local_midnight_and_event_range_end(self) -> None:
+        form = self.form(self.make_event(), "from=2026-06-10T00:00&to=2026-06-12T23:59")
+
+        self.assertTrue(form.is_valid())
+        self.assertEqual(
+            form.utc_bounds,
+            (
+                datetime(2026, 6, 9, 22, 50, tzinfo=UTC),
+                datetime(2026, 6, 12, 23, 9, tzinfo=UTC),
+            ),
+        )
+
+    def test_rejects_repeated_or_malformed_scalar_datetime_values(self) -> None:
+        event = self.make_event()
+        cases = (
+            "from=2026-06-10T12:00&from=2026-06-10T12:01",
+            "from=2026-06-10T12:00&to=2026-06-10T12:01&to=2026-06-10T12:02",
+            "from=2026-06-10",
+            "from=2026-06-10T12:00Z",
+            "from=2026-06-10T12:00&to=2026-06-10T12:00",
+            "from=2026-06-10T12:01&to=2026-06-10T12:00",
+            "from=2026-06-13T00:00",
+        )
+
+        for query in cases:
+            with self.subTest(query=query):
+                form = self.form(event, query)
+                self.assertFalse(form.is_valid())
+                self.assertIsNone(form.utc_bounds)
+
+    def test_rejects_nonexistent_and_ambiguous_dst_wall_times(self) -> None:
+        event = self.make_event(
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 11, 1),
+            timezone_name="America/New_York",
+        )
+        for query, error_field in (
+            ("from=2026-03-08T02:30", "from"),
+            ("from=2026-11-01T01:30", "from"),
+            ("from=2026-03-08T01:30&to=2026-03-08T02:30", "to"),
+        ):
+            with self.subTest(query=query):
+                form = self.form(event, query)
+                self.assertFalse(form.is_valid())
+                self.assertIn(error_field, form.errors)
+
+
+class FilteredGalleryQuerysetTests(TestCase):
+    """The break caught here is treating convenient metadata JSON as accepted evidence."""
+
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="time-filter-gallery")
+        self.event = Event.objects.create(
+            name="Time filter gallery",
+            slug="time-filter-gallery",
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 12),
+            city="London",
+            timezone_name="Europe/London",
+        )
+
+    def photo(
+        self, photo_id: str, *, event: Event | None = None, filename: str | None = None
+    ) -> Photo:
+        return Photo.objects.create(
+            id=photo_id,
+            event=event or self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/{photo_id}",
+            original_filename=filename or f"{photo_id}.jpg",
+            original_size=4,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+    def capture_evidence(
+        self,
+        photo: Photo,
+        *,
+        capture_time: object,
+        processor_version: int = 2,
+        attempt_status: str = ProcessingAttempt.Status.SUCCEEDED,
+        accepted: bool = True,
+        state_status: str = PhotoProcessingState.Status.SUCCEEDED,
+        accepted_attempt: ProcessingAttempt | None = None,
+    ) -> ProcessingAttempt:
+        configuration = {"capture_metadata": {"event_timezone": photo.event.timezone_name}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=processor_version,
+            configuration=configuration,
+            configuration_hash=uuid4().hex + uuid4().hex,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=processor_version,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=processor_version,
+            configuration=configuration,
+            input_fingerprint={},
+            status=attempt_status,
+            terminal_at=timezone.now(),
+            accepted=accepted,
+            result={"capture_time": capture_time},
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=CAPTURE_METADATA_PROCESSOR
+        )
+        state.status = state_status
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = accepted_attempt or attempt
+        state.save()
+        return attempt
+
+    def queryset(self):
+        return gallery_photo_queryset(
+            event=self.event,
+            capture_time_start=datetime(2026, 6, 10, 9, 50, tzinfo=UTC),
+            capture_time_end=datetime(2026, 6, 10, 10, 10, tzinfo=UTC),
+        )
+
+    def test_uses_current_accepted_v2_capture_evidence_with_inclusive_ten_minute_boundaries(
+        self,
+    ) -> None:
+        included_lower = self.photo("included-lower", filename="b.jpg")
+        included_upper = self.photo("included-upper", filename="a.jpg")
+        excluded_before = self.photo("excluded-before")
+        excluded_after = self.photo("excluded-after")
+        self.capture_evidence(included_lower, capture_time="2026-06-10T09:50:00Z")
+        self.capture_evidence(included_upper, capture_time="2026-06-10T10:10:00Z")
+        self.capture_evidence(excluded_before, capture_time="2026-06-10T09:49:59Z")
+        self.capture_evidence(excluded_after, capture_time="2026-06-10T10:10:01Z")
+
+        self.assertEqual(list(self.queryset()), [included_upper, included_lower])
+
+    def test_excludes_noncurrent_invalid_and_ineligible_capture_evidence(self) -> None:
+        included = self.photo("included")
+        self.capture_evidence(included, capture_time="2026-06-10T10:00:00Z")
+        version_one = self.photo("version-one")
+        self.capture_evidence(version_one, capture_time="2026-06-10T10:00:00Z", processor_version=1)
+        stale = self.photo("stale")
+        self.capture_evidence(
+            stale,
+            capture_time="2026-06-10T10:00:00Z",
+            attempt_status=ProcessingAttempt.Status.STALE,
+        )
+        unaccepted = self.photo("unaccepted")
+        self.capture_evidence(unaccepted, capture_time="2026-06-10T10:00:00Z", accepted=False)
+        failed = self.photo("failed")
+        self.capture_evidence(
+            failed,
+            capture_time="2026-06-10T10:00:00Z",
+            attempt_status=ProcessingAttempt.Status.FAILED,
+        )
+        missing = self.photo("missing")
+        self.capture_evidence(missing, capture_time=None)
+        malformed = self.photo("malformed")
+        self.capture_evidence(malformed, capture_time="not-a-timestamp")
+        state_mismatch = self.photo("state-mismatch")
+        previous = self.capture_evidence(state_mismatch, capture_time="2026-06-10T10:00:00Z")
+        current = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=previous.run,
+            job=previous.job,
+            photo=state_mismatch,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=previous.configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+            result={"capture_time": "2026-06-10T10:00:00Z"},
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=state_mismatch, processor_type=CAPTURE_METADATA_PROCESSOR
+        )
+        state.current_attempt = current
+        state.save()
+        other_event = Event.objects.create(
+            name="Other gallery",
+            slug="other-gallery",
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 10),
+            city="London",
+            timezone_name="Europe/London",
+        )
+        other_photo = self.photo("other", event=other_event)
+        self.capture_evidence(other_photo, capture_time="2026-06-10T10:00:00Z")
+        hidden = Photo.objects.create(id="hidden", event=self.event, src="photos/hidden.jpg")
+        self.capture_evidence(hidden, capture_time="2026-06-10T10:00:00Z")
+
+        self.assertEqual(list(self.queryset()), [included])
+
+    def test_excludes_evidence_when_state_run_and_job_do_not_match_accepted_attempt(self) -> None:
+        photo = self.photo("state-run-job-mismatch")
+        accepted_attempt = self.capture_evidence(photo, capture_time="2026-06-10T10:00:00Z")
+        self.capture_evidence(photo, capture_time="2026-06-10T10:00:00Z")
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=CAPTURE_METADATA_PROCESSOR
+        )
+        connection.check_constraints()
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE processing_photoprocessingstate "
+                "DISABLE TRIGGER proc_state_identity_trg"
+            )
+            try:
+                cursor.execute(
+                    "UPDATE processing_photoprocessingstate "
+                    "SET current_attempt_id = %s, accepted_attempt_id = %s "
+                    "WHERE id = %s",
+                    [accepted_attempt.pk, accepted_attempt.pk, state.pk],
+                )
+                connection.check_constraints()
+            finally:
+                cursor.execute(
+                    "ALTER TABLE processing_photoprocessingstate "
+                    "ENABLE TRIGGER proc_state_identity_trg"
+                )
+
+        self.assertEqual(list(self.queryset()), [])
+
+    def test_keeps_filename_id_order_and_one_hundred_item_pages_after_filtering(self) -> None:
+        for index in range(101):
+            photo = self.photo(f"photo-{index:03}", filename=f"image-{index:03}.jpg")
+            self.capture_evidence(photo, capture_time="2026-06-10T10:00:00Z")
+
+        page_one = Paginator(self.queryset(), 100).page(1)
+        page_two = Paginator(self.queryset(), 100).page(2)
+
+        self.assertEqual(
+            [photo.pk for photo in page_one.object_list],
+            [f"photo-{index:03}" for index in range(100)],
+        )
+        self.assertEqual([photo.pk for photo in page_two.object_list], ["photo-100"])
 
 
 class PublicGalleryMediaTests(SimpleTestCase):

@@ -69,7 +69,7 @@ Public selfie search and its processing dependencies are opt-in. Tracked default
 values:
 
 ```dotenv
-PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2
+PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2
 PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview
 ```
 

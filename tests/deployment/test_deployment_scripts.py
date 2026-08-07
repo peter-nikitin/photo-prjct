@@ -860,7 +860,7 @@ def test_disabled_processing_persists_defaults_without_the_worker_profile(
     assert "PHOTO_WORKER_BUILD=capture-metadata-v1" in deployed_env
     assert "PHOTO_WORKER_LEASE_SECONDS=120" in deployed_env
     assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1,1/face_embedding/1,"
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,"
         "2/generate_preview/1,2/face_embedding/2" in deployed_env
     )
     assert (
@@ -1028,7 +1028,7 @@ def test_preview_first_activation_accepts_and_persists_all_worker_identities(
             "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-                "1/selfie_query/1,1/capture_metadata/1,1/face_embedding/1,"
+                "1/selfie_query/1,1/capture_metadata/2,1/face_embedding/1,"
                 "2/generate_preview/1,2/face_embedding/2,3/face_embedding_benchmark/1"
             ),
             "PHOTO_WORKER_PROCESSOR_TYPES": (
@@ -1044,7 +1044,7 @@ def test_preview_first_activation_accepts_and_persists_all_worker_identities(
     assert "PHOTO_PROCESSING_PREVIEW_ENABLED=True" in deployed_env
     assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/1,1/capture_metadata/1,"
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/1,1/capture_metadata/2,"
         "1/face_embedding/1,2/generate_preview/1,2/face_embedding/2,"
         "3/face_embedding_benchmark/1" in deployed_env
     )
@@ -1053,16 +1053,17 @@ def test_preview_first_activation_accepts_and_persists_all_worker_identities(
 @pytest.mark.parametrize(
     "identities",
     [
-        "1/capture_metadata/1,2/generate_preview/1,2/face_embedding/2,9/bogus/9",
-        "1/capture_metadata/1,2/generate_preview/1,2/generate_preview/1,2/face_embedding/2",
-        "1/capture_metadata/1, 2/generate_preview/1,2/face_embedding/2",
-        "1/capture_metadata/1,",
+        "1/capture_metadata/1,2/generate_preview/1,2/face_embedding/2",
+        "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/2,9/bogus/9",
+        "1/capture_metadata/2,2/generate_preview/1,2/generate_preview/1,2/face_embedding/2",
+        "1/capture_metadata/2, 2/generate_preview/1,2/face_embedding/2",
+        "1/capture_metadata/2,",
     ],
 )
 def test_deployment_rejects_worker_identity_lists_the_worker_would_not_accept(
     tmp_path: Path, fake_bin: Path, identities: str
 ) -> None:
-    """Deployment must reject unknown, duplicate, or whitespace-bearing identities pre-mutation."""
+    """Deployment must reject invalid identities before mutating the live environment."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
@@ -1131,7 +1132,7 @@ def test_preview_first_activation_rejects_partial_or_implicit_configuration(
 @pytest.mark.parametrize(
     "missing_identity",
     (
-        "1/capture_metadata/1",
+        "1/capture_metadata/2",
         "1/face_embedding/1",
         "2/generate_preview/1",
         "2/face_embedding/2",
@@ -1141,7 +1142,7 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
     tmp_path: Path, fake_bin: Path, missing_identity: str
 ) -> None:
     required_identities = (
-        "1/capture_metadata/1",
+        "1/capture_metadata/2",
         "1/face_embedding/1",
         "2/generate_preview/1",
         "2/face_embedding/2",

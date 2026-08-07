@@ -370,7 +370,7 @@ class PipelineEndToEndTests(TestCase):
         cases = (
             ("model_inference_error", False, "processor"),
             ("download_authorization_expired", True, "download"),
-            ("fingerprint_mismatch", False, "download"),
+            ("fingerprint_mismatch", True, "download"),
             ("unsupported_input", False, "processor"),
         )
 

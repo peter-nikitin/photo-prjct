@@ -101,7 +101,7 @@ class WorkerApiTests(TestCase):
             "capture_metadata": {
                 "decode_failed": False,
                 "download_authorization_expired": True,
-                "fingerprint_mismatch": False,
+                "fingerprint_mismatch": True,
                 "input_too_large": False,
                 "network_interruption": True,
                 "storage_unavailable": True,
@@ -110,7 +110,7 @@ class WorkerApiTests(TestCase):
             "face_embedding": {
                 "decode_failed": False,
                 "download_authorization_expired": True,
-                "fingerprint_mismatch": False,
+                "fingerprint_mismatch": True,
                 "input_too_large": False,
                 "model_inference_error": False,
                 "model_inference_timeout": True,
@@ -639,6 +639,31 @@ class WorkerApiTests(TestCase):
                 processor_type="face_embedding",
                 error_code="model_inference_error",
                 retryable=True,
+            ),
+        )
+
+        self.assertEqual(mismatched.status_code, 400)
+        self.assertEqual(mismatched.json()["error"]["code"], "invalid_result")
+        self.assertEqual(
+            ProcessingAttempt.objects.get(pk=attempt).status,
+            ProcessingAttempt.Status.IN_PROGRESS,
+        )
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_capture_fail_rejects_nonretryable_fingerprint_mismatch(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        request_capture_metadata(self.photo())
+        job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
+        attempt = job["attempt_id"]
+
+        mismatched = self.post(
+            f"/internal/photo-processing/v1/attempts/{attempt}/fail",
+            self.terminal_body(
+                job,
+                outcome="failure",
+                error_code="fingerprint_mismatch",
+                retryable=False,
             ),
         )
 

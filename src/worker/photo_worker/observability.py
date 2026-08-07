@@ -64,6 +64,7 @@ _ERROR_CODES = frozenset(
 _RETRYABLE_CODES = frozenset(
     {
         "download_authorization_expired",
+        "fingerprint_mismatch",
         "model_inference_timeout",
         "network_interruption",
         "storage_unavailable",

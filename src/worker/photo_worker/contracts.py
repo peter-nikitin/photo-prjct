@@ -120,7 +120,7 @@ _EXIF_FIELDS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
 FAILURE_RETRYABLE = {
     "decode_failed": False,
     "download_authorization_expired": True,
-    "fingerprint_mismatch": False,
+    "fingerprint_mismatch": True,
     "input_too_large": False,
     "model_inference_error": False,
     "model_inference_timeout": True,

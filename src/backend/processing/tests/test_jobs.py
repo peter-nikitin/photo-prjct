@@ -484,6 +484,43 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(job.status, ProcessingJob.Status.FAILED)
         self.assertEqual(state.status, PhotoProcessingState.Status.FAILED)
 
+    def test_fingerprint_mismatch_retries_with_the_same_immutable_input_fingerprint(self) -> None:
+        photo = self.private_photo("fingerprint-retry")
+        request_capture_metadata(photo)
+        now = timezone.now()
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-1",
+            now=now,
+        )
+        fingerprint = claimed.job.input_fingerprint
+
+        fail_attempt(
+            claimed.attempt.id,
+            error_code="fingerprint_mismatch",
+            retryable=True,
+            now=now + timedelta(seconds=1),
+            jitter=lambda _low, _high: 0,
+        )
+
+        job = ProcessingJob.objects.get(pk=claimed.job.id)
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
+        retry = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-2",
+            now=job.available_at,
+        )
+
+        self.assertEqual(job.status, ProcessingJob.Status.RETRY_WAIT)
+        self.assertEqual(state.status, PhotoProcessingState.Status.RETRY_WAIT)
+        self.assertEqual(retry.job.id, job.id)
+        self.assertEqual(retry.job.input_fingerprint, fingerprint)
+        self.assertEqual(retry.attempt.input_fingerprint, fingerprint)
+
     def test_recovery_closes_expired_lease_and_schedules_its_retry(self) -> None:
         photo = self.private_photo("expired")
         request_capture_metadata(photo)

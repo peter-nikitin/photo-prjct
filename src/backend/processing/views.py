@@ -92,7 +92,7 @@ _FACE_RESULT_WARNING_CODES = {
 _CAPTURE_METADATA_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
-    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
     "network_interruption": (True, "A temporary network interruption occurred."),
     "storage_unavailable": (True, "Object storage is temporarily unavailable."),
@@ -101,7 +101,7 @@ _CAPTURE_METADATA_FAILURES = {
 _FACE_EMBEDDING_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
-    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
     "model_inference_error": (False, "The face model inference failed."),
     "model_inference_timeout": (True, "The face model processing timed out."),
@@ -115,7 +115,7 @@ _FACE_EMBEDDING_FAILURES = {
 _GENERATE_PREVIEW_FAILURES = {
     "decode_failed": (False, "The image could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
-    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
     "invalid_dimensions": (False, "The image dimensions are invalid."),
     "network_interruption": (True, "A temporary network interruption occurred."),
@@ -128,7 +128,7 @@ _GENERATE_PREVIEW_WARNING_CODES = {"color_profile_missing"}
 _SELFIE_QUERY_FAILURES = {
     "decode_failed": (False, "The selfie could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
-    "fingerprint_mismatch": (False, "The downloaded input did not match its fingerprint."),
+    "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
     "input_too_large": (False, "The input exceeded its declared limit."),
     "model_inference_error": (False, "The face model could not process the selfie."),
     "model_inference_timeout": (True, "The face model processing timed out."),

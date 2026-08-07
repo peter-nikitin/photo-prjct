@@ -815,7 +815,7 @@ def test_selfie_logging_failure_preserves_the_retryable_callback_disposition(
     ("error_code", "retryable"),
     [
         ("decode_failed", False),
-        ("fingerprint_mismatch", False),
+        ("fingerprint_mismatch", True),
         ("input_too_large", False),
         ("model_inference_error", False),
         ("model_inference_timeout", True),

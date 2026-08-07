@@ -117,6 +117,7 @@ def test_worker_failure_event_accepts_only_bounded_error_codes(
             retryable=reason_code
             in {
                 "download_authorization_expired",
+                "fingerprint_mismatch",
                 "model_inference_timeout",
                 "network_interruption",
                 "storage_unavailable",
@@ -124,6 +125,18 @@ def test_worker_failure_event_accepts_only_bounded_error_codes(
         ),
     )
     assert json.loads(logger.calls[0][1])["reason_code"] == reason_code
+
+
+def test_worker_failure_event_accepts_retryable_fingerprint_mismatch() -> None:
+    logger = _CaptureLogger()
+
+    emit_selfie_worker_event(
+        logger,
+        event="selfie_worker_attempt_finished",
+        **_fields(outcome="failed", reason_code="fingerprint_mismatch", retryable=True),
+    )
+
+    assert json.loads(logger.calls[0][1])["retryable"] is True
 
 
 def test_worker_event_allows_nullable_durations() -> None:

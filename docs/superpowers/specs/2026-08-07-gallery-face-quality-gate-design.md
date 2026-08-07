@@ -1,6 +1,6 @@
 # Gallery Face Quality Gate Design
 
-- **Status:** Approved in conversation on 2026-08-07; written review pending
+- **Status:** Approved in conversation and written review on 2026-08-07
 - **Date:** 2026-08-07
 - **Owner:** FindMe Photo
 - **Related architecture:** [`docs/architecture.md`](../../architecture.md), implemented photo-processing

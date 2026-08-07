@@ -27,6 +27,11 @@ A plan contains:
 - operational ordering, rollout, rollback, and architecture reconciliation; and
 - unresolved blockers that prevent execution.
 
+When execution will use subagents, reference `$execute-implementation-plan` once. Keep stable
+worktree, role, Git, report, review-loop, and model-selection rules in that skill instead of
+copying them into the plan. Plans contain only task-specific ownership, requirements, interfaces,
+dependencies, verification, and operational ordering.
+
 For each task, state the deliverable, affected paths, prerequisite specification sections, and
 observable completion check. Do not embed production implementation code or complete test bodies.
 Use short pseudocode only when execution order itself is otherwise ambiguous; design-level
@@ -84,6 +89,8 @@ data migration, a pricing-affecting cloud action, or a conflict with an accepted
    superseding ADR.
 10. Remove unresolved implementation choices. If an open question remains, mark the plan blocked or
    return to the decision owner instead of leaving the implementer to guess.
+11. For subagent execution, add one instruction to use `$execute-implementation-plan`; do not repeat
+    its orchestration contract in the plan or individual tasks.
 
 ## Quality rules
 

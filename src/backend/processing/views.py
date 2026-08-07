@@ -51,6 +51,11 @@ from processing.contracts import (
     parse_attempt_reference,
 )
 from processing.models import PhotoDerivative, ProcessingAttempt, ProcessingConflictAudit
+from processing.services.face_quality import (
+    QUALITY_FACE_CONTRACT_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSION,
+    validate_quality_face_result,
+)
 from processing.services.jobs import (
     complete_attempt,
     fail_attempt,
@@ -891,6 +896,11 @@ def _processor_contract(processor_type: str, contract_version: int, processor_ve
             PREVIEW_FACE_EMBEDDING_CONTRACT.processor_type,
             PREVIEW_FACE_EMBEDDING_CONTRACT.processor_version,
         ),
+        (
+            QUALITY_FACE_CONTRACT_VERSION,
+            FACE_EMBEDDING_CONTRACT.processor_type,
+            QUALITY_FACE_PROCESSOR_VERSION,
+        ),
     }
 
 
@@ -1085,7 +1095,11 @@ def _valid_result(
     if processor_type == CAPTURE_METADATA_CONTRACT.processor_type:
         return _valid_capture_metadata_result(value, configuration=configuration)
     if processor_type == FACE_EMBEDDING_CONTRACT.processor_type:
-        return _valid_face_embedding_result(value, contract_version=contract_version)
+        return _valid_face_embedding_result(
+            value,
+            contract_version=contract_version,
+            configuration=configuration,
+        )
     if processor_type == FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_type:
         return _valid_face_embedding_benchmark_result(value)
     if processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
@@ -1154,7 +1168,15 @@ def _valid_capture_metadata_result(value: object, *, configuration: object) -> b
     )
 
 
-def _valid_face_embedding_result(value: object, *, contract_version: int = 1) -> bool:
+def _valid_face_embedding_result(
+    value: object, *, contract_version: int = 1, configuration: object | None = None
+) -> bool:
+    if contract_version == QUALITY_FACE_CONTRACT_VERSION:
+        try:
+            validate_quality_face_result(value, configuration=configuration)
+        except ValueError:
+            return False
+        return True
     if not isinstance(value, dict):
         return False
     if not ("face_count" in value and "faces" in value and "warnings" in value):

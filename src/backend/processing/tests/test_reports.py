@@ -179,8 +179,12 @@ class ProcessingRunReportTests(TestCase):
                     "capture_time_present",
                     "attempt_count",
                     "faces_detected",
+                    "faces_embedded",
                     "faces_kept",
-                    "faces_failed",
+                    "faces_quality_rejected",
+                    "faces_technical_failed",
+                    "face_rejection_reasons",
+                    "face_technical_failure_reasons",
                     "duration_ms",
                     "warnings",
                     "error_code",
@@ -253,7 +257,7 @@ class ProcessingRunReportTests(TestCase):
             feature_payload={"detector": "unit"},
             quality_payload={"accepted": True},
         )
-        PhotoFaceDetection.objects.create(
+        kept = PhotoFaceDetection.objects.create(
             attempt_id=claimed.attempt.id,
             artifact=artifact,
             face_index=0,
@@ -265,20 +269,25 @@ class ProcessingRunReportTests(TestCase):
             attempt_id=claimed.attempt.id,
             artifact=artifact,
             face_index=1,
-            status=PhotoFaceDetection.Status.FAILED,
+            status=PhotoFaceDetection.Status.QUALITY_REJECTED,
             geometry={"x": 0, "y": 0, "w": 1, "h": 1},
-            features={"reason": "low_quality"},
+            features={
+                "quality": {
+                    "decision": "quality_rejected",
+                    "reasons": ["severe_blur"],
+                }
+            },
         )
-        hidden = PhotoFaceDetection.objects.create(
+        PhotoFaceDetection.objects.create(
             attempt_id=claimed.attempt.id,
             artifact=artifact,
             face_index=2,
-            status=PhotoFaceDetection.Status.DETECTED,
+            status=PhotoFaceDetection.Status.FAILED,
             geometry={"x": 2, "y": 2, "w": 1, "h": 1},
-            features={"score": 0.5},
+            features={"error_code": "model_inference_error"},
         )
         FaceEmbedding.objects.create(
-            detection=hidden,
+            detection=kept,
             model_version="sface-v1",
             vector=[0.1, 0.2, 0.3],
             metadata={"source": "unit"},
@@ -290,10 +299,23 @@ class ProcessingRunReportTests(TestCase):
         row = run.report["photos"][0]
         self.assertEqual(row["faces_detected"], 3)
         self.assertEqual(row["faces_kept"], 1)
-        self.assertEqual(row["faces_failed"], 1)
+        self.assertEqual(row["faces_quality_rejected"], 1)
+        self.assertEqual(row["faces_embedded"], 1)
+        self.assertEqual(row["faces_technical_failed"], 1)
+        self.assertEqual(row["face_rejection_reasons"], {"severe_blur": 1})
+        self.assertEqual(row["face_technical_failure_reasons"], {"model_inference_error": 1})
         self.assertEqual(
             run.report["faces"],
-            {"denominator": 1, "detected": 3, "kept": 1, "failed": 1},
+            {
+                "denominator": 1,
+                "detected": 3,
+                "kept": 1,
+                "quality_rejected": 1,
+                "embedded": 1,
+                "technical_failed": 1,
+                "rejection_reasons": {"severe_blur": 1},
+                "technical_failure_reasons": {"model_inference_error": 1},
+            },
         )
 
     def test_report_counts_retry_when_another_member_is_cancelled_without_attempt(self) -> None:

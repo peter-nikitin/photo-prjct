@@ -107,6 +107,33 @@ class WorkerApiEdgeCases(WorkerApiTests):
             views._valid_face_embedding_result(too_many_dimensions, contract_version=2)
         )
 
+    def test_v3_face_result_accepts_technical_evidence_but_rejects_nonfinite_quality(self) -> None:
+        technical_face = self.quality_face("technical_failed") | {
+            "quality": self.quality_evidence(),
+            "error_code": "model_inference_error",
+        }
+        technical = self.quality_result_body([technical_face])
+        rejected = self.quality_face("quality_rejected")
+        quality = rejected["quality"]
+        assert isinstance(quality, dict)
+        quality["sharpness"] = float("nan")
+        nonfinite = self.quality_result_body([rejected])
+
+        self.assertTrue(
+            views._valid_face_embedding_result(
+                technical,
+                contract_version=3,
+                configuration=self.quality_configuration(),
+            )
+        )
+        self.assertFalse(
+            views._valid_face_embedding_result(
+                nonfinite,
+                contract_version=3,
+                configuration=self.quality_configuration(),
+            )
+        )
+
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_stale_completion_returns_stale_and_replay_is_idempotent(self, grant) -> None:
         job = self._claim_one(grant)

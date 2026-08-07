@@ -364,6 +364,7 @@ class PhotoFaceDetection(models.Model):  # noqa: DJ008
     class Status(models.TextChoices):
         DETECTED = "detected", "Detected"
         KEPT = "kept", "Kept"
+        QUALITY_REJECTED = "quality_rejected", "Quality rejected"
         FAILED = "failed", "Failed"
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
@@ -386,7 +387,7 @@ class PhotoFaceDetection(models.Model):  # noqa: DJ008
     class Meta:
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(status__in=("detected", "kept", "failed")),
+                condition=models.Q(status__in=("detected", "kept", "quality_rejected", "failed")),
                 name="proc_photo_face_detection_status_chk",
             ),
             models.UniqueConstraint(
@@ -460,6 +461,11 @@ class FaceEmbedding(models.Model):  # noqa: DJ008
         errors = {}
         if self.detection_id and self.detection.attempt.status not in _TERMINAL_ATTEMPT_STATUSES:
             errors["detection"] = "Face embeddings are only allowed for terminal attempts."
+        if (
+            self.detection_id
+            and self.detection.status == PhotoFaceDetection.Status.QUALITY_REJECTED
+        ):
+            errors["detection"] = "Quality-rejected face detections cannot own embeddings."
         if errors:
             raise ValidationError(errors)
 

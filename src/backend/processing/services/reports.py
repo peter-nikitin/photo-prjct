@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from statistics import median
 from typing import Any
 from uuid import UUID
@@ -18,6 +19,10 @@ from processing.models import (
     PhotoFaceDetection,
     ProcessingAttempt,
     ProcessingJob,
+)
+from processing.services.face_quality import (
+    QUALITY_REJECTION_REASONS,
+    TECHNICAL_FAILURE_REASONS,
 )
 
 _PREVIEW_WARNING_CODES = frozenset({"color_profile_missing"})
@@ -139,8 +144,12 @@ def _photo_row(job: ProcessingJob) -> dict[str, Any]:
         "capture_time_present": capture_time_present,
         "attempt_count": len(attempts),
         "faces_detected": faces["detected"],
+        "faces_embedded": faces["embedded"],
         "faces_kept": faces["kept"],
-        "faces_failed": faces["failed"],
+        "faces_quality_rejected": faces["quality_rejected"],
+        "faces_technical_failed": faces["technical_failed"],
+        "face_rejection_reasons": faces["rejection_reasons"],
+        "face_technical_failure_reasons": faces["technical_failure_reasons"],
         "duration_ms": accepted.total_duration_ms if accepted else None,
         "warnings": [
             str(code)[: _row_limits(job.configuration)["max_warning_chars"]]
@@ -207,24 +216,90 @@ def _bounded_duration(value: object) -> int | None:
     return None
 
 
-def _faces_report_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+def _faces_report_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "denominator": len(rows),
         "detected": sum(row["faces_detected"] for row in rows),
         "kept": sum(row["faces_kept"] for row in rows),
-        "failed": sum(row["faces_failed"] for row in rows),
+        "quality_rejected": sum(row["faces_quality_rejected"] for row in rows),
+        "embedded": sum(row["faces_embedded"] for row in rows),
+        "technical_failed": sum(row["faces_technical_failed"] for row in rows),
+        "rejection_reasons": _aggregate_face_reasons(
+            rows, "face_rejection_reasons", QUALITY_REJECTION_REASONS
+        ),
+        "technical_failure_reasons": _aggregate_face_reasons(
+            rows,
+            "face_technical_failure_reasons",
+            TECHNICAL_FAILURE_REASONS,
+        ),
     }
 
 
-def _face_embedding_counts(attempt: ProcessingAttempt | None) -> dict[str, int]:
+def _face_embedding_counts(attempt: ProcessingAttempt | None) -> dict[str, Any]:
     if attempt is None:
-        return {"detected": 0, "kept": 0, "failed": 0}
-    detections = PhotoFaceDetection.objects.filter(attempt=attempt).order_by("face_index")
+        return {
+            "detected": 0,
+            "kept": 0,
+            "quality_rejected": 0,
+            "embedded": 0,
+            "technical_failed": 0,
+            "rejection_reasons": {},
+            "technical_failure_reasons": {},
+        }
+    detections = list(
+        PhotoFaceDetection.objects.filter(attempt=attempt)
+        .order_by("face_index")
+        .values("status", "features", "embedding__id")
+    )
+    rejection_reasons: Counter[str] = Counter()
+    technical_failure_reasons: Counter[str] = Counter()
+    for detection in detections:
+        features = detection["features"]
+        if not isinstance(features, dict):
+            continue
+        if detection["status"] == PhotoFaceDetection.Status.QUALITY_REJECTED:
+            quality = features.get("quality")
+            reasons = quality.get("reasons") if isinstance(quality, dict) else None
+            if isinstance(reasons, list):
+                rejection_reasons.update(
+                    reason
+                    for reason in reasons
+                    if isinstance(reason, str) and reason in QUALITY_REJECTION_REASONS
+                )
+        elif detection["status"] == PhotoFaceDetection.Status.FAILED:
+            error_code = features.get("error_code")
+            if isinstance(error_code, str) and error_code in TECHNICAL_FAILURE_REASONS:
+                technical_failure_reasons[error_code] += 1
     return {
-        "detected": detections.count(),
-        "kept": detections.filter(status=PhotoFaceDetection.Status.KEPT).count(),
-        "failed": detections.filter(status=PhotoFaceDetection.Status.FAILED).count(),
+        "detected": len(detections),
+        "kept": sum(
+            detection["status"] == PhotoFaceDetection.Status.KEPT for detection in detections
+        ),
+        "quality_rejected": sum(
+            detection["status"] == PhotoFaceDetection.Status.QUALITY_REJECTED
+            for detection in detections
+        ),
+        "embedded": sum(detection["embedding__id"] is not None for detection in detections),
+        "technical_failed": sum(
+            detection["status"] == PhotoFaceDetection.Status.FAILED for detection in detections
+        ),
+        "rejection_reasons": dict(sorted(rejection_reasons.items())),
+        "technical_failure_reasons": dict(sorted(technical_failure_reasons.items())),
     }
+
+
+def _aggregate_face_reasons(
+    rows: list[dict[str, Any]], field: str, allowed: frozenset[str]
+) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        reasons = row.get(field)
+        if not isinstance(reasons, dict):
+            continue
+        for reason, count in reasons.items():
+            if reason in allowed and isinstance(count, int) and not isinstance(count, bool):
+                counts[reason] += max(0, count)
+    return dict(sorted(counts.items()))
 
 
 def _duration_summary(durations: list[int]) -> dict[str, int | float | None]:

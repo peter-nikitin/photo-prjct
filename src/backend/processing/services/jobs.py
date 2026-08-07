@@ -28,6 +28,12 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
+from processing.services.face_quality import (
+    QUALITY_FACE_CONTRACT_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSION,
+    ValidatedQualityResult,
+    validate_quality_face_result,
+)
 
 DEFAULT_LEASE_SECONDS = 120
 DEFAULT_RECOVERY_LIMIT = 25
@@ -517,6 +523,16 @@ def _terminal_failure(
 
 
 def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> None:
+    if (
+        attempt.contract_version == QUALITY_FACE_CONTRACT_VERSION
+        and attempt.processor_version == QUALITY_FACE_PROCESSOR_VERSION
+    ):
+        validated = validate_quality_face_result(
+            result,
+            configuration=attempt.configuration,
+        )
+        _persist_quality_face_result(attempt, validated)
+        return
     if not isinstance(result, dict):
         return
     model = _coerce_face_model(result, attempt.configuration)
@@ -568,6 +584,64 @@ def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str,
                 model_version=model,
                 vector=embedding,
                 metadata=_safe_dict(record),
+            )
+
+
+def _persist_quality_face_result(
+    attempt: ProcessingAttempt, result: ValidatedQualityResult
+) -> None:
+    artifact = FaceProcessingAttemptArtifact.objects.create(
+        attempt=attempt,
+        status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+        feature_payload={
+            "model": result.model,
+            "warnings": result.warnings,
+            "timings": result.timings,
+            "detected_count": result.detected_count,
+            "kept_count": result.kept_count,
+            "quality_rejected_count": result.quality_rejected_count,
+            "embedded_count": result.embedded_count,
+            "technical_failed_count": result.technical_failed_count,
+            "truncated": "faces_truncated" in result.warnings,
+            "has_single_query_face_usable": result.has_single_query_face_usable,
+        },
+        quality_payload={
+            "rejection_reasons": result.rejection_reasons,
+            "technical_failure_reasons": result.technical_failure_reasons,
+        },
+    )
+    status_by_result = {
+        "kept": PhotoFaceDetection.Status.KEPT,
+        "quality_rejected": PhotoFaceDetection.Status.QUALITY_REJECTED,
+        "technical_failed": PhotoFaceDetection.Status.FAILED,
+    }
+    for face in result.faces:
+        features: dict[str, Any] = {"confidence": face.confidence}
+        if face.quality is not None:
+            features["quality"] = face.quality
+        if face.error_code is not None:
+            features["error_code"] = face.error_code
+        detection = PhotoFaceDetection.objects.create(
+            attempt=attempt,
+            artifact=artifact,
+            face_index=face.index,
+            status=status_by_result[face.status],
+            geometry={
+                "bbox": face.bbox,
+                "landmarks": face.landmarks,
+                "model": result.model,
+            },
+            features=features,
+        )
+        if face.embedding is not None:
+            FaceEmbedding.objects.create(
+                detection=detection,
+                model_version=result.model,
+                vector=face.embedding,
+                metadata={
+                    "confidence": face.confidence,
+                    "quality": face.quality,
+                },
             )
 
 

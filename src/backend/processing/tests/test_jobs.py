@@ -13,6 +13,8 @@ from picflow.models import Event, Photo
 from processing.contracts import ClaimedJob, CompletionConflict
 from processing.models import (
     EventProcessingRun,
+    FaceEmbedding,
+    FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
     PhotoProcessingState,
@@ -62,6 +64,113 @@ class ProcessingJobServiceTests(TestCase):
             original_size=10,
             original_content_type="image/jpeg",
             uploaded_at=timezone.now(),
+        )
+
+    def quality_configuration(self) -> dict[str, object]:
+        return {
+            "retry_policy": {
+                "max_attempts": 3,
+                "base_backoff_seconds": 30,
+                "max_backoff_seconds": 300,
+                "jitter_seconds": 5,
+                "lease_max_seconds": 300,
+            },
+            "max_cohort_size": 16,
+            "report_max_bytes": 262_144,
+            "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
+            "face_embedding": {
+                "model": "sface",
+                "max_faces": 32,
+                "detection_threshold": 0.75,
+                "normalize_embeddings": True,
+                "quality": {
+                    "algorithm_version": "normalized-laplacian-v1",
+                    "crop_size": 112,
+                    "minimum_face_px": 20,
+                    "severe_blur_threshold": 10.0,
+                    "borderline_blur_threshold": 20.0,
+                    "minimum_relative_area": 0.1,
+                    "minimum_confidence": 0.8,
+                },
+            },
+            "worker": {
+                "api_response_max_bytes": 131_072,
+                "concurrency": 1,
+                "heartbeat_interval_seconds": 30,
+                "lease_duration_seconds": 120,
+                "max_input_bytes": 50 * 1024 * 1024,
+                "max_pixels": 100_000_000,
+                "poll_min_delay_seconds": 5,
+                "terminal_result_max_bytes": 131_072,
+            },
+        }
+
+    def quality_evidence(
+        self, decision: str = "accepted", reasons: list[str] | None = None
+    ) -> dict[str, object]:
+        return {
+            "algorithm_version": "normalized-laplacian-v1",
+            "crop_size": 112,
+            "confidence": 0.95,
+            "minimum_side_px": 32.0,
+            "relative_area": 0.1,
+            "sharpness": 30.0 if decision == "accepted" else 5.0,
+            "decision": decision,
+            "reasons": reasons or [],
+        }
+
+    def quality_face(self, index: int, status: str) -> dict[str, object]:
+        face: dict[str, object] = {
+            "index": index,
+            "bbox": [10.0 + index, 20.0, 32.0, 32.0],
+            "confidence": 0.95,
+            "landmarks": [[1.0, 2.0]] * 5,
+            "status": status,
+        }
+        if status == "kept":
+            return face | {
+                "quality": self.quality_evidence(),
+                "embedding": [1.0] + [0.0] * 127,
+            }
+        if status == "quality_rejected":
+            return face | {
+                "quality": self.quality_evidence("quality_rejected", ["severe_blur"]),
+            }
+        return face | {
+            "quality": self.quality_evidence(),
+            "error_code": "model_inference_error",
+        }
+
+    def quality_result(self, faces: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "model": "sface",
+            "face_count": len(faces),
+            "faces": faces,
+            "has_single_query_face_usable": sum(face["status"] == "kept" for face in faces) == 1,
+            "warnings": ["faces_truncated", "face_embedding_failed"],
+            "timings": {
+                "decode_ms": 1,
+                "model_load_ms": 2,
+                "detect_ms": 3,
+                "embed_ms": 4,
+                "total_ms": 10,
+            },
+        }
+
+    def claim_quality_face(self, suffix: str):
+        photo = self.private_photo(suffix)
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=self.quality_configuration(),
+        )
+        return claim_job(
+            contract_version=3,
+            processor_type="face_embedding",
+            processor_version=3,
+            worker_build="quality-worker",
         )
 
     def test_claim_seals_the_enrolled_cohort_and_creates_a_leased_current_attempt(self) -> None:
@@ -280,6 +389,150 @@ class ProcessingJobServiceTests(TestCase):
                 "scale_y": 2.0,
             },
         )
+
+    def test_v3_mixed_truncated_result_persists_every_face_without_rejected_vectors(self) -> None:
+        claimed = self.claim_quality_face("v3-mixed")
+        faces = [
+            self.quality_face(0, "kept"),
+            self.quality_face(1, "quality_rejected"),
+            self.quality_face(2, "technical_failed"),
+        ]
+        quality_computation_failed = self.quality_face(3, "technical_failed")
+        quality_computation_failed.pop("quality")
+        quality_computation_failed["error_code"] = "invalid_face_quality"
+        faces.append(quality_computation_failed)
+
+        complete_attempt(claimed.attempt.id, result=self.quality_result(faces))
+
+        artifact = FaceProcessingAttemptArtifact.objects.get(attempt=claimed.attempt)
+        self.assertEqual(
+            artifact.feature_payload,
+            {
+                "model": "sface",
+                "warnings": ["faces_truncated", "face_embedding_failed"],
+                "timings": {
+                    "decode_ms": 1,
+                    "model_load_ms": 2,
+                    "detect_ms": 3,
+                    "embed_ms": 4,
+                    "total_ms": 10,
+                },
+                "detected_count": 4,
+                "kept_count": 1,
+                "quality_rejected_count": 1,
+                "embedded_count": 1,
+                "technical_failed_count": 2,
+                "truncated": True,
+                "has_single_query_face_usable": True,
+            },
+        )
+        self.assertEqual(
+            artifact.quality_payload,
+            {
+                "rejection_reasons": {"severe_blur": 1},
+                "technical_failure_reasons": {
+                    "invalid_face_quality": 1,
+                    "model_inference_error": 1,
+                },
+            },
+        )
+        detections = list(
+            PhotoFaceDetection.objects.filter(attempt=claimed.attempt).order_by("face_index")
+        )
+        self.assertEqual(
+            [detection.status for detection in detections],
+            [
+                PhotoFaceDetection.Status.KEPT,
+                PhotoFaceDetection.Status.QUALITY_REJECTED,
+                PhotoFaceDetection.Status.FAILED,
+                PhotoFaceDetection.Status.FAILED,
+            ],
+        )
+        self.assertEqual(FaceEmbedding.objects.filter(detection__in=detections).count(), 1)
+        self.assertFalse(hasattr(detections[1], "embedding"))
+        self.assertFalse(hasattr(detections[2], "embedding"))
+        self.assertFalse(hasattr(detections[3], "embedding"))
+        embedding = FaceEmbedding.objects.get(detection=detections[0])
+        self.assertNotIn("embedding", embedding.metadata)
+        self.assertEqual(detections[1].features["quality"]["decision"], "quality_rejected")
+        self.assertEqual(detections[2].features["error_code"], "model_inference_error")
+        self.assertEqual(detections[3].features["error_code"], "invalid_face_quality")
+
+    def test_v3_malformed_result_rolls_back_terminal_persistence_atomically(self) -> None:
+        rejected_with_vector = self.quality_face(0, "quality_rejected") | {
+            "embedding": [1.0] + [0.0] * 127
+        }
+        accepted_measurements_claimed_rejected = self.quality_face(0, "quality_rejected")
+        accepted_quality = accepted_measurements_claimed_rejected["quality"]
+        assert isinstance(accepted_quality, dict)
+        accepted_quality["sharpness"] = 30.0
+        rejected_measurements_claimed_accepted = self.quality_face(0, "kept")
+        rejected_quality = rejected_measurements_claimed_accepted["quality"]
+        assert isinstance(rejected_quality, dict)
+        rejected_quality["sharpness"] = 5.0
+        technical_failure_with_rejected_measurements = self.quality_face(0, "technical_failed")
+        technical_quality = technical_failure_with_rejected_measurements["quality"]
+        assert isinstance(technical_quality, dict)
+        technical_quality["sharpness"] = 5.0
+
+        invalid_faces = (
+            rejected_with_vector,
+            accepted_measurements_claimed_rejected,
+            rejected_measurements_claimed_accepted,
+            technical_failure_with_rejected_measurements,
+        )
+        for index, invalid_face in enumerate(invalid_faces):
+            claimed = self.claim_quality_face(f"v3-atomic-{index}")
+            with self.assertRaises(ValueError):
+                complete_attempt(
+                    claimed.attempt.id,
+                    result=self.quality_result([invalid_face]),
+                )
+
+            claimed.attempt.refresh_from_db()
+            self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
+            self.assertFalse(claimed.attempt.accepted)
+            self.assertFalse(
+                FaceProcessingAttemptArtifact.objects.filter(attempt=claimed.attempt).exists()
+            )
+            self.assertFalse(PhotoFaceDetection.objects.filter(attempt=claimed.attempt).exists())
+            self.assertFalse(
+                FaceEmbedding.objects.filter(detection__attempt=claimed.attempt).exists()
+            )
+
+    def test_v3_result_rejects_inexact_frozen_quality_configuration_atomically(self) -> None:
+        configuration = self.quality_configuration()
+        face_configuration = configuration["face_embedding"]
+        assert isinstance(face_configuration, dict)
+        quality_configuration = face_configuration["quality"]
+        assert isinstance(quality_configuration, dict)
+        quality_configuration["unexpected_threshold"] = 1.0
+        request_processor(
+            self.private_photo("v3-invalid-configuration"),
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=configuration,
+        )
+        claimed = claim_job(
+            contract_version=3,
+            processor_type="face_embedding",
+            processor_version=3,
+            worker_build="quality-worker",
+        )
+
+        with self.assertRaises(ValueError):
+            complete_attempt(
+                claimed.attempt.id,
+                result=self.quality_result([self.quality_face(0, "kept")]),
+            )
+
+        claimed.attempt.refresh_from_db()
+        self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
+        self.assertFalse(
+            FaceProcessingAttemptArtifact.objects.filter(attempt=claimed.attempt).exists()
+        )
+        self.assertFalse(PhotoFaceDetection.objects.filter(attempt=claimed.attempt).exists())
 
     def test_later_eligible_photo_enters_a_new_collecting_run_after_first_claim(self) -> None:
         first = self.private_photo("sealed")

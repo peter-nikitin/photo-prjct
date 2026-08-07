@@ -158,7 +158,7 @@ class ProcessingModelTests(TestCase):
         )
         self.assertEqual(
             {value for value, _ in PhotoFaceDetection.Status.choices},
-            {"detected", "kept", "failed"},
+            {"detected", "kept", "quality_rejected", "failed"},
         )
 
     def test_database_checks_reject_unknown_statuses(self) -> None:
@@ -836,6 +836,52 @@ class ProcessingModelTests(TestCase):
             with self.assertRaises(IntegrityError):
                 FaceEmbedding.objects.filter(pk=embedding.pk).update(vector=[0.1, 0.2])
 
+    def test_quality_rejected_detection_is_immutable_and_cannot_own_embedding(self) -> None:
+        run = self.make_run(processor_type="face_embedding", processor_version=3)
+        job = self.make_job(run=run, processor_type="face_embedding", processor_version=3)
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=self.photo,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=3,
+            configuration={},
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at="2026-08-08T00:00:00Z",
+            result={"face_count": 1},
+            accepted=True,
+        )
+        artifact = FaceProcessingAttemptArtifact.objects.create(
+            attempt=attempt,
+            feature_payload={"detected_count": 1, "quality_rejected_count": 1},
+            quality_payload={"rejection_reasons": {"severe_blur": 1}},
+        )
+        detection = PhotoFaceDetection.objects.create(
+            attempt=attempt,
+            artifact=artifact,
+            face_index=0,
+            status=PhotoFaceDetection.Status.QUALITY_REJECTED,
+            geometry={"bbox": [1.0, 2.0, 30.0, 30.0]},
+            features={"quality": {"decision": "quality_rejected"}},
+        )
+
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                FaceEmbedding.objects.create(
+                    detection=detection,
+                    model_version="sface",
+                    vector=[0.0] * 128,
+                    metadata={},
+                )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                PhotoFaceDetection.objects.filter(pk=detection.pk).update(
+                    status=PhotoFaceDetection.Status.KEPT
+                )
+
 
 class ProcessingInitialMigrationTests(TransactionTestCase):
     migrate_from = [("picflow", "0005_validate_photo_private_original_constraints")]
@@ -1033,3 +1079,113 @@ class ProcessingFaceIndexNameMigrationTests(TransactionTestCase):
             )
 
         MigrationExecutor(connection).migrate(self.migrate_to)
+
+
+class ProcessingFaceQualityGenerationMigrationTests(TransactionTestCase):
+    migrate_from = [("processing", "0006_face_cluster_corpus")]
+    migrate_to = [("processing", "0007_face_quality_generation")]
+
+    def test_migration_preserves_kept_embeddings_and_rejects_rejected_embeddings(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+        old_apps = executor.loader.project_state(self.migrate_from).apps
+        Event = old_apps.get_model("picflow", "Event")
+        Photo = old_apps.get_model("picflow", "Photo")
+        Run = old_apps.get_model("processing", "EventProcessingRun")
+        Job = old_apps.get_model("processing", "ProcessingJob")
+        Attempt = old_apps.get_model("processing", "ProcessingAttempt")
+        Artifact = old_apps.get_model("processing", "FaceProcessingAttemptArtifact")
+        Detection = old_apps.get_model("processing", "PhotoFaceDetection")
+        Embedding = old_apps.get_model("processing", "FaceEmbedding")
+
+        event = Event.objects.create(
+            name="Face quality migration event",
+            slug="face-quality-migration-event",
+            start_date="2026-08-08",
+            end_date="2026-08-08",
+            city="Moscow",
+            access_type="free",
+            publication_status="published",
+            description="",
+        )
+        photo = Photo.objects.create(
+            id="face-quality-migration-photo",
+            event=event,
+            src="photos/face-quality-migration-photo.jpg",
+        )
+        run = Run.objects.create(
+            event=event,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            configuration={},
+            configuration_hash="a" * 64,
+        )
+        job = Job.objects.create(
+            event=event,
+            run=run,
+            photo=photo,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            configuration={},
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status="succeeded",
+        )
+        attempt = Attempt.objects.create(
+            event=event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status="succeeded",
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        artifact = Artifact.objects.create(attempt=attempt)
+        kept = Detection.objects.create(
+            artifact=artifact,
+            attempt=attempt,
+            face_index=0,
+            status="kept",
+        )
+        existing = Embedding.objects.create(
+            detection=kept,
+            model_version="sface",
+            vector=[0.0] * 128,
+            metadata={"generation": "historical"},
+        )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        migrated_apps = executor.loader.project_state(self.migrate_to).apps
+        MigratedDetection = migrated_apps.get_model("processing", "PhotoFaceDetection")
+        MigratedEmbedding = migrated_apps.get_model("processing", "FaceEmbedding")
+
+        self.assertEqual(MigratedDetection.objects.get(pk=kept.pk).status, "kept")
+        self.assertEqual(
+            MigratedEmbedding.objects.get(pk=existing.pk).metadata,
+            {"generation": "historical"},
+        )
+        rejected = MigratedDetection.objects.create(
+            artifact_id=artifact.pk,
+            attempt_id=attempt.pk,
+            face_index=1,
+            status="quality_rejected",
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                MigratedEmbedding.objects.create(
+                    detection_id=rejected.pk,
+                    model_version="sface",
+                    vector=[0.0] * 128,
+                    metadata={},
+                )
+
+        restorer = MigrationExecutor(connection)
+        restorer.migrate(restorer.loader.graph.leaf_nodes())

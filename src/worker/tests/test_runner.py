@@ -23,6 +23,7 @@ from photo_worker.contracts import (
     SelfieEmbeddingResult,
 )
 from photo_worker.face_embedding import FaceEmbeddingError
+from photo_worker.face_quality import FaceQualityEvidence, FaceQualityThresholds
 from photo_worker.runner import Worker, WorkerConfig, _LeaseKeeper, _lifecycle
 from PIL import Image
 
@@ -501,6 +502,59 @@ def make_face_embedding_result() -> FaceEmbeddingResult:
             ),
         ),
         has_single_query_face_usable=True,
+        warnings=(),
+        timings={"decode_ms": 1, "model_load_ms": 2, "detect_ms": 3, "embed_ms": 4, "total_ms": 10},
+    )
+
+
+def quality_face_claim() -> Claim:
+    claim = make_claim(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING)
+    assert claim.job is not None
+    thresholds = FaceQualityThresholds(
+        algorithm_version="normalized-laplacian-v1",
+        crop_size=112,
+        minimum_face_px=20,
+        severe_blur_threshold=10.0,
+        borderline_blur_threshold=20.0,
+        minimum_relative_area=0.1,
+        minimum_confidence=0.8,
+    )
+    return Claim(
+        job=replace(
+            claim.job,
+            contract_version=3,
+            processor_version=3,
+            configuration=replace(claim.job.configuration, quality_thresholds=thresholds),
+        ),
+        suggested_delay_seconds=None,
+    )
+
+
+def quality_face_embedding_result() -> FaceEmbeddingResult:
+    quality = FaceQualityEvidence(
+        algorithm_version="normalized-laplacian-v1",
+        crop_size=112,
+        confidence=0.96,
+        minimum_side_px=32.0,
+        relative_area=0.1,
+        sharpness=30.0,
+        decision="quality_rejected",
+        reasons=("borderline_blur", "low_confidence"),
+    )
+    return FaceEmbeddingResult(
+        model="sface",
+        faces=(
+            FaceEmbeddingFace(
+                index=0,
+                bbox=(1.0, 2.0, 32.0, 32.0),
+                confidence=0.96,
+                landmarks=((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)),
+                embedding=None,
+                status="quality_rejected",
+                quality=quality,
+            ),
+        ),
+        has_single_query_face_usable=False,
         warnings=(),
         timings={"decode_ms": 1, "model_load_ms": 2, "detect_ms": 3, "embed_ms": 4, "total_ms": 10},
     )
@@ -1070,6 +1124,38 @@ def test_worker_processes_face_embedding_claim_and_submits_typed_result(
     assert len(json.dumps(client.completed[0], separators=(",", ":")).encode()) <= 8_192
     assert list(tmp_path.iterdir()) == []
     assert "phase=succeeded" in caplog.text
+
+
+def test_worker_submits_v3_quality_face_records_and_passes_the_frozen_thresholds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing v3 thresholds or a rejected record's status would break the terminal contract."""
+    claim = quality_face_claim()
+    assert claim.job is not None
+    observed: dict[str, object] = {}
+
+    def extract(*_args: object, **kwargs: object) -> FaceEmbeddingResult:
+        observed["thresholds"] = kwargs["quality_thresholds"]
+        return quality_face_embedding_result()
+
+    monkeypatch.setattr("photo_worker.runner.extract_face_embeddings", extract)
+    client = Client(claim)
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_identities=("3/face_embedding/3",),
+        ),
+    ).run_once()
+
+    assert observed["thresholds"] == claim.job.configuration.quality_thresholds
+    face = client.completed[0]["result"]["faces"][0]
+    assert face["status"] == "quality_rejected"
+    assert face["quality"]["reasons"] == ["borderline_blur", "low_confidence"]
+    assert "embedding" not in face
 
 
 def test_worker_benchmark_runs_face_extraction_but_submits_metrics_only(

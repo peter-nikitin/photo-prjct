@@ -26,6 +26,7 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
+    PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
     CaptureMetadataResult,
     Claim,
     ClaimedJob,
@@ -55,6 +56,7 @@ _SUPPORTED_IDENTITIES = {
     (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
     (2, PROCESSOR_TYPE_FACE_EMBEDDING, 2),
     (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
+    (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
     (1, PROCESSOR_TYPE_SELFIE_QUERY, 1),
 }
 
@@ -644,6 +646,7 @@ class Worker:
                 max_faces=job.configuration.max_faces,
                 detection_threshold=job.configuration.face_detection_threshold,
                 model=job.configuration.model,
+                quality_thresholds=job.configuration.quality_thresholds,
             )
             if job.contract_version == PREVIEW_CONTRACT_VERSION:
                 if job.input_geometry is None:

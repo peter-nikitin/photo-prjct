@@ -412,6 +412,104 @@ def claim_payload(
     return {"empty": False, "job": job | overrides}
 
 
+def quality_configuration() -> dict[str, object]:
+    return {
+        **processor_configuration(PROCESSOR_TYPE_FACE_EMBEDDING),
+        "face_embedding": {
+            "model": "sface",
+            "max_faces": 32,
+            "detection_threshold": 0.75,
+            "normalize_embeddings": True,
+            "quality": {
+                "algorithm_version": "normalized-laplacian-v1",
+                "crop_size": 112,
+                "minimum_face_px": 20,
+                "severe_blur_threshold": 10.0,
+                "borderline_blur_threshold": 20.0,
+                "minimum_relative_area": 0.1,
+                "minimum_confidence": 0.8,
+            },
+        },
+    }
+
+
+def quality_claim_payload(*, configuration: dict[str, object] | None = None) -> dict[str, object]:
+    return claim_payload(
+        processor_type=PROCESSOR_TYPE_FACE_EMBEDDING,
+        contract_version=3,
+        processor_version=3,
+        configuration=configuration or quality_configuration(),
+    )
+
+
+def test_v3_quality_face_claim_freezes_the_complete_quality_configuration() -> None:
+    claim = Claim.from_response(quality_claim_payload())
+
+    assert claim.job is not None
+    assert claim.job.contract_version == 3
+    assert claim.job.processor_version == 3
+    assert claim.job.configuration.quality_thresholds is not None
+    assert claim.job.configuration.quality_thresholds.crop_size == 112
+    assert claim.job.configuration.quality_thresholds.minimum_face_px == 20
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda quality: quality.pop("algorithm_version"),
+        lambda quality: quality.__setitem__("crop_size", 111),
+        lambda quality: quality.__setitem__("severe_blur_threshold", 20.0),
+        lambda quality: quality.__setitem__("unexpected", "value"),
+        lambda quality: quality.__setitem__("algorithm_version", "unsupported-algorithm"),
+        lambda quality: quality.__setitem__("model", "sface-v1"),
+    ],
+)
+def test_v3_quality_face_claim_rejects_incomplete_or_invalid_quality_identity(
+    mutate: object,
+) -> None:
+    configuration = quality_configuration()
+    face = configuration["face_embedding"]
+    assert isinstance(face, dict)
+    quality = face["quality"]
+    assert isinstance(quality, dict)
+    assert callable(mutate)
+    mutate(quality)
+
+    with pytest.raises(ContractError):
+        Claim.from_response(quality_claim_payload(configuration=configuration))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("model", "sface-v1"), ("normalize_embeddings", False)],
+)
+def test_v3_quality_face_claim_rejects_semantics_the_worker_does_not_implement(
+    field: str, value: object
+) -> None:
+    configuration = quality_configuration()
+    face = configuration["face_embedding"]
+    assert isinstance(face, dict)
+    face[field] = value
+
+    with pytest.raises(ContractError):
+        Claim.from_response(quality_claim_payload(configuration=configuration))
+
+
+def test_v1_face_claim_keeps_legacy_model_alias_and_normalization_parsing() -> None:
+    configuration = processor_configuration(PROCESSOR_TYPE_FACE_EMBEDDING)
+    face = configuration["face_embedding"]
+    assert isinstance(face, dict)
+    face.update({"model": "sface-v1", "normalize_embeddings": False})
+
+    claim = Claim.from_response(
+        claim_payload(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING, configuration=configuration)
+    )
+
+    assert claim.job is not None
+    assert claim.job.contract_version == 1
+    assert claim.job.configuration.model == "sface-v1"
+
+
 def test_claim_accepts_only_the_supported_processor_contract() -> None:
     claim = Claim.from_response(claim_payload())
 

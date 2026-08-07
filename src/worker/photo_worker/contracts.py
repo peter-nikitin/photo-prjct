@@ -11,6 +11,8 @@ from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from photo_worker.face_quality import FaceQualityError, FaceQualityEvidence, FaceQualityThresholds
+
 CONTRACT_VERSION = 1
 PROCESSOR_TYPE = "capture_metadata"
 CAPTURE_METADATA_PROCESSOR_VERSION = 2
@@ -18,6 +20,7 @@ PROCESSOR_VERSION = CAPTURE_METADATA_PROCESSOR_VERSION
 PROCESSOR_TYPE_FACE_EMBEDDING = "face_embedding"
 PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK = "face_embedding_benchmark"
 PROCESSOR_VERSION_FACE_EMBEDDING = 1
+PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 3
 PREVIEW_CONTRACT_VERSION = 2
 PROCESSOR_TYPE_GENERATE_PREVIEW = "generate_preview"
 PROCESSOR_VERSION_GENERATE_PREVIEW = 1
@@ -285,6 +288,7 @@ class ProcessorConfiguration:
     embedding_dimensions: int = MAX_FACE_EMBEDDING_DIMENSIONS
     minimum_face_px: int = 1
     event_timezone: str | None = None
+    quality_thresholds: FaceQualityThresholds | None = None
 
     @classmethod
     def from_value(cls, value: object) -> ProcessorConfiguration:
@@ -292,6 +296,7 @@ class ProcessorConfiguration:
         face_threshold: object = DEFAULT_FACE_DETECTION_THRESHOLD
         model: object = "sface"
         event_timezone: str | None = None
+        quality_thresholds: FaceQualityThresholds | None = None
         normalization = "utc_assume_utc_if_missing"
         expected_capture = {
             "retry_policy",
@@ -459,15 +464,46 @@ class ProcessorConfiguration:
         elif face_config is not None:
             if not isinstance(face_config, dict):
                 raise ContractError("invalid processor configuration")
-            if set(face_config) - {
+            has_quality = "quality" in face_config
+            allowed_face_fields = {
                 "max_faces",
                 "detection_threshold",
                 "model",
                 "max_faces_per_photo",
                 "min_face_px",
                 "normalize_embeddings",
-            }:
+            } | ({"quality"} if has_quality else set())
+            if set(face_config) - allowed_face_fields:
                 raise ContractError("invalid processor configuration")
+            if has_quality:
+                if set(face_config) != {
+                    "max_faces",
+                    "detection_threshold",
+                    "model",
+                    "normalize_embeddings",
+                    "quality",
+                }:
+                    raise ContractError("invalid processor configuration")
+                if (
+                    face_config["model"] != "sface"
+                    or face_config["normalize_embeddings"] is not True
+                ):
+                    raise ContractError("invalid processor configuration")
+                quality = face_config["quality"]
+                if not isinstance(quality, dict) or set(quality) != {
+                    "algorithm_version",
+                    "crop_size",
+                    "minimum_face_px",
+                    "severe_blur_threshold",
+                    "borderline_blur_threshold",
+                    "minimum_relative_area",
+                    "minimum_confidence",
+                }:
+                    raise ContractError("invalid processor configuration")
+                try:
+                    quality_thresholds = FaceQualityThresholds(**quality)
+                except (FaceQualityError, TypeError) as error:
+                    raise ContractError("invalid processor configuration") from error
             configured_max_faces = face_config.get(
                 "max_faces", face_config.get("max_faces_per_photo", 1)
             )
@@ -497,7 +533,11 @@ class ProcessorConfiguration:
             max_faces = cast(int, configured_max_faces)
             face_threshold = cast(float, configured_face_threshold)
             embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
-            minimum_face_px = int(face_config.get("min_face_px", 1))
+            minimum_face_px = (
+                quality_thresholds.minimum_face_px
+                if quality_thresholds is not None
+                else int(face_config.get("min_face_px", 1))
+            )
         else:
             if not (
                 isinstance(preview_config, dict)
@@ -530,6 +570,7 @@ class ProcessorConfiguration:
             embedding_dimensions=embedding_dimensions,
             minimum_face_px=minimum_face_px,
             event_timezone=event_timezone,
+            quality_thresholds=quality_thresholds,
         )
 
 
@@ -695,6 +736,7 @@ class ClaimedJob:
                     PROCESSOR_TYPE_FACE_EMBEDDING,
                     PROCESSOR_VERSION_FACE_EMBEDDING,
                 ),
+                (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
                 (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
                 (
                     PREVIEW_CONTRACT_VERSION,
@@ -724,6 +766,13 @@ class ClaimedJob:
                         PROCESSOR_VERSION_FACE_EMBEDDING,
                     )
                     and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
+                    and configuration.quality_thresholds is None
+                )
+                or (
+                    identity
+                    == (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY)
+                    and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
+                    and configuration.quality_thresholds is not None
                 )
                 or (
                     preview
@@ -844,16 +893,65 @@ class FaceEmbeddingFace:
     bbox: tuple[float, float, float, float]
     confidence: float
     landmarks: tuple[tuple[float, float], ...]
-    embedding: tuple[float, ...]
+    embedding: tuple[float, ...] | None
+    status: str = "kept"
+    quality: FaceQualityEvidence | None = None
+    error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        has_technical_error = (
+            isinstance(self.error_code, str)
+            and bool(self.error_code)
+            and len(self.error_code) <= 64
+        )
+        legacy_kept = (
+            self.status == "kept"
+            and self.quality is None
+            and self.embedding is not None
+            and self.error_code is None
+        )
+        accepted_kept = (
+            self.status == "kept"
+            and self.quality is not None
+            and self.quality.decision == "accepted"
+            and self.embedding is not None
+            and self.error_code is None
+        )
+        quality_rejected = (
+            self.status == "quality_rejected"
+            and self.quality is not None
+            and self.quality.decision == "quality_rejected"
+            and self.embedding is None
+            and self.error_code is None
+        )
+        technical_failed = (
+            self.status == "technical_failed"
+            and self.embedding is None
+            and has_technical_error
+            and (self.quality is None or self.quality.decision == "accepted")
+        )
+        if not (legacy_kept or accepted_kept or quality_rejected or technical_failed):
+            raise ValueError("invalid face embedding record")
 
     def as_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "index": self.index,
             "bbox": list(self.bbox),
             "confidence": self.confidence,
             "landmarks": [list(point) for point in self.landmarks],
-            "embedding": list(self.embedding),
         }
+        if self.quality is None and self.status == "kept":
+            assert self.embedding is not None
+            payload["embedding"] = list(self.embedding)
+            return payload
+        payload["status"] = self.status
+        if self.quality is not None:
+            payload["quality"] = self.quality.as_payload()
+        if self.embedding is not None:
+            payload["embedding"] = list(self.embedding)
+        if self.error_code is not None:
+            payload["error_code"] = self.error_code
+        return payload
 
 
 @dataclass(frozen=True)
@@ -984,11 +1082,11 @@ def _processor_version(processor_type: str, contract_version: int = CONTRACT_VER
     if processor_type == PROCESSOR_TYPE:
         return PROCESSOR_VERSION
     if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
-        return (
-            PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW
-            if contract_version == PREVIEW_CONTRACT_VERSION
-            else PROCESSOR_VERSION_FACE_EMBEDDING
-        )
+        if contract_version == PREVIEW_CONTRACT_VERSION:
+            return PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW
+        if contract_version == 3:
+            return PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY
+        return PROCESSOR_VERSION_FACE_EMBEDDING
     if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
         return 1
     if (

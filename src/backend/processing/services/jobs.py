@@ -32,6 +32,7 @@ from processing.services.face_quality import (
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     ValidatedQualityResult,
+    publish_face_embedding_projection,
     validate_quality_face_result,
 )
 
@@ -486,7 +487,8 @@ def _terminal_success(
         ]
     )
     if attempt.processor_type == FACE_EMBEDDING_PROCESSOR:
-        _persist_face_embedding_result(attempt, payload["result"])
+        if _persist_face_embedding_result(attempt, payload["result"]):
+            publish_face_embedding_projection(attempt)
 
 
 def _terminal_failure(
@@ -522,7 +524,7 @@ def _terminal_failure(
     )
 
 
-def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> None:
+def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> bool:
     if (
         attempt.contract_version == QUALITY_FACE_CONTRACT_VERSION
         and attempt.processor_version == QUALITY_FACE_PROCESSOR_VERSION
@@ -532,14 +534,14 @@ def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str,
             configuration=attempt.configuration,
         )
         _persist_quality_face_result(attempt, validated)
-        return
+        return True
     if not isinstance(result, dict):
-        return
+        return False
     model = _coerce_face_model(result, attempt.configuration)
     input_geometry = _face_input_geometry(attempt, result)
     faces = result.get("faces")
     if not isinstance(faces, list):
-        return
+        return False
     artifact = FaceProcessingAttemptArtifact.objects.create(
         attempt=attempt,
         status=FaceProcessingAttemptArtifact.Status.COMPLETE,
@@ -585,6 +587,7 @@ def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str,
                 vector=embedding,
                 metadata=_safe_dict(record),
             )
+    return True
 
 
 def _persist_quality_face_result(

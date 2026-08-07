@@ -21,6 +21,7 @@ from processing.models import (
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
+    PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -236,6 +237,201 @@ class ProcessingModelTests(TestCase):
         }
         values.update(overrides)
         return ProcessingAttempt.objects.create(**values)
+
+    def make_face_attempt(
+        self,
+        *,
+        contract_version: int,
+        processor_version: int,
+        configuration_hash: str,
+        photo: Photo | None = None,
+        processor_type: str = "face_embedding",
+        status: Any = ProcessingAttempt.Status.SUCCEEDED,
+        accepted: bool = True,
+    ) -> ProcessingAttempt:
+        attempt_photo = photo or self.photo
+        configuration = {"generation": configuration_hash[0]}
+        run = self.make_run(
+            contract_version=contract_version,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
+        )
+        job = self.make_job(
+            run=run,
+            photo=attempt_photo,
+            contract_version=contract_version,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=attempt_photo,
+            contract_version=contract_version,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            configuration=configuration,
+            input_fingerprint={},
+            status=status,
+            terminal_at=(
+                None if status == ProcessingAttempt.Status.IN_PROGRESS else timezone.now()
+            ),
+            accepted=accepted,
+        )
+        if status != ProcessingAttempt.Status.IN_PROGRESS:
+            FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
+        return attempt
+
+    def test_face_projection_keeps_same_photo_generations_separate(self) -> None:
+        baseline = self.make_face_attempt(
+            contract_version=1,
+            processor_version=1,
+            configuration_hash="a" * 64,
+        )
+        candidate = self.make_face_attempt(
+            contract_version=3,
+            processor_version=3,
+            configuration_hash="b" * 64,
+        )
+
+        PhotoFaceEmbeddingProjection.objects.create(
+            photo=self.photo,
+            contract_version=1,
+            processor_version=1,
+            configuration_hash="a" * 64,
+            accepted_attempt=baseline,
+        )
+        PhotoFaceEmbeddingProjection.objects.create(
+            photo=self.photo,
+            contract_version=3,
+            processor_version=3,
+            configuration_hash="b" * 64,
+            accepted_attempt=candidate,
+        )
+
+        self.assertEqual(
+            set(
+                PhotoFaceEmbeddingProjection.objects.filter(photo=self.photo).values_list(
+                    "contract_version", "processor_version", "configuration_hash"
+                )
+            ),
+            {(1, 1, "a" * 64), (3, 3, "b" * 64)},
+        )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                PhotoFaceEmbeddingProjection.objects.create(
+                    photo=self.photo,
+                    contract_version=1,
+                    processor_version=1,
+                    configuration_hash="a" * 64,
+                    accepted_attempt=baseline,
+                )
+
+    def test_face_projection_rejects_inconsistent_accepted_attempts_at_database_boundary(
+        self,
+    ) -> None:
+        other_photo = self.make_private_photo("projection-other", self.event)
+        invalid_attempts = {
+            "wrong_photo": self.make_face_attempt(
+                contract_version=1,
+                processor_version=1,
+                configuration_hash="a" * 64,
+                photo=other_photo,
+            ),
+            "wrong_processor": self.make_face_attempt(
+                contract_version=1,
+                processor_version=1,
+                configuration_hash="b" * 64,
+                processor_type="capture_metadata",
+            ),
+            "in_progress": self.make_face_attempt(
+                contract_version=1,
+                processor_version=1,
+                configuration_hash="c" * 64,
+                status=ProcessingAttempt.Status.IN_PROGRESS,
+                accepted=False,
+            ),
+            "unaccepted": self.make_face_attempt(
+                contract_version=1,
+                processor_version=1,
+                configuration_hash="d" * 64,
+                accepted=False,
+            ),
+            "failed": self.make_face_attempt(
+                contract_version=1,
+                processor_version=1,
+                configuration_hash="e" * 64,
+                status=ProcessingAttempt.Status.FAILED,
+                accepted=False,
+            ),
+        }
+        mismatched_generation = self.make_face_attempt(
+            contract_version=2,
+            processor_version=2,
+            configuration_hash="f" * 64,
+        )
+
+        for reason, attempt in invalid_attempts.items():
+            with self.subTest(reason=reason), transaction.atomic():
+                with self.assertRaises(IntegrityError):
+                    PhotoFaceEmbeddingProjection.objects.create(
+                        photo=self.photo,
+                        contract_version=attempt.contract_version,
+                        processor_version=attempt.processor_version,
+                        configuration_hash=attempt.job.configuration_hash,
+                        accepted_attempt=attempt,
+                    )
+        generation_mismatches: dict[str, dict[str, object]] = {
+            "contract_version": {"contract_version": 1},
+            "processor_version": {"processor_version": 1},
+            "configuration_hash": {"configuration_hash": "0" * 64},
+        }
+        for reason, overrides in generation_mismatches.items():
+            values: dict[str, Any] = {
+                "photo": self.photo,
+                "contract_version": 2,
+                "processor_version": 2,
+                "configuration_hash": "f" * 64,
+                "accepted_attempt": mismatched_generation,
+            }
+            values.update(overrides)
+            with self.subTest(reason=reason), transaction.atomic():
+                with self.assertRaises(IntegrityError):
+                    PhotoFaceEmbeddingProjection.objects.create(**values)
+
+    def test_face_projection_generation_identity_is_immutable(self) -> None:
+        attempt = self.make_face_attempt(
+            contract_version=1,
+            processor_version=1,
+            configuration_hash="a" * 64,
+        )
+        projection = PhotoFaceEmbeddingProjection.objects.create(
+            photo=self.photo,
+            contract_version=1,
+            processor_version=1,
+            configuration_hash="a" * 64,
+            accepted_attempt=attempt,
+        )
+
+        for field, value in {
+            "photo_id": self.make_private_photo("projection-move", self.event).pk,
+            "contract_version": 2,
+            "processor_version": 2,
+            "configuration_hash": "b" * 64,
+        }.items():
+            with self.subTest(field=field), transaction.atomic():
+                with self.assertRaises(IntegrityError):
+                    PhotoFaceEmbeddingProjection.objects.filter(pk=projection.pk).update(
+                        **{field: value}
+                    )
+        with transaction.atomic():
+            with self.assertRaises(IntegrityError):
+                PhotoFaceEmbeddingProjection.objects.filter(pk=projection.pk).delete()
 
     def preview_derivative_values(self, **overrides) -> dict[str, object]:
         values = {
@@ -1097,6 +1293,7 @@ class ProcessingFaceQualityGenerationMigrationTests(TransactionTestCase):
         Artifact = old_apps.get_model("processing", "FaceProcessingAttemptArtifact")
         Detection = old_apps.get_model("processing", "PhotoFaceDetection")
         Embedding = old_apps.get_model("processing", "FaceEmbedding")
+        State = old_apps.get_model("processing", "PhotoProcessingState")
 
         event = Event.objects.create(
             name="Face quality migration event",
@@ -1160,18 +1357,92 @@ class ProcessingFaceQualityGenerationMigrationTests(TransactionTestCase):
             vector=[0.0] * 128,
             metadata={"generation": "historical"},
         )
+        state = State.objects.create(
+            photo=photo,
+            processor_type="face_embedding",
+            status="succeeded",
+            current_run=run,
+            current_job=job,
+            current_attempt=attempt,
+            accepted_attempt=attempt,
+            succeeded_at=timezone.now(),
+        )
+        stale_photo = Photo.objects.create(
+            id="face-quality-stale-pointer-photo",
+            event=event,
+            src="photos/face-quality-stale-pointer-photo.jpg",
+        )
+        stale_job = Job.objects.create(
+            event=event,
+            run=run,
+            photo=stale_photo,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            configuration={},
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status="succeeded",
+        )
+        stale_attempt = Attempt.objects.create(
+            event=event,
+            run=run,
+            job=stale_job,
+            photo=stale_photo,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status="succeeded",
+            terminal_at=timezone.now(),
+            accepted=False,
+        )
+        State.objects.create(
+            photo=stale_photo,
+            processor_type="face_embedding",
+            status="succeeded",
+            current_run=run,
+            current_job=stale_job,
+            current_attempt=stale_attempt,
+            accepted_attempt=stale_attempt,
+            succeeded_at=timezone.now(),
+        )
 
         executor = MigrationExecutor(connection)
         executor.migrate(self.migrate_to)
         migrated_apps = executor.loader.project_state(self.migrate_to).apps
         MigratedDetection = migrated_apps.get_model("processing", "PhotoFaceDetection")
         MigratedEmbedding = migrated_apps.get_model("processing", "FaceEmbedding")
+        MigratedProjection = migrated_apps.get_model("processing", "PhotoFaceEmbeddingProjection")
+        MigratedState = migrated_apps.get_model("processing", "PhotoProcessingState")
 
         self.assertEqual(MigratedDetection.objects.get(pk=kept.pk).status, "kept")
         self.assertEqual(
             MigratedEmbedding.objects.get(pk=existing.pk).metadata,
             {"generation": "historical"},
         )
+        self.assertEqual(
+            MigratedProjection.objects.filter(photo_id=photo.pk)
+            .values(
+                "contract_version",
+                "processor_version",
+                "configuration_hash",
+                "accepted_attempt_id",
+            )
+            .get(),
+            {
+                "contract_version": 1,
+                "processor_version": 1,
+                "configuration_hash": "a" * 64,
+                "accepted_attempt_id": attempt.pk,
+            },
+        )
+        self.assertEqual(
+            MigratedState.objects.get(pk=state.pk).accepted_attempt_id,
+            attempt.pk,
+        )
+        self.assertFalse(MigratedProjection.objects.filter(photo_id=stale_photo.pk).exists())
         rejected = MigratedDetection.objects.create(
             artifact_id=artifact.pk,
             attempt_id=attempt.pk,

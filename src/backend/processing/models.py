@@ -470,6 +470,88 @@ class FaceEmbedding(models.Model):  # noqa: DJ008
             raise ValidationError(errors)
 
 
+class PhotoFaceEmbeddingProjection(models.Model):  # noqa: DJ008
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    photo = models.ForeignKey(
+        Photo,
+        on_delete=models.PROTECT,
+        related_name="face_embedding_projections",
+    )
+    contract_version = models.PositiveSmallIntegerField()
+    processor_version = models.PositiveSmallIntegerField()
+    configuration_hash = models.CharField(max_length=64)
+    accepted_attempt = models.ForeignKey(
+        ProcessingAttempt,
+        on_delete=models.PROTECT,
+        related_name="face_embedding_projections",
+    )
+    published_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("photo", "contract_version", "processor_version", "configuration_hash"),
+                name="proc_face_proj_generation_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["accepted_attempt"], name="proc_face_proj_attempt_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk:
+            previous = (
+                self.__class__.objects.filter(pk=self.pk)
+                .values(
+                    "photo_id",
+                    "contract_version",
+                    "processor_version",
+                    "configuration_hash",
+                )
+                .first()
+            )
+            if previous and any(
+                previous[field] != getattr(self, field)
+                for field in (
+                    "photo_id",
+                    "contract_version",
+                    "processor_version",
+                    "configuration_hash",
+                )
+            ):
+                raise ValidationError("Face-embedding projection identity is immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Face-embedding projections are immutable and cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.accepted_attempt_id:
+            return
+        attempt = self.accepted_attempt
+        if (
+            attempt.photo_id != self.photo_id
+            or attempt.processor_type != FACE_EMBEDDING_PROCESSOR
+            or attempt.contract_version != self.contract_version
+            or attempt.processor_version != self.processor_version
+            or attempt.job.configuration_hash != self.configuration_hash
+            or attempt.run.configuration_hash != self.configuration_hash
+            or attempt.status != ProcessingAttempt.Status.SUCCEEDED
+            or not attempt.accepted
+        ):
+            raise ValidationError(
+                {
+                    "accepted_attempt": (
+                        "The accepted attempt must be an accepted successful face-embedding "
+                        "attempt for this photo and exact processor generation."
+                    )
+                }
+            )
+
+
 class FaceClusterCorpus(models.Model):  # noqa: DJ008
     """One immutable, event-scoped offline face-cluster build."""
 

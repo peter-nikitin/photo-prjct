@@ -10,7 +10,7 @@ from uuid import UUID
 from django.db.models import F, Q, QuerySet
 from picflow.models import Event
 
-from processing.models import FACE_EMBEDDING_PROCESSOR, FaceEmbedding, PhotoProcessingState
+from processing.models import FaceEmbedding
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +110,7 @@ def compatible_face_embedding_queryset(
     if not generations:
         raise ValueError("face-embedding generations are required")
     compatible_generation = Q()
+    configuration_hashes: set[str] = set()
     for generation in generations:
         if not isinstance(generation, Mapping):
             raise ValueError("invalid face-embedding generation")
@@ -123,6 +124,10 @@ def compatible_face_embedding_queryset(
         )
         if any(key not in generation for key in required):
             raise ValueError("invalid face-embedding generation")
+        configuration_hash = generation["configuration_hash"]
+        if not isinstance(configuration_hash, str):
+            raise ValueError("invalid face-embedding generation")
+        configuration_hashes.add(configuration_hash)
         compatible_generation |= Q(
             model_version=generation["model"],
             detection__attempt__contract_version=generation["contract_version"],
@@ -139,7 +144,18 @@ def compatible_face_embedding_queryset(
             detection__attempt__run__processor_version=generation["processor_version"],
             detection__attempt__run__configuration=generation["configuration"],
             detection__attempt__run__configuration_hash=generation["configuration_hash"],
+            detection__attempt__face_embedding_projections__contract_version=generation[
+                "contract_version"
+            ],
+            detection__attempt__face_embedding_projections__processor_version=generation[
+                "processor_version"
+            ],
+            detection__attempt__face_embedding_projections__configuration_hash=generation[
+                "configuration_hash"
+            ],
         )
+    if len(configuration_hashes) != 1:
+        raise ValueError("cannot mix face-embedding configurations")
 
     return (
         FaceEmbedding.objects.filter(
@@ -147,9 +163,9 @@ def compatible_face_embedding_queryset(
             detection__attempt__event=event,
             detection__attempt__status="succeeded",
             detection__attempt__accepted=True,
-            detection__attempt__accepted_states__processor_type=FACE_EMBEDDING_PROCESSOR,
-            detection__attempt__accepted_states__status=PhotoProcessingState.Status.SUCCEEDED,
-            detection__attempt__accepted_states__accepted_attempt_id=F("detection__attempt_id"),
+            detection__attempt__face_embedding_projections__photo_id=F(
+                "detection__attempt__photo_id"
+            ),
             detection__attempt__photo__event=event,
             detection__attempt__photo__src="",
             detection__attempt__photo__original_key__isnull=False,

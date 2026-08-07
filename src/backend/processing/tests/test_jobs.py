@@ -17,6 +17,7 @@ from processing.models import (
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
+    PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -165,6 +166,45 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=3,
             processor_version=3,
             configuration=self.quality_configuration(),
+        )
+        return claim_job(
+            contract_version=3,
+            processor_type="face_embedding",
+            processor_version=3,
+            worker_build="quality-worker",
+        )
+
+    def reenroll_quality_face(
+        self,
+        photo: Photo,
+        *,
+        configuration: dict[str, object],
+    ):
+        state = PhotoProcessingState.objects.get(
+            photo=photo,
+            processor_type="face_embedding",
+        )
+        state.status = PhotoProcessingState.Status.NOT_REQUESTED
+        state.current_run = None
+        state.current_job = None
+        state.current_attempt = None
+        state.accepted_attempt = None
+        state.save(
+            update_fields=[
+                "status",
+                "current_run",
+                "current_job",
+                "current_attempt",
+                "accepted_attempt",
+                "updated_at",
+            ]
+        )
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=configuration,
         )
         return claim_job(
             contract_version=3,
@@ -458,6 +498,71 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(detections[2].features["error_code"], "model_inference_error")
         self.assertEqual(detections[3].features["error_code"], "invalid_face_quality")
 
+    def test_complete_face_results_publish_and_replace_only_their_exact_generation(self) -> None:
+        baseline = self.claim_quality_face("projection-generations")
+        photo = baseline.attempt.photo
+        baseline_hash = baseline.job.configuration_hash
+        self.assertFalse(PhotoFaceEmbeddingProjection.objects.filter(photo=photo).exists())
+
+        complete_attempt(
+            baseline.attempt.id,
+            result=self.quality_result([self.quality_face(0, "kept")]),
+        )
+
+        candidate_configuration = self.quality_configuration()
+        candidate_face_configuration = candidate_configuration["face_embedding"]
+        assert isinstance(candidate_face_configuration, dict)
+        candidate_quality = candidate_face_configuration["quality"]
+        assert isinstance(candidate_quality, dict)
+        candidate_quality["minimum_face_px"] = 24
+        candidate = self.reenroll_quality_face(
+            photo,
+            configuration=candidate_configuration,
+        )
+        complete_attempt(
+            candidate.attempt.id,
+            result=self.quality_result([self.quality_face(0, "kept")]),
+        )
+
+        candidate_hash = candidate.job.configuration_hash
+        self.assertNotEqual(candidate_hash, baseline_hash)
+        self.assertEqual(
+            set(
+                PhotoFaceEmbeddingProjection.objects.filter(photo=photo).values_list(
+                    "configuration_hash", "accepted_attempt_id"
+                )
+            ),
+            {
+                (baseline_hash, baseline.attempt.id),
+                (candidate_hash, candidate.attempt.id),
+            },
+        )
+
+        replacement = self.reenroll_quality_face(
+            photo,
+            configuration=candidate_configuration,
+        )
+        complete_attempt(
+            replacement.attempt.id,
+            result=self.quality_result([self.quality_face(0, "kept")]),
+        )
+
+        self.assertEqual(PhotoFaceEmbeddingProjection.objects.filter(photo=photo).count(), 2)
+        self.assertEqual(
+            PhotoFaceEmbeddingProjection.objects.get(
+                photo=photo,
+                configuration_hash=baseline_hash,
+            ).accepted_attempt_id,
+            baseline.attempt.id,
+        )
+        self.assertEqual(
+            PhotoFaceEmbeddingProjection.objects.get(
+                photo=photo,
+                configuration_hash=candidate_hash,
+            ).accepted_attempt_id,
+            replacement.attempt.id,
+        )
+
     def test_v3_malformed_result_rolls_back_terminal_persistence_atomically(self) -> None:
         rejected_with_vector = self.quality_face(0, "quality_rejected") | {
             "embedding": [1.0] + [0.0] * 127
@@ -498,6 +603,11 @@ class ProcessingJobServiceTests(TestCase):
             self.assertFalse(PhotoFaceDetection.objects.filter(attempt=claimed.attempt).exists())
             self.assertFalse(
                 FaceEmbedding.objects.filter(detection__attempt=claimed.attempt).exists()
+            )
+            self.assertFalse(
+                PhotoFaceEmbeddingProjection.objects.filter(
+                    accepted_attempt=claimed.attempt
+                ).exists()
             )
 
     def test_v3_result_rejects_inexact_frozen_quality_configuration_atomically(self) -> None:

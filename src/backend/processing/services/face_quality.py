@@ -5,7 +5,10 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from processing.models import ProcessingAttempt
 
 QUALITY_FACE_CONTRACT_VERSION = 3
 QUALITY_FACE_PROCESSOR_VERSION = 3
@@ -448,3 +451,31 @@ def _finite_number(value: object, message: str) -> float:
 
 def _positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def publish_face_embedding_projection(attempt: ProcessingAttempt) -> None:
+    """Publish or replace one photo's accepted attempt for this exact generation."""
+    from processing.models import (  # noqa: PLC0415
+        FACE_EMBEDDING_PROCESSOR,
+        FaceProcessingAttemptArtifact,
+        PhotoFaceEmbeddingProjection,
+        ProcessingAttempt,
+    )
+
+    if (
+        attempt.processor_type != FACE_EMBEDDING_PROCESSOR
+        or attempt.status != ProcessingAttempt.Status.SUCCEEDED
+        or not attempt.accepted
+        or not FaceProcessingAttemptArtifact.objects.filter(
+            attempt=attempt,
+            status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+        ).exists()
+    ):
+        raise ValueError("face projection requires complete accepted face evidence")
+    PhotoFaceEmbeddingProjection.objects.update_or_create(
+        photo_id=attempt.photo_id,
+        contract_version=attempt.contract_version,
+        processor_version=attempt.processor_version,
+        configuration_hash=attempt.job.configuration_hash,
+        defaults={"accepted_attempt": attempt},
+    )

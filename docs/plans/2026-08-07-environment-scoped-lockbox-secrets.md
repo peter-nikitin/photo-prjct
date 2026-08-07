@@ -61,9 +61,12 @@ unambiguous.
   OAuth token-exchange endpoint for the manifest service account, and keeps both tokens in memory.
 - The resolver reads Lockbox metadata to verify the expected folder and active version, then reads
   that exact `versionId` once through the payload API. It uses Python's standard library only.
-- Environment files use Docker Compose syntax with unquoted `KEY=value` records whose values are
-  encoded according to the manifest. Binary entries are written only to separate mode-0600 files
-  referenced by a projected path variable; they are never forced into text environment records.
+- Environment files use a reviewed, reversible Docker Compose encoding verified through the real
+  Compose parser. It must preserve whitespace, quotes, newlines, equals signs, dollar expressions,
+  trailing backslashes, backslashes before quotes, and other accepted shell metacharacters without
+  interpolation or record-boundary changes. Binary entries are written only to separate mode-0600
+  files referenced by a projected path variable; they are never forced into text environment
+  records.
 
 ## Implementation
 

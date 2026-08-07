@@ -27,10 +27,50 @@ on:
         type: boolean
 
 jobs:
+  classify-staging-release:
+    name: Classify staging release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      requires_observability_bootstrap: ${{ steps.classify.outputs.requires_observability_bootstrap }}
+    steps:
+      - name: Check out push range
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify staging release
+        id: classify
+        run: |
+          requires_observability_bootstrap=false
+          if [ "${{ github.event_name }}" != push ]; then
+            :
+          elif [ "${{ github.event.before }}" = 0000000000000000000000000000000000000000 ]; then
+            requires_observability_bootstrap=true
+          elif ! git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- deploy/bootstrap-selfie-observability.sh 'deploy/selfie-observability/**'; then
+            requires_observability_bootstrap=true
+          fi
+
+          echo "requires_observability_bootstrap=$requires_observability_bootstrap" >> "$GITHUB_OUTPUT"
+          if [ "$requires_observability_bootstrap" = true ]; then
+            {
+              echo "## Staging release paused"
+              echo "Commit: ${GITHUB_SHA} changes the privileged selfie-observability package."
+              echo
+              echo "An operator must complete these reviewed actions before manually running the Deploy staging workflow:"
+              echo "1. ssh -l petrnikitin 111.88.151.64"
+              echo "2. DEPLOY_ROOT=/opt/photo-prjct sh /opt/photo-prjct/deploy/bootstrap-selfie-observability.sh"
+              echo "3. sudo /usr/local/sbin/findme-selfie-observability verify"
+              echo "4. Run the Deploy staging workflow manually."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   build:
     name: Build immutable image
-    if: ${{ github.event_name == 'push' || !inputs.configure_monitoring_agent }}
+    if: ${{ (github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent) }}
     runs-on: ubuntu-latest
+    needs: [classify-staging-release]
     permissions:
       contents: read
       packages: write
@@ -68,9 +108,9 @@ jobs:
 
   deploy:
     name: Deploy staging
-    if: ${{ github.event_name == 'push' || !inputs.configure_monitoring_agent }}
+    if: ${{ (github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent) }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: [classify-staging-release, build]
     environment: staging
     concurrency:
       group: deploy-staging

@@ -654,9 +654,10 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
         == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent }}"
     )
     assert "needs" not in agent
-    assert (
-        staging_deploy["if"]
-        == "${{ github.event_name == 'push' || !inputs.configure_monitoring_agent }}"
+    assert staging_deploy["if"] == (
+        "${{ (github.event_name == 'push' && "
+        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || "
+        "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent) }}"
     )
     assert "configure-monitoring-agent" not in json.dumps(staging_deploy)
     assert "configure-monitoring-agent" not in json.dumps(production)
@@ -665,6 +666,52 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
     assert run["with"]["envs"] == "YANDEX_CLOUD_FOLDER_ID"
     assert "YANDEX_MONITORING_API_KEY" not in json.dumps(agent)
     assert "sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh" in run["with"]["script"]
+
+
+def test_staging_deployment_pauses_privileged_package_pushes_before_building() -> None:
+    staging = _load_workflow("deploy.yml")
+    classifier = staging["jobs"]["classify-staging-release"]
+    build = staging["jobs"]["build"]
+    deploy = staging["jobs"]["deploy"]
+    checkout = _workflow_step(staging, "classify-staging-release", "Check out push range")
+    classify = _workflow_step(staging, "classify-staging-release", "Classify staging release")
+
+    assert classifier["permissions"] == {"contents": "read"}
+    assert classifier["outputs"] == {
+        "requires_observability_bootstrap": (
+            "${{ steps.classify.outputs.requires_observability_bootstrap }}"
+        )
+    }
+    assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
+    assert 'git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- ' in classify["run"]
+    assert "deploy/bootstrap-selfie-observability.sh" in classify["run"]
+    assert "deploy/selfie-observability/**" in classify["run"]
+    assert "0000000000000000000000000000000000000000" in classify["run"]
+    assert "requires_observability_bootstrap=true" in classify["run"]
+    assert "requires_observability_bootstrap=false" in classify["run"]
+    assert "requires_observability_bootstrap" in classify["run"]
+    assert "$GITHUB_STEP_SUMMARY" in classify["run"]
+    for operator_action in (
+        "${GITHUB_SHA}",
+        "ssh -l petrnikitin 111.88.151.64",
+        "DEPLOY_ROOT=/opt/photo-prjct sh /opt/photo-prjct/deploy/bootstrap-selfie-observability.sh",
+        "sudo /usr/local/sbin/findme-selfie-observability verify",
+        "Deploy staging",
+    ):
+        assert operator_action in classify["run"]
+    assert "secrets." not in json.dumps(classifier)
+
+    expected_push = (
+        "github.event_name == 'push' && "
+        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false'"
+    )
+    expected_manual_deploy = (
+        "github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent"
+    )
+    expected_condition = f"${{{{ ({expected_push}) || ({expected_manual_deploy}) }}}}"
+    for job in (build, deploy):
+        assert job["if"] == expected_condition
+        assert "classify-staging-release" in job["needs"]
 
 
 def test_focused_deployment_scripts_are_versioned() -> None:

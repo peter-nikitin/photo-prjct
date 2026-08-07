@@ -650,7 +650,6 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
 
     for name, value in {
         "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
-        "SELFIE_SEARCH_ENABLED": "${{ vars.SELFIE_SEARCH_ENABLED || 'False' }}",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES": (
             "${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}"
         ),
@@ -681,8 +680,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         staging, "deploy", "Verify selfie-search temporary storage contract"
     )
     assert (
-        "test \"$(sed -n 's/^SELFIE_SEARCH_ENABLED=//p' .env | head -n 1)\" = False"
-        in (storage_preflight["with"]["script"])
+        "verify_selfie_search_storage --confirm-real-storage" in storage_preflight["with"]["script"]
     )
 
 

@@ -43,7 +43,6 @@ type ChoiceValue = str | tuple[str, str]
 
 
 @override_settings(
-    SELFIE_SEARCH_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class PublicSelfieSearchMarkupTests(TestCase):
@@ -75,44 +74,38 @@ class PublicSelfieSearchMarkupTests(TestCase):
             publication_status=publication_status,
         )
 
-    def test_published_free_and_paid_events_offer_the_same_safe_selfie_form(self) -> None:
-        for event in (self.free_event, self.paid_event):
-            with self.subTest(event=event.slug):
-                response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+    def test_published_free_event_offers_the_safe_selfie_form(self) -> None:
+        event = self.free_event
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
-                self.assertContains(response, 'class="selfie-search"')
-                self.assertContains(
-                    response,
-                    reverse("selfie_search:submit", kwargs={"event_slug": event.slug}),
-                )
-                self.assertContains(response, 'method="post"')
-                self.assertContains(response, 'enctype="multipart/form-data"')
-                self.assertContains(response, 'name="csrfmiddlewaretoken"')
-                self.assertContains(response, 'name="selfie"')
-                self.assertContains(
-                    response,
-                    'accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif"',
-                )
-                self.assertContains(
-                    response,
-                    "Мы ищем вероятные совпадения только среди фотографий этого события.",
-                )
-                self.assertContains(
-                    response,
-                    "Загрузите чёткую фотографию, где лицо хорошо видно. "
-                    "Лучше использовать фото с дня мероприятия, особенно если на мероприятии "
-                    "вы были в очках или головном уборе.",
-                )
-                self.assertContains(response, "Селфи удаляется после подготовки поиска.")
-                self.assertContains(
-                    response,
-                    "Любой, у кого есть ссылка на результат, сможет его открыть.",
-                )
+        self.assertContains(response, 'id="selfie-search"')
+        self.assertContains(
+            response, reverse("selfie_search:submit", kwargs={"event_slug": event.slug})
+        )
+        self.assertContains(response, 'method="post"')
+        self.assertContains(response, 'enctype="multipart/form-data"')
+        self.assertContains(response, 'name="csrfmiddlewaretoken"')
+        self.assertContains(response, 'name="selfie"')
+        self.assertContains(
+            response, 'accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif"'
+        )
+        self.assertContains(
+            response, "Мы ищем вероятные совпадения только среди фотографий этого события."
+        )
+        self.assertContains(
+            response,
+            (
+                "Загрузите чёткую фотографию, где лицо хорошо видно. Лучше использовать фото с дня "
+                "мероприятия, особенно если на мероприятии вы были в очках или головном уборе."
+            ),
+        )
+        self.assertContains(response, "Селфи удаляется после подготовки поиска.")
+        self.assertContains(response, "Любой, у кого есть ссылка на результат, сможет его открыть.")
 
     def test_published_events_expose_only_empty_nonsecret_saved_history_markup(self) -> None:
         token = "saved-history-bearer-token"
         result_path = f"/events/{self.free_event.slug}/selfie-search/{token}/"
-        for event in (self.free_event, self.paid_event):
+        for event in (self.free_event,):
             with self.subTest(event=event.slug):
                 response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
@@ -311,7 +304,6 @@ class _FailingLogger(logging.Logger):
 
 
 @override_settings(
-    SELFIE_SEARCH_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class GalleryPhotoSearchViewTests(TestCase):
@@ -382,16 +374,27 @@ class GalleryPhotoSearchViewTests(TestCase):
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
-    def test_post_only_and_disabled_feature_fail_closed(self, submit_gallery_photo_search) -> None:
+    def test_post_only_and_published_gallery_face_search_are_available(
+        self, submit_gallery_photo_search
+    ) -> None:
         get_response = self.client.get(self.url())
         csrf_response = Client(enforce_csrf_checks=True).post(self.url())
-        with override_settings(SELFIE_SEARCH_ENABLED=False):
-            disabled_response = self.client.post(self.url())
+        submit_gallery_photo_search.return_value = SimpleNamespace(public_token="available-token")
+        submitted_response = self.client.post(self.url())
 
         self.assertEqual(get_response.status_code, 405)
         self.assertEqual(csrf_response.status_code, 403)
-        self.assertEqual(disabled_response.status_code, 404)
-        submit_gallery_photo_search.assert_not_called()
+        self.assertRedirects(
+            submitted_response,
+            reverse(
+                "selfie_search:result",
+                kwargs={"event_slug": self.event.slug, "public_token": "available-token"},
+            ),
+            fetch_redirect_response=False,
+        )
+        submit_gallery_photo_search.assert_called_once_with(
+            event=self.event, photo=self.photo, detection_id=self.detection_id
+        )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
     def test_unpublished_cross_event_and_non_gallery_sources_are_not_submitted(
@@ -616,7 +619,6 @@ class GalleryPhotoSearchViewTests(TestCase):
 
 
 @override_settings(
-    SELFIE_SEARCH_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class SelfieSubmissionFeedbackTests(TestCase):

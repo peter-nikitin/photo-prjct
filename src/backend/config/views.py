@@ -49,7 +49,7 @@ def event_catalog(request):
 
 def event_detail(request, slug: str, *, selfie_search_form=None):
     event = get_object_or_404(Event.objects.published(), slug=slug)
-    if selfie_search_form is None and settings.SELFIE_SEARCH_ENABLED:
+    if selfie_search_form is None and event.access_type == Event.AccessType.FREE:
         selfie_search_form = SelfieSearchUploadForm()
     selfie_feedback_enabled = bool(settings.SELFIE_FEEDBACK_ENABLED)
     gallery_photos: tuple[GalleryPhoto, ...] = ()
@@ -72,11 +72,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             except InvalidPage:
                 return HttpResponse(status=404)
             gallery_page_photos = tuple(gallery_page_data.object_list)
-            faces_by_photo = (
-                gallery_search_faces_by_photo(event=event, photos=gallery_page_photos)
-                if settings.SELFIE_SEARCH_ENABLED
-                else {}
-            )
+            faces_by_photo = gallery_search_faces_by_photo(event=event, photos=gallery_page_photos)
 
             def faces(photo: Photo):
                 return tuple(

@@ -724,7 +724,6 @@ class GalleryPageTests(TestCase):
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
         self.assertNotContains(response, "gallery-photo-id")
 
-    @override_settings(SELFIE_SEARCH_ENABLED=True)
     def test_event_detail_maps_all_usable_faces_to_exact_submission_urls(self) -> None:
         """The production break caught here is losing a selectable face or addressing it vaguely."""
         event = self.make_event()
@@ -784,7 +783,6 @@ class GalleryPageTests(TestCase):
                 count=5,
             )
 
-    @override_settings(SELFIE_SEARCH_ENABLED=True)
     def test_event_detail_renders_gallery_face_controls(self) -> None:
         """The production break caught here is an ambiguous face starting a direct search."""
         event = self.make_event()
@@ -1007,7 +1005,6 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertEqual(ProcessingJob.objects.count(), jobs_before)
         self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
 
-    @override_settings(SELFIE_SEARCH_ENABLED=True)
     def test_manual_time_discovery_renders_event_local_controls_and_invalid_errors(self) -> None:
         """Invalid input must retain correction controls, not broad gallery results."""
         response = self.client.get(

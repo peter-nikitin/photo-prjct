@@ -8,7 +8,6 @@ from django import forms
 from django.conf import settings
 from django.core.paginator import InvalidPage
 from django.http import (
-    Http404,
     HttpResponse,
     HttpResponseBase,
     JsonResponse,
@@ -63,8 +62,6 @@ logger = logging.getLogger(__name__)
 
 @require_POST
 def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id):  # noqa: ARG001
-    if not settings.SELFIE_SEARCH_ENABLED:
-        return _not_found_response()
     event = get_object_or_404(Event.objects.published(), slug=event_slug)
     photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
     try:
@@ -84,8 +81,6 @@ def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id): 
 def submit(request, event_slug: str):
     started_at = monotonic()
     event = get_object_or_404(Event.objects.published(), slug=event_slug)
-    if not settings.SELFIE_SEARCH_ENABLED:
-        raise Http404
     feedback_correlation = (
         _validated_feedback_correlation(request.POST.get("feedback_correlation", ""))
         if settings.SELFIE_FEEDBACK_ENABLED
@@ -266,8 +261,6 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
 
 @require_POST
 def process_gallery_search(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa: ARG001
-    if not settings.SELFIE_SEARCH_ENABLED:
-        return _not_found_response()
     search = _public_search(event_slug=event_slug, public_token=public_token)
     if (
         search is None

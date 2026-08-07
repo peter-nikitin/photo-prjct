@@ -11,11 +11,12 @@ Approved in conversation on 2026-08-07. Written review is pending.
   [`EJ-017 — Developer — Read environment-scoped secrets consistently`](../../engineering-jobs.md#ej-017--developer--read-environment-scoped-secrets-consistently)
 - Related ADRs:
   [ADR 0003](../../adr/0003-docker-compose-yandex-cloud.md) and
-  [ADR 0005](../../adr/0005-promote-images-through-staging.md)
-- ADR impact: **Requires new ADR.** Selecting Yandex Lockbox as the authoritative store for
-  environment secrets and GitHub workload identity federation as the CI trust boundary is a
-  durable architecture decision not governed by an accepted ADR.
-- Implementation plan: not written
+  [ADR 0005](../../adr/0005-promote-images-through-staging.md), plus accepted
+  [ADR 0026](../../adr/0026-use-lockbox-for-environment-secrets.md)
+- ADR impact: **Conforms to ADR 0026.** Yandex Lockbox is the environment secret authority,
+  GitHub uses workload identity federation, and runtime services do not read Lockbox.
+- Implementation plan:
+  [`2026-08-07-environment-scoped-lockbox-secrets.md`](../../plans/2026-08-07-environment-scoped-lockbox-secrets.md)
 
 ## Problem
 
@@ -85,7 +86,7 @@ The capability succeeds when:
 - Secret inventory, rotation, revocation, migration, rollback, and incident-response documentation.
 - Repository contract and security tests plus one authorized local smoke and one real staging
   deployment validation.
-- A new ADR before implementation relies on this design as accepted architecture.
+- Conformance to accepted ADR 0026 before implementation relies on this design as architecture.
 
 ### Excluded
 
@@ -449,8 +450,9 @@ retaining automatic staging deployment, GitHub Environment boundaries, immutable
 and separate future production promotion.
 
 Neither ADR selects a secret authority, defines local access to deployment credentials, or governs
-GitHub-to-Yandex federated identity. A new ADR is therefore required before implementation. It must
-decide at least:
+GitHub-to-Yandex federated identity. Accepted
+[ADR 0026](../../adr/0026-use-lockbox-for-environment-secrets.md) now governs those boundaries. It
+decides:
 
 - Yandex Lockbox as the authoritative store for environment secrets;
 - one complete versioned secret per logical environment;
@@ -459,8 +461,7 @@ decide at least:
 - removal of migrated GitHub Secrets after validated cutover; and
 - separate secrets and IAM for any future production environment.
 
-Approval of this specification selects the product/system design but does not itself accept that
-ADR or authorize cloud mutations.
+Acceptance of ADR 0026 authorizes implementation planning but does not authorize cloud mutations.
 
 ## Alternatives Considered
 

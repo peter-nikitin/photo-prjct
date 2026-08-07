@@ -1,0 +1,158 @@
+{
+  "environment": "staging",
+  "lockbox": {
+    "secret_id": "e6q85jjl76r45maigtfb",
+    "folder_id": "b1g2qttgfhb4gdunvlge"
+  },
+  "github_oidc": {
+    "issuer": "https://token.actions.githubusercontent.com",
+    "audience": "https://github.com/peter-nikitin",
+    "subject": "repo:peter-nikitin/photo-prjct:environment:staging",
+    "repository": "peter-nikitin/photo-prjct",
+    "environment": "staging",
+    "service_account_id": "ajeaekiue94ogksguh0h",
+    "federation_id": "ajeula3gd46omgf9jiko",
+    "allowed_workflows": [
+      ".github/workflows/deploy.yml",
+      ".github/workflows/monitor-public-health.yml",
+      ".github/workflows/promote-production.yml"
+    ]
+  },
+  "entries": [
+    {
+      "key": "SECRET_KEY",
+      "target": "SECRET_KEY",
+      "type": "text",
+      "required": true,
+      "local": true
+    },
+    {
+      "key": "DB_PASSWORD",
+      "target": "DB_PASSWORD",
+      "type": "text",
+      "required": true,
+      "local": false
+    },
+    {
+      "key": "LETSENCRYPT_EMAIL",
+      "target": "LETSENCRYPT_EMAIL",
+      "type": "text",
+      "required": true,
+      "local": false
+    },
+    {
+      "key": "MEDIA_S3_ACCESS_KEY_ID",
+      "target": "MEDIA_S3_ACCESS_KEY_ID",
+      "type": "text",
+      "required": true,
+      "local": true
+    },
+    {
+      "key": "MEDIA_S3_SECRET_ACCESS_KEY",
+      "target": "MEDIA_S3_SECRET_ACCESS_KEY",
+      "type": "text",
+      "required": true,
+      "local": true
+    },
+    {
+      "key": "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
+      "target": "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
+      "type": "text",
+      "required": true,
+      "local": true
+    },
+    {
+      "key": "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
+      "target": "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
+      "type": "text",
+      "required": true,
+      "local": true
+    },
+    {
+      "key": "PHOTO_PROCESSING_WORKER_TOKEN",
+      "target": "PHOTO_PROCESSING_WORKER_TOKEN",
+      "type": "text",
+      "required": true,
+      "local": true
+    },
+    {
+      "key": "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
+      "target": "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
+      "type": "text",
+      "required": true,
+      "local": true
+    },
+    {
+      "key": "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
+      "target": "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
+      "type": "text",
+      "required": true,
+      "local": true
+    },
+    {
+      "key": "VM_SSH_KEY",
+      "target": "VM_SSH_KEY_FILE",
+      "type": "binary",
+      "required": true,
+      "local": false
+    },
+    {
+      "key": "GHCR_READ_TOKEN",
+      "target": "GHCR_READ_TOKEN",
+      "type": "text",
+      "required": true,
+      "local": false
+    },
+    {
+      "key": "YANDEX_MONITORING_API_KEY",
+      "target": "YANDEX_MONITORING_API_KEY",
+      "type": "text",
+      "required": true,
+      "local": false
+    }
+  ],
+  "consumers": {
+    "local-web": [
+      "SECRET_KEY",
+      "MEDIA_S3_ACCESS_KEY_ID",
+      "MEDIA_S3_SECRET_ACCESS_KEY",
+      "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
+      "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
+      "PHOTO_PROCESSING_WORKER_TOKEN",
+      "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
+      "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY"
+    ],
+    "staging-deploy": [
+      "SECRET_KEY",
+      "DB_PASSWORD",
+      "LETSENCRYPT_EMAIL",
+      "MEDIA_S3_ACCESS_KEY_ID",
+      "MEDIA_S3_SECRET_ACCESS_KEY",
+      "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
+      "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
+      "PHOTO_PROCESSING_WORKER_TOKEN",
+      "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
+      "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
+      "VM_SSH_KEY",
+      "GHCR_READ_TOKEN"
+    ],
+    "staging-remote-check": [
+      "VM_SSH_KEY"
+    ],
+    "staging-public-monitor": [
+      "YANDEX_MONITORING_API_KEY"
+    ]
+  },
+  "local_overrides": {
+    "DEBUG": "True",
+    "ALLOWED_HOSTS": "localhost,127.0.0.1,web",
+    "WEB_BIND_ADDRESS": "127.0.0.1",
+    "DB_NAME": "app",
+    "DB_USER": "app",
+    "DB_PASSWORD": "app",
+    "DB_HOST": "db",
+    "DB_PORT": "5432",
+    "DEPLOYMENT_TARGET": "",
+    "VM_HOST": ""
+  }
+}

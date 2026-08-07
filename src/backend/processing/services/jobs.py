@@ -33,6 +33,7 @@ from processing.services.face_quality import (
     QUALITY_FACE_PROCESSOR_VERSION,
     ValidatedQualityResult,
     publish_face_embedding_projection,
+    quality_face_result_geometry,
     validate_quality_face_result,
 )
 
@@ -533,7 +534,8 @@ def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str,
             result,
             configuration=attempt.configuration,
         )
-        _persist_quality_face_result(attempt, validated)
+        input_geometry = quality_face_result_geometry(attempt, result)
+        _persist_quality_face_result(attempt, validated, input_geometry=input_geometry)
         return True
     if not isinstance(result, dict):
         return False
@@ -591,7 +593,10 @@ def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str,
 
 
 def _persist_quality_face_result(
-    attempt: ProcessingAttempt, result: ValidatedQualityResult
+    attempt: ProcessingAttempt,
+    result: ValidatedQualityResult,
+    *,
+    input_geometry: dict[str, Any],
 ) -> None:
     artifact = FaceProcessingAttemptArtifact.objects.create(
         attempt=attempt,
@@ -633,7 +638,8 @@ def _persist_quality_face_result(
                 "bbox": face.bbox,
                 "landmarks": face.landmarks,
                 "model": result.model,
-            },
+            }
+            | input_geometry,
             features=features,
         )
         if face.embedding is not None:

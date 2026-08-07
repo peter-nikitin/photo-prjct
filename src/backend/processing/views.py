@@ -50,10 +50,17 @@ from processing.contracts import (
     EmptyClaim,
     parse_attempt_reference,
 )
-from processing.models import PhotoDerivative, ProcessingAttempt, ProcessingConflictAudit
+from processing.models import (
+    PhotoDerivative,
+    ProcessingAttempt,
+    ProcessingConflictAudit,
+    ProcessingJob,
+)
 from processing.services.face_quality import (
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
+    quality_face_claim_input_geometry,
+    quality_face_result_geometry,
     validate_quality_face_result,
 )
 from processing.services.jobs import (
@@ -483,8 +490,12 @@ def _claim_with_grant(data: dict[str, Any]) -> dict[str, object]:
                 selfie_fingerprint,
             )
         fingerprint = _input_fingerprint(
-            claimed.job.input_fingerprint, contract_version=claimed.job.contract_version
+            claimed.job.input_fingerprint,
+            contract_version=claimed.job.contract_version,
+            processor_type=claimed.job.processor_type,
+            processor_version=claimed.job.processor_version,
         )
+        quality_input_geometry = _quality_claim_input_geometry(claimed.job)
         grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
             max_ttl_seconds=_remaining_lease(claimed.attempt),
@@ -503,6 +514,7 @@ def _claim_with_grant(data: dict[str, Any]) -> dict[str, object]:
             grant.expires_at,
             fingerprint,
             preview_upload_grant=preview_upload_grant,
+            quality_input_geometry=quality_input_geometry,
         )
 
 
@@ -513,8 +525,12 @@ def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:
         if attempt is None:
             return None
         fingerprint = _input_fingerprint(
-            attempt.input_fingerprint, contract_version=attempt.contract_version
+            attempt.input_fingerprint,
+            contract_version=attempt.contract_version,
+            processor_type=attempt.processor_type,
+            processor_version=attempt.processor_version,
         )
+        _quality_claim_input_geometry(attempt)
         grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
             max_ttl_seconds=_remaining_lease(attempt),
@@ -549,7 +565,13 @@ def _refresh_selfie_with_grant(attempt_id: UUID) -> dict[str, object] | None:
         }
 
 
-def _input_fingerprint(value: object, *, contract_version: int) -> dict[str, int | str | None]:
+def _input_fingerprint(
+    value: object,
+    *,
+    contract_version: int,
+    processor_type: str,
+    processor_version: int,
+) -> dict[str, int | str | None]:
     if not isinstance(value, dict):
         raise FingerprintInvariant()
     if contract_version == 2:
@@ -591,10 +613,55 @@ def _input_fingerprint(value: object, *, contract_version: int) -> dict[str, int
         return cast(dict[str, int | str | None], value)
     if contract_version not in {1, 3}:
         raise FingerprintInvariant()
+    original_fields = {
+        "original_key",
+        "original_size",
+        "original_content_type",
+        "verified_source_etag",
+        "version_evidence",
+    }
+    if contract_version == 3 and set(value) != original_fields:
+        if not (
+            processor_type == FACE_EMBEDDING_CONTRACT.processor_type
+            and processor_version == QUALITY_FACE_PROCESSOR_VERSION
+        ):
+            raise FingerprintInvariant()
+        generic_fields = {
+            "object_key",
+            "object_size",
+            "object_content_type",
+            "object_etag",
+            "media_kind",
+            "pixel_width",
+            "pixel_height",
+        }
+        if set(value) != generic_fields:
+            raise FingerprintInvariant()
+        key = value["object_key"]
+        size = value["object_size"]
+        if not (
+            isinstance(key, str)
+            and re.fullmatch(
+                r"derivatives/previews/[A-Za-z0-9_-]{1,32}/preview-small-v1/"
+                r"[0-9a-f-]{36}-[0-9a-f]{64}\.jpg",
+                key,
+            )
+            and isinstance(size, int)
+            and not isinstance(size, bool)
+            and size >= 1
+            and value["object_content_type"] == "image/jpeg"
+            and value["object_etag"] is None
+            and value["media_kind"] == "preview-small-v1"
+            and _positive_int(value["pixel_width"])
+            and _positive_int(value["pixel_height"])
+        ):
+            raise FingerprintInvariant()
+        return cast(dict[str, int | str | None], value)
     key = value.get("original_key")
     size = value.get("original_size")
     content_type = value.get("original_content_type")
     etag = value.get("verified_source_etag")
+    evidence = value.get("version_evidence")
     if (
         not isinstance(key, str)
         or not re.fullmatch(r"originals/[0-9a-f]{32}", key)
@@ -603,6 +670,13 @@ def _input_fingerprint(value: object, *, contract_version: int) -> dict[str, int
         or size < 1
         or content_type != "image/jpeg"
         or (etag is not None and not isinstance(etag, str))
+        or (
+            contract_version == 3
+            and (
+                evidence not in {"verified_source_etag", "unavailable"}
+                or ((evidence == "verified_source_etag") != isinstance(etag, str))
+            )
+        )
     ):
         raise FingerprintInvariant()
     return {
@@ -664,6 +738,24 @@ def _download_storage(
     return ExactObjectDownloadStorage()
 
 
+def _quality_claim_input_geometry(
+    job: ProcessingJob | ProcessingAttempt,
+) -> dict[str, int | str] | None:
+    if not (
+        job.contract_version == QUALITY_FACE_CONTRACT_VERSION
+        and job.processor_type == FACE_EMBEDDING_CONTRACT.processor_type
+        and job.processor_version == QUALITY_FACE_PROCESSOR_VERSION
+    ):
+        return None
+    try:
+        return quality_face_claim_input_geometry(
+            photo_id=job.photo_id,
+            input_fingerprint=job.input_fingerprint,
+        )
+    except ValueError as error:
+        raise FingerprintInvariant() from error
+
+
 def _validate_grant_lease(
     attempt: ProcessingAttempt | SelfieSearchAttempt, expires_at: datetime
 ) -> None:
@@ -703,6 +795,7 @@ def _claimed_payload(
     expires_at: datetime,
     fingerprint: dict[str, int | str | None],
     preview_upload_grant: PreviewUploadGrant | None = None,
+    quality_input_geometry: dict[str, int | str] | None = None,
 ) -> dict[str, object]:
     job = claimed.job
     attempt = claimed.attempt
@@ -750,6 +843,15 @@ def _claimed_payload(
                 "oriented_source_width": derivative.oriented_source_width,
                 "oriented_source_height": derivative.oriented_source_height,
             }
+        }
+    elif (
+        job.contract_version == QUALITY_FACE_CONTRACT_VERSION
+        and job.processor_type == FACE_EMBEDDING_CONTRACT.processor_type
+        and job.processor_version == QUALITY_FACE_PROCESSOR_VERSION
+        and quality_input_geometry is not None
+    ):
+        payload["job"] = cast(dict[str, object], payload["job"]) | {
+            "input_geometry": quality_input_geometry
         }
     return payload
 
@@ -975,11 +1077,23 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
             attempt.configuration,
         ):
             return False
-        return not (
+        legacy_preview_valid = not (
             attempt.contract_version == PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version
             and attempt.processor_type == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_type
             and attempt.processor_version == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_version
         ) or _matches_accepted_preview_geometry(attempt, data["result"])
+        if not legacy_preview_valid:
+            return False
+        if (
+            attempt.contract_version == QUALITY_FACE_CONTRACT_VERSION
+            and attempt.processor_type == FACE_EMBEDDING_CONTRACT.processor_type
+            and attempt.processor_version == QUALITY_FACE_PROCESSOR_VERSION
+        ):
+            try:
+                quality_face_result_geometry(attempt, data["result"])
+            except ValueError:
+                return False
+        return True
     return (
         _valid_failure_code(attempt.processor_type, data["error_code"])
         and type(data["retryable"]) is bool

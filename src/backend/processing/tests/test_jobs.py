@@ -1,5 +1,6 @@
 # mypy: disable-error-code=union-attr
 
+import hashlib
 from datetime import date, timedelta
 from queue import Queue
 from threading import Barrier, Thread
@@ -60,7 +61,7 @@ class ProcessingJobServiceTests(TestCase):
             event=self.event,
             src="",
             uploaded_by=self.user,
-            original_key=f"originals/{suffix}.jpg",
+            original_key=f"originals/{hashlib.sha256(suffix.encode()).hexdigest()[:32]}",
             original_filename=f"{suffix}.jpg",
             original_size=10,
             original_content_type="image/jpeg",

@@ -32,6 +32,7 @@ from processing.models import (
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
+    PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -453,6 +454,13 @@ class SelfieSearchEndToEndTests(TestCase):
                 vector=vector,
                 metadata={},
             )
+        PhotoFaceEmbeddingProjection.objects.create(
+            photo=photo,
+            contract_version=CONTRACT_VERSION,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration_hash=configuration_hash,
+            accepted_attempt=attempt,
+        )
         return photo
 
     def add_accepted_preview_photo(

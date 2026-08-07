@@ -6,6 +6,8 @@ from itertools import batched
 import django.db.models.deletion
 from django.db import migrations, models
 
+import processing.models
+
 
 def backfill_face_embedding_projections(apps, schema_editor):  # noqa: ARG001
     State = apps.get_model("processing", "PhotoProcessingState")
@@ -174,6 +176,66 @@ class Migration(migrations.Migration):
         migrations.RunPython(
             backfill_face_embedding_projections,
             reverse_code=migrations.RunPython.noop,
+        ),
+        migrations.CreateModel(
+            name="EventFaceEmbeddingActivation",
+            fields=[
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4, editable=False, primary_key=True, serialize=False
+                    ),
+                ),
+                (
+                    "generations",
+                    models.JSONField(
+                        default=list, validators=[processing.models.validate_bounded_json]
+                    ),
+                ),
+                ("generation_set_hash", models.CharField(max_length=64)),
+                (
+                    "approved_configuration_hash",
+                    models.CharField(blank=True, default="", max_length=64),
+                ),
+                (
+                    "approved_evaluation_report_hash",
+                    models.CharField(blank=True, default="", max_length=64),
+                ),
+                ("activated_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "event",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="face_embedding_activations",
+                        to="picflow.event",
+                    ),
+                ),
+            ],
+            options={
+                "indexes": [
+                    models.Index(fields=["event", "activated_at"], name="proc_face_gen_event_idx"),
+                ],
+            },
+        ),
+        migrations.RunSQL(
+            sql="""
+                CREATE FUNCTION proc_guard_face_embedding_activation() RETURNS trigger AS $$
+                BEGIN
+                    RAISE EXCEPTION 'face embedding activations are append-only'
+                        USING ERRCODE = '23514';
+                END;
+                $$ LANGUAGE plpgsql;
+
+                CREATE TRIGGER proc_face_embedding_activation_guard_trg
+                    BEFORE UPDATE OR DELETE ON processing_eventfaceembeddingactivation
+                    FOR EACH ROW
+                    EXECUTE FUNCTION proc_guard_face_embedding_activation();
+            """,
+            reverse_sql="""
+                DROP TRIGGER IF EXISTS proc_face_embedding_activation_guard_trg
+                    ON processing_eventfaceembeddingactivation;
+                DROP FUNCTION IF EXISTS proc_guard_face_embedding_activation();
+            """,
         ),
         migrations.AlterField(
             model_name="photofacedetection",

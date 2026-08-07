@@ -22,6 +22,7 @@ from processing.models import (
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
+    PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -85,6 +86,7 @@ class SearchJobTests(TestCase):
             public_token_digest=f"search-{ordinal:0>57}"[:64],
             temporary_object_key="selfie-search/0123456789abcdef0123456789abcdef",
             configuration=submission_configuration(
+                event=self.event,
                 content_type="image/jpeg",
                 content_size=1024,
             ),
@@ -155,6 +157,13 @@ class SearchJobTests(TestCase):
             model_version="sface",
             vector=[1.0 - distance, sqrt(1 - (1.0 - distance) ** 2)] + [0.0] * 126,
             metadata={},
+        )
+        PhotoFaceEmbeddingProjection.objects.create(
+            photo=photo,
+            contract_version=CONTRACT_VERSION,
+            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration_hash=configuration_hash,
+            accepted_attempt=attempt,
         )
         PhotoProcessingState.objects.create(
             photo=photo,
@@ -793,7 +802,7 @@ class SearchJobTests(TestCase):
                 storage=self.storage,
             )
 
-    def test_domain_failure_and_empty_frozen_cohort_delete_before_terminal_states(self) -> None:
+    def test_domain_failure_and_projected_cohort_delete_before_terminal_states(self) -> None:
         failure_search = self.make_search()
         failure_claim = self.claim(failure_search)
         failure = fail_search_attempt(
@@ -818,5 +827,5 @@ class SearchJobTests(TestCase):
         self.assertEqual(failure_search.status, SelfieSearch.Status.NO_FACE)
         self.assertEqual(failure_search.failure_code, "no_face")
         self.assertEqual(ready.attempt.status, SelfieSearchAttempt.Status.SUCCEEDED)
-        self.assertEqual(empty_search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
-        self.assertEqual(empty_search.matched_photo_count, 0)
+        self.assertEqual(empty_search.status, SelfieSearch.Status.READY)
+        self.assertEqual(empty_search.matched_photo_count, 1)

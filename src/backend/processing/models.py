@@ -552,6 +552,37 @@ class PhotoFaceEmbeddingProjection(models.Model):  # noqa: DJ008
             )
 
 
+class EventFaceEmbeddingActivation(models.Model):  # noqa: DJ008
+    """One immutable event selection of an exact face-embedding generation set."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.PROTECT,
+        related_name="face_embedding_activations",
+    )
+    generations = models.JSONField(default=list, validators=[validate_bounded_json])
+    generation_set_hash = models.CharField(max_length=64)
+    approved_configuration_hash = models.CharField(max_length=64, blank=True, default="")
+    approved_evaluation_report_hash = models.CharField(max_length=64, blank=True, default="")
+    activated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["event", "activated_at"], name="proc_face_gen_event_idx"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Face-embedding activations are append-only.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Face-embedding activations are append-only.")
+        return super().delete(*args, **kwargs)
+
+
 class FaceClusterCorpus(models.Model):  # noqa: DJ008
     """One immutable, event-scoped offline face-cluster build."""
 

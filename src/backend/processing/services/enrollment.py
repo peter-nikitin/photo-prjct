@@ -31,6 +31,8 @@ FACE_EMBEDDING_PROCESSOR_VERSION = 1
 PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
 PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 2
+QUALITY_FACE_CONTRACT_VERSION = 3
+QUALITY_FACE_PROCESSOR_VERSION = 3
 FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION = 3
 FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION = 1
 FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
@@ -92,6 +94,46 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "min_face_px": 32,
         "max_faces_per_photo": 32,
         "normalize_embeddings": True,
+    },
+    "worker": {
+        "api_response_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
+        "concurrency": 1,
+        "heartbeat_interval_seconds": 30,
+        "lease_duration_seconds": 120,
+        "max_input_bytes": 50 * 1024 * 1024,
+        "max_pixels": 100_000_000,
+        "poll_min_delay_seconds": 5,
+        "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
+    },
+}
+
+# Provisional calibration points for private benchmark execution only.  Task 6 must replace these
+# values and record a matching approval before this generation can be activated for customer search.
+FACE_EMBEDDING_QUALITY_CONFIGURATION: dict[str, object] = {
+    "retry_policy": {
+        "max_attempts": 3,
+        "base_backoff_seconds": 30,
+        "max_backoff_seconds": 300,
+        "jitter_seconds": 5,
+        "lease_max_seconds": 300,
+    },
+    "max_cohort_size": 16,
+    "report_max_bytes": REPORT_JSON_MAX_BYTES,
+    "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
+    "face_embedding": {
+        "model": "sface",
+        "max_faces": 32,
+        "detection_threshold": 0.75,
+        "normalize_embeddings": True,
+        "quality": {
+            "algorithm_version": "normalized-laplacian-v1",
+            "crop_size": 112,
+            "minimum_face_px": 32,
+            "severe_blur_threshold": 25.0,
+            "borderline_blur_threshold": 50.0,
+            "minimum_relative_area": 0.0009,
+            "minimum_confidence": 0.82,
+        },
     },
     "worker": {
         "api_response_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
@@ -180,6 +222,26 @@ class CaptureTimeReprocessingTarget:
     timezone_name: str
     photo_count: int
     configuration: dict[str, object]
+
+
+@dataclass(frozen=True)
+class FaceEmbeddingGenerationApproval:
+    """Bounded non-biometric evidence authorizing one event's reviewed candidate identity."""
+
+    event_slug: str
+    photo_count: int
+    configuration_hash: str
+    evaluation_report_hash: str
+    complete: bool
+    approved: bool
+    clear_loss_count: int
+    relevant_result_loss_count: int
+    unresolved_count: int
+
+
+# Task 6 alone may replace this provisional state after the private benchmark is complete and
+# explicitly approved. Candidate processing is allowed while customer-search activation is not.
+FACE_EMBEDDING_QUALITY_APPROVAL: FaceEmbeddingGenerationApproval | None = None
 
 
 def validate_capture_time_reprocessing_enrollment(
@@ -419,6 +481,27 @@ def request_face_embedding_enqueue(
     )
 
 
+def request_face_embedding_candidate_enqueue(
+    photo: Photo, *, verified_source_etag: str | None = None
+) -> PhotoProcessingState:
+    """Explicitly queue provisional quality-v3 work without changing search activation."""
+    preview = _accepted_preview(photo)
+    return request_processor(
+        photo=photo,
+        processor_type=FACE_EMBEDDING_PROCESSOR,
+        contract_version=QUALITY_FACE_CONTRACT_VERSION,
+        processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+        configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+        verified_source_etag=verified_source_etag,
+        input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
+        enabled=(
+            photo.processing_generation != Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+            or preview is not None
+        ),
+        replace_terminal_generation=True,
+    )
+
+
 def request_generate_preview(
     photo: Photo,
     *,
@@ -538,6 +621,7 @@ def request_processor(
     input_fingerprint: dict[str, int | str | None] | None = None,
     enabled: bool = True,
     event: Event | None = None,
+    replace_terminal_generation: bool = False,
 ) -> PhotoProcessingState:
     """Queue the first compatible job exactly once for an eligible photo."""
     with transaction.atomic():
@@ -570,8 +654,24 @@ def request_processor(
             processor_type=processor_type,
             defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
         )
+        replacing_terminal_generation = False
         if state.current_job_id is not None:
-            return state
+            current_job = state.current_job
+            if (
+                current_job.contract_version == contract_version
+                and current_job.processor_version == processor_version
+                and current_job.configuration_hash == configuration_hash
+            ):
+                return state
+            if not replace_terminal_generation:
+                return state
+            if state.status in {
+                PhotoProcessingState.Status.QUEUED,
+                PhotoProcessingState.Status.PROCESSING,
+                PhotoProcessingState.Status.RETRY_WAIT,
+            }:
+                raise ValueError("cannot replace active face-embedding processing")
+            replacing_terminal_generation = True
         job, _ = ProcessingJob.objects.get_or_create(
             event=locked_event,
             run=run,
@@ -591,10 +691,29 @@ def request_processor(
         state.status = PhotoProcessingState.Status.QUEUED
         state.current_run = run
         state.current_job = job
+        if replacing_terminal_generation:
+            state.current_attempt = None
+            state.accepted_attempt = None
+            state.next_attempt_at = None
+            state.processing_at = None
+            state.succeeded_at = None
+            state.failed_at = None
+            state.cancelled_at = None
         state.queued_at = now
-        state.save(
-            update_fields=["status", "current_run", "current_job", "queued_at", "updated_at"]
-        )
+        update_fields = ["status", "current_run", "current_job", "queued_at", "updated_at"]
+        if replacing_terminal_generation:
+            update_fields.extend(
+                [
+                    "current_attempt",
+                    "accepted_attempt",
+                    "next_attempt_at",
+                    "processing_at",
+                    "succeeded_at",
+                    "failed_at",
+                    "cancelled_at",
+                ]
+            )
+        state.save(update_fields=update_fields)
         return state
 
 

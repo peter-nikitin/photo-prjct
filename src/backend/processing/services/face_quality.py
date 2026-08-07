@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import re
 from collections import Counter
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from django.db import transaction
+from picflow.models import Event, Photo
 
 if TYPE_CHECKING:
     from processing.models import ProcessingAttempt
@@ -58,6 +66,33 @@ _RESULT_FIELDS = frozenset(
         "warnings",
         "timings",
     }
+)
+_PREVIEW_RESULT_FIELDS = _RESULT_FIELDS | {"input_geometry"}
+_ORIGINAL_FINGERPRINT_FIELDS = frozenset(
+    {
+        "original_key",
+        "original_size",
+        "original_content_type",
+        "verified_source_etag",
+        "version_evidence",
+    }
+)
+_PREVIEW_FINGERPRINT_FIELDS = frozenset(
+    {
+        "object_key",
+        "object_size",
+        "object_content_type",
+        "object_etag",
+        "media_kind",
+        "pixel_width",
+        "pixel_height",
+    }
+)
+_ORIGINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
+_PUBLISHED_PREVIEW_KEY = re.compile(
+    r"derivatives/previews/(?P<photo_id>[A-Za-z0-9_-]{1,32})/preview-small-v1/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+    r"[0-9a-f]{64}\.jpg"
 )
 _FACE_CONFIGURATION_FIELDS = frozenset(
     {"model", "max_faces", "detection_threshold", "normalize_embeddings", "quality"}
@@ -152,7 +187,7 @@ class ValidatedQualityResult:
 def validate_quality_face_result(value: object, *, configuration: object) -> ValidatedQualityResult:
     """Return one normalized v3 result or raise without producing partial evidence."""
     quality_configuration = _validate_quality_configuration(configuration)
-    if not isinstance(value, dict) or set(value) != _RESULT_FIELDS:
+    if not isinstance(value, dict) or set(value) not in {_RESULT_FIELDS, _PREVIEW_RESULT_FIELDS}:
         raise FaceQualityResultError("invalid result fields")
     if value["model"] != "sface":
         raise FaceQualityResultError("invalid model")
@@ -192,6 +227,115 @@ def validate_quality_face_result(value: object, *, configuration: object) -> Val
         warnings=list(warnings),
         timings=timings,
     )
+
+
+def quality_face_claim_input_geometry(
+    *, photo_id: str, input_fingerprint: object
+) -> dict[str, int | str] | None:
+    """Validate one strict v3 original/preview input and bind previews to accepted media."""
+    from processing.models import (  # noqa: PLC0415
+        GENERATE_PREVIEW_PROCESSOR,
+        PhotoDerivative,
+        PhotoProcessingState,
+    )
+
+    if not isinstance(input_fingerprint, dict):
+        raise FaceQualityResultError("invalid v3 input fingerprint")
+    if set(input_fingerprint) == _ORIGINAL_FINGERPRINT_FIELDS:
+        key = input_fingerprint["original_key"]
+        size = input_fingerprint["original_size"]
+        etag = input_fingerprint["verified_source_etag"]
+        evidence = input_fingerprint["version_evidence"]
+        if not (
+            isinstance(key, str)
+            and _ORIGINAL_KEY.fullmatch(key) is not None
+            and _positive_int(size)
+            and input_fingerprint["original_content_type"] == "image/jpeg"
+            and (etag is None or isinstance(etag, str))
+            and evidence in {"verified_source_etag", "unavailable"}
+            and ((evidence == "verified_source_etag") == isinstance(etag, str))
+        ):
+            raise FaceQualityResultError("invalid v3 input fingerprint")
+        return None
+    if set(input_fingerprint) != _PREVIEW_FINGERPRINT_FIELDS:
+        raise FaceQualityResultError("invalid v3 input fingerprint")
+    key = input_fingerprint["object_key"]
+    size = input_fingerprint["object_size"]
+    width = input_fingerprint["pixel_width"]
+    height = input_fingerprint["pixel_height"]
+    key_match = _PUBLISHED_PREVIEW_KEY.fullmatch(key) if isinstance(key, str) else None
+    if not (
+        key_match is not None
+        and key_match.group("photo_id") == photo_id
+        and _positive_int(size)
+        and input_fingerprint["object_content_type"] == "image/jpeg"
+        and input_fingerprint["object_etag"] is None
+        and input_fingerprint["media_kind"] == "preview-small-v1"
+        and _positive_int(width)
+        and _positive_int(height)
+    ):
+        raise FaceQualityResultError("invalid v3 input fingerprint")
+    derivative = PhotoDerivative.objects.filter(
+        photo_id=photo_id,
+        variant="preview-small-v1",
+        final_key=key,
+        byte_size=size,
+        content_type="image/jpeg",
+        width=width,
+        height=height,
+        accepted_attempt_id__isnull=False,
+    ).first()
+    if (
+        derivative is None
+        or not PhotoProcessingState.objects.filter(
+            photo_id=photo_id,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            accepted_attempt_id=derivative.accepted_attempt_id,
+        ).exists()
+    ):
+        raise FaceQualityResultError("v3 preview input is not the accepted derivative")
+    return {
+        "coordinate_space": "preview-small-v1",
+        "pixel_width": derivative.width,
+        "pixel_height": derivative.height,
+        "oriented_source_width": derivative.oriented_source_width,
+        "oriented_source_height": derivative.oriented_source_height,
+    }
+
+
+def quality_face_result_geometry(
+    attempt: ProcessingAttempt, result: object
+) -> dict[str, int | float | str]:
+    """Verify worker geometry against the claimed v3 media and return persisted coordinates."""
+    if not isinstance(result, dict):
+        raise FaceQualityResultError("invalid v3 result")
+    expected = quality_face_claim_input_geometry(
+        photo_id=attempt.photo_id,
+        input_fingerprint=attempt.input_fingerprint,
+    )
+    if expected is None:
+        if "input_geometry" in result:
+            raise FaceQualityResultError("original v3 result must not contain input geometry")
+        return {}
+    if result.get("input_geometry") != expected:
+        raise FaceQualityResultError("v3 preview result geometry disagrees with accepted input")
+    pixel_width = expected["pixel_width"]
+    pixel_height = expected["pixel_height"]
+    source_width = expected["oriented_source_width"]
+    source_height = expected["oriented_source_height"]
+    if not (
+        isinstance(pixel_width, int)
+        and isinstance(pixel_height, int)
+        and isinstance(source_width, int)
+        and isinstance(source_height, int)
+    ):
+        raise FaceQualityResultError("invalid accepted preview geometry")
+    return {
+        **expected,
+        "scale_x": source_width / pixel_width,
+        "scale_y": source_height / pixel_height,
+    }
 
 
 def _validate_quality_configuration(configuration: object) -> QualityFaceConfiguration:
@@ -478,4 +622,213 @@ def publish_face_embedding_projection(attempt: ProcessingAttempt) -> None:
         processor_version=attempt.processor_version,
         configuration_hash=attempt.job.configuration_hash,
         defaults={"accepted_attempt": attempt},
+    )
+
+
+def baseline_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the frozen baseline set used by events with no activation history."""
+    from processing.models import FACE_EMBEDDING_PROCESSOR  # noqa: PLC0415
+    from processing.services.enrollment import (  # noqa: PLC0415
+        CONTRACT_VERSION,
+        FACE_EMBEDDING_CONFIGURATION,
+        FACE_EMBEDDING_PROCESSOR_VERSION,
+        PREVIEW_CONTRACT_VERSION,
+        PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+    )
+
+    configuration_hash = _canonical_hash(FACE_EMBEDDING_CONFIGURATION)
+    return tuple(
+        {
+            "contract_version": contract_version,
+            "processor_type": FACE_EMBEDDING_PROCESSOR,
+            "processor_version": processor_version,
+            "configuration": deepcopy(FACE_EMBEDDING_CONFIGURATION),
+            "configuration_hash": configuration_hash,
+            "model": "sface",
+        }
+        for contract_version, processor_version in (
+            (CONTRACT_VERSION, FACE_EMBEDDING_PROCESSOR_VERSION),
+            (PREVIEW_CONTRACT_VERSION, PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION),
+        )
+    )
+
+
+def candidate_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the one v3 identity shared by original- and preview-backed candidate inputs."""
+    from processing.models import FACE_EMBEDDING_PROCESSOR  # noqa: PLC0415
+    from processing.services.enrollment import (  # noqa: PLC0415
+        FACE_EMBEDDING_QUALITY_CONFIGURATION,
+        QUALITY_FACE_CONTRACT_VERSION,
+        QUALITY_FACE_PROCESSOR_VERSION,
+    )
+
+    return (
+        {
+            "contract_version": QUALITY_FACE_CONTRACT_VERSION,
+            "processor_type": FACE_EMBEDDING_PROCESSOR,
+            "processor_version": QUALITY_FACE_PROCESSOR_VERSION,
+            "configuration": deepcopy(FACE_EMBEDDING_QUALITY_CONFIGURATION),
+            "configuration_hash": _canonical_hash(FACE_EMBEDDING_QUALITY_CONFIGURATION),
+            "model": "sface",
+        },
+    )
+
+
+def active_face_embedding_generations(event: Event) -> tuple[dict[str, object], ...]:
+    """Resolve one event's latest explicit selection, or its initial frozen baseline."""
+    from processing.models import EventFaceEmbeddingActivation  # noqa: PLC0415
+
+    activation = (
+        EventFaceEmbeddingActivation.objects.filter(event=event)
+        .order_by("-activated_at", "-id")
+        .first()
+    )
+    if activation is None:
+        return baseline_face_embedding_generations()
+    generations = validate_face_embedding_generations(activation.generations)
+    if activation.generation_set_hash != _canonical_hash(list(generations)):
+        raise ValueError("invalid face-embedding activation record")
+    if generations == baseline_face_embedding_generations():
+        if activation.approved_configuration_hash or activation.approved_evaluation_report_hash:
+            raise ValueError("baseline activation must not claim candidate approval")
+    else:
+        _validate_candidate_activation(
+            event=event,
+            approved_configuration_hash=activation.approved_configuration_hash,
+            evaluation_report_hash=activation.approved_evaluation_report_hash,
+        )
+    return generations
+
+
+def activate_face_embedding_generation(
+    *,
+    event: Event,
+    generations: Sequence[Mapping[str, object]],
+    approved_configuration_hash: str,
+    evaluation_report_hash: str,
+    review_confirmed: bool,
+):
+    """Append one guarded event selection, returning the latest row on exact replay."""
+    from processing.models import EventFaceEmbeddingActivation  # noqa: PLC0415
+
+    if review_confirmed is not True:
+        raise ValueError("review confirmation is required")
+    selected = validate_face_embedding_generations(generations)
+    baseline = baseline_face_embedding_generations()
+    candidate = candidate_face_embedding_generations()
+    if selected == baseline:
+        if approved_configuration_hash or evaluation_report_hash:
+            raise ValueError("baseline activation must not claim candidate approval")
+    elif selected == candidate:
+        _validate_candidate_activation(
+            event=event,
+            approved_configuration_hash=approved_configuration_hash,
+            evaluation_report_hash=evaluation_report_hash,
+        )
+    else:  # pragma: no cover - generation-set validation already rejects this branch.
+        raise ValueError("unrecognized face-embedding generation set")
+
+    serialized_generations = [deepcopy(generation) for generation in selected]
+    generation_set_hash = _canonical_hash(serialized_generations)
+    with transaction.atomic():
+        locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        latest = (
+            EventFaceEmbeddingActivation.objects.select_for_update()
+            .filter(event=locked_event)
+            .order_by("-activated_at", "-id")
+            .first()
+        )
+        if latest is not None and (
+            latest.generations == serialized_generations
+            and latest.generation_set_hash == generation_set_hash
+            and latest.approved_configuration_hash == approved_configuration_hash
+            and latest.approved_evaluation_report_hash == evaluation_report_hash
+        ):
+            return latest
+        return EventFaceEmbeddingActivation.objects.create(
+            event=locked_event,
+            generations=serialized_generations,
+            generation_set_hash=generation_set_hash,
+            approved_configuration_hash=approved_configuration_hash,
+            approved_evaluation_report_hash=evaluation_report_hash,
+        )
+
+
+def validate_face_embedding_generations(
+    generations: Sequence[Mapping[str, object]] | object,
+) -> tuple[dict[str, object], ...]:
+    if not isinstance(generations, (list, tuple)):
+        raise ValueError("invalid face-embedding generation set")
+    normalized = tuple(
+        dict(generation) for generation in generations if isinstance(generation, Mapping)
+    )
+    if len(normalized) != len(generations):
+        raise ValueError("invalid face-embedding generation set")
+    if normalized not in (
+        baseline_face_embedding_generations(),
+        candidate_face_embedding_generations(),
+    ):
+        raise ValueError("invalid face-embedding generation set")
+    return tuple(deepcopy(generation) for generation in normalized)
+
+
+def _validate_candidate_activation(
+    *, event: Event, approved_configuration_hash: str, evaluation_report_hash: str
+) -> None:
+    from processing.models import PhotoFaceEmbeddingProjection  # noqa: PLC0415
+    from processing.services import enrollment  # noqa: PLC0415
+
+    approval = enrollment.FACE_EMBEDDING_QUALITY_APPROVAL
+    candidate = candidate_face_embedding_generations()[0]
+    if (
+        approval is None
+        or approval.complete is not True
+        or approval.approved is not True
+        or approval.event_slug != event.slug
+        or approval.configuration_hash != candidate["configuration_hash"]
+        or approval.configuration_hash != approved_configuration_hash
+        or approval.evaluation_report_hash != evaluation_report_hash
+        or not _is_sha256(approval.configuration_hash)
+        or not _is_sha256(approval.evaluation_report_hash)
+        or approval.clear_loss_count != 0
+        or approval.relevant_result_loss_count != 0
+        or approval.unresolved_count != 0
+    ):
+        raise ValueError("candidate activation requires approved benchmark evidence")
+
+    eligible_photo_ids = set(
+        Photo.objects.filter(
+            event=event,
+            original_key__isnull=False,
+            original_key__gt="",
+            original_size__isnull=False,
+            original_content_type="image/jpeg",
+        ).values_list("pk", flat=True)
+    )
+    projected_photo_ids = set(
+        PhotoFaceEmbeddingProjection.objects.filter(
+            photo__event=event,
+            contract_version=candidate["contract_version"],
+            processor_version=candidate["processor_version"],
+            configuration_hash=candidate["configuration_hash"],
+        ).values_list("photo_id", flat=True)
+    )
+    if (
+        approval.photo_count != len(eligible_photo_ids)
+        or not eligible_photo_ids
+        or projected_photo_ids != eligible_photo_ids
+    ):
+        raise ValueError("incomplete candidate evidence")
+
+
+def _canonical_hash(value: object) -> str:
+    encoded = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
     )

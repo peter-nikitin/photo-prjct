@@ -21,10 +21,12 @@ from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from PIL import Image
 from processing.models import (
+    EventFaceEmbeddingActivation,
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
+    PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -35,8 +37,13 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_PROCESSOR_VERSION,
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+    FaceEmbeddingGenerationApproval,
 )
 from processing.services.face_cohort import load_compatible_face_embeddings
+from processing.services.face_quality import (
+    activate_face_embedding_generation,
+    candidate_face_embedding_generations,
+)
 from selfie_search.images import PreparedSelfie, prepare_selfie_image
 from selfie_search.models import (
     SelfieSearch,
@@ -232,12 +239,21 @@ class SubmissionTests(TestCase):
                 }
             ),
         )
-        return FaceEmbedding.objects.create(
+        embedding = FaceEmbedding.objects.create(
             detection=detection,
             model_version=model,
             vector=vector if vector is not None else [0.0] * dimensions,
             metadata={},
         )
+        if accepted:
+            PhotoFaceEmbeddingProjection.objects.create(
+                photo=photo,
+                contract_version=contract_version,
+                processor_version=processor_version,
+                configuration_hash=configuration_hash,
+                accepted_attempt=attempt,
+            )
+        return embedding
 
     def test_published_free_and_paid_events_queue_without_freezing_face_candidates(self) -> None:
         self.make_eligible_embedding(event=self.event, photo_id="legacy")
@@ -316,6 +332,70 @@ class SubmissionTests(TestCase):
         self.assertEqual(created.search.configuration["embedding_dimensions"], 128)
         self.assertEqual(paid.search.event_id, self.paid_event.id)
 
+    def test_new_search_freezes_the_events_exact_active_generation_set(self) -> None:
+        generations = list(candidate_face_embedding_generations())
+        generation = generations[0]
+        configuration = generation["configuration"]
+        configuration_hash = generation["configuration_hash"]
+        assert isinstance(configuration, dict)
+        assert isinstance(configuration_hash, str)
+        self.make_eligible_embedding(
+            event=self.event,
+            photo_id="active-v3",
+            contract_version=3,
+            processor_version=3,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
+        )
+        approval = FaceEmbeddingGenerationApproval(
+            event_slug=self.event.slug,
+            photo_count=1,
+            configuration_hash=configuration_hash,
+            evaluation_report_hash="d" * 64,
+            complete=True,
+            approved=True,
+            clear_loss_count=0,
+            relevant_result_loss_count=0,
+            unresolved_count=0,
+        )
+        with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
+            activate_face_embedding_generation(
+                event=self.event,
+                generations=generations,
+                approved_configuration_hash=approval.configuration_hash,
+                evaluation_report_hash=approval.evaluation_report_hash,
+                review_confirmed=True,
+            )
+
+            created = submit_selfie_search(
+                event=self.event, selfie=valid_selfie(), storage=RecordingStorage()
+            )
+
+        self.assertEqual(
+            created.search.configuration["gallery_face_embedding_generations"], generations
+        )
+
+    def test_new_search_fails_closed_without_storing_a_selfie_for_a_direct_unapproved_row(
+        self,
+    ) -> None:
+        generations = list(candidate_face_embedding_generations())
+        EventFaceEmbeddingActivation.objects.create(
+            event=self.event,
+            generations=generations,
+            generation_set_hash=hashlib.sha256(
+                json.dumps(generations, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            approved_configuration_hash=generations[0]["configuration_hash"],
+            approved_evaluation_report_hash="d" * 64,
+        )
+        storage = RecordingStorage()
+
+        with self.assertRaisesRegex(ValueError, "approved benchmark evidence"):
+            submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
+
+        self.assertEqual(storage.objects, {})
+        self.assertFalse(SelfieSearch.objects.filter(event=self.event).exists())
+
     def test_successful_worker_callback_ranks_without_persisting_candidates(self) -> None:
         embedding = self.make_eligible_embedding(
             event=self.event,
@@ -328,6 +408,7 @@ class SubmissionTests(TestCase):
             public_token_digest="a" * 64,
             temporary_object_key="selfie-search/async-callback",
             configuration=submission_configuration(
+                event=self.event,
                 content_type="image/jpeg",
                 content_size=1024,
             ),
@@ -390,7 +471,9 @@ class SubmissionTests(TestCase):
             event=self.event,
             public_token_digest="f" * 64,
             temporary_object_key="selfie-search/lightweight",
-            configuration=submission_configuration(content_type="image/jpeg", content_size=1),
+            configuration=submission_configuration(
+                event=self.event, content_type="image/jpeg", content_size=1
+            ),
             configuration_hash="f" * 64,
         )
 
@@ -415,7 +498,9 @@ class SubmissionTests(TestCase):
             event=self.event,
             public_token_digest="g" * 64,
             temporary_object_key="selfie-search/shared-loader",
-            configuration=submission_configuration(content_type="image/jpeg", content_size=1),
+            configuration=submission_configuration(
+                event=self.event, content_type="image/jpeg", content_size=1
+            ),
             configuration_hash="g" * 64,
         )
 
@@ -719,8 +804,11 @@ class GalleryPhotoSubmissionTests(TestCase):
                 ),
             )
 
-        self.assertEqual(len(queries), 1)
-        select_clause = queries[0]["sql"].lower().split(" from ", maxsplit=1)[0]
+        self.assertEqual(len(queries), 2)
+        cohort_query = next(
+            query["sql"] for query in queries if 'FROM "processing_faceembedding"' in query["sql"]
+        )
+        select_clause = cohort_query.lower().split(" from ", maxsplit=1)[0]
         self.assertNotIn('"vector"', select_clause)
         self.assertEqual(set(faces_by_photo), {one.id, two.id})
         self.assertEqual(len(faces_by_photo[one.id]), 1)
@@ -1021,7 +1109,7 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
         self.assertEqual(search.results.count(), 0)
 
-    def test_processing_stale_source_fails_closed_without_results(self) -> None:
+    def test_processing_uses_the_frozen_projection_after_mutable_state_changes(self) -> None:
         source_embedding = self.make_eligible_embedding(
             event=self.event,
             photo_id="source",
@@ -1038,5 +1126,5 @@ class GalleryPhotoSubmissionTests(TestCase):
         process_gallery_photo_search(search=search)
 
         search.refresh_from_db()
-        self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
-        self.assertEqual(search.results.count(), 0)
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertGreater(search.results.count(), 0)

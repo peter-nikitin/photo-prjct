@@ -40,6 +40,11 @@ PREVIEW_FACE_EMBEDDING_CONTRACT = ProcessorContract(
     contract_version=2,
     processor_version=2,
 )
+QUALITY_FACE_EMBEDDING_CONTRACT = ProcessorContract(
+    processor_type="face_embedding",
+    contract_version=3,
+    processor_version=3,
+)
 SELFIE_QUERY_CONTRACT = ProcessorContract(
     processor_type="selfie_query",
     contract_version=1,

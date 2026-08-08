@@ -270,6 +270,23 @@ class EventGalleryTimeFilterBenchmarkCommandTests(TestCase):
         self.assertGreaterEqual(measurement["database_execution_ms"], 0)
         self.assertGreaterEqual(measurement["rendered_response_ms"], 0)
 
+    def test_render_survives_a_missing_production_manifest(self) -> None:
+        """The one-off benchmark must not require the production collectstatic manifest."""
+        from django.contrib.staticfiles.storage import staticfiles_storage
+        from whitenoise.storage import CompressedManifestStaticFilesStorage
+
+        from picflow.management.commands.benchmark_event_gallery_time_filter import Command
+
+        manifest_storage = CompressedManifestStaticFilesStorage()
+        with patch.object(staticfiles_storage, "_wrapped", manifest_storage):
+            measurement = Command()._rendered_response_ms(
+                event=self.event,
+                page_number=1,
+                filter_data={},
+            )
+
+        self.assertGreaterEqual(measurement, 0)
+
     @patch(
         "picflow.management.commands.benchmark_event_gallery_time_filter.event_detail",
         return_value=HttpResponse(status=503),

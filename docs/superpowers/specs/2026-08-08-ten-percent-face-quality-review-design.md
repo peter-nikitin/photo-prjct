@@ -35,10 +35,12 @@ derived from the frozen comparison-bundle SHA-256, not from runtime randomness.
 
 Allocation is stratified by the exact rejection-reason tuple. Each non-empty rare stratum receives
 a minimum allocation when the total sample permits it; remaining slots are allocated
-proportionally using deterministic largest-remainder allocation. Selection inside each stratum uses
-a stable hash of the bundle identity and face identifier. The artifact records population count,
-sample count, and inclusion weight for every stratum so aggregate estimates remain population
-weighted even when rare strata are deliberately oversampled.
+proportionally to remaining stratum capacity using deterministic largest-remainder allocation.
+Ties use the canonical reason-tuple order. Selection inside each stratum uses a stable SHA-256 of
+the bundle identity, a NUL separator, and the face identifier. The artifact records population
+count, sample count, and inclusion weight `population_count / sample_count` for every stratum so
+aggregate estimates remain population weighted even when rare strata are deliberately
+oversampled.
 
 The 100 retained threshold controls are shown as a separate audit set and do not replace any of the
 1,506 rejected samples.
@@ -67,7 +69,8 @@ Finalization strictly validates sample identity, exact row coverage, uniqueness,
 metadata, and source hashes. It produces an immutable private report containing:
 
 - raw and population-weighted counts and proportions for all four labels;
-- a 95% confidence interval for the population-weighted `clear` proportion;
+- a 95% Wilson score interval for the population-weighted `clear` proportion, using Kish effective
+  sample size `(sum(weights) ** 2) / sum(weight ** 2)` and clamped to `[0, 1]`;
 - results by rejection-reason stratum and configured threshold vicinity;
 - a review gallery containing every sampled `clear` and `uncertain` item;
 - bounded source identities, reviewer identifier, review timestamp, and artifact hashes.

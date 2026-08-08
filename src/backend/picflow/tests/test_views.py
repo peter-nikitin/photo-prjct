@@ -40,6 +40,7 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_CONFIGURATION,
     FACE_EMBEDDING_PROCESSOR_VERSION,
 )
+from processing.services.face_quality import publish_face_embedding_projection
 
 from picflow.models import Event, Photo
 
@@ -496,6 +497,7 @@ class GalleryPageTests(TestCase):
                 vector=[1.0] + [0.0] * 127,
                 metadata={},
             )
+        publish_face_embedding_projection(attempt)
 
     @patch("config.views.PrivateUploadStorage")
     def test_event_detail_builds_filename_ordered_gallery_without_storage(

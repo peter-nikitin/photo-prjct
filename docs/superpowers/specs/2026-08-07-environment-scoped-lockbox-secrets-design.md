@@ -242,10 +242,11 @@ do not receive this permission or a Lockbox payload.
 
 The Yandex workload identity federation trusts GitHub's OIDC issuer and the intended audience. Its
 federated credential binds one dedicated staging CI service account to the exact repository and
-`staging` environment subject. The trust must also constrain the reusable/deployment workflow
-identity when Yandex's supported claim matching permits it. Forks, pull-request subjects, unrelated
-repositories, other GitHub environments, and arbitrary branch-only subjects cannot exchange a
-token for this service account.
+`staging` environment subject. Before token exchange, the resolver also requires the OIDC token's
+complete `workflow_ref` claim to equal one exact manifest entry, including repository, workflow
+path, and `refs/heads/main`. Tokens without that claim and tokens from another repository, workflow
+path, or ref fail closed. Forks, pull-request subjects, unrelated repositories, other GitHub
+environments, and arbitrary branch-only subjects cannot exchange a token for this service account.
 
 The service account has `lockbox.payloadViewer` on the one staging secret, not at folder or cloud
 scope. It receives no general editor, compute, IAM, KMS, Object Storage, or Lockbox-management role.

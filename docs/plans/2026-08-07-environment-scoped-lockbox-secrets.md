@@ -266,13 +266,58 @@ changes can disclose credentials or mutate staging.
 - [ ] Self-review, package the complete unstaged task diff, obtain independent approval, and let the
   root controller create the task's single commit.
 
+### Task 5: Enforce workflow identity and add the non-mutating OIDC preflight
+
+**Ownership:** One integration implementer owns the resolver claim boundary, exact manifest
+workflow references, the manual preflight job, its no-output child, and their contract tests.
+
+**Files:**
+
+- Modify: `deploy/environment-secrets/staging.json`
+- Modify: `scripts/run-with-environment-secrets.py`
+- Create: `scripts/verify-environment-secret-projection.py`
+- Modify: `.github/workflows/deploy.yml`
+- Modify: `tests/deployment/test_environment_secrets.py`
+- Modify: `tests/deployment/test_staging_workflow_secrets.py`
+- Modify: `tests/test_repository_foundation.py`
+- Modify: `docs/runbooks/environment-secrets.md`
+- Modify: `docs/runbooks/environment-secrets-inventory.md`
+
+- **Depends on:** Tasks 1-4 reviewed and committed.
+- **Produces:** A real manifest workflow boundary and one manually dispatched, non-mutating Gate B
+  proof for all four consumer projections without enabling deployment, storage, monitoring, or
+  benchmark mutations.
+
+- [ ] Replace path-only `allowed_workflows` entries with the exact reviewed GitHub `workflow_ref`
+  claim values for the four staging workflow files at `refs/heads/main`. Reject missing, malformed,
+  wrong-repository, wrong-path, and wrong-ref workflow claims before Yandex token exchange.
+- [ ] Add failing resolver tests for the exact allowed claims and every rejected form. Do not add a
+  compatibility fallback for tokens without `workflow_ref`.
+- [ ] Add a `workflow_dispatch`-only `lockbox_preflight` input and job to the already allowlisted
+  `deploy.yml`. When selected, build, deployment, storage verification, and monitoring configuration
+  jobs must be skipped. The job uses `environment: staging`, secure checkout, `contents: read`, and
+  `id-token: write`.
+- [ ] Resolve `local-web`, `staging-deploy`, `staging-remote-check`, and
+  `staging-public-monitor` sequentially through `github-oidc`. Each invocation runs the same small
+  child that verifies only the private file boundary and emits one sanitized consumer/status line;
+  it must not print values, paths, tokens, arguments, step outputs, or artifacts.
+- [ ] Add structural and runtime tests proving the job is manual-only and non-mutating, all four
+  projections are invoked exactly once, other operational jobs are disabled in preflight mode, and
+  sentinel values remain absent from argv/stdout/stderr/retained files.
+- [ ] Update the runbook and inventory from an unenforced path allowlist/future dependency to the
+  exact enforced claims and merge-then-dispatch Gate B procedure. Keep Gate B blocked until the
+  merged `main` workflow produces secret-free evidence while legacy GitHub Secrets still exist.
+- [ ] Run the focused resolver/workflow/foundation secret-delivery tests, then the complete
+  non-overlapping secret-delivery contract. Self-review, obtain independent approval, and let the
+  root controller create the task's single commit.
+
 ### Operational gate B: Populate and validate Lockbox without changing workflow readers
 
 **Ownership:** Root controller/operator only; no implementation subagent.
 
 **Repository files:** None.
 
-- **Depends on:** Tasks 1 and 4; fresh approval before payload/IAM mutation.
+- **Depends on:** Tasks 1-5; fresh approval before payload/IAM mutation.
 - **Produces:** One complete current staging payload, local human retrieval evidence, CI OIDC
   retrieval evidence, and retained GitHub Secrets for rollback.
 

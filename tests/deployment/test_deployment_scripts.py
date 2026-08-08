@@ -1826,28 +1826,31 @@ def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliat
 
 
 def test_workflows_forward_private_media_settings() -> None:
-    for relative_path in (
-        ".github/workflows/deploy.yml",
-        ".github/workflows/promote-production.yml",
-    ):
-        workflow = (ROOT / relative_path).read_text(encoding="utf-8")
-        assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in workflow
-        assert (
-            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID: "
-            "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}" in workflow
-        )
-        assert (
-            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: "
-            "${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}" in workflow
-        )
-        forwarded = next(
-            line
-            for line in workflow.splitlines()
-            if "envs: APP_IMAGE" in line and "SECRET_KEY" in line
-        )
-        assert "PRIVATE_MEDIA_S3_BUCKET" in forwarded
-        assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in forwarded
-        assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in forwarded
+    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+
+    assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in staging
+    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" not in staging
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" not in staging
+    assert "--consumer staging-deploy" in staging
+
+    assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in production
+    assert (
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID: "
+        "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}" in production
+    )
+    assert (
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: "
+        "${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}" in production
+    )
+    forwarded = next(
+        line
+        for line in production.splitlines()
+        if "envs: APP_IMAGE" in line and "SECRET_KEY" in line
+    )
+    assert "PRIVATE_MEDIA_S3_BUCKET" in forwarded
+    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in forwarded
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in forwarded
 
 
 def test_deployment_path_performs_no_iam_mutation(tmp_path: Path, fake_bin: Path) -> None:
@@ -2131,16 +2134,11 @@ def test_feedback_workflow_forwards_web_credentials_and_keeps_them_out_of_worker
 
     assert "SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}" in workflow
     assert "SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}" in workflow
-    assert (
-        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID: "
-        "${{ secrets.SELFIE_FEEDBACK_S3_ACCESS_KEY_ID }}" in workflow
-    )
-    assert (
-        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY: "
-        "${{ secrets.SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY }}" in workflow
-    )
+    assert "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID" not in workflow
+    assert "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY" not in workflow
     assert "SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}" in workflow
-    assert "verify_selfie_feedback_storage" in workflow
+    assert "--consumer staging-deploy" in workflow
+    assert "selfie-feedback-storage" in workflow
     worker_section = compose.split("  worker:\n", maxsplit=1)[1]
     assert "SELFIE_FEEDBACK_" not in worker_section
 

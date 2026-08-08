@@ -25,170 +25,28 @@ jobs:
     name: Run bounded benchmark operation
     runs-on: ubuntu-latest
     environment: staging
+    permissions:
+      contents: read
+      id-token: write
     concurrency:
       group: deploy-staging
       cancel-in-progress: false
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Run bounded benchmark operation
-        uses: appleboy/ssh-action@v1.0.3
         env:
           BENCHMARK_OPERATION: ${{ inputs.operation }}
           BENCHMARK_EVENT_SLUG: ${{ inputs.event_slug }}
           BENCHMARK_SOURCE_RUN_UUID: ${{ inputs.source_run_uuid }}
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          envs: BENCHMARK_OPERATION,BENCHMARK_EVENT_SLUG,BENCHMARK_SOURCE_RUN_UUID
-          script: |
-            set -eu
-            cd /opt/photo-prjct
-
-            worker_identity="$(sed -n 's/^PHOTO_WORKER_PROCESSOR_IDENTITIES=//p' .env | head -n 1)"
-            test "$worker_identity" = '3/face_embedding_benchmark/1'
-            worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' .env | head -n 1)"
-            preview_enabled="$(sed -n 's/^PHOTO_PROCESSING_PREVIEW_ENABLED=//p' .env | head -n 1)"
-            test "$preview_enabled" = False
-
-            run_web() {
-              docker compose --project-name photo-prjct-staging \
-                --env-file .env \
-                -f docker-compose.prod.yml \
-                -f docker-compose.https.yml \
-                exec -T -e BENCHMARK_SOURCE_RUN_UUID web python manage.py "$@"
-            }
-
-            require_uuid() {
-              printf '%s' "$1" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-            }
-
-            case "$BENCHMARK_OPERATION" in
-              baseline)
-                test "$worker_replicas" = 1
-                test -n "$BENCHMARK_EVENT_SLUG"
-                benchmark_run_id="$(run_web run_face_embedding_benchmark \
-                  --event "$BENCHMARK_EVENT_SLUG" \
-                  --limit 114 \
-                  --label staging-baseline-one-replica)"
-                require_uuid "$benchmark_run_id"
-                printf 'BENCHMARK_RUN_ID=%s\n' "$benchmark_run_id"
-                ;;
-              replay)
-                test "$worker_replicas" = 2
-                require_uuid "$BENCHMARK_SOURCE_RUN_UUID"
-                benchmark_run_id="$(run_web run_face_embedding_benchmark \
-                  --source-run "$BENCHMARK_SOURCE_RUN_UUID" \
-                  --label staging-replay-two-replicas)"
-                require_uuid "$benchmark_run_id"
-                printf 'BENCHMARK_RUN_ID=%s\n' "$benchmark_run_id"
-                ;;
-              report)
-                require_uuid "$BENCHMARK_SOURCE_RUN_UUID"
-                export BENCHMARK_SOURCE_RUN_UUID
-                run_web shell -c '
-            from collections import Counter, defaultdict
-            import json
-            import os
-            from django.core.management.base import CommandError
-            from processing.models import EventProcessingRun, ProcessingAttempt, ProcessingJob
-
-            run = EventProcessingRun.objects.filter(pk=os.environ["BENCHMARK_SOURCE_RUN_UUID"]).first()
-            if run is None:
-                raise CommandError("benchmark run does not exist")
-            if not (
-                run.contract_version == 3
-                and run.processor_type == "face_embedding_benchmark"
-                and run.processor_version == 1
-                and run.status == EventProcessingRun.Status.CLOSED
-            ):
-                raise CommandError("benchmark run must be closed")
-
-            jobs = list(ProcessingJob.objects.filter(run=run).only("id", "status", "created_at", "input_fingerprint"))
-            attempts = list(
-                ProcessingAttempt.objects.filter(run=run).only(
-                    "job_id", "status", "error_code", "claimed_at", "terminal_at",
-                    "download_duration_ms", "compute_duration_ms", "total_duration_ms", "result",
-                )
-            )
-            terminal_statuses = {
-                ProcessingJob.Status.SUCCEEDED,
-                ProcessingJob.Status.FAILED,
-                ProcessingJob.Status.CANCELLED,
-            }
-            terminal_attempts = [attempt for attempt in attempts if attempt.terminal_at is not None]
-            attempts_by_job = defaultdict(list)
-            for attempt in attempts:
-                attempts_by_job[attempt.job_id].append(attempt)
-
-            def percentile(values, fraction):
-                ordered = sorted(values)
-                if not ordered:
-                    return None
-                position = (len(ordered) - 1) * fraction
-                lower = int(position)
-                upper = min(lower + 1, len(ordered) - 1)
-                return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
-
-            def timing(result, name):
-                value = result.get("timings", {}).get(name)
-                return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-            creation_to_claim = []
-            for job in jobs:
-                claims = [attempt.claimed_at for attempt in attempts_by_job[job.id] if attempt.claimed_at]
-                if claims:
-                    creation_to_claim.append((min(claims) - job.created_at).total_seconds() * 1000)
-            measurements = {
-                "download": [attempt.download_duration_ms for attempt in terminal_attempts if attempt.download_duration_ms is not None],
-                "compute": [attempt.compute_duration_ms for attempt in terminal_attempts if attempt.compute_duration_ms is not None],
-                "total": [attempt.total_duration_ms for attempt in terminal_attempts if attempt.total_duration_ms is not None],
-                "model_load": [value for attempt in terminal_attempts if (value := timing(attempt.result, "model_load_ms")) is not None],
-                "decode": [value for attempt in terminal_attempts if (value := timing(attempt.result, "decode_ms")) is not None],
-                "detect": [value for attempt in terminal_attempts if (value := timing(attempt.result, "detect_ms")) is not None],
-                "embed": [value for attempt in terminal_attempts if (value := timing(attempt.result, "embed_ms")) is not None],
-            }
-            size_buckets = Counter()
-            for job in jobs:
-                size = job.input_fingerprint.get("original_size")
-                if isinstance(size, int) and size < 1_000_000:
-                    size_buckets["<1MB"] += 1
-                elif isinstance(size, int) and size < 5_000_000:
-                    size_buckets["1-5MB"] += 1
-                elif isinstance(size, int) and size < 10_000_000:
-                    size_buckets["5-10MB"] += 1
-                else:
-                    size_buckets[">=10MB"] += 1
-            wall_clock_ms = (run.closed_at - run.created_at).total_seconds() * 1000
-            output = {
-                "cohort_size": len(jobs),
-                "terminal_outcomes": dict(sorted(Counter(job.status for job in jobs if job.status in terminal_statuses).items())),
-                "sample_counts": {
-                    "jobs": len(jobs),
-                    "terminal_attempts": len(terminal_attempts),
-                    "creation_to_claim_ms": len(creation_to_claim),
-                    **{f"{name}_ms": len(values) for name, values in measurements.items()},
-                },
-                "retried_job_count": sum(len(job_attempts) > 1 for job_attempts in attempts_by_job.values()),
-                "expired_attempt_count": sum(attempt.status == ProcessingAttempt.Status.EXPIRED for attempt in attempts),
-                "stale_attempt_count": sum(attempt.status == ProcessingAttempt.Status.STALE for attempt in attempts),
-                "lease_loss_count": sum(attempt.error_code == "lease_not_current" for attempt in attempts),
-                "terminal_error_code_counts": dict(sorted(Counter(attempt.error_code for attempt in terminal_attempts if attempt.error_code).items())),
-                "representative_input_size_distribution": dict(sorted(size_buckets.items())),
-                "representative_dimension_distribution": "not_collected_by_benchmark_contract",
-                "wall_clock_ms": wall_clock_ms,
-                "photos_per_minute": len([job for job in jobs if job.status in terminal_statuses]) / (wall_clock_ms / 60_000) if wall_clock_ms else None,
-                "creation_to_claim_p50_ms": percentile(creation_to_claim, 0.5),
-                "creation_to_claim_p95_ms": percentile(creation_to_claim, 0.95),
-                **{
-                    f"{name}_{percentile_name}_ms": percentile(values, fraction)
-                    for name, values in measurements.items()
-                    for percentile_name, fraction in (("p50", 0.5), ("p95", 0.95))
-                },
-            }
-            print(json.dumps(output, sort_keys=True))
-                '
-                ;;
-              *)
-                exit 2
-                ;;
-            esac
+          STAGING_VM_HOST: ${{ vars.VM_HOST }}
+          STAGING_VM_USER: ${{ vars.VM_USER }}
+          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --environment staging \
+            --consumer staging-remote-check \
+            --identity github-oidc \
+            -- deploy/run-staging-remote.sh face-embedding-benchmark

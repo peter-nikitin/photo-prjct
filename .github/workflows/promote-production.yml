@@ -13,18 +13,26 @@ jobs:
     name: Verify staging image
     runs-on: ubuntu-latest
     environment: staging
+    permissions:
+      contents: read
+      id-token: write
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Confirm image was deployed successfully to staging
-        uses: appleboy/ssh-action@v1.0.3
         env:
           APP_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha }}
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          envs: APP_IMAGE
-          script_stop: true
-          script: test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"
+          STAGING_VM_HOST: ${{ vars.VM_HOST }}
+          STAGING_VM_USER: ${{ vars.VM_USER }}
+          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --environment staging \
+            --consumer staging-remote-check \
+            --identity github-oidc \
+            -- deploy/run-staging-remote.sh verify-staging-image
 
   promote:
     name: Promote verified image

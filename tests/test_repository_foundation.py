@@ -90,6 +90,8 @@ def test_adr_index_lists_all_accepted_decisions() -> None:
 
 
 def _envs(step: dict[str, Any]) -> set[str]:
+    if "env" in step:
+        return set(step["env"])
     envs = step.get("with", {}).get("envs", "")
     assert isinstance(envs, str)
     return {name.strip() for name in envs.split(",") if name.strip()}
@@ -385,26 +387,27 @@ def test_staging_face_embedding_benchmark_is_manual_and_bounded() -> None:
     }
     assert dispatch["inputs"]["event_slug"]["required"] is False
     assert dispatch["inputs"]["source_run_uuid"]["required"] is False
-    assert run["uses"] == "appleboy/ssh-action@v1.0.3"
-    assert "script_stop" not in run["with"]
-    assert run["env"] == {
+    assert benchmark["permissions"] == {"contents": "read", "id-token": "write"}
+    assert {
+        key: run["env"][key]
+        for key in ("BENCHMARK_OPERATION", "BENCHMARK_EVENT_SLUG", "BENCHMARK_SOURCE_RUN_UUID")
+    } == {
         "BENCHMARK_OPERATION": "${{ inputs.operation }}",
         "BENCHMARK_EVENT_SLUG": "${{ inputs.event_slug }}",
         "BENCHMARK_SOURCE_RUN_UUID": "${{ inputs.source_run_uuid }}",
     }
-    assert "3/face_embedding_benchmark/1" in run["with"]["script"]
-    assert "PHOTO_WORKER_REPLICAS" in run["with"]["script"]
-    assert "PHOTO_PROCESSING_PREVIEW_ENABLED" in run["with"]["script"]
-    assert 'test "$preview_enabled" = False' in run["with"]["script"]
-    assert "run_face_embedding_benchmark" in run["with"]["script"]
-    assert 'test -n "$BENCHMARK_EVENT_SLUG"' in run["with"]["script"]
-    assert "printf '%s' \"$BENCHMARK_EVENT_SLUG\" | grep" not in run["with"]["script"]
-    assert '--event "$BENCHMARK_EVENT_SLUG"' in run["with"]["script"]
-    assert "run_web shell -c" in run["with"]["script"]
-    assert "photos_per_minute" in run["with"]["script"]
-    assert "run.report" not in run["with"]["script"]
-    assert '"run_id"' not in run["with"]["script"]
-    assert "secrets." not in run["with"]["script"]
+    assert "--consumer staging-remote-check" in run["run"]
+    assert "--identity github-oidc" in run["run"]
+    assert "face-embedding-benchmark" in run["run"]
+    assert "${{ secrets." not in str(benchmark)
+    helper = (ROOT / "deploy/run-staging-remote.sh").read_text(encoding="utf-8")
+    assert "3/face_embedding_benchmark/1" in helper
+    assert 'test "$preview_enabled" = False' in helper
+    assert "run_face_embedding_benchmark" in helper
+    assert 'test -n "$BENCHMARK_EVENT_SLUG"' in helper
+    assert '--event "$BENCHMARK_EVENT_SLUG"' in helper
+    assert "photos_per_minute" in helper
+    assert '"run_id"' not in helper
 
 
 def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
@@ -465,27 +468,29 @@ def test_public_health_monitor_workflow_is_scheduled_and_uses_only_its_monitorin
             "https://example.invalid/health/",
         ],
     }
-    assert job["permissions"] == {"contents": "read"}
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
     assert job["environment"] == "staging"
     assert checkout["uses"] == "actions/checkout@v4"
     assert checkout["with"] == {"persist-credentials": False}
-    assert job["env"] == {
-        "YANDEX_MONITORING_API_KEY": "${{ secrets.YANDEX_MONITORING_API_KEY }}",
+    assert run_probe["env"] == {
+        "MONITOR_TARGET": (
+            "${{ github.event_name == 'schedule' && "
+            "'https://findme-photo.ru/health/' || inputs.target }}"
+        ),
+        "MONITOR_ENVIRONMENT": (
+            "${{ github.event_name == 'schedule' && 'staging' || 'validation' }}"
+        ),
+        "MONITOR_CHECK": (
+            "${{ github.event_name == 'schedule' && 'canonical-health' || 'validation-health' }}"
+        ),
         "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
     }
     command = run_probe["run"]
-    assert "python scripts/monitor_public_health.py" in command
-    assert (
-        "${{ github.event_name == 'schedule' && "
-        "'https://findme-photo.ru/health/' || inputs.target }}" in command
-    )
-    assert "${{ github.event_name == 'schedule' && 'staging' || 'validation' }}" in command
-    assert (
-        "${{ github.event_name == 'schedule' && 'canonical-health' || 'validation-health' }}"
-        in command
-    )
-    assert '--folder-id "$YANDEX_CLOUD_FOLDER_ID"' in command
-    assert '--api-key "$YANDEX_MONITORING_API_KEY"' in command
+    assert "scripts/run-with-environment-secrets.py" in command
+    assert "--consumer staging-public-monitor" in command
+    assert "--identity github-oidc" in command
+    assert "public-monitor" in command
+    assert "YANDEX_MONITORING_API_KEY" not in command
 
 
 def test_root_quality_contract_includes_processing_and_standalone_worker() -> None:
@@ -573,7 +578,7 @@ def test_deployment_workflows_forward_the_bounded_gunicorn_profile() -> None:
         "GUNICORN_MAX_REQUESTS_JITTER": "100",
     }
     deployments = (
-        (_load_workflow("deploy.yml"), "deploy", "Apply staging deployment"),
+        (_load_workflow("deploy.yml"), "deploy", "Run staging deployment"),
         (_load_workflow("promote-production.yml"), "promote", "Apply production deployment"),
     )
 
@@ -589,7 +594,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
     staging = _load_workflow("deploy.yml")
     production = _load_workflow("promote-production.yml")
     build = staging["jobs"]["build"]
-    staging_apply = _workflow_step(staging, "deploy", "Apply staging deployment")
+    staging_apply = _workflow_step(staging, "deploy", "Run staging deployment")
     production_apply = _workflow_step(production, "promote", "Apply production deployment")
 
     assert build["outputs"]["worker_image"] == "${{ steps.image.outputs.worker_image }}"
@@ -609,7 +614,6 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "PHOTO_PROCESSING_PREVIEW_ENABLED": (
             "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
         ),
-        "PHOTO_PROCESSING_WORKER_TOKEN": "${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}",
         "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
             "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
         ),
@@ -630,6 +634,8 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
     for name, value in expected.items():
         assert staging_apply["env"][name] == value
         assert name in _envs(staging_apply)
+    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in staging_apply["env"]
+    assert "--consumer staging-deploy" in staging_apply["run"]
 
     production_expected = {
         "WORKER_IMAGE": "ghcr.io/${{ github.repository }}-worker:${{ inputs.image_sha }}",
@@ -689,9 +695,11 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
     storage_preflight = _workflow_step(
         staging, "deploy", "Verify selfie-search temporary storage contract"
     )
-    assert (
-        "verify_selfie_search_storage --confirm-real-storage" in storage_preflight["with"]["script"]
-    )
+    assert "--consumer staging-remote-check" in storage_preflight["run"]
+    assert "selfie-storage" in storage_preflight["run"]
+    assert "verify_selfie_search_storage --confirm-real-storage" in (
+        ROOT / "deploy/run-staging-remote.sh"
+    ).read_text(encoding="utf-8")
 
 
 def test_public_environments_share_one_https_edge_overlay() -> None:
@@ -711,12 +719,14 @@ def test_public_environments_share_one_https_edge_overlay() -> None:
         "127.0.0.1:8080:8080",
     ]
     assert "certbot" in shared["services"]
-    staging_copy = _workflow_step(staging_workflow, "deploy", "Copy staging deployment files")
+    staging_deploy = _workflow_step(staging_workflow, "deploy", "Run staging deployment")
     production_copy = _workflow_step(
         production_workflow, "promote", "Copy production deployment files"
     )
-    assert "docker-compose.https.yml" in staging_copy["with"]["source"].split(",")
-    assert "docker-compose.staging.yml" not in staging_copy["with"]["source"].split(",")
+    assert "scripts/run-with-environment-secrets.py" in staging_deploy["run"]
+    remote_helper = (ROOT / "deploy/run-staging-remote.sh").read_text(encoding="utf-8")
+    assert "docker-compose.https.yml" in remote_helper
+    assert "docker-compose.staging.yml" not in remote_helper
     assert "docker-compose.https.yml" in production_copy["with"]["source"].split(",")
     assert not (ROOT / "docker-compose.production.yml").exists()
 
@@ -725,7 +735,7 @@ def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
     staging = _load_workflow("deploy.yml")
     production = _load_workflow("promote-production.yml")
-    staging_apply = _workflow_step(staging, "deploy", "Apply staging deployment")
+    staging_apply = _workflow_step(staging, "deploy", "Run staging deployment")
     production_apply = _workflow_step(production, "promote", "Apply production deployment")
     public_variables = ("PUBLIC_DOMAIN", "PUBLIC_DOMAIN_ALIAS")
     for variable in public_variables:
@@ -739,9 +749,9 @@ def test_public_edge_configuration_is_versioned_and_wired_to_workflows() -> None
     assert "EXPECTED_PUBLIC_IPV4" not in example
     assert "EXPECTED_PUBLIC_IPV4" not in json.dumps(staging)
     assert "EXPECTED_PUBLIC_IPV4" not in json.dumps(production)
-    assert staging_apply["env"]["LETSENCRYPT_EMAIL"] == ("${{ secrets.LETSENCRYPT_EMAIL }}")
+    assert "LETSENCRYPT_EMAIL" not in staging_apply["env"]
+    assert "--consumer staging-deploy" in staging_apply["run"]
     assert production_apply["env"]["LETSENCRYPT_EMAIL"] == ("${{ secrets.LETSENCRYPT_EMAIL }}")
-    assert "LETSENCRYPT_EMAIL" in _envs(staging_apply)
     assert "LETSENCRYPT_EMAIL" in _envs(production_apply)
 
 
@@ -863,29 +873,37 @@ def test_public_edges_isolate_bearer_upstream_errors_without_changing_proxy_rout
 def test_private_upload_configuration_is_wired_to_deployments() -> None:
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
     apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
-    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Apply staging deployment")
+    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Run staging deployment")
     production = _workflow_step(
         _load_workflow("promote-production.yml"), "promote", "Apply production deployment"
     )
-    expected = {
+    staging_expected = {
         "PHOTO_UPLOAD_ENABLED": "${{ vars.PHOTO_UPLOAD_ENABLED || 'False' }}",
         "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
-        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}",
-        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": ("${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}"),
         "PRIVATE_MEDIA_ALLOWED_ORIGINS": "${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}",
     }
+    production_expected = {
+        **staging_expected,
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}",
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": ("${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}"),
+    }
 
-    for name, value in expected.items():
+    for name, value in staging_expected.items():
         assert re.search(rf"^{name}=", example, re.MULTILINE)
         assert staging["env"][name] == value
-        assert production["env"][name] == value
         assert name in _envs(staging)
+        assert f"printf '{name}=%s\\n'" in apply_script
+    for name, value in production_expected.items():
+        assert re.search(rf"^{name}=", example, re.MULTILINE)
+        assert production["env"][name] == value
         assert name in _envs(production)
         assert f"printf '{name}=%s\\n'" in apply_script
+    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" not in staging["env"]
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" not in staging["env"]
 
 
 def test_staging_deployment_forwards_preview_processing_configuration() -> None:
-    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Apply staging deployment")
+    staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Run staging deployment")
     expected = {
         "PHOTO_PROCESSING_PREVIEW_ENABLED": (
             "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
@@ -913,9 +931,11 @@ def test_staging_storage_probe_is_manual_explicit_and_uses_the_deployed_containe
     assert probe["env"]["PRIVATE_MEDIA_ALLOWED_ORIGINS"] == (
         "${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}"
     )
-    assert probe["with"]["envs"] == "PRIVATE_MEDIA_ALLOWED_ORIGINS"
-    assert "exec -T -e PHOTO_UPLOAD_ENABLED=True web" in probe["with"]["script"]
-    assert "--confirm-real-storage" in probe["with"]["script"]
+    assert "--consumer staging-remote-check" in probe["run"]
+    assert "private-storage" in probe["run"]
+    assert "verify_private_upload_storage --confirm-real-storage" in (
+        ROOT / "deploy/run-staging-remote.sh"
+    ).read_text(encoding="utf-8")
 
 
 def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deploy_rollback() -> (
@@ -951,10 +971,15 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
     assert "configure-monitoring-agent" not in json.dumps(staging_deploy)
     assert "configure-monitoring-agent" not in json.dumps(production)
     run = _workflow_step(staging, "configure-monitoring-agent", "Configure staging Unified Agent")
-    assert run["env"] == {"YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}"}
-    assert run["with"]["envs"] == "YANDEX_CLOUD_FOLDER_ID"
+    assert run["env"] == {
+        "STAGING_VM_HOST": "${{ vars.VM_HOST }}",
+        "STAGING_VM_USER": "${{ vars.VM_USER }}",
+        "STAGING_SSH_KNOWN_HOSTS": "${{ vars.STAGING_SSH_KNOWN_HOSTS }}",
+        "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
+    }
     assert "YANDEX_MONITORING_API_KEY" not in json.dumps(agent)
-    assert "sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh" in run["with"]["script"]
+    assert "--consumer staging-remote-check" in run["run"]
+    assert "configure-monitoring" in run["run"]
 
 
 def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_building(
@@ -1105,7 +1130,7 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
     )
     assert stage_release["needs"] == ["classify-staging-release"]
     assert stage_release["environment"] == "staging"
-    assert stage_release["permissions"] == {"contents": "read"}
+    assert stage_release["permissions"] == {"contents": "read", "id-token": "write"}
     assert stage_checkout["with"] == {
         "ref": "${{ github.sha }}",
         "fetch-depth": 1,
@@ -1125,26 +1150,27 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
         "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
         in (manifest_release["run"])
     )
-    assert copy_release["uses"] == "appleboy/scp-action@v0.1.7"
-    assert set(copy_release["with"]["source"].split(",")) == {
-        "staging-observability-release-sha",
-        "staging-observability-source.sha256",
-        "deploy/bootstrap-selfie-observability.sh",
-        "deploy/selfie-observability",
+    assert copy_release["env"] == {
+        "STAGING_VM_HOST": "${{ vars.VM_HOST }}",
+        "STAGING_VM_USER": "${{ vars.VM_USER }}",
+        "STAGING_SSH_KNOWN_HOSTS": "${{ vars.STAGING_SSH_KNOWN_HOSTS }}",
+        "RELEASE_SHA": "${{ github.sha }}",
+        "OBSERVABILITY_SOURCE_MANIFEST_SHA256": (
+            "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
+        ),
     }
-    assert copy_release["with"]["target"] == (
-        "/opt/photo-prjct/privileged-observability-releases/${{ github.sha }}/"
-    )
-    assert set(copy_release["with"]) == {"host", "username", "key", "source", "target"}
-    assert "appleboy/ssh-action" not in json.dumps(stage_release)
+    assert "scripts/run-with-environment-secrets.py" in copy_release["run"]
+    assert "--consumer staging-remote-check" in copy_release["run"]
+    assert "--identity github-oidc" in copy_release["run"]
+    assert "deploy/run-staging-remote.sh stage-paused-observability-release" in copy_release["run"]
+    assert "appleboy/" not in json.dumps(stage_release)
     for prohibited in (
         "sudo",
         "/usr/local",
         "docker compose",
         "apply-deployment.sh",
         "deployed-image",
-        "SECRET_KEY",
-        "DB_PASSWORD",
+        "${{ secrets.",
     ):
         assert prohibited not in json.dumps(stage_release)
 
@@ -1162,22 +1188,22 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
         "inputs.verify_paused_observability_release }}"
     )
     assert verify_staged["env"] == {
+        "STAGING_VM_HOST": "${{ vars.VM_HOST }}",
+        "STAGING_VM_USER": "${{ vars.VM_USER }}",
+        "STAGING_SSH_KNOWN_HOSTS": "${{ vars.STAGING_SSH_KNOWN_HOSTS }}",
         "RELEASE_SHA": release_sha_output,
         "OBSERVABILITY_SOURCE_MANIFEST_SHA256": (
             "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
         ),
     }
-    assert verify_staged["with"]["envs"] == ("RELEASE_SHA,OBSERVABILITY_SOURCE_MANIFEST_SHA256")
-    for evidence_check in (
-        'test "$(cat staging-observability-release-sha)" = "$RELEASE_SHA"',
-        "sha256sum --check staging-observability-source.sha256",
-        "cmp -s deploy/selfie-observability/root-helper.sh "
-        '"/usr/local/sbin/findme-selfie-observability"',
-        "sudo -n /usr/local/sbin/findme-selfie-observability verify",
-    ):
-        assert evidence_check in verify_staged["with"]["script"]
+    assert "scripts/run-with-environment-secrets.py" in verify_staged["run"]
+    assert "--consumer staging-remote-check" in verify_staged["run"]
+    assert "--identity github-oidc" in verify_staged["run"]
+    verify_command = verify_staged["run"]
+    assert "deploy/run-staging-remote.sh verify-paused-observability-release" in verify_command
+    assert "${{ secrets." not in json.dumps(verify_staged)
     assert deploy["steps"].index(verify_staged) < deploy["steps"].index(
-        _workflow_step(staging, "deploy", "Copy staging deployment files")
+        _workflow_step(staging, "deploy", "Run staging deployment")
     )
 
     fake_bin = tmp_path / "bin"
@@ -1599,6 +1625,27 @@ def test_environment_secret_inventory_maps_each_github_secret_to_its_exact_sourc
     assert sum(values[0] == "staging Environment" for values in actual.values()) == 4
 
 
+def test_environment_secret_docs_require_exact_secret_metadata_and_payload_reader_roles() -> None:
+    """Resolver readers need metadata visibility as well as payload access, without broad IAM."""
+    runbook = (ROOT / "docs/runbooks/environment-secrets.md").read_text(encoding="utf-8")
+    inventory = (ROOT / "docs/runbooks/environment-secrets-inventory.md").read_text(
+        encoding="utf-8"
+    )
+
+    for document in (runbook, inventory):
+        assert "`lockbox.viewer`" in document
+        assert "`lockbox.payloadViewer`" in document
+        assert "exact secret" in document
+    assert "metadata and access-binding view" in inventory
+    assert "neither payload access nor secret management" in inventory
+    assert "CI service account and approved human reader already have both exact-secret roles" in (
+        inventory
+    )
+    assert "nor declares the rollout complete" in inventory
+    assert "`STAGING_SSH_KNOWN_HOSTS`" in inventory
+    assert "required non-secret `staging` GitHub Environment variable" in inventory
+
+
 def test_environment_secret_runbook_preserves_the_reviewed_staging_boundary() -> None:
     """Operator instructions must stay tied to the manifest instead of guessed live state."""
     manifest = json.loads(
@@ -1723,6 +1770,7 @@ def test_environment_secret_runbook_checks_exact_setup_and_github_source_scopes(
         "DB_NAME",
         "DB_USER",
         "GHCR_USERNAME",
+        "STAGING_SSH_KNOWN_HOSTS",
         "VM_HOST",
         "VM_USER",
     }
@@ -1735,7 +1783,7 @@ def test_environment_secret_runbook_checks_exact_setup_and_github_source_scopes(
     assert set(re.findall(r"`([A-Z0-9_]+)`", required_variables["names"])) == (
         expected_environment_variables
     )
-    assert "all six required environment variables must be present before approval" in (
+    assert "all seven required environment variables must be present before approval" in (
         cleanup_preflight.lower()
     )
     assert "reviewed tracked configuration" not in cleanup

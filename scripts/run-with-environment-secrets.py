@@ -33,10 +33,8 @@ HTTP_TIMEOUT_SECONDS = 20.0
 PRIVATE_MODE = 0o600
 PRIVATE_UMASK = 0o077
 ENVIRONMENT_NAME = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
-GITHUB_TOKEN_REQUEST_HOSTS = {
-    "pipelines.actions.githubusercontent.com",
-    "token.actions.githubusercontent.com",
-}
+GITHUB_TOKEN_REQUEST_DOMAIN = "actions.githubusercontent.com"
+GITHUB_TOKEN_REQUEST_HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 HANDLED_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
 
 
@@ -168,7 +166,7 @@ def _validate_github_token_request_url(url: str) -> None:
         _fail("identity", "identity_failed")
     if (
         parts.scheme != "https"
-        or parts.hostname not in GITHUB_TOKEN_REQUEST_HOSTS
+        or not _is_github_token_request_host(parts.hostname)
         or port not in {None, 443}
         or parts.username is not None
         or parts.password is not None
@@ -176,6 +174,16 @@ def _validate_github_token_request_url(url: str) -> None:
         or parts.fragment
     ):
         _fail("identity", "identity_failed")
+
+
+def _is_github_token_request_host(hostname: str | None) -> bool:
+    suffix = f".{GITHUB_TOKEN_REQUEST_DOMAIN}"
+    if hostname is None or not hostname.endswith(suffix):
+        return False
+    labels = hostname[: -len(suffix)].split(".")
+    return bool(labels) and all(
+        GITHUB_TOKEN_REQUEST_HOST_LABEL.fullmatch(label) for label in labels
+    )
 
 
 def _decode_jwt_claims(token: str) -> dict[str, Any]:

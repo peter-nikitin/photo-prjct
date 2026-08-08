@@ -2,6 +2,9 @@
 
 - Date: 2026-08-08
 - Status: Approved for execution through the Release A operational gate
+- Current evidence: Release A is implemented and reconciled on the accepted local clone; CI,
+  pull request, deployment, live backfill, lifecycle smoke, and customer acceptance remain
+  separate pending states.
 - Owner: project maintainer
 - Related specification:
   [Photo Capture-Time Projection Design](../superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
@@ -158,21 +161,47 @@ rename.
 - **Produces:** One reviewable Release A diff/PR whose deployed application writes the projection
   but still reads direct current-v2 evidence.
 
-- [ ] Run the integrated Release A suite:
+- [x] Run the integrated Release A suite:
   `make test TESTS="src/backend/picflow/tests src/backend/processing/tests/test_jobs.py src/backend/processing/tests/test_enrollment.py src/backend/processing/tests/test_views.py tests/deployment tests/test_repository_foundation.py"`.
-- [ ] Run the existing visual suite once and require all no-JavaScript and screenshot cases to pass;
+- [x] Run the existing visual suite once and require all no-JavaScript and screenshot cases to pass;
   then run `make check` separately and require zero exit status.
-- [ ] On the accepted local clone, apply migrations, confirm the gallery remains direct-read, run
+- [x] On the accepted local clone, apply migrations, confirm the gallery remains direct-read, run
   global rebuild dry-run, explicit apply, and `report_photo_capture_time_projection --all-events
   --require-clean`. Require event 9 to report 17,043 exact pairs and every mismatch category zero.
-- [ ] Verify idempotency by rerunning apply and requiring zero changed rows; rerun the capture-time
+- [x] Verify idempotency by rerunning apply and requiring zero changed rows; rerun the capture-time
   source report and prove authoritative attempt/state counts and accepted values are unchanged.
-- [ ] Update current documentation only for locally implemented/verified Release A facts. Record
+- [x] Update current documentation only for locally implemented/verified Release A facts. Record
   local clone, CI, deployed Release A, live backfill, and live transition evidence separately; do
   not claim Release B or customer cutover.
 - [ ] Obtain final whole-Release-A review, rerun changed focused checks, `make check`, visual suite,
   migration drift, and `git diff --check`, then open the Release A PR. Merge/deployment remain
   separate states and require their normal authorization/check gates.
+
+## Release A evidence status — 2026-08-08
+
+The current branch contains the Release A schema, synchronous projection writers, bounded rebuild,
+and aggregate reconciliation. The gallery remains a direct current-v2 JSON/cast reader; Release B's
+projection-only reader and service switch are not implemented.
+
+The integrated Release A suite passed 539 tests with 2 skipped and 43 deselected. The visual suite
+passed 92 tests in 1.2 minutes after the `<=30` index fix. `make check` passed with Ruff/format/MyPy clean,
+1,591 tests passed, 3 skipped, 43 deselected, 83.53% coverage, a clean Django check, and no
+migration drift.
+
+The accepted local staging clone contains 9 events and 17,310 photos; event 9 contains 17,043.
+Before backfill, event 9 had 17,043 accepted results, 17,043 non-null results, 17,043 terminal jobs,
+and 17,043 version-2 jobs, with zero missing or terminal failures, status `accepted`, and timezone
+`Europe/Moscow`. The global dry
+run reported `would_change=17043`, `unchanged=267`, `events=9`, `photos=17310`, and zero
+exhausted/retries/skipped. Apply changed 17,043 and left 267 unchanged. The `--require-clean` report
+was clean with exact/projection/qualifying non-null counts of 17,043 and zero missing, mismatching,
+stale, extra, partial, or unsupported rows; event 9 was accepted at exactly 17,043/17,043. The
+idempotent apply changed 0 and left 17,310 unchanged, and the authoritative after-report was
+identical and accepted.
+
+These are local evidence only. CI has not run for the current branch; no PR is open, Release A has
+not been deployed, live backfill and live lifecycle smoke are not done, and the operational gate
+remains pending. Release B is therefore blocked and unimplemented.
 
 ### Operational gate: Accept deployed Release A before Release B
 

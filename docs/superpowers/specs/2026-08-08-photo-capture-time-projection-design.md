@@ -2,6 +2,8 @@
 
 - Date: 2026-08-08
 - Status: Approved
+- Release A evidence: locally implemented and reconciled; CI, pull request, deployment, live
+  backfill, lifecycle smoke, and customer acceptance remain pending operational states.
 - Owner: project maintainer
 - Related architecture:
   [Current architecture — capture-metadata processor version 2](../../architecture.md#current-architecture--implemented),
@@ -289,6 +291,32 @@ After switching, smoke checks cover unfiltered gallery, valid/invalid manual fil
 empty state, page navigation/reset, selfie search, gallery-origin search, media authorization, and
 health. Customer acceptance additionally requires the live event-9 current-v2 report and projection
 reconciliation to remain terminal and exact.
+
+## Release A evidence status — 2026-08-08
+
+The current branch implements the Release A schema, synchronous writers, bounded rebuild, and
+aggregate reconciliation. Its gallery remains the direct current-v2 JSON/cast reader; Release B's
+projection-only reader and service switch are not implemented.
+
+The integrated Release A suite passed 539 tests with 2 skipped and 43 deselected. The visual suite
+passed 92 tests in 1.2 minutes after the `<=30` index fix. `make check` passed with Ruff/format/MyPy clean,
+1,591 tests passed, 3 skipped, 43 deselected, 83.53% coverage, a clean Django check, and no
+migration drift.
+
+On the accepted local staging clone (9 events, 17,310 photos; event 9 has 17,043), the
+authoritative pre-backfill event-9 report had 17,043 accepted results, 17,043 non-null results,
+17,043 terminal jobs, and 17,043 version-2 jobs, with zero missing or terminal failures, status
+`accepted`, and timezone `Europe/Moscow`.
+The global dry run reported `would_change=17043`, `unchanged=267`, `events=9`, `photos=17310`, and
+zero exhausted/retries/skipped. Apply changed 17,043 and left 267 unchanged. The required-clean
+report was clean with exact/projection/qualifying non-null counts of 17,043 and zero missing,
+mismatching, stale, extra, partial, or unsupported rows; event 9 was accepted at exactly
+17,043/17,043. The idempotent apply changed 0 and left 17,310 unchanged, and the authoritative
+after-report was identical and accepted.
+
+This evidence is local only. CI has not run for the current branch; no PR is open, Release A has
+not been deployed, live backfill and live lifecycle smoke are not done, and the operational gate
+remains pending. Release B is blocked and unimplemented.
 
 ## Privacy and authorization
 

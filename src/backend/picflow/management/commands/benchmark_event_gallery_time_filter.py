@@ -1,11 +1,13 @@
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, time
 from time import perf_counter
 from zoneinfo import ZoneInfo
 
 from config.views import event_detail
 from django.contrib.auth.models import AnonymousUser
+from django.contrib.staticfiles.storage import StaticFilesStorage, staticfiles_storage
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import QuerySet
 from django.test import RequestFactory
@@ -19,6 +21,16 @@ from processing.management.commands.reprocess_event_capture_times import EXPECTE
 
 _REPRESENTATIVE_PAGES = ("1", "mid", "last")
 _MAX_RATIO = 2
+
+
+@contextmanager
+def _local_staticfiles_storage() -> Iterator[None]:
+    previous_storage = staticfiles_storage._wrapped
+    staticfiles_storage._wrapped = StaticFilesStorage()
+    try:
+        yield
+    finally:
+        staticfiles_storage._wrapped = previous_storage
 
 
 class Command(BaseCommand):
@@ -261,12 +273,13 @@ class Command(BaseCommand):
             reverse("event_detail", kwargs={"slug": event.slug}), data=query
         )
         request.user = AnonymousUser()
-        started = perf_counter()
-        try:
-            response = event_detail(request, event.slug)
-            content = response.content
-        except Exception as error:
-            raise CommandError("rendered event-detail request failed") from error
+        with _local_staticfiles_storage():
+            started = perf_counter()
+            try:
+                response = event_detail(request, event.slug)
+                content = response.content
+            except Exception as error:
+                raise CommandError("rendered event-detail request failed") from error
         if response.status_code != 200:
             raise CommandError("rendered event-detail response was non-200")
         _ = content

@@ -69,9 +69,10 @@ class ClusterConfig:
     image_limit: int | None = None
     max_image_dimension: int = 12000
     max_image_pixels: int = 100_000_000
-    minimum_quality_confidence: float = 0.82
-    minimum_relative_face_area: float = 0.0009
-    minimum_face_sharpness: float = 50.0
+    severe_blur_threshold: float = 25.0
+    borderline_blur_threshold: float = 50.0
+    minimum_relative_area: float = 0.0009
+    minimum_confidence: float = 0.82
 
     def validate(self) -> None:
         if (
@@ -87,12 +88,14 @@ class ClusterConfig:
             or (self.image_limit is not None and self.image_limit < 1)
             or self.max_image_dimension < 1
             or self.max_image_pixels < 1
-            or not math.isfinite(self.minimum_quality_confidence)
-            or not 0 <= self.minimum_quality_confidence <= 1
-            or not math.isfinite(self.minimum_relative_face_area)
-            or not 0 <= self.minimum_relative_face_area <= 1
-            or not math.isfinite(self.minimum_face_sharpness)
-            or self.minimum_face_sharpness < 0
+            or not math.isfinite(self.minimum_confidence)
+            or not 0 <= self.minimum_confidence <= 1
+            or not math.isfinite(self.minimum_relative_area)
+            or not 0 <= self.minimum_relative_area <= 1
+            or not math.isfinite(self.severe_blur_threshold)
+            or not math.isfinite(self.borderline_blur_threshold)
+            or self.severe_blur_threshold < 0
+            or self.severe_blur_threshold >= self.borderline_blur_threshold
         ):
             raise ClusterConfigurationError("invalid cluster configuration")
 
@@ -177,6 +180,52 @@ class SmokeSearchConfigurationError(Exception):
 
 
 @dataclass(frozen=True)
+class CompareQualityConfig:
+    baseline_run: Path
+    candidate_run: Path
+    output: Path
+    minimum_face_px: int = 32
+    severe_blur_threshold: float = 25.0
+    borderline_blur_threshold: float = 50.0
+    minimum_relative_area: float = 0.0009
+    minimum_confidence: float = 0.82
+
+
+@dataclass(frozen=True)
+class FinalizeQualityReviewConfig:
+    comparison: Path
+    labels_csv: Path
+    search_comparison: Path
+    baseline_run: Path
+    candidate_run: Path
+    benchmark: Path
+    baseline_index: Path
+    candidate_index: Path
+    run: Path
+    yunet_model: Path
+    sface_model: Path
+    reviewer: str
+    reviewed_at: str
+    output: Path
+
+
+@dataclass(frozen=True)
+class CompareSearchConfig:
+    benchmark: Path
+    baseline_index: Path
+    candidate_index: Path
+    run: Path
+    yunet_model: Path
+    sface_model: Path
+    quality_comparison: Path
+    output: Path
+
+
+class QualityComparisonConfigurationError(Exception):
+    """Private quality comparison evidence is incomplete or incompatible."""
+
+
+@dataclass(frozen=True)
 class _BenchmarkSourceFace:
     face_id: str
     filename: str
@@ -198,9 +247,12 @@ class _IndexParameters(TypedDict):
     max_image_dimension: int
     max_image_pixels: int
     min_face_px: int
-    minimum_face_sharpness: float
-    minimum_quality_confidence: float
-    minimum_relative_face_area: float
+    quality_algorithm_version: str
+    quality_crop_size: int
+    severe_blur_threshold: float
+    borderline_blur_threshold: float
+    minimum_confidence: float
+    minimum_relative_area: float
 
 
 def run_cluster(config: ClusterConfig) -> ClusterRunResult:
@@ -260,10 +312,13 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
             recognizer,
             min_face_px=config.min_face_px,
             quality_thresholds=FaceQualityThresholds(
-                minimum_confidence=config.minimum_quality_confidence,
+                algorithm_version="normalized-laplacian-v1",
+                crop_size=112,
                 minimum_face_px=config.min_face_px,
-                minimum_relative_area=config.minimum_relative_face_area,
-                minimum_sharpness=config.minimum_face_sharpness,
+                severe_blur_threshold=config.severe_blur_threshold,
+                borderline_blur_threshold=config.borderline_blur_threshold,
+                minimum_relative_area=config.minimum_relative_area,
+                minimum_confidence=config.minimum_confidence,
             ),
             write_diagnostics=writer.write_diagnostics,
         )
@@ -291,9 +346,12 @@ def run_cluster(config: ClusterConfig) -> ClusterRunResult:
                 "max_image_dimension": config.max_image_dimension,
                 "max_image_pixels": config.max_image_pixels,
                 "min_face_px": config.min_face_px,
-                "minimum_face_sharpness": config.minimum_face_sharpness,
-                "minimum_quality_confidence": config.minimum_quality_confidence,
-                "minimum_relative_face_area": config.minimum_relative_face_area,
+                "quality_algorithm_version": "normalized-laplacian-v1",
+                "quality_crop_size": 112,
+                "severe_blur_threshold": config.severe_blur_threshold,
+                "borderline_blur_threshold": config.borderline_blur_threshold,
+                "minimum_confidence": config.minimum_confidence,
+                "minimum_relative_area": config.minimum_relative_area,
                 "representative_threshold": config.representative_threshold,
             },
             analyses=analyses,
@@ -379,10 +437,13 @@ def run_build_index(config: BuildIndexConfig) -> None:
             detector,
             recognizer,
             quality_thresholds=FaceQualityThresholds(
-                minimum_confidence=parameters["minimum_quality_confidence"],
+                algorithm_version="normalized-laplacian-v1",
+                crop_size=112,
                 minimum_face_px=parameters["min_face_px"],
-                minimum_relative_area=parameters["minimum_relative_face_area"],
-                minimum_sharpness=parameters["minimum_face_sharpness"],
+                severe_blur_threshold=parameters["severe_blur_threshold"],
+                borderline_blur_threshold=parameters["borderline_blur_threshold"],
+                minimum_relative_area=parameters["minimum_relative_area"],
+                minimum_confidence=parameters["minimum_confidence"],
             ),
             manifest=index_manifest,
         )
@@ -408,6 +469,7 @@ def _load_index_source_run(
     manifest = _json_object(manifest_bytes)
     faces = _json_object(faces_bytes)
     _validate_completed_run_manifest(manifest)
+    _validate_run_source_identity(manifest, faces)
     return (
         manifest_bytes,
         faces_bytes,
@@ -446,6 +508,7 @@ def _validate_completed_run_manifest(manifest: Mapping[str, object]) -> None:
         "peak_memory_bytes",
         "platform",
         "python_version",
+        "source",
         "started_at",
     }
     if set(manifest) != expected:
@@ -465,6 +528,55 @@ def _validate_completed_run_manifest(manifest: Mapping[str, object]) -> None:
         raise BuildIndexConfigurationError("source run manifest schema is incompatible")
 
 
+def _validate_run_source_identity(
+    manifest: Mapping[str, object], faces: Mapping[str, object]
+) -> None:
+    source = _mapping(manifest["source"])
+    if set(source) != {
+        "faces_sha256",
+        "generation_sha256",
+        "inventory_sha256",
+        "media_sha256",
+    }:
+        raise BuildIndexConfigurationError("source run identity is incompatible")
+    images = faces.get("images")
+    if not isinstance(images, list):
+        raise BuildIndexConfigurationError("source run identity is invalid")
+    filenames = [_safe_filename(_mapping(image).get("filename")) for image in images]
+    media = source["media_sha256"]
+    if not isinstance(media, list):
+        raise BuildIndexConfigurationError("source run identity is invalid")
+    media_names: list[str] = []
+    for value in media:
+        item = _mapping(value)
+        if set(item) != {"filename", "sha256"} or not _is_sha256(item["sha256"]):
+            raise BuildIndexConfigurationError("source run identity is invalid")
+        media_names.append(_safe_filename(item["filename"]))
+    parameters = _mapping(manifest["parameters"])
+    generation_parameters = {
+        key: value
+        for key, value in parameters.items()
+        if key
+        not in {
+            "input_photos_basename",
+            "sface_model_filename",
+            "yunet_model_filename",
+        }
+    }
+    generation = {
+        "model_hashes": dict(_mapping(manifest["model_hashes"])),
+        "parameters": generation_parameters,
+    }
+    if (
+        filenames != sorted(filenames)
+        or media_names != filenames
+        or source["faces_sha256"] != _sha256_bytes(_canonical_json(faces))
+        or source["inventory_sha256"] != _sha256_bytes(_canonical_json(filenames))
+        or source["generation_sha256"] != _sha256_bytes(_canonical_json(generation))
+    ):
+        raise BuildIndexConfigurationError("source run identity is invalid")
+
+
 def _index_parameters(manifest: Mapping[str, object]) -> _IndexParameters:
     source = _mapping(manifest["parameters"])
     expected = {
@@ -477,9 +589,12 @@ def _index_parameters(manifest: Mapping[str, object]) -> _IndexParameters:
         "max_image_dimension",
         "max_image_pixels",
         "min_face_px",
-        "minimum_face_sharpness",
-        "minimum_quality_confidence",
-        "minimum_relative_face_area",
+        "quality_algorithm_version",
+        "quality_crop_size",
+        "severe_blur_threshold",
+        "borderline_blur_threshold",
+        "minimum_confidence",
+        "minimum_relative_area",
         "representative_threshold",
         "sface_model_filename",
         "yunet_model_filename",
@@ -492,15 +607,21 @@ def _index_parameters(manifest: Mapping[str, object]) -> _IndexParameters:
         "max_image_dimension": _positive_integer(source["max_image_dimension"]),
         "max_image_pixels": _positive_integer(source["max_image_pixels"]),
         "min_face_px": _positive_integer(source["min_face_px"]),
-        "minimum_face_sharpness": _finite_number(source["minimum_face_sharpness"]),
-        "minimum_quality_confidence": _finite_number(source["minimum_quality_confidence"]),
-        "minimum_relative_face_area": _finite_number(source["minimum_relative_face_area"]),
+        "quality_algorithm_version": _string(source["quality_algorithm_version"]),
+        "quality_crop_size": _positive_integer(source["quality_crop_size"]),
+        "severe_blur_threshold": _finite_number(source["severe_blur_threshold"]),
+        "borderline_blur_threshold": _finite_number(source["borderline_blur_threshold"]),
+        "minimum_confidence": _finite_number(source["minimum_confidence"]),
+        "minimum_relative_area": _finite_number(source["minimum_relative_area"]),
     }
     if (
         not 0 <= values["detection_threshold"] <= 1
-        or not 0 <= values["minimum_quality_confidence"] <= 1
-        or not 0 <= values["minimum_relative_face_area"] <= 1
-        or values["minimum_face_sharpness"] < 0
+        or values["quality_algorithm_version"] != "normalized-laplacian-v1"
+        or values["quality_crop_size"] != 112
+        or not 0 <= values["minimum_confidence"] <= 1
+        or not 0 <= values["minimum_relative_area"] <= 1
+        or values["severe_blur_threshold"] < 0
+        or values["severe_blur_threshold"] >= values["borderline_blur_threshold"]
     ):
         raise BuildIndexConfigurationError("source run parameters are invalid")
     return values
@@ -598,8 +719,14 @@ def _source_face_record(
         or not isinstance(face["error_code"], str)
     ):
         raise BuildIndexConfigurationError("source face schema is invalid")
-    _finite_number(face["confidence"])
-    _validate_face_quality(face["quality"])
+    confidence = _finite_number(face["confidence"])
+    quality = _validate_face_quality(face["quality"])
+    if (
+        confidence != quality.confidence
+        or (face["status"] == "ok" and quality.decision != "accepted")
+        or (face["status"] == "quality_rejected" and quality.decision != "quality_rejected")
+    ):
+        raise BuildIndexConfigurationError("source face quality is inconsistent")
     _validate_landmarks(face["landmarks"])
     return source_face_type(
         face_id=face_id,
@@ -616,17 +743,34 @@ def _source_face_record(
     )
 
 
-def _validate_face_quality(value: object) -> None:
+def _validate_face_quality(value: object) -> Any:
+    from photo_worker.face_quality import FaceQualityEvidence
+
     quality = _mapping(value)
-    if (
-        set(quality) != {"decision", "minimum_side_px", "reasons", "relative_area", "sharpness"}
-        or quality["decision"] not in {"accepted", "rejected"}
-        or not isinstance(quality["reasons"], list)
-        or any(not isinstance(reason, str) for reason in quality["reasons"])
-    ):
+    if set(quality) != {
+        "algorithm_version",
+        "confidence",
+        "crop_size",
+        "decision",
+        "minimum_side_px",
+        "reasons",
+        "relative_area",
+        "sharpness",
+    } or not isinstance(quality["reasons"], list):
         raise BuildIndexConfigurationError("source face schema is invalid")
-    for name in ("minimum_side_px", "relative_area", "sharpness"):
-        _finite_number(quality[name])
+    try:
+        return FaceQualityEvidence(
+            _string(quality["algorithm_version"]),
+            _positive_integer(quality["crop_size"]),
+            _finite_number(quality["confidence"]),
+            _finite_number(quality["minimum_side_px"]),
+            _finite_number(quality["relative_area"]),
+            _finite_number(quality["sharpness"]),
+            _string(quality["decision"]),
+            tuple(_string(reason) for reason in quality["reasons"]),
+        )
+    except ValueError:
+        raise BuildIndexConfigurationError("source face schema is invalid") from None
 
 
 def _validate_landmarks(value: object) -> None:
@@ -656,6 +800,12 @@ def _finite_number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise BuildIndexConfigurationError("source run schema is invalid")
     return float(value)
+
+
+def _string(value: object) -> str:
+    if not isinstance(value, str):
+        raise BuildIndexConfigurationError("source run schema is invalid")
+    return value
 
 
 def _positive_integer(value: object) -> int:
@@ -857,12 +1007,14 @@ def run_smoke_search_command(config: SmokeSearchConfig) -> None:
             raise ValueError("model files do not match index")
         parameters = _smoke_index_parameters(index.manifest.parameters)
         thresholds = FaceQualityThresholds(
-            minimum_confidence=parameters["minimum_quality_confidence"],
+            algorithm_version="normalized-laplacian-v1",
+            crop_size=112,
             minimum_face_px=parameters["min_face_px"],
-            minimum_relative_area=parameters["minimum_relative_face_area"],
-            minimum_sharpness=parameters["minimum_face_sharpness"],
+            severe_blur_threshold=parameters["severe_blur_threshold"],
+            borderline_blur_threshold=parameters["borderline_blur_threshold"],
+            minimum_relative_area=parameters["minimum_relative_area"],
+            minimum_confidence=parameters["minimum_confidence"],
         )
-        thresholds.validate()
         decoder = PillowImageDecoder(
             ImageLimits(parameters["max_image_dimension"], parameters["max_image_pixels"])
         )
@@ -908,6 +1060,258 @@ def run_smoke_search_command(config: SmokeSearchConfig) -> None:
         raise SmokeSearchConfigurationError("smoke search cannot be completed") from None
 
 
+def run_compare_quality_command(config: CompareQualityConfig) -> None:
+    """Compare two strict production-shaped quality runs and publish one review bundle."""
+    from photo_worker.face_quality import FaceQualityThresholds
+
+    from .quality_comparison import compare_quality_runs
+    from .quality_comparison_artifacts import (
+        load_quality_run,
+        write_quality_comparison_bundle,
+    )
+
+    try:
+        thresholds = FaceQualityThresholds(
+            algorithm_version="normalized-laplacian-v1",
+            crop_size=112,
+            minimum_face_px=config.minimum_face_px,
+            severe_blur_threshold=config.severe_blur_threshold,
+            borderline_blur_threshold=config.borderline_blur_threshold,
+            minimum_relative_area=config.minimum_relative_area,
+            minimum_confidence=config.minimum_confidence,
+        )
+        if os.path.lexists(config.output):
+            raise FileExistsError(config.output)
+        baseline, _baseline_configuration = load_quality_run(config.baseline_run)
+        candidate, candidate_configuration = load_quality_run(config.candidate_run)
+        supplied_configuration = {
+            "algorithm_version": thresholds.algorithm_version,
+            "crop_size": thresholds.crop_size,
+            "minimum_face_px": thresholds.minimum_face_px,
+            "severe_blur_threshold": thresholds.severe_blur_threshold,
+            "borderline_blur_threshold": thresholds.borderline_blur_threshold,
+            "minimum_relative_area": thresholds.minimum_relative_area,
+            "minimum_confidence": thresholds.minimum_confidence,
+        }
+        if candidate_configuration != supplied_configuration:
+            raise ValueError("candidate threshold configuration differs")
+        comparison = compare_quality_runs(baseline, candidate, thresholds=thresholds)
+        write_quality_comparison_bundle(config.output, comparison, config.candidate_run)
+    except (OSError, TypeError, ValueError, KeyError):
+        raise QualityComparisonConfigurationError(
+            "quality comparison cannot be completed"
+        ) from None
+
+
+def run_finalize_quality_review_command(config: FinalizeQualityReviewConfig) -> None:
+    """Finalize exact reviewed detection and search evidence into a bounded approval."""
+    from .benchmark_artifacts import load_final_benchmark
+    from .quality_comparison_artifacts import (
+        load_quality_comparison_bundle,
+        load_quality_review_labels,
+        load_quality_run,
+        load_search_comparison,
+    )
+    from .quality_comparison_report import finalize_quality_review, write_quality_approval
+
+    try:
+        if os.path.lexists(config.output):
+            raise FileExistsError(config.output)
+        comparison, bundle_sha256 = load_quality_comparison_bundle(config.comparison)
+        labels = load_quality_review_labels(config.labels_csv, comparison, bundle_sha256)
+        search = load_search_comparison(config.search_comparison)
+        baseline_run, _baseline_configuration = load_quality_run(config.baseline_run)
+        candidate_run, _candidate_configuration = load_quality_run(config.candidate_run)
+        benchmark = load_final_benchmark(config.benchmark)
+        with tempfile.TemporaryDirectory(prefix="findme-quality-finalize-") as directory:
+            recomputed_path = Path(directory) / "search-comparison"
+            run_compare_search_command(
+                CompareSearchConfig(
+                    benchmark=config.benchmark,
+                    baseline_index=config.baseline_index,
+                    candidate_index=config.candidate_index,
+                    run=config.run,
+                    yunet_model=config.yunet_model,
+                    sface_model=config.sface_model,
+                    quality_comparison=config.comparison,
+                    output=recomputed_path,
+                )
+            )
+            recomputed_search = load_search_comparison(recomputed_path)
+        reviewed_at = datetime.fromisoformat(config.reviewed_at.replace("Z", "+00:00"))
+        approval = finalize_quality_review(
+            comparison,
+            labels,
+            search,
+            recomputed_search,
+            baseline_run,
+            candidate_run,
+            benchmark,
+            bundle_sha256,
+            config.reviewer,
+            reviewed_at,
+        )
+        write_quality_approval(config.output, approval)
+    except (OSError, TypeError, ValueError, KeyError):
+        raise QualityComparisonConfigurationError("quality review cannot be finalized") from None
+
+
+def run_compare_search_command(config: CompareSearchConfig) -> None:
+    """Run the finalized closed queries against baseline and candidate exact-cosine indexes."""
+    from .analysis import analyze_decoded_event_photo
+    from .benchmark import _index_manifest_sha256
+    from .benchmark_artifacts import final_benchmark_sha256, load_final_benchmark
+    from .image_decoder import ImageLimits, PillowImageDecoder
+    from .index_artifacts import face_index_sha256, load_face_index
+    from .inventory import EventPhoto
+    from .quality import default_face_quality_thresholds
+    from .quality_comparison_artifacts import (
+        load_quality_comparison_bundle,
+        quality_comparison_sha256,
+        write_search_comparison,
+    )
+    from .smoke_search import SearchComparisonQuery, compare_search_indexes
+
+    try:
+        if os.path.lexists(config.output):
+            raise FileExistsError(config.output)
+        benchmark = load_final_benchmark(config.benchmark)
+        baseline = load_face_index(config.baseline_index)
+        candidate = load_face_index(config.candidate_index)
+        comparison, _bundle_sha256 = load_quality_comparison_bundle(config.quality_comparison)
+        if (
+            _sha256_file(config.run / "manifest.json") != benchmark.source.run_manifest_sha256
+            or _sha256_file(config.run / "faces.json") != benchmark.source.faces_sha256
+        ):
+            raise ValueError("query run does not match finalized benchmark")
+        query_run_sha256 = _sha256_bytes(
+            _canonical_json(
+                {
+                    "faces_sha256": benchmark.source.faces_sha256,
+                    "manifest_sha256": benchmark.source.run_manifest_sha256,
+                }
+            )
+        )
+        _validate_quality_comparison_indexes(comparison, baseline, candidate)
+        if benchmark.source.index_manifest_sha256 != _index_manifest_sha256(baseline):
+            raise ValueError("benchmark does not match baseline index")
+        supplied_yunet = _model_metadata(config.yunet_model)
+        supplied_sface = _model_metadata(config.sface_model)
+        if any(
+            dict(index.manifest.yunet_model) != supplied_yunet
+            or dict(index.manifest.sface_model) != supplied_sface
+            for index in (baseline, candidate)
+        ):
+            raise ValueError("search indexes do not share the supplied models")
+        parameters = _smoke_index_parameters(baseline.manifest.parameters)
+        decoder = PillowImageDecoder(
+            ImageLimits(parameters["max_image_dimension"], parameters["max_image_pixels"])
+        )
+        detector_type = YuNetDetector
+        recognizer_type = SFaceRecognizer
+        if detector_type is None or recognizer_type is None:
+            from .models import SFaceRecognizer as loaded_recognizer
+            from .models import YuNetDetector as loaded_detector
+
+            detector_type = loaded_detector
+            recognizer_type = loaded_recognizer
+        detector = detector_type(config.yunet_model, threshold=parameters["detection_threshold"])
+        recognizer = recognizer_type(config.sface_model)
+        face_by_id = benchmark.face_by_id
+        labels_by_query: dict[str, set[str]] = {}
+        for annotation in benchmark.annotations:
+            if annotation.label == "relevant":
+                labels_by_query.setdefault(annotation.query_id, set()).add(
+                    face_by_id[annotation.candidate_face_id].filename
+                )
+        for query in benchmark.queries:
+            if (
+                _query_crop_sha256(config.run, query.query_crop_path)
+                != face_by_id[query.query_face_id].crop_sha256
+            ):
+                raise ValueError("query crop differs from finalized benchmark")
+        queries = tuple(
+            SearchComparisonQuery(
+                query.query_id,
+                query.query_filename,
+                query_run_sha256,
+                _query_crop_sha256(config.run, query.query_crop_path),
+                _process_smoke_query(
+                    query,
+                    config.run,
+                    decoder,
+                    detector,
+                    recognizer,
+                    default_face_quality_thresholds(),
+                    EventPhoto,
+                    analyze_decoded_event_photo,
+                ),
+                tuple(sorted(labels_by_query.get(query.query_id, set()))),
+            )
+            for query in benchmark.queries
+        )
+        if any(
+            _query_crop_sha256(config.run, query.query_crop_path) != evidence.query_crop_sha256
+            for query, evidence in zip(benchmark.queries, queries, strict=True)
+        ):
+            raise ValueError("query crop changed during search preparation")
+        result = compare_search_indexes(
+            queries,
+            baseline,
+            candidate,
+            quality_rejected_baseline_face_ids=tuple(
+                sorted({item.baseline_face_id for item in comparison.new_rejections})
+            ),
+            quality_comparison_sha256=quality_comparison_sha256(comparison),
+            benchmark_sha256=final_benchmark_sha256(benchmark),
+            baseline_index_sha256=face_index_sha256(baseline),
+            candidate_index_sha256=face_index_sha256(candidate),
+        )
+        write_search_comparison(config.output, result)
+    except (OSError, TypeError, ValueError, KeyError):
+        raise QualityComparisonConfigurationError("search comparison cannot be completed") from None
+
+
+def _validate_quality_comparison_indexes(comparison: Any, baseline: Any, candidate: Any) -> None:
+    def run_sha256(index: Any) -> str:
+        return _sha256_bytes(
+            _canonical_json(
+                {
+                    "faces_sha256": index.manifest.source_faces_sha256,
+                    "manifest_sha256": index.manifest.source_run_manifest_sha256,
+                }
+            )
+        )
+
+    if (
+        run_sha256(baseline) != comparison.baseline_run_sha256
+        or run_sha256(candidate) != comparison.candidate_run_sha256
+    ):
+        raise ValueError("search indexes differ from quality comparison source runs")
+    parameters = _smoke_index_parameters(candidate.manifest.parameters)
+    configuration = {
+        "algorithm_version": parameters["quality_algorithm_version"],
+        "crop_size": parameters["quality_crop_size"],
+        "minimum_face_px": parameters["min_face_px"],
+        "severe_blur_threshold": parameters["severe_blur_threshold"],
+        "borderline_blur_threshold": parameters["borderline_blur_threshold"],
+        "minimum_relative_area": parameters["minimum_relative_area"],
+        "minimum_confidence": parameters["minimum_confidence"],
+    }
+    if configuration != comparison.quality_configuration:
+        raise ValueError("candidate index quality configuration differs")
+
+
+def _query_crop_sha256(run_root: Path, relative: str) -> str:
+    path = Path(relative)
+    if path.is_absolute() or path.parts[:1] != ("faces",) or len(path.parts) != 2:
+        raise ValueError("query crop path is unsafe")
+    crop = run_root / path
+    if crop.is_symlink() or crop.parent.resolve() != (run_root / "faces").resolve():
+        raise ValueError("query crop path is unsafe")
+    return _sha256_file(crop)
+
+
 def _validate_smoke_search_config(config: SmokeSearchConfig) -> None:
     if not isinstance(config, SmokeSearchConfig):
         raise TypeError("config must be a SmokeSearchConfig")
@@ -925,16 +1329,27 @@ def _validate_smoke_search_config(config: SmokeSearchConfig) -> None:
 
 def _smoke_index_parameters(parameters: Mapping[str, object]) -> _IndexParameters:
     try:
-        return {
+        if (
+            parameters["quality_algorithm_version"] != "normalized-laplacian-v1"
+            or parameters["quality_crop_size"] != 112
+        ):
+            raise ValueError("index quality identity is invalid")
+        values: _IndexParameters = {
             "detection_threshold": _finite_number(parameters["detection_threshold"]),
             "image_limit": None,
             "max_image_dimension": _positive_integer(parameters["max_image_dimension"]),
             "max_image_pixels": _positive_integer(parameters["max_image_pixels"]),
             "min_face_px": _positive_integer(parameters["min_face_px"]),
-            "minimum_face_sharpness": _finite_number(parameters["minimum_face_sharpness"]),
-            "minimum_quality_confidence": _finite_number(parameters["minimum_quality_confidence"]),
-            "minimum_relative_face_area": _finite_number(parameters["minimum_relative_face_area"]),
+            "quality_algorithm_version": _string(parameters["quality_algorithm_version"]),
+            "quality_crop_size": _positive_integer(parameters["quality_crop_size"]),
+            "severe_blur_threshold": _finite_number(parameters["severe_blur_threshold"]),
+            "borderline_blur_threshold": _finite_number(parameters["borderline_blur_threshold"]),
+            "minimum_confidence": _finite_number(parameters["minimum_confidence"]),
+            "minimum_relative_area": _finite_number(parameters["minimum_relative_area"]),
         }
+        if values["severe_blur_threshold"] >= values["borderline_blur_threshold"]:
+            raise ValueError("index quality thresholds are invalid")
+        return values
     except (KeyError, BuildIndexConfigurationError):
         raise ValueError("index processing parameters are invalid") from None
 
@@ -1115,6 +1530,7 @@ def _load_benchmark_run(
                 face_id=face.face_id,
                 filename=face.filename,
                 crop_path=face.crop_path,
+                crop_sha256=_query_crop_sha256(run_root, face.crop_path),
                 cluster_id=memberships[face.face_id],
                 status="ok",
                 confidence=face.confidence,
@@ -1170,18 +1586,10 @@ def _benchmark_source_faces(
             face = _mapping(raw_face)
             face_id = face.get("face_id")
             record = record_by_id.get(face_id) if isinstance(face_id, str) else None
-            quality = _mapping(face.get("quality"))
-            if (
-                not isinstance(face_id, str)
-                or record is None
-                or face_id in parsed
-                or set(quality)
-                != {"decision", "minimum_side_px", "reasons", "relative_area", "sharpness"}
-            ):
+            quality = _validate_face_quality(face.get("quality"))
+            if not isinstance(face_id, str) or record is None or face_id in parsed:
                 raise BenchmarkConfigurationError("benchmark faces are invalid")
-            if record.status == "ok" and (
-                quality["decision"] != "accepted" or quality["reasons"] != []
-            ):
+            if record.status == "ok" and (quality.decision != "accepted" or quality.reasons):
                 raise BenchmarkConfigurationError("benchmark face quality is inconsistent")
             parsed[face_id] = _BenchmarkSourceFace(
                 face_id=record.face_id,
@@ -1193,9 +1601,9 @@ def _benchmark_source_faces(
                 width=record.bounding_box.width,
                 height=record.bounding_box.height,
                 confidence=_finite_number(face["confidence"]),
-                minimum_side_px=_finite_number(quality["minimum_side_px"]),
-                relative_area=_finite_number(quality["relative_area"]),
-                sharpness=_finite_number(quality["sharpness"]),
+                minimum_side_px=quality.minimum_side_px,
+                relative_area=quality.relative_area,
+                sharpness=quality.sharpness,
             )
     if set(parsed) != set(record_by_id):
         raise BenchmarkConfigurationError("benchmark faces are incomplete")
@@ -1421,9 +1829,10 @@ def build_parser() -> argparse.ArgumentParser:
     cluster.add_argument("--image-limit", type=int)
     cluster.add_argument("--max-image-dimension", type=int, default=12000)
     cluster.add_argument("--max-image-pixels", type=int, default=100_000_000)
-    cluster.add_argument("--minimum-quality-confidence", type=float, default=0.82)
-    cluster.add_argument("--minimum-relative-face-area", type=float, default=0.0009)
-    cluster.add_argument("--minimum-face-sharpness", type=float, default=50.0)
+    cluster.add_argument("--severe-blur-threshold", type=float, default=25.0)
+    cluster.add_argument("--borderline-blur-threshold", type=float, default=50.0)
+    cluster.add_argument("--minimum-relative-area", type=float, default=0.0009)
+    cluster.add_argument("--minimum-confidence", type=float, default=0.82)
     compare = commands.add_parser("compare")
     compare.add_argument("--run", type=Path, required=True)
     compare.add_argument("--peakshot-export", type=Path, required=True)
@@ -1468,6 +1877,39 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_search.add_argument("--output", type=Path, required=True)
     smoke_search.add_argument("--query-count", type=int, default=5)
     smoke_search.add_argument("--limit", type=int, default=10)
+    compare_quality = commands.add_parser("compare-quality")
+    compare_quality.add_argument("--baseline-run", type=Path, required=True)
+    compare_quality.add_argument("--candidate-run", type=Path, required=True)
+    compare_quality.add_argument("--output", type=Path, required=True)
+    compare_quality.add_argument("--minimum-face-px", type=int, default=32)
+    compare_quality.add_argument("--severe-blur-threshold", type=float, default=25.0)
+    compare_quality.add_argument("--borderline-blur-threshold", type=float, default=50.0)
+    compare_quality.add_argument("--minimum-relative-area", type=float, default=0.0009)
+    compare_quality.add_argument("--minimum-confidence", type=float, default=0.82)
+    finalize_quality = commands.add_parser("finalize-quality-review")
+    finalize_quality.add_argument("--comparison", type=Path, required=True)
+    finalize_quality.add_argument("--labels-csv", type=Path, required=True)
+    finalize_quality.add_argument("--search-comparison", type=Path, required=True)
+    finalize_quality.add_argument("--baseline-run", type=Path, required=True)
+    finalize_quality.add_argument("--candidate-run", type=Path, required=True)
+    finalize_quality.add_argument("--benchmark", type=Path, required=True)
+    finalize_quality.add_argument("--baseline-index", type=Path, required=True)
+    finalize_quality.add_argument("--candidate-index", type=Path, required=True)
+    finalize_quality.add_argument("--run", type=Path, required=True)
+    finalize_quality.add_argument("--yunet-model", type=Path, required=True)
+    finalize_quality.add_argument("--sface-model", type=Path, required=True)
+    finalize_quality.add_argument("--reviewer", required=True)
+    finalize_quality.add_argument("--reviewed-at", required=True)
+    finalize_quality.add_argument("--output", type=Path, required=True)
+    compare_search = commands.add_parser("compare-search")
+    compare_search.add_argument("--benchmark", type=Path, required=True)
+    compare_search.add_argument("--baseline-index", type=Path, required=True)
+    compare_search.add_argument("--candidate-index", type=Path, required=True)
+    compare_search.add_argument("--run", type=Path, required=True)
+    compare_search.add_argument("--yunet-model", type=Path, required=True)
+    compare_search.add_argument("--sface-model", type=Path, required=True)
+    compare_search.add_argument("--quality-comparison", type=Path, required=True)
+    compare_search.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -1537,6 +1979,45 @@ def main(argv: Sequence[str] | None = None) -> int:
                 query_count=arguments.query_count,
                 limit=arguments.limit,
             )
+        elif arguments.command == "compare-quality":
+            compare_quality_config = CompareQualityConfig(
+                baseline_run=arguments.baseline_run,
+                candidate_run=arguments.candidate_run,
+                output=arguments.output,
+                minimum_face_px=arguments.minimum_face_px,
+                severe_blur_threshold=arguments.severe_blur_threshold,
+                borderline_blur_threshold=arguments.borderline_blur_threshold,
+                minimum_relative_area=arguments.minimum_relative_area,
+                minimum_confidence=arguments.minimum_confidence,
+            )
+        elif arguments.command == "finalize-quality-review":
+            finalize_quality_config = FinalizeQualityReviewConfig(
+                comparison=arguments.comparison,
+                labels_csv=arguments.labels_csv,
+                search_comparison=arguments.search_comparison,
+                baseline_run=arguments.baseline_run,
+                candidate_run=arguments.candidate_run,
+                benchmark=arguments.benchmark,
+                baseline_index=arguments.baseline_index,
+                candidate_index=arguments.candidate_index,
+                run=arguments.run,
+                yunet_model=arguments.yunet_model,
+                sface_model=arguments.sface_model,
+                reviewer=arguments.reviewer,
+                reviewed_at=arguments.reviewed_at,
+                output=arguments.output,
+            )
+        elif arguments.command == "compare-search":
+            compare_search_config = CompareSearchConfig(
+                benchmark=arguments.benchmark,
+                baseline_index=arguments.baseline_index,
+                candidate_index=arguments.candidate_index,
+                run=arguments.run,
+                yunet_model=arguments.yunet_model,
+                sface_model=arguments.sface_model,
+                quality_comparison=arguments.quality_comparison,
+                output=arguments.output,
+            )
         else:
             config = ClusterConfig(
                 photos=arguments.photos,
@@ -1552,16 +2033,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 image_limit=arguments.image_limit,
                 max_image_dimension=arguments.max_image_dimension,
                 max_image_pixels=arguments.max_image_pixels,
-                minimum_quality_confidence=arguments.minimum_quality_confidence,
-                minimum_relative_face_area=arguments.minimum_relative_face_area,
-                minimum_face_sharpness=arguments.minimum_face_sharpness,
+                severe_blur_threshold=arguments.severe_blur_threshold,
+                borderline_blur_threshold=arguments.borderline_blur_threshold,
+                minimum_relative_area=arguments.minimum_relative_area,
+                minimum_confidence=arguments.minimum_confidence,
             )
             config.validate()
             if os.path.lexists(config.output):
                 parser.error(f"output path already exists: {config.output}")
     except SystemExit as error:
         return error.code if isinstance(error.code, int) else 2
-    except (BuildIndexConfigurationError, ClusterConfigurationError, ComparisonError, ValueError):
+    except (
+        BuildIndexConfigurationError,
+        ClusterConfigurationError,
+        ComparisonError,
+        QualityComparisonConfigurationError,
+        ValueError,
+    ):
         return 2
 
     try:
@@ -1594,12 +2082,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_smoke_search_command(smoke_search_config)
             except Exception:
                 return 2
+        elif arguments.command == "compare-quality":
+            try:
+                run_compare_quality_command(compare_quality_config)
+            except Exception:
+                return 2
+        elif arguments.command == "finalize-quality-review":
+            try:
+                run_finalize_quality_review_command(finalize_quality_config)
+            except Exception:
+                return 2
+        elif arguments.command == "compare-search":
+            try:
+                run_compare_search_command(compare_search_config)
+            except Exception:
+                return 2
         else:
             run_cluster(config)
     except (
         BuildIndexConfigurationError,
         ClusterConfigurationError,
         ComparisonError,
+        QualityComparisonConfigurationError,
         FileExistsError,
         OSError,
         ValueError,

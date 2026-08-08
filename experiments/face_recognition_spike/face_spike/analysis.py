@@ -148,10 +148,9 @@ def analyze_event_photo_inventory(
     """Analyze every accepted face and release decoded pixels before the next photo."""
     if min_face_px < 1:
         raise ValueError("min_face_px must be positive")
-    from .quality import FaceQualityThresholds
+    from .quality import default_face_quality_thresholds
 
-    thresholds = quality_thresholds or FaceQualityThresholds(minimum_face_px=min_face_px)
-    thresholds.validate()
+    thresholds = quality_thresholds or default_face_quality_thresholds(minimum_face_px=min_face_px)
 
     analyses: list[EventPhotoAnalysis] = []
     for photo in inventory.photos:
@@ -225,8 +224,14 @@ def _analyze_face(
 
     face_id = f"{photo.filename}#face-{face_index:03d}"
     crop_path = face_crop_path(face_id)
-    quality = evaluate_face_quality(bgr, detection, quality_thresholds)
-    if quality.decision == "rejected":
+    box = detection.bounding_box
+    quality = evaluate_face_quality(
+        bgr,
+        bbox=(box.x, box.y, box.width, box.height),
+        confidence=detection.confidence,
+        thresholds=quality_thresholds,
+    )
+    if quality.decision == "quality_rejected":
         return FaceInstance(
             face_id,
             photo.filename,

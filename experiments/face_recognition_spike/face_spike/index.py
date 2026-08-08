@@ -68,7 +68,6 @@ def build_face_index(
     manifest: FaceIndexManifest,
 ) -> FaceIndex:
     """Reprocess a source run and bind accepted source faces to compact vectors."""
-    quality_thresholds.validate()
     required = _required_source_faces(source_faces)
     inventory_names = [photo.filename for photo in inventory.photos]
     if len(inventory_names) != len(set(inventory_names)):

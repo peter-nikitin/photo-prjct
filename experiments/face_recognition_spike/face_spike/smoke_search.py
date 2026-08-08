@@ -19,6 +19,8 @@ from .analysis import BoundingBox
 from .benchmark import BenchmarkProposal, BenchmarkQuery
 from .index import FaceIndex
 
+DIRECT_COSINE_THRESHOLD = 0.363
+
 
 @dataclass(frozen=True)
 class SmokeSearchPhotoResult:
@@ -49,18 +51,167 @@ class SmokeSearchResult:
     queries: tuple[SmokeSearchQueryResult, ...]
 
 
+@dataclass(frozen=True, eq=False)
+class SearchComparisonQuery:
+    query_id: str
+    source_filename: str
+    source_run_sha256: str
+    query_crop_sha256: str
+    embedding: NDArray[np.float32]
+    confirmed_relevant: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not self.query_id
+            or not self.source_filename
+            or any(
+                len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+                for value in (self.source_run_sha256, self.query_crop_sha256)
+            )
+        ):
+            raise ValueError("search comparison query identity is invalid")
+        vector = _normalized_query_vector(self.embedding)
+        if tuple(sorted(set(self.confirmed_relevant))) != self.confirmed_relevant:
+            raise ValueError("confirmed relevant filenames must be unique and ordered")
+        if self.source_filename in self.confirmed_relevant:
+            raise ValueError("held-out photo cannot be a confirmed result")
+        object.__setattr__(self, "embedding", vector)
+
+
+@dataclass(frozen=True)
+class SearchComparisonPhoto:
+    face_id: str
+    filename: str
+
+    def __post_init__(self) -> None:
+        if not self.face_id or not self.filename:
+            raise ValueError("search comparison photo is invalid")
+
+
+@dataclass(frozen=True)
+class SearchComparisonQueryResult:
+    query_id: str
+    source_run_sha256: str
+    query_crop_sha256: str
+    baseline_results: tuple[SearchComparisonPhoto, ...]
+    candidate_results: tuple[SearchComparisonPhoto, ...]
+    confirmed_relevant: tuple[str, ...]
+    lost_confirmed_relevant: tuple[str, ...]
+    quality_rejected_supports: tuple[SearchComparisonPhoto, ...]
+
+    def __post_init__(self) -> None:
+        hashes = (self.source_run_sha256, self.query_crop_sha256)
+        baseline_names = self.baseline_top
+        candidate_names = self.candidate_top
+        expected_lost = tuple(
+            sorted(set(self.confirmed_relevant) & set(baseline_names) - set(candidate_names))
+        )
+        supports = self.quality_rejected_supports
+        if (
+            not self.query_id
+            or any(
+                len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+                for value in hashes
+            )
+            or tuple(sorted(set(self.confirmed_relevant))) != self.confirmed_relevant
+            or len(baseline_names) != len(set(baseline_names))
+            or len(candidate_names) != len(set(candidate_names))
+            or len({item.face_id for item in self.baseline_results}) != len(self.baseline_results)
+            or len({item.face_id for item in self.candidate_results}) != len(self.candidate_results)
+            or self.lost_confirmed_relevant != expected_lost
+            or len({item.filename for item in supports}) != len(supports)
+            or any(item not in self.baseline_results for item in supports)
+            or any(item.filename not in expected_lost for item in supports)
+        ):
+            raise ValueError("search comparison query result does not reconcile")
+
+    @property
+    def baseline_top(self) -> tuple[str, ...]:
+        return tuple(item.filename for item in self.baseline_results)
+
+    @property
+    def candidate_top(self) -> tuple[str, ...]:
+        return tuple(item.filename for item in self.candidate_results)
+
+    @property
+    def lost_due_to_quality_rejection(self) -> tuple[str, ...]:
+        return tuple(item.filename for item in self.quality_rejected_supports)
+
+
+@dataclass(frozen=True)
+class SearchComparison:
+    quality_comparison_sha256: str
+    benchmark_sha256: str
+    baseline_index_sha256: str
+    candidate_index_sha256: str
+    direct_threshold: float
+    query_results: tuple[SearchComparisonQueryResult, ...]
+
+    def __post_init__(self) -> None:
+        hashes = (
+            self.quality_comparison_sha256,
+            self.benchmark_sha256,
+            self.baseline_index_sha256,
+            self.candidate_index_sha256,
+        )
+        if (
+            any(
+                len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+                for value in hashes
+            )
+            or self.direct_threshold != DIRECT_COSINE_THRESHOLD
+        ):
+            raise ValueError("search comparison source identity is invalid")
+        query_ids = tuple(item.query_id for item in self.query_results)
+        if not query_ids or query_ids != tuple(sorted(set(query_ids))):
+            raise ValueError("search comparison queries are invalid")
+
+    @property
+    def approved(self) -> bool:
+        return not any(result.lost_confirmed_relevant for result in self.query_results)
+
+    @property
+    def aggregate(self) -> dict[str, int]:
+        baseline_unique = sum(len(result.baseline_top) for result in self.query_results)
+        candidate_unique = sum(len(result.candidate_top) for result in self.query_results)
+        values = {
+            "queries": len(self.query_results),
+            "baseline_unique_results": baseline_unique,
+            "candidate_unique_results": candidate_unique,
+            "unique_photo_delta": candidate_unique - baseline_unique,
+        }
+        for limit in (1, 5, 10):
+            values[f"baseline_top_{limit}_relevant"] = sum(
+                len(set(result.baseline_top[:limit]) & set(result.confirmed_relevant))
+                for result in self.query_results
+            )
+            values[f"candidate_top_{limit}_relevant"] = sum(
+                len(set(result.candidate_top[:limit]) & set(result.confirmed_relevant))
+                for result in self.query_results
+            )
+        values["lost_confirmed_relevant"] = sum(
+            len(result.lost_confirmed_relevant) for result in self.query_results
+        )
+        return values
+
+
 def rank_unique_photos(
     query_embedding: NDArray[np.float32],
     index: FaceIndex,
     held_out_filename: str,
     *,
     limit: int,
+    maximum_distance: float | None = None,
 ) -> tuple[SmokeSearchPhotoResult, ...]:
     """Rank one best face per photo with exact cosine distance."""
     if not isinstance(index, FaceIndex):
         raise TypeError("index must be a FaceIndex")
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError("result limit must be positive")
+    if maximum_distance is not None and (
+        not math.isfinite(maximum_distance) or not 0 <= maximum_distance <= 2
+    ):
+        raise ValueError("maximum distance is invalid")
     vector = _normalized_query_vector(query_embedding)
     if vector.shape[0] != index.embeddings.shape[1]:
         raise ValueError("query embedding dimension does not match index")
@@ -82,6 +233,8 @@ def rank_unique_photos(
     for raw_index in ordered_indices:
         index_position = int(raw_index)
         entry = entries[index_position]
+        if maximum_distance is not None and distances[index_position] > maximum_distance:
+            continue
         best_by_filename.setdefault(
             entry.filename, (float(distances[index_position]), index_position)
         )
@@ -98,6 +251,72 @@ def rank_unique_photos(
             cosine_distance=distance,
         )
         for rank, (distance, index_position) in enumerate(selected, start=1)
+    )
+
+
+def compare_search_indexes(
+    queries: tuple[SearchComparisonQuery, ...],
+    baseline_index: FaceIndex,
+    candidate_index: FaceIndex,
+    *,
+    quality_rejected_baseline_face_ids: tuple[str, ...],
+    quality_comparison_sha256: str,
+    benchmark_sha256: str,
+    baseline_index_sha256: str,
+    candidate_index_sha256: str,
+) -> SearchComparison:
+    """Run the same closed queries against two indexes with production ranking semantics."""
+    if not queries or len({query.query_id for query in queries}) != len(queries):
+        raise ValueError("search comparison queries must be nonempty and unique")
+    if not isinstance(baseline_index, FaceIndex) or not isinstance(candidate_index, FaceIndex):
+        raise TypeError("search comparison requires FaceIndex values")
+    rejected = tuple(sorted(set(quality_rejected_baseline_face_ids)))
+    if rejected != quality_rejected_baseline_face_ids:
+        raise ValueError("quality-rejected face IDs must be unique and ordered")
+    results: list[SearchComparisonQueryResult] = []
+    for query in queries:
+        baseline = rank_unique_photos(
+            query.embedding,
+            baseline_index,
+            query.source_filename,
+            limit=len(baseline_index.entries),
+            maximum_distance=DIRECT_COSINE_THRESHOLD,
+        )
+        candidate = rank_unique_photos(
+            query.embedding,
+            candidate_index,
+            query.source_filename,
+            limit=len(candidate_index.entries),
+            maximum_distance=DIRECT_COSINE_THRESHOLD,
+        )
+        baseline_names = tuple(item.filename for item in baseline)
+        candidate_names = tuple(item.filename for item in candidate)
+        lost = tuple(
+            sorted(set(query.confirmed_relevant) & set(baseline_names) - set(candidate_names))
+        )
+        results.append(
+            SearchComparisonQueryResult(
+                query.query_id,
+                query.source_run_sha256,
+                query.query_crop_sha256,
+                tuple(SearchComparisonPhoto(item.face_id, item.filename) for item in baseline),
+                tuple(SearchComparisonPhoto(item.face_id, item.filename) for item in candidate),
+                query.confirmed_relevant,
+                lost,
+                tuple(
+                    SearchComparisonPhoto(item.face_id, item.filename)
+                    for item in baseline
+                    if item.filename in lost and item.face_id in rejected
+                ),
+            )
+        )
+    return SearchComparison(
+        quality_comparison_sha256,
+        benchmark_sha256,
+        baseline_index_sha256,
+        candidate_index_sha256,
+        DIRECT_COSINE_THRESHOLD,
+        tuple(results),
     )
 
 

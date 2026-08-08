@@ -19,7 +19,16 @@ from face_spike.quality import FaceQuality
 
 
 def _quality(*, confidence: float = 0.95, sharpness: float = 120.0) -> FaceQuality:
-    return FaceQuality(confidence, 24.0, 0.1, sharpness, "accepted", ())
+    return FaceQuality(
+        "normalized-laplacian-v1",
+        112,
+        confidence,
+        24.0,
+        0.1,
+        sharpness,
+        "accepted",
+        (),
+    )
 
 
 def _manifest() -> FaceIndexManifest:
@@ -50,6 +59,7 @@ def _face(
         face_id=f"{filename}#face-001",
         filename=filename,
         crop_path=f"faces/{hashlib.sha256(filename.encode()).hexdigest()}.png",
+        crop_sha256="f" * 64,
         cluster_id=cluster_id,
         status=status,
         confidence=confidence,

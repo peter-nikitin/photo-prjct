@@ -168,8 +168,10 @@ class ClusterArtifactWriter:
             _validate_cluster_membership(face_by_id, clusters)
             materialization = self._materialize_people(face_by_id, clusters)
             metrics = _build_metrics(analyses, clusters)
+            faces_payload = _faces_json(analyses)
+            source = _source_identity(result, analyses, faces_payload)
             _write_csv_atomic(self._staging / "faces.csv", _FACE_HEADERS, _face_rows(analyses))
-            _write_json_atomic(self._staging / "faces.json", _faces_json(analyses))
+            _write_json_atomic(self._staging / "faces.json", faces_payload)
             _write_csv_atomic(
                 self._staging / "clusters.csv",
                 _CLUSTER_HEADERS,
@@ -181,7 +183,7 @@ class ClusterArtifactWriter:
             _write_json_atomic(self._staging / "metrics.json", metrics)
             _write_json_atomic(
                 self._staging / "manifest.json",
-                _manifest(result, metrics, materialization),
+                _manifest(result, metrics, materialization, source),
             )
             from .cluster_report import render_cluster_detail_pages, render_cluster_report
 
@@ -390,11 +392,7 @@ def _face_record(face: FaceInstance) -> dict[str, Any]:
         "filename": face.filename,
         "height": float(box.height),
         "quality": {
-            "decision": face.quality.decision,
-            "minimum_side_px": float(face.quality.minimum_side_px),
-            "reasons": list(face.quality.reasons),
-            "relative_area": float(face.quality.relative_area),
-            "sharpness": float(face.quality.sharpness),
+            **face.quality.as_payload(),
         },
         "landmarks": {
             "left_eye": list(landmarks.left_eye),
@@ -489,7 +487,7 @@ def _build_metrics(
             "face_instances": len(faces),
             "images": len(analyses),
             "quality_accepted": sum(face.quality.decision == "accepted" for face in faces),
-            "quality_rejected": sum(face.quality.decision == "rejected" for face in faces),
+            "quality_rejected": sum(face.quality.decision == "quality_rejected" for face in faces),
             "singleton_clusters": sizes[1],
         },
         "quality_rejection_reasons": dict(
@@ -504,6 +502,7 @@ def _manifest(
     result: ClusterRunResult,
     metrics: Mapping[str, Any],
     materialization: Mapping[str, int],
+    source: Mapping[str, object],
 ) -> dict[str, Any]:
     parameters = {key: result.parameters[key] for key in sorted(result.parameters)}
     parameters.update(
@@ -533,7 +532,33 @@ def _manifest(
         "peak_memory_bytes": result.peak_memory_bytes,
         "platform": platform.platform(),
         "python_version": platform.python_version(),
+        "source": source,
         "started_at": _timestamp(result.started_at),
+    }
+
+
+def _source_identity(
+    result: ClusterRunResult,
+    analyses: Sequence[EventPhotoAnalysis],
+    faces_payload: Mapping[str, object],
+) -> dict[str, object]:
+    filenames = [analysis.filename for analysis in analyses]
+    media = [
+        {"filename": filename, "sha256": _sha256(result.photos / filename)}
+        for filename in filenames
+    ]
+    generation = {
+        "model_hashes": {
+            "sface": _sha256(result.sface_model),
+            "yunet": _sha256(result.yunet_model),
+        },
+        "parameters": {key: result.parameters[key] for key in sorted(result.parameters)},
+    }
+    return {
+        "faces_sha256": _sha256_bytes(_canonical_json(faces_payload)),
+        "generation_sha256": _sha256_bytes(_canonical_json(generation)),
+        "inventory_sha256": _sha256_bytes(_canonical_json(filenames)),
+        "media_sha256": media,
     }
 
 
@@ -609,6 +634,20 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def _timestamp(timestamp: datetime) -> str:

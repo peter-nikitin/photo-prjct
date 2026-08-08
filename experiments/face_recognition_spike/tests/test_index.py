@@ -20,6 +20,18 @@ from face_spike.inventory import EventPhoto, EventPhotoInventory
 from face_spike.quality import FaceQualityThresholds
 
 
+def _thresholds(*, minimum_face_px: int = 1) -> FaceQualityThresholds:
+    return FaceQualityThresholds(
+        "normalized-laplacian-v1",
+        112,
+        minimum_face_px,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+    )
+
+
 def _source_face(
     filename: str,
     face_index: int,
@@ -101,7 +113,7 @@ def _build(
         Decoder(),
         detector,
         _Recognizer(),
-        quality_thresholds=FaceQualityThresholds(minimum_face_px=1),
+        quality_thresholds=_thresholds(),
         manifest=_manifest(),
     )
 
@@ -170,7 +182,7 @@ def test_builder_allows_recoverable_failure_for_face_not_required_by_source() ->
         Decoder(),
         detector,
         Recognizer(),
-        quality_thresholds=FaceQualityThresholds(minimum_face_px=1),
+        quality_thresholds=_thresholds(),
         manifest=_manifest(),
     )
 
@@ -229,7 +241,7 @@ def test_builder_releases_decoded_pixels_before_next_photo() -> None:
         Decoder(),
         detector,
         _Recognizer(),
-        quality_thresholds=FaceQualityThresholds(minimum_face_px=1),
+        quality_thresholds=_thresholds(),
         manifest=_manifest(),
     )
 

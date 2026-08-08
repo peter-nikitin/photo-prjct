@@ -31,6 +31,7 @@ class BenchmarkFace:
     face_id: str
     filename: str
     crop_path: str
+    crop_sha256: str
     cluster_id: str
     status: str
     confidence: float
@@ -44,6 +45,7 @@ class BenchmarkFace:
             or not _is_relative_path(self.filename)
             or not self.cluster_id
             or not _is_relative_path(self.crop_path)
+            or not _SHA256.fullmatch(self.crop_sha256)
             or not all(math.isfinite(value) for value in self.quality_values)
             or not 0 <= self.confidence <= 1
             or self.sharpness < 0

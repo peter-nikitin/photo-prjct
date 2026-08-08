@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from face_spike.benchmark_artifacts import (
     ANNOTATION_CSV_HEADERS,
     BenchmarkFinalArtifactWriter,
     BenchmarkProposalArtifactWriter,
+    final_benchmark_sha256,
     load_annotations_csv,
     load_benchmark_proposal,
     load_final_benchmark,
@@ -69,6 +71,22 @@ def test_artifact_writers_publish_schema_bound_json_without_vectors_and_load_par
     final_path = tmp_path / "final"
     BenchmarkFinalArtifactWriter(final_path).finish(final)
     assert load_final_benchmark(final_path) == final
+
+
+def test_final_benchmark_hash_includes_reviewed_annotations() -> None:
+    proposal = _proposal()
+    final = finalize_benchmark(proposal, _valid_annotations(proposal))
+    changed = replace(
+        final,
+        annotations=(replace(final.annotations[0], note="changed"), *final.annotations[1:]),
+    )
+
+    assert final_benchmark_sha256(final) != final_benchmark_sha256(changed)
+    changed_crop = replace(
+        final,
+        faces=(replace(final.faces[0], crop_sha256="0" * 64), *final.faces[1:]),
+    )
+    assert final_benchmark_sha256(final) != final_benchmark_sha256(changed_crop)
 
 
 def test_final_loader_rejects_a_structurally_valid_bundle_without_required_relevant_photos(

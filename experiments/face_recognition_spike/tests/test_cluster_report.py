@@ -30,7 +30,16 @@ def test_report_has_stable_person_anchors_relative_assets_and_escaped_text() -> 
         face_crop_path(f"{filename}#face-001"),
         "ok",
         FaceEmbedding(np.asarray([1.0, 0.0], dtype=np.float32)),
-        FaceQuality(0.9, 10.0, 0.125, 100.0, "accepted", ()),
+        FaceQuality(
+            "normalized-laplacian-v1",
+            112,
+            0.9,
+            10.0,
+            0.125,
+            100.0,
+            "accepted",
+            (),
+        ),
     )
     analysis = EventPhotoAnalysis(filename, 40, 24, (face,), "ok")
     cluster = FaceCluster("person-0001", face.face_id, (ClusterMember(face.face_id, 0.0),))

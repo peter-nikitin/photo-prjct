@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -147,6 +148,33 @@ def load_face_index(path: Path) -> FaceIndex:
     return FaceIndex(entries, embeddings, manifest)
 
 
+def face_index_sha256(index: FaceIndex) -> str:
+    """Hash the full logical index, including every float32 embedding byte."""
+    from .index import FaceIndex
+
+    if not isinstance(index, FaceIndex):
+        raise TypeError("face index is required")
+    _validate_index(index)
+    payload = {
+        "manifest": index.manifest.to_dict(),
+        "entries": [_entry_to_dict(entry) for entry in index.entries],
+        "embeddings": {
+            "dtype": index.embeddings.dtype.str,
+            "shape": list(index.embeddings.shape),
+            "sha256": hashlib.sha256(index.embeddings.tobytes(order="C")).hexdigest(),
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _validate_manifest(manifest: FaceIndexManifest) -> None:
     if not _SHA256.fullmatch(manifest.source_run_manifest_sha256) or not _SHA256.fullmatch(
         manifest.source_faces_sha256
@@ -231,6 +259,8 @@ def _entry_to_dict(entry: FaceIndexEntry) -> dict[str, object]:
         },
         "crop_path": entry.crop_path,
         "quality": {
+            "algorithm_version": entry.quality.algorithm_version,
+            "crop_size": entry.quality.crop_size,
             "confidence": entry.quality.confidence,
             "minimum_side_px": entry.quality.minimum_side_px,
             "relative_area": entry.quality.relative_area,
@@ -251,6 +281,8 @@ def _entry_from_dict(value: object) -> FaceIndexEntry:
     box = _mapping(item["bounding_box"])
     quality = _mapping(item["quality"])
     if set(box) != {"x", "y", "width", "height"} or set(quality) != {
+        "algorithm_version",
+        "crop_size",
         "confidence",
         "minimum_side_px",
         "relative_area",
@@ -271,6 +303,8 @@ def _entry_from_dict(value: object) -> FaceIndexEntry:
             BoundingBox(*(_number(box[name]) for name in ("x", "y", "width", "height"))),
             _string(item["crop_path"]),
             FaceQuality(
+                _string(quality["algorithm_version"]),
+                _integer(quality["crop_size"]),
                 _number(quality["confidence"]),
                 _number(quality["minimum_side_px"]),
                 _number(quality["relative_area"]),

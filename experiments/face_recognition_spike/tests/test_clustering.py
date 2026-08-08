@@ -43,7 +43,16 @@ def _face(
         face_crop_path(face_id),
         status,
         embedding,
-        FaceQuality(0.9, 10.0, 1.0, 100.0, "accepted", ()),
+        FaceQuality(
+            "normalized-laplacian-v1",
+            112,
+            0.9,
+            10.0,
+            1.0,
+            100.0,
+            "accepted",
+            (),
+        ),
     )
 
 

@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 from face_spike.analysis import BoundingBox
 from face_spike.index import FaceIndex, FaceIndexEntry
-from face_spike.index_artifacts import FaceIndexArtifactWriter, FaceIndexManifest, load_face_index
+from face_spike.index_artifacts import (
+    FaceIndexArtifactWriter,
+    FaceIndexManifest,
+    face_index_sha256,
+    load_face_index,
+)
 from face_spike.quality import FaceQuality
 
 
@@ -32,7 +37,16 @@ def _entry(number: int) -> FaceIndexEntry:
         face_index=number,
         bounding_box=BoundingBox(float(number), 2.0, 10.0, 12.0),
         crop_path=f"faces/{number}.png",
-        quality=FaceQuality(0.9, 10.0, 0.1, 20.0, "accepted", ()),
+        quality=FaceQuality(
+            "normalized-laplacian-v1",
+            112,
+            0.9,
+            10.0,
+            0.1,
+            20.0,
+            "accepted",
+            (),
+        ),
     )
 
 
@@ -83,6 +97,15 @@ def test_writer_rejects_existing_destination_without_touching_it(tmp_path: Path)
         FaceIndexArtifactWriter(output)
 
     assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+def test_index_content_hash_includes_embedding_bytes() -> None:
+    original = _index()
+    changed_embeddings = original.embeddings.copy()
+    changed_embeddings[0] = np.asarray([0.8, 0.6], dtype=np.float32)
+    changed = FaceIndex(original.entries, changed_embeddings, original.manifest)
+
+    assert face_index_sha256(original) != face_index_sha256(changed)
 
 
 def test_writer_cleans_hidden_staging_after_publication_failure(

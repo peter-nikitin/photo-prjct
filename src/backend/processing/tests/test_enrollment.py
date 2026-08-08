@@ -18,7 +18,9 @@ from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     FACE_EMBEDDING_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
+    CaptureTimeReprocessingTarget,
     capture_metadata_configuration,
+    enroll_event_capture_time_reprocessing,
     reconcile_capture_metadata,
     reconcile_face_embedding,
     request_capture_metadata,
@@ -385,15 +387,105 @@ class CaptureMetadataEnrollmentTests(TestCase):
 
         self.assertEqual(attempt.input_fingerprint, job.input_fingerprint)
 
-    def test_repeated_enrollment_is_a_no_op(self) -> None:
-        photo = self.private_photo("repeat")
-        request_capture_metadata(photo)
+    def test_reprocessing_rotates_current_work_and_clears_the_old_projection(self) -> None:
+        """Catch approved reprocessing leaving the prior accepted time visible."""
+        photo = self.private_photo("reprocess")
+        self.event.publication_status = Event.PublicationStatus.PUBLISHED
+        self.event.save(update_fields=["publication_status"])
+        configuration = capture_metadata_configuration(self.event.timezone_name)
+        old_run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+        )
+        old_job = ProcessingJob.objects.create(
+            event=self.event,
+            run=old_run,
+            photo=photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+        )
+        old_attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=old_run,
+            job=old_job,
+            photo=photo,
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+            result={"capture_time": "2026-08-08T12:00:00Z"},
+        )
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = old_run
+        state.current_job = old_job
+        state.current_attempt = old_attempt
+        state.accepted_attempt = old_attempt
+        state.save()
+        Photo.objects.filter(pk=photo.pk).update(
+            capture_time=timezone.datetime(2026, 8, 8, 12, 0, tzinfo=timezone.UTC),
+            capture_time_source_attempt=old_attempt,
+        )
+
+        enrollment = enroll_event_capture_time_reprocessing(
+            self.event,
+            target=CaptureTimeReprocessingTarget(
+                event_id=self.event.id,
+                event_name=self.event.name,
+                timezone_name="Europe/Moscow",
+                photo_count=1,
+                configuration=configuration,
+            ),
+        )
+
+        photo.refresh_from_db()
+        state.refresh_from_db()
+        self.assertEqual(enrollment.created_job_count, 1)
+        self.assertEqual(state.status, PhotoProcessingState.Status.QUEUED)
+        self.assertNotEqual(state.current_job_id, old_job.id)
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
+
+    def test_capture_enrollment_clears_a_stale_projection_before_new_work(self) -> None:
+        """Catch re-enrollment exposing an old time while the replacement is queued."""
+        photo = self.private_photo("clear-projection")
+        state = request_capture_metadata(photo)
+        job = state.current_job
+        assert job is not None
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=job.run,
+            job=job,
+            photo=photo,
+            contract_version=job.contract_version,
+            processor_type=job.processor_type,
+            processor_version=job.processor_version,
+            configuration=job.configuration,
+            input_fingerprint=job.input_fingerprint,
+        )
+        Photo.objects.filter(pk=photo.pk).update(
+            capture_time=timezone.datetime(2026, 8, 8, 12, 0, tzinfo=timezone.UTC),
+            capture_time_source_attempt=attempt,
+        )
+
         request_capture_metadata(photo)
 
-        self.assertEqual(EventProcessingRun.objects.count(), 1)
-        self.assertEqual(ProcessingJob.objects.count(), 1)
-        state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
-        self.assertEqual(state.status, PhotoProcessingState.Status.QUEUED)
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
 
     def test_legacy_and_ineligible_photos_remain_not_requested(self) -> None:
         legacy = Photo.objects.create(id="legacy", event=self.event, src="photos/legacy.jpg")

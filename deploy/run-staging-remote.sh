@@ -378,7 +378,7 @@ esac'''
 commands = {
     'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging exec sh /opt/photo-prjct/deploy/apply-deployment.sh',
     'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
-    'selfie-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_SEARCH_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
+    'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
     'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
     'configure-monitoring': 'exec sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"',
     'verify-staging-image': 'test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"',
@@ -442,7 +442,6 @@ PHOTO_WORKER_LEASE_SECONDS
 PHOTO_WORKER_PROCESSOR_IDENTITIES
 PHOTO_WORKER_PROCESSOR_TYPES
 PHOTO_WORKER_REPLICAS
-SELFIE_SEARCH_ENABLED
 SELFIE_SEARCH_MAX_UPLOAD_BYTES
 SELFIE_SEARCH_MAX_PIXELS
 SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS

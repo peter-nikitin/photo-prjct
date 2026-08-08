@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
+from django.db.migrations.recorder import MigrationRecorder
 from django.db.models.deletion import ProtectedError
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.utils import timezone
@@ -837,7 +838,19 @@ class ProcessingModelTests(TestCase):
                 FaceEmbedding.objects.filter(pk=embedding.pk).update(vector=[0.1, 0.2])
 
 
-class ProcessingInitialMigrationTests(TransactionTestCase):
+class _ProcessingMigrationTestCase(TransactionTestCase):
+    def _restore_current_migration_leaves(self) -> None:
+        restorer = MigrationExecutor(connection)
+        restorer.migrate(restorer.loader.graph.leaf_nodes())
+
+    def tearDown(self) -> None:
+        try:
+            self._restore_current_migration_leaves()
+        finally:
+            super().tearDown()
+
+
+class ProcessingInitialMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [("picflow", "0005_validate_photo_private_original_constraints")]
     migrate_to = [("processing", "0001_initial")]
     unapply_processing = [("processing", None)]
@@ -868,8 +881,13 @@ class ProcessingInitialMigrationTests(TransactionTestCase):
             ("capture_metadata", "not_requested"),
         )
 
-        executor.migrate(self.unapply_processing)
-        reverse_apps = executor.loader.project_state(self.migrate_from).apps
+        reverse_executor = MigrationExecutor(connection)
+        reverse_executor.migrate(self.unapply_processing)
+        self.assertNotIn("processing_photoprocessingstate", connection.introspection.table_names())
+        self.assertFalse(
+            MigrationRecorder(connection).migration_qs.filter(app="processing").exists()
+        )
+        reverse_apps = reverse_executor.loader.project_state(self.migrate_from).apps
         ReversePhoto = reverse_apps.get_model("picflow", "Photo")
         self.assertTrue(ReversePhoto.objects.filter(pk="legacy").exists())
 
@@ -918,7 +936,7 @@ class ProcessingMigrationFunctionTests(TestCase):
         self.assertEqual(batches, [500, 1])
 
 
-class ProcessingFaceEmbeddingMigrationTests(TransactionTestCase):
+class ProcessingFaceEmbeddingMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [("processing", "0001_initial")]
     migrate_to = [("processing", "0002_add_face_embedding_schema")]
 
@@ -936,8 +954,9 @@ class ProcessingFaceEmbeddingMigrationTests(TransactionTestCase):
                 migrated_apps.all_models["processing"][model_name]._meta.db_table,
             )
 
-        executor.migrate(self.migrate_from)
-        reverted_apps = executor.loader.project_state(self.migrate_from).apps
+        reverse_executor = MigrationExecutor(connection)
+        reverse_executor.migrate(self.migrate_from)
+        reverted_apps = reverse_executor.loader.project_state(self.migrate_from).apps
         for model_name in (
             "faceprocessingattemptartifact",
             "photofacedetection",
@@ -946,7 +965,7 @@ class ProcessingFaceEmbeddingMigrationTests(TransactionTestCase):
             self.assertNotIn(model_name, reverted_apps.all_models.get("processing", {}))
 
 
-class ProcessingPreviewDerivativeMigrationTests(TransactionTestCase):
+class ProcessingPreviewDerivativeMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [("processing", "0002_add_face_embedding_schema")]
     migrate_to = [("processing", "0003_add_preview_derivative_schema")]
 
@@ -958,14 +977,33 @@ class ProcessingPreviewDerivativeMigrationTests(TransactionTestCase):
         migrated_apps = executor.loader.project_state(self.migrate_to).apps
         self.assertIn("photoderivative", migrated_apps.all_models["processing"])
 
-        executor.migrate(self.migrate_from)
-        reverted_apps = executor.loader.project_state(self.migrate_from).apps
+        reverse_executor = MigrationExecutor(connection)
+        reverse_executor.migrate(self.migrate_from)
+        reverted_apps = reverse_executor.loader.project_state(self.migrate_from).apps
         self.assertNotIn("photoderivative", reverted_apps.all_models.get("processing", {}))
 
 
-class ProcessingFaceIndexNameMigrationTests(TransactionTestCase):
+class ProcessingFaceIndexNameMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [("processing", "0003_add_preview_derivative_schema")]
     migrate_to = [("processing", "0004_shorten_face_index_names")]
+
+    def test_teardown_restores_current_dependent_migration_leaves(self) -> None:
+        MigrationExecutor(connection).migrate(self.migrate_from)
+        try:
+            self.tearDown()
+            with connection.cursor() as cursor:
+                column_names = {
+                    column.name
+                    for column in connection.introspection.get_table_description(
+                        cursor, "picflow_photo"
+                    )
+                }
+
+            self.assertIn("capture_time", column_names)
+            self.assertIn("capture_time_source_attempt_id", column_names)
+        finally:
+            restorer = MigrationExecutor(connection)
+            restorer.migrate(restorer.loader.graph.leaf_nodes())
 
     def test_canonical_face_index_names_migrate_to_the_current_names(self) -> None:
         executor = MigrationExecutor(connection)

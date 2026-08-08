@@ -15,9 +15,35 @@ from django.test import TransactionTestCase
 class PhotoMigrationTests(TransactionTestCase):
     reset_sequences = True
 
+    def _restore_current_migration_leaf(self) -> None:
+        restorer = MigrationExecutor(connection)
+        restorer.migrate(restorer.loader.graph.leaf_nodes())
+
+    def tearDown(self) -> None:
+        try:
+            self._restore_current_migration_leaf()
+        finally:
+            super().tearDown()
+
+    def test_teardown_restores_the_current_migration_leaf(self) -> None:
+        MigrationExecutor(connection).migrate([("picflow", "0007_event_timezone")])
+        try:
+            self.tearDown()
+            with connection.cursor() as cursor:
+                column_names = {
+                    column.name
+                    for column in connection.introspection.get_table_description(
+                        cursor, "picflow_photo"
+                    )
+                }
+
+            self.assertIn("capture_time", column_names)
+            self.assertIn("capture_time_source_attempt_id", column_names)
+        finally:
+            self._restore_current_migration_leaf()
+
     def test_legacy_rows_survive_and_private_shape_is_enforced(self) -> None:
         executor = MigrationExecutor(connection)
-        leaf_nodes = executor.loader.graph.leaf_nodes()
         try:
             executor.migrate([("picflow", "0002_event_catalog")])
             old_apps = executor.loader.project_state([("picflow", "0002_event_catalog")]).apps
@@ -72,7 +98,7 @@ class PhotoMigrationTests(TransactionTestCase):
                     id="PRIVATE-2", original_key="originals/private-1", **private_values
                 )
         finally:
-            MigrationExecutor(connection).migrate(leaf_nodes)
+            self._restore_current_migration_leaf()
 
     def test_sql_uses_safe_named_operations(self) -> None:
         from django.core.management import call_command
@@ -191,7 +217,6 @@ class PhotoMigrationTests(TransactionTestCase):
 
     def test_event_timezone_migration_sets_only_event_nine_to_moscow(self) -> None:
         executor = MigrationExecutor(connection)
-        leaf_nodes = executor.loader.graph.leaf_nodes()
         try:
             executor.migrate([("picflow", "0006_photo_processing_policy")])
             old_apps = executor.loader.project_state(
@@ -221,4 +246,21 @@ class PhotoMigrationTests(TransactionTestCase):
             self.assertIsNone(MigratedEvent.objects.get(pk=10).timezone_name)
             self.assertIsNone(MigratedEvent.objects.get(pk=11).timezone_name)
         finally:
-            MigrationExecutor(connection).migrate(leaf_nodes)
+            self._restore_current_migration_leaf()
+
+    def test_capture_time_projection_migration_is_schema_only(self) -> None:
+        """Catch a deployment-blocking data scan inside the nullable schema migration."""
+        migration = MigrationLoader(connection).get_migration(
+            "picflow", "0008_photo_capture_time_projection"
+        )
+
+        self.assertFalse(
+            any(operation.__class__.__name__ == "RunPython" for operation in migration.operations)
+        )
+        self.assertEqual(
+            migration.dependencies,
+            [
+                ("picflow", "0007_event_timezone"),
+                ("processing", "0006_face_cluster_corpus"),
+            ],
+        )

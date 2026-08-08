@@ -1,0 +1,67 @@
+{
+  "corpus": {
+    "accepted_current_v2_capture_times": 17043,
+    "event_photo_count": 17043
+  },
+  "event_id": 9,
+  "gate": "failed",
+  "pages": [
+    {
+      "filtered": {
+        "database_execution_ms": 619.222,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Seq Scan", "Index Scan", "Index Scan", "Index Scan", "Seq Scan", "Index Scan", "Index Scan", "Index Scan", "Index Scan", "Index Scan"],
+        "rendered_response_ms": 1243.019
+      },
+      "gate": "failed",
+      "page": "first",
+      "page_number": 1,
+      "ratios": {
+        "database_execution": 8.422,
+        "rendered_response": 6.685
+      },
+      "unfiltered": {
+        "database_execution_ms": 73.525,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 185.94
+      }
+    },
+    {
+      "filtered": {
+        "database_execution_ms": 630.079,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Seq Scan", "Index Scan", "Index Scan", "Index Scan", "Seq Scan", "Index Scan", "Index Scan", "Index Scan", "Index Scan", "Index Scan"],
+        "rendered_response_ms": 1245.763
+      },
+      "gate": "failed",
+      "page": "midpoint",
+      "page_number": 86,
+      "ratios": {
+        "database_execution": 8.633,
+        "rendered_response": 6.225
+      },
+      "unfiltered": {
+        "database_execution_ms": 72.986,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 200.121
+      }
+    },
+    {
+      "filtered": {
+        "database_execution_ms": 626.702,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Nested Loop", "Seq Scan", "Index Scan", "Index Scan", "Index Scan", "Seq Scan", "Index Scan", "Index Scan", "Index Scan", "Index Scan", "Index Scan"],
+        "rendered_response_ms": 1208.663
+      },
+      "gate": "failed",
+      "page": "last",
+      "page_number": 171,
+      "ratios": {
+        "database_execution": 8.169,
+        "rendered_response": 8.108
+      },
+      "unfiltered": {
+        "database_execution_ms": 76.72,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 149.074
+      }
+    }
+  ]
+}

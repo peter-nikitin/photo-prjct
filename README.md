@@ -65,10 +65,9 @@ runs the full test selection. PostgreSQL must be available on `localhost:5432`, 
 
 ### Verify public selfie search locally
 
-Public selfie search and its processing dependencies are opt-in. Tracked defaults keep
-`SELFIE_SEARCH_ENABLED`, `PHOTO_PROCESSING_ENABLED`, `PHOTO_PROCESSING_PREVIEW_ENABLED`, and
-`PHOTO_PROCESSING_FACE_ENABLED` set to `False`. The approved worker contract uses these ordered
-values:
+Public selfie search is available for every published free event. Photo processing and face
+embeddings are mandatory deployment prerequisites; the application and deployment fail fast when
+either is unavailable. The approved worker contract uses these ordered values:
 
 ```dotenv
 PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2
@@ -107,8 +106,7 @@ docker run --rm --entrypoint python "$WORKER_IMAGE" -m photo_worker.model_smoke
 
 Then apply and verify the exact `selfie-search/` lifecycle, run the explicit scratch-object
 preflight, and execute the staging smoke and capacity measurements in the
-[public selfie-search rollout](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout),
-and only then set `SELFIE_SEARCH_ENABLED=True`.
+[public selfie-search rollout](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout).
 
 ### Verify selfie-search feedback storage on staging
 

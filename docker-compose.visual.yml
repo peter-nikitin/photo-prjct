@@ -33,6 +33,8 @@ services:
       PYTHONPATH: .:src/backend
       NODE_PATH: /opt/visual-test-deps/node_modules
       DJANGO_SETTINGS_MODULE: tests.visual.settings
+      PHOTO_PROCESSING_ENABLED: "True"
+      PHOTO_PROCESSING_FACE_ENABLED: "True"
       CI: ${CI:-false}
     volumes:
       - ./src:/workspace/src:ro

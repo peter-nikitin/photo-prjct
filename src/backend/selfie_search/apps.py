@@ -12,22 +12,15 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
     """Fail closed on configuration that could widen temporary-data retention."""
     errors = []
     for name in (
-        "SELFIE_SEARCH_ENABLED",
         "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
         "SELFIE_FEEDBACK_ENABLED",
+        "PHOTO_PROCESSING_ENABLED",
         "PHOTO_PROCESSING_FACE_ENABLED",
     ):
         if not isinstance(getattr(settings, name), bool):
             errors.append(Error(f"{name} must be a boolean.", id="selfie_search.E001"))
 
     if settings.SELFIE_FEEDBACK_ENABLED is True:
-        if settings.SELFIE_SEARCH_ENABLED is not True:
-            errors.append(
-                Error(
-                    "SELFIE_FEEDBACK_ENABLED requires SELFIE_SEARCH_ENABLED.",
-                    id="selfie_search.E007",
-                )
-            )
         if (
             settings.SELFIE_FEEDBACK_MAX_UPLOAD_BYTES != 20 * 1024 * 1024
             or settings.SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS != 60
@@ -57,16 +50,6 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
                     id="selfie_search.E009",
                 )
             )
-
-    if settings.SELFIE_SEARCH_ENABLED is not True:
-        if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is True:
-            errors.append(
-                Error(
-                    "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED requires SELFIE_SEARCH_ENABLED.",
-                    id="selfie_search.E010",
-                )
-            )
-        return errors
 
     expected_values = {
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
@@ -113,7 +96,7 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
     if not settings.PHOTO_PROCESSING_ENABLED or not settings.PHOTO_PROCESSING_FACE_ENABLED:
         errors.append(
             Error(
-                "SELFIE_SEARCH_ENABLED requires enabled photo processing and face embeddings.",
+                "Selfie search requires enabled photo processing and face embeddings.",
                 id="selfie_search.E006",
             )
         )

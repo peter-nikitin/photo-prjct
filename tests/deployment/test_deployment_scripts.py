@@ -699,6 +699,10 @@ esac
         "DB_USER": "app",
         "DB_PASSWORD": "password",
         "PHOTO_UPLOAD_ENABLED": "False",
+        "PHOTO_PROCESSING_ENABLED": "True",
+        "PHOTO_PROCESSING_FACE_ENABLED": "True",
+        "WORKER_IMAGE": "worker-image",
+        "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
         "PRIVATE_MEDIA_S3_BUCKET": "requested-private-bucket",
         "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "requested-private-access",
         "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "requested-private-secret",
@@ -954,45 +958,23 @@ def test_entrypoint_starts_gunicorn_when_multiprocess_directory_cleanup_fails(
     assert (tmp_path / "gunicorn.log").read_text(encoding="utf-8") == "multiproc=\n"
 
 
-def test_disabled_processing_persists_defaults_without_the_worker_profile(
+def test_missing_processing_prerequisite_prevents_deployment(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """A normal deployment must remove a stale worker without trying to start one."""
-    result = _run(
-        "deploy/apply-deployment.sh",
-        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
-    )
+    """The always-available selfie page cannot deploy without its processor."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["PHOTO_PROCESSING_ENABLED"] = "False"
+    result = _run("deploy/apply-deployment.sh", env=env)
 
-    assert result.returncode == 0, result.stderr
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    assert "PHOTO_PROCESSING_ENABLED=False" in deployed_env
-    assert "PHOTO_PROCESSING_PREVIEW_ENABLED=False" in deployed_env
-    assert "PHOTO_PROCESSING_FACE_ENABLED=False" in deployed_env
-    assert "PHOTO_WORKER_REPLICAS=1" in deployed_env
-    assert "WORKER_IMAGE=" in deployed_env
-    assert "PHOTO_PROCESSING_WORKER_TOKEN=" in deployed_env
-    assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120" in deployed_env
-    assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=131072" in deployed_env
-    assert "PHOTO_WORKER_BUILD=capture-metadata-v1" in deployed_env
-    assert "PHOTO_WORKER_LEASE_SECONDS=120" in deployed_env
-    assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,"
-        "2/generate_preview/1,2/face_embedding/2" in deployed_env
-    )
-    assert (
-        "PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,"
-        "generate_preview" in deployed_env
-    )
-    assert "ALLOWED_HOSTS=localhost,web,findme-photo.ru" in deployed_env
-    commands = _apply_log(tmp_path)
-    assert any("--profile worker rm -sf worker" in command for command in commands)
-    assert not any("--profile worker up" in command for command in commands)
+    assert result.returncode == 2
+    assert "Selfie search requires enabled photo processing and face embeddings" in result.stderr
+    assert not (tmp_path / "apply.log").exists()
 
 
-def test_disabled_processing_removes_a_previously_running_profiled_worker(
+def test_missing_face_embedding_prerequisite_preserves_existing_deployment(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """Disabling processing must remove a worker started by the prior profile-enabled rollout."""
+    """A failed prerequisite check cannot mutate an existing deployment."""
     previous_env = PREVIOUS_ENV + (
         b"WORKER_IMAGE=old-worker-image\n"
         b"PHOTO_PROCESSING_ENABLED=True\n"
@@ -1000,53 +982,42 @@ def test_disabled_processing_removes_a_previously_running_profiled_worker(
         b"PHOTO_WORKER_REPLICAS=2\n"
     )
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["PHOTO_PROCESSING_FACE_ENABLED"] = "False"
     (tmp_path / ".env").write_bytes(previous_env)
     (tmp_path / "previous-env.expected").write_bytes(previous_env)
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
-    assert result.returncode == 0, result.stderr
-    assert any("--profile worker rm -sf worker" in command for command in _apply_log(tmp_path))
+    assert result.returncode == 2
+    assert (tmp_path / ".env").read_bytes() == previous_env
+    assert not (tmp_path / "apply.log").exists()
 
 
-def test_disabled_processing_fails_when_stale_worker_removal_fails(
+def test_missing_processing_prerequisite_does_not_reconcile_worker_profile(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """A failed worker removal cannot be hidden by bringing up only the web stack."""
+    """The validation failure occurs before worker reconciliation."""
     env = _apply_env(tmp_path, fake_bin, scenario="worker-removal-failure")
+    env["PHOTO_PROCESSING_ENABLED"] = "False"
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode != 0
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-    commands = _apply_log(tmp_path)
-    assert any("--profile worker rm -sf worker" in command for command in commands)
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not (tmp_path / "apply.log").exists()
 
 
-def test_disabled_selfie_rollback_replaces_malformed_dormant_overrides_with_safe_values(
+def test_selfie_prerequisites_are_required_for_every_deployment(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env.update(
-        {
-            "SELFIE_SEARCH_ENABLED": "False",
-            "SELFIE_SEARCH_MAX_UPLOAD_BYTES": "not-a-number",
-            "SELFIE_SEARCH_MAX_PIXELS": "also-not-a-number",
-            "SELFIE_SEARCH_EMBEDDING_MODEL": "different-model",
-            "SELFIE_SEARCH_TEMPORARY_PREFIX": "originals/",
-        }
-    )
+    env["PHOTO_PROCESSING_ENABLED"] = "False"
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
-    assert result.returncode == 0, result.stderr
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "SELFIE_SEARCH_ENABLED=False" in deployed_env
-    assert "SELFIE_SEARCH_MAX_UPLOAD_BYTES=20971520" in deployed_env
-    assert "SELFIE_SEARCH_MAX_PIXELS=25000000" in deployed_env
-    assert "SELFIE_SEARCH_EMBEDDING_MODEL=sface" in deployed_env
-    assert "SELFIE_SEARCH_TEMPORARY_PREFIX=selfie-search/" in deployed_env
+    assert result.returncode == 2
+    assert "Selfie search requires enabled photo processing and face embeddings" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
 
 
 def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
@@ -1236,6 +1207,7 @@ def test_preview_first_activation_rejects_partial_or_implicit_configuration(
 ) -> None:
     """Preview and face work must be a conscious operator activation, not an image side effect."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["PHOTO_PROCESSING_ENABLED"] = "False"
     env.update(overrides)
 
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -1297,7 +1269,6 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
             {"PHOTO_PROCESSING_FACE_ENABLED": "true"},
             "PHOTO_PROCESSING_FACE_ENABLED must be True or False",
         ),
-        ({"SELFIE_SEARCH_ENABLED": "true"}, "SELFIE_SEARCH_ENABLED must be True or False"),
         (
             {"PHOTO_WORKER_PROCESSOR_TYPES": "capture_metadata,selfie_query"},
             (
@@ -1326,6 +1297,9 @@ def test_processing_activation_requires_exact_valid_configuration(
 ) -> None:
     """Invalid activation never changes the live deployment environment."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    if message in {"Set WORKER_IMAGE", "Set PHOTO_PROCESSING_WORKER_TOKEN"}:
+        env.pop("WORKER_IMAGE")
+        env.pop("PHOTO_PROCESSING_WORKER_TOKEN")
     env.update(overrides)
 
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -1564,7 +1538,7 @@ def test_failed_first_deployment_restores_the_no_env_state(tmp_path: Path, fake_
     assert not (tmp_path / "compose-project-name").exists()
     commands = _apply_log(tmp_path)
     assert any(" down --remove-orphans" in command for command in commands)
-    assert not any("--profile worker" in command for command in commands)
+    assert any("--profile worker" in command for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -2096,7 +2070,6 @@ def test_feedback_activation_requires_a_confirmed_storage_preflight_before_mutat
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "SELFIE_SEARCH_ENABLED": "True",
             "PRIVATE_MEDIA_S3_BUCKET": "private-search",
             "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "private-access",
             "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "private-secret",
@@ -2127,7 +2100,6 @@ def test_confirmed_feedback_activation_persists_web_only_storage_configuration(
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "SELFIE_SEARCH_ENABLED": "True",
             "PRIVATE_MEDIA_S3_BUCKET": "private-search",
             "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "private-access",
             "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "private-secret",

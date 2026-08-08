@@ -38,6 +38,8 @@ jobs:
       DB_HOST: localhost
       DB_PORT: "5432"
       TEST_DB_NAME: findme_test_${{ github.run_id }}_${{ github.run_attempt }}
+      PHOTO_PROCESSING_ENABLED: "True"
+      PHOTO_PROCESSING_FACE_ENABLED: "True"
 
     steps:
       - name: Check out repository

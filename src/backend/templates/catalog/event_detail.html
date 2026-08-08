@@ -5,7 +5,7 @@
 {% block extra_css %}
   <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
   <link rel="stylesheet" href="{% static 'ui/glightbox.min.css' %}">
-  {% if selfie_search_form %}<link rel="stylesheet" href="{% static 'ui/selfie-search.css' %}">{% endif %}
+  {% if selfie_search_form or manual_time_filter_form %}<link rel="stylesheet" href="{% static 'ui/selfie-search.css' %}">{% endif %}
 {% endblock %}
 {% block content %}
   <article class="event-detail">
@@ -44,37 +44,62 @@
         {% endif %}
       </div>
     </div>
-    {% if selfie_search_form %}
-      <section id="selfie-search" class="selfie-search" aria-labelledby="selfie-search-title">
-        <h2 id="selfie-search-title">Найти мои фото</h2>
-        <p>Мы ищем вероятные совпадения только среди фотографий этого события.</p>
-        <p>Загрузите чёткую фотографию, где лицо хорошо видно. Лучше использовать фото с дня мероприятия, особенно если на мероприятии вы были в очках или головном уборе.</p>
-        <ul class="selfie-search-disclosures">
-          <li>Селфи удаляется после подготовки поиска.</li>
-          <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
-        </ul>
-        <div class="selfie-search-layout">
-          <form data-selfie-search-form data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" action="{% url 'selfie_search:submit' event_slug=event.slug %}#selfie-search" method="post" enctype="multipart/form-data">
-            {% csrf_token %}
-            {% if selfie_feedback_enabled %}<input type="hidden" name="feedback_correlation" value="">{% endif %}
-            {% if selfie_search_form.non_field_errors or selfie_search_form.selfie.errors %}
-              <div id="selfie-search-error" class="selfie-search-error" data-selfie-search-error role="alert" tabindex="-1">
-                {% for error in selfie_search_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
-                {% if not selfie_search_form.non_field_errors %}
-                  {% for error in selfie_search_form.selfie.errors %}<p>{{ error }}</p>{% endfor %}
-                {% endif %}
+    {% if manual_time_filter_form %}
+      <section id="gallery" class="event-discovery" aria-labelledby="discovery-title">
+        <h2 id="discovery-title">Найти свои фото</h2>
+        <div class="event-discovery-layout">
+          {% if selfie_search_form %}
+            <section id="selfie-search" class="selfie-search event-discovery-column" aria-labelledby="selfie-search-title">
+              <h3 id="selfie-search-title">Поиск по селфи</h3>
+              <p>Мы ищем вероятные совпадения только среди фотографий этого события.</p>
+              <p>Загрузите чёткую фотографию, где лицо хорошо видно. Лучше использовать фото с дня мероприятия, особенно если на мероприятии вы были в очках или головном уборе.</p>
+              <ul class="selfie-search-disclosures">
+                <li>Селфи удаляется после подготовки поиска.</li>
+                <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
+              </ul>
+              <div class="selfie-search-layout">
+                <form data-selfie-search-form data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" action="{% url 'selfie_search:submit' event_slug=event.slug %}#selfie-search" method="post" enctype="multipart/form-data">
+                  {% csrf_token %}
+                  {% if selfie_feedback_enabled %}<input type="hidden" name="feedback_correlation" value="">{% endif %}
+                  {% if selfie_search_form.non_field_errors or selfie_search_form.selfie.errors %}
+                    <div id="selfie-search-error" class="selfie-search-error" data-selfie-search-error role="alert" tabindex="-1">
+                      {% for error in selfie_search_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+                      {% if not selfie_search_form.non_field_errors %}
+                        {% for error in selfie_search_form.selfie.errors %}<p>{{ error }}</p>{% endfor %}
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                  <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
+                  {{ selfie_search_form.selfie }}
+                  <button class="button" type="submit">Найти мои фото</button>
+                </form>
+                <section class="selfie-search-history" data-selfie-search-history data-event-slug="{{ event.slug }}" hidden>
+                  <div data-selfie-search-history-list></div>
+                </section>
               </div>
+            </section>
+          {% endif %}
+          <section class="manual-time-filter event-discovery-column" aria-labelledby="manual-time-filter-title">
+            <h3 id="manual-time-filter-title">Ручной поиск</h3>
+            <p class="manual-time-filter-guidance">Даты события: {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}. Время указано для города проведения.</p>
+            <form class="manual-time-filter-form" data-manual-time-filter-form action="{% url 'event_detail' slug=event.slug %}#gallery" method="get">
+              {% for field in manual_time_filter_form %}
+                <div class="manual-time-filter-field">
+                  <label for="{{ field.id_for_label }}">{% if field.name == "from" %}Время начала{% else %}Время окончания{% endif %}</label>
+                  {{ field }}
+                  {% for error in field.errors %}<p class="manual-time-filter-error" role="alert">{{ error }}</p>{% endfor %}
+                </div>
+              {% endfor %}
+              <button class="button" type="submit">Показать фотографии</button>
+            </form>
+            {% if manual_time_filter_form.is_requested %}
+              <a class="manual-time-filter-reset" href="{% url 'event_detail' slug=event.slug %}#gallery">Сбросить фильтр</a>
             {% endif %}
-            <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
-            {{ selfie_search_form.selfie }}
-            <button class="button" type="submit">Найти мои фото</button>
-          </form>
-          <section class="selfie-search-history" data-selfie-search-history data-event-slug="{{ event.slug }}" hidden>
-            <div data-selfie-search-history-list></div>
           </section>
         </div>
       </section>
     {% endif %}
+    {% if not manual_time_filter_invalid %}
     <section class="event-gallery" data-event-gallery aria-labelledby="gallery-title">
       <div class="event-gallery-heading">
         <h2 id="gallery-title">Фотографии</h2>
@@ -150,12 +175,21 @@
           {% endfor %}
         </div>
         {% if gallery_page.paginator.num_pages > 1 %}
-          {% include "ui/gallery_pagination.html" with pagination_page=gallery_page pagination_label="Страницы галереи" %}
+          {% if manual_time_filter_form.is_requested %}
+            {% include "ui/gallery_pagination.html" with pagination_page=gallery_page pagination_label="Страницы галереи" pagination_filter=manual_time_filter_form.cleaned_data %}
+          {% else %}
+            {% include "ui/gallery_pagination.html" with pagination_page=gallery_page pagination_label="Страницы галереи" %}
+          {% endif %}
         {% endif %}
       {% else %}
-        <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>
+        {% if manual_time_filter_form.is_requested %}
+          <p class="event-gallery-empty">За выбранное время фотографий не найдено.</p>
+        {% else %}
+          <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>
+        {% endif %}
       {% endif %}
     </section>
+    {% endif %}
   </article>
 {% endblock %}
 {% block extra_js %}

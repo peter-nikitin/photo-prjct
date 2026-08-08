@@ -90,8 +90,24 @@ The repository currently contains an early Django application:
   commands. The reprocessing command defaults to dry run, requires an explicit apply, validates
   the approved event identity/cohort/configuration, and enrolls immutable version-2 work without
   rewriting prior attempts. The report emits bounded completion, timezone-state, warning, UTC, and
-  event-local-hour aggregates. No restored-snapshot run, deployment, backfill, or customer-facing
-  time filtering is evidenced here.
+  event-local-hour aggregates.
+- Release A of the capture-time projection is implemented locally: nullable `Photo.capture_time` and
+  `Photo.capture_time_source_attempt` fields, the synchronous lifecycle writer, bounded rebuild, and
+  aggregate reconciliation commands are present.
+  The gallery remains a direct current-v2 JSON/cast reader (`direct_capture_time`); no Release B
+  projection-reader switch is implemented. On the accepted local staging clone (9 events, 17,310
+  photos; event 9 has 17,043), the authoritative pre-backfill event-9 report had 17,043 accepted
+  results, 17,043 non-null results, 17,043 terminal jobs, and 17,043 version-2 jobs, with zero
+  missing or terminal failures, status accepted, and timezone `Europe/Moscow`. The all-event dry
+  run reported `would_change=17043`,
+  `unchanged=267`, `events=9`, `photos=17310`, and zero exhausted/retries/skipped; apply changed
+  17,043 rows and left 267 unchanged. The required-clean report was clean with 17,043 exact,
+  projected, and qualifying non-null pairs and zero missing, mismatching, stale, extra, partial,
+  or unsupported rows; event 9 was accepted at exactly 17,043/17,043. The idempotent apply then
+  changed zero and left 17,310 unchanged, and the authoritative after-report was identical and
+  accepted. These are local-clone evidence only: this branch has no CI run, PR, deployed Release A,
+  live backfill, or live lifecycle smoke, so the Release A operational gate remains pending and
+  Release B is blocked.
 - Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the
@@ -402,18 +418,21 @@ selfie deletion before `ready`, and ready-result media for both generations with
 normal paid gallery. The existing immutable worker image packages pinned public OpenCV Zoo
 YuNet/SFace models and runs a non-root build-time smoke through both `face_embedding` and
 `selfie_query`; the exact rollout image must run that same smoke before activation.
-`SELFIE_SEARCH_ENABLED` and `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED` remain `False` by default. No
-staging lifecycle mutation, real-bucket preflight, exact rollout-image smoke, VM capacity smoke,
-cluster corpus activation, or environment/customer outcome is claimed. Corpus build, private
-benchmark, aggregate report, and guarded activation commands are repository interfaces only until
-the release gate and an explicit later rollout approve them.
+Public selfie search is always available when its existing processing prerequisites are healthy;
+the retired availability switch is no longer an active setting. No staging lifecycle mutation,
+real-bucket preflight, exact rollout-image smoke, VM capacity smoke, cluster
+corpus activation, or environment/customer outcome is claimed. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False`
+remains the independent repository default. Corpus build, private benchmark, aggregate report, and
+guarded activation commands are repository interfaces only until the release gate and an explicit
+later rollout approve them.
 
 The gallery-photo source is locally verified by 145 focused Python tests, 70 JavaScript tests for
 the production markup and chooser behavior, and 83 visual tests covering the zero-, one-, two-,
 and four-face event-gallery fixture at desktop and 390px mobile widths. The root `make check`
 also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and clean system/migration
-checks. `SELFIE_SEARCH_ENABLED` remains `False` by default in the repository. The gallery-photo
-source has no staging or production deployment evidence; production is not activated.
+checks. The gallery-photo source has no staging or production deployment evidence; production is
+not activated. Public selfie search is not controlled by an availability flag; the independent
+cluster-expansion flag remains disabled by default.
 
 ### Purchase and download
 

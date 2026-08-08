@@ -10,6 +10,7 @@ from uuid import uuid4
 from config import views
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
+from django.core.paginator import Paginator
 from django.test import (
     RequestFactory,
     SimpleTestCase,
@@ -22,6 +23,7 @@ from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from processing.models import (
+    CAPTURE_METADATA_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     EventProcessingRun,
@@ -40,6 +42,7 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_CONFIGURATION,
     FACE_EMBEDDING_PROCESSOR_VERSION,
 )
+from selfie_search.models import SelfieSearch
 
 from picflow.models import Event, Photo
 
@@ -721,7 +724,6 @@ class GalleryPageTests(TestCase):
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
         self.assertNotContains(response, "gallery-photo-id")
 
-    @override_settings(SELFIE_SEARCH_ENABLED=True)
     def test_event_detail_maps_all_usable_faces_to_exact_submission_urls(self) -> None:
         """The production break caught here is losing a selectable face or addressing it vaguely."""
         event = self.make_event()
@@ -781,7 +783,6 @@ class GalleryPageTests(TestCase):
                 count=5,
             )
 
-    @override_settings(SELFIE_SEARCH_ENABLED=True)
     def test_event_detail_renders_gallery_face_controls(self) -> None:
         """The production break caught here is an ambiguous face starting a direct search."""
         event = self.make_event()
@@ -872,6 +873,217 @@ class GalleryPageTests(TestCase):
         self.assertContains(response, 'id="gallery-title"')
         self.assertContains(response, 'class="event-gallery-count">0 фото</span>')
         self.assertContains(response, "Фотографии пока не опубликованы")
+
+
+@override_settings(
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+)
+@modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
+class EventDetailManualTimeFilterTests(TestCase):
+    """The production break caught here is an invalid filter quietly rendering a broad gallery."""
+
+    def setUp(self) -> None:
+        Event.objects.update(publication_status=Event.PublicationStatus.DRAFT)
+        self.user = get_user_model().objects.create_user(username="manual-time-view")
+        self.event = Event.objects.create(
+            name="Manual time event",
+            slug="manual-time-event",
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 12),
+            city="London",
+            timezone_name="Europe/London",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+
+    def photo(self, photo_id: str, *, filename: str) -> Photo:
+        return Photo.objects.create(
+            id=photo_id,
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/{photo_id}",
+            original_filename=filename,
+            original_size=4,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+    def capture_evidence(self, photo: Photo, *, capture_time: str) -> None:
+        configuration = {"capture_metadata": {"event_timezone": self.event.timezone_name}}
+        run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            configuration_hash=uuid4().hex + uuid4().hex,
+        )
+        job = ProcessingJob.objects.create(
+            event=self.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+            result={"capture_time": capture_time},
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=CAPTURE_METADATA_PROCESSOR
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.save()
+
+    def test_no_manual_parameters_keeps_the_existing_unfiltered_gallery(self) -> None:
+        photo = self.photo("unfiltered", filename="unfiltered.jpg")
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item.photo_id for item in response.context["gallery_photos"]], [photo.pk])
+        self.assertFalse(response.context["manual_time_filter_form"].is_requested)
+        self.assertFalse(response.context["manual_time_filter_invalid"])
+
+    def test_unfiltered_event_detail_suppresses_metrika(self) -> None:
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
+
+        self.assertIsNone(response.context["yandex_metrika_counter_id"])
+        self.assertNotContains(response, "mc.yandex.ru")
+        self.assertNotContains(response, 'ym(111239706, "init", {')
+
+    def test_manual_time_event_detail_suppresses_metrika(self) -> None:
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01"},
+        )
+
+        self.assertIsNone(response.context["yandex_metrika_counter_id"])
+        self.assertNotContains(response, "mc.yandex.ru")
+        self.assertNotContains(response, 'ym(111239706, "init", {')
+
+    def test_valid_manual_filter_uses_only_matching_current_evidence_before_paging(self) -> None:
+        matching = self.photo("matching", filename="a.jpg")
+        outside = self.photo("outside", filename="b.jpg")
+        self.capture_evidence(matching, capture_time="2026-06-10T09:00:00Z")
+        self.capture_evidence(outside, capture_time="2026-06-10T10:00:00Z")
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01", "page": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item.photo_id for item in response.context["gallery_photos"]], [matching.pk]
+        )
+        self.assertTrue(response.context["manual_time_filter_form"].is_valid())
+        self.assertFalse(response.context["manual_time_filter_invalid"])
+
+    def test_invalid_manual_values_return_200_without_gallery_or_saved_search_side_effects(
+        self,
+    ) -> None:
+        photo = self.photo("would-be-unfiltered", filename="would-be-unfiltered.jpg")
+        selfies_before = SelfieSearch.objects.count()
+        jobs_before = ProcessingJob.objects.count()
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            [("from", ""), ("from", "2026-06-10T10:00")],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("from", response.context["manual_time_filter_form"].errors)
+        self.assertTrue(response.context["manual_time_filter_invalid"])
+        self.assertEqual(response.context["gallery_photos"], ())
+        self.assertIsNone(response.context["gallery_page"])
+        self.assertEqual(SelfieSearch.objects.count(), selfies_before)
+        self.assertEqual(ProcessingJob.objects.count(), jobs_before)
+        self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
+
+    def test_manual_time_discovery_renders_event_local_controls_and_invalid_errors(self) -> None:
+        """Invalid input must retain correction controls, not broad gallery results."""
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": ""},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="gallery"')
+        self.assertContains(response, "Найти свои фото")
+        self.assertContains(response, "Поиск по селфи")
+        self.assertContains(response, "Ручной поиск")
+        self.assertContains(response, "Даты события: 10.06.2026–12.06.2026")
+        self.assertContains(response, 'name="from"')
+        self.assertContains(response, 'min="2026-06-10T00:00"')
+        self.assertContains(response, 'max="2026-06-12T23:59"')
+        self.assertNotContains(response, 'name="page"')
+        self.assertContains(response, "Укажите время начала.")
+        reset_url = f"{reverse('event_detail', kwargs={'slug': self.event.slug})}#gallery"
+        self.assertContains(response, f'href="{reset_url}"')
+        self.assertNotContains(response, 'class="event-gallery"')
+
+    @patch("config.views.gallery_page")
+    def test_filtered_pagination_preserves_valid_times_while_unfiltered_pagination_stays_clean(
+        self, gallery_page_mock
+    ) -> None:
+        """A page turn must neither drop a valid filter nor invent one."""
+        photo = self.photo("pagination", filename="pagination.jpg")
+        pages = Paginator((photo, photo), 1)
+        gallery_page_mock.side_effect = lambda **kwargs: pages.page(int(kwargs["page_number"] or 1))
+        url = reverse("event_detail", kwargs={"slug": self.event.slug})
+
+        filtered = self.client.get(
+            url,
+            {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01", "page": "1"},
+        )
+        unfiltered = self.client.get(url, {"page": "1"})
+
+        self.assertContains(
+            filtered,
+            'href="?from=2026-06-10T10%3A00&amp;to=2026-06-10T10%3A01&amp;page=2"',
+        )
+        filtered_pager = filtered.content.decode(filtered.charset).split(
+            'class="gallery-pagination-form"', 1
+        )[1]
+        self.assertIn('name="from" value="2026-06-10T10:00"', filtered_pager)
+        self.assertIn('name="to" value="2026-06-10T10:01"', filtered_pager)
+        unfiltered_pager = unfiltered.content.decode(unfiltered.charset).split(
+            'class="gallery-pagination-form"', 1
+        )[1]
+        self.assertNotIn('name="from"', unfiltered_pager)
+        self.assertNotIn('name="to"', unfiltered_pager)
+
+    def test_valid_zero_match_renders_filtered_empty_state(self) -> None:
+        """An empty valid filter must not look like unpublished photos."""
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01"},
+        )
+
+        self.assertContains(response, "За выбранное время фотографий не найдено.")
+        self.assertNotContains(response, "Фотографии пока не опубликованы.")
 
 
 class GalleryMediaViewTests(TransactionTestCase):

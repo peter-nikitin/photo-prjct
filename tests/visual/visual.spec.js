@@ -28,6 +28,8 @@ const desktopPages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
+  ['event-gallery-filtered-empty', '/__visual__/event/gallery-filtered-empty/'],
+  ['event-gallery-manual-invalid', '/__visual__/event/gallery-manual-invalid/'],
   ['event-selfie-search', '/__visual__/event/selfie-search/'],
   ['event-selfie-search-rejected', '/__visual__/event/selfie-search/rejected/'],
   ['selfie-search-processing', '/__visual__/event/selfie-search/processing/'],
@@ -55,6 +57,8 @@ const mobilePages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
+  ['event-gallery-filtered-empty', '/__visual__/event/gallery-filtered-empty/'],
+  ['event-gallery-manual-invalid', '/__visual__/event/gallery-manual-invalid/'],
   ['event-selfie-search', '/__visual__/event/selfie-search/'],
   ['event-selfie-search-rejected', '/__visual__/event/selfie-search/rejected/'],
   ['selfie-search-processing', '/__visual__/event/selfie-search/processing/'],
@@ -831,6 +835,70 @@ test('gallery fallback link works without JavaScript', async ({ browser }) => {
     await expect(page).toHaveURL(/\/static\/images\/run-city-1842\.png$/);
   } finally {
     await context.close();
+  }
+});
+
+test('manual gallery search works without JavaScript and keeps its validated query through paging', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    await page.goto('/events/london-10k/');
+    const form = page.locator('[data-manual-time-filter-form]');
+    await expect(form).toHaveAttribute('method', 'get');
+    await expect(form.locator('input[name="page"]')).toHaveCount(0);
+    await form.locator('input[name="from"]').fill('2026-06-08T09:00');
+    await form.locator('input[name="to"]').fill('2026-06-08T10:00');
+    await form.locator('input[name="to"]').press('Enter', { noWaitAfter: true });
+    await expect(page).toHaveURL(/\?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00#gallery$/);
+    await expect(page.locator('#gallery')).toBeVisible();
+    await expect(page.locator('.event-gallery')).toBeVisible();
+    const nextPageLink = page.getByRole('link', { name: 'Вперёд' });
+    await expect(nextPageLink).toHaveAttribute(
+      'href',
+      '?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00&page=2',
+    );
+    await nextPageLink.focus();
+    await expect(nextPageLink).toBeFocused();
+    await nextPageLink.press('Enter', { noWaitAfter: true });
+    await expect(page).toHaveURL(/\?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00&page=2$/);
+    const resetLink = page.getByRole('link', { name: 'Сбросить фильтр' });
+    await expect(resetLink).toHaveAttribute('href', '/events/london-10k/#gallery');
+    await resetLink.focus();
+    await expect(resetLink).toBeFocused();
+    await resetLink.press('Enter', { noWaitAfter: true });
+    await expect(page).toHaveURL('/events/london-10k/#gallery');
+
+    await page.goto('/events/london-10k/?from=');
+    await expect(page.locator('.manual-time-filter-error')).toHaveText('Укажите время начала.');
+    await expect(page.locator('.event-gallery')).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+test('discovery columns are side by side on desktop and stack before the gallery on mobile', async ({ page }) => {
+  for (const [viewport, mobile] of [
+    [DESKTOP_VIEWPORT, false],
+    [MOBILE_VIEWPORT, true],
+  ]) {
+    await page.setViewportSize(viewport);
+    await preloadCookieAcknowledgement(page);
+    await page.goto('/__visual__/event/gallery-populated/');
+    await settlePage(page);
+    const layout = await page.evaluate(() => {
+      const selfie = document.querySelector('#selfie-search')?.getBoundingClientRect();
+      const manual = document.querySelector('.manual-time-filter')?.getBoundingClientRect();
+      const gallery = document.querySelector('.event-gallery')?.getBoundingClientRect();
+      return {
+        horizontal: Boolean(selfie && manual && Math.abs(selfie.top - manual.top) < 1 && selfie.left < manual.left),
+        vertical: Boolean(selfie && manual && gallery && selfie.top < manual.top && manual.top < gallery.top),
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      };
+    });
+    expect(layout.horizontal).toBe(!mobile);
+    expect(layout.vertical).toBe(mobile);
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
   }
 });
 

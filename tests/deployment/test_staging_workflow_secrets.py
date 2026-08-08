@@ -224,7 +224,6 @@ def _deployment_values() -> dict[str, str]:
             "selfie_query,face_embedding,capture_metadata,generate_preview"
         ),
         "PHOTO_WORKER_REPLICAS": "1",
-        "SELFIE_SEARCH_ENABLED": "False",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES": "20971520",
         "SELFIE_SEARCH_MAX_PIXELS": "25000000",
         "SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS": "120",

@@ -83,7 +83,11 @@ case "$*" in
       elif [ "${capture_next:-}" = yes ]; then
         cp "$argument" "$COMPOSE_CAPTURE/$index"
         case "$argument" in
-          *findme-staging-local.*) /usr/bin/stat -f '%Lp %N' "$argument" >> "$MATERIAL_LOG" ;;
+          *findme-staging-local.*)
+            "$REAL_PYTHON" -c \
+              'import os,sys;p=sys.argv[1];print(f"{os.stat(p).st_mode&0o777:o} {p}")' \
+              "$argument" >> "$MATERIAL_LOG"
+            ;;
         esac
         index=$((index + 1))
         capture_next=
@@ -420,10 +424,40 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
         return process.communicate(timeout=5)
 
 
-def test_process_group_cleanup_terminates_a_descendant_after_its_leader_exits() -> None:
+def test_process_group_cleanup_terminates_a_descendant_after_its_leader_exits(
+    tmp_path: Path,
+) -> None:
     """Would fail if cleanup only followed the make leader and orphaned a pipe-holding child."""
+    descendant_pid = tmp_path / "descendant-pid"
+    terminated = tmp_path / "descendant-terminated"
+    descendant_script = tmp_path / "descendant.py"
+    descendant_script.write_text(
+        "\n".join(
+            (
+                "from pathlib import Path",
+                "import os",
+                "import signal",
+                f"pid_path = Path({str(descendant_pid)!r})",
+                f"terminated_path = Path({str(terminated)!r})",
+                "def stop(signum, _frame):",
+                '    terminated_path.write_text(f"{signum}\\n", encoding="utf-8")',
+                "    os._exit(0)",
+                "signal.signal(signal.SIGTERM, stop)",
+                'pid_path.write_text(str(os.getpid()), encoding="utf-8")',
+                "while True:",
+                "    signal.pause()",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     process = subprocess.Popen(
-        ["/bin/sh", "-c", "while :; do /bin/sleep 1; done & exit 0"],
+        ["/bin/sh", "-c", '"$PYTHON_BIN" "$DESCENDANT_SCRIPT" & exit 0'],
+        env={
+            **os.environ,
+            "PYTHON_BIN": sys.executable,
+            "DESCENDANT_SCRIPT": str(descendant_script),
+        },
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -431,16 +465,23 @@ def test_process_group_cleanup_terminates_a_descendant_after_its_leader_exits() 
     )
     try:
         assert process.wait(timeout=5) == 0
+        deadline = time.monotonic() + 5
+        while not descendant_pid.exists():
+            if time.monotonic() >= deadline:
+                pytest.fail("descendant did not reach its signal-ready checkpoint")
+            time.sleep(0.02)
+        assert int(descendant_pid.read_text(encoding="utf-8")) > 0
         stdout, stderr = _terminate_process_group(process)
         assert stdout == ""
         assert stderr == ""
-        with pytest.raises(ProcessLookupError):
-            os.killpg(process.pid, 0)
+        assert terminated.read_text(encoding="utf-8") == f"{signal.SIGTERM}\n"
     finally:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        for path in (descendant_pid, terminated, descendant_script):
+            path.unlink(missing_ok=True)
 
 
 def _finish_signal_test_process(

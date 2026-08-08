@@ -1824,7 +1824,7 @@ def test_environment_secret_rotation_extracts_a_valid_base_from_cli_metadata() -
 
     def extract(metadata: dict[str, Any]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [str(ROOT / ".venv/bin/python"), "-c", extractor["script"]],
+            [sys.executable, "-c", extractor["script"]],
             cwd=ROOT,
             input=json.dumps(metadata),
             text=True,

@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -986,14 +987,38 @@ def test_signal_between_materialization_and_child_start_removes_private_files(
             shutil.rmtree(retained)
 
 
+@pytest.mark.parametrize(
+    "request_url",
+    [
+        "https://attacker.invalid/oidc?x=1",
+        "https://evilactions.githubusercontent.com/oidc?x=1",
+        "https://actions.githubusercontent.com.attacker.invalid/oidc?x=1",
+        "https://actions.githubusercontent.com/oidc?x=1",
+        "https://pipelines.actions.githubusercontent.com:444/oidc?x=1",
+        "https://github-user@pipelines.actions.githubusercontent.com/oidc?x=1",
+        "https://pipelines.actions.githubusercontent.com",
+        "https://pipelines.actions.githubusercontent.com/oidc?x=1#fragment",
+    ],
+    ids=[
+        "unrelated-host",
+        "lookalike-host",
+        "suffix-attack",
+        "apex",
+        "non-default-port",
+        "userinfo",
+        "missing-path",
+        "fragment",
+    ],
+)
 def test_github_identity_rejects_an_untrusted_token_request_url(
     resolver: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    request_url: str,
 ) -> None:
     http = _HttpBoundary([])
     monkeypatch.setattr(resolver, "urlopen", http)
-    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://attacker.invalid/oidc?x=1")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", request_url)
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "github-request-token")
 
     exit_code = resolver.main(
@@ -1017,11 +1042,21 @@ def test_github_identity_rejects_an_untrusted_token_request_url(
     assert "github-request-token" not in captured.err
 
 
+@pytest.mark.parametrize(
+    "request_url",
+    [
+        "https://pipelines.actions.githubusercontent.com/id-token?x=1",
+        "https://token.actions.githubusercontent.com/id-token?x=1",
+        "https://run-actions-1-azure-eastus.actions.githubusercontent.com/id-token?x=1",
+    ],
+    ids=["pipelines", "token", "observed-regional-runner"],
+)
 def test_github_oidc_claims_and_token_exchange_are_closed(
     resolver: ModuleType,
     manifest: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    request_url: str,
 ) -> None:
     claims = {
         "iss": manifest["github_oidc"]["issuer"],
@@ -1043,10 +1078,7 @@ def test_github_oidc_claims_and_token_exchange_are_closed(
         ]
     )
     monkeypatch.setattr(resolver, "urlopen", http)
-    monkeypatch.setenv(
-        "ACTIONS_ID_TOKEN_REQUEST_URL",
-        "https://pipelines.actions.githubusercontent.com/id-token?x=1",
-    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", request_url)
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "github-request-token")
 
     exit_code = resolver.main(
@@ -1071,6 +1103,7 @@ def test_github_oidc_claims_and_token_exchange_are_closed(
     assert exit_code == 0
     assert len(http.requests) == 4
     oidc_request, exchange_request, metadata_request, payload_request = http.requests
+    assert urlsplit(oidc_request.full_url).hostname == urlsplit(request_url).hostname
     assert "audience=https%3A%2F%2Fgithub.com%2Fpeter-nikitin" in oidc_request.full_url
     assert oidc_request.get_header("Authorization") == "Bearer github-request-token"
     exchange_fields = exchange_request.data.decode()

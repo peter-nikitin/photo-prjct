@@ -957,6 +957,8 @@ class WorkerApiTests(TestCase):
             {"source_value": None},
             {"source_offset": "0300"},
             {"source_offset": "+24:00"},
+            {"capture_time": "2026-07-29 07:00:00Z"},
+            {"capture_time": "2026-07-29T07:00:00.1234567Z"},
         )
 
         for index, overrides in enumerate(invalid_results):

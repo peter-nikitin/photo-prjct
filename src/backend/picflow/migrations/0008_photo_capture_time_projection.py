@@ -28,7 +28,7 @@ class Migration(migrations.Migration):
         migrations.AddIndex(
             model_name="photo",
             index=models.Index(
-                fields=["event", "capture_time"], name="picflow_photo_event_capture_time_idx"
+                fields=["event", "capture_time"], name="picflow_photo_event_time_idx"
             ),
         ),
         migrations.AddConstraint(

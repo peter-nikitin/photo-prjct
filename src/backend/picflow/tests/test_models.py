@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from uuid import uuid4
 
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -133,6 +134,20 @@ class PhotoModelTests(TestCase):
             city="Moscow",
         )
         self.photographer = get_user_model().objects.create_user(username="photographer")
+
+    def test_explicit_index_names_fit_postgresql_limit(self) -> None:
+        index_names = [
+            index.name
+            for model in apps.get_app_config("picflow").get_models()
+            for index in model._meta.indexes
+            if index.name
+        ]
+
+        self.assertTrue(index_names)
+        self.assertTrue(
+            all(len(name) <= 30 for name in index_names),
+            f"Picflow index names must be at most 30 characters: {index_names}",
+        )
 
     def test_string_representation_uses_identifier(self) -> None:
         photo = Photo(id="TEST-001", event=self.event, src="photos/test.jpg")

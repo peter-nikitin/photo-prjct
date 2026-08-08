@@ -131,9 +131,7 @@ class Photo(models.Model):
         ordering = ["id"]
         indexes = [
             models.Index(fields=["uploaded_by"], name="picflow_photo_uploaded_by_idx"),
-            models.Index(
-                fields=["event", "capture_time"], name="picflow_photo_event_capture_time_idx"
-            ),
+            models.Index(fields=["event", "capture_time"], name="picflow_photo_event_time_idx"),
         ]
         constraints = [
             models.CheckConstraint(

@@ -48,6 +48,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
 | EJ-017 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
+| EJ-018 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
 
 ## Job details
 
@@ -307,6 +308,33 @@ before this becomes operationally validated.
 - Evidence: [`src/backend/processing/services/event_original_cache.py`](../src/backend/processing/services/event_original_cache.py), [`src/backend/processing/management/commands/cache_event_originals.py`](../src/backend/processing/management/commands/cache_event_originals.py), and [`src/backend/processing/tests/test_event_original_cache.py`](../src/backend/processing/tests/test_event_original_cache.py)
 - Last updated: 2026-08-07
 
+### EJ-018 — Operator — Prepare private sampled face-quality review evidence
+
+When I assess a local experimental face-quality configuration, I want a reproducible private
+sampled-review bundle with bounded integrity evidence, so I can later make an explicit operator
+decision without changing runtime behavior.
+
+- Status: Validated for the private local sampled-review workflow and its immutable sample bundle;
+  human labels and an explicit operator decision remain pending.
+- Evidence: The frozen comparison source bundle SHA-256 is
+  `f1028cf1e581645dd0cf108e356394dc5ada838b92c9f662c1356cd52e657b48`. A private local bundle
+  published under `run-20260808T015921Z` as `quality-sample-10pct-attempt-1` has SHA-256
+  `1b2aad77523b59418a552ce2fdd92a9a290c79b8b39d3ac2ae35fa32599eb6cc`: 15,052 population
+  rejections, 1,506 unique sampled rejections, six strata, seven logical pages, and 100 retained
+  controls. First, middle, and last logical probes resolved. The source-comparison aggregate
+  filesystem SHA-256 was
+  `4271a0b017b5812d38174a5bca3308c4c8f664f9ec231830ac93ea6981aaa360` before and after the
+  sample publication. A non-human, all-`uncertain` fixture CSV (SHA-256
+  `e39a0930ddb22911c1872016354f33e0511b26dc49584abf2a57f09b8a44247d`) completed the finalizer
+  round trip; its analysis manifest SHA-256 is
+  `316fb731aec48b2ded99d7672a9ff388d6e3b49a541766457f7a609ab36160bb` and records six strata,
+  100 controls, and 1,506 uncertain gallery entries. This fixture proves only the finalization
+  round trip, not a quality decision. The tooling and evidence are local and filesystem-only; no
+  production generation is activated, and the separate search-relevance review remains pending.
+  See the [approved sampled-review plan](plans/2026-08-08-ten-percent-face-quality-review.md) and
+  [`face_spike` experiment](../experiments/face_recognition_spike/README.md).
+- Last updated: 2026-08-08
+
 ## Status log
 
 This log is append-only.
@@ -339,3 +367,4 @@ This log is append-only.
 | 2026-08-05 | EJ-016 | Not recorded | Delivered | Task 1–7 implementation commits and focused contract tests provide the repository capability for immutable event-scoped corpora, direct-first expansion, provenance, source-separated reporting, private evaluation, and guarded activation. The feature gate remains false and the release gate, environment activation, and customer outcomes are not yet evidenced. |
 | 2026-08-07 | EJ-017 | Not recorded | Candidate | The repository now has a focused, read-only event-original cache command and automated local-contract coverage. No authorized staging-clone or private Object Storage invocation is claimed. |
 | 2026-08-07 | EJ-003 | Validated | Delivered | Repository workflow, migration-identity, read-only preflight, deployment-phase, controlled-pause, and bounded issue-reconciliation contracts are implemented and covered by focused tests. No PR/CI/live staging rollout or notification-drill evidence is recorded yet, so the job is not advanced to Validated. |
+| 2026-08-08 | EJ-018 | Not recorded | Validated | A frozen 15,052-rejection comparison produced an immutable private 1,506-face, six-stratum sampled bundle with 100 separate retained controls; its bounded hashes, unchanged-source check, logical-page probes, and non-human fixture-finalizer round trip are recorded in EJ-018. Human labels, an operator decision, runtime activation, and search-relevance review remain separate. |

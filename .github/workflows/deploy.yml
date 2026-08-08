@@ -40,10 +40,16 @@ on:
         required: true
         default: false
         type: boolean
+      preflight:
+        description: Validate all staging Lockbox projections without mutating staging
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   classify-staging-release:
     name: Classify staging release
+    if: ${{ !inputs.preflight }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -127,7 +133,7 @@ jobs:
 
   stage-observability-release:
     name: Stage paused observability source
-    if: ${{ github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' }}
+    if: ${{ github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' && !inputs.preflight }}
     runs-on: ubuntu-latest
     needs: [classify-staging-release]
     environment: staging
@@ -166,7 +172,7 @@ jobs:
 
   build:
     name: Build immutable image
-    if: ${{ (github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue) }}
+    if: ${{ (github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight) }}
     runs-on: ubuntu-latest
     needs: [classify-staging-release]
     permissions:
@@ -211,7 +217,7 @@ jobs:
 
   deploy:
     name: Deploy staging
-    if: ${{ (github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue) }}
+    if: ${{ (github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight) }}
     runs-on: ubuntu-latest
     needs: [classify-staging-release, build]
     environment: staging
@@ -397,7 +403,7 @@ jobs:
 
   reconcile-staging-deploy-issue:
     name: Reconcile staging deployment issue
-    if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue)) }}
+    if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight)) }}
     runs-on: ubuntu-latest
     needs: [classify-staging-release, build, deploy]
     permissions:
@@ -456,7 +462,7 @@ jobs:
 
   validate-staging-deploy-issue:
     name: Validate staging deployment issue notification
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && !inputs.preflight }}
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -502,7 +508,7 @@ jobs:
 
   configure-monitoring-agent:
     name: Configure staging Unified Agent
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && !inputs.validate_deploy_issue }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight }}
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -529,3 +535,37 @@ jobs:
           envs: YANDEX_CLOUD_FOLDER_ID
           script_stop: true
           script: sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"
+
+  lockbox-preflight:
+    name: Validate staging Lockbox projections
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight }}
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: "Verify Lockbox projection: local-web"
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --environment staging --consumer local-web --identity github-oidc \
+            -- python scripts/verify-environment-secret-projection.py local-web
+      - name: "Verify Lockbox projection: staging-deploy"
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --environment staging --consumer staging-deploy --identity github-oidc \
+            -- python scripts/verify-environment-secret-projection.py staging-deploy
+      - name: "Verify Lockbox projection: staging-remote-check"
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --environment staging --consumer staging-remote-check --identity github-oidc \
+            -- python scripts/verify-environment-secret-projection.py staging-remote-check
+      - name: "Verify Lockbox projection: staging-public-monitor"
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --environment staging --consumer staging-public-monitor --identity github-oidc \
+            -- python scripts/verify-environment-secret-projection.py staging-public-monitor

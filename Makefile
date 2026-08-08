@@ -1,4 +1,4 @@
-.PHONY: check db-clone-staging hooks test test-clone-staging worktree
+.PHONY: check db-clone-staging hooks staging-local test test-clone-staging worktree
 
 BASE ?= origin/main
 TESTS ?=
@@ -26,3 +26,6 @@ test-clone-staging:
 
 db-clone-staging:
 	sh scripts/clone-staging-db.sh
+
+staging-local:
+	@sh scripts/staging-local.sh

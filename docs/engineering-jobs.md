@@ -47,6 +47,8 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-014 | Maintainer | Gate consented feedback storage activation | Validated | 2026-08-04 |
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
+| EJ-017 | Developer | Read environment-scoped secrets consistently | Planned | 2026-08-07 |
+| EJ-018 | Maintainer | Minimize and recover runtime credentials | Candidate | 2026-08-07 |
 
 ## Job details
 
@@ -289,6 +291,50 @@ gates are approved.
 - Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py), and [`experiments/face_recognition_spike/face_spike/cli.py`](../experiments/face_recognition_spike/face_spike/cli.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance, source-separated reports, privacy-bounded v2 events, and the closed held-out evaluator. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or environment activation change is included.
 - Last updated: 2026-08-05
 
+### EJ-017 — Developer — Read environment-scoped secrets consistently
+
+When I run the application in local development, CI, or a deployed environment, I want authorized
+workflows to read the secrets for their selected environment from one managed source, so I can
+reproduce environment behavior without copying credentials into GitHub Secrets or local files.
+
+The candidate direction is an environment-scoped Yandex Lockbox secret set. Local development
+would authenticate through `yc`, while GitHub Actions would use workload identity federation rather
+than a permanent Yandex Cloud credential. Any local launcher must materialize a payload only in a
+mode-0600 temporary file, overlay explicit safe local settings, avoid repository and worktree
+`.env` files, remove the temporary file after use, and fail without printing secret values. IAM
+must grant each actor access only to the selected environment. The eventual design must define
+secret inventory and ownership, environment isolation, rotation and revocation, audit boundaries,
+failure behavior, migration from existing GitHub Secrets, and rollback before implementation.
+
+- Status: Planned
+- Evidence: Accepted [ADR 0026](adr/0026-use-lockbox-for-environment-secrets.md), approved
+  [environment-scoped Lockbox secrets design](superpowers/specs/2026-08-07-environment-scoped-lockbox-secrets-design.md),
+  and approved [implementation plan](plans/2026-08-07-environment-scoped-lockbox-secrets.md).
+  No repository implementation, Lockbox resource, IAM binding, migration, deployment, or live
+  validation is claimed yet.
+- Last updated: 2026-08-07
+
+### EJ-018 — Maintainer — Minimize and recover runtime credentials
+
+When I operate or recover an application environment, I want each runtime component to retain only
+the credentials it needs through an explicit, recoverable lifecycle, so I can limit credential
+exposure without making restart, rollback, backup, or disaster recovery unreliable.
+
+The candidate capability covers the complete host and container boundary rather than one `.env`
+file: persistent deployment environments, Docker container metadata, Docker group access, registry
+authentication, shell history, TLS private keys, VM metadata and attached service accounts, disk
+snapshots/backups, per-service credential projection, rotation, revocation, recovery, and audit.
+It must begin with a separate specification and architecture reconciliation; this registry entry
+does not select Docker secrets, file-based settings, runtime Lockbox retrieval, an agent, or another
+delivery mechanism.
+
+- Status: Candidate
+- Evidence:
+  [Sanitized staging runtime credential inventory](future-work/2026-08-07-runtime-credential-hygiene.md)
+  records the observed exposure surfaces and the trigger for a separate design. No VM cleanup,
+  credential rotation, runtime redesign, ADR, or implementation plan is claimed.
+- Last updated: 2026-08-07
+
 ## Status log
 
 This log is append-only.
@@ -320,3 +366,6 @@ This log is append-only.
 | 2026-08-04 | EJ-015 | Not recorded | Delivered | Repository verification covers strict bounded events, edge redaction, journald reconciliation and exact rollback, timer/driver/tag checks, probe readability, and deterministic recomputation. Staging activation is not claimed. |
 | 2026-08-05 | EJ-016 | Not recorded | Delivered | Task 1–7 implementation commits and focused contract tests provide the repository capability for immutable event-scoped corpora, direct-first expansion, provenance, source-separated reporting, private evaluation, and guarded activation. The feature gate remains false and the release gate, environment activation, and customer outcomes are not yet evidenced. |
 | 2026-08-07 | EJ-003 | Validated | Delivered | Repository workflow, migration-identity, read-only preflight, deployment-phase, controlled-pause, and bounded issue-reconciliation contracts are implemented and covered by focused tests. No PR/CI/live staging rollout or notification-drill evidence is recorded yet, so the job is not advanced to Validated. |
+| 2026-08-07 | EJ-017 | Not recorded | Candidate | The maintainer requested one managed, environment-scoped source of secrets that authorized local development, CI, and deployed workflows can read without copying payloads into GitHub Secrets or persistent local files. |
+| 2026-08-07 | EJ-018 | Not recorded | Candidate | A sanitized staging audit confirmed persistent host and Docker credential surfaces; the maintainer deferred a comprehensive runtime credential lifecycle design to a separate task rather than expanding EJ-017. |
+| 2026-08-07 | EJ-017 | Candidate | Planned | The maintainer accepted ADR 0026 and approved the decision-complete environment-scoped Lockbox implementation plan for execution. |

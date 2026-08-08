@@ -181,6 +181,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Use the current preemptible VM for staging and a separate non-preemptible VM for production.
 - Promote the same staging-verified image to production only after manual approval.
 - Load environment-specific configuration from environment variables and never commit secrets.
+- Use one complete, versioned Yandex Lockbox secret as the persistent secret authority for each
+  logical environment. Authorized developers read it through interactive `yc`; GitHub staging jobs
+  use workload identity federation and resource-level payload access. Runtime services do not read
+  Lockbox, as defined by [ADR 0026](adr/0026-use-lockbox-for-environment-secrets.md).
 - Keep architecture, decisions, and delivery plans in this repository.
 - Prefer simple, repeatable operations over premature distributed infrastructure.
 - Use the shared Nginx and Certbot HTTPS edge in every public environment as defined by

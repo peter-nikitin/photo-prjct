@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = ROOT / ".github/workflows/deploy.yml"
+MANIFEST_PATH = ROOT / "deploy/environment-secrets/staging.json"
 VERIFIER_PATH = ROOT / "scripts/verify-environment-secret-projection.py"
 REMOTE_HELPER_PATH = ROOT / "deploy/run-staging-remote.sh"
 CONSUMERS = (
@@ -28,7 +29,7 @@ def _workflow() -> dict[str, Any]:
     return yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
 
 
-def test_lockbox_preflight_workflow_is_isolated_from_legacy_deploy_and_cutover() -> None:
+def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_claims() -> None:
     workflow = _workflow()
     dispatch = workflow[True]["workflow_dispatch"]
     assert dispatch["inputs"]["preflight"] == {
@@ -100,41 +101,29 @@ def test_lockbox_preflight_workflow_is_isolated_from_legacy_deploy_and_cutover()
         "!inputs.validate_deploy_issue && !inputs.preflight }}"
     )
 
-    legacy_jobs = (
-        "classify-staging-release",
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    assert manifest["github_oidc"]["allowed_workflows"] == [
+        "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
+        "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
+        "peter-nikitin/photo-prjct/.github/workflows/promote-production.yml@refs/heads/main",
+        (
+            "peter-nikitin/photo-prjct/.github/workflows/"
+            "staging-face-embedding-benchmark.yml@refs/heads/main"
+        ),
+    ]
+
+    cutover_jobs = (
         "stage-observability-release",
-        "build",
         "deploy",
-        "reconcile-staging-deploy-issue",
-        "validate-staging-deploy-issue",
         "configure-monitoring-agent",
     )
-    serialized_legacy = "\n".join(json.dumps(jobs[name]) for name in legacy_jobs)
-    assert "run-with-environment-secrets.py" not in serialized_legacy
-    assert "run-staging-remote.sh" not in serialized_legacy
-    assert not REMOTE_HELPER_PATH.exists()
-
-    deploy = json.dumps(jobs["deploy"])
-    for reader in (
-        "${{ secrets.SECRET_KEY }}",
-        "${{ secrets.VM_HOST }}",
-        "${{ secrets.VM_USER }}",
-        "${{ secrets.VM_SSH_KEY }}",
-        "${{ secrets.DB_PASSWORD }}",
-        "${{ secrets.GHCR_READ_TOKEN }}",
-        "appleboy/scp-action@v0.1.7",
-        "appleboy/ssh-action@v1.0.3",
-    ):
-        assert reader in deploy
-    configure = json.dumps(jobs["configure-monitoring-agent"])
-    for reader in (
-        "${{ secrets.VM_HOST }}",
-        "${{ secrets.VM_USER }}",
-        "${{ secrets.VM_SSH_KEY }}",
-        "appleboy/scp-action@v0.1.7",
-        "appleboy/ssh-action@v1.0.3",
-    ):
-        assert reader in configure
+    assert REMOTE_HELPER_PATH.is_file()
+    for name in cutover_jobs:
+        serialized = json.dumps(jobs[name])
+        assert "run-with-environment-secrets.py" in serialized
+        assert "deploy/run-staging-remote.sh" in serialized
+        assert "${{ secrets." not in serialized
+        assert "GITHUB_OUTPUT" not in serialized
 
 
 @pytest.mark.parametrize("consumer", CONSUMERS)

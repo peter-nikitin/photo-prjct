@@ -146,12 +146,31 @@ def test_public_services_use_journald_stable_nonsecret_tags_only() -> None:
 
 
 def test_deployment_workflows_pass_the_nonsecret_target_for_compose_tags() -> None:
-    staging = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    staging = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    )
     production = (ROOT / ".github" / "workflows" / "promote-production.yml").read_text(
         encoding="utf-8"
     )
+    helper = (ROOT / "deploy" / "run-staging-remote.sh").read_text(encoding="utf-8")
+    deploy_step = next(
+        step
+        for step in staging["jobs"]["deploy"]["steps"]
+        if step.get("name") == "Run staging deployment"
+    )
+    projected_deployment_values = helper.partition("REMOTE_DEPLOYMENT_VALUES='")[2].partition(
+        "'\n"
+    )[0]
 
-    assert "DEPLOYMENT_TARGET: staging" in staging
-    assert "envs: APP_IMAGE" in staging and ",DEPLOYMENT_TARGET" in staging
+    assert deploy_step["env"]["DEPLOYMENT_TARGET"] == "staging"
+    assert "scripts/run-with-environment-secrets.py" in deploy_step["run"]
+    assert "--consumer staging-deploy" in deploy_step["run"]
+    assert "--identity github-oidc" in deploy_step["run"]
+    assert "deploy/run-staging-remote.sh deploy" in deploy_step["run"]
+    assert "DEPLOYMENT_TARGET" in projected_deployment_values
+    assert (
+        "'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging "
+        "exec sh /opt/photo-prjct/deploy/apply-deployment.sh'"
+    ) in helper
     assert "DEPLOYMENT_TARGET: production" in production
     assert "envs: APP_IMAGE" in production and ",DEPLOYMENT_TARGET" in production

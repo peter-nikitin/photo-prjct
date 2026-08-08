@@ -609,6 +609,22 @@ class FilteredGalleryQuerysetTests(TestCase):
 
         self.assertEqual(list(self.queryset()), [included_upper, included_lower])
 
+    def test_release_a_direct_reader_ignores_the_new_photo_projection(self) -> None:
+        """Catch Release A accidentally reading an incompletely backfilled projection."""
+        direct = self.photo("direct")
+        projected_only = self.photo("projected-only")
+        accepted_attempt = self.capture_evidence(direct, capture_time="2026-06-10T10:00:00Z")
+        Photo.objects.filter(pk=direct.pk).update(
+            capture_time=datetime(2026, 6, 10, 11, 0, tzinfo=UTC),
+            capture_time_source_attempt=accepted_attempt,
+        )
+        Photo.objects.filter(pk=projected_only.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+            capture_time_source_attempt=accepted_attempt,
+        )
+
+        self.assertEqual(list(self.queryset()), [direct])
+
     def test_excludes_noncurrent_invalid_and_ineligible_capture_evidence(self) -> None:
         included = self.photo("included")
         self.capture_evidence(included, capture_time="2026-06-10T10:00:00Z")

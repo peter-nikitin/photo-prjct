@@ -222,3 +222,20 @@ class PhotoMigrationTests(TransactionTestCase):
             self.assertIsNone(MigratedEvent.objects.get(pk=11).timezone_name)
         finally:
             MigrationExecutor(connection).migrate(leaf_nodes)
+
+    def test_capture_time_projection_migration_is_schema_only(self) -> None:
+        """Catch a deployment-blocking data scan inside the nullable schema migration."""
+        migration = MigrationLoader(connection).get_migration(
+            "picflow", "0008_photo_capture_time_projection"
+        )
+
+        self.assertFalse(
+            any(operation.__class__.__name__ == "RunPython" for operation in migration.operations)
+        )
+        self.assertEqual(
+            migration.dependencies,
+            [
+                ("picflow", "0007_event_timezone"),
+                ("processing", "0006_face_cluster_corpus"),
+            ],
+        )

@@ -8,9 +8,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from ingestion.storage import ObjectChanged, ObjectMismatch, ObjectMissing
+from picflow.models import Event, Photo
 
 from processing.contracts import AttemptCompletion, CompletionConflict
 from processing.models import (
@@ -172,7 +174,7 @@ def _preflight(
 ) -> _PreviewPublication | AttemptCompletion:
     """Lock only long enough to establish that storage work belongs to the current lease."""
     with transaction.atomic():
-        run, job, state, attempt = jobs._locked_context(attempt_id)
+        _, run, job, _, state, attempt = jobs._locked_context(attempt_id)
         now = clock()
         _require_preview_attempt(job, attempt)
         if attempt.status != ProcessingAttempt.Status.IN_PROGRESS:
@@ -202,7 +204,8 @@ def _publish_after_verification(
 ) -> AttemptCompletion:
     """Re-lock the run-to-attempt chain and make the derivative/state transition indivisible."""
     with transaction.atomic():
-        run, job, state, attempt = jobs._locked_context(attempt_id)
+        _prelock_preview_face_enrollment(attempt_id)
+        _, run, job, photo, state, attempt = jobs._locked_context(attempt_id)
         now = clock()
         _require_preview_attempt(job, attempt)
         if attempt.status != ProcessingAttempt.Status.IN_PROGRESS:
@@ -255,12 +258,53 @@ def _publish_after_verification(
             accepted_attempt=attempt,
         )
         # The only automatic edge into preview-backed ML is this accepted, published transition.
-        # A retry, stale receipt, cancellation, or failure never reaches this call.
+        # Its rows were locked before the preview Attempt, so an enqueue failure rolls this whole
+        # acceptance transaction back without a leftward lock acquisition.
         from processing.services.enrollment import request_face_embedding_enqueue
 
-        request_face_embedding_enqueue(attempt.photo)
-        jobs._close_run_if_terminal(run.id, now)
+        request_face_embedding_enqueue(photo)
+        jobs._close_locked_run_if_terminal(run, now)
         return AttemptCompletion(attempt=attempt)
+
+
+def _prelock_preview_face_enrollment(attempt_id: UUID) -> None:
+    """Lock the optional preview-backed face enrollment path before the preview Attempt."""
+    identity = ProcessingAttempt.objects.only("event_id", "photo_id").get(pk=attempt_id)
+    event = Event.objects.select_for_update().get(pk=identity.event_id)
+    generation = Photo.objects.values_list("processing_generation", flat=True).get(
+        pk=identity.photo_id
+    )
+    if generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1 and bool(
+        getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)
+    ):
+        from processing.services.enrollment import (
+            FACE_EMBEDDING_CONFIGURATION,
+            PREVIEW_CONTRACT_VERSION,
+            PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            _configuration_hash,
+        )
+
+        configuration_hash = _configuration_hash(FACE_EMBEDDING_CONFIGURATION)
+        runs = EventProcessingRun.objects.select_for_update().filter(
+            event=event,
+            contract_version=PREVIEW_CONTRACT_VERSION,
+            processor_type="face_embedding",
+            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration_hash=configuration_hash,
+            status=EventProcessingRun.Status.COLLECTING,
+        )
+        for run in runs:
+            list(
+                ProcessingJob.objects.select_for_update()
+                .filter(run=run, photo_id=identity.photo_id)
+                .order_by("id")
+            )
+    photo = Photo.objects.select_for_update().get(pk=identity.photo_id)
+    PhotoProcessingState.objects.select_for_update().get_or_create(
+        photo=photo,
+        processor_type="face_embedding",
+        defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+    )
 
 
 def _record_not_current(

@@ -44,26 +44,41 @@ def close_run_report(
     now = now or timezone.now()
     with transaction.atomic():
         run = EventProcessingRun.objects.select_for_update().get(pk=run_id)
-        if run.status == EventProcessingRun.Status.CLOSED:
-            return run
-        if run.status != EventProcessingRun.Status.SEALED:
-            return None
         jobs = list(ProcessingJob.objects.select_for_update().filter(run=run).order_by("photo_id"))
-        terminal = {
-            ProcessingJob.Status.SUCCEEDED,
-            ProcessingJob.Status.FAILED,
-            ProcessingJob.Status.CANCELLED,
-        }
-        if any(job.status not in terminal for job in jobs):
-            return None
-        report = _report_payload(run, jobs, now)
-        if _serialized_bytes(report) > _report_limit(run):
-            raise ValueError("The configured cohort does not fit in its bounded processing report.")
-        run.report = report
-        run.status = EventProcessingRun.Status.CLOSED
-        run.closed_at = now
-        run.save(update_fields=["report", "status", "closed_at"])
+        return _close_run_report(run, jobs, now)
+
+
+def close_locked_run_report(
+    run: EventProcessingRun, *, now: timezone.datetime | None = None
+) -> EventProcessingRun | None:
+    """Close a run while its lifecycle caller retains the run and cohort job locks."""
+    now = now or timezone.now()
+    jobs = list(ProcessingJob.objects.filter(run=run).order_by("photo_id"))
+    return _close_run_report(run, jobs, now)
+
+
+def _close_run_report(
+    run: EventProcessingRun, jobs: list[ProcessingJob], now: timezone.datetime
+) -> EventProcessingRun | None:
+    if run.status == EventProcessingRun.Status.CLOSED:
         return run
+    if run.status != EventProcessingRun.Status.SEALED:
+        return None
+    terminal = {
+        ProcessingJob.Status.SUCCEEDED,
+        ProcessingJob.Status.FAILED,
+        ProcessingJob.Status.CANCELLED,
+    }
+    if any(job.status not in terminal for job in jobs):
+        return None
+    report = _report_payload(run, jobs, now)
+    if _serialized_bytes(report) > _report_limit(run):
+        raise ValueError("The configured cohort does not fit in its bounded processing report.")
+    run.report = report
+    run.status = EventProcessingRun.Status.CLOSED
+    run.closed_at = now
+    run.save(update_fields=["report", "status", "closed_at"])
+    return run
 
 
 def _report_payload(

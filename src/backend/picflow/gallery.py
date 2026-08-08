@@ -189,13 +189,15 @@ def gallery_photo_queryset(
         return queryset
     if capture_time_start is None or capture_time_end is None:
         raise ValueError("capture time bounds must be supplied together")
-    capture_time = KeyTextTransform("capture_time", "processing_states__accepted_attempt__result")
-    canonical_capture_time = Case(
+    direct_capture_time = KeyTextTransform(
+        "capture_time", "processing_states__accepted_attempt__result"
+    )
+    canonical_direct_capture_time = Case(
         When(
             processing_states__accepted_attempt__result__capture_time__regex=(
                 r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"
             ),
-            then=Cast(capture_time, DateTimeField()),
+            then=Cast(direct_capture_time, DateTimeField()),
         ),
         default=None,
         output_field=DateTimeField(),
@@ -219,8 +221,11 @@ def gallery_photo_queryset(
             processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
             processing_states__accepted_attempt__accepted=True,
         )
-        .annotate(capture_time=canonical_capture_time)
-        .filter(capture_time__gte=capture_time_start, capture_time__lte=capture_time_end)
+        .annotate(direct_capture_time=canonical_direct_capture_time)
+        .filter(
+            direct_capture_time__gte=capture_time_start,
+            direct_capture_time__lte=capture_time_end,
+        )
     )
 
 

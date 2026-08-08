@@ -3,6 +3,7 @@
 from datetime import date, timedelta
 from queue import Queue
 from threading import Barrier, Thread
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, close_old_connections, transaction
@@ -20,6 +21,7 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
+from processing.services import jobs as jobs_service
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     GENERATE_PREVIEW_CONFIGURATION,
@@ -88,6 +90,205 @@ class ProcessingJobServiceTests(TestCase):
         state = PhotoProcessingState.objects.get(photo=first, processor_type="capture_metadata")
         self.assertEqual(state.status, PhotoProcessingState.Status.PROCESSING)
         self.assertEqual(state.current_attempt_id, claimed.attempt.id)
+
+    def test_current_capture_metadata_v2_success_publishes_exact_projection(self) -> None:
+        """Catch accepted v2 time evidence without its same-transaction Photo projection."""
+        photo = self.private_photo("projected-success")
+        request_capture_metadata(photo)
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-1",
+        )
+
+        complete_attempt(
+            claimed.attempt.id,
+            result={"capture_time": "2026-08-08T12:34:56Z"},
+        )
+
+        photo.refresh_from_db()
+        self.assertEqual(
+            photo.capture_time,
+            timezone.datetime(2026, 8, 8, 12, 34, 56, tzinfo=timezone.UTC),
+        )
+        self.assertEqual(photo.capture_time_source_attempt_id, claimed.attempt.id)
+
+    def test_current_capture_metadata_v2_missing_time_leaves_null_projection_pair(self) -> None:
+        """Catch a source attempt being projected for a valid missing capture time."""
+        photo = self.private_photo("projected-missing")
+        request_capture_metadata(photo)
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-1",
+        )
+
+        complete_attempt(claimed.attempt.id, result={"capture_time": None})
+
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
+
+    def test_capture_metadata_v1_success_cannot_publish_the_projection(self) -> None:
+        """Catch a supported legacy completion becoming a Release-A projection source."""
+        photo = self.private_photo("legacy-capture")
+        request_processor(
+            photo,
+            processor_type="capture_metadata",
+            contract_version=1,
+            processor_version=1,
+            configuration=capture_metadata_configuration(self.event.timezone_name),
+        )
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=1,
+            worker_build="worker-1",
+        )
+
+        complete_attempt(claimed.attempt.id, result={"capture_time": "2026-08-08T12:34:56Z"})
+
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
+
+    def test_completion_locks_the_projection_rows_in_global_order(self) -> None:
+        """Catch Photo-before-Job completion locks that can deadlock re-enrollment."""
+        photo = self.private_photo("lock-order")
+        request_capture_metadata(photo)
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-1",
+        )
+        acquired: list[str] = []
+        original = jobs_service._lock_transition_row
+        original_rows = jobs_service._lock_transition_rows
+
+        def record(model, **lookup):
+            acquired.append(model.__name__)
+            return original(model, **lookup)
+
+        def record_rows(model, **lookup):
+            acquired.append(model.__name__)
+            return original_rows(model, **lookup)
+
+        with (
+            patch("processing.services.jobs._lock_transition_row", side_effect=record),
+            patch("processing.services.jobs._lock_transition_rows", side_effect=record_rows),
+            patch(
+                "processing.services.reports.close_run_report",
+                side_effect=AssertionError("completion must not re-lock a run after Attempt"),
+            ),
+        ):
+            complete_attempt(claimed.attempt.id, result={"capture_time": None})
+
+        self.assertEqual(
+            acquired,
+            [
+                "Event",
+                "EventProcessingRun",
+                "ProcessingJob",
+                "Photo",
+                "PhotoProcessingState",
+                "ProcessingAttempt",
+            ],
+        )
+        self.assertEqual(EventProcessingRun.objects.get(pk=claimed.job.run_id).status, "closed")
+
+    def test_projection_rejects_an_older_accepted_attempt_that_is_not_current(self) -> None:
+        """Catch a stale accepted v2 attempt republishing a superseded projection."""
+        photo = self.private_photo("stale-projection-source")
+        request_capture_metadata(photo)
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-1",
+        )
+        complete_attempt(claimed.attempt.id, result={"capture_time": "2026-08-08T12:34:56Z"})
+        old_attempt = ProcessingAttempt.objects.get(pk=claimed.attempt.id)
+        successor = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=claimed.job.run,
+            job=claimed.job,
+            photo=photo,
+            contract_version=claimed.job.contract_version,
+            processor_type=claimed.job.processor_type,
+            processor_version=claimed.job.processor_version,
+            configuration=claimed.job.configuration,
+            input_fingerprint=claimed.job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+            result={"capture_time": "2026-08-08T13:34:56Z"},
+        )
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
+        state.current_attempt = successor
+        state.accepted_attempt = successor
+        state.save(update_fields=["current_attempt", "accepted_attempt", "updated_at"])
+
+        with self.assertRaises(ValueError):
+            jobs_service.transition_capture_time_projection(
+                photo=photo,
+                state=state,
+                accepted_attempt=old_attempt,
+            )
+
+    def test_projection_failure_rolls_back_the_accepted_completion(self) -> None:
+        """Catch accepted immutable evidence committing without its projection transition."""
+        photo = self.private_photo("projection-rollback")
+        request_capture_metadata(photo)
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-1",
+        )
+
+        with (
+            patch(
+                "processing.services.jobs.transition_capture_time_projection",
+                side_effect=RuntimeError("projection write failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "projection write failed"),
+        ):
+            complete_attempt(claimed.attempt.id, result={"capture_time": None})
+
+        claimed.attempt.refresh_from_db()
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
+        self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
+        self.assertFalse(claimed.attempt.accepted)
+        self.assertEqual(state.status, PhotoProcessingState.Status.PROCESSING)
+
+    def test_state_transition_failure_cannot_commit_a_projection(self) -> None:
+        """Catch a projection write being committed when accepted state rolls back."""
+        photo = self.private_photo("state-rollback")
+        request_capture_metadata(photo)
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-1",
+        )
+
+        with (
+            patch(
+                "processing.services.jobs._set_state",
+                side_effect=RuntimeError("accepted state write failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "accepted state write failed"),
+        ):
+            complete_attempt(claimed.attempt.id, result={"capture_time": "2026-08-08T12:34:56Z"})
+
+        claimed.attempt.refresh_from_db()
+        photo.refresh_from_db()
+        self.assertFalse(claimed.attempt.accepted)
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
 
     def test_claim_only_selects_an_exactly_compatible_processor(self) -> None:
         photo = self.private_photo("compatible")
@@ -432,6 +633,9 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(failed.attempt.status, ProcessingAttempt.Status.FAILED)
         self.assertEqual(state.status, PhotoProcessingState.Status.RETRY_WAIT)
         self.assertGreater(job.available_at, now)
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
 
         retry = claim_job(
             contract_version=1,
@@ -466,6 +670,9 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(ProcessingAttempt.objects.filter(job=job).count(), MAX_ATTEMPTS)
         self.assertEqual(job.status, ProcessingJob.Status.FAILED)
         self.assertEqual(state.status, PhotoProcessingState.Status.FAILED)
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
 
     def test_permanent_failure_does_not_retry(self) -> None:
         photo = self.private_photo("permanent")
@@ -483,6 +690,44 @@ class ProcessingJobServiceTests(TestCase):
         state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
         self.assertEqual(job.status, ProcessingJob.Status.FAILED)
         self.assertEqual(state.status, PhotoProcessingState.Status.FAILED)
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
+
+    def test_cancelled_capture_work_has_no_projection(self) -> None:
+        """Catch a cancellation being treated as accepted capture-time evidence."""
+        photo = self.private_photo("cancelled")
+        state = request_capture_metadata(photo)
+        job = state.current_job
+        assert job is not None
+        job.status = ProcessingJob.Status.CANCELLED
+        job.completed_at = timezone.now()
+        job.save(update_fields=["status", "completed_at"])
+        state.status = PhotoProcessingState.Status.CANCELLED
+        state.cancelled_at = timezone.now()
+        state.save(update_fields=["status", "cancelled_at", "updated_at"])
+
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_wrong_processor_success_has_no_capture_time_projection(self) -> None:
+        """Catch face evidence becoming a capture-time projection source."""
+        photo = self.private_photo("face-not-capture")
+        request_face_embedding_enqueue(photo)
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            worker_build="face-worker",
+        )
+
+        complete_attempt(claimed.attempt.id, result={"face_count": 0, "faces": [], "warnings": []})
+
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
 
     def test_fingerprint_mismatch_retries_with_the_same_immutable_input_fingerprint(self) -> None:
         photo = self.private_photo("fingerprint-retry")
@@ -543,6 +788,9 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(state.status, PhotoProcessingState.Status.RETRY_WAIT)
         self.assertIsNone(state.current_attempt)
         self.assertEqual(job.status, ProcessingJob.Status.RETRY_WAIT)
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
 
     def test_recovery_respects_its_explicit_batch_limit(self) -> None:
         first = self.private_photo("recovery-limit-first")
@@ -609,6 +857,9 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(job.status, ProcessingJob.Status.RETRY_WAIT)
         self.assertEqual(state.status, PhotoProcessingState.Status.RETRY_WAIT)
         self.assertEqual(receipt.payload["outcome"], "success")
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
         with transaction.atomic():
             with self.assertRaises(IntegrityError):
                 ProcessingLateReceipt.objects.filter(pk=receipt.pk).update(
@@ -802,6 +1053,54 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
             EventProcessingRun.Status.CLOSED,
         )
 
+    def test_enrollment_and_completion_share_the_capture_lock_order_without_deadlock(self) -> None:
+        """Catch the former Photo-to-Job enrollment race against completion."""
+        photo = self._photo("enroll-complete")
+        request_capture_metadata(photo)
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="worker-1",
+        )
+        barrier = Barrier(3)
+        failures: Queue[BaseException] = Queue()
+
+        def enroll() -> None:
+            close_old_connections()
+            try:
+                barrier.wait()
+                request_capture_metadata(Photo.objects.get(pk=photo.pk))
+            except BaseException as error:  # noqa: BLE001
+                failures.put(error)
+            finally:
+                close_old_connections()
+
+        def complete() -> None:
+            close_old_connections()
+            try:
+                barrier.wait()
+                complete_attempt(
+                    claimed.attempt.id,
+                    result={"capture_time": "2026-08-08T12:34:56Z"},
+                )
+            except BaseException as error:  # noqa: BLE001
+                failures.put(error)
+            finally:
+                close_old_connections()
+
+        workers = [Thread(target=enroll), Thread(target=complete)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=5)
+
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertTrue(failures.empty())
+        photo.refresh_from_db()
+        self.assertEqual(photo.capture_time_source_attempt_id, claimed.attempt.id)
+
     def test_simultaneous_claims_take_distinct_ready_jobs_instead_of_returning_empty(self) -> None:
         request_capture_metadata(self._photo("claim-one"))
         request_capture_metadata(self._photo("claim-two"))
@@ -866,6 +1165,9 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
         self.assertTrue(repeated.idempotent)
         with self.assertRaises(CompletionConflict):
             complete_attempt(claimed.attempt.id, result={"capture_time": "2026-01-01T00:00:00Z"})
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
 
     def test_stale_completion_is_retained_without_changing_the_new_current_state(self) -> None:
         photo = self._photo("stale")
@@ -916,3 +1218,6 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
                 result={"capture_time": "2026-07-29T10:00:00Z"},
                 now=now + timedelta(seconds=3),
             )
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)

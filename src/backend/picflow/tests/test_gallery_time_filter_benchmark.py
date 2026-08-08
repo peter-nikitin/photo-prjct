@@ -1,6 +1,6 @@
 import json
 from collections.abc import Iterable
-from datetime import date
+from datetime import UTC, date, datetime
 from io import StringIO
 from unittest.mock import patch
 
@@ -27,6 +27,8 @@ from picflow.models import Event, Photo
 @override_settings(
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
 )
+@patch("picflow.capture_time_projection.EXPECTED_EVENT_PHOTO_COUNT", 201)
+@patch("processing.management.commands.report_event_capture_times.EXPECTED_EVENT_PHOTO_COUNT", 201)
 class EventGalleryTimeFilterBenchmarkCommandTests(TestCase):
     """Catch a benchmark that measures another cohort or leaks rows."""
 
@@ -132,6 +134,10 @@ class EventGalleryTimeFilterBenchmarkCommandTests(TestCase):
                 for job in jobs
             ]
         )
+        for photo, job in zip(photos, jobs, strict=True):
+            photo.capture_time = datetime(2025, 12, 31, 21, 1, tzinfo=UTC)
+            photo.capture_time_source_attempt = attempts_by_job[job.pk]
+        Photo.objects.bulk_update(photos, ["capture_time", "capture_time_source_attempt"])
 
     def test_rejects_any_scope_other_than_event_nine(self) -> None:
         """A benchmark widened beyond the accepted cohort must fail this test."""
@@ -146,6 +152,21 @@ class EventGalleryTimeFilterBenchmarkCommandTests(TestCase):
         """A benchmark without accepted v2 and event-timezone evidence must fail this test."""
         with self.assertRaisesRegex(CommandError, "current-v2 capture-time precondition"):
             call_command("benchmark_event_gallery_time_filter", event_id=9)
+
+    @patch(
+        "picflow.capture_time_projection.report_events",
+        return_value={"clean": False},
+    )
+    def test_rejects_projection_drift_before_emitting_a_benchmark_success(
+        self, _report_events
+    ) -> None:
+        """A candidate benchmark must not measure or report success on a dirty projection."""
+        output = StringIO()
+
+        with self.assertRaisesRegex(CommandError, "global projection reconciliation"):
+            call_command("benchmark_event_gallery_time_filter", event_id=9, stdout=output)
+
+        self.assertEqual(output.getvalue(), "")
 
     @patch(
         "processing.management.commands.report_event_capture_times.EXPECTED_EVENT_PHOTO_COUNT",
@@ -261,6 +282,23 @@ class EventGalleryTimeFilterBenchmarkCommandTests(TestCase):
             Command()._rendered_response_ms(event=self.event, page_number=1, filter_data={})
 
     @patch(
+        "picflow.management.commands.benchmark_event_gallery_time_filter.event_detail",
+        side_effect=TimeoutError("candidate request timed out"),
+    )
+    def test_rejects_a_timed_out_rendered_response_before_emitting_success(
+        self, _event_detail
+    ) -> None:
+        """A request timeout cannot become a measured candidate success."""
+        output = StringIO()
+
+        with self.assertRaisesRegex(CommandError, "rendered event-detail request failed"):
+            call_command(
+                "benchmark_event_gallery_time_filter", event_id=9, pages="1", stdout=output
+            )
+
+        self.assertEqual(output.getvalue(), "")
+
+    @patch(
         "processing.management.commands.report_event_capture_times.EXPECTED_EVENT_PHOTO_COUNT",
         201,
     )
@@ -333,3 +371,42 @@ class EventGalleryTimeFilterBenchmarkCommandTests(TestCase):
         report = json.loads(output.getvalue())
         self.assertEqual(report["pages"][0]["ratios"]["database_execution"], 2.0)
         self.assertEqual(report["pages"][0]["gate"], "failed")
+
+    def test_real_measurement_boundary_gates_before_rounding_timings(self) -> None:
+        """Full-precision database and rendered ratios just above 2 must both fail."""
+        from picflow.management.commands.benchmark_event_gallery_time_filter import Command
+
+        explain_results = [
+            json.dumps([{"Execution Time": execution_ms, "Plan": {"Node Type": "Limit"}}])
+            for execution_ms in (10.0001, 20.0004)
+        ]
+        with (
+            patch("django.db.models.query.QuerySet.explain", side_effect=explain_results),
+            patch(
+                "picflow.management.commands.benchmark_event_gallery_time_filter.perf_counter",
+                side_effect=(0.0, 0.0100001, 0.0, 0.0200004),
+            ),
+        ):
+            comparison = Command()._measure_comparison(
+                event=self.event,
+                filter_data={"from": "2026-01-01T00:00"},
+                capture_time_start=datetime(2025, 12, 31, 21, 0, tzinfo=UTC),
+                capture_time_end=datetime(2026, 1, 1, 21, 10, tzinfo=UTC),
+                label="first",
+                page_number=1,
+            )
+
+        self.assertEqual(comparison["gate"], "failed")
+        self.assertEqual(
+            comparison["ratios"], {"database_execution": 2.0, "rendered_response": 2.0}
+        )
+        unfiltered = comparison["unfiltered"]
+        filtered = comparison["filtered"]
+        self.assertIsInstance(unfiltered, dict)
+        self.assertIsInstance(filtered, dict)
+        assert isinstance(unfiltered, dict)
+        assert isinstance(filtered, dict)
+        self.assertEqual(unfiltered["database_execution_ms"], 10.0)
+        self.assertEqual(filtered["database_execution_ms"], 20.0)
+        self.assertEqual(unfiltered["rendered_response_ms"], 10.0)
+        self.assertEqual(filtered["rendered_response_ms"], 20.0)

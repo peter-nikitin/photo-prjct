@@ -1,5 +1,5 @@
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from html.parser import HTMLParser
 from pathlib import Path
@@ -908,7 +908,7 @@ class EventDetailManualTimeFilterTests(TestCase):
             uploaded_at=timezone.now(),
         )
 
-    def capture_evidence(self, photo: Photo, *, capture_time: str) -> None:
+    def capture_evidence(self, photo: Photo, *, capture_time: str) -> ProcessingAttempt:
         configuration = {"capture_metadata": {"event_timezone": self.event.timezone_name}}
         run = EventProcessingRun.objects.create(
             event=self.event,
@@ -955,6 +955,7 @@ class EventDetailManualTimeFilterTests(TestCase):
         state.current_attempt = attempt
         state.accepted_attempt = attempt
         state.save()
+        return attempt
 
     def test_no_manual_parameters_keeps_the_existing_unfiltered_gallery(self) -> None:
         photo = self.photo("unfiltered", filename="unfiltered.jpg")
@@ -983,11 +984,21 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertNotContains(response, "mc.yandex.ru")
         self.assertNotContains(response, 'ym(111239706, "init", {')
 
-    def test_valid_manual_filter_uses_only_matching_current_evidence_before_paging(self) -> None:
+    def test_valid_manual_filter_uses_only_matching_capture_time_projection_before_paging(
+        self,
+    ) -> None:
         matching = self.photo("matching", filename="a.jpg")
         outside = self.photo("outside", filename="b.jpg")
-        self.capture_evidence(matching, capture_time="2026-06-10T09:00:00Z")
-        self.capture_evidence(outside, capture_time="2026-06-10T10:00:00Z")
+        matching_attempt = self.capture_evidence(matching, capture_time="2026-06-10T10:00:00Z")
+        outside_attempt = self.capture_evidence(outside, capture_time="2026-06-10T09:00:00Z")
+        Photo.objects.filter(pk=matching.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
+            capture_time_source_attempt=matching_attempt,
+        )
+        Photo.objects.filter(pk=outside.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+            capture_time_source_attempt=outside_attempt,
+        )
 
         response = self.client.get(
             reverse("event_detail", kwargs={"slug": self.event.slug}),

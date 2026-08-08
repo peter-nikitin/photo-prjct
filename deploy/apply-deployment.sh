@@ -23,6 +23,7 @@ printf 'DEPLOY_PHASE=validate\n'
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
 : "${APP_IMAGE:?Set APP_IMAGE}"
+: "${ACCEPTED_RELEASE_A_IMAGE:?Set ACCEPTED_RELEASE_A_IMAGE}"
 : "${SECRET_KEY:?Set SECRET_KEY}"
 : "${DEBUG:?Set DEBUG}"
 : "${ALLOWED_HOSTS:?Set ALLOWED_HOSTS}"
@@ -522,7 +523,7 @@ fail() {
 
 phase() {
     case "$1" in
-        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
             deployment_phase="$1"
             printf 'DEPLOY_PHASE=%s\n' "$1"
             ;;
@@ -739,6 +740,27 @@ else
         --entrypoint python web manage.py showmigrations --plan; then
         fail "Candidate migration preflight failed"
     fi
+fi
+
+phase projection-preflight
+committed_release_a_image=''
+if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
+    IFS= read -r committed_release_a_image < "$DEPLOY_ROOT/deployed-image" || true
+fi
+if [ "$has_successful_deployment" -eq 0 ] || \
+    [ "$committed_release_a_image" != "$ACCEPTED_RELEASE_A_IMAGE" ]; then
+    fail "Release B requires an accepted Release A deployment with the committed accepted Release A image"
+fi
+unset committed_release_a_image
+if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+    --entrypoint python web manage.py report_photo_capture_time_projection \
+    --all-events --require-clean; then
+    fail "Candidate projection reconciliation failed"
+fi
+if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+    --entrypoint python web manage.py benchmark_event_gallery_time_filter \
+    --event-id 9 --pages 1,mid,last; then
+    fail "Candidate gallery time-filter benchmark failed"
 fi
 
 phase observability-preflight

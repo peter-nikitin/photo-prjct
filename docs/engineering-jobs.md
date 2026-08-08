@@ -342,26 +342,24 @@ When I maintain a capture-time projection for gallery filtering, I want its writ
 aggregate reconciliation to agree with immutable current version-2 evidence, so I can keep direct
 gallery reads safe until a separately accepted projection-reader release.
 
-- Status: Validated for the local Release A implementation; deployment and the operational gate
-  remain pending.
+- Status: Delivered for the accepted Release A operation and locally verified Release B candidate;
+  Release B CI, deployment, and live cutover remain pending.
 - Evidence: [`src/backend/picflow/capture_time_projection.py`](../src/backend/picflow/capture_time_projection.py),
   [`src/backend/picflow/management/commands/rebuild_photo_capture_time_projection.py`](../src/backend/picflow/management/commands/rebuild_photo_capture_time_projection.py),
   [`src/backend/picflow/management/commands/report_photo_capture_time_projection.py`](../src/backend/picflow/management/commands/report_photo_capture_time_projection.py),
-  and the integrated Release A tests. The accepted local staging clone contains 9 events and
-  17,310 photos, including 17,043 event-9 photos. Before backfill, event 9 had 17,043 accepted
-  results, 17,043 non-null results, 17,043 terminal jobs, and 17,043 version-2 jobs, with zero
-  missing or terminal failures, status accepted, and timezone `Europe/Moscow`. The global dry run
-  reported 17,043 rows to change and
-  267 unchanged; apply changed 17,043 and left 267 unchanged. The required-clean report was clean
-  with 17,043 exact/projection/qualifying pairs and all mismatch categories zero, including event
-  9's exact 17,043/17,043 acceptance. A second apply changed zero and left 17,310 unchanged; the
-  authoritative after-report was identical and accepted. Integrated tests passed 539 with 2
-  skipped and 43 deselected; the visual suite passed 92; and `make check` passed 1,591 with 3
-  skipped and 43 deselected at 83.53% coverage, with Ruff/format/MyPy, Django checks, and migration
-  drift clean.
-- Boundary: the gallery still reads direct current-v2 JSON/cast evidence, and no Release B reader
-  is implemented. CI has not run for this branch; no PR, deployed Release A, live backfill, or
-  live lifecycle smoke is recorded, so Release B remains blocked.
+  the accepted Release A deployment (`41e3068`) has a clean 17,043/17,043 global event-9
+  reconciliation and a rollback-only lifecycle smoke that clears then republishes the projection.
+  The immutable accepted local clone contains 9 events and 17,310 photos. Its final Release B
+  candidate report is clean before and after benchmarking, with 17,043 exact source/value pairs
+  and every first/midpoint/last database and rendered ratio at or below 2x; the retained
+  [benchmark JSON](performance/2026-08-08-event-gallery-time-filter-local-clone.json) is aggregate
+  only. The integrated gallery/processing/projection/deployment suite, visual suite (92 tests),
+  and separate `make check` exit clean locally; Ruff, MyPy, Django, and migration-drift checks are
+  included in the quality gate.
+- Boundary: Release B removes the direct JSON/cast filtered-reader path locally, but no Release B
+  PR, green CI, deployed candidate, live benchmark, service switch, or customer acceptance is
+  recorded. Immutable attempt/state/run/job/result evidence remains authoritative and is never
+  rewritten by rebuild or reconciliation.
 - Last updated: 2026-08-08
 
 ## Status log
@@ -399,3 +397,4 @@ This log is append-only.
 | 2026-08-07 | EJ-018 | Not recorded | Candidate | A sanitized staging audit confirmed persistent host and Docker credential surfaces; the maintainer deferred a comprehensive runtime credential lifecycle design to a separate task rather than expanding EJ-017. |
 | 2026-08-07 | EJ-017 | Candidate | Planned | The maintainer accepted ADR 0026 and approved the decision-complete environment-scoped Lockbox implementation plan for execution. |
 | 2026-08-08 | EJ-019 | Not recorded | Validated | Release A writer/schema/rebuild/report and local accepted-clone reconciliation are evidenced; direct gallery reads remain active and CI/deployment/live operational-gate evidence is pending. |
+| 2026-08-08 | EJ-019 | Validated | Delivered | Accepted Release A staging writer/direct-reader operation, local Release B projection-reader evidence, clean global reconciliation, and aggregate 2x benchmark are recorded. Release B review, PR/CI, deployment, live candidate gate, and cutover remain pending. |

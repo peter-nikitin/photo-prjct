@@ -5,18 +5,14 @@ from dataclasses import dataclass
 from typing import Final, Literal, Protocol, Self
 
 from django.core.paginator import Page, Paginator
-from django.db.models import Case, DateTimeField, F, Q, QuerySet, When
-from django.db.models.fields.json import KeyTextTransform
-from django.db.models.functions import Cast
+from django.db.models import F, Q, QuerySet
 from django.urls import reverse
 from ingestion.storage import ObjectMismatch, ObjectMissing, OpenedObject, ReadableBody
 from processing.models import (
-    CAPTURE_METADATA_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     PhotoDerivative,
     PhotoProcessingState,
     ProcessingAttempt,
-    ProcessingJob,
 )
 
 from picflow.models import Event, Photo
@@ -189,43 +185,9 @@ def gallery_photo_queryset(
         return queryset
     if capture_time_start is None or capture_time_end is None:
         raise ValueError("capture time bounds must be supplied together")
-    direct_capture_time = KeyTextTransform(
-        "capture_time", "processing_states__accepted_attempt__result"
-    )
-    canonical_direct_capture_time = Case(
-        When(
-            processing_states__accepted_attempt__result__capture_time__regex=(
-                r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"
-            ),
-            then=Cast(direct_capture_time, DateTimeField()),
-        ),
-        default=None,
-        output_field=DateTimeField(),
-    )
-    return (
-        queryset.filter(
-            Q(processing_states__current_run=F("processing_states__current_attempt__run")),
-            Q(processing_states__current_job=F("processing_states__current_attempt__job")),
-            Q(processing_states__current_run=F("processing_states__accepted_attempt__run")),
-            Q(processing_states__current_job=F("processing_states__accepted_attempt__job")),
-            processing_states__processor_type=CAPTURE_METADATA_PROCESSOR,
-            processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
-            processing_states__current_run__processor_type=CAPTURE_METADATA_PROCESSOR,
-            processing_states__current_run__processor_version=2,
-            processing_states__current_job__processor_type=CAPTURE_METADATA_PROCESSOR,
-            processing_states__current_job__processor_version=2,
-            processing_states__current_job__status=ProcessingJob.Status.SUCCEEDED,
-            processing_states__current_attempt=F("processing_states__accepted_attempt"),
-            processing_states__accepted_attempt__processor_type=CAPTURE_METADATA_PROCESSOR,
-            processing_states__accepted_attempt__processor_version=2,
-            processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
-            processing_states__accepted_attempt__accepted=True,
-        )
-        .annotate(direct_capture_time=canonical_direct_capture_time)
-        .filter(
-            direct_capture_time__gte=capture_time_start,
-            direct_capture_time__lte=capture_time_end,
-        )
+    return queryset.filter(
+        capture_time__gte=capture_time_start,
+        capture_time__lte=capture_time_end,
     )
 
 

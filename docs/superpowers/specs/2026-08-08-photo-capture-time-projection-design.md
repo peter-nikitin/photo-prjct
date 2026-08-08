@@ -1,9 +1,11 @@
 # Photo Capture-Time Projection Design
 
 - Date: 2026-08-08
-- Status: Approved
-- Release A evidence: locally implemented and reconciled; CI, pull request, deployment, live
-  backfill, lifecycle smoke, and customer acceptance remain pending operational states.
+- Status: Release B candidate implemented and locally verified; PR, CI, deployment, and customer
+  acceptance remain pending
+- Release A evidence: accepted staging deployment at `41e3068` with clean 17,043/17,043 global
+  reconciliation and rollback-only lifecycle smoke. Release B local evidence is separate and does
+  not substitute for its required live candidate gate.
 - Owner: project maintainer
 - Related architecture:
   [Current architecture — capture-metadata processor version 2](../../architecture.md#current-architecture--implemented),
@@ -292,11 +294,13 @@ empty state, page navigation/reset, selfie search, gallery-origin search, media 
 health. Customer acceptance additionally requires the live event-9 current-v2 report and projection
 reconciliation to remain terminal and exact.
 
-## Release A evidence status — 2026-08-08
+## Release A and Release B evidence status — 2026-08-08
 
-The current branch implements the Release A schema, synchronous writers, bounded rebuild, and
-aggregate reconciliation. Its gallery remains the direct current-v2 JSON/cast reader; Release B's
-projection-only reader and service switch are not implemented.
+Release A is accepted on staging at `41e3068`: it remains the projection-maintaining direct
+current-v2 JSON/cast reader, with final global reconciliation at 17,043/17,043 event-9
+source/value pairs and a rollback-only lifecycle smoke that clears then republishes the projection.
+Release B implements the projection-only filtered reader and removes the direct JSON/cast fallback
+locally; it has not switched a live service.
 
 The integrated Release A suite passed 539 tests with 2 skipped and 43 deselected. The visual suite
 passed 92 tests in 1.2 minutes after the `<=30` index fix. `make check` passed with Ruff/format/MyPy clean,
@@ -314,9 +318,12 @@ mismatching, stale, extra, partial, or unsupported rows; event 9 was accepted at
 17,043/17,043. The idempotent apply changed 0 and left 17,310 unchanged, and the authoritative
 after-report was identical and accepted.
 
-This evidence is local only. CI has not run for the current branch; no PR is open, Release A has
-not been deployed, live backfill and live lifecycle smoke are not done, and the operational gate
-remains pending. Release B is blocked and unimplemented.
+On the immutable accepted local clone, Release B's final global reconciliation was clean before and
+after the read-only candidate benchmark. Event 9 retained 17,043 exact source/value pairs and every
+first/midpoint/last database and rendered ratio passed the 2x gate in the [sanitized aggregate
+report](../../performance/2026-08-08-event-gallery-time-filter-local-clone.json). This local
+candidate evidence does not replace Release B review, PR/CI, normal staging deployment, exact
+image/health, live reconciliation, live benchmark, post-switch smoke, or customer acceptance.
 
 ## Privacy and authorization
 

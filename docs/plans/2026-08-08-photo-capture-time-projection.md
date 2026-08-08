@@ -1,10 +1,12 @@
 # Photo Capture-Time Projection Implementation Plan
 
 - Date: 2026-08-08
-- Status: Approved for execution through the Release A operational gate
-- Current evidence: Release A is implemented and reconciled on the accepted local clone; CI,
-  pull request, deployment, live backfill, lifecycle smoke, and customer acceptance remain
-  separate pending states.
+- Status: Release A operational gate accepted; Release B candidate locally verified and awaiting
+  review, pull request, CI, and normal staging deployment
+- Current evidence: Release A was accepted on staging at `41e3068`; Release B has separate local
+  reconciliation, benchmark, integrated-suite, visual-suite, and quality-gate evidence. Release B
+  review, PR, CI, deployment, live candidate checks, and customer acceptance remain separate
+  pending states.
 - Owner: project maintainer
 - Related specification:
   [Photo Capture-Time Projection Design](../superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
@@ -173,15 +175,16 @@ rename.
 - [x] Update current documentation only for locally implemented/verified Release A facts. Record
   local clone, CI, deployed Release A, live backfill, and live transition evidence separately; do
   not claim Release B or customer cutover.
-- [ ] Obtain final whole-Release-A review, rerun changed focused checks, `make check`, visual suite,
+- [x] Obtain final whole-Release-A review, rerun changed focused checks, `make check`, visual suite,
   migration drift, and `git diff --check`, then open the Release A PR. Merge/deployment remain
   separate states and require their normal authorization/check gates.
 
-## Release A evidence status — 2026-08-08
+## Release A operational evidence status — 2026-08-08
 
-The current branch contains the Release A schema, synchronous projection writers, bounded rebuild,
-and aggregate reconciliation. The gallery remains a direct current-v2 JSON/cast reader; Release B's
-projection-only reader and service switch are not implemented.
+Release A was accepted on staging at `41e3068` after deployment run `31248157078`, final global
+reconciliation at 17,043/17,043 event-9 source/value pairs, and a transaction-rollback lifecycle
+smoke that cleared then republished the projection. It remains the deployed synchronous writer and
+direct current-v2 JSON/cast reader.
 
 The integrated Release A suite passed 539 tests with 2 skipped and 43 deselected. The visual suite
 passed 92 tests in 1.2 minutes after the `<=30` index fix. `make check` passed with Ruff/format/MyPy clean,
@@ -199,22 +202,22 @@ stale, extra, partial, or unsupported rows; event 9 was accepted at exactly 17,0
 idempotent apply changed 0 and left 17,310 unchanged, and the authoritative after-report was
 identical and accepted.
 
-These are local evidence only. CI has not run for the current branch; no PR is open, Release A has
-not been deployed, live backfill and live lifecycle smoke are not done, and the operational gate
-remains pending. Release B is therefore blocked and unimplemented.
+This historical local-clone evidence supported the accepted Release A operation. It is distinct
+from the later Release B candidate and does not itself evidence Release B review, CI, deployment,
+or customer acceptance.
 
 ### Operational gate: Accept deployed Release A before Release B
 
-- [ ] Merge only after GitHub checks are green and deploy the exact merged Release A revision through
+- [x] Merge only after GitHub checks are green and deploy the exact merged Release A revision through
   the normal workflow.
-- [ ] Verify staging health and exact deployed image, then run global rebuild dry-run/apply and final
+- [x] Verify staging health and exact deployed image, then run global rebuild dry-run/apply and final
   `report_photo_capture_time_projection --all-events --require-clean` on the real database.
-- [ ] Require event 9: 17,043 current accepted v2 evidence rows, 17,043 exact projection pairs, zero
+- [x] Require event 9: 17,043 current accepted v2 evidence rows, 17,043 exact projection pairs, zero
   missing/mismatch/stale/extra/partial/unsupported rows, and unchanged immutable evidence counts.
-- [ ] Exercise one authorized capture-metadata lifecycle smoke or equivalent controlled fixture on
+- [x] Exercise one authorized capture-metadata lifecycle smoke or equivalent controlled fixture on
   the deployed Release A: enrollment clears projection and accepted completion republishes it in the
   same transaction. Do not reprocess customer event 9 merely for the smoke.
-- [ ] Record terminal aggregate evidence and explicitly accept Release A. If any check fails, keep
+- [x] Record terminal aggregate evidence and explicitly accept Release A. If any check fails, keep
   the direct reader active, repair/rebuild Release A, and do not create or implement Release B.
 
 ### Task 4: Implement Release B projection-only gallery reads and candidate gates
@@ -233,23 +236,23 @@ and focused deployment tests/workflow wiring required for candidate pre-switch c
 - **Produces:** Projection-only filtered gallery queryset and candidate pre-switch reconciliation/
   benchmark gates; no direct processing JSON join/cast fallback remains.
 
-- [ ] Add failing gallery tests proving filtered reads include/exclude solely by `Photo.capture_time`
+- [x] Add failing gallery tests proving filtered reads include/exclude solely by `Photo.capture_time`
   after existing media eligibility, preserve inclusive bounds/order/page size, exclude nulls, and
   issue no capture-metadata processing joins or JSON casts. Preserve all approved form/UI behavior.
-- [ ] Add failing regression tests proving unfiltered galleries remain independent of projection and
+- [x] Add failing regression tests proving unfiltered galleries remain independent of projection and
   no media/selfie/privacy/authorization boundary changes.
-- [ ] Update benchmark tests so the command requires a clean global projection report, measures the
+- [x] Update benchmark tests so the command requires a clean global projection report, measures the
   projection query, retains aggregate-only output, and fails before emitting success on drift,
   request errors, timeouts, or any unrounded ratio greater than 2.
-- [ ] Add failing deployment tests proving candidate pre-switch runs final global `--require-clean`
+- [x] Add failing deployment tests proving candidate pre-switch runs final global `--require-clean`
   and event-9 first/midpoint/last benchmark before service switch; any nonzero exit leaves Release A
   active. No backfill or evidence mutation occurs in Release B deployment.
-- [ ] Run the affected focused gallery, benchmark, and deployment suites and record RED before
+- [x] Run the affected focused gallery, benchmark, and deployment suites and record RED before
   implementation.
-- [ ] Replace the direct join/cast branch with the projection range and remove obsolete imports,
+- [x] Replace the direct join/cast branch with the projection range and remove obsolete imports,
   annotations, tests, and fallback paths. Add the smallest candidate pre-switch invocation through
   the established deployment entrypoint.
-- [ ] Rerun all focused suites, MyPy/Ruff, and `git diff --check` and require success.
+- [x] Rerun all focused suites, MyPy/Ruff, and `git diff --check` and require success.
 
 ### Task 5: Verify, document, and deliver Release B
 
@@ -261,13 +264,13 @@ ADR is expected.
 - **Depends on:** Task 4 and accepted Release A evidence.
 - **Produces:** One reviewable Release B PR and evidence package ready for normal CI/deployment.
 
-- [ ] On an immutable accepted local-clone snapshot, run final global projection reconciliation,
+- [x] On an immutable accepted local-clone snapshot, run final global projection reconciliation,
   then event-9 benchmark pages `1,mid,last`. Retain sanitized JSON only when every database and
   rendered ratio is at most 2x and no private value appears.
-- [ ] Run integrated gallery/processing/projection/deployment tests, the visual suite once, and
+- [x] Run integrated gallery/processing/projection/deployment tests, the visual suite once, and
   `make check` separately. Require all commands to exit zero; run `git diff --check` and migration
   drift checks.
-- [ ] Update implemented architecture facts to distinguish Release A writer deployment, Release B
+- [x] Update implemented architecture facts to distinguish Release A writer deployment, Release B
   projection reader, source-of-truth/rebuild boundary, global reconciliation, and local versus live
   evidence. Record conformance to ADRs 0002, 0017, 0022, and 0027.
 - [ ] Obtain final whole-branch review, fix blocking findings through one review loop, rerun final

@@ -251,15 +251,15 @@ storing a manual query.
 - Status: In progress
 - Evidence: The approved [event gallery time-filter design](superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
   and [capture-time projection design](superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
-  define the event-local form, inclusive tolerance, privacy boundary, and two-release gate. The
-  current branch has the Release A projection writer, rebuild, and reconciliation locally
-  verified on an accepted clone of 9 events/17,310 photos, including exact event-9 evidence and
-  projection pairs for 17,043 photos; the gallery still reads direct current-v2 evidence. The
-  integrated suite (539 passed, 2 skipped, 43 deselected), visual suite (92 passed), and final
-  `make check` (1,591 passed, 3 skipped, 43 deselected; 83.53% coverage) are clean. Customer
-  acceptance remains blocked until Release A is deployed and accepted, then Release B performs its
-  final reconciliation and performance-gated projection-reader cutover. CI, PR, deployment, live
-  backfill, and live lifecycle smoke evidence are not recorded.
+  define the event-local form, inclusive tolerance, privacy boundary, and two-release gate.
+  Accepted Release A staging evidence establishes the synchronous writer, direct reader, clean
+  global reconciliation at 17,043 event-9 pairs, and rollback-only lifecycle smoke. The current
+  Release B candidate uses the projection-only filtered reader and has a clean immutable-local-clone
+  reconciliation plus a [sanitized 2x benchmark](performance/2026-08-08-event-gallery-time-filter-local-clone.json)
+  for its first, midpoint, and last pages. The integrated gallery/processing/projection/deployment
+  suite, visual suite (92 tests), and separate `make check` exit clean locally. Customer acceptance
+  remains blocked on Release B review, PR/green CI, normal staging deployment, exact-image/health
+  checks, live reconciliation and benchmark, and gallery/privacy/authorization smoke coverage.
 - Last updated: 2026-08-08
 
 Visual design-reference screens are not delivery evidence.
@@ -294,3 +294,4 @@ This log is append-only.
 | 2026-08-04 | PJ-014 | Not recorded | Candidate | Approved product design proposes a device-local list of saved bearer results on each event page; implementation planning has not started. |
 | 2026-08-04 | PJ-014 | Candidate | In progress | Repository-only implementation and reconciled release-gate evidence: 16/16 device-local history JS cases, 81 focused Django selfie-search/event-view cases, 84/84 full JavaScript cases, `make check` with 1,239 passed and 3 skipped at 83.20% coverage, and 81/81 visual cases passed. No deployment or customer-outcome evidence is claimed. |
 | 2026-08-08 | PJ-015 | Not recorded | In progress | Release A writer and local accepted-clone projection reconciliation are complete while the gallery remains a direct reader; Release B cutover and customer acceptance remain gated on deployment, live reconciliation, and performance evidence. |
+| 2026-08-08 | PJ-015 | In progress | In progress | Release A staging operation is accepted; the Release B projection reader has clean local reconciliation and aggregate first/midpoint/last 2x evidence. Review, PR/CI, deployment, live acceptance, and customer outcome remain pending. |

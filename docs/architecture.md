@@ -91,23 +91,20 @@ The repository currently contains an early Django application:
   the approved event identity/cohort/configuration, and enrolls immutable version-2 work without
   rewriting prior attempts. The report emits bounded completion, timezone-state, warning, UTC, and
   event-local-hour aggregates.
-- Release A of the capture-time projection is implemented locally: nullable `Photo.capture_time` and
-  `Photo.capture_time_source_attempt` fields, the synchronous lifecycle writer, bounded rebuild, and
-  aggregate reconciliation commands are present.
-  The gallery remains a direct current-v2 JSON/cast reader (`direct_capture_time`); no Release B
-  projection-reader switch is implemented. On the accepted local staging clone (9 events, 17,310
-  photos; event 9 has 17,043), the authoritative pre-backfill event-9 report had 17,043 accepted
-  results, 17,043 non-null results, 17,043 terminal jobs, and 17,043 version-2 jobs, with zero
-  missing or terminal failures, status accepted, and timezone `Europe/Moscow`. The all-event dry
-  run reported `would_change=17043`,
-  `unchanged=267`, `events=9`, `photos=17310`, and zero exhausted/retries/skipped; apply changed
-  17,043 rows and left 267 unchanged. The required-clean report was clean with 17,043 exact,
-  projected, and qualifying non-null pairs and zero missing, mismatching, stale, extra, partial,
-  or unsupported rows; event 9 was accepted at exactly 17,043/17,043. The idempotent apply then
-  changed zero and left 17,310 unchanged, and the authoritative after-report was identical and
-  accepted. These are local-clone evidence only: this branch has no CI run, PR, deployed Release A,
-  live backfill, or live lifecycle smoke, so the Release A operational gate remains pending and
-  Release B is blocked.
+- Release A is the deployed projection writer and direct current-v2 evidence reader. Its accepted
+  staging operational gate is commit `41e3068`: final global reconciliation is clean at 17,043
+  exact event-9 source/value pairs, and a transaction-rollback lifecycle smoke cleared then
+  republished the derived projection without rewriting immutable evidence. The source of truth is
+  still the current accepted version-2 attempt; `Photo.capture_time` and
+  `Photo.capture_time_source_attempt` are a synchronous, rebuildable PostgreSQL read projection.
+  Release B replaces the filtered gallery's direct JSON join/cast with the indexed
+  `Photo.capture_time` range and retains no direct-reader fallback. On the immutable accepted local
+  clone (9 events, 17,310 photos; event 9 has 17,043), final global reconciliation was clean before
+  and after the read-only candidate benchmark, and every first/midpoint/last database and rendered
+  ratio passed the 2x gate; see the [sanitized aggregate report](performance/2026-08-08-event-gallery-time-filter-local-clone.json).
+  This is local Release B candidate evidence, not a Release B PR, CI result, deployed image,
+  candidate switch, live benchmark, or customer acceptance. Those remain separate normal-release
+  gates.
 - Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the

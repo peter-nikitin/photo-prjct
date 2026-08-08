@@ -226,6 +226,27 @@ class QualityComparisonConfigurationError(Exception):
 
 
 @dataclass(frozen=True)
+class BuildQualitySampleConfig:
+    comparison: Path
+    output: Path
+    sample_size: int = 1506
+    page_size: int = 250
+
+
+@dataclass(frozen=True)
+class FinalizeQualitySampleConfig:
+    sample: Path
+    labels_csv: Path
+    reviewer: str
+    reviewed_at: str
+    output: Path
+
+
+class QualitySampleConfigurationError(Exception):
+    """Private sampled quality evidence is incomplete or incompatible."""
+
+
+@dataclass(frozen=True)
 class _BenchmarkSourceFace:
     face_id: str
     filename: str
@@ -1156,6 +1177,49 @@ def run_finalize_quality_review_command(config: FinalizeQualityReviewConfig) -> 
         raise QualityComparisonConfigurationError("quality review cannot be finalized") from None
 
 
+def run_build_quality_sample_command(config: BuildQualitySampleConfig) -> None:
+    """Publish one bounded sample from a strictly validated quality comparison."""
+    from .quality_comparison_artifacts import load_quality_comparison_bundle
+    from .quality_sample import build_quality_sample
+    from .quality_sample_artifacts import write_quality_sample_bundle
+
+    try:
+        if config.page_size != 250:
+            raise ValueError("quality sample page size differs from the review format")
+        if os.path.lexists(config.output):
+            raise FileExistsError(config.output)
+        comparison, bundle_sha256 = load_quality_comparison_bundle(config.comparison)
+        sample = build_quality_sample(comparison, bundle_sha256, config.sample_size)
+        write_quality_sample_bundle(config.output, config.comparison, sample)
+    except (OSError, TypeError, ValueError, KeyError):
+        raise QualitySampleConfigurationError("quality sample cannot be built") from None
+
+
+def run_finalize_quality_sample_command(config: FinalizeQualitySampleConfig) -> None:
+    """Publish immutable weighted sample evidence without making an approval decision."""
+    from .quality_sample_artifacts import (
+        load_quality_sample_bundle,
+        load_quality_sample_labels,
+        write_quality_sample_analysis,
+    )
+
+    try:
+        if os.path.lexists(config.output):
+            raise FileExistsError(config.output)
+        sample, _sample_bundle_sha256 = load_quality_sample_bundle(config.sample)
+        labels = load_quality_sample_labels(config.labels_csv, sample)
+        write_quality_sample_analysis(
+            config.output,
+            sample,
+            labels,
+            config.reviewer,
+            config.reviewed_at,
+            sample_bundle=config.sample,
+        )
+    except (OSError, TypeError, ValueError, KeyError):
+        raise QualitySampleConfigurationError("quality sample cannot be finalized") from None
+
+
 def run_compare_search_command(config: CompareSearchConfig) -> None:
     """Run the finalized closed queries against baseline and candidate exact-cosine indexes."""
     from .analysis import analyze_decoded_event_photo
@@ -1901,6 +1965,17 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_quality.add_argument("--reviewer", required=True)
     finalize_quality.add_argument("--reviewed-at", required=True)
     finalize_quality.add_argument("--output", type=Path, required=True)
+    build_quality_sample = commands.add_parser("build-quality-sample")
+    build_quality_sample.add_argument("--comparison", type=Path, required=True)
+    build_quality_sample.add_argument("--output", type=Path, required=True)
+    build_quality_sample.add_argument("--sample-size", type=int, default=1506)
+    build_quality_sample.add_argument("--page-size", type=int, default=250)
+    finalize_quality_sample = commands.add_parser("finalize-quality-sample")
+    finalize_quality_sample.add_argument("--sample", type=Path, required=True)
+    finalize_quality_sample.add_argument("--labels-csv", type=Path, required=True)
+    finalize_quality_sample.add_argument("--reviewer", required=True)
+    finalize_quality_sample.add_argument("--reviewed-at", required=True)
+    finalize_quality_sample.add_argument("--output", type=Path, required=True)
     compare_search = commands.add_parser("compare-search")
     compare_search.add_argument("--benchmark", type=Path, required=True)
     compare_search.add_argument("--baseline-index", type=Path, required=True)
@@ -2007,6 +2082,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reviewed_at=arguments.reviewed_at,
                 output=arguments.output,
             )
+        elif arguments.command == "build-quality-sample":
+            build_quality_sample_config = BuildQualitySampleConfig(
+                comparison=arguments.comparison,
+                output=arguments.output,
+                sample_size=arguments.sample_size,
+                page_size=arguments.page_size,
+            )
+        elif arguments.command == "finalize-quality-sample":
+            finalize_quality_sample_config = FinalizeQualitySampleConfig(
+                sample=arguments.sample,
+                labels_csv=arguments.labels_csv,
+                reviewer=arguments.reviewer,
+                reviewed_at=arguments.reviewed_at,
+                output=arguments.output,
+            )
         elif arguments.command == "compare-search":
             compare_search_config = CompareSearchConfig(
                 benchmark=arguments.benchmark,
@@ -2048,6 +2138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ClusterConfigurationError,
         ComparisonError,
         QualityComparisonConfigurationError,
+        QualitySampleConfigurationError,
         ValueError,
     ):
         return 2
@@ -2092,6 +2183,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_finalize_quality_review_command(finalize_quality_config)
             except Exception:
                 return 2
+        elif arguments.command == "build-quality-sample":
+            try:
+                run_build_quality_sample_command(build_quality_sample_config)
+            except Exception:
+                return 2
+        elif arguments.command == "finalize-quality-sample":
+            try:
+                run_finalize_quality_sample_command(finalize_quality_sample_config)
+            except Exception:
+                return 2
         elif arguments.command == "compare-search":
             try:
                 run_compare_search_command(compare_search_config)
@@ -2104,6 +2205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ClusterConfigurationError,
         ComparisonError,
         QualityComparisonConfigurationError,
+        QualitySampleConfigurationError,
         FileExistsError,
         OSError,
         ValueError,

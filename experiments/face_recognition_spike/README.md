@@ -115,7 +115,7 @@ Each run contains:
 | `report.html` | Lightweight local index: one representative crop per cluster. |
 | `people/person-NNNN/index.html` | One cluster's face crops and source photos, loaded only when opened. |
 
-## Compare and approve a quality generation
+## Compare a quality configuration with a sampled review
 
 `compare-quality` accepts only the current immutable cluster-run
 `manifest.json`/`faces.json` schema. Each run freezes its sorted photo inventory hash, per-photo media
@@ -138,19 +138,63 @@ PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
 ```
 
 The output is immutable and atomic. `comparison.json` contains aggregate and
-detection evidence but no embeddings. `report.html` renders every baseline-
-accepted/candidate-rejected face plus bounded retained threshold-band samples.
-Use its export control to label every new rejection exactly once as `clear`,
-`blurred`, `unusably_small`, or `uncertain`. Missing, duplicate, unknown,
-cross-comparison, and unsupported labels fail finalization. The report is
-self-contained for direct `file://` use: its immutable bundle digest is
-embedded in the HTML, so the export control does not require a local web
-server or a runtime manifest request.
+detection evidence but no embeddings. Build the immutable ten-percent sampled
+review from that frozen comparison; the output must be a new private directory.
 
-Run the already finalized closed benchmark against both private indexes. This
-reuses the existing SFace query path, exact cosine ranking, inclusive direct
-threshold `0.363`, one best face per photo, deterministic ordering, and full-
-photo holdout for gallery proxies.
+```sh
+PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
+.venv/bin/python -m face_spike build-quality-sample \
+  --comparison /absolute/private/quality-comparison-001 \
+  --output /absolute/private/quality-sample-001 \
+  --sample-size 1506 \
+  --page-size 250
+```
+
+The command strictly revalidates the complete source comparison before it
+selects its deterministic 1,506 rejected faces. It copies only those sampled
+crops and the separate 100 retained threshold controls. It neither changes the
+comparison nor accesses Django, PostgreSQL, Object Storage, the downloader, or
+a running application. The sampled report has fixed logical pages of at most
+250 faces, so `--page-size` must remain `250`.
+
+Open the private `report.html` directly with `file://`. One reviewer labels
+each sampled rejection as exactly one of `clear`, `blurred`, `unusably_small`,
+or `uncertain`; keys `1` through `4` select those labels. The browser stores a
+bundle-scoped local draft only on that device. The report exports a CSV only
+after all 1,506 rows are labelled. A complete exported CSV can be imported
+back into the same immutable sample; malformed, incomplete, duplicate,
+unknown, or cross-sample rows are rejected.
+
+Finalization creates a separate immutable weighted-evidence report. It is not
+an approval or activation command.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
+.venv/bin/python -m face_spike finalize-quality-sample \
+  --sample /absolute/private/quality-sample-001 \
+  --labels-csv /absolute/private/quality-sample-labels.csv \
+  --reviewer reviewer-id \
+  --reviewed-at 2026-08-08T00:00:00Z \
+  --output /absolute/private/quality-sample-analysis-001
+```
+
+It validates the exact sample, complete labels, reviewer, timestamp, and new
+output path, then reports raw and population-weighted evidence, a 95% Wilson
+interval for `clear`, strata, retained controls, and every sampled `clear` or
+`uncertain` crop. Treat it as sampled evidence only: it does not establish
+zero clear-face loss or full-population manual coverage. It only informs a
+later explicit experimental decision; it does not approve or activate a
+generation.
+
+Search relevance is independent of this sampled face-quality review. Use the
+existing immutable benchmark proposal to review the 30 primary queries first,
+with `relevant`, `different`, or `uncertain` annotations. Open and use a
+deterministic replacement query page only when the primary query has fewer
+than three relevant held-out photos or conflicts with an already selected
+manual identity. After 30 valid person-disjoint queries are finalized, run the
+closed set against both private indexes. This reuses the existing SFace query
+path, exact cosine ranking, inclusive direct threshold `0.363`, one best face
+per photo, deterministic ordering, and full-photo holdout for gallery proxies.
 
 ```sh
 PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
@@ -164,37 +208,6 @@ PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
   --quality-comparison /absolute/private/quality-comparison-001 \
   --output /absolute/private/search-comparison-001
 ```
-
-Finally, publish a bounded aggregate approval. It fails closed for any clear or
-uncertain rejection, lost manually confirmed relevant photo, unresolved corpus
-item, source-hash mismatch, malformed labels, or existing output.
-
-```sh
-PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
-.venv/bin/python -m face_spike finalize-quality-review \
-  --comparison /absolute/private/quality-comparison-001 \
-  --labels-csv /absolute/private/quality-review-labels.csv \
-  --search-comparison /absolute/private/search-comparison-001 \
-  --baseline-run /absolute/private/baseline-run \
-  --candidate-run /absolute/private/candidate-run \
-  --benchmark /absolute/private/final-benchmark \
-  --baseline-index /absolute/private/baseline-index \
-  --candidate-index /absolute/private/candidate-index \
-  --run /absolute/private/baseline-run \
-  --yunet-model /absolute/models/yunet.onnx \
-  --sface-model /absolute/models/sface.onnx \
-  --reviewer reviewer-id \
-  --reviewed-at 2026-08-08T00:00:00Z \
-  --output /absolute/private/quality-approval-001
-```
-
-Finalization reloads both exact immutable source runs, reconstructs the IoU
-comparison, reruns every frozen query against both full-content indexes, and
-requires exact equality with the reviewed search artifact before authorizing
-the aggregate. The approval contains only hashes, timestamps, the reviewer
-identifier, and bounded counts. It contains no photos, crops, face IDs, labels,
-query material, or embeddings. Execution success is not approval and does not
-activate a generation.
 
 The writer attempts hard links for source photos and copies only when the
 filesystem does not permit that link. A singleton is a valid discovered

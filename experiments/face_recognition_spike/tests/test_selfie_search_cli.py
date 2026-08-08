@@ -1265,6 +1265,217 @@ def test_quality_comparison_command_parsers_and_dispatch(
     assert search_calls[0].candidate_index == tmp_path / "candidate-index"
 
 
+def test_quality_sample_command_parsers_and_dispatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    build_arguments = [
+        "build-quality-sample",
+        "--comparison",
+        str(tmp_path / "comparison"),
+        "--output",
+        str(tmp_path / "sample"),
+    ]
+    finalize_arguments = [
+        "finalize-quality-sample",
+        "--sample",
+        str(tmp_path / "sample"),
+        "--labels-csv",
+        str(tmp_path / "labels.csv"),
+        "--reviewer",
+        "reviewer",
+        "--reviewed-at",
+        "2026-08-08T00:00:00Z",
+        "--output",
+        str(tmp_path / "analysis"),
+    ]
+
+    parsed = cli.build_parser().parse_args(build_arguments)
+    assert (parsed.sample_size, parsed.page_size) == (1506, 250)
+
+    build_calls: list[cli.BuildQualitySampleConfig] = []
+    finalize_calls: list[cli.FinalizeQualitySampleConfig] = []
+    monkeypatch.setattr(cli, "run_build_quality_sample_command", build_calls.append)
+    monkeypatch.setattr(cli, "run_finalize_quality_sample_command", finalize_calls.append)
+
+    assert cli.main(build_arguments) == 0
+    assert cli.main(finalize_arguments) == 0
+    assert build_calls == [
+        cli.BuildQualitySampleConfig(
+            comparison=tmp_path / "comparison",
+            output=tmp_path / "sample",
+            sample_size=1506,
+            page_size=250,
+        )
+    ]
+    assert finalize_calls == [
+        cli.FinalizeQualitySampleConfig(
+            sample=tmp_path / "sample",
+            labels_csv=tmp_path / "labels.csv",
+            reviewer="reviewer",
+            reviewed_at="2026-08-08T00:00:00Z",
+            output=tmp_path / "analysis",
+        )
+    ]
+
+
+def test_quality_sample_commands_delegate_only_to_sample_seams(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from face_spike import quality_comparison_artifacts, quality_sample, quality_sample_artifacts
+
+    comparison = object()
+    sample = object()
+    labels = (object(),)
+    build_calls: list[tuple[object, str, int]] = []
+    bundle_calls: list[tuple[Path, Path, object]] = []
+    analysis_calls: list[tuple[Path, object, object, str, str, Path]] = []
+    monkeypatch.setattr(
+        quality_comparison_artifacts,
+        "load_quality_comparison_bundle",
+        lambda path: (comparison, "f" * 64),
+    )
+    monkeypatch.setattr(
+        quality_sample,
+        "build_quality_sample",
+        lambda evidence, digest, sample_size: (
+            build_calls.append((evidence, digest, sample_size)) or sample
+        ),
+    )
+    monkeypatch.setattr(
+        quality_sample_artifacts,
+        "write_quality_sample_bundle",
+        lambda output, source, value: bundle_calls.append((output, source, value)),
+    )
+    monkeypatch.setattr(
+        quality_sample_artifacts,
+        "load_quality_sample_bundle",
+        lambda path: (sample, "e" * 64),
+    )
+    monkeypatch.setattr(
+        quality_sample_artifacts,
+        "load_quality_sample_labels",
+        lambda path, value: labels,
+    )
+
+    def write_analysis(
+        output: Path,
+        value: object,
+        imported: object,
+        reviewer: str,
+        reviewed_at: str,
+        *,
+        sample_bundle: Path,
+    ) -> None:
+        analysis_calls.append((output, value, imported, reviewer, reviewed_at, sample_bundle))
+
+    monkeypatch.setattr(
+        quality_sample_artifacts,
+        "write_quality_sample_analysis",
+        write_analysis,
+    )
+
+    build_config = cli.BuildQualitySampleConfig(
+        comparison=tmp_path / "comparison", output=tmp_path / "sample"
+    )
+    finalize_config = cli.FinalizeQualitySampleConfig(
+        sample=tmp_path / "sample",
+        labels_csv=tmp_path / "labels.csv",
+        reviewer="reviewer",
+        reviewed_at="2026-08-08T00:00:00Z",
+        output=tmp_path / "analysis",
+    )
+
+    cli.run_build_quality_sample_command(build_config)
+    cli.run_finalize_quality_sample_command(finalize_config)
+
+    assert build_calls == [(comparison, "f" * 64, 1506)]
+    assert bundle_calls == [(tmp_path / "sample", tmp_path / "comparison", sample)]
+    assert analysis_calls == [
+        (
+            tmp_path / "analysis",
+            sample,
+            labels,
+            "reviewer",
+            "2026-08-08T00:00:00Z",
+            tmp_path / "sample",
+        )
+    ]
+
+
+def test_quality_sample_commands_reject_invalid_cli_or_runtime_failure_without_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build_arguments = [
+        "build-quality-sample",
+        "--comparison",
+        str(tmp_path / "comparison"),
+        "--output",
+        str(tmp_path / "sample"),
+        "--page-size",
+        "249",
+    ]
+    assert cli.main(["build-quality-sample"]) == 2
+    monkeypatch.setattr(
+        cli,
+        "run_build_quality_sample_command",
+        lambda config: (_ for _ in ()).throw(RuntimeError("private details")),
+    )
+
+    assert cli.main(build_arguments) == 2
+    assert not (tmp_path / "sample").exists()
+    assert "private details" not in capsys.readouterr().err
+
+
+def test_quality_sample_commands_reject_existing_outputs_before_loading_private_inputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sample = tmp_path / "sample"
+    analysis = tmp_path / "analysis"
+    sample.mkdir()
+    analysis.mkdir()
+
+    def must_not_load(*args: object, **kwargs: object) -> object:
+        pytest.fail("existing output reached a private artifact loader")
+
+    from face_spike import quality_comparison_artifacts, quality_sample_artifacts
+
+    monkeypatch.setattr(
+        quality_comparison_artifacts, "load_quality_comparison_bundle", must_not_load
+    )
+    monkeypatch.setattr(quality_sample_artifacts, "load_quality_sample_bundle", must_not_load)
+
+    assert (
+        cli.main(
+            [
+                "build-quality-sample",
+                "--comparison",
+                str(tmp_path / "comparison"),
+                "--output",
+                str(sample),
+            ]
+        )
+        == 2
+    )
+    assert (
+        cli.main(
+            [
+                "finalize-quality-sample",
+                "--sample",
+                str(sample),
+                "--labels-csv",
+                str(tmp_path / "labels.csv"),
+                "--reviewer",
+                "reviewer",
+                "--reviewed-at",
+                "2026-08-08T00:00:00Z",
+                "--output",
+                str(analysis),
+            ]
+        )
+        == 2
+    )
+
+
 def _prepare_quality_finalization_orchestration(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

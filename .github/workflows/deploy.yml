@@ -551,9 +551,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Diagnose sanitized OIDC request boundary
-        run: |
-          python -c 'import os; from urllib.parse import urlsplit; url=os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", ""); parsed=urlsplit(url); print("oidc_request_url_present=%s" % bool(url)); print("oidc_request_host=%s" % (parsed.hostname or "missing")); print("oidc_request_scheme=%s" % (parsed.scheme or "missing")); print("oidc_request_token_present=%s" % bool(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")))'
       - name: "Verify Lockbox projection: local-web"
         run: |
           python scripts/run-with-environment-secrets.py \

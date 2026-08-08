@@ -278,12 +278,14 @@ workflow references, the manual preflight job, its no-output child, and their co
 - Create: `scripts/verify-environment-secret-projection.py`
 - Modify: `.github/workflows/deploy.yml`
 - Modify: `tests/deployment/test_environment_secrets.py`
-- Modify: `tests/deployment/test_staging_workflow_secrets.py`
+- Create: `tests/deployment/test_environment_secret_preflight.py`
 - Modify: `tests/test_repository_foundation.py`
 - Modify: `docs/runbooks/environment-secrets.md`
 - Modify: `docs/runbooks/environment-secrets-inventory.md`
 
-- **Depends on:** Tasks 1-4 reviewed and committed.
+- **Depends on:** Tasks 1, 2, and 4 reviewed and committed in the preparatory release. Task 3 may be
+  implemented on a separate stacked branch, but its workflow cutover must not be present in this
+  release.
 - **Produces:** A real manifest workflow boundary and one manually dispatched, non-mutating Gate B
   proof for all four consumer projections without enabling deployment, storage, monitoring, or
   benchmark mutations.
@@ -297,6 +299,9 @@ workflow references, the manual preflight job, its no-output child, and their co
   `deploy.yml`. When selected, build, deployment, storage verification, and monitoring configuration
   jobs must be skipped. The job uses `environment: staging`, secure checkout, `contents: read`, and
   `id-token: write`.
+- [ ] Preserve the existing GitHub-Secret workflow readers and ordinary `push: main` deployment in
+  this preparatory release. Verify the release diff contains no Task 3 Lockbox cutover. Merge this
+  release first, run Gate B, and only then merge the separately reviewed Task 3 cutover.
 - [ ] Resolve `local-web`, `staging-deploy`, `staging-remote-check`, and
   `staging-public-monitor` sequentially through `github-oidc`. Each invocation runs the same small
   child that verifies only the private file boundary and emits one sanitized consumer/status line;
@@ -317,7 +322,8 @@ workflow references, the manual preflight job, its no-output child, and their co
 
 **Repository files:** None.
 
-- **Depends on:** Tasks 1-5; fresh approval before payload/IAM mutation.
+- **Depends on:** The preparatory release containing Tasks 1, 2, 4, and 5 merged to `main`, with
+  Task 3 cutover still absent; fresh approval before payload/IAM mutation.
 - **Produces:** One complete current staging payload, local human retrieval evidence, CI OIDC
   retrieval evidence, and retained GitHub Secrets for rollback.
 
@@ -337,9 +343,9 @@ workflow references, the manual preflight job, its no-output child, and their co
 
 **Repository files:** None during live operations.
 
-- **Depends on:** Tasks 1-4 reviewed and committed; Operational gate B passed; final whole-branch
-  review and `make check` green; fresh approval before deployment, rollback, secret deletion, or IAM
-  changes.
+- **Depends on:** Task 3 reviewed on its separate stacked cutover branch; Operational gate B passed
+  against the merged preparatory release; final cutover-branch review and `make check` green; fresh
+  approval before deployment, rollback, secret deletion, or IAM changes.
 - **Produces:** Validated Lockbox-only staging workflows and removal of the old persistent GitHub
   secret authority.
 

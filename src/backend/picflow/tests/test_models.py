@@ -217,6 +217,8 @@ class PhotoModelTests(TestCase):
 
         self.assertTrue(capture_time.null)
         self.assertTrue(source_attempt.null)
+        self.assertFalse(capture_time.editable)
+        self.assertFalse(source_attempt.editable)
         self.assertEqual(source_attempt.remote_field.on_delete.__name__, "PROTECT")
         self.assertIn(
             "picflow_photo_capture_time_pair_chk",

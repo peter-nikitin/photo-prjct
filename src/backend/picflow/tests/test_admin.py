@@ -46,6 +46,13 @@ class EventAdminTests(TestCase):
 
         self.assertContains(response, 'name="timezone_name"')
 
+    def test_photo_admin_does_not_expose_capture_time_projection_fields(self) -> None:
+        response = self.client.get(reverse("admin:picflow_photo_add"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "field-capture_time")
+        self.assertNotContains(response, 'name="capture_time_source_attempt"')
+
     def test_admin_rejects_published_event_without_timezone(self) -> None:
         response = self.client.post(
             reverse("admin:picflow_event_add"),

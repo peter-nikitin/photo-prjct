@@ -9,16 +9,13 @@ class Command(BaseCommand):
     help = "Dry-run or rebuild the privacy-safe Photo capture-time projection."
 
     def add_arguments(self, parser) -> None:
-        scope = parser.add_mutually_exclusive_group()
+        scope = parser.add_mutually_exclusive_group(required=True)
         scope.add_argument("--event-id", type=int)
         scope.add_argument("--all-events", action="store_true")
         parser.add_argument("--apply", action="store_true")
 
     def handle(self, *args, **options) -> None:
         event_id = options["event_id"]
-        all_events = bool(options["all_events"] or event_id is None)
-        if event_id is not None and options["all_events"]:
-            raise CommandError("--event-id is not allowed with --all-events")
         try:
             totals = rebuild_events(event_id=event_id, apply=options["apply"])
         except Event.DoesNotExist as error:
@@ -26,7 +23,7 @@ class Command(BaseCommand):
         report = {
             "action": "applied" if options["apply"] else "dry_run",
             **totals,
-            "scope": "all_events" if all_events else "event",
+            "scope": "all_events" if options["all_events"] else "event",
         }
         if not options["apply"]:
             report["would_change"] = report.pop("changed")

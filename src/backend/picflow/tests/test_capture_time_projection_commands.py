@@ -154,17 +154,56 @@ class CaptureTimeProjectionCommandTests(TestCase):
         call_command(command, *(str(argument) for argument in arguments), stdout=output)
         return json.loads(output.getvalue())
 
-    def test_scope_defaults_to_all_events_and_rejects_conflicting_selection(self) -> None:
-        report = self.command_json("rebuild_photo_capture_time_projection")
-        self.assertEqual(report["scope"], "all_events")
-        self.assertEqual(report["action"], "dry_run")
-        with self.assertRaisesRegex(CommandError, "not allowed with argument"):
-            call_command(
-                "report_photo_capture_time_projection",
-                "--event-id",
-                str(self.event.id),
-                "--all-events",
-            )
+    def test_commands_require_explicit_scope_before_output_or_mutation(self) -> None:
+        photo = self.photo("missing-scope")
+        self.current_capture_attempt(photo)
+
+        for command, arguments in (
+            ("rebuild_photo_capture_time_projection", ()),
+            ("rebuild_photo_capture_time_projection", ("--apply",)),
+            ("report_photo_capture_time_projection", ()),
+        ):
+            with self.subTest(command=command, arguments=arguments):
+                output = StringIO()
+                with CaptureQueriesContext(connection) as queries:
+                    with self.assertRaisesRegex(
+                        CommandError,
+                        "one of the arguments --event-id --all-events is required",
+                    ):
+                        call_command(command, *arguments, stdout=output)
+
+                self.assertEqual(output.getvalue(), "")
+                self.assertEqual(self.dml_queries(queries), [])
+
+        photo.refresh_from_db()
+        self.assertIsNone(photo.capture_time)
+        self.assertIsNone(photo.capture_time_source_attempt_id)
+
+    def test_commands_reject_both_scopes(self) -> None:
+        for command in (
+            "rebuild_photo_capture_time_projection",
+            "report_photo_capture_time_projection",
+        ):
+            with self.subTest(command=command):
+                with self.assertRaisesRegex(CommandError, "not allowed with argument"):
+                    call_command(
+                        command,
+                        "--event-id",
+                        str(self.event.id),
+                        "--all-events",
+                    )
+
+    def test_commands_accept_each_explicit_scope(self) -> None:
+        for command in (
+            "rebuild_photo_capture_time_projection",
+            "report_photo_capture_time_projection",
+        ):
+            with self.subTest(command=command, scope="event"):
+                event_report = self.command_json(command, "--event-id", self.event.id)
+                self.assertEqual(event_report["scope"], "event")
+            with self.subTest(command=command, scope="all_events"):
+                all_events_report = self.command_json(command, "--all-events")
+                self.assertEqual(all_events_report["scope"], "all_events")
 
     def test_rebuild_is_dry_run_by_default_and_emits_deterministic_aggregate_json(self) -> None:
         photo = self.photo("dry-run")
@@ -567,7 +606,12 @@ class CaptureTimeProjectionCommandTests(TestCase):
         output = StringIO()
 
         with self.assertRaisesRegex(CommandError, "projection reconciliation is not clean"):
-            call_command("report_photo_capture_time_projection", "--require-clean", stdout=output)
+            call_command(
+                "report_photo_capture_time_projection",
+                "--all-events",
+                "--require-clean",
+                stdout=output,
+            )
 
         report = json.loads(output.getvalue())
         self.assertFalse(report["clean"])

@@ -966,6 +966,23 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertFalse(response.context["manual_time_filter_form"].is_requested)
         self.assertFalse(response.context["manual_time_filter_invalid"])
 
+    def test_unfiltered_event_detail_suppresses_metrika(self) -> None:
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
+
+        self.assertIsNone(response.context["yandex_metrika_counter_id"])
+        self.assertNotContains(response, "mc.yandex.ru")
+        self.assertNotContains(response, 'ym(111239706, "init", {')
+
+    def test_manual_time_event_detail_suppresses_metrika(self) -> None:
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01"},
+        )
+
+        self.assertIsNone(response.context["yandex_metrika_counter_id"])
+        self.assertNotContains(response, "mc.yandex.ru")
+        self.assertNotContains(response, 'ym(111239706, "init", {')
+
     def test_valid_manual_filter_uses_only_matching_current_evidence_before_paging(self) -> None:
         matching = self.photo("matching", filename="a.jpg")
         outside = self.photo("outside", filename="b.jpg")

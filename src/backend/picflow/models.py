@@ -118,12 +118,13 @@ class Photo(models.Model):
         default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
         db_default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
     )
-    capture_time = models.DateTimeField(null=True, blank=True)
+    capture_time = models.DateTimeField(null=True, blank=True, editable=False)
     capture_time_source_attempt = models.ForeignKey(
         "processing.ProcessingAttempt",
         on_delete=models.PROTECT,
         null=True,
         blank=True,
+        editable=False,
         related_name="+",
     )
 

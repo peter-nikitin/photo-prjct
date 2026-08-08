@@ -261,6 +261,7 @@ jobs:
           STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
           DEPLOYMENT_TARGET: staging
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
+          ACCEPTED_RELEASE_A_IMAGE: ghcr.io/peter-nikitin/photo-prjct:41e3068841da9430d238af70f6ca0a98f4673f28
           WORKER_IMAGE: ${{ needs.build.outputs.worker_image }}
           DEBUG: "False"
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
@@ -387,7 +388,7 @@ jobs:
             conclusion=failure
             phase="$(
               gh run view "$GITHUB_RUN_ID" --log-failed 2>/dev/null | awk '
-                /(^|[[:space:]])DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)$/ {
+                /(^|[[:space:]])DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)$/ {
                   phase = $0
                   sub(/^.*DEPLOY_PHASE=/, "", phase)
                 }

@@ -10,6 +10,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import QuerySet
 from django.test import RequestFactory
 from django.urls import reverse
+from picflow import capture_time_projection
 from picflow.forms import EventGalleryTimeFilterForm
 from picflow.gallery import gallery_page
 from picflow.models import Event, Photo
@@ -30,6 +31,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options) -> None:
         if options["event_id"] != EXPECTED_EVENT_ID:
             raise CommandError("this command only permits event ID 9")
+        projection_report = capture_time_projection.report_events(event_id=None)
+        if not projection_report.get("clean"):
+            raise CommandError("global projection reconciliation is not clean")
         event = self._accepted_event()
         page_tokens = self._page_tokens(options["pages"])
         filter_data = self._full_event_filter_data(event)
@@ -167,13 +171,23 @@ class Command(BaseCommand):
         passed = all(ratio is not None and ratio <= _MAX_RATIO for ratio in raw_ratios.values())
         gate = "passed" if passed else "failed"
         return {
-            "filtered": filtered,
+            "filtered": self._reported_measurement(filtered),
             "gate": gate,
             "page": label,
             "page_number": page_number,
             "ratios": ratios,
-            "unfiltered": unfiltered,
+            "unfiltered": self._reported_measurement(unfiltered),
         }
+
+    @staticmethod
+    def _reported_measurement(measurement: dict[str, object]) -> dict[str, object]:
+        reported = measurement.copy()
+        for field in ("database_execution_ms", "rendered_response_ms"):
+            value = reported[field]
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise CommandError("benchmark timing is invalid")
+            reported[field] = round(float(value), 3)
+        return reported
 
     def _measure_page(
         self,
@@ -216,7 +230,7 @@ class Command(BaseCommand):
         if not isinstance(execution_ms, (int, float)) or isinstance(execution_ms, bool):
             raise CommandError("PostgreSQL did not report execution time")
         return {
-            "execution_ms": round(float(execution_ms), 3),
+            "execution_ms": float(execution_ms),
             "shape": Command._plan_shape(plan),
         }
 
@@ -248,11 +262,15 @@ class Command(BaseCommand):
         )
         request.user = AnonymousUser()
         started = perf_counter()
-        response = event_detail(request, event.slug)
+        try:
+            response = event_detail(request, event.slug)
+            content = response.content
+        except Exception as error:
+            raise CommandError("rendered event-detail request failed") from error
         if response.status_code != 200:
             raise CommandError("rendered event-detail response was non-200")
-        _ = response.content
-        return round((perf_counter() - started) * 1_000, 3)
+        _ = content
+        return (perf_counter() - started) * 1_000
 
     @staticmethod
     def _ratio(*, baseline: object, measured: object) -> float | None:

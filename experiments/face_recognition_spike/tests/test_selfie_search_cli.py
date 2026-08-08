@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from face_cluster_contract import ClusterFaceValue, build_face_cluster_kernel
 from face_spike import cli
 from face_spike.analysis import (
     BoundingBox,
@@ -749,6 +750,83 @@ def test_build_benchmark_accepts_representative_distance_roundoff(tmp_path: Path
     benchmark_run = cli._load_benchmark_run(run).benchmark_run
 
     assert benchmark_run.faces[0].cluster_id == "person-0001"
+
+
+def _write_duplicate_embedding_cluster(run: Path) -> Path:
+    faces_path = run / "faces.json"
+    faces = json.loads(faces_path.read_text(encoding="utf-8"))
+    duplicate = dict(faces["images"][0]["faces"][0])
+    duplicate.update(
+        {
+            "crop_path": face_crop_path("photo.jpg#face-002"),
+            "face_id": "photo.jpg#face-002",
+            "face_index": 2,
+        }
+    )
+    faces["images"][0]["faces"].append(duplicate)
+    faces_path.write_text(json.dumps(faces, sort_keys=True) + "\n", encoding="utf-8")
+    make_jpeg(run / duplicate["crop_path"], size=(20, 20))
+    _refresh_run_source(run)
+
+    built = build_face_cluster_kernel(
+        (
+            ClusterFaceValue("photo.jpg#face-001", (1.0, 0.0)),
+            ClusterFaceValue("photo.jpg#face-002", (1.0, 0.0)),
+        ),
+        edge_threshold=0.363,
+        representative_threshold=0.363,
+        distance_block_size=1,
+        max_candidate_edges=10,
+    )
+    cluster = built[0]
+    assert cluster.members[1].distance_to_representative == 0.0
+    clusters_path = run / "clusters.json"
+    clusters_path.write_text(
+        json.dumps(
+            {
+                "clusters": [
+                    {
+                        "cluster_id": "person-0001",
+                        "representative_face_id": cluster.representative_face_id,
+                        "members": [
+                            {
+                                "distance_to_representative": member.distance_to_representative,
+                                "face_id": member.face_id,
+                                "face_index": index,
+                                "filename": "photo.jpg",
+                            }
+                            for index, member in enumerate(cluster.members, start=1)
+                        ],
+                    }
+                ]
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return clusters_path
+
+
+def test_build_benchmark_accepts_zero_distance_for_duplicate_embedding_member(
+    tmp_path: Path,
+) -> None:
+    run, _, _, _, _ = _ready_inputs(tmp_path)
+    _write_duplicate_embedding_cluster(run)
+
+    benchmark_run = cli._load_benchmark_run(run).benchmark_run
+
+    assert [face.cluster_id for face in benchmark_run.faces] == ["person-0001", "person-0001"]
+
+
+def test_build_benchmark_rejects_distance_above_cosine_bound(tmp_path: Path) -> None:
+    run, _, _, _, _ = _ready_inputs(tmp_path)
+    clusters_path = _write_duplicate_embedding_cluster(run)
+    payload = json.loads(clusters_path.read_text(encoding="utf-8"))
+    payload["clusters"][0]["members"][1]["distance_to_representative"] = 2.1
+    clusters_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(cli.BenchmarkConfigurationError):
+        cli._load_benchmark_run(run)
 
 
 @pytest.mark.parametrize("query_count", [0, -1, True])

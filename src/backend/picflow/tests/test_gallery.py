@@ -1,5 +1,6 @@
 from dataclasses import FrozenInstanceError
 from datetime import UTC, date, datetime
+from typing import cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -535,9 +536,9 @@ class FilteredGalleryQuerysetTests(TestCase):
         *,
         capture_time: object,
         processor_version: int = 2,
-        attempt_status: str = ProcessingAttempt.Status.SUCCEEDED,
+        attempt_status: str = cast(str, ProcessingAttempt.Status.SUCCEEDED),
         accepted: bool = True,
-        state_status: str = PhotoProcessingState.Status.SUCCEEDED,
+        state_status: str = cast(str, PhotoProcessingState.Status.SUCCEEDED),
         accepted_attempt: ProcessingAttempt | None = None,
     ) -> ProcessingAttempt:
         configuration = {"capture_metadata": {"event_timezone": photo.event.timezone_name}}
@@ -634,7 +635,7 @@ class FilteredGalleryQuerysetTests(TestCase):
         self.capture_evidence(
             stale,
             capture_time="2026-06-10T10:00:00Z",
-            attempt_status=ProcessingAttempt.Status.STALE,
+            attempt_status=cast(str, ProcessingAttempt.Status.STALE),
         )
         unaccepted = self.photo("unaccepted")
         self.capture_evidence(unaccepted, capture_time="2026-06-10T10:00:00Z", accepted=False)
@@ -642,7 +643,7 @@ class FilteredGalleryQuerysetTests(TestCase):
         self.capture_evidence(
             failed,
             capture_time="2026-06-10T10:00:00Z",
-            attempt_status=ProcessingAttempt.Status.FAILED,
+            attempt_status=cast(str, ProcessingAttempt.Status.FAILED),
         )
         missing = self.photo("missing")
         self.capture_evidence(missing, capture_time=None)

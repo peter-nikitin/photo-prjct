@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from io import StringIO
 from queue import Queue
 from threading import Barrier, Thread
+from typing import cast
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -14,6 +15,7 @@ from django.db.models.query import QuerySet
 from django.test import TestCase, TransactionTestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
+from processing.contracts import ClaimedJob
 from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
     EventProcessingRun,
@@ -88,9 +90,9 @@ class CaptureTimeProjectionCommandTests(TestCase):
         *,
         capture_time: object = "2026-08-08T12:34:56Z",
         processor_version: int = 2,
-        attempt_status: str = ProcessingAttempt.Status.SUCCEEDED,
+        attempt_status: str = cast(str, ProcessingAttempt.Status.SUCCEEDED),
         accepted: bool = True,
-        state_status: str = PhotoProcessingState.Status.SUCCEEDED,
+        state_status: str = cast(str, PhotoProcessingState.Status.SUCCEEDED),
     ) -> ProcessingAttempt:
         configuration = {"capture_metadata": {"event_timezone": photo.event.timezone_name}}
         run = EventProcessingRun.objects.create(
@@ -412,7 +414,7 @@ class CaptureTimeProjectionCommandTests(TestCase):
         )
 
         self.assertFalse(report["clean"])
-        counts = report["counts"]
+        counts = cast(dict[str, object], report["counts"])
         self.assertEqual(counts["missing"], 1)
         self.assertEqual(counts["stale"], 1)
         self.assertEqual(counts["mismatching"], 1)
@@ -430,8 +432,9 @@ class CaptureTimeProjectionCommandTests(TestCase):
             "report_photo_capture_time_projection", "--event-id", self.event.id
         )
 
-        self.assertEqual(report["counts"]["qualifying_non_null"], 0)
-        self.assertEqual(report["counts"]["qualifying_null"], 0)
+        counts = cast(dict[str, object], report["counts"])
+        self.assertEqual(counts["qualifying_non_null"], 0)
+        self.assertEqual(counts["qualifying_null"], 0)
 
     def test_report_require_clean_prints_aggregate_before_nonzero_exit(self) -> None:
         self.current_capture_attempt(self.photo("require-clean"))
@@ -475,8 +478,9 @@ class CaptureTimeProjectionCommandTests(TestCase):
             )
 
         self.assertTrue(report["clean"])
-        self.assertTrue(report["event_9"]["accepted"])
-        self.assertEqual(report["event_9"]["exact_source_value_pairs"], 2)
+        event_nine_report = cast(dict[str, object], report["event_9"])
+        self.assertTrue(event_nine_report["accepted"])
+        self.assertEqual(event_nine_report["exact_source_value_pairs"], 2)
 
     def test_event_nine_preconditions_fail_independently(self) -> None:
         from picflow import capture_time_projection
@@ -511,7 +515,8 @@ class CaptureTimeProjectionCommandTests(TestCase):
                         "report_photo_capture_time_projection", "--event-id", event_nine.id
                     )
                     self.assertFalse(report["clean"])
-                    self.assertFalse(report["event_9"]["accepted"])
+                    event_nine_report = cast(dict[str, object], report["event_9"])
+                    self.assertFalse(event_nine_report["accepted"])
                     setattr(event_nine, field, original)
                     event_nine.save(update_fields=[field])
 
@@ -549,11 +554,14 @@ class CaptureTimeProjectionCommandTests(TestCase):
                 "report_photo_capture_time_projection", "--event-id", event_nine.id
             )
 
-        self.assertFalse(short_report["event_9"]["accepted"])
-        self.assertEqual(short_report["event_9"]["exact_source_value_pairs"], 1)
-        self.assertFalse(nonexact_report["event_9"]["accepted"])
-        self.assertEqual(nonexact_report["event_9"]["exact_source_value_pairs"], 1)
-        self.assertEqual(nonexact_report["counts"]["mismatching"], 1)
+        short_event_nine_report = cast(dict[str, object], short_report["event_9"])
+        nonexact_event_nine_report = cast(dict[str, object], nonexact_report["event_9"])
+        nonexact_counts = cast(dict[str, object], nonexact_report["counts"])
+        self.assertFalse(short_event_nine_report["accepted"])
+        self.assertEqual(short_event_nine_report["exact_source_value_pairs"], 1)
+        self.assertFalse(nonexact_event_nine_report["accepted"])
+        self.assertEqual(nonexact_event_nine_report["exact_source_value_pairs"], 1)
+        self.assertEqual(nonexact_counts["mismatching"], 1)
 
     def test_global_report_fails_when_event_nine_is_absent(self) -> None:
         output = StringIO()
@@ -704,6 +712,7 @@ class CaptureTimeProjectionConcurrencyTests(TransactionTestCase):
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
             worker_build="projection-concurrency-worker",
         )
+        assert isinstance(claimed, ClaimedJob)
         barrier = Barrier(3)
         discovered = ThreadEvent()
         completed = ThreadEvent()

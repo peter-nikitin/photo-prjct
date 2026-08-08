@@ -212,8 +212,17 @@ def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritativ
     assert reconcile["if"] == (
         "${{ always() && (github.event_name == 'push' || "
         "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue)) }}"
+        "!inputs.validate_deploy_issue && !inputs.preflight)) }}"
     )
+    for mutating_job in (
+        "stage-observability-release",
+        "build",
+        "deploy",
+        "reconcile-staging-deploy-issue",
+        "validate-staging-deploy-issue",
+        "configure-monitoring-agent",
+    ):
+        assert "!inputs.preflight" in staging["jobs"][mutating_job]["if"]
     assert reconcile["needs"] == ["classify-staging-release", "build", "deploy"]
     assert reconcile["permissions"] == {
         "actions": "read",
@@ -251,7 +260,8 @@ def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritativ
     assert "::warning::" in warning["run"]
 
     assert validation["if"] == (
-        "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue }}"
+        "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && "
+        "!inputs.preflight }}"
     )
     assert validation["environment"] == "staging"
     assert validation["permissions"] == {"contents": "read", "issues": "write"}
@@ -931,14 +941,14 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
     assert (
         agent["if"]
         == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue }}"
+        "!inputs.validate_deploy_issue && !inputs.preflight }}"
     )
     assert "needs" not in agent
     assert staging_deploy["if"] == (
         "${{ (github.event_name == 'push' && "
         "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || "
         "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue) }}"
+        "!inputs.validate_deploy_issue && !inputs.preflight) }}"
     )
     assert "configure-monitoring-agent" not in json.dumps(staging_deploy)
     assert "configure-monitoring-agent" not in json.dumps(production)
@@ -990,6 +1000,7 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
         "type": "boolean",
     }
 
+    assert classifier["if"] == "${{ !inputs.preflight }}"
     assert classifier["permissions"] == {"contents": "read"}
     assert classify["env"] == {"DEPLOYMENT_SHA": "${{ inputs.deployment_sha }}"}
     for job in staging["jobs"].values():
@@ -1091,7 +1102,8 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
 
     assert stage_release["if"] == (
         "${{ github.event_name == 'push' && "
-        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' }}"
+        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' && "
+        "!inputs.preflight }}"
     )
     assert stage_release["needs"] == ["classify-staging-release"]
     assert stage_release["environment"] == "staging"
@@ -1281,7 +1293,7 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
     )
     expected_manual_deploy = (
         "github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue"
+        "!inputs.validate_deploy_issue && !inputs.preflight"
     )
     expected_condition = f"${{{{ ({expected_push}) || ({expected_manual_deploy}) }}}}"
     for job in (build, deploy):
@@ -1417,6 +1429,437 @@ def test_event_gallery_lightbox_respects_reduced_motion_and_touch_targets() -> N
     assert "transition-duration: 0.01ms !important;" in catalog_css
     assert "animation-duration: 0.01ms !important;" in catalog_css
     assert "animation-iteration-count: 1 !important;" in catalog_css
+
+
+def _runbook_section(runbook: str, title: str) -> str:
+    heading = re.search(rf"^## {re.escape(title)}$", runbook, re.MULTILINE)
+    assert heading, f"Missing runbook procedure: {title}"
+    next_heading = re.search(r"^## ", runbook[heading.end() :], re.MULTILINE)
+    if next_heading is None:
+        return runbook[heading.start() :]
+    return runbook[heading.start() : heading.end() + next_heading.start()]
+
+
+def _markdown_table(source: str, title: str) -> tuple[tuple[str, ...], list[tuple[str, ...]]]:
+    section = _runbook_section(source, title)
+    lines = [line for line in section.splitlines() if line.startswith("|")]
+    assert len(lines) >= 2, f"Missing Markdown table for {title}"
+
+    header = tuple(cell.strip() for cell in lines[0].split("|")[1:-1])
+    assert all(cell for cell in header)
+    assert all(re.fullmatch(r"\s*:?-{3,}:?\s*", cell) for cell in lines[1].split("|")[1:-1])
+    rows = [tuple(cell.strip() for cell in line.split("|")[1:-1]) for line in lines[2:]]
+    assert all(len(row) == len(header) for row in rows)
+    return header, rows
+
+
+def _inline_code(value: str) -> str:
+    assert value.startswith("`") and value.endswith("`")
+    return value[1:-1]
+
+
+def test_environment_secret_inventory_matches_the_complete_manifest_schema() -> None:
+    """A schema change must update every exact key projection in the operator inventory."""
+    manifest = json.loads(
+        (ROOT / "deploy/environment-secrets/staging.json").read_text(encoding="utf-8")
+    )
+    inventory = (ROOT / "docs/runbooks/environment-secrets-inventory.md").read_text(
+        encoding="utf-8"
+    )
+
+    header, rows = _markdown_table(inventory, "Manifest key schema and consumer projections")
+    assert header == ("Manifest key", "Target", "Type", "Local", "Consumers")
+    actual: dict[str, tuple[str, str, str, set[str]]] = {}
+    for key, target, kind, local, consumers in rows:
+        name = _inline_code(key)
+        assert name not in actual, f"Duplicate manifest inventory row: {name}"
+        actual[name] = (
+            _inline_code(target),
+            kind,
+            local,
+            {_inline_code(value.strip()) for value in consumers.split(",")},
+        )
+
+    expected = {
+        entry["key"]: (
+            entry["target"],
+            entry["type"],
+            "yes" if entry["local"] else "no",
+            {name for name, keys in manifest["consumers"].items() if entry["key"] in keys},
+        )
+        for entry in manifest["entries"]
+    }
+    assert actual == expected
+
+    workflows = set(
+        re.findall(
+            r"^- `([^`]+)`$",
+            _runbook_section(inventory, "Stable staging identity ledger"),
+            re.MULTILINE,
+        )
+    )
+    assert workflows == set(manifest["github_oidc"]["allowed_workflows"])
+
+
+def test_environment_secret_inventory_maps_each_github_secret_to_its_exact_source() -> None:
+    """Cleanup must remove the actual source authority, not a same-named secret elsewhere."""
+    inventory = (ROOT / "docs/runbooks/environment-secrets-inventory.md").read_text(
+        encoding="utf-8"
+    )
+    header, rows = _markdown_table(inventory, "GitHub staging secret migration inventory")
+    assert header == (
+        "Former GitHub Actions Secret",
+        "Source scope",
+        "Owner",
+        "Destination",
+        "Rotation trigger",
+    )
+    actual: dict[str, tuple[str, str, str, str]] = {}
+    for name, source_scope, owner, destination, trigger in rows:
+        secret_name = _inline_code(name)
+        assert secret_name not in actual, f"Duplicate migration row: {secret_name}"
+        actual[secret_name] = (source_scope, owner, destination, trigger)
+
+    secret_id = "e6q85jjl76r45maigtfb"
+    variable_destination = "`staging` GitHub Environment variable"
+    expected = {
+        "ALLOWED_HOSTS": ("repository", "Application maintainer", variable_destination),
+        "DB_NAME": ("repository", "Database maintainer", variable_destination),
+        "DB_PASSWORD": (
+            "repository",
+            "Database maintainer",
+            f"Lockbox `{secret_id}` entry `DB_PASSWORD`",
+        ),
+        "DB_USER": ("repository", "Database maintainer", variable_destination),
+        "GHCR_READ_TOKEN": (
+            "repository",
+            "Registry maintainer",
+            f"Lockbox `{secret_id}` entry `GHCR_READ_TOKEN`",
+        ),
+        "GHCR_USERNAME": ("repository", "Registry maintainer", variable_destination),
+        "LETSENCRYPT_EMAIL": (
+            "repository",
+            "Edge maintainer",
+            f"Lockbox `{secret_id}` entry `LETSENCRYPT_EMAIL`",
+        ),
+        "MEDIA_S3_ACCESS_KEY_ID": (
+            "repository",
+            "Media storage maintainer",
+            f"Lockbox `{secret_id}` entry `MEDIA_S3_ACCESS_KEY_ID`",
+        ),
+        "MEDIA_S3_SECRET_ACCESS_KEY": (
+            "repository",
+            "Media storage maintainer",
+            f"Lockbox `{secret_id}` entry `MEDIA_S3_SECRET_ACCESS_KEY`",
+        ),
+        "PHOTO_PROCESSING_WORKER_TOKEN": (
+            "staging Environment",
+            "Processing maintainer",
+            f"Lockbox `{secret_id}` entry `PHOTO_PROCESSING_WORKER_TOKEN`",
+        ),
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": (
+            "repository",
+            "Private media maintainer",
+            f"Lockbox `{secret_id}` entry `PRIVATE_MEDIA_S3_ACCESS_KEY_ID`",
+        ),
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": (
+            "repository",
+            "Private media maintainer",
+            f"Lockbox `{secret_id}` entry `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY`",
+        ),
+        "SECRET_KEY": (
+            "repository",
+            "Application maintainer",
+            f"Lockbox `{secret_id}` entry `SECRET_KEY`",
+        ),
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": (
+            "staging Environment",
+            "Selfie feedback maintainer",
+            f"Lockbox `{secret_id}` entry `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID`",
+        ),
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": (
+            "staging Environment",
+            "Selfie feedback maintainer",
+            f"Lockbox `{secret_id}` entry `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY`",
+        ),
+        "VM_HOST": ("repository", "Staging operations maintainer", variable_destination),
+        "VM_SSH_KEY": (
+            "repository",
+            "Staging operations maintainer",
+            f"Lockbox `{secret_id}` binary entry `VM_SSH_KEY`",
+        ),
+        "VM_USER": ("repository", "Staging operations maintainer", variable_destination),
+        "YANDEX_MONITORING_API_KEY": (
+            "staging Environment",
+            "Monitoring maintainer",
+            f"Lockbox `{secret_id}` entry `YANDEX_MONITORING_API_KEY`",
+        ),
+    }
+    assert {name: values[:3] for name, values in actual.items()} == expected
+    assert all(values[3] for values in actual.values())
+    assert sum(values[0] == "repository" for values in actual.values()) == 15
+    assert sum(values[0] == "staging Environment" for values in actual.values()) == 4
+
+
+def test_environment_secret_runbook_preserves_the_reviewed_staging_boundary() -> None:
+    """Operator instructions must stay tied to the manifest instead of guessed live state."""
+    manifest = json.loads(
+        (ROOT / "deploy/environment-secrets/staging.json").read_text(encoding="utf-8")
+    )
+    runbook_path = ROOT / "docs/runbooks/environment-secrets.md"
+
+    assert runbook_path.is_file(), "Missing environment-secrets operator runbook"
+    runbook = runbook_path.read_text(encoding="utf-8")
+    inventory = (ROOT / "docs/runbooks/environment-secrets-inventory.md").read_text(
+        encoding="utf-8"
+    )
+
+    for value in (
+        manifest["environment"],
+        manifest["lockbox"]["secret_id"],
+        manifest["lockbox"]["folder_id"],
+        manifest["github_oidc"]["issuer"],
+        manifest["github_oidc"]["audience"],
+        manifest["github_oidc"]["subject"],
+        manifest["github_oidc"]["service_account_id"],
+        manifest["github_oidc"]["federation_id"],
+    ):
+        assert value in runbook or value in inventory
+    for consumer in manifest["consumers"]:
+        assert f"--consumer {consumer}" in runbook
+
+    assert "No Lockbox payload or version ID is recorded in this repository." in runbook
+    assert "No production Lockbox secret exists" in runbook
+    assert "EJ-018" in runbook
+    ci_preflight = _runbook_section(runbook, "CI OIDC preflight")
+    normalized_ci_preflight = ci_preflight.replace("\n", " ")
+    assert "`preflight=true`" in ci_preflight
+    assert "workflow_ref" in ci_preflight
+    assert "exactly enforces" in ci_preflight
+    assert (
+        "existing GitHub Secret deployment, storage, and monitoring readers unchanged"
+        in normalized_ci_preflight
+    )
+    assert "Task 3 cutover" in ci_preflight
+
+
+def test_environment_secret_runbook_has_safe_operator_procedures() -> None:
+    """Removing any required operator check leaves a live change unsafe and must fail CI."""
+    runbook_path = ROOT / "docs/runbooks/environment-secrets.md"
+    operations_path = ROOT / "docs/operations.md"
+
+    assert runbook_path.is_file(), "Missing environment-secrets operator runbook"
+    assert operations_path.is_file(), "Missing operations index"
+    runbook = runbook_path.read_text(encoding="utf-8")
+    operations = operations_path.read_text(encoding="utf-8")
+
+    for procedure in (
+        "Setup",
+        "Inventory",
+        "Payload version validation and population",
+        "Local use",
+        "CI OIDC preflight",
+        "Rotation",
+        "Revocation",
+        "Rollback",
+        "Lost device or account recovery",
+        "GitHub secret cleanup",
+        "Incident and non-disclosure",
+    ):
+        section = _runbook_section(runbook, procedure)
+        for check in (
+            "### Preflight",
+            "### Success evidence",
+            "### Rollback",
+            "### Non-disclosure",
+        ):
+            assert check in section, f"{procedure} lacks {check}"
+
+    assert "fresh operator approval" in runbook.lower()
+    assert "never command arguments" in runbook.lower()
+    assert "payload rotation is not identity revocation" in runbook.lower()
+    assert "surviving cloud organization administrator" in runbook.lower()
+    assert "break-glass ownership" in runbook.lower()
+    assert "[Environment secrets operator runbook](runbooks/environment-secrets.md)" in operations
+    assert (
+        "[Environment secrets inventory](runbooks/environment-secrets-inventory.md)" in operations
+    )
+
+
+def test_environment_secret_runbook_checks_exact_setup_and_github_source_scopes() -> None:
+    """Least-privilege and cleanup evidence needs the provider scopes that actually hold values."""
+    runbook = (ROOT / "docs/runbooks/environment-secrets.md").read_text(encoding="utf-8")
+    secret_id = "e6q85jjl76r45maigtfb"
+    service_account_id = "ajeaekiue94ogksguh0h"
+    folder_id = "b1g2qttgfhb4gdunvlge"
+    setup = _runbook_section(runbook, "Setup")
+
+    for command in (
+        f"yc iam key list --service-account-id {service_account_id} --format json",
+        f"yc iam api-key list --service-account-id {service_account_id} --format json",
+        f"yc iam access-key list --service-account-id {service_account_id} --format json",
+        f"yc resource-manager folder list-access-bindings --id {folder_id} --format json",
+        'yc resource-manager cloud list-access-bindings --id "$cloud_id" --format json',
+    ):
+        assert command in setup
+    assert "all three key lists are empty" in setup.lower()
+    assert re.search(r"absent from the folder and cloud\s+bindings", setup)
+    assert "incident/design review" in setup
+
+    inventory = _runbook_section(runbook, "Inventory")
+    cleanup = _runbook_section(runbook, "GitHub secret cleanup")
+    repository_list = "gh secret list --repo peter-nikitin/photo-prjct --json name,updatedAt"
+    environment_list = (
+        "gh secret list --repo peter-nikitin/photo-prjct --env staging --json name,updatedAt"
+    )
+    variable_list = (
+        "gh variable list --repo peter-nikitin/photo-prjct --env staging --json name,updatedAt"
+    )
+    for section in (inventory, cleanup):
+        assert repository_list in section
+        assert environment_list in section
+        assert variable_list in section
+    cleanup_preflight = cleanup.split("### Success evidence", maxsplit=1)[0]
+    expected_environment_variables = {
+        "ALLOWED_HOSTS",
+        "DB_NAME",
+        "DB_USER",
+        "GHCR_USERNAME",
+        "VM_HOST",
+        "VM_USER",
+    }
+    required_variables = re.search(
+        r"The exact required `staging` Environment variable-name set\s+is:\n\n"
+        r"(?P<names>(?:- `[A-Z0-9_]+`\n)+)",
+        cleanup_preflight,
+    )
+    assert required_variables
+    assert set(re.findall(r"`([A-Z0-9_]+)`", required_variables["names"])) == (
+        expected_environment_variables
+    )
+    assert "all six required environment variables must be present before approval" in (
+        cleanup_preflight.lower()
+    )
+    assert "reviewed tracked configuration" not in cleanup
+    expected_deletions = {
+        "ALLOWED_HOSTS": "repository",
+        "DB_NAME": "repository",
+        "DB_PASSWORD": "repository",
+        "DB_USER": "repository",
+        "GHCR_READ_TOKEN": "repository",
+        "GHCR_USERNAME": "repository",
+        "LETSENCRYPT_EMAIL": "repository",
+        "MEDIA_S3_ACCESS_KEY_ID": "repository",
+        "MEDIA_S3_SECRET_ACCESS_KEY": "repository",
+        "PHOTO_PROCESSING_WORKER_TOKEN": "staging Environment",
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "repository",
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "repository",
+        "SECRET_KEY": "repository",
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "staging Environment",
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "staging Environment",
+        "VM_HOST": "repository",
+        "VM_SSH_KEY": "repository",
+        "VM_USER": "repository",
+        "YANDEX_MONITORING_API_KEY": "staging Environment",
+    }
+    delete_rows = re.findall(
+        r"^gh secret delete ([A-Z0-9_]+) --repo peter-nikitin/photo-prjct"
+        r"(?: --env (staging))?$",
+        cleanup,
+        re.MULTILINE,
+    )
+    actual_deletions = {
+        name: "staging Environment" if environment == "staging" else "repository"
+        for name, environment in delete_rows
+    }
+    assert actual_deletions == expected_deletions
+    assert len(delete_rows) == len(expected_deletions)
+    assert "Require all 15 repository source names and all four" in cleanup
+    assert "Environment source names to be absent" in cleanup
+    assert secret_id in runbook
+
+
+def test_environment_secret_runbook_separates_initial_rotation_and_rollback_versions() -> None:
+    """An empty secret and a later rollback use different provider-valid version operations."""
+    runbook = (ROOT / "docs/runbooks/environment-secrets.md").read_text(encoding="utf-8")
+    payload = _runbook_section(runbook, "Payload version validation and population")
+    rotation = _runbook_section(runbook, "Rotation")
+    rollback = _runbook_section(runbook, "Rollback")
+
+    initial_command = (
+        "yc lockbox secret add-version --id e6q85jjl76r45maigtfb \\\n"
+        '  --payload - --format json < "$candidate_payload"'
+    )
+    assert initial_command in payload
+    assert 'test -n "$previous_version_id"' in rotation
+    assert '--base-version-id "$previous_version_id" --payload - --format json' in rotation
+    assert 'printf "[]" | yc lockbox secret add-version --id e6q85jjl76r45maigtfb' in rollback
+    assert '--base-version-id "$rollback_version_id" --payload - --format json' in rollback
+    assert "exact key set" in rollback
+    assert "current version" in rollback
+    assert "cancel-version-destruction" in rollback
+
+
+def test_environment_secret_rotation_extracts_a_valid_base_from_cli_metadata() -> None:
+    """The documented base-version extraction must execute against the CLI's snake-case JSON."""
+    manifest = json.loads(
+        (ROOT / "deploy/environment-secrets/staging.json").read_text(encoding="utf-8")
+    )
+    runbook = (ROOT / "docs/runbooks/environment-secrets.md").read_text(encoding="utf-8")
+    rotation = _runbook_section(runbook, "Rotation")
+    extractor = re.search(
+        r"\.venv/bin/python -c '\n(?P<script>.*?)\n'\)\ntest -n \"\$previous_version_id\"",
+        rotation,
+        re.DOTALL,
+    )
+    assert extractor, "Rotation must contain an executable CLI metadata extractor"
+
+    secret_id = manifest["lockbox"]["secret_id"]
+    version = {
+        "id": "version-base",
+        "secret_id": secret_id,
+        "status": "ACTIVE",
+        "payload_entry_keys": sorted(entry["key"] for entry in manifest["entries"]),
+    }
+
+    def extract(metadata: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-c", extractor["script"]],
+            cwd=ROOT,
+            input=json.dumps(metadata),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    valid = extract({"id": secret_id, "current_version": version})
+    assert valid.returncode == 0, valid.stderr
+    assert valid.stdout.strip() == version["id"]
+
+    for invalid in (
+        {"id": secret_id},
+        {"id": secret_id, "current_version": {**version, "secret_id": "wrong-secret"}},
+        {"id": secret_id, "current_version": {**version, "status": "INACTIVE"}},
+        {"id": secret_id, "current_version": {**version, "payload_entry_keys": []}},
+    ):
+        assert extract(invalid).returncode == 2
+
+
+def test_environment_secret_runbook_cleans_candidate_payload_on_all_exit_paths() -> None:
+    """A protected candidate must not become a persistent local secret after any failure path."""
+    runbook = (ROOT / "docs/runbooks/environment-secrets.md").read_text(encoding="utf-8")
+    payload = _runbook_section(runbook, "Payload version validation and population")
+
+    creation = 'candidate_payload=$(mktemp "${TMPDIR:-/tmp}/findme-lockbox-payload.XXXXXX.json")'
+    assert creation in payload
+    assert payload.index(creation) < payload.index("trap finish_candidate EXIT")
+    assert "set -e" in payload
+    for signal, status in (("HUP", "129"), ("INT", "130"), ("TERM", "143")):
+        assert f"trap 'exit {status}' {signal}" in payload
+    assert "retained_path=$candidate_payload" in payload
+    assert "editor must not create swap, backup, or cloud-synced copies" in payload
+    assert 'rm -f -- "$candidate_payload"' in payload
+    assert 'cat "$candidate_payload"' not in payload
 
 
 def test_production_django_configuration_excludes_visual_references() -> None:

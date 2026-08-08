@@ -1,6 +1,6 @@
 # 0027: Project current capture time onto Photo
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-08
 - Deciders: project maintainer
 - Supersedes: none

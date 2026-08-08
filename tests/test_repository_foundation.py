@@ -212,8 +212,17 @@ def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritativ
     assert reconcile["if"] == (
         "${{ always() && (github.event_name == 'push' || "
         "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue)) }}"
+        "!inputs.validate_deploy_issue && !inputs.preflight)) }}"
     )
+    for mutating_job in (
+        "stage-observability-release",
+        "build",
+        "deploy",
+        "reconcile-staging-deploy-issue",
+        "validate-staging-deploy-issue",
+        "configure-monitoring-agent",
+    ):
+        assert "!inputs.preflight" in staging["jobs"][mutating_job]["if"]
     assert reconcile["needs"] == ["classify-staging-release", "build", "deploy"]
     assert reconcile["permissions"] == {
         "actions": "read",
@@ -251,7 +260,8 @@ def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritativ
     assert "::warning::" in warning["run"]
 
     assert validation["if"] == (
-        "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue }}"
+        "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && "
+        "!inputs.preflight }}"
     )
     assert validation["environment"] == "staging"
     assert validation["permissions"] == {"contents": "read", "issues": "write"}
@@ -931,14 +941,14 @@ def test_monitoring_agent_configuration_is_manual_staging_only_and_outside_deplo
     assert (
         agent["if"]
         == "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue }}"
+        "!inputs.validate_deploy_issue && !inputs.preflight }}"
     )
     assert "needs" not in agent
     assert staging_deploy["if"] == (
         "${{ (github.event_name == 'push' && "
         "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || "
         "(github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue) }}"
+        "!inputs.validate_deploy_issue && !inputs.preflight) }}"
     )
     assert "configure-monitoring-agent" not in json.dumps(staging_deploy)
     assert "configure-monitoring-agent" not in json.dumps(production)
@@ -990,6 +1000,7 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
         "type": "boolean",
     }
 
+    assert classifier["if"] == "${{ !inputs.preflight }}"
     assert classifier["permissions"] == {"contents": "read"}
     assert classify["env"] == {"DEPLOYMENT_SHA": "${{ inputs.deployment_sha }}"}
     for job in staging["jobs"].values():
@@ -1091,7 +1102,8 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
 
     assert stage_release["if"] == (
         "${{ github.event_name == 'push' && "
-        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' }}"
+        "needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' && "
+        "!inputs.preflight }}"
     )
     assert stage_release["needs"] == ["classify-staging-release"]
     assert stage_release["environment"] == "staging"
@@ -1281,7 +1293,7 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
     )
     expected_manual_deploy = (
         "github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue"
+        "!inputs.validate_deploy_issue && !inputs.preflight"
     )
     expected_condition = f"${{{{ ({expected_push}) || ({expected_manual_deploy}) }}}}"
     for job in (build, deploy):
@@ -1620,8 +1632,15 @@ def test_environment_secret_runbook_preserves_the_reviewed_staging_boundary() ->
     assert "No production Lockbox secret exists" in runbook
     assert "EJ-018" in runbook
     ci_preflight = _runbook_section(runbook, "CI OIDC preflight")
-    assert "Gate B is blocked pending a separate reviewed repository task." in ci_preflight
-    assert "allowed_workflows is not enforced by the current resolver" in ci_preflight
+    normalized_ci_preflight = ci_preflight.replace("\n", " ")
+    assert "`preflight=true`" in ci_preflight
+    assert "workflow_ref" in ci_preflight
+    assert "exactly enforces" in ci_preflight
+    assert (
+        "existing GitHub Secret deployment, storage, and monitoring readers unchanged"
+        in normalized_ci_preflight
+    )
+    assert "Task 3 cutover" in ci_preflight
 
 
 def test_environment_secret_runbook_has_safe_operator_procedures() -> None:

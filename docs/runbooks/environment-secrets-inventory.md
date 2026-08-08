@@ -25,10 +25,14 @@ repository, a ticket, command line, CI output, or shell history.
 
 Allowed GitHub workflow identities are:
 
-- `.github/workflows/deploy.yml`
-- `.github/workflows/monitor-public-health.yml`
-- `.github/workflows/promote-production.yml`
-- `.github/workflows/staging-face-embedding-benchmark.yml`
+- `peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main`
+- `peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main`
+- `peter-nikitin/photo-prjct/.github/workflows/promote-production.yml@refs/heads/main`
+- `peter-nikitin/photo-prjct/.github/workflows/staging-face-embedding-benchmark.yml@refs/heads/main`
+
+The resolver exactly enforces the GitHub OIDC `workflow_ref` claim against this full list before
+exchanging the OIDC token. A matching path without the reviewed repository or `refs/heads/main`
+is not an authorized workflow identity.
 
 The approved human reader identity is an interactive `yc` identity with a resource-level
 `lockbox.payloadViewer` binding on this exact secret. Do not substitute a folder-wide binding.

@@ -13,9 +13,10 @@
     "service_account_id": "ajeaekiue94ogksguh0h",
     "federation_id": "ajeula3gd46omgf9jiko",
     "allowed_workflows": [
-      ".github/workflows/deploy.yml",
-      ".github/workflows/monitor-public-health.yml",
-      ".github/workflows/promote-production.yml"
+      "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
+      "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
+      "peter-nikitin/photo-prjct/.github/workflows/promote-production.yml@refs/heads/main",
+      "peter-nikitin/photo-prjct/.github/workflows/staging-face-embedding-benchmark.yml@refs/heads/main"
     ]
   },
   "entries": [

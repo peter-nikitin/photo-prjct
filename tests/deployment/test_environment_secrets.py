@@ -20,6 +20,7 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPOSITORY_ROOT / "deploy/environment-secrets/staging.json"
 RESOLVER_PATH = REPOSITORY_ROOT / "scripts/run-with-environment-secrets.py"
+VERIFIER_PATH = REPOSITORY_ROOT / "scripts/verify-environment-secret-projection.py"
 
 EXPECTED_SECRET_KEYS = {
     "SECRET_KEY",
@@ -187,9 +188,13 @@ def test_manifest_pins_the_reviewed_staging_identity(manifest: dict[str, Any]) -
         "service_account_id": "ajeaekiue94ogksguh0h",
         "federation_id": "ajeula3gd46omgf9jiko",
         "allowed_workflows": [
-            ".github/workflows/deploy.yml",
-            ".github/workflows/monitor-public-health.yml",
-            ".github/workflows/promote-production.yml",
+            "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
+            "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
+            "peter-nikitin/photo-prjct/.github/workflows/promote-production.yml@refs/heads/main",
+            (
+                "peter-nikitin/photo-prjct/.github/workflows/"
+                "staging-face-embedding-benchmark.yml@refs/heads/main"
+            ),
         ],
     }
 
@@ -670,6 +675,45 @@ def test_each_consumer_receives_exactly_its_projection(
         }.isdisjoint(expected)
 
 
+@pytest.mark.parametrize(
+    "consumer",
+    ["local-web", "staging-deploy", "staging-remote-check", "staging-public-monitor"],
+)
+def test_resolver_runs_the_projection_verifier_without_exposing_payload_values(
+    resolver: ModuleType,
+    manifest: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    consumer: str,
+) -> None:
+    values = _sentinel_values(manifest)
+    http = _HttpBoundary([_metadata(), _payload(values)])
+
+    assert (
+        _run_main(
+            resolver,
+            monkeypatch,
+            tmp_path,
+            http,
+            consumer=consumer,
+            command=[sys.executable, str(VERIFIER_PATH), consumer],
+        )
+        == 0
+    )
+
+    captured = capfd.readouterr()
+    assert captured.out == (
+        f"[environment-secrets] stage=resolve status=ok environment=staging "
+        f"consumer={consumer} version_id=version-exact\n"
+        f"[environment-secret-projection] consumer={consumer} status=ok\n"
+    )
+    assert captured.err == ""
+    for value in values.values():
+        if isinstance(value, str):
+            assert value not in captured.out
+
+
 @pytest.mark.parametrize(("child_exit", "expected_exit"), [(0, 0), (23, 23)])
 def test_private_files_are_removed_after_child_exit(
     resolver: ModuleType,
@@ -985,6 +1029,7 @@ def test_github_oidc_claims_and_token_exchange_are_closed(
         "sub": manifest["github_oidc"]["subject"],
         "repository": manifest["github_oidc"]["repository"],
         "environment": manifest["github_oidc"]["environment"],
+        "workflow_ref": manifest["github_oidc"]["allowed_workflows"][0],
     }
     encoded_claims = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
     oidc_jwt = f"header.{encoded_claims}.signature"
@@ -1033,6 +1078,63 @@ def test_github_oidc_claims_and_token_exchange_are_closed(
     assert "subject_token=header." in exchange_fields
     assert metadata_request.get_header("Authorization") == "Bearer github-iam-token"
     assert payload_request.get_header("Authorization") == "Bearer github-iam-token"
+
+
+@pytest.mark.parametrize(
+    "workflow_ref",
+    [
+        None,
+        ".github/workflows/deploy.yml",
+        "another-owner/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
+        "peter-nikitin/photo-prjct/.github/workflows/other.yml@refs/heads/main",
+        "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/feature",
+    ],
+    ids=["missing", "path-only", "wrong-repository", "unknown-workflow", "wrong-ref"],
+)
+def test_github_oidc_rejects_a_workflow_ref_outside_the_exact_manifest_allowlist(
+    resolver: ModuleType,
+    manifest: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    workflow_ref: str | None,
+) -> None:
+    claims = {
+        "iss": manifest["github_oidc"]["issuer"],
+        "aud": manifest["github_oidc"]["audience"],
+        "sub": manifest["github_oidc"]["subject"],
+        "repository": manifest["github_oidc"]["repository"],
+        "environment": manifest["github_oidc"]["environment"],
+    }
+    if workflow_ref is not None:
+        claims["workflow_ref"] = workflow_ref
+    encoded_claims = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    http = _HttpBoundary([{"value": f"header.{encoded_claims}.signature"}])
+    monkeypatch.setattr(resolver, "urlopen", http)
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://pipelines.actions.githubusercontent.com/id-token?x=1",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "github-request-token")
+
+    exit_code = resolver.main(
+        [
+            "--environment",
+            "staging",
+            "--consumer",
+            "staging-public-monitor",
+            "--identity",
+            "github-oidc",
+            "--",
+            "true",
+        ]
+    )
+
+    assert exit_code == 2
+    assert len(http.requests) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "stage=identity status=error code=identity_claims_mismatch" in captured.err
+    assert "github-request-token" not in captured.err
 
 
 def test_repository_does_not_retain_generated_sentinel(

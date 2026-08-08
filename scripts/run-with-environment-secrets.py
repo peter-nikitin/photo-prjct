@@ -233,6 +233,17 @@ def _github_identity(manifest: Mapping[str, Any], environment: Mapping[str, str]
     }
     if any(claims.get(name) != value for name, value in expected_claims.items()):
         _fail("identity", "identity_claims_mismatch")
+    allowed_workflows = oidc.get("allowed_workflows")
+    workflow_ref = claims.get("workflow_ref")
+    if (
+        not isinstance(allowed_workflows, list)
+        or not allowed_workflows
+        or any(not isinstance(reference, str) or not reference for reference in allowed_workflows)
+        or len(allowed_workflows) != len(set(allowed_workflows))
+        or not isinstance(workflow_ref, str)
+        or workflow_ref not in allowed_workflows
+    ):
+        _fail("identity", "identity_claims_mismatch")
 
     exchange_body = urlencode(
         {

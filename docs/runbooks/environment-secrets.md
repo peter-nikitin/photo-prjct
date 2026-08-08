@@ -290,26 +290,35 @@ Docker. `FINDME_ENV_FILE` is a private path, not a value; do not log its path af
 
 ### Preflight
 
-The GitHub job must have `environment: staging`, `contents: read`, and `id-token: write`. Its OIDC
-claim must match the issuer, audience, repository, and subject in the inventory. The approved
-resolver call for each projection is:
+The manually dispatched `preflight=true` input on the `Deploy staging` workflow selects the one
+non-mutating `lockbox-preflight` job. The job has `environment: staging`, `contents: read`, and
+`id-token: write`; it checks out without persisted credentials and does not write an output,
+artifact, issue, VM, storage object, or monitoring configuration. Dispatch only the reviewed main
+revision:
 
-```text
-python scripts/run-with-environment-secrets.py --environment staging --consumer local-web --identity github-oidc -- sh -c 'test -r "$FINDME_ENV_FILE"'
-python scripts/run-with-environment-secrets.py --environment staging --consumer staging-deploy --identity github-oidc -- sh -c 'test -r "$FINDME_ENV_FILE"'
-python scripts/run-with-environment-secrets.py --environment staging --consumer staging-remote-check --identity github-oidc -- sh -c 'test -r "$FINDME_ENV_FILE"'
-python scripts/run-with-environment-secrets.py --environment staging --consumer staging-public-monitor --identity github-oidc -- sh -c 'test -r "$FINDME_ENV_FILE"'
+```bash
+gh workflow run deploy.yml --ref main -f preflight=true
 ```
 
-The current workflows do not provide one universal non-mutating preflight job for all four
-projections. Do not dispatch a deployment, storage probe, monitoring configuration, or benchmark as
-a substitute. Gate B is blocked pending a separate reviewed repository task. That task must add and
-review a manually dispatched no-op workflow revision containing exactly these resolver calls and no
-payload output before it is dispatched.
+Its OIDC claim must match the issuer, audience, repository, subject, and `workflow_ref` in the
+inventory. The resolver exactly enforces `workflow_ref` against the full repository/path/ref
+allowlist before exchanging the OIDC token. The approved resolver call for each projection is:
 
-The manifest allowed_workflows is not enforced by the current resolver. It remains a reviewed
-inventory/intent record until that separate task also implements and tests workflow-ref enforcement;
-do not claim it is a current authorization boundary.
+```text
+python scripts/run-with-environment-secrets.py --environment staging --consumer local-web --identity github-oidc -- python scripts/verify-environment-secret-projection.py local-web
+python scripts/run-with-environment-secrets.py --environment staging --consumer staging-deploy --identity github-oidc -- python scripts/verify-environment-secret-projection.py staging-deploy
+python scripts/run-with-environment-secrets.py --environment staging --consumer staging-remote-check --identity github-oidc -- python scripts/verify-environment-secret-projection.py staging-remote-check
+python scripts/run-with-environment-secrets.py --environment staging --consumer staging-public-monitor --identity github-oidc -- python scripts/verify-environment-secret-projection.py staging-public-monitor
+```
+
+The verifier reads neither payload contents nor values. It accepts only the resolver-created
+mode-0600 file in its mode-0700 directory and emits the consumer name plus a sanitized success or
+failure marker.
+
+This preflight release deliberately keeps the existing GitHub Secret deployment, storage, and
+monitoring readers unchanged. Merge and evidence Gate B first; Task 3 cutover remains a separate
+reviewed release and is not present in this preflight revision. Do not dispatch a deployment,
+storage probe, monitoring configuration, or benchmark as a substitute for preflight.
 
 ### Success evidence
 
@@ -326,9 +335,9 @@ only after fresh operator approval and return for design revision.
 
 ### Non-disclosure
 
-Use `test -r "$FINDME_ENV_FILE"` only; never use `cat`, `env`, `printenv`, an action output, or a
-diagnostic artifact. OIDC and IAM tokens remain in memory and must not be echoed or passed as
-workflow parameters.
+Use the verifier only; never use `cat`, `env`, `printenv`, an action output, or a diagnostic
+artifact. OIDC and IAM tokens remain in memory and must not be echoed or passed as workflow
+parameters.
 
 ## Rotation
 

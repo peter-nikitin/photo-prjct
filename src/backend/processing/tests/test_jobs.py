@@ -11,7 +11,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from picflow.models import Event, Photo
 
-from processing.contracts import ClaimedJob, CompletionConflict
+from processing.contracts import ClaimedJob, CompletionConflict, EmptyClaim
 from processing.models import (
     EventProcessingRun,
     FaceEmbedding,
@@ -57,10 +57,10 @@ class ProcessingJobServiceTests(TestCase):
             timezone_name="Europe/Moscow",
         )
 
-    def private_photo(self, suffix: str) -> Photo:
+    def private_photo(self, suffix: str, *, event: Event | None = None) -> Photo:
         return Photo.objects.create(
             id=f"job-{suffix}",
-            event=self.event,
+            event=event or self.event,
             src="",
             uploaded_by=self.user,
             original_key=f"originals/{hashlib.sha256(suffix.encode()).hexdigest()[:32]}",
@@ -307,6 +307,112 @@ class ProcessingJobServiceTests(TestCase):
 
         self.assertTrue(empty.empty)
         self.assertEqual(ProcessingJob.objects.get().status, ProcessingJob.Status.QUEUED)
+
+    def test_claim_scope_selects_only_the_exact_event_and_configuration(self) -> None:
+        other_event = Event.objects.create(
+            name="Other scoped jobs event",
+            slug="other-scoped-jobs-event",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="UTC",
+        )
+        exact_configuration = capture_metadata_configuration("Europe/Moscow")
+        other_configuration = capture_metadata_configuration("UTC")
+        exact_state = request_processor(
+            self.private_photo("scope-exact"),
+            processor_type="capture_metadata",
+            contract_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            configuration=exact_configuration,
+        )
+        other_configuration_state = request_processor(
+            self.private_photo("scope-other-config"),
+            processor_type="capture_metadata",
+            contract_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            configuration=other_configuration,
+        )
+        other_event_state = request_processor(
+            self.private_photo("scope-other-event", event=other_event),
+            processor_type="capture_metadata",
+            contract_version=1,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            configuration=exact_configuration,
+        )
+        assert exact_state.current_job is not None
+        assert other_configuration_state.current_job is not None
+        assert other_event_state.current_job is not None
+
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="scoped-worker",
+            event_id=self.event.id,
+            configuration_hash=exact_state.current_job.configuration_hash,
+        )
+
+        self.assertEqual(claimed.job.id, exact_state.current_job_id)
+        self.assertEqual(ProcessingAttempt.objects.count(), 1)
+        for state in (other_configuration_state, other_event_state):
+            state.refresh_from_db()
+            assert state.current_job is not None
+            state.current_job.refresh_from_db()
+            state.current_job.run.refresh_from_db()
+            self.assertEqual(state.status, PhotoProcessingState.Status.QUEUED)
+            self.assertIsNone(state.current_attempt_id)
+            self.assertEqual(state.current_job.status, ProcessingJob.Status.QUEUED)
+            self.assertIsNone(state.current_job.claimed_at)
+            self.assertEqual(state.current_job.run.status, EventProcessingRun.Status.COLLECTING)
+
+    def test_claim_scope_without_an_exact_match_returns_empty_without_mutation(self) -> None:
+        other_event = Event.objects.create(
+            name="No scoped match event",
+            slug="no-scoped-match-event",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="UTC",
+        )
+        states = [
+            request_processor(
+                self.private_photo("no-scope-config"),
+                processor_type="capture_metadata",
+                contract_version=1,
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+                configuration=capture_metadata_configuration("UTC"),
+            ),
+            request_processor(
+                self.private_photo("no-scope-event", event=other_event),
+                processor_type="capture_metadata",
+                contract_version=1,
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+                configuration=capture_metadata_configuration("Europe/Moscow"),
+            ),
+        ]
+
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            worker_build="scoped-worker",
+            event_id=self.event.id,
+            configuration_hash="f" * 64,
+        )
+
+        self.assertIsInstance(claimed, EmptyClaim)
+        self.assertFalse(ProcessingAttempt.objects.exists())
+        for state in states:
+            state.refresh_from_db()
+            assert state.current_job is not None
+            state.current_job.refresh_from_db()
+            state.current_job.run.refresh_from_db()
+            self.assertEqual(state.status, PhotoProcessingState.Status.QUEUED)
+            self.assertIsNone(state.current_attempt_id)
+            self.assertEqual(state.current_job.status, ProcessingJob.Status.QUEUED)
+            self.assertIsNone(state.current_job.claimed_at)
+            self.assertEqual(state.current_job.run.status, EventProcessingRun.Status.COLLECTING)
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_claim_only_selects_an_exactly_compatible_processor(self) -> None:

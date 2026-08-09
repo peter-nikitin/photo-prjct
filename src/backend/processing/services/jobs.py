@@ -61,25 +61,31 @@ def claim_job(
     worker_build: str,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     now: timezone.datetime | None = None,
+    event_id: int | None = None,
+    configuration_hash: str | None = None,
 ) -> ClaimedJob | EmptyClaim:
-    """Atomically seal and lease compatible work; skip races until no work remains."""
+    """Atomically seal and lease compatible, optionally exact-scoped work."""
     now = now or timezone.now()
     tried: set[UUID] = set()
     with transaction.atomic():
         while True:
+            candidates = ProcessingJob.objects.filter(
+                contract_version=contract_version,
+                processor_type=processor_type,
+                processor_version=processor_version,
+                status__in=(ProcessingJob.Status.QUEUED, ProcessingJob.Status.RETRY_WAIT),
+                available_at__lte=now,
+                run__status__in=(
+                    EventProcessingRun.Status.COLLECTING,
+                    EventProcessingRun.Status.SEALED,
+                ),
+            )
+            if event_id is not None:
+                candidates = candidates.filter(event_id=event_id)
+            if configuration_hash is not None:
+                candidates = candidates.filter(configuration_hash=configuration_hash)
             candidate = (
-                ProcessingJob.objects.filter(
-                    contract_version=contract_version,
-                    processor_type=processor_type,
-                    processor_version=processor_version,
-                    status__in=(ProcessingJob.Status.QUEUED, ProcessingJob.Status.RETRY_WAIT),
-                    available_at__lte=now,
-                    run__status__in=(
-                        EventProcessingRun.Status.COLLECTING,
-                        EventProcessingRun.Status.SEALED,
-                    ),
-                )
-                .exclude(pk__in=tried)
+                candidates.exclude(pk__in=tried)
                 .order_by("available_at", "created_at", "id")
                 .first()
             )

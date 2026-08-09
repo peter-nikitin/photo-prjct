@@ -255,7 +255,7 @@ class FaceClusterCorpusTests(TestCase):
             photo_id="active-candidate",
             vector=[1.0] + [0.0] * 127,
             contract_version=3,
-            processor_version=3,
+            processor_version=4,
         )
         approval = self.candidate_approval(event=self.event, photo_count=1)
         with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
@@ -310,7 +310,7 @@ class FaceClusterCorpusTests(TestCase):
             photo_id="candidate-only",
             vector=[1.0, 0.0],
             contract_version=3,
-            processor_version=3,
+            processor_version=4,
         )
 
         corpus = build_face_cluster_corpus(

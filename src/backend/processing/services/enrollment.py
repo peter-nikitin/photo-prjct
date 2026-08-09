@@ -32,7 +32,8 @@ PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
 PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 2
 QUALITY_FACE_CONTRACT_VERSION = 3
-QUALITY_FACE_PROCESSOR_VERSION = 3
+HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION = 3
+QUALITY_FACE_PROCESSOR_VERSION = 4
 FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION = 3
 FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION = 1
 FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
@@ -481,10 +482,8 @@ def request_face_embedding_enqueue(
     )
 
 
-def request_face_embedding_candidate_enqueue(
-    photo: Photo, *, verified_source_etag: str | None = None
-) -> PhotoProcessingState:
-    """Explicitly queue provisional quality-v3 work without changing search activation."""
+def request_face_embedding_candidate_enqueue(photo: Photo) -> PhotoProcessingState:
+    """Explicitly queue preview-backed quality-v4 work without changing search activation."""
     preview = _accepted_preview(photo)
     return request_processor(
         photo=photo,
@@ -492,12 +491,8 @@ def request_face_embedding_candidate_enqueue(
         contract_version=QUALITY_FACE_CONTRACT_VERSION,
         processor_version=QUALITY_FACE_PROCESSOR_VERSION,
         configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
-        verified_source_etag=verified_source_etag,
         input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
-        enabled=(
-            photo.processing_generation != Photo.ProcessingGeneration.PREVIEW_FIRST_V1
-            or preview is not None
-        ),
+        enabled=preview is not None,
         replace_terminal_generation=True,
     )
 

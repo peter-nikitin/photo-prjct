@@ -20,6 +20,7 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_CONFIGURATION,
     FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
+    HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     capture_metadata_configuration,
@@ -154,14 +155,18 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(state.current_job.processor_type, FACE_EMBEDDING_PROCESSOR)
         self.assertEqual(state.current_job.processor_version, 1)
 
-    def test_v3_candidate_configuration_freezes_the_provisional_quality_identity(self) -> None:
+    def test_v4_candidate_reuses_the_frozen_v3_quality_configuration(self) -> None:
         self.assertEqual(
             (
                 QUALITY_FACE_EMBEDDING_CONTRACT.processor_type,
                 QUALITY_FACE_EMBEDDING_CONTRACT.contract_version,
                 QUALITY_FACE_EMBEDDING_CONTRACT.processor_version,
             ),
-            ("face_embedding", QUALITY_FACE_CONTRACT_VERSION, QUALITY_FACE_PROCESSOR_VERSION),
+            (
+                "face_embedding",
+                QUALITY_FACE_CONTRACT_VERSION,
+                HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
+            ),
         )
         self.assertEqual(
             FACE_EMBEDDING_QUALITY_CONFIGURATION["face_embedding"],
@@ -182,10 +187,9 @@ class CaptureMetadataEnrollmentTests(TestCase):
             },
         )
 
-    def test_candidate_enqueue_is_explicit_and_uses_v3_without_the_feature_flag(self) -> None:
-        photo = self.private_photo("candidate-original")
-        photo.original_key = f"originals/{'a' * 32}"
-        photo.save(update_fields=["original_key"])
+    def test_candidate_enqueue_uses_the_accepted_preview_and_processor_v4(self) -> None:
+        photo = self.private_photo("candidate-preview")
+        derivative = self.publish_preview(photo)
 
         state = request_face_embedding_candidate_enqueue(photo)
 
@@ -196,13 +200,23 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(
             state.current_job.input_fingerprint,
             {
-                "original_key": f"originals/{'a' * 32}",
-                "original_size": 10,
-                "original_content_type": "image/jpeg",
-                "verified_source_etag": None,
-                "version_evidence": "unavailable",
+                "object_key": derivative.final_key,
+                "object_size": derivative.byte_size,
+                "object_content_type": derivative.content_type,
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": derivative.width,
+                "pixel_height": derivative.height,
             },
         )
+
+    def test_candidate_enqueue_is_not_requested_without_an_accepted_preview(self) -> None:
+        photo = self.private_photo("candidate-no-preview")
+
+        state = request_face_embedding_candidate_enqueue(photo)
+
+        self.assertEqual(state.status, PhotoProcessingState.Status.NOT_REQUESTED)
+        self.assertIsNone(state.current_job)
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_candidate_enqueue_rotates_only_completed_baseline_processing(self) -> None:
@@ -237,6 +251,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
                 "updated_at",
             ]
         )
+        self.publish_preview(photo)
 
         candidate = request_face_embedding_candidate_enqueue(photo)
 
@@ -245,33 +260,6 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(candidate.current_job.contract_version, QUALITY_FACE_CONTRACT_VERSION)
         self.assertEqual(candidate.current_job.processor_version, QUALITY_FACE_PROCESSOR_VERSION)
         self.assertIsNone(candidate.accepted_attempt_id)
-
-    def test_original_and_preview_candidates_share_one_exact_v3_configuration_identity(
-        self,
-    ) -> None:
-        original = self.private_photo("candidate-original")
-        original.original_key = f"originals/{'b' * 32}"
-        original.save(update_fields=["original_key"])
-        preview_photo = self.private_photo("candidate-preview")
-        derivative = self.publish_preview(preview_photo)
-
-        original_job = request_face_embedding_candidate_enqueue(original).current_job
-        preview_job = request_face_embedding_candidate_enqueue(preview_photo).current_job
-
-        assert original_job is not None
-        assert preview_job is not None
-        self.assertEqual(
-            (original_job.contract_version, original_job.processor_version),
-            (QUALITY_FACE_CONTRACT_VERSION, QUALITY_FACE_PROCESSOR_VERSION),
-        )
-        self.assertEqual(
-            (preview_job.contract_version, preview_job.processor_version),
-            (QUALITY_FACE_CONTRACT_VERSION, QUALITY_FACE_PROCESSOR_VERSION),
-        )
-        self.assertEqual(original_job.configuration_hash, preview_job.configuration_hash)
-        self.assertEqual(original_job.configuration, preview_job.configuration)
-        self.assertEqual(preview_job.input_fingerprint["object_key"], derivative.final_key)
-        self.assertEqual(preview_job.input_fingerprint["media_kind"], "preview-small-v1")
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_reconciliation_creates_missing_states_and_bounded_jobs(self) -> None:

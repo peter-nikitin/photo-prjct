@@ -30,7 +30,7 @@ from processing.models import (
 )
 from processing.services.face_quality import (
     QUALITY_FACE_CONTRACT_VERSION,
-    QUALITY_FACE_PROCESSOR_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSIONS,
     ValidatedQualityResult,
     publish_face_embedding_projection,
     quality_face_result_geometry,
@@ -528,7 +528,7 @@ def _terminal_failure(
 def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> bool:
     if (
         attempt.contract_version == QUALITY_FACE_CONTRACT_VERSION
-        and attempt.processor_version == QUALITY_FACE_PROCESSOR_VERSION
+        and attempt.processor_version in QUALITY_FACE_PROCESSOR_VERSIONS
     ):
         validated = validate_quality_face_result(
             result,

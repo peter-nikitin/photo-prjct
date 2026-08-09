@@ -435,17 +435,19 @@ def quality_configuration() -> dict[str, object]:
     }
 
 
-def quality_claim_payload(*, configuration: dict[str, object] | None = None) -> dict[str, object]:
+def quality_claim_payload(
+    *, configuration: dict[str, object] | None = None, processor_version: int = 3
+) -> dict[str, object]:
     return claim_payload(
         processor_type=PROCESSOR_TYPE_FACE_EMBEDDING,
         contract_version=3,
-        processor_version=3,
+        processor_version=processor_version,
         configuration=configuration or quality_configuration(),
     )
 
 
-def quality_preview_claim_payload() -> dict[str, object]:
-    payload = quality_claim_payload()
+def quality_preview_claim_payload(*, processor_version: int = 3) -> dict[str, object]:
+    payload = quality_claim_payload(processor_version=processor_version)
     job = payload["job"]
     assert isinstance(job, dict)
     job["input_fingerprint"] = {
@@ -509,6 +511,25 @@ def test_v3_quality_face_claim_accepts_the_exact_published_preview_identity() ->
         "oriented_source_width": 3200,
         "oriented_source_height": 2000,
     }
+
+
+def test_v4_quality_face_claim_accepts_only_preview_input_with_geometry() -> None:
+    claim = Claim.from_response(quality_preview_claim_payload(processor_version=4))
+
+    assert claim.job is not None
+    assert (claim.job.contract_version, claim.job.processor_version) == (3, 4)
+    assert claim.job.input_fingerprint.original_key is None
+    assert claim.job.input_fingerprint.media_kind == "preview-small-v1"
+    assert claim.job.input_geometry == {
+        "coordinate_space": "preview-small-v1",
+        "pixel_width": 1600,
+        "pixel_height": 1000,
+        "oriented_source_width": 3200,
+        "oriented_source_height": 2000,
+    }
+
+    with pytest.raises(ContractError):
+        Claim.from_response(quality_claim_payload(processor_version=4))
 
 
 def test_v3_quality_face_claim_rejects_a_preview_key_for_another_photo() -> None:

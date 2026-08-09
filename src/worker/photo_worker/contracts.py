@@ -20,7 +20,8 @@ PROCESSOR_VERSION = CAPTURE_METADATA_PROCESSOR_VERSION
 PROCESSOR_TYPE_FACE_EMBEDDING = "face_embedding"
 PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK = "face_embedding_benchmark"
 PROCESSOR_VERSION_FACE_EMBEDDING = 1
-PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 3
+HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 3
+PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 4
 PREVIEW_CONTRACT_VERSION = 2
 PROCESSOR_TYPE_GENERATE_PREVIEW = "generate_preview"
 PROCESSOR_VERSION_GENERATE_PREVIEW = 1
@@ -721,7 +722,15 @@ class ClaimedJob:
                 PROCESSOR_TYPE_FACE_EMBEDDING,
                 PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
             )
-            quality_face = identity == (
+            quality_face = identity in {
+                (
+                    3,
+                    PROCESSOR_TYPE_FACE_EMBEDDING,
+                    HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
+                ),
+                (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
+            }
+            preview_only_quality_face = identity == (
                 3,
                 PROCESSOR_TYPE_FACE_EMBEDDING,
                 PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
@@ -760,6 +769,11 @@ class ClaimedJob:
                     CONTRACT_VERSION,
                     PROCESSOR_TYPE_FACE_EMBEDDING,
                     PROCESSOR_VERSION_FACE_EMBEDDING,
+                ),
+                (
+                    3,
+                    PROCESSOR_TYPE_FACE_EMBEDDING,
+                    HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
                 ),
                 (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
                 (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
@@ -801,7 +815,11 @@ class ClaimedJob:
                     and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
                     and configuration.quality_thresholds is not None
                     and (
-                        (photo_fingerprint.original_key is not None and input_geometry is None)
+                        (
+                            not preview_only_quality_face
+                            and photo_fingerprint.original_key is not None
+                            and input_geometry is None
+                        )
                         or (
                             photo_fingerprint.media_kind == "preview-small-v1"
                             and _preview_key_matches_photo(photo_fingerprint, value["photo_id"])

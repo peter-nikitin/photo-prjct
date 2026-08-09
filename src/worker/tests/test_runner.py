@@ -531,12 +531,13 @@ def quality_face_claim() -> Claim:
     )
 
 
-def quality_preview_face_claim() -> Claim:
+def quality_preview_face_claim(*, processor_version: int = 3) -> Claim:
     claim = quality_face_claim()
     assert claim.job is not None
     return Claim(
         job=replace(
             claim.job,
+            processor_version=processor_version,
             input_fingerprint=InputFingerprint(
                 object_key=(
                     "derivatives/previews/photo-1/preview-small-v1/"
@@ -1218,6 +1219,35 @@ def test_worker_preserves_v3_preview_geometry_through_download_and_terminal_resu
         "oriented_source_width": 3200,
         "oriented_source_height": 2000,
     }
+
+
+def test_worker_dispatches_v4_preview_claim_through_quality_extraction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claim = quality_preview_face_claim(processor_version=4)
+    observed: dict[str, object] = {}
+
+    def extract(*_args: object, **kwargs: object) -> FaceEmbeddingResult:
+        observed["thresholds"] = kwargs["quality_thresholds"]
+        return quality_face_embedding_result()
+
+    monkeypatch.setattr("photo_worker.runner.extract_face_embeddings", extract)
+    client = Client(claim)
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_identities=("3/face_embedding/4",),
+        ),
+    ).run_once()
+
+    assert observed["thresholds"] == claim.job.configuration.quality_thresholds
+    assert client.failed == []
+    assert client.completed[0]["processor_version"] == 4
+    assert client.completed[0]["result"]["input_geometry"] == claim.job.input_geometry
 
 
 def test_worker_benchmark_runs_face_extraction_but_submits_metrics_only(

@@ -35,6 +35,7 @@ from processing.models import (
 )
 from processing.services.enrollment import (
     FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
+    FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
     create_face_embedding_benchmark_run,
     request_capture_metadata,
@@ -436,8 +437,29 @@ class WorkerApiTests(TestCase):
             "quality-preview", original_key="originals/cccccccccccccccccccccccccccccccc"
         )
         derivative = self.publish_preview(preview_photo)
-        request_face_embedding_candidate_enqueue(original)
-        request_face_embedding_candidate_enqueue(preview_photo)
+        request_processor(
+            original,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+        )
+        request_processor(
+            preview_photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+            input_fingerprint={
+                "object_key": derivative.final_key,
+                "object_size": derivative.byte_size,
+                "object_content_type": derivative.content_type,
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": derivative.width,
+                "pixel_height": derivative.height,
+            },
+        )
 
         for expected_photo, expected_geometry in (
             (original, None),
@@ -525,6 +547,112 @@ class WorkerApiTests(TestCase):
                         "scale_y": 2.0,
                     },
                 )
+
+    @patch("processing.views.ExactPreviewStorage.create_download_grant")
+    def test_v4_preview_completion_validates_persists_and_projects_preview_geometry(
+        self, preview_grant
+    ) -> None:
+        preview_grant.return_value.url = "https://storage.example.test/preview?secret"
+        preview_grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        photo = self.photo(
+            "quality-v4-preview",
+            original_key="originals/dddddddddddddddddddddddddddddddd",
+        )
+        self.publish_preview(photo)
+        request_face_embedding_candidate_enqueue(photo)
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.face_claim_body(contract_version=3, processor_version=4),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        claim = Claim.from_response(response.json())
+        assert claim.job is not None
+        self.assertEqual(claim.job.processor_version, 4)
+        self.assertEqual(
+            claim.job.input_geometry,
+            {
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+            },
+        )
+        result = FaceEmbeddingResult(
+            model="sface",
+            faces=(
+                FaceEmbeddingFace(
+                    index=0,
+                    bbox=(10.0, 20.0, 32.0, 32.0),
+                    confidence=0.95,
+                    landmarks=((1.0, 2.0),) * 5,
+                    embedding=(1.0,) + (0.0,) * 127,
+                    quality=FaceQualityEvidence(
+                        algorithm_version="normalized-laplacian-v1",
+                        crop_size=112,
+                        confidence=0.95,
+                        minimum_side_px=32.0,
+                        relative_area=0.1,
+                        sharpness=60.0,
+                        decision="accepted",
+                        reasons=(),
+                    ),
+                ),
+            ),
+            has_single_query_face_usable=True,
+            warnings=(),
+            timings={
+                "decode_ms": 1,
+                "model_load_ms": 2,
+                "detect_ms": 3,
+                "embed_ms": 4,
+                "total_ms": 10,
+            },
+            input_geometry=claim.job.input_geometry,
+        ).as_payload()
+
+        completed = self.post(
+            f"/internal/photo-processing/v1/attempts/{claim.job.attempt_id}/complete",
+            self.terminal_body(
+                response.json()["job"],
+                contract_version=3,
+                processor_type="face_embedding",
+                processor_version=4,
+                result=result,
+            ),
+        )
+
+        self.assertEqual(completed.status_code, 200)
+        detection = PhotoFaceDetection.objects.get(attempt_id=claim.job.attempt_id)
+        self.assertEqual(detection.geometry["coordinate_space"], "preview-small-v1")
+        self.assertEqual(detection.geometry["scale_x"], 2.0)
+        projection = detection.attempt.photo.face_embedding_projections.get(processor_version=4)
+        self.assertEqual(str(projection.accepted_attempt_id), claim.job.attempt_id)
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_v4_claim_rejects_an_original_fingerprint_before_issuing_a_grant(self, grant) -> None:
+        photo = self.photo(
+            "quality-v4-original",
+            original_key="originals/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        )
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=4,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+        )
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.face_claim_body(contract_version=3, processor_version=4),
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["error"]["code"], "input_invariant")
+        grant.assert_not_called()
 
     @patch("processing.views.ExactPreviewStorage.create_download_grant")
     def test_v3_benchmark_preview_is_rejected_before_a_grant_or_worker_claim(

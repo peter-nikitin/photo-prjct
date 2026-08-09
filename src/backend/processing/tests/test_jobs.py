@@ -26,9 +26,11 @@ from processing.models import (
 )
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
+    FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
     capture_metadata_configuration,
     request_capture_metadata,
+    request_face_embedding_candidate_enqueue,
     request_face_embedding_enqueue,
     request_processor,
 )
@@ -213,6 +215,59 @@ class ProcessingJobServiceTests(TestCase):
             processor_version=3,
             worker_build="quality-worker",
         )
+
+    def publish_preview(self, photo: Photo) -> PhotoDerivative:
+        state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+        assert state.current_job is not None
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=state.current_job.run,
+            job=state.current_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint=state.current_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        derivative = PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=(
+                f"derivatives/previews/{photo.pk}/preview-small-v1/{attempt.id}-{'a' * 64}.jpg"
+            ),
+            byte_size=1024,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=3200,
+            oriented_source_height=2000,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save(update_fields=["status", "accepted_attempt", "succeeded_at", "updated_at"])
+        return derivative
 
     def test_claim_seals_the_enrolled_cohort_and_creates_a_leased_current_attempt(self) -> None:
         first = self.private_photo("first")
@@ -562,6 +617,81 @@ class ProcessingJobServiceTests(TestCase):
                 configuration_hash=candidate_hash,
             ).accepted_attempt_id,
             replacement.attempt.id,
+        )
+
+    def test_v3_and_v4_quality_projections_coexist_with_distinct_accepted_attempts(self) -> None:
+        photo = self.private_photo("quality-v3-v4")
+        derivative = self.publish_preview(photo)
+        fingerprint = {
+            "object_key": derivative.final_key,
+            "object_size": derivative.byte_size,
+            "object_content_type": derivative.content_type,
+            "object_etag": None,
+            "media_kind": "preview-small-v1",
+            "pixel_width": derivative.width,
+            "pixel_height": derivative.height,
+        }
+        geometry = {
+            "coordinate_space": "preview-small-v1",
+            "pixel_width": 1600,
+            "pixel_height": 1000,
+            "oriented_source_width": 3200,
+            "oriented_source_height": 2000,
+        }
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+            input_fingerprint=fingerprint,
+        )
+        historical = claim_job(
+            contract_version=3,
+            processor_type="face_embedding",
+            processor_version=3,
+            worker_build="quality-v3-worker",
+        )
+        complete_attempt(
+            historical.attempt.id,
+            result=self.quality_result([self.quality_face(0, "kept")])
+            | {"input_geometry": geometry},
+        )
+
+        request_face_embedding_candidate_enqueue(photo)
+        candidate = claim_job(
+            contract_version=3,
+            processor_type="face_embedding",
+            processor_version=4,
+            worker_build="quality-v4-worker",
+        )
+        complete_attempt(
+            candidate.attempt.id,
+            result=self.quality_result([self.quality_face(0, "kept")])
+            | {"input_geometry": geometry},
+        )
+
+        projections = list(
+            PhotoFaceEmbeddingProjection.objects.filter(photo=photo).order_by("processor_version")
+        )
+        self.assertEqual([projection.processor_version for projection in projections], [3, 4])
+        self.assertEqual(projections[0].configuration_hash, projections[1].configuration_hash)
+        self.assertEqual(
+            [projection.accepted_attempt_id for projection in projections],
+            [historical.attempt.id, candidate.attempt.id],
+        )
+        self.assertEqual(
+            list(
+                FaceProcessingAttemptArtifact.objects.filter(
+                    attempt_id__in=[historical.attempt.id, candidate.attempt.id]
+                )
+                .order_by("attempt__processor_version")
+                .values_list("quality_payload", flat=True)
+            ),
+            [
+                {"rejection_reasons": {}, "technical_failure_reasons": {}},
+                {"rejection_reasons": {}, "technical_failure_reasons": {}},
+            ],
         )
 
     def test_v3_malformed_result_rolls_back_terminal_persistence_atomically(self) -> None:

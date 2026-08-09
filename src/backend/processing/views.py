@@ -57,8 +57,10 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.face_quality import (
+    HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSIONS,
     quality_face_claim_input_geometry,
     quality_face_result_geometry,
     validate_quality_face_result,
@@ -623,7 +625,7 @@ def _input_fingerprint(
     if contract_version == 3 and set(value) != original_fields:
         if not (
             processor_type == FACE_EMBEDDING_CONTRACT.processor_type
-            and processor_version == QUALITY_FACE_PROCESSOR_VERSION
+            and processor_version in QUALITY_FACE_PROCESSOR_VERSIONS
         ):
             raise FingerprintInvariant()
         generic_fields = {
@@ -744,12 +746,13 @@ def _quality_claim_input_geometry(
     if not (
         job.contract_version == QUALITY_FACE_CONTRACT_VERSION
         and job.processor_type == FACE_EMBEDDING_CONTRACT.processor_type
-        and job.processor_version == QUALITY_FACE_PROCESSOR_VERSION
+        and job.processor_version in QUALITY_FACE_PROCESSOR_VERSIONS
     ):
         return None
     try:
         return quality_face_claim_input_geometry(
             photo_id=job.photo_id,
+            processor_version=job.processor_version,
             input_fingerprint=job.input_fingerprint,
         )
     except ValueError as error:
@@ -847,7 +850,7 @@ def _claimed_payload(
     elif (
         job.contract_version == QUALITY_FACE_CONTRACT_VERSION
         and job.processor_type == FACE_EMBEDDING_CONTRACT.processor_type
-        and job.processor_version == QUALITY_FACE_PROCESSOR_VERSION
+        and job.processor_version in QUALITY_FACE_PROCESSOR_VERSIONS
         and quality_input_geometry is not None
     ):
         payload["job"] = cast(dict[str, object], payload["job"]) | {
@@ -1001,6 +1004,11 @@ def _processor_contract(processor_type: str, contract_version: int, processor_ve
         (
             QUALITY_FACE_CONTRACT_VERSION,
             FACE_EMBEDDING_CONTRACT.processor_type,
+            HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
+        ),
+        (
+            QUALITY_FACE_CONTRACT_VERSION,
+            FACE_EMBEDDING_CONTRACT.processor_type,
             QUALITY_FACE_PROCESSOR_VERSION,
         ),
     }
@@ -1087,7 +1095,7 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
         if (
             attempt.contract_version == QUALITY_FACE_CONTRACT_VERSION
             and attempt.processor_type == FACE_EMBEDDING_CONTRACT.processor_type
-            and attempt.processor_version == QUALITY_FACE_PROCESSOR_VERSION
+            and attempt.processor_version in QUALITY_FACE_PROCESSOR_VERSIONS
         ):
             try:
                 quality_face_result_geometry(attempt, data["result"])

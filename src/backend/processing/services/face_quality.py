@@ -19,7 +19,11 @@ if TYPE_CHECKING:
     from processing.models import ProcessingAttempt
 
 QUALITY_FACE_CONTRACT_VERSION = 3
-QUALITY_FACE_PROCESSOR_VERSION = 3
+HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION = 3
+QUALITY_FACE_PROCESSOR_VERSION = 4
+QUALITY_FACE_PROCESSOR_VERSIONS = frozenset(
+    {HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION, QUALITY_FACE_PROCESSOR_VERSION}
+)
 MAX_QUALITY_FACES = 64
 EMBEDDING_DIMENSIONS = 128
 MAX_SHARPNESS = 1_040_400.0
@@ -111,7 +115,7 @@ _QUALITY_CONFIGURATION_FIELDS = frozenset(
 
 
 class FaceQualityResultError(ValueError):
-    """A v3 terminal result is incomplete or contradictory."""
+    """A versioned quality terminal result is incomplete or contradictory."""
 
 
 @dataclass(frozen=True)
@@ -230,9 +234,9 @@ def validate_quality_face_result(value: object, *, configuration: object) -> Val
 
 
 def quality_face_claim_input_geometry(
-    *, photo_id: str, input_fingerprint: object
+    *, photo_id: str, processor_version: int, input_fingerprint: object
 ) -> dict[str, int | str] | None:
-    """Validate one strict v3 original/preview input and bind previews to accepted media."""
+    """Validate one versioned quality input and bind previews to accepted media."""
     from processing.models import (  # noqa: PLC0415
         GENERATE_PREVIEW_PROCESSOR,
         PhotoDerivative,
@@ -240,8 +244,10 @@ def quality_face_claim_input_geometry(
     )
 
     if not isinstance(input_fingerprint, dict):
-        raise FaceQualityResultError("invalid v3 input fingerprint")
+        raise FaceQualityResultError("invalid quality input fingerprint")
     if set(input_fingerprint) == _ORIGINAL_FINGERPRINT_FIELDS:
+        if processor_version != HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION:
+            raise FaceQualityResultError("quality v4 requires preview input")
         key = input_fingerprint["original_key"]
         size = input_fingerprint["original_size"]
         etag = input_fingerprint["verified_source_etag"]
@@ -255,10 +261,10 @@ def quality_face_claim_input_geometry(
             and evidence in {"verified_source_etag", "unavailable"}
             and ((evidence == "verified_source_etag") == isinstance(etag, str))
         ):
-            raise FaceQualityResultError("invalid v3 input fingerprint")
+            raise FaceQualityResultError("invalid quality input fingerprint")
         return None
     if set(input_fingerprint) != _PREVIEW_FINGERPRINT_FIELDS:
-        raise FaceQualityResultError("invalid v3 input fingerprint")
+        raise FaceQualityResultError("invalid quality input fingerprint")
     key = input_fingerprint["object_key"]
     size = input_fingerprint["object_size"]
     width = input_fingerprint["pixel_width"]
@@ -274,7 +280,7 @@ def quality_face_claim_input_geometry(
         and _positive_int(width)
         and _positive_int(height)
     ):
-        raise FaceQualityResultError("invalid v3 input fingerprint")
+        raise FaceQualityResultError("invalid quality input fingerprint")
     derivative = PhotoDerivative.objects.filter(
         photo_id=photo_id,
         variant="preview-small-v1",
@@ -294,7 +300,7 @@ def quality_face_claim_input_geometry(
             accepted_attempt_id=derivative.accepted_attempt_id,
         ).exists()
     ):
-        raise FaceQualityResultError("v3 preview input is not the accepted derivative")
+        raise FaceQualityResultError("quality preview input is not the accepted derivative")
     return {
         "coordinate_space": "preview-small-v1",
         "pixel_width": derivative.width,
@@ -307,19 +313,22 @@ def quality_face_claim_input_geometry(
 def quality_face_result_geometry(
     attempt: ProcessingAttempt, result: object
 ) -> dict[str, int | float | str]:
-    """Verify worker geometry against the claimed v3 media and return persisted coordinates."""
+    """Verify worker geometry against claimed quality media and return persisted coordinates."""
     if not isinstance(result, dict):
-        raise FaceQualityResultError("invalid v3 result")
+        raise FaceQualityResultError("invalid quality result")
     expected = quality_face_claim_input_geometry(
         photo_id=attempt.photo_id,
+        processor_version=attempt.processor_version,
         input_fingerprint=attempt.input_fingerprint,
     )
     if expected is None:
         if "input_geometry" in result:
-            raise FaceQualityResultError("original v3 result must not contain input geometry")
+            raise FaceQualityResultError("original quality result must not contain input geometry")
         return {}
     if result.get("input_geometry") != expected:
-        raise FaceQualityResultError("v3 preview result geometry disagrees with accepted input")
+        raise FaceQualityResultError(
+            "quality preview result geometry disagrees with accepted input"
+        )
     pixel_width = expected["pixel_width"]
     pixel_height = expected["pixel_height"]
     source_width = expected["oriented_source_width"]
@@ -654,7 +663,7 @@ def baseline_face_embedding_generations() -> tuple[dict[str, object], ...]:
 
 
 def candidate_face_embedding_generations() -> tuple[dict[str, object], ...]:
-    """Return the one v3 identity shared by original- and preview-backed candidate inputs."""
+    """Return the current preview-backed quality-v4 candidate identity."""
     from processing.models import FACE_EMBEDDING_PROCESSOR  # noqa: PLC0415
     from processing.services.enrollment import (  # noqa: PLC0415
         FACE_EMBEDDING_QUALITY_CONFIGURATION,
@@ -667,6 +676,27 @@ def candidate_face_embedding_generations() -> tuple[dict[str, object], ...]:
             "contract_version": QUALITY_FACE_CONTRACT_VERSION,
             "processor_type": FACE_EMBEDDING_PROCESSOR,
             "processor_version": QUALITY_FACE_PROCESSOR_VERSION,
+            "configuration": deepcopy(FACE_EMBEDDING_QUALITY_CONFIGURATION),
+            "configuration_hash": _canonical_hash(FACE_EMBEDDING_QUALITY_CONFIGURATION),
+            "model": "sface",
+        },
+    )
+
+
+def historical_quality_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the preserved quality-v3 generation selectable for exact rollback."""
+    from processing.models import FACE_EMBEDDING_PROCESSOR  # noqa: PLC0415
+    from processing.services.enrollment import (  # noqa: PLC0415
+        FACE_EMBEDDING_QUALITY_CONFIGURATION,
+        HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
+        QUALITY_FACE_CONTRACT_VERSION,
+    )
+
+    return (
+        {
+            "contract_version": QUALITY_FACE_CONTRACT_VERSION,
+            "processor_type": FACE_EMBEDDING_PROCESSOR,
+            "processor_version": HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
             "configuration": deepcopy(FACE_EMBEDDING_QUALITY_CONFIGURATION),
             "configuration_hash": _canonical_hash(FACE_EMBEDDING_QUALITY_CONFIGURATION),
             "model": "sface",
@@ -691,7 +721,7 @@ def active_face_embedding_generations(event: Event) -> tuple[dict[str, object], 
     if generations == baseline_face_embedding_generations():
         if activation.approved_configuration_hash or activation.approved_evaluation_report_hash:
             raise ValueError("baseline activation must not claim candidate approval")
-    else:
+    elif generations == candidate_face_embedding_generations():
         _validate_candidate_activation(
             event=event,
             approved_configuration_hash=activation.approved_configuration_hash,
@@ -716,6 +746,7 @@ def activate_face_embedding_generation(
     selected = validate_face_embedding_generations(generations)
     baseline = baseline_face_embedding_generations()
     candidate = candidate_face_embedding_generations()
+    historical = historical_quality_face_embedding_generations()
     if selected == baseline:
         if approved_configuration_hash or evaluation_report_hash:
             raise ValueError("baseline activation must not claim candidate approval")
@@ -725,7 +756,7 @@ def activate_face_embedding_generation(
             approved_configuration_hash=approved_configuration_hash,
             evaluation_report_hash=evaluation_report_hash,
         )
-    else:  # pragma: no cover - generation-set validation already rejects this branch.
+    elif selected != historical:  # pragma: no cover - generation-set validation rejects this.
         raise ValueError("unrecognized face-embedding generation set")
 
     serialized_generations = [deepcopy(generation) for generation in selected]
@@ -766,6 +797,7 @@ def validate_face_embedding_generations(
         raise ValueError("invalid face-embedding generation set")
     if normalized not in (
         baseline_face_embedding_generations(),
+        historical_quality_face_embedding_generations(),
         candidate_face_embedding_generations(),
     ):
         raise ValueError("invalid face-embedding generation set")

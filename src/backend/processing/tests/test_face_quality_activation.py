@@ -22,6 +22,7 @@ from processing.models import (
 )
 from processing.services.enrollment import (
     FACE_EMBEDDING_QUALITY_CONFIGURATION,
+    HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     FaceEmbeddingGenerationApproval,
@@ -31,6 +32,7 @@ from processing.services.face_quality import (
     active_face_embedding_generations,
     baseline_face_embedding_generations,
     candidate_face_embedding_generations,
+    historical_quality_face_embedding_generations,
 )
 
 
@@ -136,6 +138,76 @@ class FaceEmbeddingActivationTests(TestCase):
             baseline_face_embedding_generations(),
         )
         self.assertFalse(EventFaceEmbeddingActivation.objects.exists())
+
+    def test_v4_is_current_candidate_and_v3_remains_a_distinct_historical_generation(self) -> None:
+        candidate = candidate_face_embedding_generations()[0]
+        historical = historical_quality_face_embedding_generations()[0]
+
+        self.assertEqual(candidate["processor_version"], QUALITY_FACE_PROCESSOR_VERSION)
+        self.assertEqual(historical["processor_version"], HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION)
+        self.assertEqual(candidate["configuration"], historical["configuration"])
+        self.assertEqual(candidate["configuration_hash"], historical["configuration_hash"])
+        self.assertNotEqual(candidate, historical)
+
+    def test_existing_historical_v3_activation_resolves_exactly(self) -> None:
+        generations = list(historical_quality_face_embedding_generations())
+        EventFaceEmbeddingActivation.objects.create(
+            event=self.event,
+            generations=generations,
+            generation_set_hash=hashlib.sha256(
+                json.dumps(generations, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            approved_configuration_hash=generations[0]["configuration_hash"],
+            approved_evaluation_report_hash="d" * 64,
+        )
+
+        self.assertEqual(
+            active_face_embedding_generations(self.event),
+            historical_quality_face_embedding_generations(),
+        )
+
+    def test_invalid_latest_v4_activation_fails_closed_without_historical_fallback(self) -> None:
+        activate_face_embedding_generation(
+            event=self.event,
+            generations=historical_quality_face_embedding_generations(),
+            approved_configuration_hash="",
+            evaluation_report_hash="",
+            review_confirmed=True,
+        )
+        generations = list(candidate_face_embedding_generations())
+        EventFaceEmbeddingActivation.objects.create(
+            event=self.event,
+            generations=generations,
+            generation_set_hash=hashlib.sha256(
+                json.dumps(generations, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "approved benchmark evidence"):
+            active_face_embedding_generations(self.event)
+
+    def test_explicit_rollback_appends_and_selects_the_historical_v3_generation(self) -> None:
+        baseline = activate_face_embedding_generation(
+            event=self.event,
+            generations=baseline_face_embedding_generations(),
+            approved_configuration_hash="",
+            evaluation_report_hash="",
+            review_confirmed=True,
+        )
+        rollback = activate_face_embedding_generation(
+            event=self.event,
+            generations=historical_quality_face_embedding_generations(),
+            approved_configuration_hash="",
+            evaluation_report_hash="",
+            review_confirmed=True,
+        )
+
+        self.assertNotEqual(baseline.pk, rollback.pk)
+        self.assertEqual(EventFaceEmbeddingActivation.objects.count(), 2)
+        self.assertEqual(
+            active_face_embedding_generations(self.event),
+            historical_quality_face_embedding_generations(),
+        )
 
     def test_exact_baseline_replay_is_idempotent(self) -> None:
         first = activate_face_embedding_generation(

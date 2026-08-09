@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .fixtures import make_jpeg, write_json
 
+# ruff: noqa: E501
+
 
 def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(
@@ -127,3 +129,63 @@ def test_materialize_cli_returns_nonzero_for_source_failure(tmp_path: Path) -> N
 
     assert result.returncode == 1
     assert "source corpus" in result.stderr
+
+
+def test_compare_cli_requires_exactly_seven_unique_lowerhex_problem_ids(tmp_path: Path) -> None:
+    from face_spike.local_preview_quality import main
+
+    assert (
+        main(
+            [
+                "compare",
+                "--preview-corpus",
+                str(tmp_path),
+                "--sample",
+                str(tmp_path / "sample.json"),
+                "--yunet-model",
+                str(tmp_path / "yunet.onnx"),
+                "--sface-model",
+                str(tmp_path / "sface.onnx"),
+                "--output",
+                str(tmp_path / "out"),
+                "--problem-photo-id",
+                "A" * 32,
+            ]
+        )
+        == 1
+    )
+
+
+def test_s_unsorted_valid_seven_id_compare_cli_reaches_publisher(
+    tmp_path: Path, monkeypatch: __import__("pytest").MonkeyPatch
+) -> None:
+    """S: parser accepts arbitrary valid order and dispatches the publisher contract."""
+    from face_spike import local_preview_quality as command
+    from face_spike.preview_profile_comparison import ProfileComparison
+
+    received: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        command,
+        "compare_preview_profiles",
+        lambda *_args, problem_photo_ids: (
+            received.append(problem_photo_ids) or ProfileComparison(tmp_path / "out", "a" * 64, 7)
+        ),
+    )
+    ids = [f"{value:032x}" for value in reversed(range(1, 8))]
+    argv = [
+        "compare",
+        "--preview-corpus",
+        str(tmp_path),
+        "--sample",
+        str(tmp_path / "sample.json"),
+        "--yunet-model",
+        str(tmp_path / "yunet.onnx"),
+        "--sface-model",
+        str(tmp_path / "sface.onnx"),
+        "--output",
+        str(tmp_path / "out"),
+    ]
+    for identifier in ids:
+        argv.extend(("--problem-photo-id", identifier))
+    assert command.main(argv) == 0
+    assert received == [tuple(ids)]

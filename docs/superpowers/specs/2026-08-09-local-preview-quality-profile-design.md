@@ -126,7 +126,24 @@ failures before a local-only activation can be considered.
   preview-profile approval evidence.
 - A full replay cannot start until one exact profile is human-approved.
 - A full replay cannot activate unless its exact 17,043-photo preview cohort is terminal and
-  complete in the isolated local database.
+complete in the isolated local database.
+
+### Approved local replay selection — 2026-08-09
+
+The operator approved `detection_threshold=0.75` with the unchanged `current-v3` quality decision
+configuration after reviewing the preview-backed comparison. The selected evidence is frozen by:
+
+- preview manifest SHA-256
+  `62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879`;
+- comparison manifest SHA-256
+  `043ce5c02cd6df901f16096c2637c3a26b3b96171a9e9538b439cee12abca0a6`;
+- YuNet SHA-256 `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`;
+- SFace SHA-256 `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`.
+
+The replay uses a new immutable processor version `4` even though the decision algorithm and
+threshold values are unchanged. Reusing version `3` would collide with the prior original-backed
+generation and mutate its projection pointers. Version `3` remains a valid historical activation
+for rollback; version `4` is preview-backed only.
 
 ## Failure and rollback
 

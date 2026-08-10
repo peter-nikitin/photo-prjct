@@ -7,6 +7,7 @@ from datetime import date
 from math import sqrt
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import numpy as np
@@ -19,16 +20,25 @@ from selfie_search.services.submission import _face_embedding_generations
 
 from processing.models import (
     EventFaceClusterActivation,
+    EventFaceEmbeddingActivation,
     EventProcessingRun,
     FaceClusterCorpus,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
+    PhotoDerivative,
     PhotoFaceDetection,
+    PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
 )
-from processing.services.enrollment import FACE_EMBEDDING_CONFIGURATION
+from processing.services.enrollment import (
+    FACE_EMBEDDING_CONFIGURATION,
+    GENERATE_PREVIEW_CONFIGURATION,
+    FaceEmbeddingGenerationApproval,
+    accepted_preview_cohort_hash,
+    request_processor,
+)
 from processing.services.face_cluster_corpora import (
     activate_face_cluster_corpus,
     build_face_cluster_corpus,
@@ -36,6 +46,10 @@ from processing.services.face_cluster_corpora import (
 from processing.services.face_cohort import (
     CompatibleFaceEmbedding,
     load_compatible_face_embeddings,
+)
+from processing.services.face_quality import (
+    activate_face_embedding_generation,
+    candidate_face_embedding_generations,
 )
 
 
@@ -48,6 +62,7 @@ class FaceClusterCorpusTests(TestCase):
             self.generation(contract_version=1, processor_version=1),
             self.generation(contract_version=2, processor_version=2),
         )
+        self.candidate_generations = candidate_face_embedding_generations()
 
     def make_event(self, suffix: str) -> Event:
         return Event.objects.create(
@@ -60,7 +75,7 @@ class FaceClusterCorpusTests(TestCase):
         )
 
     def generation(self, *, contract_version: int, processor_version: int) -> dict[str, object]:
-        configuration = {**FACE_EMBEDDING_CONFIGURATION, "generation": contract_version}
+        configuration = FACE_EMBEDDING_CONFIGURATION
         return {
             "contract_version": contract_version,
             "processor_type": "face_embedding",
@@ -82,16 +97,14 @@ class FaceClusterCorpusTests(TestCase):
         processor_version: int = 1,
         model: str = "sface",
     ) -> FaceEmbedding:
-        configuration = next(
-            generation["configuration"]
-            for generation in self.generations
+        generation = next(
+            generation
+            for generation in (*self.generations, *self.candidate_generations)
             if generation["contract_version"] == contract_version
+            and generation["processor_version"] == processor_version
         )
-        configuration_hash = next(
-            generation["configuration_hash"]
-            for generation in self.generations
-            if generation["contract_version"] == contract_version
-        )
+        configuration = generation["configuration"]
+        configuration_hash = generation["configuration_hash"]
         photo = Photo.objects.create(
             id=photo_id,
             event=event,
@@ -152,20 +165,116 @@ class FaceClusterCorpusTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        return FaceEmbedding.objects.create(
+        embedding = FaceEmbedding.objects.create(
             detection=detection,
             model_version=model,
             vector=vector,
             metadata={},
         )
+        PhotoFaceEmbeddingProjection.objects.create(
+            photo=photo,
+            contract_version=contract_version,
+            processor_version=processor_version,
+            configuration_hash=configuration_hash,
+            accepted_attempt=attempt,
+        )
+        return embedding
 
     def make_runtime_compatible(self, corpus: FaceClusterCorpus) -> FaceClusterCorpus:
         FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
-            configuration={"face_embedding_generations": list(_face_embedding_generations())},
+            configuration={
+                "face_embedding_generations": list(_face_embedding_generations(self.event))
+            },
             model_version="sface",
             embedding_dimensions=128,
         )
         return FaceClusterCorpus.objects.get(pk=corpus.pk)
+
+    def candidate_approval(
+        self, *, event: Event, photo_count: int
+    ) -> FaceEmbeddingGenerationApproval:
+        configuration_hash = self.candidate_generations[0]["configuration_hash"]
+        assert isinstance(configuration_hash, str)
+        return FaceEmbeddingGenerationApproval(
+            event_slug=event.slug,
+            photo_count=photo_count,
+            configuration_hash=configuration_hash,
+            preview_manifest_hash="a" * 64,
+            local_preview_projection_hash="e" * 64,
+            accepted_preview_cohort_hash=accepted_preview_cohort_hash(event),
+            accepted_preview_crosswalk_hash="f" * 64,
+            accepted_preview_crosswalk_entry_count=photo_count,
+            accepted_preview_crosswalk_sha_mismatch_count=photo_count,
+            comparison_manifest_hash="d" * 64,
+            yunet_model_hash="b" * 64,
+            sface_model_hash="c" * 64,
+            job_count=photo_count,
+            attempt_count=photo_count,
+            projection_count=photo_count,
+            technical_failure_count=0,
+            kept_face_count=photo_count,
+            quality_rejected_face_count=0,
+            approved=True,
+        )
+
+    def publish_accepted_preview(self, photo: Photo) -> None:
+        state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+            },
+        )
+        assert state.current_job is not None
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=state.current_job.run,
+            job=state.current_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint=state.current_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=f"previews/{photo.pk}.jpg",
+            byte_size=8,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=1600,
+            oriented_source_height=1000,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save(
+            update_fields=[
+                "status",
+                "current_attempt",
+                "accepted_attempt",
+                "succeeded_at",
+                "updated_at",
+            ]
+        )
 
     def test_shared_loader_is_event_and_generation_scoped(self) -> None:
         accepted = self.make_embedding(event=self.event, photo_id="accepted", vector=[1.0, 0.0])
@@ -196,7 +305,7 @@ class FaceClusterCorpusTests(TestCase):
         corpus = build_face_cluster_corpus(
             event=self.event,
             version=1,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=0.1,
             representative_threshold=0.1,
@@ -212,12 +321,127 @@ class FaceClusterCorpusTests(TestCase):
         self.assertEqual(corpus.clusters.count(), 2)
         self.assertEqual(corpus.clusters.get(member_count=2).members.count(), 2)
 
+    def test_default_builder_freezes_the_events_active_generation_set(self) -> None:
+        generations = list(candidate_face_embedding_generations())
+        embedding = self.make_embedding(
+            event=self.event,
+            photo_id="active-candidate",
+            vector=[1.0] + [0.0] * 127,
+            contract_version=3,
+            processor_version=4,
+        )
+        candidate_job = embedding.detection.attempt.job
+        candidate_job.status = ProcessingJob.Status.SUCCEEDED
+        candidate_job.completed_at = timezone.now()
+        candidate_job.save(update_fields=["status", "completed_at"])
+        self.publish_accepted_preview(embedding.detection.attempt.photo)
+        approval = self.candidate_approval(event=self.event, photo_count=1)
+        with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
+            activate_face_embedding_generation(
+                event=self.event,
+                generations=self.candidate_generations,
+                approved_configuration_hash=approval.configuration_hash,
+                evaluation_report_hash=approval.comparison_manifest_hash,
+                review_confirmed=True,
+            )
+
+            corpus = build_face_cluster_corpus(
+                event=self.event,
+                version=1,
+                dimensions=128,
+                edge_threshold=0.1,
+                representative_threshold=0.1,
+                distance_block_size=2,
+                max_candidate_edges=100,
+            )
+
+        self.assertEqual(corpus.configuration["face_embedding_generations"], generations)
+
+    def test_default_builder_fails_closed_on_a_direct_unapproved_candidate_row(self) -> None:
+        generations = list(self.candidate_generations)
+        EventFaceEmbeddingActivation.objects.create(
+            event=self.event,
+            generations=generations,
+            generation_set_hash=hashlib.sha256(
+                json.dumps(generations, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            approved_configuration_hash=generations[0]["configuration_hash"],
+            approved_evaluation_report_hash="d" * 64,
+        )
+
+        with self.assertRaisesRegex(ValueError, "approved benchmark evidence"):
+            build_face_cluster_corpus(
+                event=self.event,
+                version=1,
+                dimensions=128,
+                edge_threshold=0.1,
+                representative_threshold=0.1,
+                distance_block_size=2,
+                max_candidate_edges=100,
+            )
+
+        self.assertFalse(FaceClusterCorpus.objects.filter(event=self.event).exists())
+
+    def test_explicit_candidate_build_is_isolated_and_malformed_sets_write_no_corpus(self) -> None:
+        candidate = self.make_embedding(
+            event=self.event,
+            photo_id="candidate-only",
+            vector=[1.0, 0.0],
+            contract_version=3,
+            processor_version=4,
+        )
+
+        corpus = build_face_cluster_corpus(
+            event=self.event,
+            version=1,
+            generations=self.candidate_generations,
+            dimensions=2,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+
+        self.assertEqual(corpus.input_count, 1)
+        self.assertEqual(
+            corpus.members.get().detection_id,
+            candidate.detection_id,
+        )
+        self.assertFalse(EventFaceEmbeddingActivation.objects.filter(event=self.event).exists())
+
+        mutated = dict(self.candidate_generations[0])
+        mutated["configuration_hash"] = "f" * 64
+        invalid_sets = (
+            (*self.generations, *self.candidate_generations),
+            self.generations[:1],
+            tuple(reversed(self.generations)),
+            (*self.candidate_generations, *self.candidate_generations),
+            (mutated,),
+        )
+        for offset, generations in enumerate(invalid_sets, start=2):
+            with self.subTest(generations=generations):
+                with self.assertRaisesRegex(ValueError, "generation set"):
+                    build_face_cluster_corpus(
+                        event=self.event,
+                        version=offset,
+                        generations=generations,
+                        dimensions=2,
+                        edge_threshold=0.1,
+                        representative_threshold=0.1,
+                        distance_block_size=2,
+                        max_candidate_edges=100,
+                    )
+                self.assertFalse(
+                    FaceClusterCorpus.objects.filter(event=self.event, version=offset).exists()
+                )
+        self.assertFalse(EventFaceEmbeddingActivation.objects.filter(event=self.event).exists())
+
     def test_repeated_builds_have_reproducible_configuration_and_membership_hashes(self) -> None:
         self.make_embedding(event=self.event, photo_id="hash-one", vector=[1.0, 0.0])
         first = build_face_cluster_corpus(
             event=self.event,
             version=1,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=0.1,
             representative_threshold=0.1,
@@ -227,7 +451,7 @@ class FaceClusterCorpusTests(TestCase):
         second = build_face_cluster_corpus(
             event=self.event,
             version=2,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=0.1,
             representative_threshold=0.1,
@@ -242,7 +466,7 @@ class FaceClusterCorpusTests(TestCase):
         first = build_face_cluster_corpus(
             event=self.event,
             version=1,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=0.1,
             representative_threshold=0.1,
@@ -253,7 +477,7 @@ class FaceClusterCorpusTests(TestCase):
         second = build_face_cluster_corpus(
             event=self.event,
             version=2,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=0.1,
             representative_threshold=0.1,
@@ -307,7 +531,7 @@ class FaceClusterCorpusTests(TestCase):
         corpus = build_face_cluster_corpus(
             event=self.event,
             version=1,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=float(thresholds["cluster_threshold"]),
             representative_threshold=float(thresholds["representative_threshold"]),
@@ -322,7 +546,16 @@ class FaceClusterCorpusTests(TestCase):
                     1,
                     bounding_box_type(0, 0, 10, 10),
                     "faces/projection.jpg#face-001.png",
-                    face_quality_type(0.9, 10.0, 0.1, 100.0, "accepted", ()),
+                    face_quality_type(
+                        algorithm_version="normalized-laplacian-v1",
+                        crop_size=112,
+                        confidence=0.9,
+                        minimum_side_px=10.0,
+                        relative_area=0.1,
+                        sharpness=100.0,
+                        decision="accepted",
+                        reasons=(),
+                    ),
                 ),
             ),
             np.asarray([[1.0, 0.0]], dtype=np.float32),
@@ -344,7 +577,7 @@ class FaceClusterCorpusTests(TestCase):
             evaluator_projection(
                 index,
                 source_parameters=thresholds,
-                generations=self.generations[:1],
+                generations=self.generations,
             ),
         )
 
@@ -355,7 +588,7 @@ class FaceClusterCorpusTests(TestCase):
             build_face_cluster_corpus(
                 event=self.event,
                 version=1,
-                generations=self.generations[:1],
+                generations=self.generations,
                 dimensions=2,
                 edge_threshold=0.0,
                 representative_threshold=0.1,
@@ -368,8 +601,6 @@ class FaceClusterCorpusTests(TestCase):
         self.assertFalse(corpus.clusters.exists())
 
     def test_loader_failure_leaves_a_durable_failed_corpus(self) -> None:
-        from unittest.mock import patch
-
         with patch(
             "processing.services.face_cluster_corpora.load_compatible_face_embeddings",
             side_effect=ValueError("loader unavailable"),
@@ -378,7 +609,7 @@ class FaceClusterCorpusTests(TestCase):
                 build_face_cluster_corpus(
                     event=self.event,
                     version=1,
-                    generations=self.generations[:1],
+                    generations=self.generations,
                     dimensions=2,
                     edge_threshold=0.1,
                     representative_threshold=0.1,
@@ -395,7 +626,7 @@ class FaceClusterCorpusTests(TestCase):
         first = build_face_cluster_corpus(
             event=self.event,
             version=1,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=0.1,
             representative_threshold=0.1,
@@ -405,7 +636,7 @@ class FaceClusterCorpusTests(TestCase):
         second = build_face_cluster_corpus(
             event=self.event,
             version=2,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=0.1,
             representative_threshold=0.1,
@@ -458,7 +689,7 @@ class FaceClusterCorpusTests(TestCase):
             build_face_cluster_corpus(
                 event=self.event,
                 version=1,
-                generations=self.generations[:1],
+                generations=self.generations,
                 dimensions=2,
                 edge_threshold=0.1,
                 representative_threshold=0.1,
@@ -496,7 +727,7 @@ class FaceClusterCorpusTests(TestCase):
         corpus = build_face_cluster_corpus(
             event=self.event,
             version=1,
-            generations=self.generations[:1],
+            generations=self.generations,
             dimensions=2,
             edge_threshold=0.1,
             representative_threshold=0.1,

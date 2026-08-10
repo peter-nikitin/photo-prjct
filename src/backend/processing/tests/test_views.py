@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import date, timedelta
 from unittest.mock import patch
@@ -7,7 +8,14 @@ from django.http import HttpResponse
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from ingestion.storage import StorageUnavailable
-from photo_worker.contracts import Claim
+from photo_worker.contracts import (
+    Claim,
+    ContractError,
+    FaceEmbeddingFace,
+    FaceEmbeddingResult,
+    InputFingerprint,
+)
+from photo_worker.face_quality import FaceQualityEvidence
 from picflow.models import Event, Photo
 from selfie_search.models import SelfieSearch, SelfieSearchJob
 from selfie_search.services.submission import _configuration
@@ -16,15 +24,22 @@ from selfie_search.storage import DownloadGrant, StoredTemporarySelfie
 from processing.contracts import AttemptCompletion
 from processing.models import (
     EventProcessingRun,
+    FaceEmbedding,
+    FaceProcessingAttemptArtifact,
     PhotoDerivative,
+    PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
     ProcessingLateReceipt,
 )
 from processing.services.enrollment import (
+    FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
+    FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
+    create_face_embedding_benchmark_run,
     request_capture_metadata,
+    request_face_embedding_candidate_enqueue,
     request_face_embedding_enqueue,
     request_processor,
 )
@@ -86,7 +101,7 @@ class WorkerApiTests(TestCase):
         } | overrides
 
     def face_claim_body(self, **overrides: object) -> dict[str, object]:
-        return self.claim_body(processor_type="face_embedding", processor_version=1, **overrides)
+        return self.claim_body(processor_type="face_embedding", processor_version=1) | overrides
 
     def preview_claim_body(self, **overrides: object) -> dict[str, object]:
         return self.claim_body(
@@ -170,6 +185,165 @@ class WorkerApiTests(TestCase):
             "warnings": [],
         } | overrides
 
+    def quality_configuration(self) -> dict[str, object]:
+        return {
+            "retry_policy": {
+                "max_attempts": 3,
+                "base_backoff_seconds": 30,
+                "max_backoff_seconds": 300,
+                "jitter_seconds": 5,
+                "lease_max_seconds": 300,
+            },
+            "max_cohort_size": 16,
+            "report_max_bytes": 262_144,
+            "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
+            "face_embedding": {
+                "model": "sface",
+                "max_faces": 32,
+                "detection_threshold": 0.75,
+                "normalize_embeddings": True,
+                "quality": {
+                    "algorithm_version": "normalized-laplacian-v1",
+                    "crop_size": 112,
+                    "minimum_face_px": 20,
+                    "severe_blur_threshold": 10.0,
+                    "borderline_blur_threshold": 20.0,
+                    "minimum_relative_area": 0.1,
+                    "minimum_confidence": 0.8,
+                },
+            },
+            "worker": {
+                "api_response_max_bytes": 131_072,
+                "concurrency": 1,
+                "heartbeat_interval_seconds": 30,
+                "lease_duration_seconds": 120,
+                "max_input_bytes": 50 * 1024 * 1024,
+                "max_pixels": 100_000_000,
+                "poll_min_delay_seconds": 5,
+                "terminal_result_max_bytes": 131_072,
+            },
+        }
+
+    def quality_evidence(
+        self, decision: str = "accepted", reasons: list[str] | None = None
+    ) -> dict[str, object]:
+        return {
+            "algorithm_version": "normalized-laplacian-v1",
+            "crop_size": 112,
+            "confidence": 0.95,
+            "minimum_side_px": 32.0,
+            "relative_area": 0.1,
+            "sharpness": 30.0 if decision == "accepted" else 5.0,
+            "decision": decision,
+            "reasons": reasons or [],
+        }
+
+    def quality_face(self, status: str, *, index: int = 0) -> dict[str, object]:
+        face: dict[str, object] = {
+            "index": index,
+            "bbox": [10.0, 20.0, 32.0, 32.0],
+            "confidence": 0.95,
+            "landmarks": [[1.0, 2.0]] * 5,
+            "status": status,
+        }
+        if status == "kept":
+            return face | {
+                "quality": self.quality_evidence(),
+                "embedding": [1.0] + [0.0] * 127,
+            }
+        if status == "quality_rejected":
+            return face | {
+                "quality": self.quality_evidence("quality_rejected", ["severe_blur"]),
+            }
+        return face | {"error_code": "invalid_face_quality"}
+
+    def quality_result_body(self, faces: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "model": "sface",
+            "face_count": len(faces),
+            "faces": faces,
+            "has_single_query_face_usable": sum(face["status"] == "kept" for face in faces) == 1,
+            "warnings": [],
+            "timings": {
+                "decode_ms": 1,
+                "model_load_ms": 2,
+                "detect_ms": 3,
+                "embed_ms": 4,
+                "total_ms": 10,
+            },
+        }
+
+    def request_quality_face_job(self, identifier: str) -> dict[str, object]:
+        key_suffix = hashlib.sha256(identifier.encode()).hexdigest()[:32]
+        request_processor(
+            self.photo(identifier, original_key=f"originals/{key_suffix}"),
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=self.quality_configuration(),
+        )
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.face_claim_body(contract_version=3, processor_version=3),
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()["job"]
+
+    def publish_preview(self, photo: Photo) -> PhotoDerivative:
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": "image/jpeg",
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 3200,
+                "pixel_height": 2000,
+            },
+        )
+        assert state.current_job is not None
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=state.current_job.run,
+            job=state.current_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=state.current_job.configuration,
+            input_fingerprint=state.current_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        derivative = PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=f"derivatives/previews/{photo.id}/preview-small-v1/"
+            f"{attempt.id}-{'a' * 64}.jpg",
+            byte_size=1024,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=3200,
+            oriented_source_height=2000,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save(update_fields=["status", "accepted_attempt", "succeeded_at", "updated_at"])
+        return derivative
+
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_claim_grants_only_the_queued_job_and_unsupported_contract_polls_empty(
         self, grant
@@ -213,6 +387,16 @@ class WorkerApiTests(TestCase):
             original_key="originals/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
         request_face_embedding_enqueue(face_photo)
+        benchmark_photo = self.photo(
+            "claim-contract-benchmark",
+            original_key="originals/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        )
+        create_face_embedding_benchmark_run(
+            event=self.event,
+            photos=[benchmark_photo],
+            label="baseline",
+            source_run_id=None,
+        )
 
         identities = (
             self.claim_body(processor_type="selfie_query"),
@@ -224,6 +408,11 @@ class WorkerApiTests(TestCase):
                 processor_type="face_embedding",
                 processor_version=2,
             ),
+            self.claim_body(
+                contract_version=3,
+                processor_type="face_embedding_benchmark",
+                processor_version=1,
+            ),
         )
 
         for request in identities:
@@ -231,6 +420,291 @@ class WorkerApiTests(TestCase):
 
             self.assertEqual(response.status_code, 200)
             Claim.from_response(response.json())
+
+    @patch("processing.views.ExactPreviewStorage.create_download_grant")
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_v3_original_and_preview_candidates_cross_the_exact_worker_boundary(
+        self, original_grant, preview_grant
+    ) -> None:
+        """Catch Django widening or dropping either strict v3 input/result union member."""
+        for grant, suffix in ((original_grant, "original"), (preview_grant, "preview")):
+            grant.return_value.url = f"https://storage.example.test/{suffix}?secret"
+            grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        original = self.photo(
+            "quality-original", original_key="originals/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        )
+        preview_photo = self.photo(
+            "quality-preview", original_key="originals/cccccccccccccccccccccccccccccccc"
+        )
+        derivative = self.publish_preview(preview_photo)
+        request_processor(
+            original,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+        )
+        request_processor(
+            preview_photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=3,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+            input_fingerprint={
+                "object_key": derivative.final_key,
+                "object_size": derivative.byte_size,
+                "object_content_type": derivative.content_type,
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": derivative.width,
+                "pixel_height": derivative.height,
+            },
+        )
+
+        for expected_photo, expected_geometry in (
+            (original, None),
+            (
+                preview_photo,
+                {
+                    "coordinate_space": "preview-small-v1",
+                    "pixel_width": 1600,
+                    "pixel_height": 1000,
+                    "oriented_source_width": 3200,
+                    "oriented_source_height": 2000,
+                },
+            ),
+        ):
+            response = self.post(
+                "/internal/photo-processing/v1/claim",
+                self.face_claim_body(contract_version=3, processor_version=3),
+            )
+
+            self.assertEqual(response.status_code, 200)
+            claim = Claim.from_response(response.json())
+            assert claim.job is not None
+            self.assertEqual(claim.job.photo_id, expected_photo.id)
+            self.assertEqual(claim.job.input_geometry, expected_geometry)
+            if expected_geometry is not None:
+                self.assertIsInstance(claim.job.input_fingerprint, InputFingerprint)
+                assert isinstance(claim.job.input_fingerprint, InputFingerprint)
+                self.assertEqual(claim.job.input_fingerprint.object_key, derivative.final_key)
+            result = FaceEmbeddingResult(
+                model="sface",
+                faces=(
+                    FaceEmbeddingFace(
+                        index=0,
+                        bbox=(10.0, 20.0, 32.0, 32.0),
+                        confidence=0.95,
+                        landmarks=((1.0, 2.0),) * 5,
+                        embedding=(1.0,) + (0.0,) * 127,
+                        quality=FaceQualityEvidence(
+                            algorithm_version="normalized-laplacian-v1",
+                            crop_size=112,
+                            confidence=0.95,
+                            minimum_side_px=32.0,
+                            relative_area=0.1,
+                            sharpness=60.0,
+                            decision="accepted",
+                            reasons=(),
+                        ),
+                    ),
+                ),
+                has_single_query_face_usable=True,
+                warnings=(),
+                timings={
+                    "decode_ms": 1,
+                    "model_load_ms": 2,
+                    "detect_ms": 3,
+                    "embed_ms": 4,
+                    "total_ms": 10,
+                },
+                input_geometry=claim.job.input_geometry,
+            ).as_payload()
+            completed = self.post(
+                f"/internal/photo-processing/v1/attempts/{claim.job.attempt_id}/complete",
+                self.terminal_body(
+                    response.json()["job"],
+                    contract_version=3,
+                    processor_type="face_embedding",
+                    processor_version=3,
+                    result=result,
+                ),
+            )
+
+            self.assertEqual(completed.status_code, 200)
+            detection = PhotoFaceDetection.objects.get(attempt_id=claim.job.attempt_id)
+            if expected_geometry is None:
+                self.assertNotIn("coordinate_space", detection.geometry)
+            else:
+                self.assertEqual(
+                    detection.geometry,
+                    {
+                        "bbox": [10.0, 20.0, 32.0, 32.0],
+                        "landmarks": [[1.0, 2.0]] * 5,
+                        "model": "sface",
+                        **expected_geometry,
+                        "scale_x": 2.0,
+                        "scale_y": 2.0,
+                    },
+                )
+
+    @patch("processing.views.ExactPreviewStorage.create_download_grant")
+    def test_v4_preview_completion_validates_persists_and_projects_preview_geometry(
+        self, preview_grant
+    ) -> None:
+        preview_grant.return_value.url = "https://storage.example.test/preview?secret"
+        preview_grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        photo = self.photo(
+            "quality-v4-preview",
+            original_key="originals/dddddddddddddddddddddddddddddddd",
+        )
+        self.publish_preview(photo)
+        request_face_embedding_candidate_enqueue(photo)
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.face_claim_body(contract_version=3, processor_version=4),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        claim = Claim.from_response(response.json())
+        assert claim.job is not None
+        self.assertEqual(claim.job.processor_version, 4)
+        self.assertEqual(
+            claim.job.input_geometry,
+            {
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+            },
+        )
+        result = FaceEmbeddingResult(
+            model="sface",
+            faces=(
+                FaceEmbeddingFace(
+                    index=0,
+                    bbox=(10.0, 20.0, 32.0, 32.0),
+                    confidence=0.95,
+                    landmarks=((1.0, 2.0),) * 5,
+                    embedding=(1.0,) + (0.0,) * 127,
+                    quality=FaceQualityEvidence(
+                        algorithm_version="normalized-laplacian-v1",
+                        crop_size=112,
+                        confidence=0.95,
+                        minimum_side_px=32.0,
+                        relative_area=0.1,
+                        sharpness=60.0,
+                        decision="accepted",
+                        reasons=(),
+                    ),
+                ),
+            ),
+            has_single_query_face_usable=True,
+            warnings=(),
+            timings={
+                "decode_ms": 1,
+                "model_load_ms": 2,
+                "detect_ms": 3,
+                "embed_ms": 4,
+                "total_ms": 10,
+            },
+            input_geometry=claim.job.input_geometry,
+        ).as_payload()
+
+        completed = self.post(
+            f"/internal/photo-processing/v1/attempts/{claim.job.attempt_id}/complete",
+            self.terminal_body(
+                response.json()["job"],
+                contract_version=3,
+                processor_type="face_embedding",
+                processor_version=4,
+                result=result,
+            ),
+        )
+
+        self.assertEqual(completed.status_code, 200)
+        detection = PhotoFaceDetection.objects.get(attempt_id=claim.job.attempt_id)
+        self.assertEqual(detection.geometry["coordinate_space"], "preview-small-v1")
+        self.assertEqual(detection.geometry["scale_x"], 2.0)
+        projection = detection.attempt.photo.face_embedding_projections.get(processor_version=4)
+        self.assertEqual(str(projection.accepted_attempt_id), claim.job.attempt_id)
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_v4_claim_rejects_an_original_fingerprint_before_issuing_a_grant(self, grant) -> None:
+        photo = self.photo(
+            "quality-v4-original",
+            original_key="originals/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        )
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=4,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+        )
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.face_claim_body(contract_version=3, processor_version=4),
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["error"]["code"], "input_invariant")
+        grant.assert_not_called()
+
+    @patch("processing.views.ExactPreviewStorage.create_download_grant")
+    def test_v3_benchmark_preview_is_rejected_before_a_grant_or_worker_claim(
+        self, preview_grant
+    ) -> None:
+        """Catch contract-version-only parsing that widens original-only benchmark input."""
+        preview_grant.return_value.url = "https://storage.example.test/preview?secret"
+        preview_grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        photo = self.photo(
+            "benchmark-preview", original_key="originals/dddddddddddddddddddddddddddddddd"
+        )
+        derivative = self.publish_preview(photo)
+        request_processor(
+            photo,
+            processor_type="face_embedding_benchmark",
+            contract_version=3,
+            processor_version=1,
+            configuration=FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
+            input_fingerprint={
+                "object_key": derivative.final_key,
+                "object_size": derivative.byte_size,
+                "object_content_type": derivative.content_type,
+                "object_etag": None,
+                "media_kind": derivative.variant,
+                "pixel_width": derivative.width,
+                "pixel_height": derivative.height,
+            },
+        )
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.claim_body(
+                contract_version=3,
+                processor_type="face_embedding_benchmark",
+                processor_version=1,
+            ),
+        )
+
+        with self.assertRaises(ContractError):
+            Claim.from_response(response.json())
+        self.assertEqual(
+            (response.status_code, response.json()["error"]["code"]),
+            (500, "input_invariant"),
+        )
+        preview_grant.assert_not_called()
+        self.assertEqual(
+            ProcessingJob.objects.get(processor_type="face_embedding_benchmark").status,
+            ProcessingJob.Status.QUEUED,
+        )
+        self.assertFalse(
+            ProcessingAttempt.objects.filter(processor_type="face_embedding_benchmark").exists()
+        )
 
     @patch("processing.views.ExactPreviewStorage")
     def test_preview_face_claim_grants_the_accepted_preview_derivative(
@@ -568,6 +1042,94 @@ class WorkerApiTests(TestCase):
         self.assertEqual(valid_complete.status_code, 200)
         self.assertEqual(invalid_complete.status_code, 400)
         self.assertEqual(invalid_complete.json()["error"]["code"], "invalid_result")
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_v3_completion_accepts_kept_and_quality_rejected_terminal_forms(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+
+        for index, status in enumerate(("kept", "quality_rejected")):
+            job = self.request_quality_face_job(f"quality-valid-{index}")
+            response = self.post(
+                f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+                self.terminal_body(
+                    job,
+                    contract_version=3,
+                    processor_type="face_embedding",
+                    processor_version=3,
+                    result=self.quality_result_body([self.quality_face(status)]),
+                ),
+            )
+
+            self.assertEqual(response.status_code, 200)
+            detection = PhotoFaceDetection.objects.get(attempt_id=job["attempt_id"])
+            self.assertEqual(detection.status, status)
+            self.assertEqual(
+                FaceEmbedding.objects.filter(detection=detection).exists(), status == "kept"
+            )
+
+    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    def test_v3_completion_rejects_contradictory_or_invalid_quality_atomically(self, grant) -> None:
+        grant.return_value.url = "https://storage.example.test/object?secret"
+        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
+        invalid_faces = []
+        accepted_without_quality = self.quality_face("kept")
+        accepted_without_quality.pop("quality")
+        invalid_faces.append(accepted_without_quality)
+        rejected_without_quality = self.quality_face("quality_rejected")
+        rejected_without_quality.pop("quality")
+        invalid_faces.append(rejected_without_quality)
+        rejected_with_invalid_quality = self.quality_face("quality_rejected")
+        quality = rejected_with_invalid_quality["quality"]
+        assert isinstance(quality, dict)
+        quality["sharpness"] = 1_040_401.0
+        invalid_faces.append(rejected_with_invalid_quality)
+        invalid_faces.append(
+            self.quality_face("quality_rejected") | {"embedding": [1.0] + [0.0] * 127}
+        )
+        accepted_without_vector = self.quality_face("kept")
+        accepted_without_vector.pop("embedding")
+        invalid_faces.append(accepted_without_vector)
+        accepted_measurements_claimed_rejected = self.quality_face("quality_rejected")
+        accepted_quality = accepted_measurements_claimed_rejected["quality"]
+        assert isinstance(accepted_quality, dict)
+        accepted_quality["sharpness"] = 30.0
+        invalid_faces.append(accepted_measurements_claimed_rejected)
+        rejected_measurements_claimed_accepted = self.quality_face("kept")
+        rejected_quality = rejected_measurements_claimed_accepted["quality"]
+        assert isinstance(rejected_quality, dict)
+        rejected_quality["sharpness"] = 5.0
+        invalid_faces.append(rejected_measurements_claimed_accepted)
+        technical_failure_with_rejected_measurements = self.quality_face("technical_failed") | {
+            "quality": self.quality_evidence(),
+            "error_code": "model_inference_error",
+        }
+        technical_quality = technical_failure_with_rejected_measurements["quality"]
+        assert isinstance(technical_quality, dict)
+        technical_quality["sharpness"] = 5.0
+        invalid_faces.append(technical_failure_with_rejected_measurements)
+
+        for index, face in enumerate(invalid_faces):
+            job = self.request_quality_face_job(f"quality-invalid-{index}")
+            response = self.post(
+                f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+                self.terminal_body(
+                    job,
+                    contract_version=3,
+                    processor_type="face_embedding",
+                    processor_version=3,
+                    result=self.quality_result_body([face]),
+                ),
+            )
+
+            self.assertEqual(
+                (response.status_code, response.json()["error"]["code"]),
+                (400, "invalid_result"),
+            )
+            attempt = ProcessingAttempt.objects.get(pk=job["attempt_id"])
+            self.assertEqual(attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
+            self.assertFalse(FaceProcessingAttemptArtifact.objects.filter(attempt=attempt).exists())
+            self.assertFalse(PhotoFaceDetection.objects.filter(attempt=attempt).exists())
 
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_fail_rejects_unknown_processor_contract(self, grant) -> None:
@@ -1077,7 +1639,9 @@ class SelfieWorkerApiTests(TestCase):
             end_date=date.today(),
             city="Moscow",
         )
-        configuration = _configuration(content_type="image/jpeg", content_size=1024)
+        configuration = _configuration(
+            event=self.event, content_type="image/jpeg", content_size=1024
+        )
         self.search = SelfieSearch.objects.create(
             event=self.event,
             public_token_digest="b" * 64,

@@ -11,6 +11,7 @@ from photo_worker.face_embedding import (
     extract_face_embeddings,
     extract_selfie_embedding,
 )
+from photo_worker.face_quality import FaceQualityError, FaceQualityEvidence, FaceQualityThresholds
 from PIL import Image
 
 
@@ -303,6 +304,208 @@ def _detection(*, size: float = 32.0) -> dict[str, object]:
         "landmarks": ((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
         "score": 0.99,
     }
+
+
+def _quality_thresholds() -> FaceQualityThresholds:
+    return FaceQualityThresholds(
+        algorithm_version="normalized-laplacian-v1",
+        crop_size=112,
+        minimum_face_px=20,
+        severe_blur_threshold=10.0,
+        borderline_blur_threshold=20.0,
+        minimum_relative_area=0.1,
+        minimum_confidence=0.8,
+    )
+
+
+def _quality(decision: str) -> FaceQualityEvidence:
+    return FaceQualityEvidence(
+        algorithm_version="normalized-laplacian-v1",
+        crop_size=112,
+        confidence=0.99,
+        minimum_side_px=30.0,
+        relative_area=0.2,
+        sharpness=30.0,
+        decision=decision,
+        reasons=("severe_blur",) if decision == "quality_rejected" else (),
+    )
+
+
+def test_quality_rejection_skips_sface_and_keeps_explicit_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A rejected gallery detection must never reach SFace or carry a vector."""
+    source = tmp_path / "photo.jpg"
+    write_jpeg(source)
+    _selfie_model_mocks(monkeypatch, DummyImage(100, 100), [_detection(size=30)])
+    monkeypatch.setattr(
+        "photo_worker.face_embedding.evaluate_face_quality",
+        lambda *_args, **_kwargs: _quality("quality_rejected"),
+    )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._extract_embedding",
+        lambda *_args, **_kwargs: pytest.fail("SFace must not run for quality rejection"),
+    )
+
+    result = extract_face_embeddings(
+        source, max_bytes=1024, quality_thresholds=_quality_thresholds()
+    )
+
+    assert result.faces[0].status == "quality_rejected"
+    assert result.faces[0].quality == _quality("quality_rejected")
+    assert result.faces[0].embedding is None
+    assert result.faces[0].error_code is None
+
+
+def test_quality_gate_keeps_accepted_vectors_and_isolates_face_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One technical SFace failure must not discard a successful sibling face."""
+    source = tmp_path / "photo.jpg"
+    write_jpeg(source)
+    _selfie_model_mocks(
+        monkeypatch,
+        DummyImage(100, 100),
+        [
+            _detection(size=30),
+            {**_detection(size=31), "bbox": (50.0, 20.0, 31.0, 31.0)},
+            {**_detection(size=32), "bbox": (20.0, 50.0, 32.0, 32.0)},
+        ],
+    )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding.evaluate_face_quality",
+        lambda *_args, **_kwargs: _quality("accepted"),
+    )
+    calls = iter((FaceEmbeddingError("model_inference_error"), tuple(2.0 for _ in range(128))))
+
+    def extract(*_args: object, **_kwargs: object) -> tuple[float, ...]:
+        result = next(calls)
+        if isinstance(result, FaceEmbeddingError):
+            raise result
+        return result
+
+    monkeypatch.setattr("photo_worker.face_embedding._extract_embedding", extract)
+
+    result = extract_face_embeddings(
+        source, max_bytes=1024, max_faces=2, quality_thresholds=_quality_thresholds()
+    )
+
+    assert result.warnings == ("faces_truncated", "face_embedding_failed")
+    assert len(result.faces) == 2
+    assert result.faces[0].status == "technical_failed"
+    assert result.faces[0].embedding is None
+    assert result.faces[0].error_code == "model_inference_error"
+    assert result.faces[1].status == "kept"
+    assert result.faces[1].embedding == tuple(2.0 for _ in range(128))
+
+
+def test_quality_measurement_failure_is_a_technical_record_without_a_vector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Converting an invalid calculation into a quality rejection would hide a processor error."""
+    source = tmp_path / "photo.jpg"
+    write_jpeg(source)
+    _selfie_model_mocks(monkeypatch, DummyImage(100, 100), [_detection(size=30)])
+    monkeypatch.setattr(
+        "photo_worker.face_embedding.evaluate_face_quality",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FaceQualityError()),
+    )
+
+    result = extract_face_embeddings(
+        source, max_bytes=1024, quality_thresholds=_quality_thresholds()
+    )
+
+    assert result.faces[0].status == "technical_failed"
+    assert result.faces[0].error_code == "invalid_face_quality"
+    assert result.as_payload()["faces"][0] == {
+        "index": 0,
+        "bbox": [1.0, 2.0, 30.0, 30.0],
+        "confidence": 0.99,
+        "landmarks": [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0], [5.0, 5.0]],
+        "status": "technical_failed",
+        "error_code": "invalid_face_quality",
+    }
+
+
+def test_face_record_rejects_every_contradictory_v3_state() -> None:
+    """A terminal record must not combine acceptance, rejection, vector, and error states."""
+    accepted = _quality("accepted")
+    rejected = _quality("quality_rejected")
+    vector = tuple(2.0 for _ in range(128))
+    shared = {
+        "index": 0,
+        "bbox": (1.0, 2.0, 30.0, 30.0),
+        "confidence": 0.99,
+        "landmarks": ((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
+    }
+    contradictory_states = (
+        {"status": "quality_rejected", "quality": accepted, "embedding": None, "error_code": None},
+        {"status": "kept", "quality": rejected, "embedding": vector, "error_code": None},
+        {
+            "status": "quality_rejected",
+            "quality": rejected,
+            "embedding": vector,
+            "error_code": None,
+        },
+        {
+            "status": "quality_rejected",
+            "quality": rejected,
+            "embedding": None,
+            "error_code": "model_inference_error",
+        },
+        {
+            "status": "technical_failed",
+            "quality": accepted,
+            "embedding": vector,
+            "error_code": "model_inference_error",
+        },
+        {"status": "technical_failed", "quality": None, "embedding": None, "error_code": None},
+        {"status": "kept", "quality": accepted, "embedding": None, "error_code": None},
+    )
+
+    for state in contradictory_states:
+        with pytest.raises(ValueError):
+            FaceEmbeddingFace(**shared, **state)
+
+
+def test_face_record_retains_legacy_and_intended_terminal_forms() -> None:
+    """State validation must retain the v1/v2 kept record and both v3 technical forms."""
+    accepted = _quality("accepted")
+    rejected = _quality("quality_rejected")
+    vector = tuple(2.0 for _ in range(128))
+    shared = {
+        "index": 0,
+        "bbox": (1.0, 2.0, 30.0, 30.0),
+        "confidence": 0.99,
+        "landmarks": ((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
+    }
+
+    records = (
+        FaceEmbeddingFace(**shared, embedding=vector),
+        FaceEmbeddingFace(**shared, status="kept", quality=accepted, embedding=vector),
+        FaceEmbeddingFace(
+            **shared,
+            status="quality_rejected",
+            quality=rejected,
+            embedding=None,
+        ),
+        FaceEmbeddingFace(
+            **shared,
+            status="technical_failed",
+            quality=accepted,
+            embedding=None,
+            error_code="model_inference_error",
+        ),
+        FaceEmbeddingFace(
+            **shared,
+            status="technical_failed",
+            quality=None,
+            embedding=None,
+            error_code="invalid_face_quality",
+        ),
+    )
+
+    assert len(records) == 5
 
 
 def test_extract_selfie_embedding_requires_exactly_one_face_and_normalizes_vector(

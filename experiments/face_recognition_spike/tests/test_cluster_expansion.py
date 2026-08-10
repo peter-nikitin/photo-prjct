@@ -67,6 +67,7 @@ def _benchmark() -> tuple[FinalBenchmark, FaceIndex, tuple[FaceCluster, ...]]:
                     face_id,
                     filename,
                     f"faces/{face_id}.png",
+                    "f" * 64,
                     prefix,
                     "ok",
                     0.9,
@@ -81,7 +82,16 @@ def _benchmark() -> tuple[FinalBenchmark, FaceIndex, tuple[FaceCluster, ...]]:
                     1,
                     BoundingBox(0, 0, 10, 10),
                     f"faces/{face_id}.png",
-                    FaceQuality(0.9, 10.0, 0.1, 100.0, "accepted", ()),
+                    FaceQuality(
+                        "normalized-laplacian-v1",
+                        112,
+                        0.9,
+                        10.0,
+                        0.1,
+                        100.0,
+                        "accepted",
+                        (),
+                    ),
                 )
             )
             vectors.append(vector.tolist())

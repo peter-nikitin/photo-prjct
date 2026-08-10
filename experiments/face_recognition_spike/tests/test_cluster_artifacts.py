@@ -55,7 +55,16 @@ def _face(
         crop_path=f"faces/{hashlib.sha256(face_id.encode()).hexdigest()}.png",
         status=status,
         embedding=(None if vector is None else FaceEmbedding(np.asarray(vector, dtype=np.float32))),
-        quality=FaceQuality(0.875, 8.0, 1 / 12, 100.0, "accepted", ()),
+        quality=FaceQuality(
+            "normalized-laplacian-v1",
+            112,
+            0.875,
+            8.0,
+            1 / 12,
+            100.0,
+            "accepted",
+            (),
+        ),
     )
 
 
@@ -79,6 +88,7 @@ def _run(
         yunet_model=yunet,
         sface_model=sface,
         parameters={
+            "borderline_blur_threshold": 50.0,
             "cluster_threshold": 0.363,
             "detection_threshold": 0.75,
             "distance_block_size": 512,
@@ -86,7 +96,12 @@ def _run(
             "max_image_dimension": 12000,
             "max_image_pixels": 100_000_000,
             "min_face_px": 32,
+            "minimum_confidence": 0.82,
+            "minimum_relative_area": 0.0009,
+            "quality_algorithm_version": "normalized-laplacian-v1",
+            "quality_crop_size": 112,
             "representative_threshold": 0.363,
+            "severe_blur_threshold": 25.0,
         },
         analyses=analyses,
         clusters=clusters,
@@ -193,6 +208,16 @@ def test_cluster_run_publishes_complete_deterministic_artifact_contract(tmp_path
     assert faces_payload["images"][0]["faces"][0]["confidence"] == 0.875
     assert faces_payload["images"][0]["faces"][0]["quality"]["decision"] == "accepted"
     assert faces_payload["images"][0]["faces"][0]["quality"]["reasons"] == []
+    assert set(faces_payload["images"][0]["faces"][0]["quality"]) == {
+        "algorithm_version",
+        "confidence",
+        "crop_size",
+        "decision",
+        "minimum_side_px",
+        "reasons",
+        "relative_area",
+        "sharpness",
+    }
     assert faces_payload["images"][1]["faces"][0]["status"] == "alignment_failed"
     assert clusters_payload["clusters"][0]["members"][0]["distance_to_representative"] == 0.0
     assert len(clusters_payload["clusters"]) == 2
@@ -206,6 +231,16 @@ def test_cluster_run_publishes_complete_deterministic_artifact_contract(tmp_path
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["photo_materialization"] == {"copy": 0, "hard_link": 2}
     assert manifest["parameters"]["input_photos_basename"] == "photos"
+    assert set(manifest["source"]) == {
+        "faces_sha256",
+        "generation_sha256",
+        "inventory_sha256",
+        "media_sha256",
+    }
+    assert [item["filename"] for item in manifest["source"]["media_sha256"]] == [
+        "group.jpg",
+        "solo.jpg",
+    ]
     assert set(manifest["model_hashes"]) == {"sface", "yunet"}
     assert manifest["peak_memory_bytes"] == 123
 

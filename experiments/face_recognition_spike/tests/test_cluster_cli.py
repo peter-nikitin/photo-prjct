@@ -157,9 +157,10 @@ def test_cluster_uses_approved_defaults(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert config.image_limit is None
     assert config.max_image_dimension == 12000
     assert config.max_image_pixels == 100_000_000
-    assert config.minimum_quality_confidence == 0.82
-    assert config.minimum_relative_face_area == 0.0009
-    assert config.minimum_face_sharpness == 50.0
+    assert config.severe_blur_threshold == 25.0
+    assert config.borderline_blur_threshold == 50.0
+    assert config.minimum_relative_area == 0.0009
+    assert config.minimum_confidence == 0.82
 
 
 @pytest.mark.parametrize(
@@ -174,11 +175,12 @@ def test_cluster_uses_approved_defaults(monkeypatch: pytest.MonkeyPatch, tmp_pat
         ("--image-limit", "0"),
         ("--max-image-dimension", "0"),
         ("--max-image-pixels", "0"),
-        ("--minimum-quality-confidence", "nan"),
-        ("--minimum-quality-confidence", "1.01"),
-        ("--minimum-relative-face-area", "-0.1"),
-        ("--minimum-relative-face-area", "1.01"),
-        ("--minimum-face-sharpness", "-0.1"),
+        ("--minimum-confidence", "nan"),
+        ("--minimum-confidence", "1.01"),
+        ("--minimum-relative-area", "-0.1"),
+        ("--minimum-relative-area", "1.01"),
+        ("--severe-blur-threshold", "-0.1"),
+        ("--borderline-blur-threshold", "25.0"),
     ],
 )
 def test_invalid_cluster_configuration_is_rejected_before_orchestration(
@@ -258,9 +260,10 @@ def test_run_cluster_orchestrates_unlabelled_all_face_pipeline(
             min_face_px=1,
             cluster_threshold=0.1,
             representative_threshold=0.1,
-            minimum_quality_confidence=0.0,
-            minimum_relative_face_area=0.0,
-            minimum_face_sharpness=0.0,
+            severe_blur_threshold=0.0,
+            borderline_blur_threshold=1.0,
+            minimum_relative_area=0.0,
+            minimum_confidence=0.0,
         )
     )
 

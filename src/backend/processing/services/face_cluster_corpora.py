@@ -111,11 +111,13 @@ def build_face_cluster_corpus(
     select a complete corpus.
     """
     if generations is None:
-        generations = _default_generations()
+        generations = _default_generations(event)
+    from processing.services.face_quality import validate_face_embedding_generations
+
+    normalized_generations = validate_face_embedding_generations(generations)
     if dimensions is None:
         configured_dimensions = getattr(settings, "SELFIE_SEARCH_EMBEDDING_DIMENSIONS", 128)
         dimensions = configured_dimensions if isinstance(configured_dimensions, int) else 128
-    normalized_generations = tuple(dict(generation) for generation in generations)
     configuration = corpus_configuration(
         algorithm_version=algorithm_version,
         generations=normalized_generations,
@@ -254,34 +256,10 @@ def _mark_failed(corpus: FaceClusterCorpus, error: Exception) -> None:
     )
 
 
-def _default_generations() -> tuple[Mapping[str, object], ...]:
-    from processing.services.enrollment import (
-        CONTRACT_VERSION,
-        FACE_EMBEDDING_CONFIGURATION,
-        FACE_EMBEDDING_PROCESSOR_VERSION,
-        PREVIEW_CONTRACT_VERSION,
-        PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-    )
+def _default_generations(event: Event) -> tuple[Mapping[str, object], ...]:
+    from processing.services.face_quality import active_face_embedding_generations
 
-    configuration_hash = canonical_json_hash(FACE_EMBEDDING_CONFIGURATION)
-    return (
-        {
-            "contract_version": CONTRACT_VERSION,
-            "processor_type": FACE_EMBEDDING_PROCESSOR,
-            "processor_version": FACE_EMBEDDING_PROCESSOR_VERSION,
-            "configuration": FACE_EMBEDDING_CONFIGURATION,
-            "configuration_hash": configuration_hash,
-            "model": FACE_EMBEDDING_CONFIGURATION["face_embedding"]["model"],  # type: ignore[index]
-        },
-        {
-            "contract_version": PREVIEW_CONTRACT_VERSION,
-            "processor_type": FACE_EMBEDDING_PROCESSOR,
-            "processor_version": PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-            "configuration": FACE_EMBEDDING_CONFIGURATION,
-            "configuration_hash": configuration_hash,
-            "model": FACE_EMBEDDING_CONFIGURATION["face_embedding"]["model"],  # type: ignore[index]
-        },
-    )
+    return active_face_embedding_generations(event)
 
 
 def _model_version(generations: Sequence[Mapping[str, object]]) -> str:
@@ -342,7 +320,7 @@ def _membership_hash(clusters: Sequence[Any]) -> str:
 def _runtime_compatible(corpus: FaceClusterCorpus) -> bool:
     from selfie_search.services.submission import _face_embedding_generations
 
-    generations = list(_face_embedding_generations())
+    generations = list(_face_embedding_generations(corpus.event))
     return (
         corpus.model_version == getattr(settings, "SELFIE_SEARCH_EMBEDDING_MODEL", None)
         and corpus.embedding_dimensions

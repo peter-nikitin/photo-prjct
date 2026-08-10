@@ -11,6 +11,8 @@ from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from photo_worker.face_quality import FaceQualityError, FaceQualityEvidence, FaceQualityThresholds
+
 CONTRACT_VERSION = 1
 PROCESSOR_TYPE = "capture_metadata"
 CAPTURE_METADATA_PROCESSOR_VERSION = 2
@@ -18,6 +20,8 @@ PROCESSOR_VERSION = CAPTURE_METADATA_PROCESSOR_VERSION
 PROCESSOR_TYPE_FACE_EMBEDDING = "face_embedding"
 PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK = "face_embedding_benchmark"
 PROCESSOR_VERSION_FACE_EMBEDDING = 1
+HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 3
+PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 4
 PREVIEW_CONTRACT_VERSION = 2
 PROCESSOR_TYPE_GENERATE_PREVIEW = "generate_preview"
 PROCESSOR_VERSION_GENERATE_PREVIEW = 1
@@ -116,6 +120,12 @@ FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
 }
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _SELFIE_KEY = re.compile(r"selfie-search/[0-9a-f]{32}")
+_ORIGINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
+_PUBLISHED_PREVIEW_KEY = re.compile(
+    r"derivatives/previews/(?P<photo_id>[A-Za-z0-9_-]{1,32})/preview-small-v1/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+    r"[0-9a-f]{64}\.jpg"
+)
 _EXIF_FIELDS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
 FAILURE_RETRYABLE = {
     "decode_failed": False,
@@ -169,17 +179,26 @@ class InputFingerprint:
 
     @classmethod
     def from_value(cls, value: object, *, contract_version: int) -> InputFingerprint:
-        fields = {
+        original_fields = {
             "original_key",
             "original_size",
             "original_content_type",
             "verified_source_etag",
             "version_evidence",
         }
+        generic_fields = {
+            "object_key",
+            "object_size",
+            "object_content_type",
+            "object_etag",
+            "media_kind",
+            "pixel_width",
+            "pixel_height",
+        }
         if not isinstance(value, dict) or not _bounded_json(value):
             raise ContractError("invalid input fingerprint")
-        if contract_version in {CONTRACT_VERSION, 3}:
-            if set(value) != fields:
+        if set(value) == original_fields:
+            if contract_version not in {CONTRACT_VERSION, 3}:
                 raise ContractError("invalid input fingerprint")
             key = value["original_key"]
             size = value["original_size"]
@@ -193,6 +212,10 @@ class InputFingerprint:
                 and evidence in {"verified_source_etag", "unavailable"}
                 and (etag is None or _safe_string(etag, maximum=256))
                 and ((evidence == "verified_source_etag") == isinstance(etag, str))
+                and (
+                    contract_version != 3
+                    or (isinstance(key, str) and _ORIGINAL_KEY.fullmatch(key) is not None)
+                )
             ):
                 raise ContractError("invalid input fingerprint")
             return cls(
@@ -202,16 +225,7 @@ class InputFingerprint:
                 verified_source_etag=etag,
                 version_evidence=evidence,
             )
-        generic_fields = {
-            "object_key",
-            "object_size",
-            "object_content_type",
-            "object_etag",
-            "media_kind",
-            "pixel_width",
-            "pixel_height",
-        }
-        if set(value) != generic_fields:
+        if set(value) != generic_fields or contract_version not in {PREVIEW_CONTRACT_VERSION, 3}:
             raise ContractError("invalid input fingerprint")
         key = value["object_key"]
         size = value["object_size"]
@@ -228,6 +242,15 @@ class InputFingerprint:
             and media_kind in {"original", "preview-small-v1"}
             and _positive_int(width)
             and _positive_int(height)
+            and (
+                contract_version != 3
+                or (
+                    isinstance(key, str)
+                    and _PUBLISHED_PREVIEW_KEY.fullmatch(key) is not None
+                    and etag is None
+                    and media_kind == "preview-small-v1"
+                )
+            )
         ):
             raise ContractError("invalid input fingerprint")
         return cls(
@@ -285,6 +308,7 @@ class ProcessorConfiguration:
     embedding_dimensions: int = MAX_FACE_EMBEDDING_DIMENSIONS
     minimum_face_px: int = 1
     event_timezone: str | None = None
+    quality_thresholds: FaceQualityThresholds | None = None
 
     @classmethod
     def from_value(cls, value: object) -> ProcessorConfiguration:
@@ -292,6 +316,7 @@ class ProcessorConfiguration:
         face_threshold: object = DEFAULT_FACE_DETECTION_THRESHOLD
         model: object = "sface"
         event_timezone: str | None = None
+        quality_thresholds: FaceQualityThresholds | None = None
         normalization = "utc_assume_utc_if_missing"
         expected_capture = {
             "retry_policy",
@@ -459,15 +484,46 @@ class ProcessorConfiguration:
         elif face_config is not None:
             if not isinstance(face_config, dict):
                 raise ContractError("invalid processor configuration")
-            if set(face_config) - {
+            has_quality = "quality" in face_config
+            allowed_face_fields = {
                 "max_faces",
                 "detection_threshold",
                 "model",
                 "max_faces_per_photo",
                 "min_face_px",
                 "normalize_embeddings",
-            }:
+            } | ({"quality"} if has_quality else set())
+            if set(face_config) - allowed_face_fields:
                 raise ContractError("invalid processor configuration")
+            if has_quality:
+                if set(face_config) != {
+                    "max_faces",
+                    "detection_threshold",
+                    "model",
+                    "normalize_embeddings",
+                    "quality",
+                }:
+                    raise ContractError("invalid processor configuration")
+                if (
+                    face_config["model"] != "sface"
+                    or face_config["normalize_embeddings"] is not True
+                ):
+                    raise ContractError("invalid processor configuration")
+                quality = face_config["quality"]
+                if not isinstance(quality, dict) or set(quality) != {
+                    "algorithm_version",
+                    "crop_size",
+                    "minimum_face_px",
+                    "severe_blur_threshold",
+                    "borderline_blur_threshold",
+                    "minimum_relative_area",
+                    "minimum_confidence",
+                }:
+                    raise ContractError("invalid processor configuration")
+                try:
+                    quality_thresholds = FaceQualityThresholds(**quality)
+                except (FaceQualityError, TypeError) as error:
+                    raise ContractError("invalid processor configuration") from error
             configured_max_faces = face_config.get(
                 "max_faces", face_config.get("max_faces_per_photo", 1)
             )
@@ -497,7 +553,11 @@ class ProcessorConfiguration:
             max_faces = cast(int, configured_max_faces)
             face_threshold = cast(float, configured_face_threshold)
             embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
-            minimum_face_px = int(face_config.get("min_face_px", 1))
+            minimum_face_px = (
+                quality_thresholds.minimum_face_px
+                if quality_thresholds is not None
+                else int(face_config.get("min_face_px", 1))
+            )
         else:
             if not (
                 isinstance(preview_config, dict)
@@ -530,6 +590,7 @@ class ProcessorConfiguration:
             embedding_dimensions=embedding_dimensions,
             minimum_face_px=minimum_face_px,
             event_timezone=event_timezone,
+            quality_thresholds=quality_thresholds,
         )
 
 
@@ -661,10 +722,24 @@ class ClaimedJob:
                 PROCESSOR_TYPE_FACE_EMBEDDING,
                 PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
             )
+            quality_face = identity in {
+                (
+                    3,
+                    PROCESSOR_TYPE_FACE_EMBEDDING,
+                    HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
+                ),
+                (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
+            }
+            preview_only_quality_face = identity == (
+                3,
+                PROCESSOR_TYPE_FACE_EMBEDDING,
+                PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
+            )
+            quality_face_with_geometry = quality_face and "input_geometry" in value
             fields = (
                 photo_fields
                 | ({"output_slots"} if preview else set())
-                | ({"input_geometry"} if preview_face else set())
+                | ({"input_geometry"} if preview_face or quality_face_with_geometry else set())
             )
             if set(value) != fields:
                 raise ContractError("invalid claimed job")
@@ -680,12 +755,12 @@ class ClaimedJob:
             input_geometry = cast(dict[str, int | str] | None, value.get("input_geometry"))
             expected_size = (
                 photo_fingerprint.object_size
-                if version == PREVIEW_CONTRACT_VERSION
+                if photo_fingerprint.object_key is not None
                 else photo_fingerprint.original_size
             )
             expected_content_type = (
                 photo_fingerprint.object_content_type
-                if version == PREVIEW_CONTRACT_VERSION
+                if photo_fingerprint.object_key is not None
                 else photo_fingerprint.original_content_type
             )
             supported_identity = identity in {
@@ -695,6 +770,12 @@ class ClaimedJob:
                     PROCESSOR_TYPE_FACE_EMBEDDING,
                     PROCESSOR_VERSION_FACE_EMBEDDING,
                 ),
+                (
+                    3,
+                    PROCESSOR_TYPE_FACE_EMBEDDING,
+                    HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
+                ),
+                (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
                 (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
                 (
                     PREVIEW_CONTRACT_VERSION,
@@ -715,6 +796,9 @@ class ClaimedJob:
                 or (
                     identity == (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1)
                     and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK
+                    and photo_fingerprint.original_key is not None
+                    and photo_fingerprint.object_key is None
+                    and input_geometry is None
                 )
                 or (
                     identity
@@ -724,6 +808,24 @@ class ClaimedJob:
                         PROCESSOR_VERSION_FACE_EMBEDDING,
                     )
                     and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
+                    and configuration.quality_thresholds is None
+                )
+                or (
+                    quality_face
+                    and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
+                    and configuration.quality_thresholds is not None
+                    and (
+                        (
+                            not preview_only_quality_face
+                            and photo_fingerprint.original_key is not None
+                            and input_geometry is None
+                        )
+                        or (
+                            photo_fingerprint.media_kind == "preview-small-v1"
+                            and _preview_key_matches_photo(photo_fingerprint, value["photo_id"])
+                            and _valid_preview_input_geometry(input_geometry, photo_fingerprint)
+                        )
+                    )
                 )
                 or (
                     preview
@@ -844,16 +946,65 @@ class FaceEmbeddingFace:
     bbox: tuple[float, float, float, float]
     confidence: float
     landmarks: tuple[tuple[float, float], ...]
-    embedding: tuple[float, ...]
+    embedding: tuple[float, ...] | None
+    status: str = "kept"
+    quality: FaceQualityEvidence | None = None
+    error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        has_technical_error = (
+            isinstance(self.error_code, str)
+            and bool(self.error_code)
+            and len(self.error_code) <= 64
+        )
+        legacy_kept = (
+            self.status == "kept"
+            and self.quality is None
+            and self.embedding is not None
+            and self.error_code is None
+        )
+        accepted_kept = (
+            self.status == "kept"
+            and self.quality is not None
+            and self.quality.decision == "accepted"
+            and self.embedding is not None
+            and self.error_code is None
+        )
+        quality_rejected = (
+            self.status == "quality_rejected"
+            and self.quality is not None
+            and self.quality.decision == "quality_rejected"
+            and self.embedding is None
+            and self.error_code is None
+        )
+        technical_failed = (
+            self.status == "technical_failed"
+            and self.embedding is None
+            and has_technical_error
+            and (self.quality is None or self.quality.decision == "accepted")
+        )
+        if not (legacy_kept or accepted_kept or quality_rejected or technical_failed):
+            raise ValueError("invalid face embedding record")
 
     def as_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "index": self.index,
             "bbox": list(self.bbox),
             "confidence": self.confidence,
             "landmarks": [list(point) for point in self.landmarks],
-            "embedding": list(self.embedding),
         }
+        if self.quality is None and self.status == "kept":
+            assert self.embedding is not None
+            payload["embedding"] = list(self.embedding)
+            return payload
+        payload["status"] = self.status
+        if self.quality is not None:
+            payload["quality"] = self.quality.as_payload()
+        if self.embedding is not None:
+            payload["embedding"] = list(self.embedding)
+        if self.error_code is not None:
+            payload["error_code"] = self.error_code
+        return payload
 
 
 @dataclass(frozen=True)
@@ -933,6 +1084,13 @@ def _valid_preview_input_geometry(value: object, fingerprint: InputFingerprint) 
     )
 
 
+def _preview_key_matches_photo(fingerprint: InputFingerprint, photo_id: object) -> bool:
+    if not isinstance(fingerprint.object_key, str) or not isinstance(photo_id, str):
+        return False
+    match = _PUBLISHED_PREVIEW_KEY.fullmatch(fingerprint.object_key)
+    return match is not None and match.group("photo_id") == photo_id
+
+
 def _safe_string(value: object, *, maximum: int) -> bool:
     return isinstance(value, str) and bool(value) and len(value) <= maximum and "\x00" not in value
 
@@ -984,11 +1142,11 @@ def _processor_version(processor_type: str, contract_version: int = CONTRACT_VER
     if processor_type == PROCESSOR_TYPE:
         return PROCESSOR_VERSION
     if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
-        return (
-            PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW
-            if contract_version == PREVIEW_CONTRACT_VERSION
-            else PROCESSOR_VERSION_FACE_EMBEDDING
-        )
+        if contract_version == PREVIEW_CONTRACT_VERSION:
+            return PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW
+        if contract_version == 3:
+            return PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY
+        return PROCESSOR_VERSION_FACE_EMBEDDING
     if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
         return 1
     if (

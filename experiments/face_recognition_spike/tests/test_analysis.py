@@ -19,6 +19,20 @@ from face_spike.inventory import EventPhoto, EventPhotoInventory
 from face_spike.quality import FaceQualityThresholds
 
 
+def _quality_thresholds(**overrides: object) -> FaceQualityThresholds:
+    values = {
+        "algorithm_version": "normalized-laplacian-v1",
+        "crop_size": 112,
+        "minimum_face_px": 1,
+        "severe_blur_threshold": 0.0,
+        "borderline_blur_threshold": 1.0,
+        "minimum_relative_area": 0.0,
+        "minimum_confidence": 0.0,
+    }
+    values.update(overrides)
+    return FaceQualityThresholds(**values)
+
+
 def _inventory(*filenames: str) -> EventPhotoInventory:
     root = Path("event")
     return EventPhotoInventory(
@@ -28,8 +42,8 @@ def _inventory(*filenames: str) -> EventPhotoInventory:
 
 def _detection(x: float, width: float, confidence: float = 0.9) -> FaceDetection:
     return FaceDetection(
-        BoundingBox(x, 3, width, 20),
-        FaceLandmarks((x, 3), (x + 1, 3), (x + 1, 4), (x, 5), (x + 1, 5)),
+        BoundingBox(x, 0, width, 20),
+        FaceLandmarks((x, 1), (x + 1, 1), (x + 1, 2), (x, 3), (x + 1, 3)),
         confidence,
     )
 
@@ -52,7 +66,7 @@ def test_decoded_photo_analysis_matches_inventory_analysis_contract() -> None:
     photo = EventPhoto("frame.jpg", Path("event/frame.jpg"))
     decoded = _Decoder().decode(photo)
     detector = _Detector((_detection(20, 20), _detection(2, 10)))
-    thresholds = FaceQualityThresholds()
+    thresholds = _quality_thresholds()
 
     class Recognizer:
         def extract(self, bgr: np.ndarray, detection: FaceDetection) -> FaceEmbedding:
@@ -188,11 +202,12 @@ def test_quality_gate_retains_rejected_detection_and_skips_embedding() -> None:
         Decoder(),
         _Detector((_detection(2, 10, confidence=0.80),)),
         Recognizer(),
-        quality_thresholds=FaceQualityThresholds(
-            minimum_confidence=0.82,
+        quality_thresholds=_quality_thresholds(
             minimum_face_px=12,
+            severe_blur_threshold=1.0,
+            borderline_blur_threshold=2.0,
             minimum_relative_area=0.021,
-            minimum_sharpness=1.0,
+            minimum_confidence=0.82,
         ),
     )
 
@@ -200,13 +215,8 @@ def test_quality_gate_retains_rejected_detection_and_skips_embedding() -> None:
     assert calls == []
     assert face.status == "quality_rejected"
     assert face.embedding is None
-    assert face.quality.decision == "rejected"
-    assert face.quality.reasons == (
-        "low_confidence",
-        "small_face",
-        "small_relative_area",
-        "low_sharpness",
-    )
+    assert face.quality.decision == "quality_rejected"
+    assert face.quality.reasons == ("too_small", "severe_blur")
     assert face.quality.minimum_side_px == 10
     assert face.quality.relative_area == 0.02
     assert face.quality.sharpness == 0
@@ -222,11 +232,12 @@ def test_quality_gate_accepts_inclusive_boundaries_and_embeds_face() -> None:
         _Decoder(),
         _Detector((_detection(2, 10, confidence=0.82),)),
         Recognizer(),
-        quality_thresholds=FaceQualityThresholds(
-            minimum_confidence=0.82,
+        quality_thresholds=_quality_thresholds(
             minimum_face_px=10,
+            severe_blur_threshold=0.0,
+            borderline_blur_threshold=1.0,
             minimum_relative_area=0.25,
-            minimum_sharpness=0.0,
+            minimum_confidence=0.82,
         ),
     )
 
@@ -235,3 +246,39 @@ def test_quality_gate_accepts_inclusive_boundaries_and_embeds_face() -> None:
     assert face.embedding is not None
     assert face.quality.decision == "accepted"
     assert face.quality.reasons == ()
+
+
+def test_analysis_uses_the_production_recall_first_quality_interface(
+    monkeypatch,
+) -> None:
+    import face_spike.quality as experiment_quality
+    import photo_worker.face_quality as production_quality
+
+    assert experiment_quality.FaceQualityThresholds is production_quality.FaceQualityThresholds
+    assert experiment_quality.FaceQuality is production_quality.FaceQualityEvidence
+    monkeypatch.setattr(
+        production_quality,
+        "_normalized_crop_sharpness",
+        lambda *_args, **_kwargs: 60.0,
+    )
+
+    class Recognizer:
+        def extract(self, bgr: np.ndarray, detection: FaceDetection) -> FaceEmbedding:
+            return FaceEmbedding(np.asarray([1.0], dtype=np.float32))
+
+    analyses = analyze_event_photo_inventory(
+        _inventory("frame.jpg"),
+        _Decoder(),
+        _Detector((_detection(2, 10, confidence=0.80),)),
+        Recognizer(),
+        quality_thresholds=_quality_thresholds(
+            minimum_confidence=0.82,
+            minimum_face_px=1,
+            minimum_relative_area=0.0,
+            severe_blur_threshold=25.0,
+            borderline_blur_threshold=50.0,
+        ),
+    )
+
+    assert analyses[0].faces[0].status == "ok"
+    assert analyses[0].faces[0].quality.decision == "accepted"

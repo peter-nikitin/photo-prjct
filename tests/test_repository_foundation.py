@@ -609,6 +609,11 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
     production = _load_workflow("promote-production.yml")
     build = staging["jobs"]["build"]
     staging_apply = _workflow_step(staging, "deploy", "Run staging deployment")
+    verify_staging = production["jobs"]["verify-staging"]
+    verified_identity = _workflow_step(
+        production, "verify-staging", "Confirm image was deployed successfully to staging"
+    )
+    promote = production["jobs"]["promote"]
     production_apply = _workflow_step(production, "promote", "Apply production deployment")
 
     assert build["outputs"]["worker_image"] == "${{ steps.image.outputs.worker_image }}"
@@ -667,7 +672,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+            "${{ needs.verify-staging.outputs.photo_worker_processor_identities }}"
         ),
         "PHOTO_WORKER_PROCESSOR_TYPES": (
             "${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || "
@@ -677,6 +682,16 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
     for name, value in production_expected.items():
         assert production_apply["env"].get(name) == value
         assert name in _envs(production_apply)
+
+    assert verified_identity["id"] == "verified-worker-identity"
+    assert verified_identity["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
+        "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+    )
+    assert verify_staging["outputs"]["photo_worker_processor_identities"] == (
+        "${{ steps.verified-worker-identity.outputs.photo_worker_processor_identities }}"
+    )
+    assert promote["needs"] == "verify-staging"
+    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES" in production_apply["with"]["envs"].split(",")
 
     for name, value in {
         "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",

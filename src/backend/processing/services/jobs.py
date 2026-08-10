@@ -30,6 +30,14 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
+from processing.services.face_quality import (
+    QUALITY_FACE_CONTRACT_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSIONS,
+    ValidatedQualityResult,
+    publish_face_embedding_projection,
+    quality_face_result_geometry,
+    validate_quality_face_result,
+)
 
 DEFAULT_LEASE_SECONDS = 120
 DEFAULT_RECOVERY_LIMIT = 25
@@ -55,25 +63,31 @@ def claim_job(
     worker_build: str,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     now: timezone.datetime | None = None,
+    event_id: int | None = None,
+    configuration_hash: str | None = None,
 ) -> ClaimedJob | EmptyClaim:
-    """Atomically seal and lease compatible work; skip races until no work remains."""
+    """Atomically seal and lease compatible, optionally exact-scoped work."""
     now = now or timezone.now()
     tried: set[UUID] = set()
     with transaction.atomic():
         while True:
+            candidates = ProcessingJob.objects.filter(
+                contract_version=contract_version,
+                processor_type=processor_type,
+                processor_version=processor_version,
+                status__in=(ProcessingJob.Status.QUEUED, ProcessingJob.Status.RETRY_WAIT),
+                available_at__lte=now,
+                run__status__in=(
+                    EventProcessingRun.Status.COLLECTING,
+                    EventProcessingRun.Status.SEALED,
+                ),
+            )
+            if event_id is not None:
+                candidates = candidates.filter(event_id=event_id)
+            if configuration_hash is not None:
+                candidates = candidates.filter(configuration_hash=configuration_hash)
             candidate = (
-                ProcessingJob.objects.filter(
-                    contract_version=contract_version,
-                    processor_type=processor_type,
-                    processor_version=processor_version,
-                    status__in=(ProcessingJob.Status.QUEUED, ProcessingJob.Status.RETRY_WAIT),
-                    available_at__lte=now,
-                    run__status__in=(
-                        EventProcessingRun.Status.COLLECTING,
-                        EventProcessingRun.Status.SEALED,
-                    ),
-                )
-                .exclude(pk__in=tried)
+                candidates.exclude(pk__in=tried)
                 .order_by("available_at", "created_at", "id")
                 .first()
             )
@@ -549,7 +563,8 @@ def _terminal_success(
         ]
     )
     if attempt.processor_type == FACE_EMBEDDING_PROCESSOR:
-        _persist_face_embedding_result(attempt, payload["result"])
+        if _persist_face_embedding_result(attempt, payload["result"]):
+            publish_face_embedding_projection(attempt)
 
 
 def _terminal_failure(
@@ -585,14 +600,25 @@ def _terminal_failure(
     )
 
 
-def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> None:
+def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> bool:
+    if (
+        attempt.contract_version == QUALITY_FACE_CONTRACT_VERSION
+        and attempt.processor_version in QUALITY_FACE_PROCESSOR_VERSIONS
+    ):
+        validated = validate_quality_face_result(
+            result,
+            configuration=attempt.configuration,
+        )
+        input_geometry = quality_face_result_geometry(attempt, result)
+        _persist_quality_face_result(attempt, validated, input_geometry=input_geometry)
+        return True
     if not isinstance(result, dict):
-        return
+        return False
     model = _coerce_face_model(result, attempt.configuration)
     input_geometry = _face_input_geometry(attempt, result)
     faces = result.get("faces")
     if not isinstance(faces, list):
-        return
+        return False
     artifact = FaceProcessingAttemptArtifact.objects.create(
         attempt=attempt,
         status=FaceProcessingAttemptArtifact.Status.COMPLETE,
@@ -637,6 +663,69 @@ def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str,
                 model_version=model,
                 vector=embedding,
                 metadata=_safe_dict(record),
+            )
+    return True
+
+
+def _persist_quality_face_result(
+    attempt: ProcessingAttempt,
+    result: ValidatedQualityResult,
+    *,
+    input_geometry: dict[str, Any],
+) -> None:
+    artifact = FaceProcessingAttemptArtifact.objects.create(
+        attempt=attempt,
+        status=FaceProcessingAttemptArtifact.Status.COMPLETE,
+        feature_payload={
+            "model": result.model,
+            "warnings": result.warnings,
+            "timings": result.timings,
+            "detected_count": result.detected_count,
+            "kept_count": result.kept_count,
+            "quality_rejected_count": result.quality_rejected_count,
+            "embedded_count": result.embedded_count,
+            "technical_failed_count": result.technical_failed_count,
+            "truncated": "faces_truncated" in result.warnings,
+            "has_single_query_face_usable": result.has_single_query_face_usable,
+        },
+        quality_payload={
+            "rejection_reasons": result.rejection_reasons,
+            "technical_failure_reasons": result.technical_failure_reasons,
+        },
+    )
+    status_by_result = {
+        "kept": PhotoFaceDetection.Status.KEPT,
+        "quality_rejected": PhotoFaceDetection.Status.QUALITY_REJECTED,
+        "technical_failed": PhotoFaceDetection.Status.FAILED,
+    }
+    for face in result.faces:
+        features: dict[str, Any] = {"confidence": face.confidence}
+        if face.quality is not None:
+            features["quality"] = face.quality
+        if face.error_code is not None:
+            features["error_code"] = face.error_code
+        detection = PhotoFaceDetection.objects.create(
+            attempt=attempt,
+            artifact=artifact,
+            face_index=face.index,
+            status=status_by_result[face.status],
+            geometry={
+                "bbox": face.bbox,
+                "landmarks": face.landmarks,
+                "model": result.model,
+            }
+            | input_geometry,
+            features=features,
+        )
+        if face.embedding is not None:
+            FaceEmbedding.objects.create(
+                detection=detection,
+                model_version=result.model,
+                vector=face.embedding,
+                metadata={
+                    "confidence": face.confidence,
+                    "quality": face.quality,
+                },
             )
 
 

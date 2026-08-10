@@ -13,6 +13,8 @@ jobs:
     name: Verify staging image
     runs-on: ubuntu-latest
     environment: staging
+    outputs:
+      photo_worker_processor_identities: ${{ steps.verified-worker-identity.outputs.photo_worker_processor_identities }}
     permissions:
       contents: read
       id-token: write
@@ -22,8 +24,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Confirm image was deployed successfully to staging
+        id: verified-worker-identity
         env:
           APP_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha }}
+          PHOTO_WORKER_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}
           STAGING_VM_HOST: ${{ vars.VM_HOST }}
           STAGING_VM_USER: ${{ vars.VM_USER }}
           STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
@@ -33,6 +37,7 @@ jobs:
             --consumer staging-remote-check \
             --identity github-oidc \
             -- deploy/run-staging-remote.sh verify-staging-image
+          printf 'photo_worker_processor_identities=%s\n' "$PHOTO_WORKER_PROCESSOR_IDENTITIES" >> "$GITHUB_OUTPUT"
 
   promote:
     name: Promote verified image
@@ -95,7 +100,7 @@ jobs:
           PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '131072' }}
           PHOTO_WORKER_BUILD: ${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}
           PHOTO_WORKER_LEASE_SECONDS: ${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}
-          PHOTO_WORKER_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}
+          PHOTO_WORKER_PROCESSOR_IDENTITIES: ${{ needs.verify-staging.outputs.photo_worker_processor_identities }}
           PHOTO_WORKER_PROCESSOR_TYPES: ${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || 'selfie_query,face_embedding,capture_metadata,generate_preview' }}
           SELFIE_SEARCH_MAX_UPLOAD_BYTES: ${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}
           SELFIE_SEARCH_MAX_PIXELS: ${{ vars.SELFIE_SEARCH_MAX_PIXELS || '25000000' }}

@@ -20,12 +20,14 @@ from photo_worker.client import ApiError, CallbackResult, DownloadError, HttpCli
 from photo_worker.contracts import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     FAILURE_RETRYABLE,
+    HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
     PREVIEW_CONTRACT_VERSION,
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
     PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
+    PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
     CaptureMetadataResult,
     Claim,
     ClaimedJob,
@@ -55,6 +57,12 @@ _SUPPORTED_IDENTITIES = {
     (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
     (2, PROCESSOR_TYPE_FACE_EMBEDDING, 2),
     (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
+    (
+        3,
+        PROCESSOR_TYPE_FACE_EMBEDDING,
+        HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
+    ),
+    (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
     (1, PROCESSOR_TYPE_SELFIE_QUERY, 1),
 }
 
@@ -644,10 +652,13 @@ class Worker:
                 max_faces=job.configuration.max_faces,
                 detection_threshold=job.configuration.face_detection_threshold,
                 model=job.configuration.model,
+                quality_thresholds=job.configuration.quality_thresholds,
             )
             if job.contract_version == PREVIEW_CONTRACT_VERSION:
                 if job.input_geometry is None:
                     raise ValueError("preview face claim is missing input geometry")
+                return result.as_payload() | {"input_geometry": job.input_geometry}
+            if job.input_geometry is not None:
                 return result.as_payload() | {"input_geometry": job.input_geometry}
             if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
                 return {
@@ -680,7 +691,7 @@ class Worker:
     def _download_current(self, job: ClaimedJob, path: Path) -> None:
         expected_etag = (
             getattr(job.input_fingerprint, "object_etag", None)
-            if job.contract_version == PREVIEW_CONTRACT_VERSION
+            if getattr(job.input_fingerprint, "object_key", None) is not None
             else getattr(job.input_fingerprint, "verified_source_etag", None)
         )
         try:
@@ -842,10 +853,10 @@ def _unlink_temporary(path: Path | None) -> None:
 
 
 def _fingerprint_size(job: ClaimedJob) -> int:
-    if job.contract_version == PREVIEW_CONTRACT_VERSION:
-        size = getattr(job.input_fingerprint, "object_size", None)
-    elif job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+    if job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
         size = getattr(job.input_fingerprint, "temporary_size", None)
+    elif getattr(job.input_fingerprint, "object_key", None) is not None:
+        size = getattr(job.input_fingerprint, "object_size", None)
     else:
         size = getattr(job.input_fingerprint, "original_size", None)
     if not isinstance(size, int):

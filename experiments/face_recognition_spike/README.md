@@ -35,7 +35,7 @@ Model-independent tests use generated images and adapters; they do not read
 event photos or model files:
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend:src/worker \
 .venv/bin/pytest -q experiments/face_recognition_spike/tests -m "not face_models"
 ```
 
@@ -48,7 +48,7 @@ SECRET_KEY=test \
 FACE_SPIKE_YUNET_MODEL=/absolute/models/yunet.onnx \
 FACE_SPIKE_SFACE_MODEL=/absolute/models/sface.onnx \
 FACE_SPIKE_SMOKE_PHOTOS=/absolute/smoke-photos \
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend:src/worker \
 .venv/bin/pytest -q \
   experiments/face_recognition_spike/tests/test_model_smoke.py -m face_models
 ```
@@ -64,7 +64,7 @@ directories, symlinked images, case-folded filename collisions, and an empty
 inventory are rejected. A run never modifies the sources.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend:src/worker \
 .venv/bin/python -m face_spike cluster \
   --photos /absolute/photos \
   --yunet-model /absolute/models/yunet.onnx \
@@ -72,9 +72,10 @@ PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike
   --output /absolute/runs/all-people-run-001 \
   --detection-threshold 0.75 \
   --min-face-px 32 \
-  --minimum-quality-confidence 0.82 \
-  --minimum-relative-face-area 0.0009 \
-  --minimum-face-sharpness 50 \
+  --severe-blur-threshold 25 \
+  --borderline-blur-threshold 50 \
+  --minimum-relative-area 0.0009 \
+  --minimum-confidence 0.82 \
   --cluster-threshold 0.363 \
   --representative-threshold 0.363 \
   --distance-block-size 512 \
@@ -82,9 +83,9 @@ PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike
 ```
 
 `--detection-threshold` controls which YuNet detections enter the measured
-quality gate. The minimum side, confidence, relative bounding-box area, and
-Laplacian-variance thresholds then decide whether a detection is eligible for
-embedding and clustering. Rejected detections remain in `faces.csv`,
+quality gate. The experiment calls `photo_worker.face_quality` directly: an
+unusably small face or severe blur rejects independently, while borderline blur
+requires low confidence or small relative area as corroboration. Rejected detections remain in `faces.csv`,
 `faces.json`, and `faces/`, with `quality_rejected`, measured signal values,
 and every rejection reason. `--cluster-threshold` creates candidate
 edges and `--representative-threshold` guards each merge against chaining; the
@@ -111,46 +112,102 @@ Each run contains:
 | `annotated/` | Per-image detection previews. |
 | `people/person-NNNN/` | Review crops and the cluster's unique source photos. A group photo can occur in several people directories. |
 | `metrics.json` | Detection, embedding, cluster-size, singleton, and failure counts. |
-
-## Quality-gate calibration and first result
-
-Calibrate the configured gate against an immutable run and the exported manual
-cluster labels without changing either input:
-
-```sh
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
-.venv/bin/python -m face_spike.quality_calibration \
-  --run /absolute/runs/all-people-run-001 \
-  --cluster-quality-csv /absolute/comparisons/cluster-quality-session-001.csv.csv \
-  --output /absolute/comparisons/quality-gate-calibration-001.json
-```
-
-The calibration is intentionally fitted to a small, problem-biased sample. On
-the 23 reviewed old cluster IDs it retained all 4 `usable` clusters, rejected
-both `not_face` singleton clusters, and fully rejected 13 of 17 `low_quality`
-clusters. It must not be interpreted as a full-event false-detection estimate.
-
-The first full quality-gated evidence is:
-
-- run:
-  `/Users/petrnikitin/Documents/Projects/photo-refs/runs/all-people-run-002-quality-gated`;
-- comparison:
-  `/Users/petrnikitin/Documents/Projects/photo-refs/comparisons/all-people-run-002-quality-gated-vs-peakshot`;
-- review:
-  `/Users/petrnikitin/Documents/Projects/photo-refs/reviews/all-people-run-002-quality-gated-fragmentation-review-001`;
-- calibration:
-  `/Users/petrnikitin/Documents/Projects/photo-refs/comparisons/quality-gate-calibration-001.json`.
-
-The gate retained 2,223 of 3,352 detections and rejected 1,129. Relative area
-was the most frequent rejection reason (883 detections); reasons overlap.
-Compared with `all-people-run-001`, clusters fell from 1,092 to 614,
-relationship precision rose from `0.6932` to `0.8060`, recall fell from
-`0.8997` to `0.8647`, F1 rose from `0.7830` to `0.8343`, and purity rose from
-`0.7057` to `0.7897`. Matched Peakshot people fell from 165 to 163, so the
-quality improvement has a measurable coverage cost and is not a final
-production threshold.
 | `report.html` | Lightweight local index: one representative crop per cluster. |
 | `people/person-NNNN/index.html` | One cluster's face crops and source photos, loaded only when opened. |
+
+## Compare a quality configuration with a sampled review
+
+`compare-quality` accepts only the current immutable cluster-run
+`manifest.json`/`faces.json` schema. Each run freezes its sorted photo inventory hash, per-photo media
+SHA-256 values, generation hash, terminal photo states, detections, production
+quality evidence, and technical failures. It rejects a changed or incomplete
+cohort instead of dropping items. The baseline and candidate run directories
+and candidate review crops are private local inputs outside Git.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
+.venv/bin/python -m face_spike compare-quality \
+  --baseline-run /absolute/private/baseline-quality-run \
+  --candidate-run /absolute/private/candidate-quality-run \
+  --output /absolute/private/quality-comparison-001 \
+  --minimum-face-px 32 \
+  --severe-blur-threshold 25 \
+  --borderline-blur-threshold 50 \
+  --minimum-relative-area 0.0009 \
+  --minimum-confidence 0.82
+```
+
+The output is immutable and atomic. `comparison.json` contains aggregate and
+detection evidence but no embeddings. Build the immutable ten-percent sampled
+review from that frozen comparison; the output must be a new private directory.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
+.venv/bin/python -m face_spike build-quality-sample \
+  --comparison /absolute/private/quality-comparison-001 \
+  --output /absolute/private/quality-sample-001 \
+  --sample-size 1506 \
+  --page-size 250
+```
+
+The command strictly revalidates the complete source comparison before it
+selects its deterministic 1,506 rejected faces. It copies only those sampled
+crops and the separate 100 retained threshold controls. It neither changes the
+comparison nor accesses Django, PostgreSQL, Object Storage, the downloader, or
+a running application. The sampled report has fixed logical pages of at most
+250 faces, so `--page-size` must remain `250`.
+
+Open the private `report.html` directly with `file://`. One reviewer labels
+each sampled rejection as exactly one of `clear`, `blurred`, `unusably_small`,
+or `uncertain`; keys `1` through `4` select those labels. The browser stores a
+bundle-scoped local draft only on that device. The report exports a CSV only
+after all 1,506 rows are labelled. A complete exported CSV can be imported
+back into the same immutable sample; malformed, incomplete, duplicate,
+unknown, or cross-sample rows are rejected.
+
+Finalization creates a separate immutable weighted-evidence report. It is not
+an approval or activation command.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
+.venv/bin/python -m face_spike finalize-quality-sample \
+  --sample /absolute/private/quality-sample-001 \
+  --labels-csv /absolute/private/quality-sample-labels.csv \
+  --reviewer reviewer-id \
+  --reviewed-at 2026-08-08T00:00:00Z \
+  --output /absolute/private/quality-sample-analysis-001
+```
+
+It validates the exact sample, complete labels, reviewer, timestamp, and new
+output path, then reports raw and population-weighted evidence, a 95% Wilson
+interval for `clear`, strata, retained controls, and every sampled `clear` or
+`uncertain` crop. Treat it as sampled evidence only: it does not establish
+zero clear-face loss or full-population manual coverage. It only informs a
+later explicit experimental decision; it does not approve or activate a
+generation.
+
+Search relevance is independent of this sampled face-quality review. Use the
+existing immutable benchmark proposal to review the 30 primary queries first,
+with `relevant`, `different`, or `uncertain` annotations. Open and use a
+deterministic replacement query page only when the primary query has fewer
+than three relevant held-out photos or conflicts with an already selected
+manual identity. After 30 valid person-disjoint queries are finalized, run the
+closed set against both private indexes. This reuses the existing SFace query
+path, exact cosine ranking, inclusive direct threshold `0.363`, one best face
+per photo, deterministic ordering, and full-photo holdout for gallery proxies.
+
+```sh
+PYTHONPATH=experiments/face_recognition_spike:src/backend:src/worker \
+.venv/bin/python -m face_spike compare-search \
+  --benchmark /absolute/private/final-benchmark \
+  --baseline-index /absolute/private/baseline-index \
+  --candidate-index /absolute/private/candidate-index \
+  --run /absolute/private/baseline-run \
+  --yunet-model /absolute/models/yunet.onnx \
+  --sface-model /absolute/models/sface.onnx \
+  --quality-comparison /absolute/private/quality-comparison-001 \
+  --output /absolute/private/search-comparison-001
+```
 
 The writer attempts hard links for source photos and copies only when the
 filesystem does not permit that link. A singleton is a valid discovered
@@ -172,7 +229,7 @@ input, copy embeddings, or copy source photos; its pages link to local media in
 the immutable run.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend:src/worker \
 .venv/bin/python -m face_spike review \
   --run /absolute/runs/all-people-run-001 \
   --comparison /absolute/comparisons/all-people-run-001-vs-peakshot \
@@ -230,7 +287,7 @@ completed cluster run and a Peakshot export containing
 exist and must not be inside either input directory.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend:src/worker \
 .venv/bin/python -m face_spike compare \
   --run /absolute/runs/all-people-run-001 \
   --peakshot-export /absolute/peakshot-reference-export \
@@ -266,7 +323,7 @@ five query crops come from the proposal; the command recomputes each crop throug
 instead of reusing its gallery vector.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend:src/worker \
 .venv/bin/python -m face_spike smoke-search \
   --proposal /absolute/benchmarks/proposal \
   --index /absolute/indexes/event-index \
@@ -296,7 +353,7 @@ The held-out source photo is excluded for every query, direct photos remain firs
 photos are unique additions. Calibration and evaluation metrics remain separate.
 
 ```sh
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
+PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend:src/worker \
 .venv/bin/python -m face_spike evaluate-cluster-expansion \
   --benchmark /absolute/benchmarks/final \
   --index /absolute/indexes/event-index \

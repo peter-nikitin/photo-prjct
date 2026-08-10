@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import shutil
@@ -36,6 +37,21 @@ ANNOTATION_CSV_HEADERS = (
     "label",
     "note",
 )
+
+
+def final_benchmark_sha256(benchmark: FinalBenchmark) -> str:
+    """Hash the finalized queries, annotations, faces, and source identity."""
+    if not isinstance(benchmark, FinalBenchmark):
+        raise TypeError("final benchmark is required")
+    return hashlib.sha256(
+        json.dumps(
+            _final_payload(benchmark),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 class BenchmarkProposalArtifactWriter:
@@ -292,6 +308,7 @@ def _faces_from_payload(value: object) -> tuple[BenchmarkFace, ...]:
         "face_id",
         "filename",
         "crop_path",
+        "crop_sha256",
         "cluster_id",
         "status",
         "confidence",
@@ -303,6 +320,7 @@ def _faces_from_payload(value: object) -> tuple[BenchmarkFace, ...]:
             _string(item["face_id"]),
             _string(item["filename"]),
             _string(item["crop_path"]),
+            _string(item["crop_sha256"]),
             _string(item["cluster_id"]),
             _string(item["status"]),
             _number(item["confidence"]),

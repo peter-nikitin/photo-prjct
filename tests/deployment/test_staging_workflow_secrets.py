@@ -30,7 +30,9 @@ def _step(job: dict[str, Any], name: str) -> dict[str, Any]:
     return steps[0]
 
 
-def _resolver_step(job: dict[str, Any], name: str, consumer: str) -> None:
+def _resolver_step(
+    job: dict[str, Any], name: str, consumer: str, *, records_verified_identity: bool = False
+) -> None:
     step = _step(job, name)
     command = step["run"]
     assert "scripts/run-with-environment-secrets.py" in command
@@ -39,7 +41,11 @@ def _resolver_step(job: dict[str, Any], name: str, consumer: str) -> None:
     assert "--identity github-oidc" in command
     assert "deploy/run-staging-remote.sh" in command
     assert "${{ secrets." not in command
-    assert "GITHUB_OUTPUT" not in command
+    if records_verified_identity:
+        assert "photo_worker_processor_identities=%s\\n" in command
+        assert '"$PHOTO_WORKER_PROCESSOR_IDENTITIES" >> "$GITHUB_OUTPUT"' in command
+    else:
+        assert "GITHUB_OUTPUT" not in command
 
 
 def test_every_migrated_staging_consumer_uses_environment_oidc_and_its_projection() -> None:
@@ -101,7 +107,12 @@ def test_every_migrated_staging_consumer_uses_environment_oidc_and_its_projectio
         assert job["environment"] == "staging"
         assert job["permissions"] == {"contents": "read", "id-token": "write"}
         for step_name, consumer in steps:
-            _resolver_step(job, step_name, consumer)
+            _resolver_step(
+                job,
+                step_name,
+                consumer,
+                records_verified_identity=(_name == "verify-staging"),
+            )
 
 
 def test_every_resolver_job_checks_out_without_persisting_credentials() -> None:
@@ -159,7 +170,17 @@ def test_migrated_staging_jobs_have_no_github_secret_expressions_or_secret_outpu
         for job_name in job_names:
             rendered = str(workflow["jobs"][job_name])
             assert "${{ secrets." not in rendered
-            assert "GITHUB_OUTPUT" not in rendered
+            if workflow_name == "promote-production.yml" and job_name == "verify-staging":
+                output_step = _step(
+                    workflow["jobs"][job_name], "Confirm image was deployed successfully to staging"
+                )
+                assert output_step["id"] == "verified-worker-identity"
+                assert "photo_worker_processor_identities=%s\\n" in output_step["run"]
+                assert (
+                    '"$PHOTO_WORKER_PROCESSOR_IDENTITIES" >> "$GITHUB_OUTPUT"' in output_step["run"]
+                )
+            else:
+                assert "GITHUB_OUTPUT" not in rendered
 
     build = _workflow("deploy.yml")["jobs"]["build"]
     assert "${{ secrets.GITHUB_TOKEN }}" in str(build)
@@ -182,6 +203,81 @@ def test_staging_workflows_supply_remote_host_user_and_deployment_identity_from_
     assert deploy_step["env"]["DB_USER"] == "${{ vars.DB_USER }}"
     assert deploy_step["env"]["ALLOWED_HOSTS"] == "${{ vars.ALLOWED_HOSTS }}"
     assert deploy_step["env"]["GHCR_USERNAME"] == "${{ vars.GHCR_USERNAME }}"
+
+
+def test_promotion_forwards_explicit_quality_identity_without_activation() -> None:
+    """The rollout can opt in to v4 through deployment variables without changing worker state."""
+    deploy = _workflow("deploy.yml")
+    promotion = _workflow("promote-production.yml")
+    staging_step = _step(deploy["jobs"]["deploy"], "Run staging deployment")
+    verification_step = _step(
+        promotion["jobs"]["verify-staging"], "Confirm image was deployed successfully to staging"
+    )
+    production_step = _step(promotion["jobs"]["promote"], "Apply production deployment")
+
+    for step in (staging_step, verification_step):
+        assert step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+        )
+    for step in (staging_step, production_step):
+        assert step["env"]["PHOTO_PROCESSING_PREVIEW_ENABLED"] == (
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+        )
+        assert step["env"]["PHOTO_PROCESSING_FACE_ENABLED"] == (
+            "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}"
+        )
+
+    assert production_step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
+        "${{ needs.verify-staging.outputs.photo_worker_processor_identities }}"
+    )
+    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES" in production_step["with"]["envs"].split(",")
+
+
+def test_promotion_reuses_the_staging_verified_identity_and_stops_before_production_on_mismatch(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    """A staging marker mismatch must stop promotion before a different identity is selected."""
+    identity = "1/capture_metadata/2,3/face_embedding/4"
+    environment, _sentinel = _remote_environment(tmp_path, remote_boundary)
+    environment["PHOTO_WORKER_PROCESSOR_IDENTITIES"] = identity
+    remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
+    (remote_root / ".env").write_text(
+        f"PHOTO_WORKER_PROCESSOR_IDENTITIES={identity}\n", encoding="utf-8"
+    )
+
+    verified = _run_helper(["verify-staging-image"], environment)
+
+    assert verified.returncode == 0, verified.stderr
+    assert f'PHOTO_WORKER_PROCESSOR_IDENTITIES="{identity}"' in Path(
+        environment["SSH_STDIN"]
+    ).read_text(encoding="utf-8")
+
+    (remote_root / ".env").write_text(
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/face_embedding/2\n",
+        encoding="utf-8",
+    )
+    mismatch = _run_helper(["verify-staging-image"], environment)
+
+    assert mismatch.returncode == 2
+    assert mismatch.stderr == "[staging-remote] stage=remote status=error code=remote_failed\n"
+
+    workflow = _workflow("promote-production.yml")
+    verify_staging = workflow["jobs"]["verify-staging"]
+    promote = workflow["jobs"]["promote"]
+    verify_step = _step(verify_staging, "Confirm image was deployed successfully to staging")
+    production_step = _step(promote, "Apply production deployment")
+
+    assert verify_step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
+        "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+    )
+    assert verify_staging["outputs"]["photo_worker_processor_identities"] == (
+        "${{ steps.verified-worker-identity.outputs.photo_worker_processor_identities }}"
+    )
+    assert production_step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
+        "${{ needs.verify-staging.outputs.photo_worker_processor_identities }}"
+    )
+    assert promote["needs"] == "verify-staging"
+    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES" in production_step["with"]["envs"].split(",")
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -351,6 +447,16 @@ def remote_boundary(tmp_path: Path) -> Path:
           mkdir -p "$REMOTE_RELEASES/$release_sha/deploy"
           exit 0
         fi
+        case "$remote_command" in
+          *" 'verify-staging-image'")
+            escaped_remote_root=$(printf '%s' "$REMOTE_DEPLOY_ROOT" | sed 's/[&|]/\\&/g')
+            rewritten_command="$(
+              printf '%s' "$remote_command" | sed "s|/opt/photo-prjct|$escaped_remote_root|g"
+            )"
+            sh -c "$rewritten_command" < "$SSH_STDIN"
+            exit $?
+            ;;
+        esac
         [ -z "${SSH_STDOUT:-}" ] || printf '%s\n' "$SSH_STDOUT"
         """,
     )
@@ -368,6 +474,14 @@ def _remote_environment(tmp_path: Path, remote_boundary: Path) -> tuple[dict[str
         encoding="utf-8",
     )
     environment_file.chmod(0o600)
+    remote_deploy_root = tmp_path / "remote-photo-prjct"
+    remote_deploy_root.mkdir()
+    (remote_deploy_root / "deployed-image").write_text(
+        "ghcr.io/peter-nikitin/photo-prjct:test-image\n", encoding="utf-8"
+    )
+    (remote_deploy_root / ".env").write_text(
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1\n", encoding="utf-8"
+    )
     environment = {
         **os.environ,
         **_deployment_values(),
@@ -385,6 +499,7 @@ def _remote_environment(tmp_path: Path, remote_boundary: Path) -> tuple[dict[str
         "SSH_SIGNAL": str(tmp_path / "ssh-signal"),
         "SSH_READY": str(tmp_path / "ssh-ready"),
         "REMOTE_RELEASES": str(tmp_path / "remote-releases"),
+        "REMOTE_DEPLOY_ROOT": str(remote_deploy_root),
     }
     return environment, sentinel
 

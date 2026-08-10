@@ -16,6 +16,11 @@ from photo_worker.contracts import (
     FaceEmbeddingResult,
     SelfieEmbeddingResult,
 )
+from photo_worker.face_quality import (
+    FaceQualityError,
+    FaceQualityThresholds,
+    evaluate_face_quality,
+)
 
 
 class FaceEmbeddingError(ValueError):
@@ -143,6 +148,7 @@ def extract_face_embeddings(
     model: str = "sface",
     yunet_model_path: Path | None = None,
     sface_model_path: Path | None = None,
+    quality_thresholds: FaceQualityThresholds | None = None,
 ) -> FaceEmbeddingResult:
     """Extract faces from a local JPEG file with YuNet + SFace."""
     if max_faces < 1:
@@ -186,10 +192,59 @@ def extract_face_embeddings(
         embed_started = monotonic()
         faces: list[FaceEmbeddingFace] = []
         for index, detection in enumerate(selected):
+            quality = None
+            if quality_thresholds is not None:
+                try:
+                    quality = evaluate_face_quality(
+                        image,
+                        bbox=detection["bbox"],
+                        confidence=detection["confidence"],
+                        thresholds=quality_thresholds,
+                    )
+                except FaceQualityError:
+                    warnings.append("face_quality_failed")
+                    faces.append(
+                        FaceEmbeddingFace(
+                            index=index,
+                            bbox=detection["bbox"],
+                            confidence=detection["confidence"],
+                            landmarks=detection["landmarks"],
+                            embedding=None,
+                            status="technical_failed",
+                            error_code="invalid_face_quality",
+                        )
+                    )
+                    continue
+                if quality.decision == "quality_rejected":
+                    faces.append(
+                        FaceEmbeddingFace(
+                            index=index,
+                            bbox=detection["bbox"],
+                            confidence=detection["confidence"],
+                            landmarks=detection["landmarks"],
+                            embedding=None,
+                            status="quality_rejected",
+                            quality=quality,
+                        )
+                    )
+                    continue
             try:
                 embedding = _extract_embedding(np, runtime.recognizer, image, detection)
-            except FaceEmbeddingError:
+            except FaceEmbeddingError as error:
                 warnings.append("face_embedding_failed")
+                if quality is not None:
+                    faces.append(
+                        FaceEmbeddingFace(
+                            index=index,
+                            bbox=detection["bbox"],
+                            confidence=detection["confidence"],
+                            landmarks=detection["landmarks"],
+                            embedding=None,
+                            status="technical_failed",
+                            quality=quality,
+                            error_code=error.code,
+                        )
+                    )
                 continue
             faces.append(
                 FaceEmbeddingFace(
@@ -198,18 +253,20 @@ def extract_face_embeddings(
                     confidence=detection["confidence"],
                     landmarks=detection["landmarks"],
                     embedding=embedding,
+                    quality=quality,
                 )
             )
             del embedding
         embed_ms = _elapsed_ms(embed_started)
 
-        if not faces and detections:
+        kept_faces = tuple(face for face in faces if face.embedding is not None)
+        if not kept_faces and detections:
             warnings.append("no_valid_faces")
 
         return FaceEmbeddingResult(
             model=model,
             faces=tuple(faces),
-            has_single_query_face_usable=len(faces) == 1,
+            has_single_query_face_usable=len(kept_faces) == 1,
             warnings=_dedupe(warnings),
             timings={
                 "decode_ms": decode_ms,

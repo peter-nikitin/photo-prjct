@@ -16,20 +16,11 @@ from django.utils import timezone
 from picflow.gallery import GalleryFaceCrop, gallery_face_crop, gallery_photo_queryset
 from picflow.models import Event, Photo
 from processing.models import (
-    FACE_EMBEDDING_PROCESSOR,
     EventFaceClusterActivation,
     FaceEmbedding,
 )
-from processing.services.enrollment import (
-    CONTRACT_VERSION as FACE_EMBEDDING_CONTRACT_VERSION,
-)
-from processing.services.enrollment import (
-    FACE_EMBEDDING_CONFIGURATION,
-    FACE_EMBEDDING_PROCESSOR_VERSION,
-    PREVIEW_CONTRACT_VERSION,
-    PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-)
 from processing.services.face_cohort import compatible_face_embedding_queryset
+from processing.services.face_quality import active_face_embedding_generations
 
 from selfie_search.images import PreparedSelfie
 from selfie_search.models import (
@@ -79,10 +70,12 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage) -> Cr
 
     content = selfie.content
     content_type = selfie.content_type
+    configuration = _configuration(
+        event=event, content_type=content_type, content_size=len(content)
+    )
     key = f"selfie-search/{uuid4().hex}"
     stored = storage.put(key=key, content=content, content_type=content_type)
     public_token = secrets.token_urlsafe(32)
-    configuration = _configuration(content_type=content_type, content_size=len(content))
     try:
         with transaction.atomic():
             search = SelfieSearch.objects.create(
@@ -109,7 +102,7 @@ def gallery_search_faces_by_photo(
     photo_ids = frozenset(str(photo.pk) for photo in photos if photo.event_id == event.pk)
     if not photo_ids:
         return {}
-    configuration = _gallery_configuration()
+    configuration = _gallery_configuration(event=event)
     faces = _compatible_gallery_embeddings(
         event=event,
         configuration=configuration,
@@ -148,7 +141,9 @@ def submit_gallery_photo_search(
             if photo is None:
                 raise GallerySearchUnavailable() from None
 
-            configuration = _gallery_configuration(photo=photo, detection_id=detection_id)
+            configuration = _gallery_configuration(
+                event=event, photo=photo, detection_id=detection_id
+            )
             _gallery_source_candidate(event=event, configuration=configuration)
 
             public_token = secrets.token_urlsafe(32)
@@ -356,8 +351,8 @@ def resolve_public_search(event_slug: str, public_token: str) -> SelfieSearch:
     )
 
 
-def _configuration(*, content_type: str, content_size: int) -> dict[str, object]:
-    gallery_generations = _face_embedding_generations()
+def _configuration(*, event: Event, content_type: str, content_size: int) -> dict[str, object]:
+    gallery_generations = _face_embedding_generations(event)
     gallery_model = gallery_generations[0]["model"]
     if not isinstance(gallery_model, str):
         raise ValueError("invalid face-embedding generation")
@@ -373,8 +368,10 @@ def _configuration(*, content_type: str, content_size: int) -> dict[str, object]
     }
 
 
-def _gallery_configuration(*, photo: Photo | None = None, detection_id=None) -> dict[str, object]:
-    gallery_generations = _face_embedding_generations()
+def _gallery_configuration(
+    *, event: Event, photo: Photo | None = None, detection_id=None
+) -> dict[str, object]:
+    gallery_generations = _face_embedding_generations(event)
     gallery_model = gallery_generations[0]["model"]
     if not isinstance(gallery_model, str):
         raise ValueError("invalid face-embedding generation")
@@ -581,36 +578,8 @@ def _persist_gallery_results(*, search: SelfieSearch, expansion: RankedPhotoExpa
     )
 
 
-def _face_embedding_generations() -> tuple[dict[str, object], ...]:
-    return (
-        _face_embedding_generation(
-            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
-        ),
-        _face_embedding_generation(
-            contract_version=PREVIEW_CONTRACT_VERSION,
-            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-        ),
-    )
-
-
-def _face_embedding_generation(
-    *, contract_version: int, processor_version: int
-) -> dict[str, object]:
-    face_configuration = FACE_EMBEDDING_CONFIGURATION.get("face_embedding")
-    if not isinstance(face_configuration, dict):
-        raise ValueError("invalid current face-embedding configuration")
-    model = face_configuration.get("model")
-    if not isinstance(model, str) or not model:
-        raise ValueError("invalid current face-embedding model")
-    return {
-        "contract_version": contract_version,
-        "processor_type": FACE_EMBEDDING_PROCESSOR,
-        "processor_version": processor_version,
-        "configuration": FACE_EMBEDDING_CONFIGURATION,
-        "configuration_hash": _configuration_hash(FACE_EMBEDDING_CONFIGURATION),
-        "model": model,
-    }
+def _face_embedding_generations(event: Event) -> tuple[dict[str, object], ...]:
+    return active_face_embedding_generations(event)
 
 
 def _token_digest(public_token: str) -> str:

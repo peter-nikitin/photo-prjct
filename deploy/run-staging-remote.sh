@@ -381,7 +381,9 @@ commands = {
     'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
     'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
     'configure-monitoring': 'exec sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"',
-    'verify-staging-image': 'test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"',
+    'verify-staging-image': r'''set -eu
+test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"
+test "$(sed -n 's/^PHOTO_WORKER_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_PROCESSOR_IDENTITIES"''',
     'verify-paused-observability-release': r'''set -eu
 case "$RELEASE_SHA" in
   ''|*[!0-9a-f]*) exit 2 ;;
@@ -601,7 +603,7 @@ case "$mode" in
         ;;
     verify-staging-image)
         remote_environment=$temporary_root/remote.env
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" APP_IMAGE >"$command_output" 2>&1; then
+        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" APP_IMAGE PHOTO_WORKER_PROCESSOR_IDENTITIES >"$command_output" 2>&1; then
             fail environment materialization_failed
         fi
         ;;

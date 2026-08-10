@@ -1149,11 +1149,47 @@ def test_preview_first_activation_accepts_and_persists_all_worker_identities(
     )
 
 
+def test_quality_gate_candidate_identity_is_opt_in_and_preserved_without_preview_activation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """An explicit v4 claimant must not implicitly enable preview processing."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "PHOTO_PROCESSING_PREVIEW_ENABLED": "False",
+            "PHOTO_PROCESSING_FACE_ENABLED": "True",
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+                "1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,"
+                "2/face_embedding/2,3/face_embedding/4"
+            ),
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert "PHOTO_PROCESSING_ENABLED=True" in deployed_env
+    assert "PHOTO_PROCESSING_PREVIEW_ENABLED=False" in deployed_env
+    assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
+    assert (
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,"
+        "2/generate_preview/1,2/face_embedding/2,3/face_embedding/4" in deployed_env
+    )
+    commands = _apply_log(tmp_path)
+    assert not any("reprocess_event_face_embeddings --apply" in command for command in commands)
+    assert not any("activate_face_embedding_generation" in command for command in commands)
+
+
 @pytest.mark.parametrize(
     "identities",
     [
         "1/capture_metadata/1,2/generate_preview/1,2/face_embedding/2",
         "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/2,9/bogus/9",
+        "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/2,3/face_embedding/5",
         "1/capture_metadata/2,2/generate_preview/1,2/generate_preview/1,2/face_embedding/2",
         "1/capture_metadata/2, 2/generate_preview/1,2/face_embedding/2",
         "1/capture_metadata/2,",

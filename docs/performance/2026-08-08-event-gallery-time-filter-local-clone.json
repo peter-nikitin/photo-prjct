@@ -1,0 +1,67 @@
+{
+  "corpus": {
+    "accepted_current_v2_capture_times": 17043,
+    "event_photo_count": 17043
+  },
+  "event_id": 9,
+  "gate": "passed",
+  "pages": [
+    {
+      "filtered": {
+        "database_execution_ms": 64.66,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 162.768
+      },
+      "gate": "passed",
+      "page": "first",
+      "page_number": 1,
+      "ratios": {
+        "database_execution": 1.012,
+        "rendered_response": 0.946
+      },
+      "unfiltered": {
+        "database_execution_ms": 63.896,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 172.002
+      }
+    },
+    {
+      "filtered": {
+        "database_execution_ms": 69.969,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 186.929
+      },
+      "gate": "passed",
+      "page": "midpoint",
+      "page_number": 86,
+      "ratios": {
+        "database_execution": 0.95,
+        "rendered_response": 0.939
+      },
+      "unfiltered": {
+        "database_execution_ms": 73.687,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 199.05
+      }
+    },
+    {
+      "filtered": {
+        "database_execution_ms": 72.829,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 142.084
+      },
+      "gate": "passed",
+      "page": "last",
+      "page_number": 171,
+      "ratios": {
+        "database_execution": 1.0,
+        "rendered_response": 1.005
+      },
+      "unfiltered": {
+        "database_execution_ms": 72.859,
+        "plan_shape": ["Limit", "Unique", "Sort", "Nested Loop", "Seq Scan", "Hash Join", "Hash Join", "Seq Scan", "Hash", "Hash Join", "Seq Scan", "Hash", "Seq Scan", "Hash", "Seq Scan"],
+        "rendered_response_ms": 141.396
+      }
+    }
+  ]
+}

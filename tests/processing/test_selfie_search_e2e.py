@@ -173,7 +173,6 @@ def _nearby_vector(vector: tuple[float, ...]) -> list[float]:
 
 
 @override_settings(
-    SELFIE_SEARCH_ENABLED=True,
     PHOTO_PROCESSING_ENABLED=True,
     PHOTO_PROCESSING_FACE_ENABLED=True,
     PHOTO_PROCESSING_WORKER_TOKEN="selfie-search-e2e-worker-token",

@@ -7,15 +7,17 @@ import json
 import math
 import random
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from picflow.models import Event, Photo
 
 from processing.contracts import AttemptCompletion, ClaimedJob, CompletionConflict, EmptyClaim
 from processing.models import (
+    CAPTURE_METADATA_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     EventProcessingRun,
@@ -92,7 +94,8 @@ def claim_job(
             if candidate is None:
                 return EmptyClaim()
             tried.add(candidate.id)
-            run = EventProcessingRun.objects.select_for_update().get(pk=candidate.run_id)
+            _lock_transition_row(Event, pk=candidate.event_id)
+            run = _lock_transition_row(EventProcessingRun, pk=candidate.run_id)
             job = (
                 ProcessingJob.objects.select_for_update(skip_locked=True)
                 .filter(
@@ -104,12 +107,14 @@ def claim_job(
             )
             if job is None or run.status == EventProcessingRun.Status.CLOSED:
                 continue
+            _lock_transition_row(Photo, pk=job.photo_id)
             _validate_lease_seconds(lease_seconds, job.configuration)
             if run.status == EventProcessingRun.Status.COLLECTING:
                 run.status = EventProcessingRun.Status.SEALED
                 run.sealed_at = now
                 run.save(update_fields=["status", "sealed_at"])
-            state = PhotoProcessingState.objects.select_for_update().get(
+            state = _lock_transition_row(
+                PhotoProcessingState,
                 photo_id=job.photo_id,
                 processor_type=job.processor_type,
             )
@@ -151,7 +156,7 @@ def heartbeat_attempt(
 ) -> ProcessingAttempt | None:
     now = now or timezone.now()
     with transaction.atomic():
-        _, job, state, attempt = _locked_context(attempt_id)
+        _, _, job, _, state, attempt = _locked_context(attempt_id)
         _validate_lease_seconds(lease_seconds, job.configuration)
         if not _owns_current_lease(state, attempt, now):
             return None
@@ -166,7 +171,7 @@ def refresh_download(
 ) -> ProcessingAttempt | None:
     now = now or timezone.now()
     with transaction.atomic():
-        _, _, state, attempt = _locked_context(attempt_id)
+        _, _, _, _, state, attempt = _locked_context(attempt_id)
         return attempt if _owns_current_lease(state, attempt, now) else None
 
 
@@ -253,7 +258,7 @@ def recover_expired_attempts(
     recovered: list[ProcessingAttempt] = []
     for attempt_id in candidate_ids:
         with transaction.atomic():
-            run, job, state, attempt = _locked_context(attempt_id)
+            _, run, job, _, state, attempt = _locked_context(attempt_id)
             if attempt.status != ProcessingAttempt.Status.IN_PROGRESS:
                 continue
             if attempt.lease_expires_at is None or attempt.lease_expires_at > now:
@@ -272,7 +277,7 @@ def _terminal_submission(
 ) -> AttemptCompletion:
     payload_hash = _canonical_hash(payload)
     with transaction.atomic():
-        run, job, state, attempt = _locked_context(attempt_id)
+        _, run, job, photo, state, attempt = _locked_context(attempt_id)
         now = now or timezone.now()
         if attempt.status != ProcessingAttempt.Status.IN_PROGRESS:
             if attempt.status == ProcessingAttempt.Status.EXPIRED:
@@ -297,25 +302,51 @@ def _terminal_submission(
                 succeeded_at=now,
                 next_attempt_at=None,
             )
+            if attempt.processor_type == CAPTURE_METADATA_PROCESSOR:
+                transition_capture_time_projection(
+                    photo=photo,
+                    state=state,
+                    accepted_attempt=attempt if attempt.processor_version == 2 else None,
+                )
         else:
             _terminal_failure(attempt, payload, now)
             _transition_failure(run, job, state, attempt, now=now, jitter=jitter)
-        _close_run_if_terminal(run.id, now)
+            if attempt.processor_type == CAPTURE_METADATA_PROCESSOR:
+                transition_capture_time_projection(photo=photo, state=state, accepted_attempt=None)
+        _close_locked_run_if_terminal(run, now)
         return AttemptCompletion(attempt=attempt)
 
 
 def _locked_context(
     attempt_id: UUID,
-) -> tuple[EventProcessingRun, ProcessingJob, PhotoProcessingState, ProcessingAttempt]:
-    identity = ProcessingAttempt.objects.only("run_id", "job_id").get(pk=attempt_id)
-    run = EventProcessingRun.objects.select_for_update().get(pk=identity.run_id)
-    job = ProcessingJob.objects.select_for_update().get(pk=identity.job_id)
-    state = PhotoProcessingState.objects.select_for_update().get(
+) -> tuple[
+    Event, EventProcessingRun, ProcessingJob, Photo, PhotoProcessingState, ProcessingAttempt
+]:
+    identity = ProcessingAttempt.objects.only("event_id", "run_id", "job_id", "photo_id").get(
+        pk=attempt_id
+    )
+    event = _lock_transition_row(Event, pk=identity.event_id)
+    run = _lock_transition_row(EventProcessingRun, pk=identity.run_id)
+    jobs = _lock_transition_rows(ProcessingJob, run_id=identity.run_id)
+    job = next(job for job in jobs if job.pk == identity.job_id)
+    photo = _lock_transition_row(Photo, pk=identity.photo_id)
+    state = _lock_transition_row(
+        PhotoProcessingState,
         photo_id=job.photo_id,
         processor_type=job.processor_type,
     )
-    attempt = ProcessingAttempt.objects.select_for_update().get(pk=attempt_id)
-    return run, job, state, attempt
+    attempt = _lock_transition_row(ProcessingAttempt, pk=attempt_id)
+    return event, run, job, photo, state, attempt
+
+
+def _lock_transition_row(model: Any, **lookup: Any) -> Any:
+    """Take one lifecycle row lock; callers keep the documented global order."""
+    return model.objects.select_for_update().get(**lookup)
+
+
+def _lock_transition_rows(model: Any, **lookup: Any) -> list[Any]:
+    """Lock one same-kind lifecycle row group in a deterministic order."""
+    return list(model.objects.select_for_update().filter(**lookup).order_by("photo_id", "id"))
 
 
 def _recover_expired(
@@ -355,7 +386,7 @@ def _recover_expired(
     )
     if state.current_attempt_id == attempt.id:
         _transition_failure(run, job, state, attempt, now=now, jitter=jitter)
-    _close_run_if_terminal(run.id, now)
+    _close_locked_run_if_terminal(run, now)
 
 
 def _transition_failure(
@@ -464,6 +495,44 @@ def _set_state(
     for field, value in values.items():
         setattr(state, field, value)
     state.save(update_fields=[*values, "updated_at"])
+
+
+def transition_capture_time_projection(
+    *, photo: Photo, state: PhotoProcessingState, accepted_attempt: ProcessingAttempt | None
+) -> None:
+    """Synchronously clear or publish the sole supported Photo time projection."""
+    capture_time = None
+    source_attempt = None
+    if accepted_attempt is not None:
+        if not (
+            accepted_attempt.photo_id == photo.pk
+            and state.photo_id == photo.pk
+            and state.processor_type == CAPTURE_METADATA_PROCESSOR
+            and state.status == PhotoProcessingState.Status.SUCCEEDED
+            and state.current_run_id == accepted_attempt.run_id
+            and state.current_job_id == accepted_attempt.job_id
+            and state.current_attempt_id == accepted_attempt.id
+            and state.accepted_attempt_id == accepted_attempt.id
+            and accepted_attempt.processor_type == CAPTURE_METADATA_PROCESSOR
+            and accepted_attempt.processor_version == 2
+            and accepted_attempt.status == ProcessingAttempt.Status.SUCCEEDED
+            and accepted_attempt.accepted
+        ):
+            raise ValueError("capture-time projection requires the current accepted v2 attempt")
+        value = accepted_attempt.result.get("capture_time")
+        if value is not None:
+            if not isinstance(value, str):
+                raise ValueError("capture-time projection requires a canonical timestamp")
+            try:
+                capture_time = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+            except ValueError as error:
+                raise ValueError(
+                    "capture-time projection requires a canonical timestamp"
+                ) from error
+            source_attempt = accepted_attempt
+    photo.capture_time = capture_time
+    photo.capture_time_source_attempt = source_attempt
+    photo.save(update_fields=["capture_time", "capture_time_source_attempt"])
 
 
 def _terminal_success(
@@ -912,7 +981,7 @@ def _durable_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key != "canonical_error_detail"}
 
 
-def _close_run_if_terminal(run_id: UUID, now: timezone.datetime) -> None:
-    from processing.services.reports import close_run_report
+def _close_locked_run_if_terminal(run: EventProcessingRun, now: timezone.datetime) -> None:
+    from processing.services.reports import close_locked_run_report
 
-    close_run_report(run_id, now=now)
+    close_locked_run_report(run, now=now)

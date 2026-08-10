@@ -121,7 +121,7 @@ def decompression_bomb_upload() -> SimpleUploadedFile:
 @override_settings(
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
 )
-@override_settings(SELFIE_SEARCH_ENABLED=True, SELFIE_SEARCH_EMBEDDING_MODEL="sface")
+@override_settings(SELFIE_SEARCH_EMBEDDING_MODEL="sface")
 class SubmissionTests(TestCase):
     """The production break caught here is unaccepted or foreign data entering a search."""
 
@@ -650,7 +650,7 @@ class SubmissionTests(TestCase):
 @override_settings(
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
 )
-@override_settings(SELFIE_SEARCH_ENABLED=True, SELFIE_SEARCH_EMBEDDING_MODEL="sface")
+@override_settings(SELFIE_SEARCH_EMBEDDING_MODEL="sface")
 class GalleryPhotoSubmissionTests(TestCase):
     """The production break caught here is accepting stale or ambiguous gallery face evidence."""
 

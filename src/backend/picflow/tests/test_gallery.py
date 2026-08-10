@@ -1,13 +1,16 @@
 from dataclasses import FrozenInstanceError
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TestCase
+from django.core.paginator import Paginator
+from django.http import QueryDict
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, OpenedObject
 from processing.models import (
+    CAPTURE_METADATA_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     EventProcessingRun,
     PhotoDerivative,
@@ -16,6 +19,7 @@ from processing.models import (
     ProcessingJob,
 )
 
+from picflow.forms import EventGalleryTimeFilterForm
 from picflow.gallery import (
     CloseableMediaIterator,
     GalleryFaceCrop,
@@ -25,6 +29,7 @@ from picflow.gallery import (
     PublicMediaResolver,
     ResolvedPublicMedia,
     gallery_face_crop,
+    gallery_photo_queryset,
 )
 from picflow.models import Event, Photo
 
@@ -386,6 +391,311 @@ class _DownloadFinalObjectStorage:
     def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str:
         self.signed_requests.append((key, attachment_filename))
         return f"https://storage.example.test/{key}?signature=secret"
+
+
+class EventGalleryTimeFilterFormTests(SimpleTestCase):
+    """The production breaks caught here are broad or timezone-dependent time searches."""
+
+    def make_event(self, **overrides) -> Event:
+        values = {
+            "name": "Summer festival",
+            "slug": "summer-festival",
+            "start_date": date(2026, 6, 10),
+            "end_date": date(2026, 6, 12),
+            "city": "London",
+            "timezone_name": "Europe/London",
+        }
+        values.update(overrides)
+        return Event(**values)
+
+    def form(self, event: Event, query: str) -> EventGalleryTimeFilterForm:
+        return EventGalleryTimeFilterForm(event, QueryDict(query))
+
+    def test_unfiltered_request_has_no_bounds(self) -> None:
+        form = self.form(self.make_event(), "")
+
+        self.assertFalse(form.is_requested)
+        self.assertTrue(form.is_valid())
+        self.assertIsNone(form.utc_bounds)
+
+    def test_from_is_required_when_a_manual_filter_is_requested(self) -> None:
+        form = self.form(self.make_event(), "to=2026-06-10T12:00")
+
+        self.assertTrue(form.is_requested)
+        self.assertFalse(form.is_valid())
+        self.assertIn("from", form.errors)
+
+    def test_to_can_be_blank_and_uses_the_exclusive_midnight_after_event_end(self) -> None:
+        event = self.make_event()
+        form = self.form(event, "from=2026-06-11T23:50&to=")
+
+        self.assertTrue(form.is_valid())
+        self.assertEqual(
+            form.utc_bounds,
+            (
+                datetime(2026, 6, 11, 22, 40, tzinfo=UTC),
+                datetime(2026, 6, 12, 23, 10, tzinfo=UTC),
+            ),
+        )
+
+    def test_uses_event_timezone_not_server_or_browser_timezone(self) -> None:
+        event = self.make_event()
+        with override_settings(TIME_ZONE="Pacific/Auckland"):
+            form = self.form(event, "from=2026-06-10T12:03&to=2026-06-10T12:04")
+            self.assertTrue(form.is_valid())
+
+        self.assertEqual(
+            form.utc_bounds,
+            (
+                datetime(2026, 6, 10, 10, 53, tzinfo=UTC),
+                datetime(2026, 6, 10, 11, 14, tzinfo=UTC),
+            ),
+        )
+
+    def test_accepts_event_local_midnight_and_event_range_end(self) -> None:
+        form = self.form(self.make_event(), "from=2026-06-10T00:00&to=2026-06-12T23:59")
+
+        self.assertTrue(form.is_valid())
+        self.assertEqual(
+            form.utc_bounds,
+            (
+                datetime(2026, 6, 9, 22, 50, tzinfo=UTC),
+                datetime(2026, 6, 12, 23, 9, tzinfo=UTC),
+            ),
+        )
+
+    def test_rejects_repeated_or_malformed_scalar_datetime_values(self) -> None:
+        event = self.make_event()
+        cases = (
+            "from=2026-06-10T12:00&from=2026-06-10T12:01",
+            "from=2026-06-10T12:00&to=2026-06-10T12:01&to=2026-06-10T12:02",
+            "from=2026-06-10",
+            "from=2026-06-10T12:00Z",
+            "from=2026-06-10T12:00&to=2026-06-10T12:00",
+            "from=2026-06-10T12:01&to=2026-06-10T12:00",
+            "from=2026-06-13T00:00",
+        )
+
+        for query in cases:
+            with self.subTest(query=query):
+                form = self.form(event, query)
+                self.assertFalse(form.is_valid())
+                self.assertIsNone(form.utc_bounds)
+
+    def test_rejects_nonexistent_and_ambiguous_dst_wall_times(self) -> None:
+        event = self.make_event(
+            start_date=date(2026, 3, 8),
+            end_date=date(2026, 11, 1),
+            timezone_name="America/New_York",
+        )
+        for query, error_field in (
+            ("from=2026-03-08T02:30", "from"),
+            ("from=2026-11-01T01:30", "from"),
+            ("from=2026-03-08T01:30&to=2026-03-08T02:30", "to"),
+        ):
+            with self.subTest(query=query):
+                form = self.form(event, query)
+                self.assertFalse(form.is_valid())
+                self.assertIn(error_field, form.errors)
+
+
+class FilteredGalleryQuerysetTests(TestCase):
+    """The break caught here is treating convenient metadata JSON as accepted evidence."""
+
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="time-filter-gallery")
+        self.event = Event.objects.create(
+            name="Time filter gallery",
+            slug="time-filter-gallery",
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 12),
+            city="London",
+            timezone_name="Europe/London",
+        )
+
+    def photo(
+        self, photo_id: str, *, event: Event | None = None, filename: str | None = None
+    ) -> Photo:
+        return Photo.objects.create(
+            id=photo_id,
+            event=event or self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/{photo_id}",
+            original_filename=filename or f"{photo_id}.jpg",
+            original_size=4,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+    def capture_evidence(
+        self,
+        photo: Photo,
+        *,
+        capture_time: object,
+    ) -> ProcessingAttempt:
+        configuration = {"capture_metadata": {"event_timezone": photo.event.timezone_name}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            configuration_hash=uuid4().hex + uuid4().hex,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+            result={"capture_time": capture_time},
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo, processor_type=CAPTURE_METADATA_PROCESSOR
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.save()
+        return attempt
+
+    def queryset(self):
+        return gallery_photo_queryset(
+            event=self.event,
+            capture_time_start=datetime(2026, 6, 10, 9, 50, tzinfo=UTC),
+            capture_time_end=datetime(2026, 6, 10, 10, 10, tzinfo=UTC),
+        )
+
+    def test_uses_photo_capture_time_with_inclusive_boundaries_after_media_eligibility(
+        self,
+    ) -> None:
+        included_lower = self.photo("included-lower", filename="b.jpg")
+        included_upper = self.photo("included-upper", filename="a.jpg")
+        excluded_before = self.photo("excluded-before")
+        excluded_after = self.photo("excluded-after")
+        null_projection = self.photo("null-projection")
+        attempts = {
+            photo: self.capture_evidence(photo, capture_time="2026-06-10T10:00:00Z")
+            for photo in (included_lower, included_upper, excluded_before, excluded_after)
+        }
+        Photo.objects.filter(pk=included_lower.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 50, tzinfo=UTC),
+            capture_time_source_attempt=attempts[included_lower],
+        )
+        Photo.objects.filter(pk=included_upper.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 10, tzinfo=UTC),
+            capture_time_source_attempt=attempts[included_upper],
+        )
+        Photo.objects.filter(pk=excluded_before.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 49, 59, tzinfo=UTC),
+            capture_time_source_attempt=attempts[excluded_before],
+        )
+        Photo.objects.filter(pk=excluded_after.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 10, 1, tzinfo=UTC),
+            capture_time_source_attempt=attempts[excluded_after],
+        )
+        self.capture_evidence(null_projection, capture_time="2026-06-10T10:00:00Z")
+
+        self.assertEqual(list(self.queryset()), [included_upper, included_lower])
+
+    def test_filtered_projection_query_has_no_capture_metadata_json_reader(self) -> None:
+        photo = self.photo("projected")
+        attempt = self.capture_evidence(photo, capture_time="2026-06-10T10:00:00Z")
+        Photo.objects.filter(pk=photo.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+            capture_time_source_attempt=attempt,
+        )
+
+        query_sql = str(self.queryset().query)
+
+        self.assertNotIn("capture_metadata", query_sql)
+        self.assertNotIn("::timestamp", query_sql)
+        self.assertNotIn("JSON", query_sql)
+
+    def test_unfiltered_gallery_does_not_require_a_capture_time_projection(self) -> None:
+        without_projection = self.photo("without-projection")
+        with_projection = self.photo("with-projection")
+        attempt = self.capture_evidence(with_projection, capture_time="2026-06-10T10:00:00Z")
+        Photo.objects.filter(pk=with_projection.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+            capture_time_source_attempt=attempt,
+        )
+
+        self.assertEqual(
+            list(gallery_photo_queryset(event=self.event)),
+            [without_projection, with_projection],
+        )
+
+    def test_filtered_projection_reader_preserves_event_and_media_eligibility(self) -> None:
+        included = self.photo("included")
+        accepted_attempt = self.capture_evidence(included, capture_time="2026-06-10T10:00:00Z")
+        Photo.objects.filter(pk=included.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+            capture_time_source_attempt=accepted_attempt,
+        )
+        other_event = Event.objects.create(
+            name="Other gallery",
+            slug="other-gallery",
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 10),
+            city="London",
+            timezone_name="Europe/London",
+        )
+        other_photo = self.photo("other", event=other_event)
+        other_attempt = self.capture_evidence(other_photo, capture_time="2026-06-10T10:00:00Z")
+        Photo.objects.filter(pk=other_photo.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+            capture_time_source_attempt=other_attempt,
+        )
+        hidden = Photo.objects.create(id="hidden", event=self.event, src="photos/hidden.jpg")
+        hidden_attempt = self.capture_evidence(hidden, capture_time="2026-06-10T10:00:00Z")
+        Photo.objects.filter(pk=hidden.pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+            capture_time_source_attempt=hidden_attempt,
+        )
+
+        self.assertEqual(list(self.queryset()), [included])
+
+    def test_keeps_filename_id_order_and_one_hundred_item_pages_after_filtering(self) -> None:
+        for index in range(101):
+            photo = self.photo(f"photo-{index:03}", filename=f"image-{index:03}.jpg")
+            attempt = self.capture_evidence(photo, capture_time="2026-06-10T10:00:00Z")
+            Photo.objects.filter(pk=photo.pk).update(
+                capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+                capture_time_source_attempt=attempt,
+            )
+
+        page_one = Paginator(self.queryset(), 100).page(1)
+        page_two = Paginator(self.queryset(), 100).page(2)
+
+        self.assertEqual(
+            [photo.pk for photo in page_one.object_list],
+            [f"photo-{index:03}" for index in range(100)],
+        )
+        self.assertEqual([photo.pk for photo in page_two.object_list], ["photo-100"])
 
 
 class PublicGalleryMediaTests(SimpleTestCase):

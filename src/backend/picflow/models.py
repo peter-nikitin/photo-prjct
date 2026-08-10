@@ -118,11 +118,21 @@ class Photo(models.Model):
         default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
         db_default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
     )
+    capture_time = models.DateTimeField(null=True, blank=True, editable=False)
+    capture_time_source_attempt = models.ForeignKey(
+        "processing.ProcessingAttempt",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        editable=False,
+        related_name="+",
+    )
 
     class Meta:
         ordering = ["id"]
         indexes = [
             models.Index(fields=["uploaded_by"], name="picflow_photo_uploaded_by_idx"),
+            models.Index(fields=["event", "capture_time"], name="picflow_photo_event_time_idx"),
         ]
         constraints = [
             models.CheckConstraint(
@@ -160,6 +170,15 @@ class Photo(models.Model):
                     )
                 ),
                 name="picflow_photo_processing_policy_pair_chk",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(capture_time__isnull=True, capture_time_source_attempt__isnull=True)
+                    | models.Q(
+                        capture_time__isnull=False, capture_time_source_attempt__isnull=False
+                    )
+                ),
+                name="picflow_photo_capture_time_pair_chk",
             ),
         ]
 

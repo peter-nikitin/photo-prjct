@@ -90,8 +90,21 @@ The repository currently contains an early Django application:
   commands. The reprocessing command defaults to dry run, requires an explicit apply, validates
   the approved event identity/cohort/configuration, and enrolls immutable version-2 work without
   rewriting prior attempts. The report emits bounded completion, timezone-state, warning, UTC, and
-  event-local-hour aggregates. No restored-snapshot run, deployment, backfill, or customer-facing
-  time filtering is evidenced here.
+  event-local-hour aggregates.
+- Release A is the deployed projection writer and direct current-v2 evidence reader. Its accepted
+  staging operational gate is commit `41e3068`: final global reconciliation is clean at 17,043
+  exact event-9 source/value pairs, and a transaction-rollback lifecycle smoke cleared then
+  republished the derived projection without rewriting immutable evidence. The source of truth is
+  still the current accepted version-2 attempt; `Photo.capture_time` and
+  `Photo.capture_time_source_attempt` are a synchronous, rebuildable PostgreSQL read projection.
+  Release B replaces the filtered gallery's direct JSON join/cast with the indexed
+  `Photo.capture_time` range and retains no direct-reader fallback. On the immutable accepted local
+  clone (9 events, 17,310 photos; event 9 has 17,043), final global reconciliation was clean before
+  and after the read-only candidate benchmark, and every first/midpoint/last database and rendered
+  ratio passed the 2x gate; see the [sanitized aggregate report](performance/2026-08-08-event-gallery-time-filter-local-clone.json).
+  This is local Release B candidate evidence, not a Release B PR, CI result, deployed image,
+  candidate switch, live benchmark, or customer acceptance. Those remain separate normal-release
+  gates.
 - Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the
@@ -181,6 +194,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Use the current preemptible VM for staging and a separate non-preemptible VM for production.
 - Promote the same staging-verified image to production only after manual approval.
 - Load environment-specific configuration from environment variables and never commit secrets.
+- Use one complete, versioned Yandex Lockbox secret as the persistent secret authority for each
+  logical environment. Authorized developers read it through interactive `yc`; GitHub staging jobs
+  use workload identity federation and resource-level payload access. Runtime services do not read
+  Lockbox, as defined by [ADR 0026](adr/0026-use-lockbox-for-environment-secrets.md).
 - Keep architecture, decisions, and delivery plans in this repository.
 - Prefer simple, repeatable operations over premature distributed infrastructure.
 - Use the shared Nginx and Certbot HTTPS edge in every public environment as defined by
@@ -398,18 +415,21 @@ selfie deletion before `ready`, and ready-result media for both generations with
 normal paid gallery. The existing immutable worker image packages pinned public OpenCV Zoo
 YuNet/SFace models and runs a non-root build-time smoke through both `face_embedding` and
 `selfie_query`; the exact rollout image must run that same smoke before activation.
-`SELFIE_SEARCH_ENABLED` and `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED` remain `False` by default. No
-staging lifecycle mutation, real-bucket preflight, exact rollout-image smoke, VM capacity smoke,
-cluster corpus activation, or environment/customer outcome is claimed. Corpus build, private
-benchmark, aggregate report, and guarded activation commands are repository interfaces only until
-the release gate and an explicit later rollout approve them.
+Public selfie search is always available when its existing processing prerequisites are healthy;
+the retired availability switch is no longer an active setting. No staging lifecycle mutation,
+real-bucket preflight, exact rollout-image smoke, VM capacity smoke, cluster
+corpus activation, or environment/customer outcome is claimed. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False`
+remains the independent repository default. Corpus build, private benchmark, aggregate report, and
+guarded activation commands are repository interfaces only until the release gate and an explicit
+later rollout approve them.
 
 The gallery-photo source is locally verified by 145 focused Python tests, 70 JavaScript tests for
 the production markup and chooser behavior, and 83 visual tests covering the zero-, one-, two-,
 and four-face event-gallery fixture at desktop and 390px mobile widths. The root `make check`
 also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and clean system/migration
-checks. `SELFIE_SEARCH_ENABLED` remains `False` by default in the repository. The gallery-photo
-source has no staging or production deployment evidence; production is not activated.
+checks. The gallery-photo source has no staging or production deployment evidence; production is
+not activated. Public selfie search is not controlled by an availability flag; the independent
+cluster-expansion flag remains disabled by default.
 
 ### Purchase and download
 

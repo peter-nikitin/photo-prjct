@@ -469,6 +469,16 @@ validate_migration_preflight_env() {
   printf 'candidate-migration-env-mode-0600\n' >> "$COMMAND_LOG"
 }
 case " $* " in
+  *" manage.py report_photo_capture_time_projection --all-events --require-clean "*)
+    validate_migration_preflight_env
+    printf 'candidate-projection-report\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != projection-report-failure ]
+    ;;
+  *" manage.py benchmark_event_gallery_time_filter --event-id 9 --pages 1,mid,last "*)
+    validate_migration_preflight_env
+    printf 'candidate-projection-benchmark\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != projection-benchmark-failure ]
+    ;;
   *" run --rm --no-deps -T --entrypoint python web manage.py verify_migration_history "*)
     validate_migration_preflight_env
     case "$APPLY_SCENARIO" in
@@ -686,6 +696,7 @@ esac
         "DEPLOY_ROOT": str(tmp_path),
         "COMPOSE_PROJECT_NAME": f"photo-{target}",
         "APP_IMAGE": "new-image",
+        "ACCEPTED_RELEASE_A_IMAGE": "old-image",
         "SECRET_KEY": "new-secret",
         "EXPECTED_REQUESTED_SECRET": "new-secret",
         "DEBUG": "False",
@@ -699,6 +710,10 @@ esac
         "DB_USER": "app",
         "DB_PASSWORD": "password",
         "PHOTO_UPLOAD_ENABLED": "False",
+        "PHOTO_PROCESSING_ENABLED": "True",
+        "PHOTO_PROCESSING_FACE_ENABLED": "True",
+        "WORKER_IMAGE": "worker-image",
+        "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
         "PRIVATE_MEDIA_S3_BUCKET": "requested-private-bucket",
         "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "requested-private-access",
         "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "requested-private-secret",
@@ -718,6 +733,7 @@ SUCCESS_PHASES = [
     "candidate-pull",
     "private-media-preflight",
     "migration-preflight",
+    "projection-preflight",
     "observability-preflight",
     "observability-reconcile",
     "certificate",
@@ -954,45 +970,23 @@ def test_entrypoint_starts_gunicorn_when_multiprocess_directory_cleanup_fails(
     assert (tmp_path / "gunicorn.log").read_text(encoding="utf-8") == "multiproc=\n"
 
 
-def test_disabled_processing_persists_defaults_without_the_worker_profile(
+def test_missing_processing_prerequisite_prevents_deployment(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """A normal deployment must remove a stale worker without trying to start one."""
-    result = _run(
-        "deploy/apply-deployment.sh",
-        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
-    )
+    """The always-available selfie page cannot deploy without its processor."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["PHOTO_PROCESSING_ENABLED"] = "False"
+    result = _run("deploy/apply-deployment.sh", env=env)
 
-    assert result.returncode == 0, result.stderr
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    assert "PHOTO_PROCESSING_ENABLED=False" in deployed_env
-    assert "PHOTO_PROCESSING_PREVIEW_ENABLED=False" in deployed_env
-    assert "PHOTO_PROCESSING_FACE_ENABLED=False" in deployed_env
-    assert "PHOTO_WORKER_REPLICAS=1" in deployed_env
-    assert "WORKER_IMAGE=" in deployed_env
-    assert "PHOTO_PROCESSING_WORKER_TOKEN=" in deployed_env
-    assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120" in deployed_env
-    assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=131072" in deployed_env
-    assert "PHOTO_WORKER_BUILD=capture-metadata-v1" in deployed_env
-    assert "PHOTO_WORKER_LEASE_SECONDS=120" in deployed_env
-    assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,"
-        "2/generate_preview/1,2/face_embedding/2" in deployed_env
-    )
-    assert (
-        "PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,"
-        "generate_preview" in deployed_env
-    )
-    assert "ALLOWED_HOSTS=localhost,web,findme-photo.ru" in deployed_env
-    commands = _apply_log(tmp_path)
-    assert any("--profile worker rm -sf worker" in command for command in commands)
-    assert not any("--profile worker up" in command for command in commands)
+    assert result.returncode == 2
+    assert "Selfie search requires enabled photo processing and face embeddings" in result.stderr
+    assert not (tmp_path / "apply.log").exists()
 
 
-def test_disabled_processing_removes_a_previously_running_profiled_worker(
+def test_missing_face_embedding_prerequisite_preserves_existing_deployment(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """Disabling processing must remove a worker started by the prior profile-enabled rollout."""
+    """A failed prerequisite check cannot mutate an existing deployment."""
     previous_env = PREVIOUS_ENV + (
         b"WORKER_IMAGE=old-worker-image\n"
         b"PHOTO_PROCESSING_ENABLED=True\n"
@@ -1000,53 +994,42 @@ def test_disabled_processing_removes_a_previously_running_profiled_worker(
         b"PHOTO_WORKER_REPLICAS=2\n"
     )
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["PHOTO_PROCESSING_FACE_ENABLED"] = "False"
     (tmp_path / ".env").write_bytes(previous_env)
     (tmp_path / "previous-env.expected").write_bytes(previous_env)
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
-    assert result.returncode == 0, result.stderr
-    assert any("--profile worker rm -sf worker" in command for command in _apply_log(tmp_path))
+    assert result.returncode == 2
+    assert (tmp_path / ".env").read_bytes() == previous_env
+    assert not (tmp_path / "apply.log").exists()
 
 
-def test_disabled_processing_fails_when_stale_worker_removal_fails(
+def test_missing_processing_prerequisite_does_not_reconcile_worker_profile(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """A failed worker removal cannot be hidden by bringing up only the web stack."""
+    """The validation failure occurs before worker reconciliation."""
     env = _apply_env(tmp_path, fake_bin, scenario="worker-removal-failure")
+    env["PHOTO_PROCESSING_ENABLED"] = "False"
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode != 0
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-    commands = _apply_log(tmp_path)
-    assert any("--profile worker rm -sf worker" in command for command in commands)
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not (tmp_path / "apply.log").exists()
 
 
-def test_disabled_selfie_rollback_replaces_malformed_dormant_overrides_with_safe_values(
+def test_selfie_prerequisites_are_required_for_every_deployment(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env.update(
-        {
-            "SELFIE_SEARCH_ENABLED": "False",
-            "SELFIE_SEARCH_MAX_UPLOAD_BYTES": "not-a-number",
-            "SELFIE_SEARCH_MAX_PIXELS": "also-not-a-number",
-            "SELFIE_SEARCH_EMBEDDING_MODEL": "different-model",
-            "SELFIE_SEARCH_TEMPORARY_PREFIX": "originals/",
-        }
-    )
+    env["PHOTO_PROCESSING_ENABLED"] = "False"
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
-    assert result.returncode == 0, result.stderr
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "SELFIE_SEARCH_ENABLED=False" in deployed_env
-    assert "SELFIE_SEARCH_MAX_UPLOAD_BYTES=20971520" in deployed_env
-    assert "SELFIE_SEARCH_MAX_PIXELS=25000000" in deployed_env
-    assert "SELFIE_SEARCH_EMBEDDING_MODEL=sface" in deployed_env
-    assert "SELFIE_SEARCH_TEMPORARY_PREFIX=selfie-search/" in deployed_env
+    assert result.returncode == 2
+    assert "Selfie search requires enabled photo processing and face embeddings" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
 
 
 def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
@@ -1236,6 +1219,7 @@ def test_preview_first_activation_rejects_partial_or_implicit_configuration(
 ) -> None:
     """Preview and face work must be a conscious operator activation, not an image side effect."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["PHOTO_PROCESSING_ENABLED"] = "False"
     env.update(overrides)
 
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -1297,7 +1281,6 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
             {"PHOTO_PROCESSING_FACE_ENABLED": "true"},
             "PHOTO_PROCESSING_FACE_ENABLED must be True or False",
         ),
-        ({"SELFIE_SEARCH_ENABLED": "true"}, "SELFIE_SEARCH_ENABLED must be True or False"),
         (
             {"PHOTO_WORKER_PROCESSOR_TYPES": "capture_metadata,selfie_query"},
             (
@@ -1326,6 +1309,9 @@ def test_processing_activation_requires_exact_valid_configuration(
 ) -> None:
     """Invalid activation never changes the live deployment environment."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    if message in {"Set WORKER_IMAGE", "Set PHOTO_PROCESSING_WORKER_TOKEN"}:
+        env.pop("WORKER_IMAGE")
+        env.pop("PHOTO_PROCESSING_WORKER_TOKEN")
     env.update(overrides)
 
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -1441,7 +1427,7 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     assert not any(command.startswith("preflight-read") for command in commands)
 
 
-def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
+def test_release_b_rejects_a_fresh_deployment_without_accepted_release_a(
     tmp_path: Path,
     fake_bin: Path,
 ) -> None:
@@ -1451,34 +1437,34 @@ def test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow(
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode != 0
     assert "gallery-private-media-preflight-skipped:no-existing-deployment\n" in result.stdout
     assert "migration-preflight-skipped:no-established-deployment\n" in result.stdout
-    assert "Removed upload cleanup schedule.\n" in result.stdout
+    assert "Release B requires an accepted Release A deployment" in result.stderr
     assert _deployment_markers(result) == [
-        *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
-        "DEPLOY_RESULT=success phase=commit rollback=not-needed",
+        "DEPLOY_PHASE=validate",
+        "DEPLOY_PHASE=snapshot",
+        "DEPLOY_PHASE=candidate-pull",
+        "DEPLOY_PHASE=private-media-preflight",
+        "DEPLOY_PHASE=migration-preflight",
+        "DEPLOY_PHASE=projection-preflight",
+        "DEPLOY_RESULT=failure phase=projection-preflight rollback=not-needed",
     ]
-    assert result.stderr == "docker compose up exit status: 0\n"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
-    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
-    assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
-    assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        assert not (tmp_path / name).exists()
     commands = _apply_log(tmp_path)
     assert commands.count("volume-inspect photo-production_pgdata") == 1
-    candidate_pull = next(index for index, command in enumerate(commands) if " pull web" in command)
-    promotion = next(
-        index
-        for index, command in enumerate(commands)
-        if "/.env.requested." in command and command.endswith(f" {tmp_path}/.env")
-    )
-    stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
-    assert candidate_pull < promotion < stop_nginx
+    assert any(" pull web" in command for command in commands)
     assert not any("manage.py shell --no-imports" in command for command in commands)
     assert not any("candidate-migration-history" in command for command in commands)
     assert "candidate-migration-plan" not in commands
     assert "unexpected-fresh-migration-history" not in commands
+    assert "candidate-projection-report" not in commands
+    assert "candidate-projection-benchmark" not in commands
     assert not any(command.startswith("preflight-") for command in commands)
+    assert not any(" stop nginx" in command for command in commands)
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(command.startswith("crontab ") for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -1549,8 +1535,10 @@ def test_postgres_volume_inspection_error_fails_safely_before_mutation(
     _assert_no_env_temporary_files(tmp_path)
 
 
-def test_failed_first_deployment_restores_the_no_env_state(tmp_path: Path, fake_bin: Path) -> None:
-    """A failed initial rollout leaves neither a candidate environment nor worker service."""
+def test_rejected_release_b_without_release_a_leaves_the_no_env_state(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """Fail-closed Release B rejection must not create a candidate service to recover."""
     env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-health-failure")
     for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
         (tmp_path / name).unlink()
@@ -1563,8 +1551,8 @@ def test_failed_first_deployment_restores_the_no_env_state(tmp_path: Path, fake_
     assert not (tmp_path / "deployment-target").exists()
     assert not (tmp_path / "compose-project-name").exists()
     commands = _apply_log(tmp_path)
-    assert any(" down --remove-orphans" in command for command in commands)
-    assert not any("--profile worker" in command for command in commands)
+    assert not any(" down --remove-orphans" in command for command in commands)
+    assert not any(" up -d --remove-orphans" in command for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -1633,6 +1621,104 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
         if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
     )
     assert candidate_pull < candidate_run < stop_nginx < candidate_up
+
+
+def test_candidate_projection_gates_run_before_service_switch_without_backfill(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    projection_report = commands.index("candidate-projection-report")
+    projection_benchmark = commands.index("candidate-projection-benchmark")
+    stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
+    assert projection_report < projection_benchmark < stop_nginx
+    command_log = "\n".join(commands)
+    assert "report_photo_capture_time_projection --all-events --require-clean" in command_log
+    assert "benchmark_event_gallery_time_filter --event-id 9 --pages 1,mid,last" in command_log
+    assert "rebuild_photo_capture_time_projection" not in command_log
+    assert "reprocess_event_capture_times" not in command_log
+
+
+@pytest.mark.parametrize("state", ["partial-env", "retained-volume"])
+def test_release_b_rejects_partial_state_without_a_successful_release_a_image(
+    tmp_path: Path, fake_bin: Path, state: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+        (tmp_path / name).unlink()
+    if state == "partial-env":
+        (tmp_path / ".env").write_bytes(PREVIOUS_ENV)
+    else:
+        env["EXPECT_CANONICAL_ENV"] = "absent"
+        (tmp_path / ".docker-volume-photo-production_pgdata").write_text(
+            "retained\n", encoding="utf-8"
+        )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "committed accepted Release A image" in result.stderr
+    assert _deployment_markers(result)[-1] == (
+        "DEPLOY_RESULT=failure phase=projection-preflight rollback=not-needed"
+    )
+    commands = _apply_log(tmp_path)
+    assert "candidate-projection-report" not in commands
+    assert "candidate-projection-benchmark" not in commands
+    assert not any(" stop nginx" in command for command in commands)
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+
+
+def test_release_b_rejects_a_wrong_successful_deployment_image(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    (tmp_path / "deployed-image").write_text("wrong-successful-image\n", encoding="utf-8")
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "committed accepted Release A image" in result.stderr
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == ("wrong-successful-image\n")
+    commands = _apply_log(tmp_path)
+    assert "candidate-projection-report" not in commands
+    assert "candidate-projection-benchmark" not in commands
+    assert not any(" stop nginx" in command for command in commands)
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_phase", "message"),
+    [
+        ("projection-report-failure", "projection-preflight", "projection reconciliation"),
+        ("projection-benchmark-failure", "projection-preflight", "time-filter benchmark"),
+    ],
+)
+def test_failed_candidate_projection_gate_leaves_release_a_active(
+    tmp_path: Path,
+    fake_bin: Path,
+    scenario: str,
+    expected_phase: str,
+    message: str,
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh", env=_apply_env(tmp_path, fake_bin, scenario=scenario)
+    )
+
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert _deployment_markers(result)[-1] == (
+        f"DEPLOY_RESULT=failure phase={expected_phase} rollback=not-needed"
+    )
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
+    commands = _apply_log(tmp_path)
+    assert not any(" stop nginx" in command for command in commands)
+    assert not any(" up -d --remove-orphans" in command for command in commands)
 
 
 @pytest.mark.parametrize(
@@ -1852,28 +1938,31 @@ def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliat
 
 
 def test_workflows_forward_private_media_settings() -> None:
-    for relative_path in (
-        ".github/workflows/deploy.yml",
-        ".github/workflows/promote-production.yml",
-    ):
-        workflow = (ROOT / relative_path).read_text(encoding="utf-8")
-        assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in workflow
-        assert (
-            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID: "
-            "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}" in workflow
-        )
-        assert (
-            "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: "
-            "${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}" in workflow
-        )
-        forwarded = next(
-            line
-            for line in workflow.splitlines()
-            if "envs: APP_IMAGE" in line and "SECRET_KEY" in line
-        )
-        assert "PRIVATE_MEDIA_S3_BUCKET" in forwarded
-        assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in forwarded
-        assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in forwarded
+    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+
+    assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in staging
+    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" not in staging
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" not in staging
+    assert "--consumer staging-deploy" in staging
+
+    assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in production
+    assert (
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID: "
+        "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}" in production
+    )
+    assert (
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: "
+        "${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}" in production
+    )
+    forwarded = next(
+        line
+        for line in production.splitlines()
+        if "envs: APP_IMAGE" in line and "SECRET_KEY" in line
+    )
+    assert "PRIVATE_MEDIA_S3_BUCKET" in forwarded
+    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in forwarded
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in forwarded
 
 
 def test_deployment_path_performs_no_iam_mutation(tmp_path: Path, fake_bin: Path) -> None:
@@ -2003,7 +2092,7 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
     assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = _apply_log(tmp_path)
-    assert commands.count("candidate-requested-env-with-canonical-untouched") == 4
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 6
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
     assert sum(" up -d --remove-orphans" in command for command in commands) == 1
@@ -2093,7 +2182,6 @@ def test_feedback_activation_requires_a_confirmed_storage_preflight_before_mutat
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "SELFIE_SEARCH_ENABLED": "True",
             "PRIVATE_MEDIA_S3_BUCKET": "private-search",
             "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "private-access",
             "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "private-secret",
@@ -2124,7 +2212,6 @@ def test_confirmed_feedback_activation_persists_web_only_storage_configuration(
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "SELFIE_SEARCH_ENABLED": "True",
             "PRIVATE_MEDIA_S3_BUCKET": "private-search",
             "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "private-access",
             "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "private-secret",
@@ -2159,16 +2246,11 @@ def test_feedback_workflow_forwards_web_credentials_and_keeps_them_out_of_worker
 
     assert "SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}" in workflow
     assert "SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}" in workflow
-    assert (
-        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID: "
-        "${{ secrets.SELFIE_FEEDBACK_S3_ACCESS_KEY_ID }}" in workflow
-    )
-    assert (
-        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY: "
-        "${{ secrets.SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY }}" in workflow
-    )
+    assert "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID" not in workflow
+    assert "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY" not in workflow
     assert "SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}" in workflow
-    assert "verify_selfie_feedback_storage" in workflow
+    assert "--consumer staging-deploy" in workflow
+    assert "selfie-feedback-storage" in workflow
     worker_section = compose.split("  worker:\n", maxsplit=1)[1]
     assert "SELFIE_FEEDBACK_" not in worker_section
 

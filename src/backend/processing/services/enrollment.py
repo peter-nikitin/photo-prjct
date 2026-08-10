@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -24,6 +25,7 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingJob,
 )
+from processing.services.jobs import transition_capture_time_projection
 
 CONTRACT_VERSION = 1
 CAPTURE_METADATA_PROCESSOR_VERSION = 2
@@ -289,16 +291,32 @@ def enroll_event_capture_time_reprocessing(
     if not isinstance(max_cohort_size, int) or max_cohort_size < 1:
         raise ValueError("capture-metadata configuration has an invalid cohort size")
 
+    discovered_photo_ids = list(
+        Photo.objects.filter(event=event).order_by("pk").values_list("pk", flat=True)
+    )
     with transaction.atomic():
         locked_event = Event.objects.select_for_update().get(pk=event.pk)
-        photos = list(Photo.objects.select_for_update().filter(event=locked_event).order_by("pk"))
-        locked_configuration, locked_photo_count = _validate_capture_time_reprocessing_target(
-            locked_event,
-            target=target,
-            photo_count=len(photos),
+        existing_job_run_ids = ProcessingJob.objects.filter(
+            event=locked_event,
+            contract_version=CONTRACT_VERSION,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+        ).values_list("run_id", flat=True)
+        collecting_runs = list(
+            EventProcessingRun.objects.select_for_update()
+            .filter(
+                Q(pk__in=existing_job_run_ids)
+                | Q(
+                    event=locked_event,
+                    contract_version=CONTRACT_VERSION,
+                    processor_type=CAPTURE_METADATA_PROCESSOR,
+                    processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+                    configuration_hash=configuration_hash,
+                    status=EventProcessingRun.Status.COLLECTING,
+                )
+            )
+            .order_by("id")
         )
-        if locked_configuration != configuration:
-            raise ValueError("event capture-metadata configuration changed during enrollment")
         existing_jobs = list(
             ProcessingJob.objects.select_for_update()
             .select_related("run")
@@ -322,24 +340,56 @@ def enroll_event_capture_time_reprocessing(
                 raise ValueError("event has an unexpected capture-metadata version-2 configuration")
             jobs_by_photo_id[job.photo_id] = job
 
-        created_job_count = 0
-        now = timezone.now()
-        run: EventProcessingRun | None = None
-        for photo in photos:
-            job = jobs_by_photo_id.get(photo.pk)
-            if job is None:
-                if run is None or run.jobs.count() >= max_cohort_size:
-                    run = _locked_collecting_run(
+        assigned_runs: dict[str, EventProcessingRun] = {}
+        available_runs = [
+            [run, max_cohort_size - ProcessingJob.objects.filter(run=run).count()]
+            for run in collecting_runs
+            if (
+                run.contract_version == CONTRACT_VERSION
+                and run.processor_type == CAPTURE_METADATA_PROCESSOR
+                and run.processor_version == CAPTURE_METADATA_PROCESSOR_VERSION
+                and run.configuration == configuration
+                and run.configuration_hash == configuration_hash
+                and run.status == EventProcessingRun.Status.COLLECTING
+            )
+        ]
+        for photo_id in discovered_photo_ids:
+            if photo_id in jobs_by_photo_id:
+                continue
+            available = next((item for item in available_runs if item[1] > 0), None)
+            if available is None:
+                available = [
+                    EventProcessingRun.objects.create(
                         event=locked_event,
-                        configuration=configuration,
-                        configuration_hash=configuration_hash,
                         contract_version=CONTRACT_VERSION,
                         processor_type=CAPTURE_METADATA_PROCESSOR,
                         processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-                    )
+                        configuration=configuration,
+                        configuration_hash=configuration_hash,
+                        status=EventProcessingRun.Status.COLLECTING,
+                    ),
+                    max_cohort_size,
+                ]
+                available_runs.append(available)
+            assigned_runs[photo_id] = available[0]
+            available[1] -= 1
+
+        photos = list(Photo.objects.select_for_update().filter(event=locked_event).order_by("pk"))
+        locked_configuration, locked_photo_count = _validate_capture_time_reprocessing_target(
+            locked_event,
+            target=target,
+            photo_count=len(photos),
+        )
+        if locked_configuration != configuration:
+            raise ValueError("event capture-metadata configuration changed during enrollment")
+        created_job_count = 0
+        now = timezone.now()
+        for photo in photos:
+            job = jobs_by_photo_id.get(photo.pk)
+            if job is None:
                 job = ProcessingJob.objects.create(
                     event=locked_event,
-                    run=run,
+                    run=assigned_runs[photo.pk],
                     photo=photo,
                     contract_version=CONTRACT_VERSION,
                     processor_type=CAPTURE_METADATA_PROCESSOR,
@@ -387,6 +437,7 @@ def enroll_event_capture_time_reprocessing(
                         "updated_at",
                     ]
                 )
+                transition_capture_time_projection(photo=photo, state=state, accepted_attempt=None)
 
         return CaptureTimeReprocessingEnrollment(
             photo_count=locked_photo_count,
@@ -629,11 +680,6 @@ def request_processor(
             return state
 
         configuration_hash = _configuration_hash(configuration)
-        if input_fingerprint is None:
-            input_fingerprint = _input_fingerprint(
-                photo,
-                verified_source_etag=verified_source_etag,
-            )
         # Use the same run -> state ordering as claims to avoid a seal/enroll deadlock.
         locked_event = event or Event.objects.select_for_update().get(pk=photo.event_id)
         run = _locked_collecting_run(
@@ -644,8 +690,27 @@ def request_processor(
             processor_type=processor_type,
             processor_version=processor_version,
         )
+        existing_job = (
+            ProcessingJob.objects.select_for_update()
+            .filter(
+                event=locked_event,
+                run=run,
+                photo_id=photo.pk,
+                contract_version=contract_version,
+                processor_type=processor_type,
+                processor_version=processor_version,
+                configuration_hash=configuration_hash,
+            )
+            .first()
+        )
+        locked_photo = Photo.objects.select_for_update().get(pk=photo.pk)
+        if input_fingerprint is None:
+            input_fingerprint = _input_fingerprint(
+                locked_photo,
+                verified_source_etag=verified_source_etag,
+            )
         state, _ = PhotoProcessingState.objects.select_for_update().get_or_create(
-            photo=photo,
+            photo=locked_photo,
             processor_type=processor_type,
             defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
         )
@@ -657,8 +722,24 @@ def request_processor(
                 and current_job.processor_version == processor_version
                 and current_job.configuration_hash == configuration_hash
             ):
+                if processor_type == CAPTURE_METADATA_PROCESSOR and state.status in {
+                    PhotoProcessingState.Status.QUEUED,
+                    PhotoProcessingState.Status.PROCESSING,
+                    PhotoProcessingState.Status.RETRY_WAIT,
+                }:
+                    transition_capture_time_projection(
+                        photo=locked_photo, state=state, accepted_attempt=None
+                    )
                 return state
             if not replace_terminal_generation:
+                if processor_type == CAPTURE_METADATA_PROCESSOR and state.status in {
+                    PhotoProcessingState.Status.QUEUED,
+                    PhotoProcessingState.Status.PROCESSING,
+                    PhotoProcessingState.Status.RETRY_WAIT,
+                }:
+                    transition_capture_time_projection(
+                        photo=locked_photo, state=state, accepted_attempt=None
+                    )
                 return state
             if state.status in {
                 PhotoProcessingState.Status.QUEUED,
@@ -667,20 +748,20 @@ def request_processor(
             }:
                 raise ValueError("cannot replace active face-embedding processing")
             replacing_terminal_generation = True
-        job, _ = ProcessingJob.objects.get_or_create(
-            event=locked_event,
-            run=run,
-            photo=photo,
-            contract_version=contract_version,
-            processor_type=processor_type,
-            processor_version=processor_version,
-            configuration_hash=configuration_hash,
-            defaults={
-                "configuration": configuration,
-                "input_fingerprint": input_fingerprint,
-                "status": ProcessingJob.Status.QUEUED,
-            },
-        )
+        job = existing_job
+        if job is None:
+            job = ProcessingJob.objects.create(
+                event=locked_event,
+                run=run,
+                photo=locked_photo,
+                contract_version=contract_version,
+                processor_type=processor_type,
+                processor_version=processor_version,
+                configuration=configuration,
+                configuration_hash=configuration_hash,
+                input_fingerprint=input_fingerprint,
+                status=ProcessingJob.Status.QUEUED,
+            )
 
         now = timezone.now()
         state.status = PhotoProcessingState.Status.QUEUED
@@ -709,6 +790,10 @@ def request_processor(
                 ]
             )
         state.save(update_fields=update_fields)
+        if processor_type == CAPTURE_METADATA_PROCESSOR:
+            transition_capture_time_projection(
+                photo=locked_photo, state=state, accepted_attempt=None
+            )
         return state
 
 

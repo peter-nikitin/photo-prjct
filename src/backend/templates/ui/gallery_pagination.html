@@ -1,7 +1,11 @@
 <nav class="gallery-pagination" aria-label="{{ pagination_label }}">
-  {% if pagination_page.has_previous %}<a href="?page={{ pagination_page.previous_page_number }}">Назад</a>{% endif %}
+  {% if pagination_page.has_previous %}<a href="?{% if pagination_filter %}from={{ pagination_filter.from|urlencode }}{% if pagination_filter.to %}&amp;to={{ pagination_filter.to|urlencode }}{% endif %}&amp;{% endif %}page={{ pagination_page.previous_page_number }}">Назад</a>{% endif %}
   <span class="gallery-pagination-status">Страница {{ pagination_page.number }} из {{ pagination_page.paginator.num_pages }}</span>
   <form class="gallery-pagination-form" method="get">
+    {% if pagination_filter %}
+      <input type="hidden" name="from" value="{{ pagination_filter.from }}">
+      {% if pagination_filter.to %}<input type="hidden" name="to" value="{{ pagination_filter.to }}">{% endif %}
+    {% endif %}
     <label class="visually-hidden" for="gallery-page-number">Номер страницы</label>
     <input
       id="gallery-page-number"
@@ -14,5 +18,5 @@
     >
     <button class="gallery-pagination-button" type="submit">Перейти</button>
   </form>
-  {% if pagination_page.has_next %}<a href="?page={{ pagination_page.next_page_number }}">Вперёд</a>{% endif %}
+  {% if pagination_page.has_next %}<a href="?{% if pagination_filter %}from={{ pagination_filter.from|urlencode }}{% if pagination_filter.to %}&amp;to={{ pagination_filter.to|urlencode }}{% endif %}&amp;{% endif %}page={{ pagination_page.next_page_number }}">Вперёд</a>{% endif %}
 </nav>

@@ -17,6 +17,16 @@ visual_patterns = [
         views.event_gallery_empty,
         name="visual_event_gallery_empty",
     ),
+    path(
+        "event/gallery-filtered-empty/",
+        views.event_gallery_filtered_empty,
+        name="visual_event_gallery_filtered_empty",
+    ),
+    path(
+        "event/gallery-manual-invalid/",
+        views.event_gallery_manual_invalid,
+        name="visual_event_gallery_manual_invalid",
+    ),
     path("event/selfie-search/", views.event_selfie_search, name="visual_event_selfie_search"),
     path(
         "event/selfie-search/rejected/",
@@ -81,5 +91,6 @@ visual_patterns = [
 
 urlpatterns = [
     path("__visual__/", include(visual_patterns)),
+    path("events/london-10k/", views.visual_event_detail, name="visual_event_detail"),
     path("", include("config.urls")),
 ]

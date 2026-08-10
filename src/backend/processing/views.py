@@ -56,6 +56,7 @@ from processing.models import (
     ProcessingConflictAudit,
     ProcessingJob,
 )
+from processing.results import parse_canonical_timestamp
 from processing.services.face_quality import (
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
@@ -78,7 +79,6 @@ from processing.services.previews import complete_preview_attempt
 from processing.storage import ExactObjectDownloadStorage, ExactPreviewStorage, PreviewUploadGrant
 
 _WORKER_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-_NORMALIZED_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
 _SECRET_MARKER = re.compile(r"(?:[a-z][a-z0-9+.-]*://|x-amz-|signature=|credential=|token=)", re.I)
 _SOURCE_FIELDS = {"DateTime", "DateTimeDigitized", "DateTimeOriginal"}
 _V2_FACE_EMBEDDING_MAX_FACES = 32
@@ -1056,8 +1056,8 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
     failures = _processor_failures(attempt.processor_type)
     if failures is None:
         return False
-    started_at = _parse_timestamp(data["started_at"])
-    finished_at = _parse_timestamp(data["finished_at"])
+    started_at = parse_canonical_timestamp(data["started_at"])
+    finished_at = parse_canonical_timestamp(data["finished_at"])
     if not (
         data["outcome"] == outcome
         and data["attempt_id"] == str(attempt.id)
@@ -1121,8 +1121,8 @@ def _valid_selfie_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: s
     search = attempt.job.search
     failures = _processor_failures(SELFIE_QUERY_CONTRACT.processor_type)
     assert failures is not None
-    started_at = _parse_timestamp(data["started_at"])
-    finished_at = _parse_timestamp(data["finished_at"])
+    started_at = parse_canonical_timestamp(data["started_at"])
+    finished_at = parse_canonical_timestamp(data["finished_at"])
     if not (
         data["outcome"] == outcome
         and data["attempt_id"] == str(attempt.id)
@@ -1249,7 +1249,7 @@ def _valid_capture_metadata_result(value: object, *, configuration: object) -> b
     if not isinstance(event_timezone, str) or value["event_timezone"] != event_timezone:
         return False
     capture_time = value["capture_time"]
-    if capture_time is not None and _parse_timestamp(capture_time) is None:
+    if capture_time is not None and parse_canonical_timestamp(capture_time) is None:
         return False
     if value["source_field"] is not None and value["source_field"] not in _SOURCE_FIELDS:
         return False
@@ -1542,15 +1542,6 @@ def _safe_face_coordinate(value: object) -> bool:
         and isfinite(value)
         and 0 <= value <= 10_000
     )
-
-
-def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or _NORMALIZED_TIMESTAMP.fullmatch(value) is None:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _safe_source_value(value: object) -> bool:

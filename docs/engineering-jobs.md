@@ -47,8 +47,11 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-014 | Maintainer | Gate consented feedback storage activation | Validated | 2026-08-04 |
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
-| EJ-017 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
-| EJ-018 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
+| EJ-017 | Developer | Read environment-scoped secrets consistently | Planned | 2026-08-07 |
+| EJ-018 | Maintainer | Minimize and recover runtime credentials | Candidate | 2026-08-07 |
+| EJ-019 | Maintainer | Reconcile the capture-time projection before gallery cutover | Validated | 2026-08-08 |
+| EJ-020 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
+| EJ-021 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
 
 ## Job details
 
@@ -291,7 +294,7 @@ gates are approved.
 - Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py), and [`experiments/face_recognition_spike/face_spike/cli.py`](../experiments/face_recognition_spike/face_spike/cli.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance, source-separated reports, privacy-bounded v2 events, and the closed held-out evaluator. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or environment activation change is included.
 - Last updated: 2026-08-05
 
-### EJ-017 — Operator — Cache a frozen private event-original corpus
+### EJ-020 — Operator — Cache a frozen private event-original corpus
 
 When I evaluate a new gallery-face generation, I want one complete, verified private local copy of
 the selected published event's originals, so repeated baseline and candidate runs use identical
@@ -308,7 +311,7 @@ before this becomes operationally validated.
 - Evidence: [`src/backend/processing/services/event_original_cache.py`](../src/backend/processing/services/event_original_cache.py), [`src/backend/processing/management/commands/cache_event_originals.py`](../src/backend/processing/management/commands/cache_event_originals.py), and [`src/backend/processing/tests/test_event_original_cache.py`](../src/backend/processing/tests/test_event_original_cache.py)
 - Last updated: 2026-08-07
 
-### EJ-018 — Operator — Prepare private sampled face-quality review evidence
+### EJ-021 — Operator — Prepare private sampled face-quality review evidence
 
 When I assess a local experimental face-quality configuration, I want a reproducible private
 sampled-review bundle with bounded integrity evidence, so I can later make an explicit operator
@@ -333,6 +336,76 @@ decision without changing runtime behavior.
   production generation is activated, and the separate search-relevance review remains pending.
   See the [approved sampled-review plan](plans/2026-08-08-ten-percent-face-quality-review.md) and
   [`face_spike` experiment](../experiments/face_recognition_spike/README.md).
+- Last updated: 2026-08-08
+
+### EJ-017 — Developer — Read environment-scoped secrets consistently
+
+When I run the application in local development, CI, or a deployed environment, I want authorized
+workflows to read the secrets for their selected environment from one managed source, so I can
+reproduce environment behavior without copying credentials into GitHub Secrets or local files.
+
+The candidate direction is an environment-scoped Yandex Lockbox secret set. Local development
+would authenticate through `yc`, while GitHub Actions would use workload identity federation rather
+than a permanent Yandex Cloud credential. Any local launcher must materialize a payload only in a
+mode-0600 temporary file, overlay explicit safe local settings, avoid repository and worktree
+`.env` files, remove the temporary file after use, and fail without printing secret values. IAM
+must grant each actor access only to the selected environment. The eventual design must define
+secret inventory and ownership, environment isolation, rotation and revocation, audit boundaries,
+failure behavior, migration from existing GitHub Secrets, and rollback before implementation.
+
+- Status: Planned
+- Evidence: Accepted [ADR 0026](adr/0026-use-lockbox-for-environment-secrets.md), approved
+  [environment-scoped Lockbox secrets design](superpowers/specs/2026-08-07-environment-scoped-lockbox-secrets-design.md),
+  and approved [implementation plan](plans/2026-08-07-environment-scoped-lockbox-secrets.md).
+  No repository implementation, Lockbox resource, IAM binding, migration, deployment, or live
+  validation is claimed yet.
+- Last updated: 2026-08-07
+
+### EJ-018 — Maintainer — Minimize and recover runtime credentials
+
+When I operate or recover an application environment, I want each runtime component to retain only
+the credentials it needs through an explicit, recoverable lifecycle, so I can limit credential
+exposure without making restart, rollback, backup, or disaster recovery unreliable.
+
+The candidate capability covers the complete host and container boundary rather than one `.env`
+file: persistent deployment environments, Docker container metadata, Docker group access, registry
+authentication, shell history, TLS private keys, VM metadata and attached service accounts, disk
+snapshots/backups, per-service credential projection, rotation, revocation, recovery, and audit.
+It must begin with a separate specification and architecture reconciliation; this registry entry
+does not select Docker secrets, file-based settings, runtime Lockbox retrieval, an agent, or another
+delivery mechanism.
+
+- Status: Candidate
+- Evidence:
+  [Sanitized staging runtime credential inventory](future-work/2026-08-07-runtime-credential-hygiene.md)
+  records the observed exposure surfaces and the trigger for a separate design. No VM cleanup,
+  credential rotation, runtime redesign, ADR, or implementation plan is claimed.
+- Last updated: 2026-08-07
+
+### EJ-019 — Maintainer — Reconcile the capture-time projection before gallery cutover
+
+When I maintain a capture-time projection for gallery filtering, I want its writers, rebuild, and
+aggregate reconciliation to agree with immutable current version-2 evidence, so I can keep direct
+gallery reads safe until a separately accepted projection-reader release.
+
+- Status: Delivered for the accepted Release A operation and locally verified Release B candidate;
+  Release B CI, deployment, and live cutover remain pending.
+- Evidence: [`src/backend/picflow/capture_time_projection.py`](../src/backend/picflow/capture_time_projection.py),
+  [`src/backend/picflow/management/commands/rebuild_photo_capture_time_projection.py`](../src/backend/picflow/management/commands/rebuild_photo_capture_time_projection.py),
+  [`src/backend/picflow/management/commands/report_photo_capture_time_projection.py`](../src/backend/picflow/management/commands/report_photo_capture_time_projection.py),
+  the accepted Release A deployment (`41e3068`) has a clean 17,043/17,043 global event-9
+  reconciliation and a rollback-only lifecycle smoke that clears then republishes the projection.
+  The immutable accepted local clone contains 9 events and 17,310 photos. Its final Release B
+  candidate report is clean before and after benchmarking, with 17,043 exact source/value pairs
+  and every first/midpoint/last database and rendered ratio at or below 2x; the retained
+  [benchmark JSON](performance/2026-08-08-event-gallery-time-filter-local-clone.json) is aggregate
+  only. The integrated gallery/processing/projection/deployment suite, visual suite (92 tests),
+  and separate `make check` exit clean locally; Ruff, MyPy, Django, and migration-drift checks are
+  included in the quality gate.
+- Boundary: Release B removes the direct JSON/cast filtered-reader path locally, but no Release B
+  PR, green CI, deployed candidate, live benchmark, service switch, or customer acceptance is
+  recorded. Immutable attempt/state/run/job/result evidence remains authoritative and is never
+  rewritten by rebuild or reconciliation.
 - Last updated: 2026-08-08
 
 ## Status log
@@ -365,6 +438,11 @@ This log is append-only.
 | 2026-08-04 | EJ-014 | Not recorded | Validated | Automated lifecycle, storage-contract, and deployment tests verify the guarded 30-day feedback bucket contract, anonymous denial probes, scratch cleanup, disabled-by-default wiring, and web-only credential propagation. No live bucket/KMS preflight or environment activation is claimed. |
 | 2026-08-04 | EJ-015 | Not recorded | Delivered | Repository verification covers strict bounded events, edge redaction, journald reconciliation and exact rollback, timer/driver/tag checks, probe readability, and deterministic recomputation. Staging activation is not claimed. |
 | 2026-08-05 | EJ-016 | Not recorded | Delivered | Task 1–7 implementation commits and focused contract tests provide the repository capability for immutable event-scoped corpora, direct-first expansion, provenance, source-separated reporting, private evaluation, and guarded activation. The feature gate remains false and the release gate, environment activation, and customer outcomes are not yet evidenced. |
-| 2026-08-07 | EJ-017 | Not recorded | Candidate | The repository now has a focused, read-only event-original cache command and automated local-contract coverage. No authorized staging-clone or private Object Storage invocation is claimed. |
+| 2026-08-07 | EJ-020 | Not recorded | Candidate | The repository now has a focused, read-only event-original cache command and automated local-contract coverage. No authorized staging-clone or private Object Storage invocation is claimed. |
 | 2026-08-07 | EJ-003 | Validated | Delivered | Repository workflow, migration-identity, read-only preflight, deployment-phase, controlled-pause, and bounded issue-reconciliation contracts are implemented and covered by focused tests. No PR/CI/live staging rollout or notification-drill evidence is recorded yet, so the job is not advanced to Validated. |
-| 2026-08-08 | EJ-018 | Not recorded | Validated | A frozen 15,052-rejection comparison produced an immutable private 1,506-face, six-stratum sampled bundle with 100 separate retained controls; its bounded hashes, unchanged-source check, logical-page probes, and non-human fixture-finalizer round trip are recorded in EJ-018. Human labels, an operator decision, runtime activation, and search-relevance review remain separate. |
+| 2026-08-07 | EJ-017 | Not recorded | Candidate | The maintainer requested one managed, environment-scoped source of secrets that authorized local development, CI, and deployed workflows can read without copying payloads into GitHub Secrets or persistent local files. |
+| 2026-08-07 | EJ-018 | Not recorded | Candidate | A sanitized staging audit confirmed persistent host and Docker credential surfaces; the maintainer deferred a comprehensive runtime credential lifecycle design to a separate task rather than expanding EJ-017. |
+| 2026-08-07 | EJ-017 | Candidate | Planned | The maintainer accepted ADR 0026 and approved the decision-complete environment-scoped Lockbox implementation plan for execution. |
+| 2026-08-08 | EJ-019 | Not recorded | Validated | Release A writer/schema/rebuild/report and local accepted-clone reconciliation are evidenced; direct gallery reads remain active and CI/deployment/live operational-gate evidence is pending. |
+| 2026-08-08 | EJ-019 | Validated | Delivered | Accepted Release A staging writer/direct-reader operation, local Release B projection-reader evidence, clean global reconciliation, and aggregate 2x benchmark are recorded. Release B review, PR/CI, deployment, live candidate gate, and cutover remain pending. |
+| 2026-08-08 | EJ-021 | Not recorded | Validated | A frozen 15,052-rejection comparison produced an immutable private 1,506-face, six-stratum sampled bundle with 100 separate retained controls; its bounded hashes, unchanged-source check, logical-page probes, and non-human fixture-finalizer round trip are recorded in EJ-021. Human labels, an operator decision, runtime activation, and search-relevance review remain separate. |

@@ -10,6 +10,7 @@ from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.test import override_settings
+from picflow.forms import EventGalleryTimeFilterForm
 from selfie_search.forms import SelfieSearchUploadForm
 
 
@@ -40,6 +41,7 @@ class FixtureEvent:
     description: str
     access_label: str = "Открытый доступ"
     cover: FixtureImage | None = None
+    timezone_name: str = "Europe/London"
 
     @property
     def pk(self) -> str:
@@ -469,6 +471,32 @@ def _header_only_event(response: HttpResponse) -> HttpResponse:
     return response
 
 
+def _manual_time_filter_form(data=None) -> EventGalleryTimeFilterForm:
+    return EventGalleryTimeFilterForm(EVENTS[0], data)
+
+
+def _gallery_context(
+    *, data=None, photos=GALLERY_FACE_PHOTOS, page_number: int = 1
+) -> dict[str, Any]:
+    manual_time_filter_form = _manual_time_filter_form(data)
+    manual_time_filter_invalid = (
+        manual_time_filter_form.is_requested and not manual_time_filter_form.is_valid()
+    )
+    gallery_page = None
+    if not manual_time_filter_invalid:
+        gallery_page = Paginator(photos, 3).page(page_number)
+    else:
+        photos = ()
+    return {
+        "event": EVENTS[0],
+        "gallery_photos": photos,
+        "gallery_page": gallery_page,
+        "manual_time_filter_form": manual_time_filter_form,
+        "manual_time_filter_invalid": manual_time_filter_invalid,
+        "selfie_search_form": SelfieSearchUploadForm(),
+    }
+
+
 def catalog_populated(request: HttpRequest) -> HttpResponse:
     return _render(request, "catalog/event_catalog.html", {"events": EVENTS})
 
@@ -486,22 +514,36 @@ def event_uncovered(request: HttpRequest) -> HttpResponse:
 
 
 def event_gallery_populated(request: HttpRequest) -> HttpResponse:
-    return _render(
-        request,
-        "catalog/event_detail.html",
-        {
-            "event": EVENTS[0],
-            "gallery_photos": GALLERY_FACE_PHOTOS,
-            "gallery_page": Paginator(GALLERY_FACE_PHOTOS, 3).page(1),
-        },
-    )
+    return _render(request, "catalog/event_detail.html", _gallery_context())
 
 
 def event_gallery_empty(request: HttpRequest) -> HttpResponse:
+    return _render(request, "catalog/event_detail.html", _gallery_context(photos=()))
+
+
+def event_gallery_filtered_empty(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "catalog/event_detail.html",
-        {"event": EVENTS[0], "gallery_photos": ()},
+        _gallery_context(data={"from": "2026-06-08T09:00", "to": "2026-06-08T10:00"}, photos=()),
+    )
+
+
+def event_gallery_manual_invalid(request: HttpRequest) -> HttpResponse:
+    return _render(request, "catalog/event_detail.html", _gallery_context(data={"from": ""}))
+
+
+def visual_event_detail(request: HttpRequest) -> HttpResponse:
+    if "from" in request.GET or "to" in request.GET:
+        return _render(
+            request,
+            "catalog/event_detail.html",
+            _gallery_context(data=request.GET, page_number=int(request.GET.get("page", "1"))),
+        )
+    return _render(
+        request,
+        "catalog/event_detail.html",
+        _gallery_context(page_number=int(request.GET.get("page", "1"))),
     )
 
 
@@ -509,11 +551,7 @@ def event_selfie_search(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "catalog/event_detail.html",
-        {
-            "event": EVENTS[0],
-            "gallery_photos": GALLERY_PHOTOS,
-            "selfie_search_form": SelfieSearchUploadForm(),
-        },
+        _gallery_context(photos=GALLERY_PHOTOS),
     )
 
 
@@ -528,6 +566,8 @@ def event_selfie_search_rejected(request: HttpRequest) -> HttpResponse:
         {
             "event": EVENTS[0],
             "gallery_photos": GALLERY_PHOTOS,
+            "manual_time_filter_form": _manual_time_filter_form(),
+            "manual_time_filter_invalid": False,
             "selfie_search_form": form,
         },
     )

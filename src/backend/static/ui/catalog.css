@@ -323,6 +323,84 @@
   border-top: 1px solid var(--line);
 }
 
+.event-discovery {
+  margin-top: clamp(44px, 7vw, 84px);
+  padding: clamp(24px, 5vw, 42px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgb(35 31 26 / 7%);
+}
+
+.event-discovery > h2 {
+  margin-bottom: 24px;
+}
+
+.event-discovery-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(28px, 5vw, 56px);
+}
+
+.event-discovery-column {
+  min-width: 0;
+}
+
+.event-discovery-column + .event-discovery-column {
+  padding-left: clamp(28px, 5vw, 56px);
+  border-left: 1px solid var(--line);
+}
+
+.event-discovery h3 {
+  margin-bottom: 14px;
+}
+
+.manual-time-filter-guidance {
+  color: var(--muted);
+}
+
+.manual-time-filter-form {
+  display: grid;
+  max-width: 520px;
+  gap: 12px;
+}
+
+.manual-time-filter-field {
+  display: grid;
+  gap: 7px;
+}
+
+.manual-time-filter-field label {
+  font-weight: 800;
+}
+
+.manual-time-filter-field input[type="datetime-local"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font: inherit;
+}
+
+.manual-time-filter-error {
+  margin: 0;
+  color: #a82d22;
+  font-weight: 750;
+}
+
+.manual-time-filter-reset {
+  display: inline-block;
+  min-height: 44px;
+  margin-top: 12px;
+  padding: 11px 0;
+  color: var(--teal-strong);
+  font-weight: 800;
+}
+
 .event-gallery-heading {
   display: flex;
   align-items: center;
@@ -703,6 +781,28 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
     order: 3;
     flex-basis: 100%;
     justify-content: center;
+  }
+}
+
+@media (max-width: 620px) {
+  .event-discovery {
+    padding: 22px;
+  }
+
+  .event-discovery-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+
+  .event-discovery-column + .event-discovery-column {
+    padding-top: 32px;
+    padding-left: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .manual-time-filter-form .button {
+    width: 100%;
   }
 }
 

@@ -197,6 +197,48 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
             ProcessingJob.objects.filter(photo=photo, processor_type="face_embedding").count(), 1
         )
 
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_face_enqueue_failure_rolls_back_preview_acceptance_and_allows_retry(self) -> None:
+        """Catch a committed preview whose duplicate receipt cannot retry face enrollment."""
+        photo, claimed = self._claim("preview-face-atomic")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        object = self._stored_object()
+        storage = FakePreviewStorage(object)
+
+        with (
+            patch(
+                "processing.services.enrollment.request_face_embedding_enqueue",
+                side_effect=RuntimeError("face enrollment failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "face enrollment failed"),
+        ):
+            complete_preview_attempt(
+                claimed.attempt.id,
+                result=self._result(object),
+                storage=storage,
+            )
+
+        claimed.attempt.refresh_from_db()
+        self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
+        self.assertFalse(PhotoDerivative.objects.filter(photo=photo).exists())
+        self.assertFalse(
+            ProcessingJob.objects.filter(photo=photo, processor_type="face_embedding").exists()
+        )
+
+        completion = complete_preview_attempt(
+            claimed.attempt.id,
+            result=self._result(object),
+            storage=storage,
+        )
+
+        self.assertFalse(completion.idempotent)
+        self.assertTrue(PhotoDerivative.objects.filter(photo=photo).exists())
+        self.assertTrue(
+            ProcessingJob.objects.filter(photo=photo, processor_type="face_embedding").exists()
+        )
+
     def test_retry_converges_after_copy_succeeded_before_the_database_transaction(self) -> None:
         photo, claimed = self._claim("preview-recovery")
         object = self._stored_object()
@@ -518,8 +560,8 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
                 jobs._locked_context(claimed.attempt.id)
                 publication_phase.set()
                 allow_publish.set()
-                self.assertTrue(lock_wait_started.wait(timeout=5))
                 use_expired_time.set()
+            self.assertTrue(lock_wait_started.wait(timeout=5))
             worker.join(timeout=5)
 
         self.assertFalse(worker.is_alive())
@@ -578,8 +620,8 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
                 jobs._locked_context(claimed.attempt.id)
                 publication_phase.set()
                 allow_failure.set()
-                self.assertTrue(lock_wait_started.wait(timeout=5))
                 use_expired_time.set()
+            self.assertTrue(lock_wait_started.wait(timeout=5))
             worker.join(timeout=5)
 
         self.assertFalse(worker.is_alive())

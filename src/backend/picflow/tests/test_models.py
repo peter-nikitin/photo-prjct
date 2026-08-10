@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from uuid import uuid4
 
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -134,6 +135,20 @@ class PhotoModelTests(TestCase):
         )
         self.photographer = get_user_model().objects.create_user(username="photographer")
 
+    def test_explicit_index_names_fit_postgresql_limit(self) -> None:
+        index_names = [
+            index.name
+            for model in apps.get_app_config("picflow").get_models()
+            for index in model._meta.indexes
+            if index.name
+        ]
+
+        self.assertTrue(index_names)
+        self.assertTrue(
+            all(len(name) <= 30 for name in index_names),
+            f"Picflow index names must be at most 30 characters: {index_names}",
+        )
+
     def test_string_representation_uses_identifier(self) -> None:
         photo = Photo(id="TEST-001", event=self.event, src="photos/test.jpg")
         self.assertEqual(str(photo), "TEST-001")
@@ -194,3 +209,27 @@ class PhotoModelTests(TestCase):
             Photo.objects.filter(pk=photo.pk).update(
                 processing_generation="preview_first_v1",
             )
+
+    def test_capture_time_projection_is_nullable_and_requires_a_complete_pair(self) -> None:
+        """Catch a partial read projection becoming representable in PostgreSQL."""
+        capture_time = Photo._meta.get_field("capture_time")
+        source_attempt = Photo._meta.get_field("capture_time_source_attempt")
+
+        self.assertTrue(capture_time.null)
+        self.assertTrue(source_attempt.null)
+        self.assertFalse(capture_time.editable)
+        self.assertFalse(source_attempt.editable)
+        self.assertEqual(source_attempt.remote_field.on_delete.__name__, "PROTECT")
+        self.assertIn(
+            "picflow_photo_capture_time_pair_chk",
+            {constraint.name for constraint in Photo._meta.constraints},
+        )
+        self.assertIn(
+            ("event", "capture_time"),
+            {tuple(index.fields) for index in Photo._meta.indexes},
+        )
+
+        photo = self.private_photo()
+        photo.save()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Photo.objects.filter(pk=photo.pk).update(capture_time=timezone.now())

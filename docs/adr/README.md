@@ -45,6 +45,8 @@ place, and add the new record to this index.
 | 0023 | [Store consented selfie-search quality feedback](0023-store-consented-selfie-search-feedback.md) | Accepted |
 | 0024 | [Use a selected gallery face as a search query](0024-use-gallery-face-as-search-query.md) | Accepted |
 | 0025 | [Expand selfie search with conservative face clusters](0025-expand-selfie-search-with-face-clusters.md) | Accepted |
+| 0026 | [Use Lockbox for environment secrets](0026-use-lockbox-for-environment-secrets.md) | Accepted |
+| 0027 | [Project current capture time onto Photo](0027-project-capture-time-onto-photo.md) | Accepted |
 
 ## Public selfie-search outcome
 

@@ -156,7 +156,12 @@ class GalleryPhotoFactory:
         )
 
 
-def gallery_photo_queryset(*, event: Event) -> QuerySet[Photo]:
+def gallery_photo_queryset(
+    *,
+    event: Event,
+    capture_time_start=None,
+    capture_time_end=None,
+) -> QuerySet[Photo]:
     """Return database-confirmed gallery media without probing object storage."""
     preview_ready = Q(
         gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
@@ -167,7 +172,7 @@ def gallery_photo_queryset(*, event: Event) -> QuerySet[Photo]:
         processing_states__accepted_attempt__accepted=True,
         processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
     )
-    return (
+    queryset = (
         Photo.objects.filter(event=event, src="", original_key__isnull=False)
         .filter(
             Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED) | preview_ready
@@ -176,10 +181,31 @@ def gallery_photo_queryset(*, event: Event) -> QuerySet[Photo]:
         .order_by("original_filename", "id")
         .distinct()
     )
+    if capture_time_start is None and capture_time_end is None:
+        return queryset
+    if capture_time_start is None or capture_time_end is None:
+        raise ValueError("capture time bounds must be supplied together")
+    return queryset.filter(
+        capture_time__gte=capture_time_start,
+        capture_time__lte=capture_time_end,
+    )
 
 
-def gallery_page(*, event: Event, page_number: str | None) -> Page[Photo]:
-    return Paginator(gallery_photo_queryset(event=event), GALLERY_PAGE_SIZE).page(page_number or 1)
+def gallery_page(
+    *,
+    event: Event,
+    page_number: str | None,
+    capture_time_start=None,
+    capture_time_end=None,
+) -> Page[Photo]:
+    return Paginator(
+        gallery_photo_queryset(
+            event=event,
+            capture_time_start=capture_time_start,
+            capture_time_end=capture_time_end,
+        ),
+        GALLERY_PAGE_SIZE,
+    ).page(page_number or 1)
 
 
 @dataclass(frozen=True)

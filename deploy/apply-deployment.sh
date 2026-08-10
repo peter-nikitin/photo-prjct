@@ -23,6 +23,7 @@ printf 'DEPLOY_PHASE=validate\n'
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
 : "${APP_IMAGE:?Set APP_IMAGE}"
+: "${ACCEPTED_RELEASE_A_IMAGE:?Set ACCEPTED_RELEASE_A_IMAGE}"
 : "${SECRET_KEY:?Set SECRET_KEY}"
 : "${DEBUG:?Set DEBUG}"
 : "${ALLOWED_HOSTS:?Set ALLOWED_HOSTS}"
@@ -42,7 +43,6 @@ requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}"
 requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
-requested_selfie_search_enabled="${SELFIE_SEARCH_ENABLED:-False}"
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
 
@@ -191,47 +191,24 @@ if [ "$requested_preview_enabled" = True ]; then
     done
 fi
 
-case "$requested_selfie_search_enabled" in
-    True)
-        if [ "$requested_processing_enabled" != True ] || \
-            [ "$requested_face_enabled" != True ]; then
-            echo "SELFIE_SEARCH_ENABLED requires photo processing and face embeddings" >&2
-            exit 2
-        fi
-        : "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
-        : "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
-        : "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
-        requested_selfie_search_max_upload_bytes="${SELFIE_SEARCH_MAX_UPLOAD_BYTES:-20971520}"
-        requested_selfie_search_max_pixels="${SELFIE_SEARCH_MAX_PIXELS:-25000000}"
-        requested_selfie_search_download_ttl_seconds="${SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS:-120}"
-        requested_selfie_search_embedding_model="${SELFIE_SEARCH_EMBEDDING_MODEL:-sface}"
-        requested_selfie_search_embedding_dimensions="${SELFIE_SEARCH_EMBEDDING_DIMENSIONS:-128}"
-        requested_selfie_search_cosine_distance_threshold="${SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD:-0.363}"
-        requested_selfie_search_temporary_prefix="${SELFIE_SEARCH_TEMPORARY_PREFIX:-selfie-search/}"
-        requested_selfie_search_lifecycle_max_age_hours="${SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS:-24}"
-        ;;
-    False)
-        requested_selfie_search_max_upload_bytes=20971520
-        requested_selfie_search_max_pixels=25000000
-        requested_selfie_search_download_ttl_seconds=120
-        requested_selfie_search_embedding_model=sface
-        requested_selfie_search_embedding_dimensions=128
-        requested_selfie_search_cosine_distance_threshold=0.363
-        requested_selfie_search_temporary_prefix=selfie-search/
-        requested_selfie_search_lifecycle_max_age_hours=24
-        ;;
-    *)
-        echo "SELFIE_SEARCH_ENABLED must be True or False" >&2
-        exit 2
-        ;;
-esac
+if [ "$requested_processing_enabled" != True ] || [ "$requested_face_enabled" != True ]; then
+    echo "Selfie search requires enabled photo processing and face embeddings" >&2
+    exit 2
+fi
+: "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
+: "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
+: "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
+requested_selfie_search_max_upload_bytes=20971520
+requested_selfie_search_max_pixels=25000000
+requested_selfie_search_download_ttl_seconds=120
+requested_selfie_search_embedding_model=sface
+requested_selfie_search_embedding_dimensions=128
+requested_selfie_search_cosine_distance_threshold=0.363
+requested_selfie_search_temporary_prefix=selfie-search/
+requested_selfie_search_lifecycle_max_age_hours=24
 
 case "$requested_selfie_feedback_enabled" in
     True)
-        if [ "$requested_selfie_search_enabled" != True ]; then
-            echo "SELFIE_FEEDBACK_ENABLED requires SELFIE_SEARCH_ENABLED=True" >&2
-            exit 2
-        fi
         : "${SELFIE_FEEDBACK_S3_BUCKET:?Set SELFIE_FEEDBACK_S3_BUCKET}"
         : "${SELFIE_FEEDBACK_S3_ACCESS_KEY_ID:?Set SELFIE_FEEDBACK_S3_ACCESS_KEY_ID}"
         : "${SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY:?Set SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY}"
@@ -452,7 +429,6 @@ clear_candidate_compose_interpolation() {
         PHOTO_WORKER_PROCESSOR_IDENTITIES \
         PHOTO_WORKER_PROCESSOR_TYPES \
         PHOTO_WORKER_REPLICAS \
-        SELFIE_SEARCH_ENABLED \
         SELFIE_SEARCH_MAX_UPLOAD_BYTES \
         SELFIE_SEARCH_MAX_PIXELS \
         SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS \
@@ -547,7 +523,7 @@ fail() {
 
 phase() {
     case "$1" in
-        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
             deployment_phase="$1"
             printf 'DEPLOY_PHASE=%s\n' "$1"
             ;;
@@ -682,7 +658,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PHOTO_WORKER_PROCESSOR_IDENTITIES=%s\n' "$requested_worker_processor_identities"
     printf 'PHOTO_WORKER_PROCESSOR_TYPES=%s\n' "$requested_processor_types"
     printf 'PHOTO_WORKER_REPLICAS=%s\n' "$requested_worker_replicas"
-    printf 'SELFIE_SEARCH_ENABLED=%s\n' "$requested_selfie_search_enabled"
     printf 'SELFIE_SEARCH_MAX_UPLOAD_BYTES=%s\n' "$requested_selfie_search_max_upload_bytes"
     printf 'SELFIE_SEARCH_MAX_PIXELS=%s\n' "$requested_selfie_search_max_pixels"
     printf 'SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS=%s\n' "$requested_selfie_search_download_ttl_seconds"
@@ -765,6 +740,27 @@ else
         --entrypoint python web manage.py showmigrations --plan; then
         fail "Candidate migration preflight failed"
     fi
+fi
+
+phase projection-preflight
+committed_release_a_image=''
+if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
+    IFS= read -r committed_release_a_image < "$DEPLOY_ROOT/deployed-image" || true
+fi
+if [ "$has_successful_deployment" -eq 0 ] || \
+    [ "$committed_release_a_image" != "$ACCEPTED_RELEASE_A_IMAGE" ]; then
+    fail "Release B requires an accepted Release A deployment with the committed accepted Release A image"
+fi
+unset committed_release_a_image
+if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+    --entrypoint python web manage.py report_photo_capture_time_projection \
+    --all-events --require-clean; then
+    fail "Candidate projection reconciliation failed"
+fi
+if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+    --entrypoint python web manage.py benchmark_event_gallery_time_filter \
+    --event-id 9 --pages 1,mid,last; then
+    fail "Candidate gallery time-filter benchmark failed"
 fi
 
 phase observability-preflight

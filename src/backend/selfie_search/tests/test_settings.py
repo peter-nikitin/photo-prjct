@@ -14,7 +14,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 def load_isolated_selfie_settings(**environment_overrides: str) -> dict[str, object]:
     environment = os.environ.copy()
     for name in (
-        "SELFIE_SEARCH_ENABLED",
         "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES",
         "SELFIE_SEARCH_MAX_PIXELS",
@@ -56,7 +55,6 @@ with patch("environ.Env.read_env"):
 print(json.dumps({name: getattr(settings, name) for name in json.loads(__import__("sys").argv[1])}))
 """
     names = [
-        "SELFIE_SEARCH_ENABLED",
         "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES",
         "SELFIE_SEARCH_MAX_PIXELS",
@@ -92,10 +90,14 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         )
         self.assertEqual(handler, {"class": "logging.StreamHandler", "level": "INFO"})
 
-    def test_disabled_defaults_are_the_approved_bounded_contract(self) -> None:
+    def test_selfie_contract_values_are_always_parsed_and_validated(self) -> None:
+        """A malformed normal selfie limit must prevent startup, not leave a hidden feature."""
+        with self.assertRaises(subprocess.CalledProcessError):
+            load_isolated_selfie_settings(SELFIE_SEARCH_MAX_UPLOAD_BYTES="not-a-number")
+
+    def test_defaults_are_the_approved_bounded_contract(self) -> None:
         from django.conf import settings
 
-        self.assertIs(settings.SELFIE_SEARCH_ENABLED, False)
         self.assertIs(settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED, False)
         self.assertEqual(settings.SELFIE_SEARCH_MAX_UPLOAD_BYTES, 20 * 1024 * 1024)
         self.assertEqual(settings.SELFIE_SEARCH_MAX_PIXELS, 25_000_000)
@@ -113,47 +115,6 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         self.assertEqual(settings.SELFIE_FEEDBACK_MAX_UPLOAD_BYTES, 20 * 1024 * 1024)
         self.assertEqual(settings.SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS, 60)
 
-    @override_settings(SELFIE_SEARCH_ENABLED="True")
-    def test_feature_flag_must_remain_a_boolean(self) -> None:
-        errors = run_checks(tags=[SELFIE_SEARCH_CHECK_TAG])
-
-        self.assertIn("selfie_search.E001", [error.id for error in errors])
-
-    def test_disabled_feature_uses_safe_defaults_without_parsing_dormant_overrides(self) -> None:
-        values = load_isolated_selfie_settings(
-            SELFIE_SEARCH_ENABLED="False",
-            SELFIE_SEARCH_MAX_UPLOAD_BYTES="not-a-number",
-            SELFIE_SEARCH_MAX_PIXELS="also-not-a-number",
-            SELFIE_SEARCH_EMBEDDING_MODEL="different-model",
-            SELFIE_SEARCH_TEMPORARY_PREFIX="originals/",
-        )
-
-        self.assertEqual(
-            values,
-            {
-                "SELFIE_SEARCH_ENABLED": False,
-                "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED": False,
-                "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
-                "SELFIE_SEARCH_MAX_PIXELS": 25_000_000,
-                "SELFIE_SEARCH_EMBEDDING_MODEL": "sface",
-                "SELFIE_SEARCH_TEMPORARY_PREFIX": "selfie-search/",
-                "SELFIE_FEEDBACK_ENABLED": False,
-                "SELFIE_FEEDBACK_S3_BUCKET": "",
-                "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "",
-                "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "",
-                "SELFIE_FEEDBACK_KMS_KEY_ID": "",
-                "SELFIE_FEEDBACK_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
-                "SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS": 60,
-            },
-        )
-
-    def test_enabled_feature_fails_closed_on_malformed_required_override(self) -> None:
-        with self.assertRaises(subprocess.CalledProcessError):
-            load_isolated_selfie_settings(
-                SELFIE_SEARCH_ENABLED="True",
-                SELFIE_SEARCH_MAX_UPLOAD_BYTES="not-a-number",
-            )
-
     def test_disabled_feedback_uses_safe_defaults_without_parsing_dormant_overrides(self) -> None:
         values = load_isolated_selfie_settings(
             SELFIE_FEEDBACK_ENABLED="False",
@@ -164,7 +125,6 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         self.assertEqual(
             values,
             {
-                "SELFIE_SEARCH_ENABLED": False,
                 "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED": False,
                 "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
                 "SELFIE_SEARCH_MAX_PIXELS": 25_000_000,
@@ -180,12 +140,11 @@ class SelfieSearchSettingsTests(SimpleTestCase):
             },
         )
 
-    def test_enabled_feedback_requires_enabled_search_and_complete_safe_configuration(self) -> None:
+    def test_enabled_feedback_requires_complete_safe_configuration(self) -> None:
         with self.assertRaises(subprocess.CalledProcessError):
             load_isolated_selfie_settings(SELFIE_FEEDBACK_ENABLED="True")
         with self.assertRaises(subprocess.CalledProcessError):
             load_isolated_selfie_settings(
-                SELFIE_SEARCH_ENABLED="True",
                 SELFIE_FEEDBACK_ENABLED="True",
                 SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
                 SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",
@@ -195,7 +154,6 @@ class SelfieSearchSettingsTests(SimpleTestCase):
             )
         with self.assertRaises(subprocess.CalledProcessError):
             load_isolated_selfie_settings(
-                SELFIE_SEARCH_ENABLED="True",
                 SELFIE_FEEDBACK_ENABLED="True",
                 PRIVATE_MEDIA_S3_BUCKET="feedback-bucket",
                 SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
@@ -210,7 +168,6 @@ class SelfieSearchSettingsTests(SimpleTestCase):
             with self.subTest(unsafe_override=unsafe_override):
                 with self.assertRaises(subprocess.CalledProcessError):
                     load_isolated_selfie_settings(
-                        SELFIE_SEARCH_ENABLED="True",
                         SELFIE_FEEDBACK_ENABLED="True",
                         SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
                         SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",
@@ -219,23 +176,13 @@ class SelfieSearchSettingsTests(SimpleTestCase):
                         **unsafe_override,
                     )
 
-    @override_settings(SELFIE_SEARCH_ENABLED=False, SELFIE_FEEDBACK_ENABLED=True)
-    def test_enabled_feedback_requires_enabled_search_at_system_check_time(self) -> None:
+    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    def test_cluster_expansion_is_independent_of_feedback_storage(self) -> None:
         errors = run_checks(tags=[SELFIE_SEARCH_CHECK_TAG])
 
-        self.assertIn("selfie_search.E007", [error.id for error in errors])
+        self.assertNotIn("selfie_search.E010", [error.id for error in errors])
 
     @override_settings(
-        SELFIE_SEARCH_ENABLED=False,
-        SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True,
-    )
-    def test_cluster_expansion_requires_ordinary_selfie_search(self) -> None:
-        errors = run_checks(tags=[SELFIE_SEARCH_CHECK_TAG])
-
-        self.assertIn("selfie_search.E010", [error.id for error in errors])
-
-    @override_settings(
-        SELFIE_SEARCH_ENABLED=True,
         SELFIE_FEEDBACK_ENABLED=True,
         SELFIE_FEEDBACK_S3_BUCKET="private-selfies",
         PRIVATE_MEDIA_S3_BUCKET="private-selfies",
@@ -250,11 +197,10 @@ class SelfieSearchSettingsTests(SimpleTestCase):
 
         self.assertEqual(
             {error.id for error in errors if error.id.startswith("selfie_search.E00")},
-            {"selfie_search.E006", "selfie_search.E008", "selfie_search.E009"},
+            {"selfie_search.E008", "selfie_search.E009"},
         )
 
     @override_settings(
-        SELFIE_SEARCH_ENABLED=True,
         PHOTO_PROCESSING_ENABLED=True,
         PHOTO_PROCESSING_FACE_ENABLED=True,
         SELFIE_FEEDBACK_ENABLED=True,

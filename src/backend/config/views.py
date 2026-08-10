@@ -13,6 +13,7 @@ from ingestion.storage import (
     StorageError,
     StorageUnavailable,
 )
+from picflow.forms import EventGalleryTimeFilterForm
 from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhoto,
@@ -48,47 +49,55 @@ def event_catalog(request):
 
 def event_detail(request, slug: str, *, selfie_search_form=None):
     event = get_object_or_404(Event.objects.published(), slug=slug)
-    if selfie_search_form is None and settings.SELFIE_SEARCH_ENABLED:
+    if selfie_search_form is None and event.access_type == Event.AccessType.FREE:
         selfie_search_form = SelfieSearchUploadForm()
     selfie_feedback_enabled = bool(settings.SELFIE_FEEDBACK_ENABLED)
     gallery_photos: tuple[GalleryPhoto, ...] = ()
     gallery_page_data = None
+    manual_time_filter_form = None
+    manual_time_filter_invalid = False
     if event.access_type == Event.AccessType.FREE:
-        try:
-            gallery_page_data = gallery_page(event=event, page_number=request.GET.get("page"))
-        except InvalidPage:
-            return HttpResponse(status=404)
-        gallery_page_photos = tuple(gallery_page_data.object_list)
-        faces_by_photo = (
-            gallery_search_faces_by_photo(event=event, photos=gallery_page_photos)
-            if settings.SELFIE_SEARCH_ENABLED
-            else {}
-        )
-
-        def faces(photo: Photo):
-            return tuple(
-                replace(
-                    face,
-                    search_url=reverse(
-                        "selfie_search:submit_gallery_face",
-                        kwargs={
-                            "event_slug": event.slug,
-                            "photo_id": photo.pk,
-                            "detection_id": face.detection_id,
-                        },
-                    ),
+        manual_time_filter_form = EventGalleryTimeFilterForm(event, request.GET)
+        if manual_time_filter_form.is_requested and not manual_time_filter_form.is_valid():
+            manual_time_filter_invalid = True
+        else:
+            bounds = manual_time_filter_form.utc_bounds
+            try:
+                gallery_page_data = gallery_page(
+                    event=event,
+                    page_number=request.GET.get("page"),
+                    capture_time_start=bounds[0] if bounds else None,
+                    capture_time_end=bounds[1] if bounds else None,
                 )
-                for face in faces_by_photo.get(photo.pk, ())
-            )
+            except InvalidPage:
+                return HttpResponse(status=404)
+            gallery_page_photos = tuple(gallery_page_data.object_list)
+            faces_by_photo = gallery_search_faces_by_photo(event=event, photos=gallery_page_photos)
 
-        gallery_photos = tuple(
-            GalleryPhotoFactory.from_photo(
-                photo=photo,
-                event_slug=event.slug,
-                faces=faces(photo),
+            def faces(photo: Photo):
+                return tuple(
+                    replace(
+                        face,
+                        search_url=reverse(
+                            "selfie_search:submit_gallery_face",
+                            kwargs={
+                                "event_slug": event.slug,
+                                "photo_id": photo.pk,
+                                "detection_id": face.detection_id,
+                            },
+                        ),
+                    )
+                    for face in faces_by_photo.get(photo.pk, ())
+                )
+
+            gallery_photos = tuple(
+                GalleryPhotoFactory.from_photo(
+                    photo=photo,
+                    event_slug=event.slug,
+                    faces=faces(photo),
+                )
+                for photo in gallery_page_photos
             )
-            for photo in gallery_page_photos
-        )
     return render(
         request,
         "catalog/event_detail.html",
@@ -96,6 +105,8 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             "event": event,
             "gallery_photos": gallery_photos,
             "gallery_page": gallery_page_data,
+            "manual_time_filter_form": manual_time_filter_form,
+            "manual_time_filter_invalid": manual_time_filter_invalid,
             "selfie_search_form": selfie_search_form,
             "selfie_feedback_enabled": selfie_feedback_enabled,
         },

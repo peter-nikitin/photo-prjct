@@ -44,6 +44,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
+| PJ-015 | Customer | Filter an event gallery by capture time | In progress | 2026-08-08 |
 
 ## Job details
 
@@ -131,8 +132,9 @@ search within that event, so I can review probable matches.
   deterministic gallery fixtures cover both face generations, including a verified preview
   publication and production enrollment into `2/face_embedding/2`. The existing selfie-upload path
   covers event isolation, probable matches, selfie cleanup, stable results, and the narrow
-  paid-result media exception. The repository default remains disabled, but staging deployed branch
-  `c62508a` with that path enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
+  paid-result media exception. Public selfie search is now always available when its existing
+  processing prerequisites are healthy; the retired availability switch is no longer active.
+  Staging deployed branch `c62508a` with that path enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
   put/head/grant/delete preflight passed; six legacy face jobs produced four accepted event
   embeddings; and a live Unicode event upload reached a stable ready bearer URL with the expected
   original. The temporary selfie was deleted before publication, including from the bucket prefix.
@@ -240,6 +242,26 @@ selfie again.
   customer, or validated delivery evidence is recorded.
 - Last updated: 2026-08-04
 
+### PJ-015 — Customer — Filter an event gallery by capture time
+
+When I know approximately when my photos were taken at an event, I want to narrow that event's
+gallery by event-local capture time, so I can reach likely photos without uploading a selfie or
+storing a manual query.
+
+- Status: In progress
+- Evidence: The approved [event gallery time-filter design](superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
+  and [capture-time projection design](superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
+  define the event-local form, inclusive tolerance, privacy boundary, and two-release gate.
+  Accepted Release A staging evidence establishes the synchronous writer, direct reader, clean
+  global reconciliation at 17,043 event-9 pairs, and rollback-only lifecycle smoke. The current
+  Release B candidate uses the projection-only filtered reader and has a clean immutable-local-clone
+  reconciliation plus a [sanitized 2x benchmark](performance/2026-08-08-event-gallery-time-filter-local-clone.json)
+  for its first, midpoint, and last pages. The integrated gallery/processing/projection/deployment
+  suite, visual suite (92 tests), and separate `make check` exit clean locally. Customer acceptance
+  remains blocked on Release B review, PR/green CI, normal staging deployment, exact-image/health
+  checks, live reconciliation and benchmark, and gallery/privacy/authorization smoke coverage.
+- Last updated: 2026-08-08
+
 Visual design-reference screens are not delivery evidence.
 
 ## Status log
@@ -271,3 +293,5 @@ This log is append-only.
 | 2026-08-04 | PJ-013 | Planned | In progress | Repository implementation and automated release-gate evidence are complete; the feature remains disabled by default and has no staging/production activation or real customer-outcome evidence. |
 | 2026-08-04 | PJ-014 | Not recorded | Candidate | Approved product design proposes a device-local list of saved bearer results on each event page; implementation planning has not started. |
 | 2026-08-04 | PJ-014 | Candidate | In progress | Repository-only implementation and reconciled release-gate evidence: 16/16 device-local history JS cases, 81 focused Django selfie-search/event-view cases, 84/84 full JavaScript cases, `make check` with 1,239 passed and 3 skipped at 83.20% coverage, and 81/81 visual cases passed. No deployment or customer-outcome evidence is claimed. |
+| 2026-08-08 | PJ-015 | Not recorded | In progress | Release A writer and local accepted-clone projection reconciliation are complete while the gallery remains a direct reader; Release B cutover and customer acceptance remain gated on deployment, live reconciliation, and performance evidence. |
+| 2026-08-08 | PJ-015 | In progress | In progress | Release A staging operation is accepted; the Release B projection reader has clean local reconciliation and aggregate first/midpoint/last 2x evidence. Review, PR/CI, deployment, live acceptance, and customer outcome remain pending. |

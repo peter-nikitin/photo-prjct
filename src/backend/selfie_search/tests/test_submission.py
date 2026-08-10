@@ -25,6 +25,7 @@ from processing.models import (
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
+    PhotoDerivative,
     PhotoFaceDetection,
     PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
@@ -35,9 +36,12 @@ from processing.services.enrollment import (
     CONTRACT_VERSION,
     FACE_EMBEDDING_CONFIGURATION,
     FACE_EMBEDDING_PROCESSOR_VERSION,
+    GENERATE_PREVIEW_CONFIGURATION,
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSION,
     FaceEmbeddingGenerationApproval,
+    request_processor,
 )
 from processing.services.face_cohort import load_compatible_face_embeddings
 from processing.services.face_quality import (
@@ -160,6 +164,7 @@ class SubmissionTests(TestCase):
         configuration_hash: str | None = None,
         detection_id: UUID | None = None,
         geometry: dict[str, object] | None = None,
+        input_fingerprint: dict[str, int | str | None] | None = None,
     ) -> FaceEmbedding:
         configuration = configuration if configuration is not None else FACE_EMBEDDING_CONFIGURATION
         configuration_hash = (
@@ -195,7 +200,7 @@ class SubmissionTests(TestCase):
             processor_version=processor_version,
             configuration=configuration,
             configuration_hash=configuration_hash,
-            input_fingerprint={},
+            input_fingerprint=input_fingerprint or {},
         )
         attempt = ProcessingAttempt.objects.create(
             event=event,
@@ -206,7 +211,7 @@ class SubmissionTests(TestCase):
             processor_type="face_embedding",
             processor_version=processor_version,
             configuration=configuration,
-            input_fingerprint={},
+            input_fingerprint=input_fingerprint or {},
             status=ProcessingAttempt.Status.SUCCEEDED,
             terminal_at=timezone.now(),
             accepted=accepted,
@@ -339,31 +344,127 @@ class SubmissionTests(TestCase):
         configuration_hash = generation["configuration_hash"]
         assert isinstance(configuration, dict)
         assert isinstance(configuration_hash, str)
-        self.make_eligible_embedding(
+        photo = Photo.objects.create(
+            id="active-v4",
             event=self.event,
-            photo_id="active-v3",
+            uploaded_by=self.user,
+            original_key="originals/active-v4",
+            original_filename="active-v4.jpg",
+            original_size=1,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+        preview_state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+            },
+        )
+        assert preview_state.current_job is not None
+        preview_attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=preview_state.current_job.run,
+            job=preview_state.current_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint=preview_state.current_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        derivative = PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key="previews/active-v4.jpg",
+            byte_size=8,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=1600,
+            oriented_source_height=1000,
+            sha256="a" * 64,
+            accepted_attempt=preview_attempt,
+        )
+        preview_state.status = PhotoProcessingState.Status.SUCCEEDED
+        preview_state.current_attempt = preview_attempt
+        preview_state.accepted_attempt = preview_attempt
+        preview_state.succeeded_at = timezone.now()
+        preview_state.save(
+            update_fields=[
+                "status",
+                "current_attempt",
+                "accepted_attempt",
+                "succeeded_at",
+                "updated_at",
+            ]
+        )
+        expected_candidate_fingerprint = {
+            "object_key": derivative.final_key,
+            "object_size": derivative.byte_size,
+            "object_content_type": derivative.content_type,
+            "object_etag": None,
+            "media_kind": derivative.variant,
+            "pixel_width": derivative.width,
+            "pixel_height": derivative.height,
+        }
+        embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="active-v4",
+            photo=photo,
             contract_version=3,
-            processor_version=3,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=configuration,
             configuration_hash=configuration_hash,
+            input_fingerprint=expected_candidate_fingerprint,
+            geometry={
+                "coordinate_space": derivative.variant,
+                "pixel_width": derivative.width,
+                "pixel_height": derivative.height,
+                "bbox": [320, 200, 640, 400],
+            },
         )
+        candidate_job = embedding.detection.attempt.job
+        candidate_job.status = ProcessingJob.Status.SUCCEEDED
+        candidate_job.completed_at = timezone.now()
+        candidate_job.save(update_fields=["status", "completed_at"])
+        self.assertEqual(candidate_job.input_fingerprint, expected_candidate_fingerprint)
+        self.assertEqual(embedding.detection.geometry["pixel_width"], derivative.width)
+        self.assertEqual(embedding.detection.geometry["pixel_height"], derivative.height)
         approval = FaceEmbeddingGenerationApproval(
             event_slug=self.event.slug,
             photo_count=1,
             configuration_hash=configuration_hash,
-            evaluation_report_hash="d" * 64,
-            complete=True,
+            preview_manifest_hash="a" * 64,
+            comparison_manifest_hash="d" * 64,
+            yunet_model_hash="b" * 64,
+            sface_model_hash="c" * 64,
+            job_count=1,
+            attempt_count=1,
+            projection_count=1,
+            technical_failure_count=0,
+            kept_face_count=1,
+            quality_rejected_face_count=0,
             approved=True,
-            clear_loss_count=0,
-            relevant_result_loss_count=0,
-            unresolved_count=0,
         )
         with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
             activate_face_embedding_generation(
                 event=self.event,
                 generations=generations,
                 approved_configuration_hash=approval.configuration_hash,
-                evaluation_report_hash=approval.evaluation_report_hash,
+                evaluation_report_hash=approval.comparison_manifest_hash,
                 review_confirmed=True,
             )
 

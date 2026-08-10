@@ -1,6 +1,7 @@
 import json
 from datetime import date
 from io import StringIO
+from typing import NotRequired, TypedDict, cast
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -25,6 +26,27 @@ from processing.services.enrollment import (
     request_processor,
 )
 from processing.services.face_quality import candidate_face_embedding_generations
+
+
+class CandidateCounts(TypedDict):
+    candidate_job_count: int
+    candidate_projection_count: int
+    candidate_state_counts: dict[str, int]
+    eligible_photo_count: int
+    failure_job_count: int
+    nonterminal_job_count: int
+    terminal_job_count: int
+
+
+class EnrollmentCounts(TypedDict):
+    created_job_count: int
+    existing_job_count: int
+
+
+class CommandReport(TypedDict):
+    counts: CandidateCounts
+    enrollment: NotRequired[EnrollmentCounts]
+    mode: str
 
 
 class FaceQualityReprocessingCommandTests(TestCase):
@@ -143,10 +165,14 @@ class FaceQualityReprocessingCommandTests(TestCase):
             approved=approved,
         )
 
-    def command(self, *, apply: bool = False) -> dict[str, object]:
+    def command(self, *, apply: bool = False) -> CommandReport:
         output = StringIO()
         call_command("reprocess_event_face_embeddings", apply=apply, stdout=output)
-        return json.loads(output.getvalue())
+        return cast(CommandReport, json.loads(output.getvalue()))
+
+    def enrollment(self, report: CommandReport) -> EnrollmentCounts:
+        self.assertIn("enrollment", report)
+        return report["enrollment"]
 
     def test_tracked_approval_binds_exact_reviewed_artifacts_without_loss_counters(self) -> None:
         """Changing reviewed artifacts or inventing recall-loss fields must fail this contract."""
@@ -232,9 +258,9 @@ class FaceQualityReprocessingCommandTests(TestCase):
             processor_version=QUALITY_FACE_PROCESSOR_VERSION,
         )
         self.assertEqual(list(jobs.values_list("photo_id", flat=True)), [accepted.pk])
-        self.assertEqual(first["enrollment"]["created_job_count"], 1)
-        self.assertEqual(replay["enrollment"]["created_job_count"], 0)
-        self.assertEqual(replay["enrollment"]["existing_job_count"], 1)
+        self.assertEqual(self.enrollment(first)["created_job_count"], 1)
+        self.assertEqual(self.enrollment(replay)["created_job_count"], 0)
+        self.assertEqual(self.enrollment(replay)["existing_job_count"], 1)
 
     def test_apply_reuses_the_existing_job_after_its_run_closes(self) -> None:
         """Creating a collecting run on a sealed replay must fail this idempotence contract."""
@@ -258,8 +284,8 @@ class FaceQualityReprocessingCommandTests(TestCase):
 
         self.assertEqual(ProcessingJob.objects.count(), before_jobs)
         self.assertEqual(job.run.__class__.objects.count(), before_runs)
-        self.assertEqual(replay["enrollment"]["created_job_count"], 0)
-        self.assertEqual(replay["enrollment"]["existing_job_count"], 1)
+        self.assertEqual(self.enrollment(replay)["created_job_count"], 0)
+        self.assertEqual(self.enrollment(replay)["existing_job_count"], 1)
 
     def test_changed_or_incomplete_cohort_fails_closed_and_status_reports_all_counts(self) -> None:
         """Allowing a cohort count mismatch or hiding nonterminal state must fail this test."""

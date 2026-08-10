@@ -748,28 +748,29 @@ def candidate_face_embedding_status(event: Event) -> dict[str, object]:
             counts[row["status"]] = row["count"]
         return counts
 
-    job_statuses = status_counts(jobs, tuple(ProcessingJob.Status.values))
-    attempt_statuses = status_counts(attempts, tuple(ProcessingAttempt.Status.values))
-    state_statuses = status_counts(states, tuple(PhotoProcessingState.Status.values))
-    detection_statuses = status_counts(detections, tuple(PhotoFaceDetection.Status.values))
-    terminal_job_count = sum(
-        job_statuses[status]
-        for status in (
-            ProcessingJob.Status.SUCCEEDED,
-            ProcessingJob.Status.FAILED,
-            ProcessingJob.Status.CANCELLED,
-        )
+    job_statuses = status_counts(jobs, tuple(str(value) for value in ProcessingJob.Status.values))
+    attempt_statuses = status_counts(
+        attempts, tuple(str(value) for value in ProcessingAttempt.Status.values)
     )
-    failure_job_count = (
-        job_statuses[ProcessingJob.Status.FAILED] + job_statuses[ProcessingJob.Status.CANCELLED]
+    state_statuses = status_counts(
+        states, tuple(str(value) for value in PhotoProcessingState.Status.values)
     )
-    failure_attempt_count = sum(
-        attempt_statuses[status]
-        for status in (
-            ProcessingAttempt.Status.FAILED,
-            ProcessingAttempt.Status.EXPIRED,
-            ProcessingAttempt.Status.STALE,
-        )
+    detection_statuses = status_counts(
+        detections, tuple(str(value) for value in PhotoFaceDetection.Status.values)
+    )
+    succeeded_job_status = str(ProcessingJob.Status.SUCCEEDED)
+    failed_job_status = str(ProcessingJob.Status.FAILED)
+    cancelled_job_status = str(ProcessingJob.Status.CANCELLED)
+    terminal_job_count = (
+        job_statuses[succeeded_job_status]
+        + job_statuses[failed_job_status]
+        + job_statuses[cancelled_job_status]
+    )
+    failure_job_count = job_statuses[failed_job_status] + job_statuses[cancelled_job_status]
+    failure_attempt_count = (
+        attempt_statuses[str(ProcessingAttempt.Status.FAILED)]
+        + attempt_statuses[str(ProcessingAttempt.Status.EXPIRED)]
+        + attempt_statuses[str(ProcessingAttempt.Status.STALE)]
     )
     return {
         "accepted_attempt_count": attempts.filter(
@@ -786,12 +787,12 @@ def candidate_face_embedding_status(event: Event) -> dict[str, object]:
         "failure_attempt_count": failure_attempt_count,
         "failure_job_count": failure_job_count,
         "nonterminal_job_count": jobs.count() - terminal_job_count,
-        "kept_face_count": detection_statuses[PhotoFaceDetection.Status.KEPT],
+        "kept_face_count": detection_statuses[str(PhotoFaceDetection.Status.KEPT)],
         "quality_rejected_face_count": detection_statuses[
-            PhotoFaceDetection.Status.QUALITY_REJECTED
+            str(PhotoFaceDetection.Status.QUALITY_REJECTED)
         ],
         "terminal_job_count": terminal_job_count,
-        "technical_failure_face_count": detection_statuses[PhotoFaceDetection.Status.FAILED],
+        "technical_failure_face_count": detection_statuses[str(PhotoFaceDetection.Status.FAILED)],
     }
 
 

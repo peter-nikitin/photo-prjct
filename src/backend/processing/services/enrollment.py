@@ -358,7 +358,10 @@ def enroll_event_face_embedding_candidate_reprocessing(
         existing_job_count = 0
         run_ids: set[object] = set()
         for photo in cohort:
-            expected_fingerprint = _derivative_fingerprint(_accepted_preview(photo))
+            preview = _accepted_preview(photo)
+            if preview is None:
+                raise ValueError("candidate enrollment lost its accepted preview")
+            expected_fingerprint = _derivative_fingerprint(preview)
             existing_jobs = list(
                 ProcessingJob.objects.select_for_update()
                 .select_related("run")

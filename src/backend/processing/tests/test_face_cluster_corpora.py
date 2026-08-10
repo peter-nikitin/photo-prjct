@@ -36,6 +36,7 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
     FaceEmbeddingGenerationApproval,
+    accepted_preview_cohort_hash,
     request_processor,
 )
 from processing.services.face_cluster_corpora import (
@@ -199,6 +200,11 @@ class FaceClusterCorpusTests(TestCase):
             photo_count=photo_count,
             configuration_hash=configuration_hash,
             preview_manifest_hash="a" * 64,
+            local_preview_projection_hash="e" * 64,
+            accepted_preview_cohort_hash=accepted_preview_cohort_hash(event),
+            accepted_preview_crosswalk_hash="f" * 64,
+            accepted_preview_crosswalk_entry_count=photo_count,
+            accepted_preview_crosswalk_sha_mismatch_count=photo_count,
             comparison_manifest_hash="d" * 64,
             yunet_model_hash="b" * 64,
             sface_model_hash="c" * 64,

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
@@ -31,6 +31,7 @@ from processing.services.enrollment import (
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     FaceEmbeddingGenerationApproval,
+    accepted_preview_cohort_hash,
     request_processor,
 )
 from processing.services.face_quality import (
@@ -188,6 +189,11 @@ class FaceEmbeddingActivationTests(TestCase):
             photo_count=photo_count,
             configuration_hash=configuration_hash,
             preview_manifest_hash="a" * 64,
+            local_preview_projection_hash="e" * 64,
+            accepted_preview_cohort_hash=accepted_preview_cohort_hash(event or self.event),
+            accepted_preview_crosswalk_hash="f" * 64,
+            accepted_preview_crosswalk_entry_count=photo_count,
+            accepted_preview_crosswalk_sha_mismatch_count=photo_count,
             comparison_manifest_hash="d" * 64,
             yunet_model_hash="b" * 64,
             sface_model_hash="c" * 64,
@@ -568,6 +574,41 @@ class FaceEmbeddingActivationTests(TestCase):
                     review_confirmed=True,
                 )
 
+    def test_candidate_rejects_derivative_change_after_complete_processing(self) -> None:
+        """Changing accepted preview identity after enrollment must block immutable activation."""
+        self.publish_candidate_projection(event=self.event, photo_id="changed-after-enrollment")
+        approval = self.approval()
+        # Application writes cannot mutate a published derivative. Temporarily bypass only the
+        # test-database trigger to reproduce restored/cloned database drift after enrollment.
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            cursor.execute(
+                "ALTER TABLE processing_photoderivative "
+                "DISABLE TRIGGER proc_photo_derivative_immutability_trg"
+            )
+            try:
+                cursor.execute(
+                    "UPDATE processing_photoderivative SET sha256 = %s "
+                    "WHERE photo_id = %s AND variant = %s",
+                    ["8" * 64, "changed-after-enrollment", "preview-small-v1"],
+                )
+            finally:
+                cursor.execute(
+                    "ALTER TABLE processing_photoderivative "
+                    "ENABLE TRIGGER proc_photo_derivative_immutability_trg"
+                )
+
+        with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
+            with self.assertRaisesRegex(ValueError, "approved accepted preview cohort"):
+                activate_face_embedding_generation(
+                    event=self.event,
+                    generations=candidate_face_embedding_generations(),
+                    approved_configuration_hash=approval.configuration_hash,
+                    evaluation_report_hash=approval.comparison_manifest_hash,
+                    review_confirmed=True,
+                )
+        self.assertFalse(EventFaceEmbeddingActivation.objects.exists())
+
     def test_candidate_revalidates_the_cohort_after_acquiring_the_event_lock(self) -> None:
         """A preview accepted between validation and activation must prevent the append."""
         initial_attempt = self.publish_candidate_projection(
@@ -593,7 +634,7 @@ class FaceEmbeddingActivationTests(TestCase):
 
         with patch.object(Event.objects, "select_for_update", side_effect=lock_then_publish):
             with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
-                with self.assertRaisesRegex(ValueError, "incomplete candidate evidence"):
+                with self.assertRaisesRegex(ValueError, "approved accepted preview cohort"):
                     activate_face_embedding_generation(
                         event=self.event,
                         generations=candidate_face_embedding_generations(),

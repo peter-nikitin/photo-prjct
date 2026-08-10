@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import date
 from io import StringIO
@@ -23,6 +24,7 @@ from processing.services.enrollment import (
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     FaceEmbeddingGenerationApproval,
+    accepted_preview_cohort_hash,
     request_processor,
 )
 from processing.services.face_quality import candidate_face_embedding_generations
@@ -70,7 +72,15 @@ class FaceQualityReprocessingCommandTests(TestCase):
             city="Moscow",
         )
 
-    def accepted_preview_photo(self, identifier: str, *, event: Event | None = None) -> Photo:
+    def accepted_preview_photo(
+        self,
+        identifier: str,
+        *,
+        event: Event | None = None,
+        byte_size: int = 8,
+        sha256: str = "a" * 64,
+        width: int = 1600,
+    ) -> Photo:
         photo = Photo.objects.create(
             id=identifier,
             event=event or self.event,
@@ -118,13 +128,13 @@ class FaceQualityReprocessingCommandTests(TestCase):
             photo=photo,
             variant="preview-small-v1",
             final_key=f"previews/{identifier}.jpg",
-            byte_size=8,
+            byte_size=byte_size,
             content_type="image/jpeg",
-            width=1600,
+            width=width,
             height=1000,
             oriented_source_width=1600,
             oriented_source_height=1000,
-            sha256="a" * 64,
+            sha256=sha256,
             accepted_attempt=attempt,
         )
         state.status = PhotoProcessingState.Status.SUCCEEDED
@@ -143,7 +153,11 @@ class FaceQualityReprocessingCommandTests(TestCase):
         return photo
 
     def approval(
-        self, *, photo_count: int = 1, approved: bool = True
+        self,
+        *,
+        photo_count: int = 1,
+        approved: bool = True,
+        cohort_hash: str | None = None,
     ) -> FaceEmbeddingGenerationApproval:
         generation = candidate_face_embedding_generations()[0]
         configuration_hash = generation["configuration_hash"]
@@ -153,6 +167,13 @@ class FaceQualityReprocessingCommandTests(TestCase):
             photo_count=photo_count,
             configuration_hash=configuration_hash,
             preview_manifest_hash="a" * 64,
+            local_preview_projection_hash="e" * 64,
+            accepted_preview_cohort_hash=(
+                cohort_hash if cohort_hash is not None else accepted_preview_cohort_hash(self.event)
+            ),
+            accepted_preview_crosswalk_hash="f" * 64,
+            accepted_preview_crosswalk_entry_count=photo_count,
+            accepted_preview_crosswalk_sha_mismatch_count=photo_count,
             comparison_manifest_hash="b" * 64,
             yunet_model_hash="c" * 64,
             sface_model_hash="d" * 64,
@@ -164,6 +185,22 @@ class FaceQualityReprocessingCommandTests(TestCase):
             quality_rejected_face_count=0,
             approved=approved,
         )
+
+    def reviewed_cohort_hash(self, photo: Photo) -> str:
+        projection = (
+            {
+                "byte_size": 8,
+                "height": 1000,
+                "oriented_source_height": 1000,
+                "oriented_source_width": 1600,
+                "photo_id": photo.pk,
+                "sha256": "a" * 64,
+                "width": 1600,
+            },
+        )
+        return hashlib.sha256(
+            json.dumps(projection, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
 
     def command(self, *, apply: bool = False) -> CommandReport:
         output = StringIO()
@@ -181,6 +218,25 @@ class FaceQualityReprocessingCommandTests(TestCase):
         self.assertEqual(
             FACE_EMBEDDING_QUALITY_APPROVAL.preview_manifest_hash,
             "62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879",
+        )
+        self.assertEqual(
+            FACE_EMBEDDING_QUALITY_APPROVAL.local_preview_projection_hash,
+            "a98b5d13152683419c722a115045037fdf883a1f5cdcc3e47a2bddf5291b7d63",
+        )
+        self.assertEqual(
+            FACE_EMBEDDING_QUALITY_APPROVAL.accepted_preview_cohort_hash,
+            "6701b7436e1b00b64e701791983a0c9c1d26bcddd56f93a36dd0923aa6bc1034",
+        )
+        self.assertEqual(
+            FACE_EMBEDDING_QUALITY_APPROVAL.accepted_preview_crosswalk_hash,
+            "055d7c72614deb3b87b607f467c16365ee6e125be005e9e8f5cf2e910ec56d51",
+        )
+        self.assertEqual(
+            FACE_EMBEDDING_QUALITY_APPROVAL.accepted_preview_crosswalk_entry_count, 17_043
+        )
+        self.assertEqual(
+            FACE_EMBEDDING_QUALITY_APPROVAL.accepted_preview_crosswalk_sha_mismatch_count,
+            17_043,
         )
         self.assertEqual(
             FACE_EMBEDDING_QUALITY_APPROVAL.comparison_manifest_hash,
@@ -231,6 +287,63 @@ class FaceQualityReprocessingCommandTests(TestCase):
         self.assertEqual(report["counts"]["candidate_job_count"], 0)
         self.assertEqual(report["counts"]["candidate_projection_count"], 0)
         self.assertFalse(ProcessingJob.objects.filter(processor_version=4).exists())
+
+    def test_same_count_with_changed_derivative_sha_fails_before_any_candidate_write(self) -> None:
+        """A same-size cohort with changed accepted media identity must fail dry-run and apply."""
+        photo = self.accepted_preview_photo("changed-sha", sha256="9" * 64)
+        approval = self.approval(cohort_hash=self.reviewed_cohort_hash(photo))
+
+        with patch(
+            "processing.management.commands.reprocess_event_face_embeddings.FACE_EMBEDDING_QUALITY_APPROVAL",
+            approval,
+        ):
+            with self.assertRaisesRegex(CommandError, "accepted preview cohort"):
+                self.command()
+            with self.assertRaisesRegex(CommandError, "accepted preview cohort"):
+                self.command(apply=True)
+
+        self.assertFalse(
+            ProcessingJob.objects.filter(
+                contract_version=QUALITY_FACE_CONTRACT_VERSION,
+                processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+            ).exists()
+        )
+
+    def test_changed_derivative_byte_size_fails_with_the_same_photo_count(self) -> None:
+        """A byte-size change must alter the approved accepted-preview identity."""
+        photo = self.accepted_preview_photo("changed-size", byte_size=9)
+        approval = self.approval(cohort_hash=self.reviewed_cohort_hash(photo))
+        with patch(
+            "processing.management.commands.reprocess_event_face_embeddings.FACE_EMBEDDING_QUALITY_APPROVAL",
+            approval,
+        ):
+            with self.assertRaisesRegex(CommandError, "accepted preview cohort"):
+                self.command(apply=True)
+
+        self.assertFalse(
+            ProcessingJob.objects.filter(
+                contract_version=QUALITY_FACE_CONTRACT_VERSION,
+                processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+            ).exists()
+        )
+
+    def test_changed_derivative_geometry_fails_with_the_same_photo_count(self) -> None:
+        """A geometry change must alter the approved accepted-preview identity."""
+        photo = self.accepted_preview_photo("changed-geometry", width=1599)
+        approval = self.approval(cohort_hash=self.reviewed_cohort_hash(photo))
+        with patch(
+            "processing.management.commands.reprocess_event_face_embeddings.FACE_EMBEDDING_QUALITY_APPROVAL",
+            approval,
+        ):
+            with self.assertRaisesRegex(CommandError, "accepted preview cohort"):
+                self.command(apply=True)
+
+        self.assertFalse(
+            ProcessingJob.objects.filter(
+                contract_version=QUALITY_FACE_CONTRACT_VERSION,
+                processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+            ).exists()
+        )
 
     def test_apply_enrolls_only_accepted_preview_photos_and_is_idempotent(self) -> None:
         """Enrolling a photo without an accepted preview or duplicating replays must fail."""

@@ -923,6 +923,8 @@ def _validate_candidate_activation(
         raise ValueError("candidate activation requires approved benchmark evidence")
 
     status = candidate_face_embedding_status(event)
+    if enrollment.accepted_preview_cohort_hash(event) != approval.accepted_preview_cohort_hash:
+        raise ValueError("candidate activation requires approved accepted preview cohort")
     eligible_photo_ids = {photo.pk for photo in enrollment.candidate_face_embedding_cohort(event)}
     projected_photo_ids = set(
         PhotoFaceEmbeddingProjection.objects.filter(

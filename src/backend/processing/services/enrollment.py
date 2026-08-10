@@ -235,6 +235,11 @@ class FaceEmbeddingGenerationApproval:
     photo_count: int
     configuration_hash: str
     preview_manifest_hash: str
+    local_preview_projection_hash: str
+    accepted_preview_cohort_hash: str
+    accepted_preview_crosswalk_hash: str
+    accepted_preview_crosswalk_entry_count: int
+    accepted_preview_crosswalk_sha_mismatch_count: int
     comparison_manifest_hash: str
     yunet_model_hash: str
     sface_model_hash: str
@@ -254,6 +259,17 @@ FACE_EMBEDDING_QUALITY_APPROVAL = FaceEmbeddingGenerationApproval(
     photo_count=17_043,
     configuration_hash="dfe32ba0c5914db5a5720046ac5220659155a370a3d9abab766410c41873919a",
     preview_manifest_hash="62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879",
+    local_preview_projection_hash=(
+        "a98b5d13152683419c722a115045037fdf883a1f5cdcc3e47a2bddf5291b7d63"
+    ),
+    accepted_preview_cohort_hash=(
+        "6701b7436e1b00b64e701791983a0c9c1d26bcddd56f93a36dd0923aa6bc1034"
+    ),
+    accepted_preview_crosswalk_hash=(
+        "055d7c72614deb3b87b607f467c16365ee6e125be005e9e8f5cf2e910ec56d51"
+    ),
+    accepted_preview_crosswalk_entry_count=17_043,
+    accepted_preview_crosswalk_sha_mismatch_count=17_043,
     comparison_manifest_hash="043ce5c02cd6df901f16096c2637c3a26b3b96171a9e9538b439cee12abca0a6",
     yunet_model_hash="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
     sface_model_hash="0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
@@ -275,9 +291,20 @@ class FaceEmbeddingCandidateEnrollment:
     run_count: int
 
 
-def candidate_face_embedding_cohort(event: Event) -> list[Photo]:
-    """Return the event's current, accepted preview-backed candidate cohort without writes."""
-    preview_photo_ids = (
+ACCEPTED_PREVIEW_PROJECTION_FIELDS = (
+    "byte_size",
+    "height",
+    "oriented_source_height",
+    "oriented_source_width",
+    "photo_id",
+    "sha256",
+    "width",
+)
+
+
+def accepted_preview_projection(event: Event) -> tuple[dict[str, object], ...]:
+    """Project the exact accepted derivatives into the reviewed non-biometric v1 hash format."""
+    return tuple(
         PhotoDerivative.objects.filter(
             photo__event=event,
             variant="preview-small-v1",
@@ -286,10 +313,22 @@ def candidate_face_embedding_cohort(event: Event) -> list[Photo]:
             photo__processing_states__accepted_attempt_id=F("accepted_attempt_id"),
         )
         .order_by("photo_id")
-        .values_list("photo_id", flat=True)
-        .distinct()
+        .values(*ACCEPTED_PREVIEW_PROJECTION_FIELDS)
     )
-    return list(Photo.objects.filter(pk__in=preview_photo_ids).order_by("pk"))
+
+
+def accepted_preview_cohort_hash(event: Event) -> str:
+    """Hash the canonical ordered accepted-PhotoDerivative projection for one event."""
+    encoded = json.dumps(
+        accepted_preview_projection(event), separators=(",", ":"), sort_keys=True
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def candidate_face_embedding_cohort(event: Event) -> list[Photo]:
+    """Return the event's current, accepted preview-backed candidate cohort without writes."""
+    photo_ids = [row["photo_id"] for row in accepted_preview_projection(event)]
+    return list(Photo.objects.filter(pk__in=photo_ids).order_by("pk"))
 
 
 def validate_face_embedding_candidate_enrollment(
@@ -310,6 +349,9 @@ def validate_face_embedding_candidate_enrollment(
             for value in (
                 selected_approval.configuration_hash,
                 selected_approval.preview_manifest_hash,
+                selected_approval.local_preview_projection_hash,
+                selected_approval.accepted_preview_cohort_hash,
+                selected_approval.accepted_preview_crosswalk_hash,
                 selected_approval.comparison_manifest_hash,
                 selected_approval.yunet_model_hash,
                 selected_approval.sface_model_hash,
@@ -322,6 +364,8 @@ def validate_face_embedding_candidate_enrollment(
                 selected_approval.job_count,
                 selected_approval.attempt_count,
                 selected_approval.projection_count,
+                selected_approval.accepted_preview_crosswalk_entry_count,
+                selected_approval.accepted_preview_crosswalk_sha_mismatch_count,
                 selected_approval.technical_failure_count,
                 selected_approval.kept_face_count,
                 selected_approval.quality_rejected_face_count,
@@ -337,11 +381,16 @@ def validate_face_embedding_candidate_enrollment(
         )
         != 1
         or selected_approval.technical_failure_count != 0
+        or selected_approval.accepted_preview_crosswalk_entry_count != selected_approval.photo_count
+        or selected_approval.accepted_preview_crosswalk_sha_mismatch_count
+        != selected_approval.photo_count
     ):
         raise ValueError("candidate approval identity is invalid")
     cohort = candidate_face_embedding_cohort(event)
     if len(cohort) != selected_approval.photo_count:
         raise ValueError("candidate approval does not match the accepted preview cohort")
+    if accepted_preview_cohort_hash(event) != selected_approval.accepted_preview_cohort_hash:
+        raise ValueError("candidate approval does not match the accepted preview cohort hash")
     return cohort
 
 

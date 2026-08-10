@@ -56,7 +56,10 @@ def _approval_identity(approval: FaceEmbeddingGenerationApproval) -> dict[str, o
     return {
         "comparison_manifest_hash": approval.comparison_manifest_hash,
         "configuration_hash": approval.configuration_hash,
+        "accepted_preview_cohort_hash": approval.accepted_preview_cohort_hash,
+        "accepted_preview_crosswalk_hash": approval.accepted_preview_crosswalk_hash,
         "event_slug": approval.event_slug,
+        "local_preview_projection_hash": approval.local_preview_projection_hash,
         "preview_manifest_hash": approval.preview_manifest_hash,
         "sface_model_hash": approval.sface_model_hash,
         "yunet_model_hash": approval.yunet_model_hash,

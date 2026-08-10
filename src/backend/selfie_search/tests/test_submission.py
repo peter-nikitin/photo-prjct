@@ -41,6 +41,7 @@ from processing.services.enrollment import (
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     FaceEmbeddingGenerationApproval,
+    accepted_preview_cohort_hash,
     request_processor,
 )
 from processing.services.face_cohort import load_compatible_face_embeddings
@@ -448,6 +449,11 @@ class SubmissionTests(TestCase):
             photo_count=1,
             configuration_hash=configuration_hash,
             preview_manifest_hash="a" * 64,
+            local_preview_projection_hash="e" * 64,
+            accepted_preview_cohort_hash=accepted_preview_cohort_hash(self.event),
+            accepted_preview_crosswalk_hash="f" * 64,
+            accepted_preview_crosswalk_entry_count=1,
+            accepted_preview_crosswalk_sha_mismatch_count=1,
             comparison_manifest_hash="d" * 64,
             yunet_model_hash="b" * 64,
             sface_model_hash="c" * 64,

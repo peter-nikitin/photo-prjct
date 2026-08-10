@@ -1,6 +1,6 @@
 # Preview Face Quality V4 Rollout Design
 
-- **Status:** Approved in conversation on 2026-08-10; pending written review
+- **Status:** Approved in conversation and written review on 2026-08-10
 - **Date:** 2026-08-10
 - **Owner:** FindMe Photo
 - **Related architecture:** [`docs/architecture.md`](../../architecture.md), preview-first photo

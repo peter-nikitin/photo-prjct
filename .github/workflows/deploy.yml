@@ -261,7 +261,6 @@ jobs:
           STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
           DEPLOYMENT_TARGET: staging
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
-          ACCEPTED_RELEASE_A_IMAGE: ghcr.io/peter-nikitin/photo-prjct:41e3068841da9430d238af70f6ca0a98f4673f28
           WORKER_IMAGE: ${{ needs.build.outputs.worker_image }}
           DEBUG: "False"
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}

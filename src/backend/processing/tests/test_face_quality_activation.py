@@ -59,7 +59,13 @@ class FaceEmbeddingActivationTests(TestCase):
             publication_status=Event.PublicationStatus.PUBLISHED,
         )
 
-    def publish_candidate_projection(self, *, event: Event, photo_id: str) -> ProcessingAttempt:
+    def publish_candidate_projection(
+        self,
+        *,
+        event: Event,
+        photo_id: str,
+        prior_attempts: tuple[tuple[str, bool], ...] = (),
+    ) -> ProcessingAttempt:
         generation = candidate_face_embedding_generations()[0]
         photo = Photo.objects.create(
             id=photo_id,
@@ -91,6 +97,23 @@ class FaceEmbeddingActivationTests(TestCase):
             input_fingerprint={},
             status=ProcessingJob.Status.SUCCEEDED,
         )
+        for status, accepted in prior_attempts:
+            ProcessingAttempt.objects.create(
+                event=event,
+                run=run,
+                job=job,
+                photo=photo,
+                contract_version=QUALITY_FACE_CONTRACT_VERSION,
+                processor_type="face_embedding",
+                processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+                configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+                input_fingerprint={},
+                status=status,
+                terminal_at=(
+                    None if status == str(ProcessingAttempt.Status.IN_PROGRESS) else timezone.now()
+                ),
+                accepted=accepted,
+            )
         attempt = ProcessingAttempt.objects.create(
             event=event,
             run=run,
@@ -357,6 +380,79 @@ class FaceEmbeddingActivationTests(TestCase):
         self.assertEqual(
             active_face_embedding_generations(self.event), baseline_face_embedding_generations()
         )
+
+    def test_candidate_allows_recovered_unaccepted_failed_expired_and_stale_attempts(self) -> None:
+        """Historical retry attempts do not invalidate the accepted successful evidence."""
+        self.publish_candidate_projection(
+            event=self.event,
+            photo_id="recovered-retries",
+            prior_attempts=(
+                (str(ProcessingAttempt.Status.FAILED), False),
+                (str(ProcessingAttempt.Status.EXPIRED), False),
+                (str(ProcessingAttempt.Status.STALE), False),
+            ),
+        )
+        approval = self.approval()
+
+        with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
+            activate_face_embedding_generation(
+                event=self.event,
+                generations=candidate_face_embedding_generations(),
+                approved_configuration_hash=approval.configuration_hash,
+                evaluation_report_hash=approval.comparison_manifest_hash,
+                review_confirmed=True,
+            )
+
+        self.assertEqual(EventFaceEmbeddingActivation.objects.count(), 1)
+
+    def test_candidate_rejects_attempts_outside_the_recovered_retry_set(self) -> None:
+        """Only unaccepted failed, expired, and stale attempts may precede accepted evidence."""
+        for index, (status, accepted) in enumerate(
+            (
+                (str(ProcessingAttempt.Status.IN_PROGRESS), False),
+                (str(ProcessingAttempt.Status.SUCCEEDED), False),
+                (str(ProcessingAttempt.Status.FAILED), True),
+            ),
+            start=1,
+        ):
+            with self.subTest(status=status, accepted=accepted):
+                event = self.make_event(f"invalid-{index}")
+                self.publish_candidate_projection(
+                    event=event,
+                    photo_id=f"invalid-{index}",
+                    prior_attempts=((status, accepted),),
+                )
+                approval = self.approval(event=event)
+
+                with patch(
+                    "processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval
+                ):
+                    with self.assertRaisesRegex(ValueError, "incomplete candidate evidence"):
+                        activate_face_embedding_generation(
+                            event=event,
+                            generations=candidate_face_embedding_generations(),
+                            approved_configuration_hash=approval.configuration_hash,
+                            evaluation_report_hash=approval.comparison_manifest_hash,
+                            review_confirmed=True,
+                        )
+
+    def test_candidate_rejects_an_unrecovered_failed_job(self) -> None:
+        """A failed candidate job blocks activation even if related evidence was persisted."""
+        attempt = self.publish_candidate_projection(event=self.event, photo_id="unrecovered-job")
+        ProcessingJob.objects.filter(pk=attempt.job_id).update(status=ProcessingJob.Status.FAILED)
+        approval = self.approval()
+
+        with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
+            with self.assertRaisesRegex(ValueError, "incomplete candidate evidence"):
+                activate_face_embedding_generation(
+                    event=self.event,
+                    generations=candidate_face_embedding_generations(),
+                    approved_configuration_hash=approval.configuration_hash,
+                    evaluation_report_hash=approval.comparison_manifest_hash,
+                    review_confirmed=True,
+                )
+
+        self.assertFalse(EventFaceEmbeddingActivation.objects.exists())
 
     def test_candidate_is_non_activatable_while_approval_is_provisional(self) -> None:
         self.publish_candidate_projection(event=self.event, photo_id="candidate-unapproved")

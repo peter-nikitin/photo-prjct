@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from picflow.models import Event
 
 if TYPE_CHECKING:
@@ -793,6 +793,17 @@ def candidate_face_embedding_status(event: Event) -> dict[str, object]:
         ],
         "terminal_job_count": terminal_job_count,
         "technical_failure_face_count": detection_statuses[str(PhotoFaceDetection.Status.FAILED)],
+        "unexpected_attempt_count": attempts.exclude(
+            Q(status=ProcessingAttempt.Status.SUCCEEDED, accepted=True)
+            | Q(
+                status__in=(
+                    ProcessingAttempt.Status.FAILED,
+                    ProcessingAttempt.Status.EXPIRED,
+                    ProcessingAttempt.Status.STALE,
+                ),
+                accepted=False,
+            )
+        ).count(),
     }
 
 
@@ -952,13 +963,12 @@ def _validate_candidate_activation(
         )
         != 1
         or approval.job_count != status["candidate_job_count"]
-        or approval.attempt_count != status["candidate_attempt_count"]
         or approval.projection_count != status["candidate_projection_count"]
         or status["terminal_job_count"] != approval.job_count
         or status["nonterminal_job_count"] != 0
         or status["failure_job_count"] != 0
-        or status["failure_attempt_count"] != 0
         or status["accepted_attempt_count"] != approval.attempt_count
+        or status["unexpected_attempt_count"] != 0
         or status["kept_face_count"] != approval.kept_face_count
         or status["quality_rejected_face_count"] != approval.quality_rejected_face_count
         or status["technical_failure_face_count"] != 0

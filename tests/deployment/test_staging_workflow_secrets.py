@@ -288,9 +288,6 @@ def _write_executable(path: Path, body: str) -> None:
 def _deployment_values() -> dict[str, str]:
     return {
         "APP_IMAGE": "ghcr.io/peter-nikitin/photo-prjct:test-image",
-        "ACCEPTED_RELEASE_A_IMAGE": (
-            "ghcr.io/peter-nikitin/photo-prjct:41e3068841da9430d238af70f6ca0a98f4673f28"
-        ),
         "WORKER_IMAGE": "ghcr.io/peter-nikitin/photo-prjct-worker:test-image",
         "DEPLOYMENT_TARGET": "staging",
         "DEBUG": "False",

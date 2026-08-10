@@ -589,18 +589,17 @@ def test_deployment_workflows_forward_the_bounded_gunicorn_profile() -> None:
             assert name in _envs(apply)
 
 
-def test_release_b_workflows_pin_and_forward_the_accepted_release_a_image() -> None:
-    expected = "ghcr.io/peter-nikitin/photo-prjct:41e3068841da9430d238af70f6ca0a98f4673f28"
+def test_release_b_workflows_do_not_transport_the_retired_release_a_image_gate() -> None:
     staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Run staging deployment")
     production = _workflow_step(
         _load_workflow("promote-production.yml"), "promote", "Apply production deployment"
     )
 
-    assert staging["env"]["ACCEPTED_RELEASE_A_IMAGE"] == expected
-    assert production["env"]["ACCEPTED_RELEASE_A_IMAGE"] == expected
-    assert "ACCEPTED_RELEASE_A_IMAGE" in production["with"]["envs"].split(",")
+    assert "ACCEPTED_RELEASE_A_IMAGE" not in staging["env"]
+    assert "ACCEPTED_RELEASE_A_IMAGE" not in production["env"]
+    assert "ACCEPTED_RELEASE_A_IMAGE" not in production["with"]["envs"].split(",")
     staging_remote = (ROOT / "deploy/run-staging-remote.sh").read_text(encoding="utf-8")
-    assert "\nACCEPTED_RELEASE_A_IMAGE\n" in staging_remote
+    assert "ACCEPTED_RELEASE_A_IMAGE" not in staging_remote
 
 
 def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_image() -> None:

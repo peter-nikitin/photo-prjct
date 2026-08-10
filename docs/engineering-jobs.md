@@ -430,8 +430,8 @@ When I maintain a capture-time projection for gallery filtering, I want its writ
 aggregate reconciliation to agree with immutable current version-2 evidence, so I can keep direct
 gallery reads safe until a separately accepted projection-reader release.
 
-- Status: Delivered for the accepted Release A operation and locally verified Release B candidate;
-  Release B CI, deployment, and live cutover remain pending.
+- Status: Delivered for the accepted Release A operation and deployed Release B; future deployment
+  candidates use live projection evidence rather than an exact Release A image precondition.
 - Evidence: [`src/backend/picflow/capture_time_projection.py`](../src/backend/picflow/capture_time_projection.py),
   [`src/backend/picflow/management/commands/rebuild_photo_capture_time_projection.py`](../src/backend/picflow/management/commands/rebuild_photo_capture_time_projection.py),
   [`src/backend/picflow/management/commands/report_photo_capture_time_projection.py`](../src/backend/picflow/management/commands/report_photo_capture_time_projection.py),
@@ -441,14 +441,15 @@ gallery reads safe until a separately accepted projection-reader release.
   candidate report is clean before and after benchmarking, with 17,043 exact source/value pairs
   and every first/midpoint/last database and rendered ratio at or below 2x; the retained
   [benchmark JSON](performance/2026-08-08-event-gallery-time-filter-local-clone.json) is aggregate
-  only. The integrated gallery/processing/projection/deployment suite, visual suite (92 tests),
+  only. Release B commit `d5b21e4` is deployed. The integrated
+  gallery/processing/projection/deployment suite, visual suite (92 tests),
   and separate `make check` exit clean locally; Ruff, MyPy, Django, and migration-drift checks are
   included in the quality gate.
-- Boundary: Release B removes the direct JSON/cast filtered-reader path locally, but no Release B
-  PR, green CI, deployed candidate, live benchmark, service switch, or customer acceptance is
-  recorded. Immutable attempt/state/run/job/result evidence remains authoritative and is never
-  rewritten by rebuild or reconciliation.
-- Last updated: 2026-08-08
+- Boundary: Release B removes the direct JSON/cast filtered-reader path and is deployed. Every
+  future candidate still requires live all-events projection reconciliation and the event-9
+  benchmark before service switch; immutable attempt/state/run/job/result evidence remains
+  authoritative and is never rewritten by rebuild or reconciliation.
+- Last updated: 2026-08-10
 
 ## Status log
 
@@ -487,6 +488,7 @@ This log is append-only.
 | 2026-08-07 | EJ-017 | Candidate | Planned | The maintainer accepted ADR 0026 and approved the decision-complete environment-scoped Lockbox implementation plan for execution. |
 | 2026-08-08 | EJ-019 | Not recorded | Validated | Release A writer/schema/rebuild/report and local accepted-clone reconciliation are evidenced; direct gallery reads remain active and CI/deployment/live operational-gate evidence is pending. |
 | 2026-08-08 | EJ-019 | Validated | Delivered | Accepted Release A staging writer/direct-reader operation, local Release B projection-reader evidence, clean global reconciliation, and aggregate 2x benchmark are recorded. Release B review, PR/CI, deployment, live candidate gate, and cutover remain pending. |
+| 2026-08-10 | EJ-019 | Delivered | Delivered | Release B commit `d5b21e4` is deployed. The obsolete exact Release A image precondition is retired; future deployments retain live all-events reconciliation and event-9 benchmark gates. |
 | 2026-08-08 | EJ-021 | Not recorded | Validated | A frozen 15,052-rejection comparison produced an immutable private 1,506-face, six-stratum sampled bundle with 100 separate retained controls; its bounded hashes, unchanged-source check, logical-page probes, and non-human fixture-finalizer round trip are recorded in EJ-021. Human labels, an operator decision, runtime activation, and search-relevance review remain separate. |
 | 2026-08-10 | EJ-022 | Not recorded | Delivered | Commits `e29e65a` and `333f5b8` provide the exact preview-backed version-4 approval/replay/activation and dark-deployment capability with focused local-contract tests. The maintainer-accepted 17,043-photo full-corpus quality selection, its counts, and its exact hashes are recorded in the [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence). Current-merge-candidate `make check`/reconciliation, PR/CI, all staging and production rollout stages, and live verification remain unrecorded. |
 | 2026-08-10 | EJ-022 | Delivered | Delivered | Commit `4f10a1a` enforces the clarified accepted cohort contract: the local projection and accepted runtime cohort have distinct canonical hashes and 17,043/17,043 SHA mismatches bound by one immutable reviewed crosswalk. Runtime enrollment and activation recompute the accepted cohort identity over photo ID, accepted SHA-256, byte size, and geometry; no byte-equivalence or environment-rollout evidence is claimed. |

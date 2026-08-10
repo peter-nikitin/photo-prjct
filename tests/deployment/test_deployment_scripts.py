@@ -696,7 +696,6 @@ esac
         "DEPLOY_ROOT": str(tmp_path),
         "COMPOSE_PROJECT_NAME": f"photo-{target}",
         "APP_IMAGE": "new-image",
-        "ACCEPTED_RELEASE_A_IMAGE": "old-image",
         "SECRET_KEY": "new-secret",
         "EXPECTED_REQUESTED_SECRET": "new-secret",
         "DEBUG": "False",
@@ -1463,7 +1462,7 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     assert not any(command.startswith("preflight-read") for command in commands)
 
 
-def test_release_b_rejects_a_fresh_deployment_without_accepted_release_a(
+def test_release_b_runs_projection_gates_without_the_retired_release_a_image_gate(
     tmp_path: Path,
     fake_bin: Path,
 ) -> None:
@@ -1473,21 +1472,13 @@ def test_release_b_rejects_a_fresh_deployment_without_accepted_release_a(
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
-    assert result.returncode != 0
+    assert result.returncode == 0, result.stderr
     assert "gallery-private-media-preflight-skipped:no-existing-deployment\n" in result.stdout
     assert "migration-preflight-skipped:no-established-deployment\n" in result.stdout
-    assert "Release B requires an accepted Release A deployment" in result.stderr
     assert _deployment_markers(result) == [
-        "DEPLOY_PHASE=validate",
-        "DEPLOY_PHASE=snapshot",
-        "DEPLOY_PHASE=candidate-pull",
-        "DEPLOY_PHASE=private-media-preflight",
-        "DEPLOY_PHASE=migration-preflight",
-        "DEPLOY_PHASE=projection-preflight",
-        "DEPLOY_RESULT=failure phase=projection-preflight rollback=not-needed",
+        *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
+        "DEPLOY_RESULT=success phase=commit rollback=not-needed",
     ]
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
-        assert not (tmp_path / name).exists()
     commands = _apply_log(tmp_path)
     assert commands.count("volume-inspect photo-production_pgdata") == 1
     assert any(" pull web" in command for command in commands)
@@ -1495,12 +1486,10 @@ def test_release_b_rejects_a_fresh_deployment_without_accepted_release_a(
     assert not any("candidate-migration-history" in command for command in commands)
     assert "candidate-migration-plan" not in commands
     assert "unexpected-fresh-migration-history" not in commands
-    assert "candidate-projection-report" not in commands
-    assert "candidate-projection-benchmark" not in commands
-    assert not any(command.startswith("preflight-") for command in commands)
-    assert not any(" stop nginx" in command for command in commands)
-    assert not any(" up -d --remove-orphans" in command for command in commands)
-    assert not any(command.startswith("crontab ") for command in commands)
+    assert "candidate-projection-report" in commands
+    assert "candidate-projection-benchmark" in commands
+    assert any(" stop nginx" in command for command in commands)
+    assert any(" up -d --remove-orphans" in command for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -1571,10 +1560,8 @@ def test_postgres_volume_inspection_error_fails_safely_before_mutation(
     _assert_no_env_temporary_files(tmp_path)
 
 
-def test_rejected_release_b_without_release_a_leaves_the_no_env_state(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """Fail-closed Release B rejection must not create a candidate service to recover."""
+def test_failed_fresh_deployment_leaves_the_no_env_state(tmp_path: Path, fake_bin: Path) -> None:
+    """A failed initial rollout must not leave deployment metadata to recover."""
     env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-health-failure")
     for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
         (tmp_path / name).unlink()
@@ -1587,8 +1574,8 @@ def test_rejected_release_b_without_release_a_leaves_the_no_env_state(
     assert not (tmp_path / "deployment-target").exists()
     assert not (tmp_path / "compose-project-name").exists()
     commands = _apply_log(tmp_path)
-    assert not any(" down --remove-orphans" in command for command in commands)
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert any(" down --remove-orphans" in command for command in commands)
+    assert any(" up -d --remove-orphans" in command for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -1680,53 +1667,6 @@ def test_candidate_projection_gates_run_before_service_switch_without_backfill(
     assert "reprocess_event_capture_times" not in command_log
 
 
-@pytest.mark.parametrize("state", ["partial-env", "retained-volume"])
-def test_release_b_rejects_partial_state_without_a_successful_release_a_image(
-    tmp_path: Path, fake_bin: Path, state: str
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
-        (tmp_path / name).unlink()
-    if state == "partial-env":
-        (tmp_path / ".env").write_bytes(PREVIOUS_ENV)
-    else:
-        env["EXPECT_CANONICAL_ENV"] = "absent"
-        (tmp_path / ".docker-volume-photo-production_pgdata").write_text(
-            "retained\n", encoding="utf-8"
-        )
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert "committed accepted Release A image" in result.stderr
-    assert _deployment_markers(result)[-1] == (
-        "DEPLOY_RESULT=failure phase=projection-preflight rollback=not-needed"
-    )
-    commands = _apply_log(tmp_path)
-    assert "candidate-projection-report" not in commands
-    assert "candidate-projection-benchmark" not in commands
-    assert not any(" stop nginx" in command for command in commands)
-    assert not any(" up -d --remove-orphans" in command for command in commands)
-
-
-def test_release_b_rejects_a_wrong_successful_deployment_image(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    (tmp_path / "deployed-image").write_text("wrong-successful-image\n", encoding="utf-8")
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert "committed accepted Release A image" in result.stderr
-    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == ("wrong-successful-image\n")
-    commands = _apply_log(tmp_path)
-    assert "candidate-projection-report" not in commands
-    assert "candidate-projection-benchmark" not in commands
-    assert not any(" stop nginx" in command for command in commands)
-    assert not any(" up -d --remove-orphans" in command for command in commands)
-
-
 @pytest.mark.parametrize(
     ("scenario", "expected_phase", "message"),
     [
@@ -1734,7 +1674,7 @@ def test_release_b_rejects_a_wrong_successful_deployment_image(
         ("projection-benchmark-failure", "projection-preflight", "time-filter benchmark"),
     ],
 )
-def test_failed_candidate_projection_gate_leaves_release_a_active(
+def test_failed_candidate_projection_gate_leaves_prior_deployment_active(
     tmp_path: Path,
     fake_bin: Path,
     scenario: str,

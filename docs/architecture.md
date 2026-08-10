@@ -120,8 +120,8 @@ The repository currently contains an early Django application:
   the approved event identity/cohort/configuration, and enrolls immutable version-2 work without
   rewriting prior attempts. The report emits bounded completion, timezone-state, warning, UTC, and
   event-local-hour aggregates.
-- Release A is the deployed projection writer and direct current-v2 evidence reader. Its accepted
-  staging operational gate is commit `41e3068`: final global reconciliation is clean at 17,043
+- Release A was the deployed projection writer and direct current-v2 evidence reader. Its accepted
+  staging operational gate at commit `41e3068` had final global reconciliation clean at 17,043
   exact event-9 source/value pairs, and a transaction-rollback lifecycle smoke cleared then
   republished the derived projection without rewriting immutable evidence. The source of truth is
   still the current accepted version-2 attempt; `Photo.capture_time` and
@@ -131,9 +131,9 @@ The repository currently contains an early Django application:
   clone (9 events, 17,310 photos; event 9 has 17,043), final global reconciliation was clean before
   and after the read-only candidate benchmark, and every first/midpoint/last database and rendered
   ratio passed the 2x gate; see the [sanitized aggregate report](performance/2026-08-08-event-gallery-time-filter-local-clone.json).
-  This is local Release B candidate evidence, not a Release B PR, CI result, deployed image,
-  candidate switch, live benchmark, or customer acceptance. Those remain separate normal-release
-  gates.
+  That local Release B candidate evidence preceded the deployed Release B commit `d5b21e4`.
+  Future deployment candidates must pass the live all-events reconciliation and event-9 benchmark
+  before service switch; the exact Release A image precondition is retired.
 - Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the

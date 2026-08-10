@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from django.db import transaction
-from picflow.models import Event, Photo
+from django.db.models import Count
+from picflow.models import Event
 
 if TYPE_CHECKING:
     from processing.models import ProcessingAttempt
@@ -704,6 +705,96 @@ def historical_quality_face_embedding_generations() -> tuple[dict[str, object], 
     )
 
 
+def candidate_face_embedding_status(event: Event) -> dict[str, object]:
+    """Return privacy-safe exact v4 candidate processing and projection aggregates."""
+    from processing.models import (  # noqa: PLC0415
+        FACE_EMBEDDING_PROCESSOR,
+        PhotoFaceDetection,
+        PhotoFaceEmbeddingProjection,
+        PhotoProcessingState,
+        ProcessingAttempt,
+        ProcessingJob,
+    )
+    from processing.services.enrollment import (  # noqa: PLC0415
+        QUALITY_FACE_CONTRACT_VERSION,
+        QUALITY_FACE_PROCESSOR_VERSION,
+        candidate_face_embedding_cohort,
+    )
+
+    candidate = candidate_face_embedding_generations()[0]
+    jobs = ProcessingJob.objects.filter(
+        event=event,
+        contract_version=QUALITY_FACE_CONTRACT_VERSION,
+        processor_type=FACE_EMBEDDING_PROCESSOR,
+        processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+        configuration_hash=candidate["configuration_hash"],
+    )
+    attempts = ProcessingAttempt.objects.filter(job__in=jobs)
+    states = PhotoProcessingState.objects.filter(
+        processor_type=FACE_EMBEDDING_PROCESSOR,
+        current_job__in=jobs,
+    )
+    projections = PhotoFaceEmbeddingProjection.objects.filter(
+        photo__event=event,
+        contract_version=QUALITY_FACE_CONTRACT_VERSION,
+        processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+        configuration_hash=candidate["configuration_hash"],
+    )
+    detections = PhotoFaceDetection.objects.filter(attempt__job__in=jobs)
+
+    def status_counts(queryset, statuses: tuple[str, ...]) -> dict[str, int]:
+        counts = {status: 0 for status in statuses}
+        for row in queryset.values("status").annotate(count=Count("id")):
+            counts[row["status"]] = row["count"]
+        return counts
+
+    job_statuses = status_counts(jobs, tuple(ProcessingJob.Status.values))
+    attempt_statuses = status_counts(attempts, tuple(ProcessingAttempt.Status.values))
+    state_statuses = status_counts(states, tuple(PhotoProcessingState.Status.values))
+    detection_statuses = status_counts(detections, tuple(PhotoFaceDetection.Status.values))
+    terminal_job_count = sum(
+        job_statuses[status]
+        for status in (
+            ProcessingJob.Status.SUCCEEDED,
+            ProcessingJob.Status.FAILED,
+            ProcessingJob.Status.CANCELLED,
+        )
+    )
+    failure_job_count = (
+        job_statuses[ProcessingJob.Status.FAILED] + job_statuses[ProcessingJob.Status.CANCELLED]
+    )
+    failure_attempt_count = sum(
+        attempt_statuses[status]
+        for status in (
+            ProcessingAttempt.Status.FAILED,
+            ProcessingAttempt.Status.EXPIRED,
+            ProcessingAttempt.Status.STALE,
+        )
+    )
+    return {
+        "accepted_attempt_count": attempts.filter(
+            status=ProcessingAttempt.Status.SUCCEEDED, accepted=True
+        ).count(),
+        "candidate_attempt_count": attempts.count(),
+        "candidate_attempt_status_counts": attempt_statuses,
+        "candidate_job_count": jobs.count(),
+        "candidate_job_status_counts": job_statuses,
+        "candidate_projection_count": projections.count(),
+        "candidate_state_counts": state_statuses,
+        "candidate_face_detection_status_counts": detection_statuses,
+        "eligible_photo_count": len(candidate_face_embedding_cohort(event)),
+        "failure_attempt_count": failure_attempt_count,
+        "failure_job_count": failure_job_count,
+        "nonterminal_job_count": jobs.count() - terminal_job_count,
+        "kept_face_count": detection_statuses[PhotoFaceDetection.Status.KEPT],
+        "quality_rejected_face_count": detection_statuses[
+            PhotoFaceDetection.Status.QUALITY_REJECTED
+        ],
+        "terminal_job_count": terminal_job_count,
+        "technical_failure_face_count": detection_statuses[PhotoFaceDetection.Status.FAILED],
+    }
+
+
 def active_face_embedding_generations(event: Event) -> tuple[dict[str, object], ...]:
     """Resolve one event's latest explicit selection, or its initial frozen baseline."""
     from processing.models import EventFaceEmbeddingActivation  # noqa: PLC0415
@@ -751,11 +842,7 @@ def activate_face_embedding_generation(
         if approved_configuration_hash or evaluation_report_hash:
             raise ValueError("baseline activation must not claim candidate approval")
     elif selected == candidate:
-        _validate_candidate_activation(
-            event=event,
-            approved_configuration_hash=approved_configuration_hash,
-            evaluation_report_hash=evaluation_report_hash,
-        )
+        pass
     elif selected != historical:  # pragma: no cover - generation-set validation rejects this.
         raise ValueError("unrecognized face-embedding generation set")
 
@@ -763,6 +850,12 @@ def activate_face_embedding_generation(
     generation_set_hash = _canonical_hash(serialized_generations)
     with transaction.atomic():
         locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        if selected == candidate:
+            _validate_candidate_activation(
+                event=locked_event,
+                approved_configuration_hash=approved_configuration_hash,
+                evaluation_report_hash=evaluation_report_hash,
+            )
         latest = (
             EventFaceEmbeddingActivation.objects.select_for_update()
             .filter(event=locked_event)
@@ -814,40 +907,58 @@ def _validate_candidate_activation(
     candidate = candidate_face_embedding_generations()[0]
     if (
         approval is None
-        or approval.complete is not True
         or approval.approved is not True
         or approval.event_slug != event.slug
         or approval.configuration_hash != candidate["configuration_hash"]
         or approval.configuration_hash != approved_configuration_hash
-        or approval.evaluation_report_hash != evaluation_report_hash
+        or approval.comparison_manifest_hash != evaluation_report_hash
         or not _is_sha256(approval.configuration_hash)
-        or not _is_sha256(approval.evaluation_report_hash)
-        or approval.clear_loss_count != 0
-        or approval.relevant_result_loss_count != 0
-        or approval.unresolved_count != 0
+        or not _is_sha256(approval.preview_manifest_hash)
+        or not _is_sha256(approval.comparison_manifest_hash)
+        or not _is_sha256(approval.yunet_model_hash)
+        or not _is_sha256(approval.sface_model_hash)
+        or approval.technical_failure_count != 0
     ):
         raise ValueError("candidate activation requires approved benchmark evidence")
 
-    eligible_photo_ids = set(
-        Photo.objects.filter(
-            event=event,
-            original_key__isnull=False,
-            original_key__gt="",
-            original_size__isnull=False,
-            original_content_type="image/jpeg",
-        ).values_list("pk", flat=True)
-    )
+    status = candidate_face_embedding_status(event)
+    eligible_photo_ids = {photo.pk for photo in enrollment.candidate_face_embedding_cohort(event)}
     projected_photo_ids = set(
         PhotoFaceEmbeddingProjection.objects.filter(
             photo__event=event,
             contract_version=candidate["contract_version"],
             processor_version=candidate["processor_version"],
             configuration_hash=candidate["configuration_hash"],
+            accepted_attempt__job__contract_version=candidate["contract_version"],
+            accepted_attempt__job__processor_version=candidate["processor_version"],
+            accepted_attempt__job__configuration_hash=candidate["configuration_hash"],
+            accepted_attempt__status="succeeded",
+            accepted_attempt__accepted=True,
         ).values_list("photo_id", flat=True)
     )
     if (
         approval.photo_count != len(eligible_photo_ids)
         or not eligible_photo_ids
+        or len(
+            {
+                approval.photo_count,
+                approval.job_count,
+                approval.attempt_count,
+                approval.projection_count,
+            }
+        )
+        != 1
+        or approval.job_count != status["candidate_job_count"]
+        or approval.attempt_count != status["candidate_attempt_count"]
+        or approval.projection_count != status["candidate_projection_count"]
+        or status["terminal_job_count"] != approval.job_count
+        or status["nonterminal_job_count"] != 0
+        or status["failure_job_count"] != 0
+        or status["failure_attempt_count"] != 0
+        or status["accepted_attempt_count"] != approval.attempt_count
+        or status["kept_face_count"] != approval.kept_face_count
+        or status["quality_rejected_face_count"] != approval.quality_rejected_face_count
+        or status["technical_failure_face_count"] != 0
         or projected_photo_ids != eligible_photo_ids
     ):
         raise ValueError("incomplete candidate evidence")

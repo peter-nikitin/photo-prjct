@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -234,17 +234,164 @@ class FaceEmbeddingGenerationApproval:
     event_slug: str
     photo_count: int
     configuration_hash: str
-    evaluation_report_hash: str
-    complete: bool
+    preview_manifest_hash: str
+    comparison_manifest_hash: str
+    yunet_model_hash: str
+    sface_model_hash: str
+    job_count: int
+    attempt_count: int
+    projection_count: int
+    technical_failure_count: int
+    kept_face_count: int
+    quality_rejected_face_count: int
     approved: bool
-    clear_loss_count: int
-    relevant_result_loss_count: int
-    unresolved_count: int
 
 
-# Task 6 alone may replace this provisional state after the private benchmark is complete and
-# explicitly approved. Candidate processing is allowed while customer-search activation is not.
-FACE_EMBEDDING_QUALITY_APPROVAL: FaceEmbeddingGenerationApproval | None = None
+# The explicit maintainer review covers these exact, content-addressed local artifacts.  It does
+# not claim a person-labelled benchmark or fabricate unobserved loss categories.
+FACE_EMBEDDING_QUALITY_APPROVAL = FaceEmbeddingGenerationApproval(
+    event_slug="cyclingrace-vechernee-sadovoe",
+    photo_count=17_043,
+    configuration_hash="dfe32ba0c5914db5a5720046ac5220659155a370a3d9abab766410c41873919a",
+    preview_manifest_hash="62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879",
+    comparison_manifest_hash="043ce5c02cd6df901f16096c2637c3a26b3b96171a9e9538b439cee12abca0a6",
+    yunet_model_hash="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+    sface_model_hash="0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+    job_count=17_043,
+    attempt_count=17_043,
+    projection_count=17_043,
+    technical_failure_count=0,
+    kept_face_count=37_573,
+    quality_rejected_face_count=18_610,
+    approved=True,
+)
+
+
+@dataclass(frozen=True)
+class FaceEmbeddingCandidateEnrollment:
+    photo_count: int
+    created_job_count: int
+    existing_job_count: int
+    run_count: int
+
+
+def candidate_face_embedding_cohort(event: Event) -> list[Photo]:
+    """Return the event's current, accepted preview-backed candidate cohort without writes."""
+    preview_photo_ids = (
+        PhotoDerivative.objects.filter(
+            photo__event=event,
+            variant="preview-small-v1",
+            photo__processing_states__processor_type=GENERATE_PREVIEW_PROCESSOR,
+            photo__processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
+            photo__processing_states__accepted_attempt_id=F("accepted_attempt_id"),
+        )
+        .order_by("photo_id")
+        .values_list("photo_id", flat=True)
+        .distinct()
+    )
+    return list(Photo.objects.filter(pk__in=preview_photo_ids).order_by("pk"))
+
+
+def validate_face_embedding_candidate_enrollment(
+    event: Event,
+    *,
+    approval: FaceEmbeddingGenerationApproval | None = None,
+) -> list[Photo]:
+    """Fail closed unless the current event cohort matches its exact reviewed approval."""
+    selected_approval = approval or FACE_EMBEDDING_QUALITY_APPROVAL
+    candidate_configuration_hash = _configuration_hash(FACE_EMBEDDING_QUALITY_CONFIGURATION)
+    if (
+        selected_approval is None
+        or selected_approval.approved is not True
+        or selected_approval.event_slug != event.slug
+        or selected_approval.configuration_hash != candidate_configuration_hash
+        or any(
+            not _is_sha256(value)
+            for value in (
+                selected_approval.configuration_hash,
+                selected_approval.preview_manifest_hash,
+                selected_approval.comparison_manifest_hash,
+                selected_approval.yunet_model_hash,
+                selected_approval.sface_model_hash,
+            )
+        )
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in (
+                selected_approval.photo_count,
+                selected_approval.job_count,
+                selected_approval.attempt_count,
+                selected_approval.projection_count,
+                selected_approval.technical_failure_count,
+                selected_approval.kept_face_count,
+                selected_approval.quality_rejected_face_count,
+            )
+        )
+        or len(
+            {
+                selected_approval.photo_count,
+                selected_approval.job_count,
+                selected_approval.attempt_count,
+                selected_approval.projection_count,
+            }
+        )
+        != 1
+        or selected_approval.technical_failure_count != 0
+    ):
+        raise ValueError("candidate approval identity is invalid")
+    cohort = candidate_face_embedding_cohort(event)
+    if len(cohort) != selected_approval.photo_count:
+        raise ValueError("candidate approval does not match the accepted preview cohort")
+    return cohort
+
+
+def enroll_event_face_embedding_candidate_reprocessing(
+    event: Event,
+    *,
+    approval: FaceEmbeddingGenerationApproval | None = None,
+) -> FaceEmbeddingCandidateEnrollment:
+    """Enroll the approved preview cohort exactly once, preserving all terminal evidence."""
+    with transaction.atomic():
+        locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        cohort = validate_face_embedding_candidate_enrollment(locked_event, approval=approval)
+        created_job_count = 0
+        existing_job_count = 0
+        run_ids: set[object] = set()
+        for photo in cohort:
+            expected_fingerprint = _derivative_fingerprint(_accepted_preview(photo))
+            existing_jobs = list(
+                ProcessingJob.objects.select_for_update()
+                .select_related("run")
+                .filter(
+                    event=locked_event,
+                    photo=photo,
+                    contract_version=QUALITY_FACE_CONTRACT_VERSION,
+                    processor_type=FACE_EMBEDDING_PROCESSOR,
+                    processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+                    configuration_hash=_configuration_hash(FACE_EMBEDDING_QUALITY_CONFIGURATION),
+                )
+                .order_by("created_at", "id")
+            )
+            if len(existing_jobs) > 1:
+                raise ValueError("candidate enrollment has ambiguous existing job identity")
+            if existing_jobs and existing_jobs[0].input_fingerprint != expected_fingerprint:
+                raise ValueError("candidate job input no longer matches the accepted preview")
+            if existing_jobs:
+                existing_job_count += 1
+                run_ids.add(existing_jobs[0].run_id)
+                continue
+            state = request_face_embedding_candidate_enqueue(photo)
+            job = state.current_job
+            if job is None:  # pragma: no cover - validated accepted previews make this unreachable.
+                raise ValueError("candidate enrollment lost its accepted preview")
+            created_job_count += 1
+            run_ids.add(job.run_id)
+        return FaceEmbeddingCandidateEnrollment(
+            photo_count=len(cohort),
+            created_job_count=created_job_count,
+            existing_job_count=existing_job_count,
+            run_count=len(run_ids),
+        )
 
 
 def validate_capture_time_reprocessing_enrollment(
@@ -970,6 +1117,14 @@ def _derivative_fingerprint(
 def _configuration_hash(configuration: dict[str, object]) -> str:
     encoded = json.dumps(configuration, separators=(",", ":"), sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _locked_collecting_run(

@@ -25,6 +25,7 @@ from processing.models import (
     FaceClusterCorpus,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
+    PhotoDerivative,
     PhotoFaceDetection,
     PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
@@ -33,7 +34,9 @@ from processing.models import (
 )
 from processing.services.enrollment import (
     FACE_EMBEDDING_CONFIGURATION,
+    GENERATE_PREVIEW_CONFIGURATION,
     FaceEmbeddingGenerationApproval,
+    request_processor,
 )
 from processing.services.face_cluster_corpora import (
     activate_face_cluster_corpus,
@@ -195,12 +198,76 @@ class FaceClusterCorpusTests(TestCase):
             event_slug=event.slug,
             photo_count=photo_count,
             configuration_hash=configuration_hash,
-            evaluation_report_hash="d" * 64,
-            complete=True,
+            preview_manifest_hash="a" * 64,
+            comparison_manifest_hash="d" * 64,
+            yunet_model_hash="b" * 64,
+            sface_model_hash="c" * 64,
+            job_count=photo_count,
+            attempt_count=photo_count,
+            projection_count=photo_count,
+            technical_failure_count=0,
+            kept_face_count=photo_count,
+            quality_rejected_face_count=0,
             approved=True,
-            clear_loss_count=0,
-            relevant_result_loss_count=0,
-            unresolved_count=0,
+        )
+
+    def publish_accepted_preview(self, photo: Photo) -> None:
+        state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+            },
+        )
+        assert state.current_job is not None
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=state.current_job.run,
+            job=state.current_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint=state.current_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=f"previews/{photo.pk}.jpg",
+            byte_size=8,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=1600,
+            oriented_source_height=1000,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save(
+            update_fields=[
+                "status",
+                "current_attempt",
+                "accepted_attempt",
+                "succeeded_at",
+                "updated_at",
+            ]
         )
 
     def test_shared_loader_is_event_and_generation_scoped(self) -> None:
@@ -250,20 +317,25 @@ class FaceClusterCorpusTests(TestCase):
 
     def test_default_builder_freezes_the_events_active_generation_set(self) -> None:
         generations = list(candidate_face_embedding_generations())
-        self.make_embedding(
+        embedding = self.make_embedding(
             event=self.event,
             photo_id="active-candidate",
             vector=[1.0] + [0.0] * 127,
             contract_version=3,
             processor_version=4,
         )
+        candidate_job = embedding.detection.attempt.job
+        candidate_job.status = ProcessingJob.Status.SUCCEEDED
+        candidate_job.completed_at = timezone.now()
+        candidate_job.save(update_fields=["status", "completed_at"])
+        self.publish_accepted_preview(embedding.detection.attempt.photo)
         approval = self.candidate_approval(event=self.event, photo_count=1)
         with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
             activate_face_embedding_generation(
                 event=self.event,
                 generations=self.candidate_generations,
                 approved_configuration_hash=approval.configuration_hash,
-                evaluation_report_hash=approval.evaluation_report_hash,
+                evaluation_report_hash=approval.comparison_manifest_hash,
                 review_confirmed=True,
             )
 

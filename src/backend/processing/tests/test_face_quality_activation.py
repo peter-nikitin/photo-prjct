@@ -16,16 +16,22 @@ from picflow.models import Event, Photo
 from processing.models import (
     EventFaceEmbeddingActivation,
     EventProcessingRun,
+    FaceProcessingAttemptArtifact,
+    PhotoDerivative,
+    PhotoFaceDetection,
     PhotoFaceEmbeddingProjection,
+    PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
 )
 from processing.services.enrollment import (
     FACE_EMBEDDING_QUALITY_CONFIGURATION,
+    GENERATE_PREVIEW_CONFIGURATION,
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     FaceEmbeddingGenerationApproval,
+    request_processor,
 )
 from processing.services.face_quality import (
     activate_face_embedding_generation,
@@ -52,7 +58,7 @@ class FaceEmbeddingActivationTests(TestCase):
             publication_status=Event.PublicationStatus.PUBLISHED,
         )
 
-    def publish_candidate_projection(self, *, event: Event, photo_id: str) -> None:
+    def publish_candidate_projection(self, *, event: Event, photo_id: str) -> ProcessingAttempt:
         generation = candidate_face_embedding_generations()[0]
         photo = Photo.objects.create(
             id=photo_id,
@@ -105,17 +111,74 @@ class FaceEmbeddingActivationTests(TestCase):
             configuration_hash=generation["configuration_hash"],
             accepted_attempt=attempt,
         )
+        preview_state = request_processor(
+            photo,
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": photo.original_key,
+                "object_size": photo.original_size,
+                "object_content_type": photo.original_content_type,
+                "object_etag": None,
+                "media_kind": "original",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+            },
+        )
+        assert preview_state.current_job is not None
+        preview_attempt = ProcessingAttempt.objects.create(
+            event=event,
+            run=preview_state.current_job.run,
+            job=preview_state.current_job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_preview",
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+            input_fingerprint=preview_state.current_job.input_fingerprint,
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-small-v1",
+            final_key=f"previews/{photo_id}.jpg",
+            byte_size=8,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=1600,
+            oriented_source_height=1000,
+            sha256="a" * 64,
+            accepted_attempt=preview_attempt,
+        )
+        preview_state.status = PhotoProcessingState.Status.SUCCEEDED
+        preview_state.current_attempt = preview_attempt
+        preview_state.accepted_attempt = preview_attempt
+        preview_state.succeeded_at = timezone.now()
+        preview_state.save(
+            update_fields=[
+                "status",
+                "current_attempt",
+                "accepted_attempt",
+                "succeeded_at",
+                "updated_at",
+            ]
+        )
+        return attempt
 
     def approval(
         self,
         *,
         event: Event | None = None,
         photo_count: int = 1,
-        complete: bool = True,
         approved: bool = True,
-        clear_loss_count: int = 0,
-        relevant_result_loss_count: int = 0,
-        unresolved_count: int = 0,
+        technical_failure_count: int = 0,
+        kept_face_count: int = 0,
+        quality_rejected_face_count: int = 0,
     ) -> FaceEmbeddingGenerationApproval:
         generation = candidate_face_embedding_generations()[0]
         configuration_hash = generation["configuration_hash"]
@@ -124,12 +187,17 @@ class FaceEmbeddingActivationTests(TestCase):
             event_slug=(event or self.event).slug,
             photo_count=photo_count,
             configuration_hash=configuration_hash,
-            evaluation_report_hash="d" * 64,
-            complete=complete,
+            preview_manifest_hash="a" * 64,
+            comparison_manifest_hash="d" * 64,
+            yunet_model_hash="b" * 64,
+            sface_model_hash="c" * 64,
+            job_count=photo_count,
+            attempt_count=photo_count,
+            projection_count=photo_count,
+            technical_failure_count=technical_failure_count,
+            kept_face_count=kept_face_count,
+            quality_rejected_face_count=quality_rejected_face_count,
             approved=approved,
-            clear_loss_count=clear_loss_count,
-            relevant_result_loss_count=relevant_result_loss_count,
-            unresolved_count=unresolved_count,
         )
 
     def test_event_without_activation_resolves_only_the_frozen_baseline(self) -> None:
@@ -266,7 +334,7 @@ class FaceEmbeddingActivationTests(TestCase):
                 event=self.event,
                 generations=candidate_face_embedding_generations(),
                 approved_configuration_hash=approval.configuration_hash,
-                evaluation_report_hash=approval.evaluation_report_hash,
+                evaluation_report_hash=approval.comparison_manifest_hash,
                 review_confirmed=True,
             )
         rollback = activate_face_embedding_generation(
@@ -359,7 +427,7 @@ class FaceEmbeddingActivationTests(TestCase):
             generations=generations,
             generation_set_hash=generation_set_hash,
             approved_configuration_hash="e" * 64,
-            approved_evaluation_report_hash=mismatched_approval.evaluation_report_hash,
+            approved_evaluation_report_hash=mismatched_approval.comparison_manifest_hash,
         )
         with patch(
             "processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL",
@@ -402,7 +470,7 @@ class FaceEmbeddingActivationTests(TestCase):
             generations=generations,
             generation_set_hash=generation_set_hash,
             approved_configuration_hash=configuration_hash,
-            approved_evaluation_report_hash=incomplete_approval.evaluation_report_hash,
+            approved_evaluation_report_hash=incomplete_approval.comparison_manifest_hash,
         )
         with patch(
             "processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL",
@@ -415,11 +483,9 @@ class FaceEmbeddingActivationTests(TestCase):
         self.publish_candidate_projection(event=self.event, photo_id="candidate-cross-event")
         for approval in (
             self.approval(event=self.other_event),
-            self.approval(complete=False),
             self.approval(approved=False),
-            self.approval(clear_loss_count=1),
-            self.approval(relevant_result_loss_count=1),
-            self.approval(unresolved_count=1),
+            self.approval(photo_count=2),
+            self.approval(technical_failure_count=1),
         ):
             with self.subTest(approval=approval):
                 with patch(
@@ -430,7 +496,7 @@ class FaceEmbeddingActivationTests(TestCase):
                             event=self.event,
                             generations=candidate_face_embedding_generations(),
                             approved_configuration_hash=approval.configuration_hash,
-                            evaluation_report_hash=approval.evaluation_report_hash,
+                            evaluation_report_hash=approval.comparison_manifest_hash,
                             review_confirmed=True,
                         )
         self.assertFalse(EventFaceEmbeddingActivation.objects.exists())
@@ -454,9 +520,88 @@ class FaceEmbeddingActivationTests(TestCase):
                     event=self.event,
                     generations=candidate_face_embedding_generations(),
                     approved_configuration_hash=approval.configuration_hash,
-                    evaluation_report_hash=approval.evaluation_report_hash,
+                    evaluation_report_hash=approval.comparison_manifest_hash,
                     review_confirmed=True,
                 )
+
+    def test_candidate_rejects_technical_face_failure_in_successful_projection(self) -> None:
+        """Ignoring a failed face result in an accepted v4 attempt must fail activation."""
+        attempt = self.publish_candidate_projection(event=self.event, photo_id="technical-face")
+        artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
+        PhotoFaceDetection.objects.create(
+            artifact=artifact,
+            attempt=attempt,
+            face_index=0,
+            status=PhotoFaceDetection.Status.FAILED,
+        )
+        approval = self.approval()
+
+        with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
+            with self.assertRaisesRegex(ValueError, "incomplete candidate evidence"):
+                activate_face_embedding_generation(
+                    event=self.event,
+                    generations=candidate_face_embedding_generations(),
+                    approved_configuration_hash=approval.configuration_hash,
+                    evaluation_report_hash=approval.comparison_manifest_hash,
+                    review_confirmed=True,
+                )
+
+    def test_candidate_rejects_kept_or_quality_rejected_face_count_mismatch(self) -> None:
+        """Changing reviewed kept or rejected face totals must fail activation."""
+        attempt = self.publish_candidate_projection(event=self.event, photo_id="count-mismatch")
+        artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
+        PhotoFaceDetection.objects.create(
+            artifact=artifact,
+            attempt=attempt,
+            face_index=0,
+            status=PhotoFaceDetection.Status.KEPT,
+        )
+        approval = self.approval()
+
+        with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
+            with self.assertRaisesRegex(ValueError, "incomplete candidate evidence"):
+                activate_face_embedding_generation(
+                    event=self.event,
+                    generations=candidate_face_embedding_generations(),
+                    approved_configuration_hash=approval.configuration_hash,
+                    evaluation_report_hash=approval.comparison_manifest_hash,
+                    review_confirmed=True,
+                )
+
+    def test_candidate_revalidates_the_cohort_after_acquiring_the_event_lock(self) -> None:
+        """A preview accepted between validation and activation must prevent the append."""
+        initial_attempt = self.publish_candidate_projection(
+            event=self.event, photo_id="before-lock"
+        )
+        initial_artifact = FaceProcessingAttemptArtifact.objects.create(attempt=initial_attempt)
+        PhotoFaceDetection.objects.create(
+            artifact=initial_artifact,
+            attempt=initial_attempt,
+            face_index=0,
+            status=PhotoFaceDetection.Status.KEPT,
+        )
+        approval = self.approval(kept_face_count=1)
+        original_select_for_update = Event.objects.select_for_update
+        transition_applied = False
+
+        def lock_then_publish():
+            nonlocal transition_applied
+            if not transition_applied:
+                transition_applied = True
+                self.publish_candidate_projection(event=self.event, photo_id="after-lock")
+            return original_select_for_update()
+
+        with patch.object(Event.objects, "select_for_update", side_effect=lock_then_publish):
+            with patch("processing.services.enrollment.FACE_EMBEDDING_QUALITY_APPROVAL", approval):
+                with self.assertRaisesRegex(ValueError, "incomplete candidate evidence"):
+                    activate_face_embedding_generation(
+                        event=self.event,
+                        generations=candidate_face_embedding_generations(),
+                        approved_configuration_hash=approval.configuration_hash,
+                        evaluation_report_hash=approval.comparison_manifest_hash,
+                        review_confirmed=True,
+                    )
+        self.assertFalse(EventFaceEmbeddingActivation.objects.exists())
 
     def test_activation_rejects_mismatched_or_mixed_generation_sets(self) -> None:
         candidate = candidate_face_embedding_generations()[0]

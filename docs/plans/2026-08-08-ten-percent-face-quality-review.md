@@ -138,7 +138,7 @@ after the sampled quality decision; no new search-ranking behavior is added here
 - Modify: `experiments/face_recognition_spike/tests/test_selfie_search_cli.py`
 - Modify: `experiments/face_recognition_spike/README.md`
 - Private output outside Git: a new child of
-  `/Users/petrnikitin/Documents/Projects/photo-prjct-private/face-quality-benchmark/cyclingrace-vechernee-sadovoe/run-20260808T015921Z`
+  `<private-artifact-root>/face-quality-benchmark/cyclingrace-vechernee-sadovoe/run-20260808T015921Z`
 
 - **Specification:** Entire sampled-review workflow; Search-level review.
 - **Depends on:** Tasks 1–2 and frozen comparison bundle

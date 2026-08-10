@@ -45,9 +45,10 @@ quality gate is required for this rollout.
   event after validating the event, accepted preview cohort, configuration, and approval evidence.
 - One bounded status surface for exact version-4 job, attempt, terminal, projection, and failure
   counts before activation.
-- Content-addressed approval evidence for the exact event, configuration, preview corpus,
-  comparison report, and model files; approval records the maintainer's explicit review without
-  fabricating unobserved loss counts.
+- Content-addressed approval evidence for the exact event, configuration, local preview corpus,
+  accepted runtime preview cohort, immutable accepted-to-local crosswalk, comparison report, and
+  model files; approval records the maintainer's explicit review without fabricating unobserved
+  loss counts or claiming that local and accepted preview bytes are equal.
 - Dark deployment to staging, staging processing and verification, promotion of the same immutable
   image to an already provisioned production environment, event-only production processing, and
   explicit append-only activation.
@@ -77,6 +78,14 @@ The tracked approval binds activation to:
 - the exact version-4 configuration hash;
 - the complete local preview manifest hash
   `62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879`;
+- the canonical local preview projection over photo ID, local SHA-256, byte size, and geometry,
+  hash `a98b5d13152683419c722a115045037fdf883a1f5cdcc3e47a2bddf5291b7d63`;
+- the canonical accepted runtime `PhotoDerivative` cohort over photo ID, accepted SHA-256, byte
+  size, and geometry, hash
+  `6701b7436e1b00b64e701791983a0c9c1d26bcddd56f93a36dd0923aa6bc1034`;
+- the immutable reviewed accepted-to-local crosswalk hash
+  `055d7c72614deb3b87b607f467c16365ee6e125be005e9e8f5cf2e910ec56d51`, with
+  `entries=17043` and `sha_mismatch=17043`;
 - the reviewed comparison manifest hash
   `043ce5c02cd6df901f16096c2637c3a26b3b96171a9e9538b439cee12abca0a6`;
 - YuNet SHA-256 `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`;
@@ -84,6 +93,11 @@ The tracked approval binds activation to:
 - local replay counts `photos=jobs=attempts=projections=17043`, technical failures `0`, kept faces
   `37573`, and quality-rejected faces `18610`; and
 - a reviewed/approved boolean representing the maintainer's explicit acceptance.
+
+The local preview SHA-256 and accepted runtime derivative SHA-256 differ systematically for all
+17,043 crosswalk entries. The approval does not treat them as byte-equivalent. It binds the local
+quality evidence to the accepted runtime cohort through the reviewed immutable crosswalk and the
+separate canonical hashes above.
 
 The approval does not claim that a person-labelled recall benchmark was completed and does not
 invent `clear_loss`, `relevant_result_loss`, or `unresolved` values. Activation safety comes from
@@ -98,13 +112,18 @@ permanent Object Storage credentials.
 
 Enrollment is event-scoped, dry-run by default, and requires an explicit apply option. It validates
 the event slug, approval identity, version-4 configuration, and the current accepted-preview cohort
-inside a transaction before creating or reusing jobs. Repeated application is idempotent and never
-rotates a terminal version-4 job into a different identity.
+inside a transaction before creating or reusing jobs. It recomputes the canonical accepted runtime
+cohort hash from each accepted derivative's photo ID, SHA-256, byte size, and geometry and requires
+the exact approved hash. Repeated application is idempotent and never rotates a terminal version-4
+job into a different identity.
 
 Candidate activation is allowed only when every photo in the frozen eligible cohort has exactly one
 compatible accepted version-4 projection and there are no queued, processing, retryable, failed,
 stale, or technical-failure states for the candidate cohort. New or changed event photos require a
-new reviewed generation rather than silently joining the active one.
+new reviewed generation rather than silently joining the active one. Activation recomputes the same
+accepted runtime cohort hash while holding the event lock. Any accepted derivative SHA-256, byte
+size, or geometry change therefore blocks both new enrollment and activation; count equality alone
+is insufficient.
 
 Activation appends an `EventFaceEmbeddingActivation`. Existing selfie-search bearer snapshots stay
 immutable. New gallery and selfie searches resolve the latest event activation. A cluster corpus
@@ -118,8 +137,9 @@ is not active. Staging must show a healthy application and a worker capable of c
 version-4 smoke cohort before the full staging replay. Production promotion uses the exact image
 successfully recorded by staging, consistent with ADR 0005.
 
-Any mismatch in event identity, preview cohort, configuration, artifact hash, model hash, terminal
-count, projection coverage, or worker contract stops before activation and preserves all evidence.
+Any mismatch in event identity, accepted runtime preview cohort hash, reviewed crosswalk identity,
+configuration, artifact hash, model hash, terminal count, projection coverage, or worker contract
+stops before activation and preserves all evidence.
 A worker or deployment failure uses the existing image rollback and lease/retry semantics. A
 quality regression after activation rolls back only future searches by appending the prior
 generation selection; already published result snapshots and all processing evidence remain
@@ -133,6 +153,13 @@ unchanged.
   local/private path.
 - The same immutable image is healthy on staging before any production promotion.
 - Version `4` is not active during code deployment or while its event cohort is incomplete.
+- Before enrollment and again before activation, the environment's canonical accepted runtime
+  `PhotoDerivative` cohort hash equals
+  `6701b7436e1b00b64e701791983a0c9c1d26bcddd56f93a36dd0923aa6bc1034`; a same-count cohort with
+  any changed accepted SHA-256, byte size, or geometry fails closed.
+- The approved local preview projection and accepted runtime cohort remain distinct identities,
+  linked only through the reviewed crosswalk with `entries=17043` and `sha_mismatch=17043`; no
+  byte-equivalence claim is made.
 - The target environment reports an exact complete candidate cohort, zero nonterminal/failed/stale/
   technical states, and one compatible projection for every eligible event photo.
 - The ordinary event page exposes version-4 accepted faces, and both gallery-origin and uploaded-

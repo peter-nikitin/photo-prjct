@@ -110,12 +110,12 @@ In addition to the specification's acceptance criteria:
 
 ### Task 3: Materialize and verify the complete preview corpus
 
-**Files:** private output only under
-`/Users/petrnikitin/Documents/Projects/photo-prjct-private/event-corpora/cyclingrace-vechernee-sadovoe/previews/preview-small-v1/`.
+**Files:** private output outside Git only under
+`<private-artifact-root>/event-corpora/cyclingrace-vechernee-sadovoe/previews/preview-small-v1/`.
 
 - **Specification:** complete-corpus count, determinism, reuse, and no-S3 requirements.
 - **Depends on:** approved Task 1 and the complete source cache at
-  `/Users/petrnikitin/Documents/Projects/photo-prjct-private/event-corpora/cyclingrace-vechernee-sadovoe/`.
+  `<private-artifact-root>/event-corpora/cyclingrace-vechernee-sadovoe/`.
 - **Produces:** a complete manifest with exactly 17,043 verified previews and zero unresolved items.
 
 - [ ] Run the `materialize` command with an explicit bounded worker count against the source
@@ -128,8 +128,8 @@ In addition to the specification's acceptance criteria:
 
 ### Task 4: Run and publish profile evidence for human selection
 
-**Files:** a new immutable private attempt directory under
-`/Users/petrnikitin/Documents/Projects/photo-prjct-private/face-quality-benchmark/cyclingrace-vechernee-sadovoe/run-20260808T015921Z/`.
+**Files:** a new immutable private attempt directory outside Git under
+`<private-artifact-root>/face-quality-benchmark/cyclingrace-vechernee-sadovoe/run-20260808T015921Z/`.
 
 - **Specification:** seven-photo and deterministic 10% comparison, immutable evidence, and human
   selection boundary.

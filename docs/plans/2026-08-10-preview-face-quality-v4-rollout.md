@@ -47,13 +47,15 @@ after enrollment and activation.
 
 - **Specification:** Approval evidence; Processing and activation contract; Acceptance criteria.
 - **Depends on:** Existing version-4 enrollment, projection, and activation services.
-- **Produces:** Tracked exact approval evidence plus a dry-run-by-default, `--apply`-guarded,
-  event-scoped, idempotent enrollment/status command whose machine-readable report can gate
-  activation.
+- **Produces:** Tracked exact approval evidence for the separate local preview projection, accepted
+  runtime preview cohort, and reviewed immutable crosswalk plus a dry-run-by-default,
+  `--apply`-guarded, event-scoped, idempotent enrollment/status command whose machine-readable
+  report can gate activation.
 
 - [ ] Add failing tests showing that approval uses the exact reviewed artifacts without fabricated
-  loss counters, another event is rejected, dry run writes nothing, apply enrolls only accepted
-  preview-backed photos, replay is idempotent, incomplete/changed cohorts fail closed, and status
+  loss counters or local/runtime byte-equivalence claims, another event is rejected, dry run writes
+  nothing, apply enrolls only accepted preview-backed photos, replay is idempotent, any accepted
+  derivative SHA-256/byte-size/geometry change fails closed even at the same count, and status
   exposes all terminal/nonterminal/failure/projection counts.
 - [ ] Run the focused tests and confirm each fails because the production approval/command behavior
   is absent.
@@ -124,6 +126,16 @@ after enrollment and activation.
 - The merge SHA is the exact image recorded by successful staging deployment.
 - The environment replay command reports one complete eligible event cohort, zero active/retry/
   failed/stale/technical states, and exact projection coverage before activation.
+- Both pre-enrollment and pre-activation validation recompute the canonical accepted runtime
+  `PhotoDerivative` cohort hash as
+  `6701b7436e1b00b64e701791983a0c9c1d26bcddd56f93a36dd0923aa6bc1034`; any accepted SHA-256,
+  byte-size, or geometry change blocks the rollout. The local preview manifest
+  `62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879` has the distinct canonical
+  local projection hash
+  `a98b5d13152683419c722a115045037fdf883a1f5cdcc3e47a2bddf5291b7d63`; that projection is linked
+  to the accepted runtime cohort only by
+  reviewed crosswalk hash `055d7c72614deb3b87b607f467c16365ee6e125be005e9e8f5cf2e910ec56d51`
+  with `entries=17043` and `sha_mismatch=17043`; this is not byte-equivalence evidence.
 - The ordinary event page, gallery-origin search, and uploaded-selfie search resolve the candidate
   generation after activation.
 

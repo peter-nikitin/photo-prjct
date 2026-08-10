@@ -79,8 +79,12 @@ The repository currently contains an early Django application:
   `3/face_embedding/4`. It accepts only the already verified `preview-small-v1` input, and its
   fixed event-scoped replay command is dry-run by default and requires an explicit apply option.
   Enrollment fails closed on the reviewed event, configuration and artifact identity, and current
-  accepted-preview cohort before it creates or reuses a job. Candidate status exposes bounded
-  aggregate job, attempt, state, terminal/nonterminal, failure, detection, and projection counts.
+  accepted-preview cohort before it creates or reuses a job. It recomputes the exact canonical
+  accepted `PhotoDerivative` cohort over photo ID, accepted SHA-256, byte size, and geometry;
+  activation recomputes the same hash while holding the event lock. Any change to those accepted
+  derivative fields blocks enrollment and activation even when the photo count is unchanged.
+  Candidate status exposes bounded aggregate job, attempt, state, terminal/nonterminal, failure,
+  detection, and projection counts.
   Activation additionally requires every photo in the frozen eligible cohort to have one compatible
   accepted projection and no queued, processing, retryable, failed, stale, or technical-failure
   candidate state. It appends an event selection only after those checks; existing baseline,
@@ -90,8 +94,12 @@ The repository currently contains an early Django application:
   enrolls nor activates the candidate. Version 4 leaves the `0.363` selfie-search ranking threshold
   and direct/cluster result evidence unchanged. The accepted local full-corpus quality selection
   covers 17,043 photos/jobs/attempts/projections, zero technical failures, 37,573 kept faces, and
-  18,610 quality-rejected faces; its exact configuration, preview-manifest, comparison-manifest,
-  and YuNet/SFace SHA-256 values are recorded in the
+  18,610 quality-rejected faces. Its local preview manifest hash is `62f071…`, local canonical
+  projection hash is `a98b5d…`, accepted runtime cohort hash is `6701b743…`, and immutable reviewed
+  crosswalk hash is `055d7c…` with `entries=17043` and `sha_mismatch=17043`. Local and accepted
+  preview SHA-256 values therefore differ systematically; the crosswalk binds the two reviewed
+  identities and does not claim byte equivalence. The full hashes, exact configuration,
+  comparison-manifest, and YuNet/SFace SHA-256 values are recorded in the
   [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence).
   Current-merge-candidate full `make check`/reconciliation, PR and CI, staging
   deployment/replay/activation, production promotion/replay/activation, and live verification

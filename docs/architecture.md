@@ -75,6 +75,27 @@ The repository currently contains an early Django application:
   staging-configured nor live-activated. A seven-day staging-prefix lifecycle rule, representative
   original-versus-preview ML comparison, and concurrency-one capacity measurement remain activation
   blockers. No staging or production preview worker is enabled.
+- The repository now also implements the dark-deployable preview-quality candidate
+  `3/face_embedding/4`. It accepts only the already verified `preview-small-v1` input, and its
+  fixed event-scoped replay command is dry-run by default and requires an explicit apply option.
+  Enrollment fails closed on the reviewed event, configuration and artifact identity, and current
+  accepted-preview cohort before it creates or reuses a job. Candidate status exposes bounded
+  aggregate job, attempt, state, terminal/nonterminal, failure, detection, and projection counts.
+  Activation additionally requires every photo in the frozen eligible cohort to have one compatible
+  accepted projection and no queued, processing, retryable, failed, stale, or technical-failure
+  candidate state. It appends an event selection only after those checks; existing baseline,
+  version-3, version-4, failed-attempt, projection, activation, and bearer-result evidence is not
+  rewritten. The worker/deployment contract accepts the identity only when explicitly configured
+  and transports the staging-verified identity unchanged to production; deployment itself neither
+  enrolls nor activates the candidate. Version 4 leaves the `0.363` selfie-search ranking threshold
+  and direct/cluster result evidence unchanged. The accepted local full-corpus quality selection
+  covers 17,043 photos/jobs/attempts/projections, zero technical failures, 37,573 kept faces, and
+  18,610 quality-rejected faces; its exact configuration, preview-manifest, comparison-manifest,
+  and YuNet/SFace SHA-256 values are recorded in the
+  [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence).
+  Current-merge-candidate full `make check`/reconciliation, PR and CI, staging
+  deployment/replay/activation, production promotion/replay/activation, and live verification
+  remain unevidenced.
 - Events now carry an optional, explicitly entered IANA `timezone_name`; Django validates it with
   `ZoneInfo`, and publication rejects a missing or invalid value while draft events may remain
   unset. The capture-time migration assigns `Europe/Moscow` only to the existing event with ID 9;
@@ -382,8 +403,9 @@ broker, vector engine, and ML implementations shown for later processing require
    activation. Watermarked assets and a broker remain later-stage design.
 6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
    embeddings. The implemented preview-first contract records preview coordinate space and source
-   dimensions for face results, but no face-recognition quality result or environment activation is
-   claimed. Each result records model version, confidence, geometry, and processing status.
+   dimensions for face results. The repository includes the approval-gated version-4 candidate for
+   one exact event and preserves its immutable evidence, but no environment processing or activation
+   is claimed. Each result records model version, confidence, geometry, and processing status.
 7. Search indexes are updated only within the photo's event scope.
 8. Operators can correct or suppress candidates. Manual decisions outrank automated results.
 9. Failures remain visible and retryable without re-uploading the original.
@@ -404,6 +426,12 @@ broker, vector engine, and ML implementations shown for later processing require
 4. Face results are ordered by ascending cosine distance with stable photo-ID tie breaking and are
    exposed through the non-expiring public bearer link accepted by ADR 0019. Results from other
    events never enter the snapshot.
+
+An event with the version-4 candidate still resolves its frozen baseline until an explicit guarded
+activation appends the candidate selection. That selection is event-scoped and cannot mutate older
+search snapshots, projections, attempts, or activation records; a rollback appends the preceding
+generation selection. The candidate does not alter the ordinary `0.363` ranking threshold or the
+immutable direct and optional cluster-expansion evidence that ADRs 0019, 0024, and 0025 require.
 
 The worker-backed selfie source is implemented in the repository and locally verified with real
 YuNet/SFace inference for the submitted selfie query. The existing selfie E2E's gallery side uses

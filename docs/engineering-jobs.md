@@ -52,6 +52,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-019 | Maintainer | Reconcile the capture-time projection before gallery cutover | Validated | 2026-08-08 |
 | EJ-020 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
 | EJ-021 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
+| EJ-022 | Maintainer | Gate preview-backed version-4 face generation activation | Delivered | 2026-08-10 |
 
 ## Job details
 
@@ -338,6 +339,38 @@ decision without changing runtime behavior.
   [`face_spike` experiment](../experiments/face_recognition_spike/README.md).
 - Last updated: 2026-08-08
 
+### EJ-022 — Maintainer — Gate preview-backed version-4 face generation activation
+
+When I roll out the reviewed preview-backed face-quality generation for one event, I want a
+dark-deployable worker identity, exact approval evidence, bounded replay/status reporting, and an
+explicit event activation gate, so I can promote only a complete compatible cohort without changing
+other events, ranking, or historical biometric evidence.
+
+- Status: Delivered for the repository capability, focused local-contract evidence, and the
+  maintainer-accepted local full-corpus quality selection. Current-merge-candidate full `make
+  check`/reconciliation, PR creation, GitHub CI, staging deployment, staging replay and activation,
+  production promotion, production replay and activation, and live verification are separate
+  pending evidence states; none is claimed here.
+- Evidence: Commit `e29e65a` implements the exact `3/face_embedding/4` approval, accepted
+  `preview-small-v1` cohort validation, dry-run-by-default
+  [`reprocess_event_face_embeddings`](../src/backend/processing/management/commands/reprocess_event_face_embeddings.py)
+  command, idempotent replay, privacy-safe status aggregates, and append-only activation gate in
+  [`enrollment.py`](../src/backend/processing/services/enrollment.py) and
+  [`face_quality.py`](../src/backend/processing/services/face_quality.py). Its focused activation,
+  replay, enrollment, and adjacent corpus tests passed (60 tests). Commit `333f5b8` accepts the
+  exact identity only when configured in [`apply-deployment.sh`](../deploy/apply-deployment.sh),
+  verifies and forwards the staging identity through
+  [`promote-production.yml`](../.github/workflows/promote-production.yml), and proves with focused
+  deployment/workflow and worker-contract tests that deployment performs neither replay nor
+  activation. The candidate keeps the `0.363` ranking threshold and preserves baseline,
+  version-3/version-4, failed-attempt, projection, activation, and bearer-result evidence. The
+  maintainer accepted the complete local quality selection of 17,043
+  photos/jobs/attempts/projections with zero technical failures, 37,573 kept faces, and 18,610
+  quality-rejected faces; its exact configuration, preview-manifest, comparison-manifest, and
+  YuNet/SFace SHA-256 values are recorded in the
+  [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence).
+- Last updated: 2026-08-10
+
 ### EJ-017 — Developer — Read environment-scoped secrets consistently
 
 When I run the application in local development, CI, or a deployed environment, I want authorized
@@ -446,3 +479,4 @@ This log is append-only.
 | 2026-08-08 | EJ-019 | Not recorded | Validated | Release A writer/schema/rebuild/report and local accepted-clone reconciliation are evidenced; direct gallery reads remain active and CI/deployment/live operational-gate evidence is pending. |
 | 2026-08-08 | EJ-019 | Validated | Delivered | Accepted Release A staging writer/direct-reader operation, local Release B projection-reader evidence, clean global reconciliation, and aggregate 2x benchmark are recorded. Release B review, PR/CI, deployment, live candidate gate, and cutover remain pending. |
 | 2026-08-08 | EJ-021 | Not recorded | Validated | A frozen 15,052-rejection comparison produced an immutable private 1,506-face, six-stratum sampled bundle with 100 separate retained controls; its bounded hashes, unchanged-source check, logical-page probes, and non-human fixture-finalizer round trip are recorded in EJ-021. Human labels, an operator decision, runtime activation, and search-relevance review remain separate. |
+| 2026-08-10 | EJ-022 | Not recorded | Delivered | Commits `e29e65a` and `333f5b8` provide the exact preview-backed version-4 approval/replay/activation and dark-deployment capability with focused local-contract tests. The maintainer-accepted 17,043-photo full-corpus quality selection, its counts, and its exact hashes are recorded in the [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence). Current-merge-candidate `make check`/reconciliation, PR/CI, all staging and production rollout stages, and live verification remain unrecorded. |

@@ -93,7 +93,7 @@ test('keeps only the active built-in description download in GLightbox keyboard 
   assert.equal(secondAction.attributes.get('data-taborder'), '4');
 });
 
-test('restores focus to the pointer-opened card after close', () => {
+test('does not restore focus to the pointer-opened card after close', () => {
   const clickListeners = [];
   let options;
   let focusCalls = 0;
@@ -117,9 +117,9 @@ test('restores focus to the pointer-opened card after close', () => {
   });
 
   clickListeners.forEach((listener) => listener({ target: { closest: () => card } }));
-  options.onClose();
+  options.onClose?.();
 
-  assert.equal(focusCalls, 1);
+  assert.equal(focusCalls, 0);
 });
 
 function makeFaceChooser() {
@@ -156,7 +156,7 @@ function makeFaceChooser() {
   return { details, tile, trigger };
 }
 
-test('keeps one face chooser open and restores its trigger after outside close or Escape', () => {
+test('keeps one face chooser open without restoring its trigger after outside close or Escape', () => {
   const documentListeners = new Map();
   const first = makeFaceChooser();
   const second = makeFaceChooser();
@@ -190,17 +190,17 @@ test('keeps one face chooser open and restores its trigger after outside close o
   documentListeners.get('click')({ target: {} });
 
   assert.equal(second.details.open, false);
-  assert.equal(second.trigger.focusCalls, 1);
+  assert.equal(second.trigger.focusCalls, 0);
 
   first.details.open = true;
   first.details.trigger('toggle');
   documentListeners.get('keydown')({ key: 'Escape' });
 
   assert.equal(first.details.open, false);
-  assert.equal(first.trigger.focusCalls, 1);
+  assert.equal(first.trigger.focusCalls, 0);
 });
 
-test('leaves a face form click outside the GLightbox trigger', () => {
+test('does not expose a GLightbox focus-restoration callback for face form clicks', () => {
   const clickListeners = [];
   let options;
   const root = {
@@ -222,9 +222,9 @@ test('leaves a face form click outside the GLightbox trigger', () => {
 
   eventGallery.initializeEventGallery(root, glightbox);
   clickListeners.forEach((listener) => listener({ target: faceFormControl }));
-  options.onClose();
+  options.onClose?.();
 
-  assert.equal(options.onClose(), undefined);
+  assert.equal(options.onClose, undefined);
 });
 
 test('does nothing without root or GLightbox', () => {

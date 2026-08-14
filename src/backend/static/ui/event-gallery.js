@@ -15,13 +15,12 @@
     if (!choosers.length) return;
     const ownerDocument = root.ownerDocument ?? globalThis.document;
     let openChooser = null;
-    const closeChooser = (chooser, { restoreFocus = true } = {}) => {
+    const closeChooser = (chooser) => {
       if (!chooser || !chooser.open) return;
       chooser.open = false;
       if (openChooser === chooser) openChooser = null;
-      if (restoreFocus) chooser.querySelector('[data-face-chooser-trigger]')?.focus();
     };
-    const closeOpenChooser = (options) => closeChooser(openChooser, options);
+    const closeOpenChooser = () => closeChooser(openChooser);
 
     choosers.forEach((chooser) => {
       chooser.addEventListener('toggle', () => {
@@ -30,7 +29,7 @@
           return;
         }
         if (openChooser && openChooser !== chooser) {
-          closeChooser(openChooser, { restoreFocus: false });
+          closeChooser(openChooser);
         }
         openChooser = chooser;
       });
@@ -46,7 +45,6 @@
 
   function initializeEventGallery(root, GLightbox) {
     if (!root || typeof GLightbox !== 'function') return null;
-    let lastTrigger = null;
     const descriptionDownload = (slide) => slide?.querySelector('.gallery-lightbox-download');
     const removeDescriptionDownloadFromKeyboardOrder = (slide) => {
       const download = descriptionDownload(slide);
@@ -60,9 +58,6 @@
       download.classList.add('gbtn');
       download.setAttribute('data-taborder', '4');
     };
-    root.addEventListener('click', (event) => {
-      lastTrigger = event.target.closest?.('.gallery-card-link') ?? null;
-    });
     return GLightbox({
       selector: '.event-gallery .glightbox',
       touchNavigation: true,
@@ -79,7 +74,6 @@
         removeDescriptionDownloadFromKeyboardOrder(previous?.slide);
         addDescriptionDownloadToKeyboardOrder(current?.slide);
       },
-      onClose: () => lastTrigger?.focus(),
     });
   }
 

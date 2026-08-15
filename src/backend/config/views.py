@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import date
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core.paginator import InvalidPage
@@ -13,16 +14,17 @@ from ingestion.storage import (
     StorageError,
     StorageUnavailable,
 )
-from picflow.forms import EventGalleryTimeFilterForm
+from picflow.forms import EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhoto,
     GalleryPhotoFactory,
     PublicMediaResolver,
+    gallery_folder_choices,
     gallery_page,
     gallery_photo_queryset,
 )
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
 from selfie_search.forms import SelfieSearchUploadForm
 from selfie_search.services.submission import gallery_search_faces_by_photo
@@ -56,18 +58,51 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     gallery_page_data = None
     manual_time_filter_form = None
     manual_time_filter_invalid = False
+    gallery_folder_choices_data: tuple[EventFolder, ...] = ()
+    gallery_folder_filter_form = None
+    gallery_pagination_query = ""
+    gallery_pagination_query_pairs: tuple[tuple[str, str], ...] = ()
+    gallery_filters_active = False
     if event.access_type == Event.AccessType.FREE:
+        base_gallery_queryset = gallery_photo_queryset(event=event)
+        gallery_folder_choices_data, has_unfiled = gallery_folder_choices(
+            event=event, base_queryset=base_gallery_queryset
+        )
+        gallery_folder_filter_form = EventGalleryFolderFilterForm(
+            event,
+            gallery_folder_choices_data,
+            request.GET,
+            include_unfiled=bool(gallery_folder_choices_data) and has_unfiled,
+        )
+        gallery_folder_filter_form.is_valid()
         manual_time_filter_form = EventGalleryTimeFilterForm(event, request.GET)
         if manual_time_filter_form.is_requested and not manual_time_filter_form.is_valid():
             manual_time_filter_invalid = True
         else:
             bounds = manual_time_filter_form.utc_bounds
+            gallery_filters_active = (
+                manual_time_filter_form.is_requested or gallery_folder_filter_form.is_requested
+            )
+            query_pairs = [
+                ("folder", str(folder_id))
+                for folder_id in gallery_folder_filter_form.selected_folder_ids
+            ]
+            if gallery_folder_filter_form.include_unfiled:
+                query_pairs.append(("unfiled", "1"))
+            if manual_time_filter_form.is_requested:
+                query_pairs.append(("from", manual_time_filter_form.cleaned_data["from"]))
+                if manual_time_filter_form.cleaned_data["to"]:
+                    query_pairs.append(("to", manual_time_filter_form.cleaned_data["to"]))
+            gallery_pagination_query_pairs = tuple(query_pairs)
+            gallery_pagination_query = urlencode(gallery_pagination_query_pairs)
             try:
                 gallery_page_data = gallery_page(
                     event=event,
                     page_number=request.GET.get("page"),
                     capture_time_start=bounds[0] if bounds else None,
                     capture_time_end=bounds[1] if bounds else None,
+                    folder_ids=gallery_folder_filter_form.selected_folder_ids,
+                    include_unfiled=gallery_folder_filter_form.include_unfiled,
                 )
             except InvalidPage:
                 return HttpResponse(status=404)
@@ -107,6 +142,11 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             "gallery_page": gallery_page_data,
             "manual_time_filter_form": manual_time_filter_form,
             "manual_time_filter_invalid": manual_time_filter_invalid,
+            "gallery_folder_choices": gallery_folder_choices_data,
+            "gallery_folder_filter_form": gallery_folder_filter_form,
+            "gallery_pagination_query": gallery_pagination_query,
+            "gallery_pagination_query_pairs": gallery_pagination_query_pairs,
+            "gallery_filters_active": gallery_filters_active,
             "selfie_search_form": selfie_search_form,
             "selfie_feedback_enabled": selfie_feedback_enabled,
         },

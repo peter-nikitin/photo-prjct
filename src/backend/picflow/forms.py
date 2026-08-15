@@ -3,7 +3,53 @@ from zoneinfo import ZoneInfo
 
 from django import forms
 
-from picflow.models import Event
+from picflow.models import Event, EventFolder
+
+
+class EventGalleryFolderFilterForm(forms.Form):
+    """Normalize the optional, event-scoped folder choices in a gallery request."""
+
+    def __init__(
+        self,
+        event: Event,
+        available_choices: tuple[EventFolder, ...] | list[EventFolder],
+        data=None,
+        *,
+        include_unfiled: bool = False,
+        **kwargs,
+    ) -> None:
+        self.event = event
+        self.available_choices = tuple(available_choices)
+        self._available_ids = {folder.pk for folder in self.available_choices}
+        self._unfiled_available = include_unfiled
+        self.is_requested = bool(data and ("folder" in data or "unfiled" in data))
+        self.selected_folder_ids: tuple[int, ...] = ()
+        self.include_unfiled = False
+        super().__init__(data=data, **kwargs)
+
+    @property
+    def show_unfiled(self) -> bool:
+        return self._unfiled_available
+
+    def clean(self):
+        cleaned_data = super().clean()
+        values = (
+            self.data.getlist("folder")
+            if hasattr(self.data, "getlist")
+            else ((self.data.get("folder"),) if self.data.get("folder") is not None else ())
+        )
+        selected_ids: set[int] = set()
+        for value in values:
+            try:
+                folder_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if folder_id in self._available_ids:
+                selected_ids.add(folder_id)
+        self.selected_folder_ids = tuple(sorted(selected_ids))
+        self.include_unfiled = self._unfiled_available and self.data.get("unfiled") == "1"
+        self.is_requested = bool(self.selected_folder_ids or self.include_unfiled)
+        return cleaned_data
 
 
 class EventGalleryTimeFilterForm(forms.Form):

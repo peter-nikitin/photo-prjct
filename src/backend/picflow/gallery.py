@@ -1,11 +1,12 @@
 import logging
 import math
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol, Self
 
 from django.core.paginator import Page, Paginator
 from django.db.models import F, Q, QuerySet
+from django.db.models.functions import Lower
 from django.urls import reverse
 from ingestion.storage import ObjectMismatch, ObjectMissing, OpenedObject, ReadableBody
 from processing.models import (
@@ -15,7 +16,7 @@ from processing.models import (
     ProcessingAttempt,
 )
 
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 
 GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
@@ -161,6 +162,8 @@ def gallery_photo_queryset(
     event: Event,
     capture_time_start=None,
     capture_time_end=None,
+    folder_ids: Collection[int] | None = None,
+    include_unfiled: bool = False,
 ) -> QuerySet[Photo]:
     """Return database-confirmed gallery media without probing object storage."""
     preview_ready = Q(
@@ -181,6 +184,13 @@ def gallery_photo_queryset(
         .order_by("original_filename", "id")
         .distinct()
     )
+    if folder_ids or include_unfiled:
+        folder_filter = Q()
+        if folder_ids:
+            folder_filter |= Q(folder_id__in=folder_ids)
+        if include_unfiled:
+            folder_filter |= Q(folder_id__isnull=True)
+        queryset = queryset.filter(folder_filter)
     if capture_time_start is None and capture_time_end is None:
         return queryset
     if capture_time_start is None or capture_time_end is None:
@@ -191,18 +201,35 @@ def gallery_photo_queryset(
     )
 
 
+def gallery_folder_choices(
+    *, event: Event, base_queryset: QuerySet[Photo]
+) -> tuple[tuple[EventFolder, ...], bool]:
+    """Return folder controls derived only from the event's base public gallery."""
+    folders = tuple(
+        EventFolder.objects.filter(event=event, photos__in=base_queryset)
+        .order_by(Lower("name"), "id")
+        .distinct()
+    )
+    has_unfiled = base_queryset.filter(folder_id__isnull=True).exists()
+    return folders, has_unfiled
+
+
 def gallery_page(
     *,
     event: Event,
     page_number: str | None,
     capture_time_start=None,
     capture_time_end=None,
+    folder_ids: Collection[int] | None = None,
+    include_unfiled: bool = False,
 ) -> Page[Photo]:
     return Paginator(
         gallery_photo_queryset(
             event=event,
             capture_time_start=capture_time_start,
             capture_time_end=capture_time_end,
+            folder_ids=folder_ids,
+            include_unfiled=include_unfiled,
         ),
         GALLERY_PAGE_SIZE,
     ).page(page_number or 1)

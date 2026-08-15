@@ -365,6 +365,35 @@
   gap: 12px;
 }
 
+.gallery-folder-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.gallery-folder-filter legend {
+  width: 100%;
+  margin-bottom: 2px;
+  font-weight: 800;
+}
+
+.gallery-folder-filter label {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+}
+
+.gallery-folder-filter input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--teal);
+}
+
 .manual-time-filter-field {
   display: grid;
   gap: 7px;

@@ -61,3 +61,7 @@ On 2026-08-08, the production event-gallery fixtures added the permanent two-col
 and dedicated valid-empty and invalid manual-time-filter states. Desktop and 390px mobile baselines
 cover the normal, filtered-empty, and correction-only responses; interaction tests separately cover
 no-JavaScript submit, filtered paging, reset, column order, and overflow.
+
+On 2026-08-15, the production event-gallery fixtures added stable named-folder and `Без папки`
+checkboxes. The populated and filtered-empty desktop and 390px mobile baselines cover no selection,
+combined folder/time selection, and controls that remain visible for a zero-result intersection.

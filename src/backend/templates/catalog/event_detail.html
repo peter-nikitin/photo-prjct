@@ -83,6 +83,23 @@
             <h3 id="manual-time-filter-title">Ручной поиск</h3>
             <p class="manual-time-filter-guidance">Даты события: {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}. Время указано для города проведения.</p>
             <form class="manual-time-filter-form" data-manual-time-filter-form action="{% url 'event_detail' slug=event.slug %}#gallery" method="get">
+              {% if gallery_folder_choices %}
+                <fieldset class="gallery-folder-filter">
+                  <legend>Папки</legend>
+                  {% for folder in gallery_folder_choices %}
+                    <label>
+                      <input type="checkbox" name="folder" value="{{ folder.pk }}"{% if folder.pk in gallery_folder_filter_form.selected_folder_ids %} checked{% endif %}>
+                      {{ folder.name }}
+                    </label>
+                  {% endfor %}
+                  {% if gallery_folder_filter_form.show_unfiled %}
+                    <label>
+                      <input type="checkbox" name="unfiled" value="1"{% if gallery_folder_filter_form.include_unfiled %} checked{% endif %}>
+                      Без папки
+                    </label>
+                  {% endif %}
+                </fieldset>
+              {% endif %}
               {% for field in manual_time_filter_form %}
                 <div class="manual-time-filter-field">
                   <label for="{{ field.id_for_label }}">{% if field.name == "from" %}Время начала{% else %}Время окончания{% endif %}</label>
@@ -92,7 +109,7 @@
               {% endfor %}
               <button class="button" type="submit">Показать фотографии</button>
             </form>
-            {% if manual_time_filter_form.is_requested %}
+            {% if gallery_filters_active or manual_time_filter_form.is_requested %}
               <a class="manual-time-filter-reset" href="{% url 'event_detail' slug=event.slug %}#gallery">Сбросить фильтр</a>
             {% endif %}
           </section>
@@ -175,15 +192,11 @@
           {% endfor %}
         </div>
         {% if gallery_page.paginator.num_pages > 1 %}
-          {% if manual_time_filter_form.is_requested %}
-            {% include "ui/gallery_pagination.html" with pagination_page=gallery_page pagination_label="Страницы галереи" pagination_filter=manual_time_filter_form.cleaned_data %}
-          {% else %}
-            {% include "ui/gallery_pagination.html" with pagination_page=gallery_page pagination_label="Страницы галереи" %}
-          {% endif %}
+          {% include "ui/gallery_pagination.html" with pagination_page=gallery_page pagination_label="Страницы галереи" pagination_query=gallery_pagination_query pagination_query_pairs=gallery_pagination_query_pairs pagination_anchor="gallery" %}
         {% endif %}
       {% else %}
-        {% if manual_time_filter_form.is_requested %}
-          <p class="event-gallery-empty">За выбранное время фотографий не найдено.</p>
+        {% if gallery_filters_active %}
+          <p class="event-gallery-empty">По выбранным фильтрам фотографий не найдено.</p>
         {% else %}
           <p class="event-gallery-empty">Фотографии пока не опубликованы.</p>
         {% endif %}

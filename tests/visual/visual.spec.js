@@ -863,12 +863,12 @@ test('manual gallery search works without JavaScript and keeps its validated que
     const nextPageLink = page.getByRole('link', { name: 'Вперёд' });
     await expect(nextPageLink).toHaveAttribute(
       'href',
-      '?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00&page=2',
+      '?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00&page=2#gallery',
     );
     await nextPageLink.focus();
     await expect(nextPageLink).toBeFocused();
     await nextPageLink.press('Enter', { noWaitAfter: true });
-    await expect(page).toHaveURL(/\?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00&page=2$/);
+    await expect(page).toHaveURL(/\?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00&page=2#gallery$/);
     const resetLink = page.getByRole('link', { name: 'Сбросить фильтр' });
     await expect(resetLink).toHaveAttribute('href', '/events/london-10k/#gallery');
     await resetLink.focus();
@@ -881,6 +881,29 @@ test('manual gallery search works without JavaScript and keeps its validated que
     await expect(page.locator('.event-gallery')).toHaveCount(0);
   } finally {
     await context.close();
+  }
+});
+
+test('folder controls stay visible and usable in populated and zero-result gallery states', async ({ page }) => {
+  for (const [viewport, path, selected] of [
+    [DESKTOP_VIEWPORT, '/__visual__/event/gallery-populated/', false],
+    [MOBILE_VIEWPORT, '/__visual__/event/gallery-filtered-empty/', true],
+  ]) {
+    await page.setViewportSize(viewport);
+    await preloadCookieAcknowledgement(page);
+    await page.goto(path);
+    await settlePage(page);
+    const folders = page.locator('.gallery-folder-filter');
+    await expect(folders).toBeVisible();
+    await expect(folders.getByRole('checkbox')).toHaveCount(3);
+    await expect(folders.getByLabel('Старт')).toBeChecked({ checked: selected });
+    await expect(folders.getByLabel('Финиш')).toBeChecked({ checked: selected });
+    await expect(folders.getByLabel('Без папки')).toBeChecked({ checked: selected });
+    const dimensions = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
   }
 });
 

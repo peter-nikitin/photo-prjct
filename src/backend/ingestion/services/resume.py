@@ -38,6 +38,8 @@ class ResumeManifestItem:
     size: int
     last_modified_ms: int | None
     ambiguous_sha256: str | None
+    folder_id: int | None
+    folder_name: str | None
     status: str
     confirmed: bool
 
@@ -86,6 +88,8 @@ def get_resume_manifest(uploader: AbstractBaseUser, batch_id: UUID) -> ResumeMan
         "expected_size",
         "client_last_modified_ms",
         "ambiguous_sha256",
+        "folder_id",
+        "folder__name",
         "status",
         "photo_id",
     )
@@ -97,6 +101,7 @@ def get_resume_manifest(uploader: AbstractBaseUser, batch_id: UUID) -> ResumeMan
                 "items",
                 queryset=(
                     UploadItem.objects.filter(batch__uploader_id=uploader.pk)
+                    .select_related("folder")
                     .only(*item_fields)
                     .order_by("id")
                 ),
@@ -116,6 +121,8 @@ def get_resume_manifest(uploader: AbstractBaseUser, batch_id: UUID) -> ResumeMan
                 size=item.expected_size,
                 last_modified_ms=item.client_last_modified_ms,
                 ambiguous_sha256=item.ambiguous_sha256,
+                folder_id=item.folder_id,
+                folder_name=item.folder.name if item.folder_id is not None else None,
                 status=item.status,
                 confirmed=item.photo_id is not None,
             )

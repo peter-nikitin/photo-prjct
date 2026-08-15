@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from ingestion.models import UploadBatch, UploadItem
-from picflow.models import Event
+from picflow.models import Event, EventFolder
 
 
 class UploadModelTests(TestCase):
@@ -131,3 +131,18 @@ class UploadModelTests(TestCase):
 
         self.assertIsNone(item.client_last_modified_ms)
         self.assertIsNone(item.ambiguous_sha256)
+
+    def test_item_folder_is_optional_and_protected(self) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Старт")
+        batch = self.make_batch()
+        batch.save()
+        item = self.make_item(batch, folder=folder)
+
+        item.full_clean()
+        item.save()
+        item.refresh_from_db()
+
+        self.assertEqual(item.folder, folder)
+        self.assertEqual(
+            UploadItem._meta.get_field("folder").remote_field.on_delete.__name__, "PROTECT"
+        )

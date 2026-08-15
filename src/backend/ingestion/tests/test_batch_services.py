@@ -34,7 +34,7 @@ from ingestion.storage import (
     StorageUnavailable,
     UploadGrant,
 )
-from picflow.models import Event
+from picflow.models import Event, EventFolder
 
 
 class FakeStorage:
@@ -77,12 +77,13 @@ class BatchServiceTests(TransactionTestCase):
         ambiguous_sha256: str | None = None,
     ) -> ItemInput:
         return ItemInput(
-            client_item_id or uuid4(),
-            filename,
-            content_type,
-            size,
-            last_modified_ms,
-            ambiguous_sha256,
+            client_item_id=client_item_id or uuid4(),
+            filename=filename,
+            content_type=content_type,
+            size=size,
+            folder_id=None,
+            last_modified_ms=last_modified_ms,
+            ambiguous_sha256=ambiguous_sha256,
         )
 
     def register_one(self, batch_id: UUID, item=None):
@@ -117,6 +118,69 @@ class BatchServiceTests(TransactionTestCase):
         self.assertEqual(row.incoming_key, f"incoming/{batch.id}/{row.id}")
         self.assertEqual(row.final_key, f"originals/{row.id.hex}")
         self.assertNotIn(row.original_filename, row.incoming_key)
+
+    def test_registration_persists_mixed_folder_assignments_and_replay(self) -> None:
+        batch = self.make_batch(3)
+        start = EventFolder.objects.create(event=self.event, name="Старт")
+        finish = EventFolder.objects.create(event=self.event, name="Финиш")
+        items = [
+            ItemInput(uuid4(), "start.jpg", "image/jpeg", 100, folder_id=start.id),
+            ItemInput(uuid4(), "finish.jpg", "image/jpeg", 101, folder_id=finish.id),
+            ItemInput(uuid4(), "unfiled.jpg", "image/jpeg", 102, folder_id=None),
+        ]
+
+        first = register_items(uploader=self.user, batch_id=batch.id, items=items)
+        replay = register_items(uploader=self.user, batch_id=batch.id, items=items)
+
+        self.assertTrue(first.created)
+        self.assertFalse(replay.created)
+        self.assertEqual(first.items, replay.items)
+        stored = {row.client_item_id: row for row in UploadItem.objects.filter(batch_id=batch.id)}
+        self.assertEqual(stored[items[0].client_item_id].folder, start)
+        self.assertEqual(stored[items[1].client_item_id].folder, finish)
+        self.assertIsNone(stored[items[2].client_item_id].folder_id)
+
+    def test_registration_replay_rejects_changed_folder_assignment(self) -> None:
+        batch = self.make_batch()
+        client_item_id = uuid4()
+        start = EventFolder.objects.create(event=self.event, name="Старт")
+        finish = EventFolder.objects.create(event=self.event, name="Финиш")
+        register_items(
+            uploader=self.user,
+            batch_id=batch.id,
+            items=[ItemInput(client_item_id, "race.jpg", "image/jpeg", 100, folder_id=start.id)],
+        )
+
+        with self.assertRaises(BatchConflict) as raised:
+            register_items(
+                uploader=self.user,
+                batch_id=batch.id,
+                items=[
+                    ItemInput(client_item_id, "race.jpg", "image/jpeg", 100, folder_id=finish.id)
+                ],
+            )
+
+        self.assertEqual(raised.exception.code, "item_metadata_conflict")
+
+    def test_registration_rejects_missing_or_foreign_folder(self) -> None:
+        batch = self.make_batch(2)
+        other_event = Event.objects.create(
+            name="Other",
+            slug="other",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        foreign = EventFolder.objects.create(event=other_event, name="Старт")
+
+        for folder_id in (foreign.id, foreign.id + 1):
+            with self.subTest(folder_id=folder_id), self.assertRaises(BatchConflict) as raised:
+                register_items(
+                    uploader=self.user,
+                    batch_id=batch.id,
+                    items=[ItemInput(uuid4(), "race.jpg", "image/jpeg", 100, folder_id=folder_id)],
+                )
+            self.assertEqual(raised.exception.code, "folder_not_found")
 
     def test_registration_persists_resume_metadata_only_for_ambiguous_items(self) -> None:
         batch = self.make_batch(2)
@@ -507,7 +571,7 @@ class RegistrationConcurrencyTests(TransactionTestCase):
             return register_items(
                 uploader=self.user,
                 batch_id=self.batch.id,
-                items=[ItemInput(client_item_id, "race.jpg", "image/jpeg", 100)],
+                items=[ItemInput(client_item_id, "race.jpg", "image/jpeg", 100, None)],
             )
         except BatchConflict:
             return None
@@ -532,9 +596,9 @@ class RegistrationConcurrencyTests(TransactionTestCase):
         batch = UploadBatch.objects.create(
             event=self.event, uploader=self.user, expected_item_count=2
         )
-        first = ItemInput(uuid4(), "first.jpg", "image/jpeg", 100)
+        first = ItemInput(uuid4(), "first.jpg", "image/jpeg", 100, None)
         register_items(uploader=self.user, batch_id=batch.id, items=[first])
-        second = ItemInput(uuid4(), "second.jpg", "image/jpeg", 100)
+        second = ItemInput(uuid4(), "second.jpg", "image/jpeg", 100, None)
         lock_held = ThreadEvent()
         release_registration = ThreadEvent()
 

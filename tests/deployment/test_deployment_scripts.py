@@ -468,14 +468,19 @@ validate_migration_preflight_env() {
   esac
   printf 'candidate-migration-env-mode-0600\n' >> "$COMMAND_LOG"
 }
+validate_active_candidate_env() {
+  [ "$compose_env_file" = "$DEPLOY_ROOT/.env" ]
+  [ "$APP_ENV_FILE" = "$compose_env_file" ]
+  [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = new-image ]
+}
 case " $* " in
   *" manage.py report_photo_capture_time_projection --all-events --require-clean "*)
-    validate_migration_preflight_env
+    validate_active_candidate_env
     printf 'candidate-projection-report\n' >> "$COMMAND_LOG"
     [ "$APPLY_SCENARIO" != projection-report-failure ]
     ;;
   *" manage.py benchmark_event_gallery_time_filter --event-id 9 --pages 1,mid,last "*)
-    validate_migration_preflight_env
+    validate_active_candidate_env
     printf 'candidate-projection-benchmark\n' >> "$COMMAND_LOG"
     [ "$APPLY_SCENARIO" != projection-benchmark-failure ]
     ;;
@@ -732,12 +737,12 @@ SUCCESS_PHASES = [
     "candidate-pull",
     "private-media-preflight",
     "migration-preflight",
-    "projection-preflight",
     "observability-preflight",
     "observability-reconcile",
     "certificate",
     "compose-reconcile",
     "local-health",
+    "projection-preflight",
     "worker-health",
     "public-health",
     "observability-verify",
@@ -1646,7 +1651,7 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
     assert candidate_pull < candidate_run < stop_nginx < candidate_up
 
 
-def test_candidate_projection_gates_run_before_service_switch_without_backfill(
+def test_candidate_projection_gates_run_after_migrated_service_is_healthy_without_backfill(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     result = _run(
@@ -1658,8 +1663,17 @@ def test_candidate_projection_gates_run_before_service_switch_without_backfill(
     commands = _apply_log(tmp_path)
     projection_report = commands.index("candidate-projection-report")
     projection_benchmark = commands.index("candidate-projection-benchmark")
-    stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
-    assert projection_report < projection_benchmark < stop_nginx
+    candidate_up = next(
+        index
+        for index, command in enumerate(commands)
+        if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+    )
+    local_health = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("curl ") and "https://findme-photo.ru/health/" in command
+    )
+    assert candidate_up < local_health < projection_report < projection_benchmark
     command_log = "\n".join(commands)
     assert "report_photo_capture_time_projection --all-events --require-clean" in command_log
     assert "benchmark_event_gallery_time_filter --event-id 9 --pages 1,mid,last" in command_log
@@ -1688,13 +1702,19 @@ def test_failed_candidate_projection_gate_leaves_prior_deployment_active(
     assert result.returncode != 0
     assert message in result.stderr
     assert _deployment_markers(result)[-1] == (
-        f"DEPLOY_RESULT=failure phase={expected_phase} rollback=not-needed"
+        f"DEPLOY_RESULT=failure phase={expected_phase} rollback=succeeded"
     )
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
     commands = _apply_log(tmp_path)
-    assert not any(" stop nginx" in command for command in commands)
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert any(
+        "APP_IMAGE=new-image" in command and " up -d --remove-orphans" in command
+        for command in commands
+    )
+    assert any(
+        "APP_IMAGE=unset" in command and " up -d --remove-orphans" in command
+        for command in commands
+    )
 
 
 @pytest.mark.parametrize(
@@ -2068,7 +2088,7 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
     assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = _apply_log(tmp_path)
-    assert commands.count("candidate-requested-env-with-canonical-untouched") == 6
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 4
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
     assert sum(" up -d --remove-orphans" in command for command in commands) == 1

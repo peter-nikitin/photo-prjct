@@ -32,6 +32,24 @@ class FixtureUser:
 
 
 @dataclass(frozen=True)
+class FixtureFolder:
+    id: int
+    name: str
+
+    @property
+    def pk(self) -> int:
+        return self.id
+
+
+@dataclass(frozen=True)
+class FixtureFolderCollection:
+    items: tuple[FixtureFolder, ...] = ()
+
+    def all(self) -> tuple[FixtureFolder, ...]:
+        return self.items
+
+
+@dataclass(frozen=True)
 class FixtureEvent:
     name: str
     slug: str
@@ -42,6 +60,7 @@ class FixtureEvent:
     access_label: str = "Открытый доступ"
     cover: FixtureImage | None = None
     timezone_name: str = "Europe/London"
+    folders: FixtureFolderCollection = FixtureFolderCollection()
 
     @property
     def pk(self) -> str:
@@ -123,6 +142,7 @@ EVENTS = (
         date(2026, 6, 9),
         "Городской забег с несколькими точками съёмки на трассе.",
         cover=FixtureImage("/static/images/run-city-1842.png"),
+        folders=FixtureFolderCollection((FixtureFolder(4, "Старт"), FixtureFolder(8, "Финиш"))),
     ),
     FixtureEvent(
         "Brighton Ride",
@@ -458,6 +478,39 @@ COMPLETE_UPLOAD_QUEUE = (
     ),
 )
 
+FOLDER_UPLOAD_QUEUE = (
+    MappingProxyType(
+        {
+            "name": "DSC_4298.jpg",
+            "meta": "17,8 МБ",
+            "folder_label": "Старт",
+            "status": "Загружено",
+            "status_class": "uploaded",
+            "progress": 100,
+        }
+    ),
+    MappingProxyType(
+        {
+            "name": "DSC_4299.jpg",
+            "meta": "22,3 МБ",
+            "folder_label": "Финиш",
+            "status": "Передача · 68%",
+            "status_class": "active",
+            "progress": 68,
+        }
+    ),
+    MappingProxyType(
+        {
+            "name": "DSC_4300.jpg",
+            "meta": "20,6 МБ",
+            "folder_label": "Без папки",
+            "status": "Ожидает",
+            "status_class": "pending",
+            "progress": 0,
+        }
+    ),
+)
+
 
 def _render(request: HttpRequest, template: str, context: dict[str, Any]) -> HttpResponse:
     return render(request, template, context)
@@ -723,6 +776,7 @@ def _upload(
     summary: dict[str, int | str],
     queue: tuple[MappingProxyType[str, Any], ...] = (),
     unfinished_uploads: tuple[FixtureUnfinishedUpload, ...] = (),
+    selected_event_id: str = "",
 ) -> HttpResponse:
     request.user = FixtureUser("Анна Смирнова")
     with override_settings(PHOTO_UPLOAD_ENABLED=True):
@@ -736,6 +790,7 @@ def _upload(
                 "upload_summary": summary,
                 "upload_queue_groups": _upload_queue_groups(queue),
                 "unfinished_batches": unfinished_uploads,
+                "selected_event_id": selected_event_id,
             },
         )
 
@@ -824,6 +879,16 @@ def upload_complete(request: HttpRequest) -> HttpResponse:
             "bytes": "5,8 ГБ",
         },
         queue=COMPLETE_UPLOAD_QUEUE,
+    )
+
+
+def upload_folders(request: HttpRequest) -> HttpResponse:
+    return _upload(
+        request,
+        state="active",
+        summary={"progress": 56, "total": 3, "uploaded": 1, "failed": 0, "bytes": "60,7 МБ"},
+        queue=FOLDER_UPLOAD_QUEUE,
+        selected_event_id="london-10k",
     )
 
 

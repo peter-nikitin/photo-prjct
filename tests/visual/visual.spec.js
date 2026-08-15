@@ -45,6 +45,7 @@ const desktopPages = [
   ['upload-active', '/__visual__/upload/active/'],
   ['upload-partial', '/__visual__/upload/partial/'],
   ['upload-complete', '/__visual__/upload/complete/'],
+  ['upload-folders', '/__visual__/upload/folders/'],
   ['reference-orders', '/__visual__/reference/orders/'],
   ['reference-promotions', '/__visual__/reference/promotions/'],
   ['reference-purchased', '/__visual__/reference/purchased/'],
@@ -73,6 +74,7 @@ const mobilePages = [
   ['upload-active', '/__visual__/upload/active/'],
   ['upload-partial', '/__visual__/upload/partial/'],
   ['upload-complete', '/__visual__/upload/complete/'],
+  ['upload-folders', '/__visual__/upload/folders/'],
 ];
 
 function collectBrowserFailures(page) {
@@ -280,6 +282,13 @@ async function installUploadStubs(
     });
   });
   return { controlCalls, storageCalls, pageErrors, getMaxActiveTransfers: () => maxActiveTransfers };
+}
+
+async function selectUnfiledUploadFiles(page, files) {
+  await page
+    .locator('[data-folder-targets]:not([hidden]) [data-folder-target][data-folder-id=""] [data-folder-target-input]')
+    .setInputFiles(files);
+  await page.locator('[data-start-upload]').click();
 }
 
 test.describe('desktop visual regression', () => {
@@ -1089,7 +1098,7 @@ test('browser coordinator completes a successful upload and announces progress',
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles([
+  await selectUnfiledUploadFiles(page, [
     { name: 'one.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('one') },
     { name: 'two.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('two') },
   ]);
@@ -1260,20 +1269,32 @@ test('browser coordinator accepts a dropped JPEG when the browser omits its MIME
   const stubs = await installUploadStubs(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('[data-upload-drop-target]').evaluate((dropTarget) => {
+  const finishTarget = page.locator('[data-folder-targets]:not([hidden]) [data-folder-target][data-folder-name="Финиш"]');
+  await finishTarget.evaluate((dropTarget) => {
     const transfer = new DataTransfer();
     transfer.items.add(new File(['jpeg'], 'dropped.jpeg'));
     dropTarget.dispatchEvent(
-      new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: transfer }),
     );
+  });
+
+  await expect(finishTarget).toHaveAttribute('data-drag-active', 'true');
+  await expect(finishTarget).toContainText('Загрузить в «Финиш»');
+  await expect(page.locator('[data-folder-target][data-drag-active="true"]')).toHaveCount(1);
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-drag-active', 'true');
+  await finishTarget.evaluate((dropTarget) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['jpeg'], 'dropped.jpeg'));
     dropTarget.dispatchEvent(
       new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }),
     );
   });
+  await page.locator('[data-start-upload]').click();
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
   const registration = stubs.controlCalls.find(({ path }) => path.endsWith('/items/'));
   expect(registration.body.items[0].content_type).toBe('image/jpeg');
+  expect(registration.body.items[0].folder_id).toBe(8);
   expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/confirm/'))).toHaveLength(1);
   expect(stubs.pageErrors).toEqual([]);
 });
@@ -1282,7 +1303,7 @@ test('browser coordinator preserves success when another upload fails', async ({
   const stubs = await installUploadStubs(page, { storageStatuses: [204, 400] });
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles([
+  await selectUnfiledUploadFiles(page, [
     { name: 'good.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('good') },
     { name: 'bad.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('bad') },
   ]);
@@ -1298,7 +1319,7 @@ test('slow upload has an active close warning and visible cancel control', async
   const stubs = await installUploadStubs(page, { storageDelay: 400 });
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles({
+  await selectUnfiledUploadFiles(page, {
     name: 'slow.jpg',
     mimeType: 'image/jpeg',
     buffer: Buffer.from('slow'),
@@ -1328,7 +1349,7 @@ test('cancel is visible during authorization and aborts the pending control requ
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles({
+  await selectUnfiledUploadFiles(page, {
     name: 'cancel-authorization.jpg',
     mimeType: 'image/jpeg',
     buffer: Buffer.from('cancel-authorization'),
@@ -1348,7 +1369,7 @@ test('expired grant is refreshed once without starting another data attempt', as
   const stubs = await installUploadStubs(page, { storageStatuses: [403, 204] });
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles({
+  await selectUnfiledUploadFiles(page, {
     name: 'expired.jpg',
     mimeType: 'image/jpeg',
     buffer: Buffer.from('expired'),
@@ -1367,7 +1388,7 @@ test('browser queue never exceeds four simultaneous transfers', async ({ page })
   const stubs = await installUploadStubs(page, { storageDelay: 100 });
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles(
+  await selectUnfiledUploadFiles(page,
     Array.from({ length: 8 }, (_, index) => ({
       name: `${index}.jpg`,
       mimeType: 'image/jpeg',
@@ -1385,7 +1406,7 @@ test('failed file can be retried from the keyboard without losing its row', asyn
   const stubs = await installUploadStubs(page, { storageStatuses: [400, 204] });
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles({
+  await selectUnfiledUploadFiles(page, {
     name: 'keyboard.jpg',
     mimeType: 'image/jpeg',
     buffer: Buffer.from('keyboard'),
@@ -1413,7 +1434,7 @@ test('manual retry 503 remains retryable without leaking an unhandled page error
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles({
+  await selectUnfiledUploadFiles(page, {
     name: 'retry-503.jpg',
     mimeType: 'image/jpeg',
     buffer: Buffer.from('retry-503'),
@@ -1439,7 +1460,7 @@ test('manual retry confirm failure is contained without an unhandled page error'
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
   await page.locator('#upload-event').selectOption({ index: 1 });
-  await page.locator('#upload-files').setInputFiles({
+  await selectUnfiledUploadFiles(page, {
     name: 'retry-confirm-503.jpg',
     mimeType: 'image/jpeg',
     buffer: Buffer.from('retry-confirm-503'),

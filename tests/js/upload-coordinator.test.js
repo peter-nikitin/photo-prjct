@@ -5,8 +5,10 @@ const fs = require('node:fs');
 const test = require('node:test');
 
 const {
+  ControlError,
   UploadCoordinator,
   bindUploadPage,
+  bindFolderTargets,
   chunkItems,
   groupItems,
   matchingKey,
@@ -15,6 +17,7 @@ const {
   prepareSelection,
   renderPage,
   summarize,
+  uploadErrorMessage,
   visibleGroupItems,
 } = require('../../src/backend/static/ui/upload-coordinator.js');
 
@@ -272,6 +275,11 @@ function makeHarness({
   };
 }
 
+async function startUpload(coordinator, files, eventId) {
+  coordinator.stage(files);
+  return coordinator.start(eventId);
+}
+
 test('prepareSelection validates JPEG files and assigns one stable UUID per accepted file', () => {
   const ids = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002'];
   const crypto = { randomUUID: () => ids.shift() };
@@ -280,7 +288,12 @@ test('prepareSelection validates JPEG files and assigns one stable UUID per acce
     { name: 'two.jpeg', type: 'image/jpeg', size: 8 },
   ];
 
-  const selection = prepareSelection(files, { maxFiles: 2, maxFileBytes: 8, crypto });
+  const selection = prepareSelection(files, {
+    maxFiles: 2,
+    maxFileBytes: 8,
+    crypto,
+    folder: { id: 4, name: 'Старт' },
+  });
 
   assert.deepEqual(
     selection.items.map(({ clientItemId, file }) => [clientItemId, file.name]),
@@ -290,6 +303,7 @@ test('prepareSelection validates JPEG files and assigns one stable UUID per acce
     ],
   );
   assert.equal(selection.items[0].clientItemId, selection.items[0].clientItemId);
+  assert.equal(selection.items[0].folder.id, 4);
   assert.throws(
     () => prepareSelection([{ name: 'bad.png', type: 'image/png', size: 4 }], { maxFiles: 2, maxFileBytes: 8, crypto }),
     /JPEG/,
@@ -299,6 +313,119 @@ test('prepareSelection validates JPEG files and assigns one stable UUID per acce
     () => prepareSelection([{ name: 'huge.jpg', type: 'image/jpeg', size: 9 }], { maxFiles: 2, maxFileBytes: 8, crypto }),
     /8/,
   );
+});
+
+test('mixed queue keeps three immutable folder assignments in one batch', async () => {
+  const { calls, coordinator } = makeHarness();
+
+  coordinator.stage([file('start.jpg', 4, 1000)], { id: 4, name: 'Старт' });
+  coordinator.stage([file('finish.jpg', 4, 1001)], { id: 8, name: 'Финиш' });
+  coordinator.stage([file('plain.jpg', 4, 1002)], null);
+  await coordinator.start('42');
+
+  const registration = calls.find(({ url }) => url === '/batch-1/items/');
+  assert.equal(calls.filter(({ url }) => url === '/batches/').length, 1);
+  assert.deepEqual(
+    registration.body.items.map(({ filename, folder_id: folderId }) => [filename, folderId]),
+    [['start.jpg', 4], ['finish.jpg', 8], ['plain.jpg', null]],
+  );
+  assert.deepEqual(
+    coordinator.items.map(({ folder }) => folder),
+    [{ id: 4, name: 'Старт' }, { id: 8, name: 'Финиш' }, null],
+  );
+  assert.throws(
+    () => coordinator.stage([file('too-many.jpg', 4, 1003)], { id: 4, name: 'Старт' }),
+    /начата/,
+  );
+});
+
+test('concurrent starts share one batch creation while the first start is pending', async () => {
+  const { calls, coordinator } = makeHarness();
+  coordinator.stage([file('start.jpg', 4, 1000)]);
+
+  await Promise.all([coordinator.start('42'), coordinator.start('42')]);
+
+  assert.equal(calls.filter(({ url }) => url === '/batches/').length, 1);
+  assert.equal(calls.filter(({ url }) => url === '/batch-1/items/').length, 1);
+});
+
+test('folder registration conflict tells the photographer to add files again from a current target', () => {
+  const error = new ControlError(409, {
+    error: { code: 'folder_not_found', message: 'The selected event folder is no longer available.' },
+  });
+
+  assert.equal(
+    uploadErrorMessage(error),
+    'Выбранная папка больше недоступна. Обновите страницу и добавьте эти файлы заново через актуальную папку события.',
+  );
+  assert.equal(
+    uploadErrorMessage(new ControlError(503, { error: { code: 'unavailable' } })),
+    'Не удалось продолжить загрузку. Повторите попытку.',
+  );
+});
+
+test('staging selections enforces the total max-file limit across folders', () => {
+  const { coordinator } = makeHarness();
+  coordinator.config.maxFiles = 2;
+
+  coordinator.stage([file('start.jpg', 4, 1000)], { id: 4, name: 'Старт' });
+  assert.throws(
+    () => coordinator.stage(
+      [file('finish.jpg', 4, 1001), file('plain.jpg', 4, 1002)],
+      { id: 8, name: 'Финиш' },
+    ),
+    /1/,
+  );
+  assert.equal(coordinator.items.length, 1);
+});
+
+test('folder drop target keeps one active zone across nested leaves and clears on completion', () => {
+  const listeners = new Map();
+  const makeTarget = (id, name) => {
+    const copy = { textContent: 'Перетащите JPEG сюда' };
+    const input = { addEventListener() {} };
+    return {
+      dataset: { folderId: id, folderName: name, defaultCopy: 'Перетащите JPEG сюда' },
+      addEventListener(type, listener) { listeners.set(`${id}:${type}`, listener); },
+      contains(node) { return node === child; },
+      querySelector(selector) {
+        if (selector === '[data-folder-target-copy]') return copy;
+        if (selector === '[data-folder-target-input]') return input;
+        return null;
+      },
+      copy,
+    };
+  };
+  const child = {};
+  const plain = makeTarget('', 'Без папки');
+  const finish = makeTarget('8', 'Финиш');
+  const root = {
+    dataset: {},
+    querySelectorAll() { return [plain, finish]; },
+    addEventListener(type, listener) { listeners.set(`root:${type}`, listener); },
+  };
+  const selections = [];
+  bindFolderTargets(root, (files, folder) => selections.push({ files, folder }));
+  const drag = (type, target, relatedTarget = null) => listeners.get(`${target.dataset.folderId}:${type}`)({
+    preventDefault() {}, dataTransfer: { files: ['finish.jpg'] }, relatedTarget,
+  });
+
+  drag('dragenter', finish);
+  drag('dragleave', finish, child);
+  assert.equal(finish.dataset.dragActive, 'true');
+  assert.equal(plain.dataset.dragActive, undefined);
+  assert.equal(root.dataset.dragActive, 'true');
+  assert.equal(finish.copy.textContent, 'Загрузить в «Финиш»');
+  drag('drop', finish);
+  assert.equal(finish.dataset.dragActive, undefined);
+  assert.equal(root.dataset.dragActive, undefined);
+  assert.deepEqual(selections, [{ files: ['finish.jpg'], folder: { id: 8, name: 'Финиш' } }]);
+
+  drag('dragenter', plain);
+  assert.equal(plain.copy.textContent, 'Загрузить без папки');
+  listeners.get('root:dragend')();
+  assert.equal(plain.dataset.dragActive, undefined);
+  assert.equal(root.dataset.dragActive, undefined);
 });
 
 test('prepareSelection accepts a JPEG extension when drag-and-drop omits the MIME type', () => {
@@ -323,7 +450,7 @@ test('registration records last-modified metadata without hashing a unique selec
   const { calls, coordinator } = makeHarness();
   const unique = file('unique.jpg', 4, 1_722_500_123_456, 'unique');
 
-  await coordinator.start([unique], '42');
+  await startUpload(coordinator, [unique], '42');
 
   const registration = calls.find(({ url }) => url === '/batch-1/items/');
   assert.deepEqual(registration.body.items[0], {
@@ -331,6 +458,7 @@ test('registration records last-modified metadata without hashing a unique selec
     filename: 'unique.jpg',
     content_type: 'image/jpeg',
     size: 4,
+    folder_id: null,
     last_modified_ms: 1_722_500_123_456,
     ambiguous_sha256: null,
   });
@@ -356,7 +484,7 @@ test('registration sends lowercase ambiguous SHA-256 values for duplicate select
   const { calls, coordinator } = makeHarness();
   coordinator.crypto.subtle = digest.subtle;
 
-  await coordinator.start(
+  await startUpload(coordinator,
     [file('same.jpg', 4, 1000, 'first'), file('same.jpg', 4, 1000, 'second')],
     '42',
   );
@@ -475,7 +603,7 @@ test('network and retryable HTTP failures use exactly three delayed automatic re
     ],
   });
 
-  await coordinator.start([{ name: 'retry.jpg', type: 'image/jpeg', size: 4 }], '42');
+  await startUpload(coordinator, [{ name: 'retry.jpg', type: 'image/jpeg', size: 4 }], '42');
 
   assert.deepEqual(delays, [1000, 3000, 7000]);
   assert.deepEqual(
@@ -493,7 +621,7 @@ test('one 403 refreshes the grant without consuming a data attempt', async () =>
     ],
   });
 
-  await coordinator.start([{ name: 'expired.jpg', type: 'image/jpeg', size: 4 }], '42');
+  await startUpload(coordinator, [{ name: 'expired.jpg', type: 'image/jpeg', size: 4 }], '42');
 
   assert.deepEqual(
     calls.filter(({ url }) => url.endsWith('/authorize/')).map(({ body }) => body.reason),
@@ -509,7 +637,7 @@ test('a repeated 403 or another 4xx is terminal and still allows batch finalizat
       xhrResults: statuses.map((status) => ({ type: 'load', status })),
     });
 
-    await coordinator.start([{ name: 'bad.jpg', type: 'image/jpeg', size: 4 }], '42');
+    await startUpload(coordinator, [{ name: 'bad.jpg', type: 'image/jpeg', size: 4 }], '42');
 
     assert.equal(coordinator.items[0].status, 'failed');
     assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
@@ -521,7 +649,7 @@ test('a repeated 403 or another 4xx is terminal and still allows batch finalizat
 test('cancellation is terminal for the cycle and manual retry reuses the item and file', async () => {
   const { calls, coordinator, delays } = makeHarness({ xhrResults: [{ type: 'abort' }] });
 
-  await coordinator.start([{ name: 'cancel.jpg', type: 'image/jpeg', size: 4 }], '42');
+  await startUpload(coordinator, [{ name: 'cancel.jpg', type: 'image/jpeg', size: 4 }], '42');
   const original = coordinator.items[0];
 
   assert.equal(original.status, 'failed');
@@ -543,7 +671,7 @@ test('simultaneous manual retries share the four-transfer concurrency limit', as
       ...Array.from({ length: 6 }, () => ({ type: 'load', status: 204 })),
     ],
   });
-  await coordinator.start(
+  await startUpload(coordinator,
     Array.from({ length: 6 }, (_, index) => ({
       name: `${index}.jpg`,
       type: 'image/jpeg',
@@ -578,7 +706,7 @@ test('manual retry grants are requested just in time inside the bounded work que
       });
     },
   });
-  await coordinator.start(
+  await startUpload(coordinator,
     Array.from({ length: 20 }, (_, index) => ({
       name: `${index}.jpg`,
       type: 'image/jpeg',
@@ -615,7 +743,7 @@ test('a queued manual retry is nonterminal immediately and duplicate clicks shar
       });
     },
   });
-  await coordinator.start(
+  await startUpload(coordinator,
     [
       { name: 'one.jpg', type: 'image/jpeg', size: 4 },
       { name: 'two.jpg', type: 'image/jpeg', size: 4 },
@@ -657,7 +785,7 @@ test('cancel during automatic backoff clears the timer and reports one terminal 
     xhrResults: [{ type: 'error' }, { type: 'load', status: 204 }],
     retryTimer,
   });
-  const completion = coordinator.start(
+  const completion = startUpload(coordinator,
     [{ name: 'cancel-backoff.jpg', type: 'image/jpeg', size: 4 }],
     '42',
   );
@@ -702,7 +830,7 @@ test('cancel wins a grant-refresh network race and reports cancellation once', a
       });
     },
   });
-  const completion = coordinator.start(
+  const completion = startUpload(coordinator,
     [{ name: 'cancel-refresh.jpg', type: 'image/jpeg', size: 4 }],
     '42',
   );
@@ -736,7 +864,7 @@ test('cancel aborts a pending authorization without waiting for its response', a
       return authorizationResponse;
     },
   });
-  const completion = coordinator.start(
+  const completion = startUpload(coordinator,
     [{ name: 'cancel-authorization.jpg', type: 'image/jpeg', size: 4 }],
     '42',
   );
@@ -777,7 +905,7 @@ test('cancel during manual retry authorization closes the reopened batch once', 
       return retryResponse;
     },
   });
-  await coordinator.start(
+  await startUpload(coordinator,
     [{ name: 'cancel-retry-authorization.jpg', type: 'image/jpeg', size: 4 }],
     '42',
   );
@@ -806,7 +934,7 @@ test('manual retry control failures restore a stable retryable terminal state', 
         });
       },
     });
-    await coordinator.start(
+    await startUpload(coordinator,
       [{ name: `${failure}.jpg`, type: 'image/jpeg', size: 4 }],
       '42',
     );
@@ -831,7 +959,7 @@ test('a confirm network failure is contained across the whole manual retry cycle
       throw new Error('private confirm network detail');
     },
   });
-  await coordinator.start(
+  await startUpload(coordinator,
     [{ name: 'confirm-network.jpg', type: 'image/jpeg', size: 4 }],
     '42',
   );
@@ -867,7 +995,7 @@ test('a failed pending retry finalizes once after a sibling retry succeeds', asy
       });
     },
   });
-  await coordinator.start(
+  await startUpload(coordinator,
     [
       { name: 'one.jpg', type: 'image/jpeg', size: 4 },
       { name: 'two.jpg', type: 'image/jpeg', size: 4 },
@@ -1005,7 +1133,7 @@ test('close warning is active only while registered work is unfinished', async (
   const { coordinator } = makeHarness();
   assert.equal(coordinator.shouldWarnBeforeUnload(), false);
 
-  const completion = coordinator.start([{ name: 'one.jpg', type: 'image/jpeg', size: 4 }], '42');
+  const completion = startUpload(coordinator, [{ name: 'one.jpg', type: 'image/jpeg', size: 4 }], '42');
   assert.equal(coordinator.shouldWarnBeforeUnload(), true);
   await completion;
 
@@ -1106,7 +1234,7 @@ test('coordinator registers every file, uploads at most four at once, confirms, 
     size: 4,
   }));
 
-  await coordinator.start(files, '42');
+  await startUpload(coordinator, files, '42');
 
   const registrations = calls.filter(({ url }) => url === '/batch-1/items/');
   assert.deepEqual(registrations.map(({ body }) => body.items.length), [100, 100, 5]);

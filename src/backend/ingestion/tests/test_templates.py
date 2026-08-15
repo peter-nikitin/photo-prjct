@@ -10,7 +10,7 @@ from django.test import TestCase, override_settings
 from django.test.client import RequestFactory
 from django.urls import reverse
 from ingestion.models import UploadBatch, UploadItem
-from picflow.models import Event
+from picflow.models import Event, EventFolder
 
 
 @override_settings(
@@ -46,7 +46,8 @@ class UploadTemplateTests(TestCase):
         self.assertContains(response, 'type="file"')
         self.assertContains(response, 'accept="image/jpeg,.jpg,.jpeg"')
         self.assertContains(response, "multiple")
-        self.assertContains(response, "data-upload-drop-target")
+        self.assertContains(response, "data-folder-target")
+        self.assertContains(response, "data-start-upload")
         self.assertContains(response, "<progress", html=False)
         self.assertContains(response, 'aria-live="polite"')
         self.assertContains(response, "data-upload-queue")
@@ -63,6 +64,34 @@ class UploadTemplateTests(TestCase):
             'data-retry-url-template="/photographer/uploads/{batch}/items/{item}/retry/"',
         )
         self.assertContains(response, 'src="/static/ui/upload-coordinator.js"')
+
+    def test_upload_page_renders_event_scoped_folder_targets_safely(self) -> None:
+        start = EventFolder.objects.create(event=self.event, name="Старт")
+        unsafe = EventFolder.objects.create(
+            event=self.event, name="Финиш <script>alert(1)</script>"
+        )
+        other_event = Event.objects.create(
+            name="Other race",
+            slug="other-race",
+            start_date=date(2026, 7, 15),
+            end_date=date(2026, 7, 15),
+            city="Moscow",
+            publication_status=Event.PublicationStatus.DRAFT,
+        )
+        other_folder = EventFolder.objects.create(event=other_event, name="Трасса")
+
+        response = self.client.get(reverse("upload_page"))
+        html = response.content.decode()
+
+        self.assertIn(f'data-folder-targets data-event-id="{self.event.id}" hidden', html)
+        self.assertIn(f'data-folder-targets data-event-id="{other_event.id}" hidden', html)
+        self.assertIn('data-folder-target data-folder-id=""', html)
+        self.assertIn(f'data-folder-id="{start.id}"', html)
+        self.assertIn(f'data-folder-id="{unsafe.id}"', html)
+        self.assertIn(f'data-folder-id="{other_folder.id}"', html)
+        self.assertIn("data-folder-target-input", html)
+        self.assertIn("Финиш &lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<script>alert(1)</script>", html)
 
     def test_upload_page_omits_deferred_controls_claims_and_private_keys(self) -> None:
         response = self.client.get(reverse("upload_page"))

@@ -109,7 +109,7 @@ def upload_page(request: HttpRequest) -> HttpResponse:
         request,
         "ingestion/upload.html",
         {
-            "events": Event.objects.all(),
+            "events": Event.objects.prefetch_related("folders"),
             "upload_limits": {
                 "max_files": settings.PHOTO_UPLOAD_MAX_FILES,
                 "max_files_label": f"{settings.PHOTO_UPLOAD_MAX_FILES:,}".replace(",", " "),

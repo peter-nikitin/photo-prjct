@@ -19,7 +19,8 @@
        data-max-files="{{ upload_limits.max_files|default:10000 }}"
        data-max-file-bytes="{{ upload_limits.max_file_bytes|default:52428800 }}"
        data-registration-chunk="{{ upload_limits.registration_chunk|default:100 }}"
-       data-concurrency="{{ upload_limits.concurrency|default:4 }}">
+       data-concurrency="{{ upload_limits.concurrency|default:4 }}"
+       data-initial-event-id="{{ selected_event_id|default:'' }}">
     <header class="upload-heading">
       <div>
         <p class="eyebrow">Кабинет фотографа</p>
@@ -70,20 +71,28 @@
           </select>
         </label>
 
-        <div class="drop-target" data-upload-drop-target>
-          <svg class="drop-target-icon icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>
-          <div>
-            <strong>Перетащите JPEG сюда</strong>
-            <span>или выберите файлы — до {{ upload_limits.max_files_label|default:"10 000" }} штук, каждый не больше {{ upload_limits.max_file_megabytes|default:50 }} МБ</span>
-          </div>
-          <label class="button file-picker" for="upload-files">Выбрать фотографии</label>
-          <input class="visually-hidden"
-                 id="upload-files"
-                 name="photos"
-                 type="file"
-                 accept="image/jpeg,.jpg,.jpeg"
-                 multiple>
+        <div class="folder-target-collections" data-folder-target-collections>
+          {% for event in events %}
+            <section class="folder-targets" data-folder-targets data-event-id="{{ event.pk }}" hidden aria-label="Папки события {{ event.name }}">
+              <p class="folder-targets-heading">Выберите папку для файлов</p>
+              <label class="folder-target" data-folder-target data-folder-id="" data-folder-name="Без папки" data-default-copy="Перетащите JPEG сюда">
+                <svg class="drop-target-icon icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>
+                <span class="folder-target-copy"><strong data-folder-target-copy>Перетащите JPEG сюда</strong><span>Загрузить без папки</span></span>
+                <span class="button file-picker">Выбрать фотографии</span>
+                <input class="visually-hidden" data-folder-target-input type="file" accept="image/jpeg,.jpg,.jpeg" multiple>
+              </label>
+              {% for folder in event.folders.all %}
+                <label class="folder-target" data-folder-target data-folder-id="{{ folder.pk }}" data-folder-name="{{ folder.name }}" data-default-copy="Перетащите JPEG сюда">
+                  <svg class="drop-target-icon icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>
+                  <span class="folder-target-copy"><strong data-folder-target-copy>Перетащите JPEG сюда</strong><span>Загрузить в «{{ folder.name }}»</span></span>
+                  <span class="button file-picker">Выбрать фотографии</span>
+                  <input class="visually-hidden" data-folder-target-input type="file" accept="image/jpeg,.jpg,.jpeg" multiple>
+                </label>
+              {% endfor %}
+            </section>
+          {% endfor %}
         </div>
+        <button class="button upload-start-button" type="button" data-start-upload disabled>Начать загрузку</button>
 
         <p class="close-warning">
           <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#alert"></use></svg>
@@ -145,6 +154,7 @@
                       <div class="queue-file-copy">
                         <strong>{{ item.name }}</strong>
                         <span>{{ item.meta }}</span>
+                        <span data-file-folder>Папка: {{ item.folder_label|default:"Без папки" }}</span>
                         {% if item.error %}<p id="queue-error-{{ group.key }}-{{ forloop.counter }}" class="queue-error">{{ item.error }}</p>{% endif %}
                       </div>
                       <div class="queue-item-progress">
@@ -199,7 +209,7 @@
       <template id="upload-queue-row-template">
         <article class="queue-item">
           <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>
-          <div class="queue-file-copy"><strong data-file-name></strong><span data-file-meta></span><p data-file-error></p></div>
+          <div class="queue-file-copy"><strong data-file-name></strong><span data-file-meta></span><span data-file-folder></span><p data-file-error></p></div>
           <div class="queue-item-progress"><span data-file-status></span><progress max="100" value="0">0%</progress></div>
           <button class="retry-button" type="button" data-retry-item>Повторить</button>
           <button class="cancel-button" type="button" data-cancel-item>Отменить</button>

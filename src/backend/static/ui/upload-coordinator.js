@@ -11,7 +11,7 @@
 
   class SelectionError extends Error {}
 
-  function prepareSelection(files, { maxFiles, maxFileBytes, crypto }) {
+  function prepareSelection(files, { maxFiles, maxFileBytes, crypto, folder = null }) {
     const selected = Array.from(files || []);
     if (selected.length < 1 || selected.length > maxFiles) {
       throw new SelectionError(`Выберите от 1 до ${maxFiles} файлов.`);
@@ -30,6 +30,7 @@
         clientItemId: crypto.randomUUID(),
         contentType: 'image/jpeg',
         file,
+        folder,
       })),
     };
   }
@@ -184,6 +185,14 @@
     }
   }
 
+  function uploadErrorMessage(error) {
+    if (error instanceof SelectionError) return error.message;
+    if (error instanceof ControlError && error.payload?.error?.code === 'folder_not_found') {
+      return 'Выбранная папка больше недоступна. Обновите страницу и добавьте эти файлы заново через актуальную папку события.';
+    }
+    return 'Не удалось продолжить загрузку. Повторите попытку.';
+  }
+
   function interpolate(template, values) {
     return Object.entries(values).reduce(
       (url, [key, value]) => url.replaceAll(`{${key}}`, encodeURIComponent(value)),
@@ -283,6 +292,7 @@
     row.classList.add(`queue-item-${item.status === 'uploading' ? 'active' : item.status}`);
     row.querySelector('[data-file-name]').textContent = item.file.name;
     row.querySelector('[data-file-meta]').textContent = formatBytes(item.file.size);
+    row.querySelector('[data-file-folder]').textContent = `Папка: ${item.folder?.name || 'Без папки'}`;
     row.querySelector('[data-file-status]').textContent = statusCopy(item);
     const itemProgress = row.querySelector('progress');
     itemProgress.value = item.progress;
@@ -421,6 +431,58 @@
     renderQueue(root, coordinator);
   }
 
+  function folderFromTarget(target) {
+    const folderId = target.dataset.folderId;
+    return folderId ? { id: Number(folderId), name: target.dataset.folderName } : null;
+  }
+
+  function bindFolderTargets(root, onSelection) {
+    const targets = Array.from(root.querySelectorAll?.('[data-folder-target]') || []);
+    const clear = () => {
+      delete root.dataset.dragActive;
+      for (const target of targets) {
+        delete target.dataset.dragActive;
+        const copy = target.querySelector('[data-folder-target-copy]');
+        if (copy) copy.textContent = target.dataset.defaultCopy;
+      }
+    };
+    const activate = (target) => {
+      clear();
+      root.dataset.dragActive = 'true';
+      target.dataset.dragActive = 'true';
+      const copy = target.querySelector('[data-folder-target-copy]');
+      if (copy) {
+        copy.textContent = target.dataset.folderId
+          ? `Загрузить в «${target.dataset.folderName}»`
+          : 'Загрузить без папки';
+      }
+    };
+    for (const target of targets) {
+      target.addEventListener('dragenter', (event) => {
+        event.preventDefault();
+        activate(target);
+      });
+      target.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        activate(target);
+      });
+      target.addEventListener('dragleave', (event) => {
+        if (!target.contains(event.relatedTarget)) clear();
+      });
+      target.addEventListener('drop', (event) => {
+        event.preventDefault();
+        clear();
+        onSelection(event.dataTransfer.files, folderFromTarget(target));
+      });
+      target.querySelector('[data-folder-target-input]')?.addEventListener('change', (event) => {
+        onSelection(event.currentTarget.files, folderFromTarget(target));
+        event.currentTarget.value = '';
+      });
+    }
+    root.addEventListener?.('dragend', clear);
+    return clear;
+  }
+
   function bindUploadPage(root, dependencies = {}) {
     if (!root) return null;
     let globalError = '';
@@ -450,11 +512,11 @@
       clearTimeout: dependencies.clearTimeout || globalScope.clearTimeout.bind(globalScope),
       onChange: () => renderPage(root, coordinator, globalError),
     });
-    const input = root.querySelector('#upload-files');
     const resumeInput = root.querySelector('#resume-upload-files');
     const eventSelect = root.querySelector('#upload-event');
+    const startUpload = root.querySelector('[data-start-upload]');
     let resumeManifest = null;
-    const begin = async (files) => {
+    const stage = (files, folder) => {
       globalError = '';
       if (!eventSelect.value) {
         globalError = 'Сначала выберите событие.';
@@ -463,14 +525,36 @@
         return;
       }
       try {
-        await coordinator.start(files, eventSelect.value);
+        coordinator.stage(files, folder);
+        eventSelect.disabled = true;
+        if (startUpload) startUpload.disabled = !coordinator.items.length;
       } catch (error) {
         globalError = error instanceof SelectionError ? error.message : 'Не удалось продолжить загрузку. Повторите попытку.';
-        coordinator.active = false;
         renderPage(root, coordinator, globalError);
       }
     };
-    input?.addEventListener('change', () => begin(input.files));
+    bindFolderTargets(root, stage);
+    startUpload?.addEventListener('click', async () => {
+      if (startUpload.disabled) return;
+      startUpload.disabled = true;
+      globalError = '';
+      try {
+        await coordinator.start(eventSelect.value);
+      } catch (error) {
+        globalError = uploadErrorMessage(error);
+        coordinator.active = false;
+        if (!coordinator.batchId) startUpload.disabled = false;
+        renderPage(root, coordinator, globalError);
+      }
+    });
+    const syncFolderTargets = () => {
+      for (const collection of root.querySelectorAll?.('[data-folder-targets]') || []) {
+        collection.hidden = collection.dataset.eventId !== eventSelect.value;
+      }
+    };
+    eventSelect?.addEventListener?.('change', syncFolderTargets);
+    if (eventSelect && root.dataset.initialEventId) eventSelect.value = root.dataset.initialEventId;
+    if (eventSelect) syncFolderTargets();
     resumeInput?.addEventListener('change', async () => {
       if (!resumeManifest || !resumeInput.files.length) return;
       globalError = '';
@@ -496,12 +580,6 @@
         globalError = 'Не удалось открыть незавершённую загрузку. Повторите попытку.';
         renderPage(root, coordinator, globalError);
       }
-    });
-    const dropTarget = root.querySelector('[data-upload-drop-target]');
-    dropTarget?.addEventListener('dragover', (event) => event.preventDefault());
-    dropTarget?.addEventListener('drop', (event) => {
-      event.preventDefault();
-      begin(event.dataTransfer.files);
     });
     root.querySelector('[data-upload-queue]')?.addEventListener('click', async (event) => {
       const toggle = event.target.closest('[data-queue-group-toggle]');
@@ -550,6 +628,7 @@
       this.onChange = options.onChange || (() => {});
       this.items = [];
       this.batchId = null;
+      this.startPromise = null;
       this.active = false;
       this.registeredAll = false;
       this.finalizing = false;
@@ -559,13 +638,17 @@
       this.manualRetryCycles = new Map();
     }
 
-    async start(files, eventId) {
+    stage(files, folder = null) {
+      if (this.batchId || this.startPromise) {
+        throw new SelectionError('Загрузка уже начата. Добавить файлы в неё нельзя.');
+      }
       const selection = prepareSelection(files, {
-        maxFiles: this.config.maxFiles,
+        maxFiles: this.config.maxFiles - this.items.length,
         maxFileBytes: this.config.maxFileBytes,
         crypto: this.crypto,
+        folder,
       });
-      this.items = selection.items.map((entry) => ({
+      this.items.push(...selection.items.map((entry) => ({
         ...entry,
         id: null,
         status: 'pending',
@@ -573,7 +656,25 @@
         error: '',
         xhr: null,
         cycleToken: this.createCycleToken(),
-      }));
+      })));
+      this.onChange(this);
+      return this;
+    }
+
+    start(eventId) {
+      if (this.startPromise) return this.startPromise;
+      if (!this.items.length) {
+        return Promise.reject(new SelectionError('Сначала добавьте JPEG-файлы в очередь.'));
+      }
+      const attempt = this.startBatch(eventId);
+      this.startPromise = attempt;
+      attempt.catch(() => {
+        if (!this.batchId && this.startPromise === attempt) this.startPromise = null;
+      });
+      return attempt;
+    }
+
+    async startBatch(eventId) {
       this.active = true;
       this.onChange(this);
       await prepareAmbiguousFingerprints(this.items, this.crypto.subtle);
@@ -593,6 +694,7 @@
               filename: item.file.name,
               content_type: item.contentType,
               size: item.file.size,
+              folder_id: item.folder?.id || null,
               last_modified_ms: lastModifiedMs(item.file),
               ambiguous_sha256: item.ambiguousSha256,
             })),
@@ -645,6 +747,7 @@
           id: manifestItem.id,
           contentType: 'image/jpeg',
           file: selected || { name: manifestItem.filename, size: manifestItem.size },
+          folder: manifestItem.folder || null,
           status: confirmed
             ? 'uploaded'
             : selected
@@ -663,6 +766,7 @@
           id: null,
           contentType: 'image/jpeg',
           file: unmatched.file,
+          folder: null,
           status: 'needs_attention',
           progress: 0,
           error: unmatched.reason === 'extra'
@@ -1051,8 +1155,10 @@
     SelectionError,
     UploadCoordinator,
     bindUploadPage,
+    bindFolderTargets,
     renderPage,
     summarize,
+    uploadErrorMessage,
     visibleGroupItems,
   };
 });

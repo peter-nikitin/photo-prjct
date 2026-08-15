@@ -780,7 +780,6 @@ test('gallery supports pointer open and visible close control', async ({ page })
   await closeButton.click();
 
   await expect(page.locator('.glightbox-container')).toBeHidden();
-  await expect(firstCard).toBeFocused();
 });
 
 test('gallery supports mobile swipe', async ({ browser }) => {

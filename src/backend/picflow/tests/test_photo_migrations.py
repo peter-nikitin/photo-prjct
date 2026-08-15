@@ -264,3 +264,33 @@ class PhotoMigrationTests(TransactionTestCase):
                 ("processing", "0006_face_cluster_corpus"),
             ],
         )
+
+    def test_event_folder_migration_leaves_existing_photos_unassigned(self) -> None:
+        executor = MigrationExecutor(connection)
+        try:
+            executor.migrate([("picflow", "0008_photo_capture_time_projection")])
+            old_apps = executor.loader.project_state(
+                [("picflow", "0008_photo_capture_time_projection")]
+            ).apps
+            Event = old_apps.get_model("picflow", "Event")
+            Photo = old_apps.get_model("picflow", "Photo")
+            event = Event.objects.create(
+                id=1001,
+                name="Folder migration event",
+                slug="folder-migration-event",
+                start_date=date.today(),
+                end_date=date.today(),
+                city="Moscow",
+            )
+            Photo.objects.create(id="PRE-FOLDER", event=event, src="photos/pre-folder.jpg")
+
+            executor = MigrationExecutor(connection)
+            executor.migrate([("picflow", "0009_eventfolder_photo_folder")])
+            apps = executor.loader.project_state(
+                [("picflow", "0009_eventfolder_photo_folder")]
+            ).apps
+            MigratedPhoto = apps.get_model("picflow", "Photo")
+
+            self.assertIsNone(MigratedPhoto.objects.get(pk="PRE-FOLDER").folder_id)
+        finally:
+            self._restore_current_migration_leaf()

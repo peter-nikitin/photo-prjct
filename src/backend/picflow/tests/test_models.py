@@ -5,10 +5,11 @@ from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models.deletion import ProtectedError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 
 
 class EventModelTests(TestCase):
@@ -233,3 +234,64 @@ class PhotoModelTests(TestCase):
         photo.save()
         with self.assertRaises(IntegrityError), transaction.atomic():
             Photo.objects.filter(pk=photo.pk).update(capture_time=timezone.now())
+
+    def test_folder_is_optional_and_protects_its_folder_from_deletion(self) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Finish")
+        field = Photo._meta.get_field("folder")
+
+        self.assertTrue(field.null)
+        self.assertTrue(field.blank)
+        self.assertEqual(field.remote_field.related_name, "photos")
+        self.assertEqual(field.remote_field.on_delete.__name__, "PROTECT")
+
+        photo = self.private_photo(folder=folder)
+        photo.full_clean()
+        photo.save()
+        with self.assertRaises(ProtectedError):
+            folder.delete()
+
+
+class EventFolderModelTests(TestCase):
+    def setUp(self) -> None:
+        self.event = Event.objects.create(
+            name="Folder Run",
+            slug="folder-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+
+    def test_string_representation_uses_name(self) -> None:
+        folder = EventFolder(event=self.event, name="Finish")
+
+        self.assertEqual(str(folder), "Finish")
+
+    def test_name_is_trimmed_before_validation_and_persistence(self) -> None:
+        folder = EventFolder(event=self.event, name="  Финиш  ")
+
+        folder.full_clean()
+        folder.save()
+
+        ordinary_write = EventFolder.objects.create(event=self.event, name="  Старт  ")
+
+        self.assertEqual(folder.name, "Финиш")
+        self.assertEqual(EventFolder.objects.get(pk=folder.pk).name, "Финиш")
+        self.assertEqual(ordinary_write.name, "Старт")
+
+    def test_blank_after_trimming_is_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            EventFolder(event=self.event, name="   ").full_clean()
+
+    def test_case_insensitive_name_is_unique_within_an_event(self) -> None:
+        EventFolder.objects.create(event=self.event, name="Старт")
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            EventFolder.objects.create(event=self.event, name="старт")
+
+    def test_folders_are_ordered_by_case_insensitive_name(self) -> None:
+        EventFolder.objects.create(event=self.event, name="zebra")
+        EventFolder.objects.create(event=self.event, name="Apple")
+
+        self.assertEqual(
+            list(self.event.folders.values_list("name", flat=True)), ["Apple", "zebra"]
+        )

@@ -53,6 +53,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-020 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
 | EJ-021 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
 | EJ-022 | Maintainer | Gate preview-backed version-4 face generation activation | Delivered | 2026-08-10 |
+| EJ-023 | Maintainer | Keep event-photo folders durable and safely filterable | Validated | 2026-08-15 |
 
 ## Job details
 
@@ -380,6 +381,26 @@ other events, ranking, or historical biometric evidence.
   SHA-256, byte size, and geometry; any field change blocks before a job write or activation append.
 - Last updated: 2026-08-10
 
+### EJ-023 — Maintainer — Keep event-photo folders durable and safely filterable
+
+When I add event-specific photo folders, I want administration, upload state, and public filtering
+to enforce the same event boundary, so folders organize photos without changing storage or media
+authority.
+
+- Status: Validated by local automated evidence only.
+- Evidence: [`src/backend/picflow/tests/test_admin.py`](../src/backend/picflow/tests/test_admin.py)
+  covers inline event-folder management and protected deletion;
+  [`src/backend/ingestion/tests/test_batch_services.py`](../src/backend/ingestion/tests/test_batch_services.py),
+  [`src/backend/ingestion/tests/test_confirmation.py`](../src/backend/ingestion/tests/test_confirmation.py),
+  and [`src/backend/ingestion/tests/test_resume.py`](../src/backend/ingestion/tests/test_resume.py)
+  cover durable named-folder and `Без папки` assignments through mixed-batch registration,
+  confirmation, retries, and resume; [`src/backend/picflow/tests/test_views.py`](../src/backend/picflow/tests/test_views.py)
+  covers stable event-local GET filtering, capture-time composition, and pagination. Folder values
+  do not alter existing upload ownership, gallery eligibility, or media authorization. The mass
+  editor for already uploaded photos, its photographer/time filters, and its permission model are
+  explicitly deferred. No CI, deployment, staging, or customer evidence is claimed.
+- Last updated: 2026-08-15
+
 ### EJ-017 — Developer — Read environment-scoped secrets consistently
 
 When I run the application in local development, CI, or a deployed environment, I want authorized
@@ -492,3 +513,4 @@ This log is append-only.
 | 2026-08-08 | EJ-021 | Not recorded | Validated | A frozen 15,052-rejection comparison produced an immutable private 1,506-face, six-stratum sampled bundle with 100 separate retained controls; its bounded hashes, unchanged-source check, logical-page probes, and non-human fixture-finalizer round trip are recorded in EJ-021. Human labels, an operator decision, runtime activation, and search-relevance review remain separate. |
 | 2026-08-10 | EJ-022 | Not recorded | Delivered | Commits `e29e65a` and `333f5b8` provide the exact preview-backed version-4 approval/replay/activation and dark-deployment capability with focused local-contract tests. The maintainer-accepted 17,043-photo full-corpus quality selection, its counts, and its exact hashes are recorded in the [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence). Current-merge-candidate `make check`/reconciliation, PR/CI, all staging and production rollout stages, and live verification remain unrecorded. |
 | 2026-08-10 | EJ-022 | Delivered | Delivered | Commit `4f10a1a` enforces the clarified accepted cohort contract: the local projection and accepted runtime cohort have distinct canonical hashes and 17,043/17,043 SHA mismatches bound by one immutable reviewed crosswalk. Runtime enrollment and activation recompute the accepted cohort identity over photo ID, accepted SHA-256, byte size, and geometry; no byte-equivalence or environment-rollout evidence is claimed. |
+| 2026-08-15 | EJ-023 | Not recorded | Validated | Local automated coverage validates inline folder administration, durable mixed-folder ingestion, and stable public GET filtering restricted to the existing eligible event gallery. Folder identifiers remain non-authoritative for media; the mass editor is deferred. No CI, deployment, staging, or customer evidence is claimed. |

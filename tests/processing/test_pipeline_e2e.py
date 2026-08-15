@@ -508,7 +508,15 @@ class PipelineEndToEndTests(TestCase):
         registered = register_items(
             uploader=self.user,
             batch_id=batch.id,
-            items=[ItemInput(uuid4(), "pipeline.jpg", "image/jpeg", len(self.jpeg))],
+            items=[
+                ItemInput(
+                    uuid4(),
+                    "pipeline.jpg",
+                    "image/jpeg",
+                    len(self.jpeg),
+                    folder_id=None,
+                )
+            ],
         )
         item_id = registered.items[0].id
         storage = _ConfirmationStorage()

@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlencode
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.paginator import Paginator
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import render
 from django.test import override_settings
-from picflow.forms import EventGalleryTimeFilterForm
+from picflow.forms import EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from selfie_search.forms import SelfieSearchUploadForm
 
 
@@ -32,6 +33,24 @@ class FixtureUser:
 
 
 @dataclass(frozen=True)
+class FixtureFolder:
+    id: int
+    name: str
+
+    @property
+    def pk(self) -> int:
+        return self.id
+
+
+@dataclass(frozen=True)
+class FixtureFolderCollection:
+    items: tuple[FixtureFolder, ...] = ()
+
+    def all(self) -> tuple[FixtureFolder, ...]:
+        return self.items
+
+
+@dataclass(frozen=True)
 class FixtureEvent:
     name: str
     slug: str
@@ -42,6 +61,7 @@ class FixtureEvent:
     access_label: str = "Открытый доступ"
     cover: FixtureImage | None = None
     timezone_name: str = "Europe/London"
+    folders: FixtureFolderCollection = FixtureFolderCollection()
 
     @property
     def pk(self) -> str:
@@ -123,6 +143,7 @@ EVENTS = (
         date(2026, 6, 9),
         "Городской забег с несколькими точками съёмки на трассе.",
         cover=FixtureImage("/static/images/run-city-1842.png"),
+        folders=FixtureFolderCollection((FixtureFolder(4, "Старт"), FixtureFolder(8, "Финиш"))),
     ),
     FixtureEvent(
         "Brighton Ride",
@@ -458,6 +479,39 @@ COMPLETE_UPLOAD_QUEUE = (
     ),
 )
 
+FOLDER_UPLOAD_QUEUE = (
+    MappingProxyType(
+        {
+            "name": "DSC_4298.jpg",
+            "meta": "17,8 МБ",
+            "folder_label": "Старт",
+            "status": "Загружено",
+            "status_class": "uploaded",
+            "progress": 100,
+        }
+    ),
+    MappingProxyType(
+        {
+            "name": "DSC_4299.jpg",
+            "meta": "22,3 МБ",
+            "folder_label": "Финиш",
+            "status": "Передача · 68%",
+            "status_class": "active",
+            "progress": 68,
+        }
+    ),
+    MappingProxyType(
+        {
+            "name": "DSC_4300.jpg",
+            "meta": "20,6 МБ",
+            "folder_label": "Без папки",
+            "status": "Ожидает",
+            "status_class": "pending",
+            "progress": 0,
+        }
+    ),
+)
+
 
 def _render(request: HttpRequest, template: str, context: dict[str, Any]) -> HttpResponse:
     return render(request, template, context)
@@ -479,6 +533,11 @@ def _gallery_context(
     *, data=None, photos=GALLERY_FACE_PHOTOS, page_number: int = 1
 ) -> dict[str, Any]:
     manual_time_filter_form = _manual_time_filter_form(data)
+    gallery_folder_choices = EVENTS[0].folders.all()
+    gallery_folder_filter_form = EventGalleryFolderFilterForm(
+        EVENTS[0], gallery_folder_choices, data, include_unfiled=True
+    )
+    gallery_folder_filter_form.is_valid()
     manual_time_filter_invalid = (
         manual_time_filter_form.is_requested and not manual_time_filter_form.is_valid()
     )
@@ -487,12 +546,28 @@ def _gallery_context(
         gallery_page = Paginator(photos, 3).page(page_number)
     else:
         photos = ()
+    pagination_query_pairs = [
+        ("folder", str(folder_id)) for folder_id in gallery_folder_filter_form.selected_folder_ids
+    ]
+    if gallery_folder_filter_form.include_unfiled:
+        pagination_query_pairs.append(("unfiled", "1"))
+    if manual_time_filter_form.is_requested and not manual_time_filter_invalid:
+        pagination_query_pairs.append(("from", manual_time_filter_form.cleaned_data["from"]))
+        if manual_time_filter_form.cleaned_data["to"]:
+            pagination_query_pairs.append(("to", manual_time_filter_form.cleaned_data["to"]))
     return {
         "event": EVENTS[0],
         "gallery_photos": photos,
         "gallery_page": gallery_page,
         "manual_time_filter_form": manual_time_filter_form,
         "manual_time_filter_invalid": manual_time_filter_invalid,
+        "gallery_folder_choices": gallery_folder_choices,
+        "gallery_folder_filter_form": gallery_folder_filter_form,
+        "gallery_filters_active": (
+            manual_time_filter_form.is_requested or gallery_folder_filter_form.is_requested
+        ),
+        "gallery_pagination_query": urlencode(pagination_query_pairs),
+        "gallery_pagination_query_pairs": tuple(pagination_query_pairs),
         "selfie_search_form": SelfieSearchUploadForm(),
     }
 
@@ -525,7 +600,12 @@ def event_gallery_filtered_empty(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "catalog/event_detail.html",
-        _gallery_context(data={"from": "2026-06-08T09:00", "to": "2026-06-08T10:00"}, photos=()),
+        _gallery_context(
+            data=QueryDict(
+                "folder=4&folder=8&unfiled=1&from=2026-06-08T09%3A00&to=2026-06-08T10%3A00"
+            ),
+            photos=(),
+        ),
     )
 
 
@@ -560,17 +640,9 @@ def event_selfie_search_rejected(request: HttpRequest) -> HttpResponse:
         files={"selfie": SimpleUploadedFile("selfie.gif", b"GIF89a", content_type="image/gif")}
     )
     form.is_valid()
-    return _render(
-        request,
-        "catalog/event_detail.html",
-        {
-            "event": EVENTS[0],
-            "gallery_photos": GALLERY_PHOTOS,
-            "manual_time_filter_form": _manual_time_filter_form(),
-            "manual_time_filter_invalid": False,
-            "selfie_search_form": form,
-        },
-    )
+    context = _gallery_context(photos=GALLERY_PHOTOS)
+    context["selfie_search_form"] = form
+    return _render(request, "catalog/event_detail.html", context)
 
 
 def selfie_search_processing(request: HttpRequest) -> HttpResponse:
@@ -723,6 +795,7 @@ def _upload(
     summary: dict[str, int | str],
     queue: tuple[MappingProxyType[str, Any], ...] = (),
     unfinished_uploads: tuple[FixtureUnfinishedUpload, ...] = (),
+    selected_event_id: str = "",
 ) -> HttpResponse:
     request.user = FixtureUser("Анна Смирнова")
     with override_settings(PHOTO_UPLOAD_ENABLED=True):
@@ -736,6 +809,7 @@ def _upload(
                 "upload_summary": summary,
                 "upload_queue_groups": _upload_queue_groups(queue),
                 "unfinished_batches": unfinished_uploads,
+                "selected_event_id": selected_event_id,
             },
         )
 
@@ -824,6 +898,16 @@ def upload_complete(request: HttpRequest) -> HttpResponse:
             "bytes": "5,8 ГБ",
         },
         queue=COMPLETE_UPLOAD_QUEUE,
+    )
+
+
+def upload_folders(request: HttpRequest) -> HttpResponse:
+    return _upload(
+        request,
+        state="active",
+        summary={"progress": 56, "total": 3, "uploaded": 1, "failed": 0, "bytes": "60,7 МБ"},
+        queue=FOLDER_UPLOAD_QUEUE,
+        selected_event_id="london-10k",
     )
 
 

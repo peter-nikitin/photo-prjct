@@ -16,6 +16,7 @@ from ingestion.services.batches import (
     AuthorizationReason,
     BatchInput,
     ItemInput,
+    ItemStateConflict,
     authorize_item,
     create_batch,
     register_items,
@@ -28,7 +29,7 @@ from ingestion.storage import (
     StorageUnavailable,
     UploadGrant,
 )
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 from PIL import Image
 from processing.models import (
     EventProcessingRun,
@@ -125,7 +126,7 @@ class ConfirmationTests(TransactionTestCase):
         registered = register_items(
             uploader=self.user,
             batch_id=batch.id,
-            items=[ItemInput(uuid4(), "finish.jpg", "image/jpeg", len(self.jpeg))],
+            items=[ItemInput(uuid4(), "finish.jpg", "image/jpeg", len(self.jpeg), None)],
         )
         self.batch_id = batch.id
         self.item_id = registered.items[0].id
@@ -177,12 +178,40 @@ class ConfirmationTests(TransactionTestCase):
         self.storage.add(self.item.incoming_key, b"malicious replacement", '"replacement"')
         second = self.confirm_success()
         self.assertEqual(first.pk, second.pk)
+        self.assertIsNone(second.folder_id)
         self.assert_completed_once(second)
         self.assertEqual(sum(call[0] == "promote" for call in self.storage.calls), 1)
         item = UploadItem.objects.get(id=self.item_id)
         self.assertEqual(item.verified_source_etag, "source-etag")
         self.assertEqual(self.storage.promote_etags, ['"source-etag"'])
         self.assertEqual(self.storage.objects[item.final_key][0], self.jpeg)
+
+    def test_confirmation_copies_the_registered_folder_to_photo(self) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Старт")
+        UploadItem.objects.filter(pk=self.item_id).update(folder_id=folder.id)
+
+        self.confirm_success()
+
+        start_item = UploadItem.objects.get(pk=self.item_id)
+        assert start_item.photo is not None
+        self.assertEqual(start_item.photo.folder, folder)
+
+    def test_confirmation_rejects_a_folder_from_another_event_before_creating_photo(self) -> None:
+        other_event = Event.objects.create(
+            name="Other",
+            slug="other",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="M",
+        )
+        foreign_folder = EventFolder.objects.create(event=other_event, name="Старт")
+        UploadItem.objects.filter(pk=self.item_id).update(folder_id=foreign_folder.id)
+
+        with self.assertRaises(ItemStateConflict) as raised:
+            self.confirm()
+
+        self.assertEqual(raised.exception.code, "folder_event_mismatch")
+        self.assertEqual(Photo.objects.count(), 0)
 
     def test_successful_confirmation_enrolls_the_new_private_photo(self) -> None:
         photo = self.confirm_success()

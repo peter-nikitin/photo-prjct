@@ -4,7 +4,7 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 
 MAX_POSTGRES_BIGINT = 9_223_372_036_854_775_807
 
@@ -87,6 +87,13 @@ class UploadItem(models.Model):  # noqa: DJ008
     last_activity_at = models.DateTimeField(default=timezone.now)
     upload_attempts = models.PositiveSmallIntegerField(default=0)
     completed_at = models.DateTimeField(null=True, blank=True)
+    folder = models.ForeignKey(
+        EventFolder,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="upload_items",
+    )
     photo = models.OneToOneField(
         Photo,
         on_delete=models.PROTECT,

@@ -242,6 +242,12 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Keep Stage 2 ingestion control and confirmation request-driven, with bounded browser transfer
   concurrency and no worker or broker, as defined by
   [ADR 0014](adr/0014-keep-stage-2-ingestion-request-driven.md).
+- Treat `EventFolder` as event-scoped catalog metadata, never as an Object Storage prefix. Django
+  Admin manages normalized names inline with the event; a nullable protected folder assignment
+  travels from an `UploadItem` through confirmation to its `Photo`. One browser queue and one
+  batch may contain several named folders and `Без папки`. Reassigning already uploaded photos,
+  including a photographer-facing mass editor and its authorization boundary, is explicitly
+  deferred.
 - Run the first Stage 3 photo processor as a separately runnable worker that polls a private Django
   API backed by PostgreSQL jobs and leases. Give it no database or permanent Object Storage
   credentials; issue only short-lived exact-object media grants, as defined by
@@ -390,8 +396,10 @@ broker, vector engine, and ML implementations shown for later processing require
    own batches; superusers retain administrative visibility. PostgreSQL preserves unfinished batch
    and item state, so an open upload page can list the photographer's unfinished batches and, after
    explicit reselection of local files, reconstruct its browser queue while skipping server-confirmed
-   items. Closing the page still stops unfinished browser transfers; it does not retain local-file
-   access or continue transfer in the background.
+   items. Each item durably retains its event-scoped folder or `NULL` (`Без папки`) across
+   registration, retry, and resume; confirmation copies that exact assignment to the photo.
+   Closing the page still stops unfinished browser transfers; it does not retain local-file access
+   or continue transfer in the background.
 2. A browser-managed queue uploads files with bounded concurrency to generated keys in a private
    incoming prefix using constrained 10-minute presigned POST grants.
 3. In a confirmation request, Django verifies the incoming object and binds validation and
@@ -417,6 +425,20 @@ broker, vector engine, and ML implementations shown for later processing require
 7. Search indexes are updated only within the photo's event scope.
 8. Operators can correct or suppress candidates. Manual decisions outrank automated results.
 9. Failures remain visible and retryable without re-uploading the original.
+
+### Public event-gallery filtering
+
+1. The public event gallery first builds its normal eligible queryset, then derives the visible
+   folder choices from that base set. A named folder and `Без папки` appear only when they contain
+   an eligible photo; active folder and capture-time filters never make an existing choice vanish.
+2. Repeated `folder` GET values and the explicit `unfiled` choice are validated against the current
+   event and narrow the base queryset with folder `OR`; the capture-time range combines with that
+   predicate using `AND`. Unknown, malformed, deleted, and foreign folder values are ignored.
+3. Numbered page links preserve valid folder and time parameters, while reset removes both filter
+   kinds. Empty intersections retain the stable controls and provide an accessible reset path.
+4. Folder values do not grant authority. Existing gallery eligibility and media authorization run
+   unchanged before any folder predicate, so filtering cannot expose non-public, paid, unprocessed,
+   or cross-event media.
 
 ### Search
 
@@ -489,6 +511,9 @@ cluster-expansion flag remains disabled by default.
   unsanitized bytes that can be saved or redistributed.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
+- Event-folder identifiers are catalog selectors, not media authority. Upload registration and
+  confirmation require the folder to belong to the batch event; public GET filtering can only
+  narrow the already-authorized gallery, and media delivery authorization is unchanged.
 - Photographer routes require the additive upload permission, and non-superuser batch access is
   restricted to the owning uploader.
 - Secrets and credentials are environment-provided; `.env` files remain untracked.

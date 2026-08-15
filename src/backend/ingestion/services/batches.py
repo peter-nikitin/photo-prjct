@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
 from django.utils import timezone
-from picflow.models import Event
+from picflow.models import Event, EventFolder
 
 from ingestion.models import MAX_POSTGRES_BIGINT, UploadBatch, UploadItem
 from ingestion.storage import (
@@ -58,6 +58,7 @@ class ItemInput:
     filename: str
     content_type: str
     size: int
+    folder_id: int | None
     last_modified_ms: int | None = None
     ambiguous_sha256: str | None = None
 
@@ -130,6 +131,16 @@ def register_items(
         batch = _locked_owned_batch(uploader=uploader, batch_id=batch_id)
         _ensure_open_batch(batch)
 
+        folder_ids = {item.folder_id for item in items if item.folder_id is not None}
+        folders = {
+            folder.id: folder
+            for folder in EventFolder.objects.filter(event_id=batch.event_id, id__in=folder_ids)
+        }
+        if len(folders) != len(folder_ids):
+            raise BatchConflict(
+                "folder_not_found", "The selected event folder is no longer available."
+            )
+
         client_ids = [item.client_item_id for item in items]
         existing = {
             row.client_item_id: row
@@ -162,6 +173,7 @@ def register_items(
                     original_filename=item_input.filename,
                     declared_content_type=item_input.content_type,
                     expected_size=item_input.size,
+                    folder=folders.get(item_input.folder_id),
                     client_last_modified_ms=item_input.last_modified_ms,
                     ambiguous_sha256=item_input.ambiguous_sha256,
                     incoming_key=f"incoming/{batch.id}/{item_id}",
@@ -481,6 +493,7 @@ def _metadata_matches(row: UploadItem, item: ItemInput) -> bool:
         row.original_filename == item.filename
         and row.declared_content_type == item.content_type
         and row.expected_size == item.size
+        and row.folder_id == item.folder_id
         and row.client_last_modified_ms == item.last_modified_ms
         and row.ambiguous_sha256 == item.ambiguous_sha256
     )

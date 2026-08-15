@@ -165,11 +165,16 @@ def confirm_upload_item(
                 _require_authorized(item)
                 if not checkpoint or item.verified_source_etag != checkpoint:
                     raise ObjectChanged()
+                if item.folder_id is not None and item.folder.event_id != batch.event_id:
+                    raise ItemStateConflict(
+                        "folder_event_mismatch", "The upload folder does not belong to this event."
+                    )
 
                 now = timezone.now()
                 photo = Photo.objects.create(
                     id=item.id.hex,
                     event=batch.event,
+                    folder=item.folder,
                     src="",
                     uploaded_by=batch.uploader,
                     original_key=item.final_key,

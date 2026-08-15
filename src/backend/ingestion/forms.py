@@ -24,6 +24,7 @@ class ItemForm(forms.Form):
         min_value=1,
         max_value=settings.PHOTO_UPLOAD_MAX_FILE_BYTES,
     )
+    folder_id = forms.IntegerField(required=False, min_value=1)
     last_modified_ms = forms.IntegerField(
         required=False,
         min_value=0,

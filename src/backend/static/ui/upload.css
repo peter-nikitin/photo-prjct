@@ -120,6 +120,78 @@
   background: rgb(11 107 104 / 5%);
 }
 
+.folder-targets {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.folder-targets[hidden] {
+  display: none;
+}
+
+.folder-targets-heading {
+  margin: 0 0 2px;
+  color: var(--charcoal);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.folder-target {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 132px;
+  padding: 20px;
+  border: 2px dashed rgb(11 107 104 / 38%);
+  border-radius: var(--radius);
+  background: rgb(11 107 104 / 5%);
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+.folder-target-copy > strong,
+.folder-target-copy > span,
+.queue-file-copy [data-file-folder] {
+  display: block;
+}
+
+.folder-target-copy > span,
+.queue-file-copy [data-file-folder] {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.folder-target:has([data-folder-target-input]:focus-visible) {
+  border-color: var(--focus);
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+}
+
+[data-upload-root][data-drag-active="true"] .folder-target {
+  opacity: 0.52;
+}
+
+[data-upload-root][data-drag-active="true"] .folder-target[data-drag-active="true"] {
+  border-color: var(--teal);
+  background: rgb(11 107 104 / 14%);
+  box-shadow: 0 0 0 4px rgb(11 107 104 / 16%);
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.upload-start-button {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.upload-start-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .drop-target-icon {
   width: 40px;
   height: 40px;
@@ -536,8 +608,14 @@
     text-align: center;
   }
 
+  .folder-target {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+
   .drop-target-icon,
-  .file-picker {
+  .file-picker,
+  .folder-target .drop-target-icon {
     margin-inline: auto;
   }
 

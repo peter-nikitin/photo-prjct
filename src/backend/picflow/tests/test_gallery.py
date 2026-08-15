@@ -19,7 +19,7 @@ from processing.models import (
     ProcessingJob,
 )
 
-from picflow.forms import EventGalleryTimeFilterForm
+from picflow.forms import EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from picflow.gallery import (
     CloseableMediaIterator,
     GalleryFaceCrop,
@@ -29,9 +29,10 @@ from picflow.gallery import (
     PublicMediaResolver,
     ResolvedPublicMedia,
     gallery_face_crop,
+    gallery_folder_choices,
     gallery_photo_queryset,
 )
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 
 
 class GalleryPresentationContractTests(SimpleTestCase):
@@ -589,6 +590,69 @@ class FilteredGalleryQuerysetTests(TestCase):
             capture_time_end=datetime(2026, 6, 10, 10, 10, tzinfo=UTC),
         )
 
+    def test_folder_choices_come_from_base_eligible_photos_and_folder_filters_are_or_then_time_and(
+        self,
+    ) -> None:
+        start = EventFolder.objects.create(event=self.event, name="Старт")
+        finish = EventFolder.objects.create(event=self.event, name="Финиш")
+        empty = EventFolder.objects.create(event=self.event, name="Пустая")
+        start_photo = self.photo("start", filename="a.jpg")
+        finish_photo = self.photo("finish", filename="b.jpg")
+        unfiled_photo = self.photo("unfiled", filename="c.jpg")
+        hidden_photo = Photo.objects.create(id="hidden-folder", event=self.event, src="hidden.jpg")
+        other_event = Event.objects.create(
+            name="Other folders",
+            slug="other-folders",
+            start_date=self.event.start_date,
+            end_date=self.event.end_date,
+            city="London",
+            timezone_name="Europe/London",
+        )
+        other_folder = EventFolder.objects.create(event=other_event, name="Other")
+        other_photo = self.photo("other-folder", event=other_event)
+        attempts = {
+            photo: self.capture_evidence(photo, capture_time="2026-06-10T10:00:00Z")
+            for photo in (start_photo, finish_photo, unfiled_photo, hidden_photo, other_photo)
+        }
+        for photo, capture_attempt in attempts.items():
+            Photo.objects.filter(pk=photo.pk).update(
+                capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+                capture_time_source_attempt=capture_attempt,
+            )
+        Photo.objects.filter(pk=start_photo.pk).update(folder=start)
+        Photo.objects.filter(pk=finish_photo.pk).update(folder=finish)
+        Photo.objects.filter(pk=hidden_photo.pk).update(folder=empty)
+        Photo.objects.filter(pk=other_photo.pk).update(folder=other_folder)
+
+        base_queryset = gallery_photo_queryset(event=self.event)
+        choices, has_unfiled = gallery_folder_choices(event=self.event, base_queryset=base_queryset)
+
+        self.assertEqual(tuple(folder.pk for folder in choices), (start.pk, finish.pk))
+        self.assertTrue(has_unfiled)
+        self.assertEqual(
+            list(gallery_photo_queryset(event=self.event, folder_ids=(start.pk, finish.pk))),
+            [start_photo, finish_photo],
+        )
+        self.assertEqual(
+            list(
+                gallery_photo_queryset(
+                    event=self.event, folder_ids=(start.pk,), include_unfiled=True
+                )
+            ),
+            [start_photo, unfiled_photo],
+        )
+        self.assertEqual(
+            list(
+                gallery_photo_queryset(
+                    event=self.event,
+                    folder_ids=(start.pk, finish.pk),
+                    capture_time_start=datetime(2026, 6, 10, 9, 50, tzinfo=UTC),
+                    capture_time_end=datetime(2026, 6, 10, 10, 10, tzinfo=UTC),
+                )
+            ),
+            [start_photo, finish_photo],
+        )
+
     def test_uses_photo_capture_time_with_inclusive_boundaries_after_media_eligibility(
         self,
     ) -> None:
@@ -696,6 +760,24 @@ class FilteredGalleryQuerysetTests(TestCase):
             [f"photo-{index:03}" for index in range(100)],
         )
         self.assertEqual([photo.pk for photo in page_two.object_list], ["photo-100"])
+
+
+class EventGalleryFolderFilterFormTests(SimpleTestCase):
+    def test_ignores_unknown_malformed_duplicate_and_foreign_folder_ids(self) -> None:
+        event = Event(pk=1)
+        start = EventFolder(pk=4, event=event, name="Старт")
+        finish = EventFolder(pk=8, event=event, name="Финиш")
+
+        form = EventGalleryFolderFilterForm(
+            event,
+            (start, finish),
+            QueryDict("folder=8&folder=nope&folder=8&folder=4&folder=999&unfiled=1"),
+            include_unfiled=True,
+        )
+
+        self.assertTrue(form.is_valid())
+        self.assertEqual(form.selected_folder_ids, (4, 8))
+        self.assertTrue(form.include_unfiled)
 
 
 class PublicGalleryMediaTests(SimpleTestCase):

@@ -80,6 +80,7 @@ visual_patterns = [
     path("upload/active/", views.upload_active, name="visual_upload_active"),
     path("upload/partial/", views.upload_partial, name="visual_upload_partial"),
     path("upload/complete/", views.upload_complete, name="visual_upload_complete"),
+    path("upload/folders/", views.upload_folders, name="visual_upload_folders"),
     path("reference/orders/", views.reference_orders, name="visual_reference_orders"),
     path(
         "reference/promotions/",

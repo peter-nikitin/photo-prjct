@@ -9,7 +9,7 @@ from django.test import TestCase
 from django.utils import timezone
 from ingestion.models import UploadBatch, UploadItem
 from ingestion.services.resume import get_resume_manifest, list_unfinished_batches
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 
 
 class ResumeServiceTests(TestCase):
@@ -149,6 +149,10 @@ class ResumeServiceTests(TestCase):
             size=9,
             ambiguous_sha256="a" * 64,
         )
+        start = EventFolder.objects.create(event=self.event, name="Старт")
+        UploadItem.objects.filter(pk=pending.pk).update(folder_id=start.id)
+        start.name = "Старт переименован"
+        start.save(update_fields=["name"])
 
         with self.assertNumQueries(2):
             manifest = get_resume_manifest(self.uploader, batch.id)
@@ -163,9 +167,13 @@ class ResumeServiceTests(TestCase):
         self.assertEqual(items[pending.id].size, 7)
         self.assertEqual(items[pending.id].last_modified_ms, 1_722_500_123_456)
         self.assertIsNone(items[pending.id].ambiguous_sha256)
+        self.assertEqual(items[pending.id].folder_id, start.id)
+        self.assertEqual(items[pending.id].folder_name, "Старт переименован")
         self.assertEqual(items[pending.id].status, UploadItem.Status.PENDING)
         self.assertFalse(items[pending.id].confirmed)
         self.assertEqual(items[uploaded.id].ambiguous_sha256, "a" * 64)
+        self.assertIsNone(items[uploaded.id].folder_id)
+        self.assertIsNone(items[uploaded.id].folder_name)
         self.assertTrue(items[uploaded.id].confirmed)
         filename_field = "filename"
         with self.assertRaises(FrozenInstanceError):

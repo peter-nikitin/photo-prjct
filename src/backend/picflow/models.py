@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.functions import Lower, Trim
 
 
 def event_cover_key(instance, filename: str) -> str:  # noqa: ARG001
@@ -77,6 +78,38 @@ class Event(models.Model):
             raise ValidationError(errors)
 
 
+class EventFolder(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="folders")
+    name = models.CharField(max_length=255)
+
+    class Meta:
+        ordering = [Lower("name"), "id"]
+        constraints = [
+            models.UniqueConstraint(
+                Lower(Trim("name")),
+                "event",
+                name="picflow_folder_event_name_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(name=Trim("name")) & ~models.Q(name=""),
+                name="picflow_folder_name_trimmed_chk",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+    def save(self, *args, **kwargs) -> None:
+        self.name = self.name.strip()
+        super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValidationError({"name": "Folder name cannot be empty."})
+
+
 class Photo(models.Model):
     class ProcessingGeneration(models.TextChoices):
         LEGACY_ORIGINAL_V1 = "legacy_original_v1", "Legacy original v1"
@@ -88,6 +121,13 @@ class Photo(models.Model):
 
     id = models.CharField(max_length=32, primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="photos")
+    folder = models.ForeignKey(
+        EventFolder,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="photos",
+    )
     src = models.FileField(upload_to="photos/", blank=True, default="")
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

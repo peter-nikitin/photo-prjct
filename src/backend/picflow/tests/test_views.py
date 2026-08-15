@@ -45,7 +45,7 @@ from processing.services.enrollment import (
 from processing.services.face_quality import publish_face_embedding_projection
 from selfie_search.models import SelfieSearch
 
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 
 
 class NavigationMarkupParser(HTMLParser):
@@ -542,7 +542,10 @@ class GalleryPageTests(TestCase):
         self.assertEqual(first_page_ids, tuple(f"photo-{index:03}" for index in range(100)))
         self.assertContains(first_response, "Страница 1 из 2")
         self.assertContains(first_response, "?page=2")
-        self.assertContains(first_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(
+            first_response,
+            '<form class="gallery-pagination-form" action="#gallery" method="get">',
+        )
         self.assertContains(first_response, 'name="page"')
         self.assertContains(first_response, 'type="number"')
         self.assertContains(first_response, 'min="1"')
@@ -558,7 +561,10 @@ class GalleryPageTests(TestCase):
         self.assertEqual(second_page_ids, ("photo-100",))
         self.assertContains(second_response, "Страница 2 из 2")
         self.assertContains(second_response, "?page=1")
-        self.assertContains(second_response, '<form class="gallery-pagination-form" method="get">')
+        self.assertContains(
+            second_response,
+            '<form class="gallery-pagination-form" action="#gallery" method="get">',
+        )
         self.assertContains(second_response, 'name="page"')
         self.assertContains(second_response, 'type="number"')
         self.assertContains(second_response, 'min="1"')
@@ -1057,6 +1063,106 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertContains(response, f'href="{reset_url}"')
         self.assertNotContains(response, 'class="event-gallery"')
 
+    def test_folder_controls_are_stable_and_filter_named_and_unfiled_photos(self) -> None:
+        start = EventFolder.objects.create(event=self.event, name="Старт")
+        finish = EventFolder.objects.create(event=self.event, name="Финиш")
+        EventFolder.objects.create(event=self.event, name="Пустая")
+        start_photo = self.photo("folder-start", filename="a.jpg")
+        finish_photo = self.photo("folder-finish", filename="b.jpg")
+        unfiled_photo = self.photo("folder-unfiled", filename="c.jpg")
+        hidden = Photo.objects.create(id="folder-hidden", event=self.event, src="hidden.jpg")
+        other_event = Event.objects.create(
+            name="Foreign folders",
+            slug="foreign-folders",
+            start_date=self.event.start_date,
+            end_date=self.event.end_date,
+            city="London",
+            timezone_name="Europe/London",
+        )
+        foreign = EventFolder.objects.create(event=other_event, name="Чужая")
+        Photo.objects.filter(pk=start_photo.pk).update(folder=start)
+        Photo.objects.filter(pk=finish_photo.pk).update(folder=finish)
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
+        filtered = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            [
+                ("folder", str(start.pk)),
+                ("folder", str(foreign.pk)),
+                ("folder", "bad"),
+                ("unfiled", "1"),
+            ],
+        )
+
+        self.assertEqual(
+            [folder.pk for folder in response.context["gallery_folder_choices"]],
+            [start.pk, finish.pk],
+        )
+        self.assertTrue(response.context["gallery_folder_filter_form"].show_unfiled)
+        self.assertContains(response, '<fieldset class="gallery-folder-filter">')
+        self.assertContains(response, f'name="folder" value="{start.pk}"')
+        self.assertContains(response, f'name="folder" value="{finish.pk}"')
+        self.assertContains(response, 'name="unfiled" value="1"')
+        self.assertNotContains(response, "Пустая")
+        self.assertEqual(
+            [item.photo_id for item in filtered.context["gallery_photos"]],
+            [start_photo.pk, unfiled_photo.pk],
+        )
+        self.assertContains(filtered, f'name="folder" value="{start.pk}" checked')
+        self.assertContains(filtered, 'name="unfiled" value="1" checked')
+        self.assertNotContains(filtered, "Чужая")
+        self.assertTrue(Photo.objects.filter(pk=hidden.pk).exists())
+
+    def test_folder_control_stays_hidden_when_only_unfiled_photos_are_eligible(self) -> None:
+        self.photo("unfiled-only", filename="a.jpg")
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
+
+        self.assertEqual(response.context["gallery_folder_choices"], ())
+        self.assertFalse(response.context["gallery_folder_filter_form"].show_unfiled)
+        self.assertNotContains(response, 'class="gallery-folder-filter"')
+
+    def test_folder_filter_preserves_choices_on_zero_time_intersection_and_pagination(
+        self,
+    ) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Старт")
+        photo = self.photo("folder-pagination", filename="a.jpg")
+        self.photo("folder-pagination-unfiled", filename="b.jpg")
+        Photo.objects.filter(pk=photo.pk).update(folder=folder)
+        url = reverse("event_detail", kwargs={"slug": self.event.slug})
+
+        zero = self.client.get(
+            url,
+            [("folder", str(folder.pk)), ("from", "2026-06-10T10:00"), ("to", "2026-06-10T10:01")],
+        )
+        self.assertContains(zero, "Старт")
+        self.assertContains(zero, f'name="folder" value="{folder.pk}" checked')
+        self.assertContains(zero, "По выбранным фильтрам фотографий не найдено.")
+
+        with patch("config.views.gallery_page") as gallery_page_mock:
+            gallery_page_mock.side_effect = lambda **kwargs: Paginator((photo, photo), 1).page(
+                int(kwargs["page_number"] or 1)
+            )
+            paged = self.client.get(
+                url,
+                [
+                    ("folder", str(folder.pk)),
+                    ("folder", str(folder.pk)),
+                    ("unfiled", "1"),
+                    ("from", "2026-06-10T10:00"),
+                    ("to", "2026-06-10T10:01"),
+                    ("page", "1"),
+                ],
+            )
+
+        self.assertContains(
+            paged,
+            f'href="?folder={folder.pk}&amp;unfiled=1&amp;from=2026-06-10T10%3A00&amp;'
+            'to=2026-06-10T10%3A01&amp;page=2#gallery"',
+        )
+        self.assertContains(paged, f'name="folder" value="{folder.pk}"')
+        self.assertContains(paged, 'name="unfiled" value="1"')
+
     @patch("config.views.gallery_page")
     def test_filtered_pagination_preserves_valid_times_while_unfiltered_pagination_stays_clean(
         self, gallery_page_mock
@@ -1075,7 +1181,7 @@ class EventDetailManualTimeFilterTests(TestCase):
 
         self.assertContains(
             filtered,
-            'href="?from=2026-06-10T10%3A00&amp;to=2026-06-10T10%3A01&amp;page=2"',
+            'href="?from=2026-06-10T10%3A00&amp;to=2026-06-10T10%3A01&amp;page=2#gallery"',
         )
         filtered_pager = filtered.content.decode(filtered.charset).split(
             'class="gallery-pagination-form"', 1
@@ -1095,7 +1201,7 @@ class EventDetailManualTimeFilterTests(TestCase):
             {"from": "2026-06-10T10:00", "to": "2026-06-10T10:01"},
         )
 
-        self.assertContains(response, "За выбранное время фотографий не найдено.")
+        self.assertContains(response, "По выбранным фильтрам фотографий не найдено.")
         self.assertNotContains(response, "Фотографии пока не опубликованы.")
 
 

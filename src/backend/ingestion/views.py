@@ -109,7 +109,7 @@ def upload_page(request: HttpRequest) -> HttpResponse:
         request,
         "ingestion/upload.html",
         {
-            "events": Event.objects.all(),
+            "events": Event.objects.prefetch_related("folders"),
             "upload_limits": {
                 "max_files": settings.PHOTO_UPLOAD_MAX_FILES,
                 "max_files_label": f"{settings.PHOTO_UPLOAD_MAX_FILES:,}".replace(",", " "),
@@ -205,6 +205,7 @@ def upload_items_register(request: HttpRequest, batch: UUID) -> JsonResponse:
             filename=item["filename"],
             content_type=item["content_type"],
             size=item["size"],
+            folder_id=item["folder_id"],
             last_modified_ms=item["last_modified_ms"],
             ambiguous_sha256=item["ambiguous_sha256"],
         )
@@ -485,6 +486,11 @@ def _resume_manifest_payload(manifest: ResumeManifest) -> dict[str, object]:
                 "size": item.size,
                 "last_modified_ms": item.last_modified_ms,
                 "ambiguous_sha256": item.ambiguous_sha256,
+                "folder": (
+                    {"id": item.folder_id, "name": item.folder_name}
+                    if item.folder_id is not None
+                    else None
+                ),
                 "status": item.status,
                 "confirmed": item.confirmed,
             }

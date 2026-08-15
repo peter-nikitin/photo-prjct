@@ -14,7 +14,7 @@ This inventory is the canonical map from visual concepts to Django templates and
 | Search workspace | design-reference | `tests/visual/templates/design_reference/search.html` | none | `/__visual__/reference/search/` | `desktop-reference-search.png`, `mobile-reference-search.png` |
 | Operator dashboard | design-reference | `tests/visual/templates/design_reference/dashboard.html` | none | `/__visual__/reference/dashboard/` | `desktop-reference-dashboard.png` |
 | Event management | design-reference | `tests/visual/templates/design_reference/events.html` | none | `/__visual__/reference/events/` | `desktop-reference-events.png` |
-| Upload | production | `src/backend/templates/ingestion/upload.html` | `/photographer/uploads/` | `/__visual__/upload/empty/`, `/__visual__/upload/active/`, `/__visual__/upload/partial/`, `/__visual__/upload/complete/` | `desktop-upload-empty.png`, `desktop-upload-active.png`, `desktop-upload-partial.png`, `desktop-upload-complete.png`, `mobile-upload-empty.png`, `mobile-upload-active.png`, `mobile-upload-partial.png`, `mobile-upload-complete.png` |
+| Upload | production | `src/backend/templates/ingestion/upload.html` | `/photographer/uploads/` | `/__visual__/upload/empty/`, `/__visual__/upload/active/`, `/__visual__/upload/partial/`, `/__visual__/upload/complete/`, `/__visual__/upload/folders/` | `desktop-upload-empty.png`, `desktop-upload-active.png`, `desktop-upload-partial.png`, `desktop-upload-complete.png`, `desktop-upload-folders.png`, `mobile-upload-empty.png`, `mobile-upload-active.png`, `mobile-upload-partial.png`, `mobile-upload-complete.png`, `mobile-upload-folders.png` |
 | Orders | design-reference | `tests/visual/templates/design_reference/orders.html` | none | `/__visual__/reference/orders/` | `desktop-reference-orders.png` |
 | Promotions | design-reference | `tests/visual/templates/design_reference/promotions.html` | none | `/__visual__/reference/promotions/` | `desktop-reference-promotions.png` |
 | Purchased photos | design-reference | `tests/visual/templates/design_reference/purchased.html` | none | `/__visual__/reference/purchased/` | `desktop-reference-purchased.png` |
@@ -53,7 +53,15 @@ closed states in `desktop-event-selfie-search-history.png` and `mobile-event-sel
 Playwright interaction and geometry assertions separately open the disclosure to cover the
 privacy copy, visible shared-sprite delete icon, one-line date rows, and 44px controls.
 
+On 2026-08-15, the production upload fixture gained `/__visual__/upload/folders/` with the
+selected event's `Без папки`, `Старт`, and `Финиш` targets plus a mixed-folder queue. Its desktop
+and 390px mobile baselines are `desktop-upload-folders.png` and `mobile-upload-folders.png`.
+
 On 2026-08-08, the production event-gallery fixtures added the permanent two-column discovery area
 and dedicated valid-empty and invalid manual-time-filter states. Desktop and 390px mobile baselines
 cover the normal, filtered-empty, and correction-only responses; interaction tests separately cover
 no-JavaScript submit, filtered paging, reset, column order, and overflow.
+
+On 2026-08-15, the production event-gallery fixtures added stable named-folder and `Без папки`
+checkboxes. The populated and filtered-empty desktop and 390px mobile baselines cover no selection,
+combined folder/time selection, and controls that remain visible for a zero-result intersection.

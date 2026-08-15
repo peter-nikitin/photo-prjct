@@ -13,7 +13,7 @@ from django.urls import reverse
 from django.utils import timezone
 from ingestion.models import UploadItem
 from ingestion.storage import ObjectIdentity, ObjectMissing, StorageUnavailable, UploadGrant
-from picflow.models import Event, Photo
+from picflow.models import Event, EventFolder, Photo
 from processing.models import PhotoProcessingState, ProcessingJob
 from processing.services.enrollment import reconcile_capture_metadata
 
@@ -106,11 +106,13 @@ class UploadViewTests(TestCase):
 
     def test_resume_manifest_returns_only_safe_matching_metadata(self) -> None:
         batch_id, _ = self.create_batch(expected=2)
+        start = EventFolder.objects.create(event=self.event, name="Старт")
         _, first = self.register_item(
             batch_id,
             filename="race.jpg",
             last_modified_ms=1_722_500_123_456,
             ambiguous_sha256="a" * 64,
+            folder_id=start.id,
         )
         _, second = self.register_item(
             batch_id,
@@ -136,7 +138,12 @@ class UploadViewTests(TestCase):
             verified_source_etag="private-etag",
         )
 
-        response = self.client.get(reverse("upload_batch_resume_manifest", args=[batch_id]))
+        start.name = "Старт переименован"
+        start.save(update_fields=["name"])
+
+        response = self.client.get(
+            reverse("upload_batch_resume_manifest", args=[batch_id]), {"folder_id": 999_999}
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -156,6 +163,7 @@ class UploadViewTests(TestCase):
                 "size": 4,
                 "last_modified_ms": 1_722_500_123_456,
                 "ambiguous_sha256": "a" * 64,
+                "folder": {"id": start.id, "name": "Старт переименован"},
                 "status": "uploaded",
                 "confirmed": True,
             },
@@ -168,6 +176,7 @@ class UploadViewTests(TestCase):
                 "size": 4,
                 "last_modified_ms": 1_722_500_123_457,
                 "ambiguous_sha256": None,
+                "folder": None,
                 "status": "pending",
                 "confirmed": False,
             },
@@ -186,6 +195,23 @@ class UploadViewTests(TestCase):
             "credential",
         ):
             self.assertNotIn(forbidden, body)
+
+    def test_registration_rejects_missing_or_foreign_folder(self) -> None:
+        batch_id, _ = self.create_batch(expected=2)
+        other_event = Event.objects.create(
+            name="Other",
+            slug="other",
+            start_date=date(2026, 7, 13),
+            end_date=date(2026, 7, 13),
+            city="Moscow",
+        )
+        foreign = EventFolder.objects.create(event=other_event, name="Старт")
+
+        for folder_id in (foreign.id, foreign.id + 1):
+            with self.subTest(folder_id=folder_id):
+                _, response = self.register_item(batch_id, folder_id=folder_id)
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json()["error"]["code"], "folder_not_found")
 
     def test_resume_manifest_hides_missing_batches_with_the_sanitized_envelope(self) -> None:
         response = self.client.get(reverse("upload_batch_resume_manifest", args=[uuid4()]))

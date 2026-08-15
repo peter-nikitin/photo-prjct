@@ -90,7 +90,13 @@ can submit it for processing.
   `manage.py check` and migration drift passed. After independently reviewed test-only corrections,
   the full-repository Ruff format check, Ruff lint, mypy over 131 source files, and
   `git diff --check` also passed.
-- Last updated: 2026-08-01
+  Local 2026-08-15 folder evidence adds event-admin management and one shared queue for named
+  folders plus `Без папки`; each assignment survives registration, retry, confirmation, and resume.
+  Existing upload ownership and incoming-object authorization remain unchanged. Moving already
+  uploaded photos, including a photographer-facing mass editor, is deliberately deferred.
+  This is local automated evidence only; CI, deployment, staging, and customer validation are not
+  recorded.
+- Last updated: 2026-08-15
 
 ### PJ-005 — Visitor — Browse an event gallery
 
@@ -99,7 +105,12 @@ event.
 
 - Status: Validated
 - Evidence: [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_builds_ordered_gallery_without_storage`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_excludes_legacy_other_event_and_paid_originals`](../src/backend/picflow/tests/test_views.py), [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_gallery_markup_and_loading_policy`](../src/backend/picflow/tests/test_views.py), Task 6's passing keyboard, pointer, touch, focus-restoration, no-JavaScript, populated, and empty interaction/snapshot evidence in [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js), and [PR #45 CI run 29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091), which passed all 44 visual tests for the CI-tested implementation commit `7d6a718` after the local Docker/`networkidle` failure; later docs-only evidence commits were not included in that run.
-- Last updated: 2026-07-19
+  Local 2026-08-15 evidence adds stable repeated-folder GET filtering: named folders and
+  `Без папки` come only from the base eligible gallery, selections combine with capture time,
+  survive numbered pagination, and invalid or foreign values cannot widen the event gallery.
+  Existing gallery-media authorization is unchanged. This new evidence is local only; it does not
+  claim CI, deployment, staging, or customer validation.
+- Last updated: 2026-08-15
 
 ### PJ-006 — Operator — Review processing results
 
@@ -295,3 +306,5 @@ This log is append-only.
 | 2026-08-04 | PJ-014 | Candidate | In progress | Repository-only implementation and reconciled release-gate evidence: 16/16 device-local history JS cases, 81 focused Django selfie-search/event-view cases, 84/84 full JavaScript cases, `make check` with 1,239 passed and 3 skipped at 83.20% coverage, and 81/81 visual cases passed. No deployment or customer-outcome evidence is claimed. |
 | 2026-08-08 | PJ-015 | Not recorded | In progress | Release A writer and local accepted-clone projection reconciliation are complete while the gallery remains a direct reader; Release B cutover and customer acceptance remain gated on deployment, live reconciliation, and performance evidence. |
 | 2026-08-08 | PJ-015 | In progress | In progress | Release A staging operation is accepted; the Release B projection reader has clean local reconciliation and aggregate first/midpoint/last 2x evidence. Review, PR/CI, deployment, live acceptance, and customer outcome remain pending. |
+| 2026-08-15 | PJ-004 | Validated | Validated | Local automated folder coverage verifies event-admin management plus durable mixed-folder assignment through registration, retry, confirmation, and resume in one owned upload batch. No CI, deployment, staging, or customer evidence is claimed; mass reassignment remains deferred. |
+| 2026-08-15 | PJ-005 | Validated | Validated | Local automated gallery coverage verifies stable repeated-folder GET filtering over the existing eligible event gallery, including `Без папки`, capture-time composition, pagination, and invalid/foreign-value rejection. Existing media authorization is unchanged; no CI, deployment, staging, or customer evidence is claimed. |

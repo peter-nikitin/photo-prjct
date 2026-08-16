@@ -1,6 +1,6 @@
 # Локальная ручная проверка preview-first photo-processing worker
 
-Эта инструкция проверяет сквозной путь с настоящими private Object Storage: браузер загружает JPEG через штатную страницу фотографа, Django подтверждает его и ставит `generate_preview`, отдельный worker получает временную GET-ссылку, создаёт нормализованный preview JPEG и загружает его только в попытку-scoped staging key. Django сам проверяет и публикует derivative, после чего ставит preview-backed `face_embedding` 2/2. Она не включает worker на staging или production. Перед решением о реальной VM используйте отдельную [оценку конфигурации VM](photo-processing-vm-sizing.md): эта ручная проверка собирает для неё нужные измерения, но сама не разрешает resize или включение worker.
+Эта инструкция проверяет сквозной путь с настоящими private Object Storage: браузер загружает JPEG через штатную страницу фотографа, Django подтверждает его и ставит `generate_preview`, отдельный worker получает временную GET-ссылку, создаёт нормализованный preview JPEG и загружает его только в попытку-scoped staging key. Django сам проверяет и публикует derivative, после чего ставит preview-backed `face_embedding` 2/3 с SCRFD. Она не включает worker на staging или production. Перед решением о реальной VM используйте отдельную [оценку конфигурации VM](photo-processing-vm-sizing.md): эта ручная проверка собирает для неё нужные измерения, но сама не разрешает resize или включение worker.
 
 После создания `.env` по инструкции ниже запустите быстрый автоматизированный preflight перед
 ручной проверкой:
@@ -221,7 +221,7 @@ PHOTO_PROCESSING_WORKER_TOKEN=<new-random-shared-token>
 PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120
 PHOTO_WORKER_BUILD=capture-metadata-v1
 PHOTO_WORKER_LEASE_SECONDS=120
-PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/1,2/generate_preview/1,2/face_embedding/2
+PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3
 ```
 
 Start with `test -f .env || cp .env.example .env`, then edit it. Generate the worker token locally
@@ -275,7 +275,7 @@ Run the preview-state query again. Expected terminal results are:
 
 - both `generate_preview` states and current jobs are `succeeded`, and each has the same non-null `accepted_attempt_id` as its published `preview-small-v1` derivative;
 - no original key, staging key, signed URL, checksum, image bytes, or EXIF appears in a public gallery response;
-- each `face_embedding` state is now `queued`, its job identity is `(contract_version=2, processor_version=2)`, and its persisted fingerprint says `media_kind: preview-small-v1`.
+- each `face_embedding` state is now `queued`, its job identity is `(contract_version=2, processor_version=3)`, and its persisted fingerprint says `media_kind: preview-small-v1`.
 
 Prove the last transition from PostgreSQL rather than worker logs or an Object Storage listing:
 
@@ -283,12 +283,12 @@ Prove the last transition from PostgreSQL rather than worker logs or an Object S
 docker compose exec -e CHECK_EVENT_SLUG=manual-processing web python manage.py shell -c 'import json, os; from picflow.models import Event; from processing.models import PhotoDerivative, PhotoProcessingState; event = Event.objects.get(slug=os.environ["CHECK_EVENT_SLUG"]); previews = list(PhotoDerivative.objects.filter(photo__event=event, variant="preview-small-v1").order_by("photo_id").values("photo_id", "accepted_attempt_id", "byte_size", "width", "height")); faces = list(PhotoProcessingState.objects.filter(photo__event=event, processor_type="face_embedding").order_by("photo_id").values("photo_id", "status", "current_job__contract_version", "current_job__processor_version", "current_job__input_fingerprint__media_kind")); print(json.dumps({"previews": previews, "faces": faces}, default=str, indent=2))'
 ```
 
-The command must report one derivative per confirmed photo and `queued`, `2`, `2`, and `preview-small-v1` for every face row. It intentionally prints no storage key, grant, checksum, source metadata, or image bytes. Do not start an all-identities worker before this check: it can legitimately claim face work immediately and make the hand-off unobservable.
+The command must report one derivative per confirmed photo and `queued`, `2`, `3`, and `preview-small-v1` for every face row. It intentionally prints no storage key, grant, checksum, source metadata, or image bytes. Do not start an all-identities worker before this check: it can legitimately claim face work immediately and make the hand-off unobservable.
 
 Only after recording the queued hand-off, run a separate **face-only** phase and then stop it too:
 
 ```bash
-PHOTO_WORKER_PROCESSOR_IDENTITIES=2/face_embedding/2 docker compose --profile worker up --build -d worker
+PHOTO_WORKER_PROCESSOR_IDENTITIES=2/face_embedding/3 docker compose --profile worker up --build -d worker
 docker compose logs -f worker
 docker compose --profile worker stop worker
 ```
@@ -299,6 +299,25 @@ retry, or a claim with another processor identity is a failed manual check.
 ```bash
 docker compose exec -e CHECK_EVENT_SLUG=manual-processing web python manage.py shell -c 'import json, os; from picflow.models import Event; from processing.models import PhotoProcessingState; event = Event.objects.get(slug=os.environ["CHECK_EVENT_SLUG"]); rows = list(PhotoProcessingState.objects.filter(photo__event=event, processor_type="face_embedding").order_by("photo_id").values("photo_id", "status", "accepted_attempt_id", "current_job__contract_version", "current_job__processor_version")); print(json.dumps(rows, default=str, indent=2))'
 ```
+
+## Небольшая проверка gallery/SCRFD и selfie v2
+
+После успешного gallery-пути запустите worker с обычным набором product identities и типом
+`selfie_query`, затем на публичной странице этого free event отправьте только своё тестовое селфи.
+Не используйте customer media, не сохраняйте URL результата и не печатайте worker logs с query
+parameters.
+
+```bash
+PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3 \
+PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview \
+  docker compose --profile worker up --build -d worker
+```
+
+The gallery rows must retain contract `2` / face-embedding `3`; the resulting selfie job and claim
+must identify contract `1` / `selfie_query` `2`. A successful foreground-face search or the stable
+terminal `no_face_detected`/`multiple_faces_detected` outcome is acceptable. A model-load,
+result-contract, or worker-claim error fails the local check. Stop the worker after recording this
+small acceptance result; it is not a staging or production deployment authorization.
 
 Read the event-scoped immutable evidence without changing it:
 

@@ -25,9 +25,9 @@ PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 4
 PREVIEW_CONTRACT_VERSION = 2
 PROCESSOR_TYPE_GENERATE_PREVIEW = "generate_preview"
 PROCESSOR_VERSION_GENERATE_PREVIEW = 1
-PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW = 2
+PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW = 3
 PROCESSOR_TYPE_SELFIE_QUERY = "selfie_query"
-PROCESSOR_VERSION_SELFIE_QUERY = 1
+PROCESSOR_VERSION_SELFIE_QUERY = 2
 MAX_FACE_EMBEDDINGS_PER_JOB = 64
 MAX_FACE_EMBEDDING_DIMENSIONS = 128
 FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
@@ -106,6 +106,13 @@ V2_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "max_pixels": 100_000_000,
         "poll_min_delay_seconds": 5,
         "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
+    },
+}
+SCRFD_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
+    **V2_FACE_EMBEDDING_CONFIGURATION,
+    "face_embedding": {
+        **cast(dict[str, object], V2_FACE_EMBEDDING_CONFIGURATION["face_embedding"]),
+        "detection_threshold": 0.5,
     },
 }
 FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
@@ -837,7 +844,7 @@ class ClaimedJob:
                 or (
                     preview_face
                     and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
-                    and value["configuration"] == V2_FACE_EMBEDDING_CONFIGURATION
+                    and value["configuration"] == SCRFD_FACE_EMBEDDING_CONFIGURATION
                     and photo_fingerprint.media_kind == "preview-small-v1"
                     and not output_slots
                     and _valid_preview_input_geometry(input_geometry, photo_fingerprint)

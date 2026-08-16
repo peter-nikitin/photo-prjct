@@ -101,7 +101,7 @@ class UploadTemplateTests(TestCase):
             'name="zone"',
             'name="photographer"',
             "Распознавание",
-            "QR",
+            "QR-код",
             "EXIF",
             "incoming/",
             "originals/",

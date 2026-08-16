@@ -110,7 +110,6 @@ def compatible_face_embedding_queryset(
     if not generations:
         raise ValueError("face-embedding generations are required")
     compatible_generation = Q()
-    configuration_hashes: set[str] = set()
     for generation in generations:
         if not isinstance(generation, Mapping):
             raise ValueError("invalid face-embedding generation")
@@ -127,7 +126,6 @@ def compatible_face_embedding_queryset(
         configuration_hash = generation["configuration_hash"]
         if not isinstance(configuration_hash, str):
             raise ValueError("invalid face-embedding generation")
-        configuration_hashes.add(configuration_hash)
         compatible_generation |= Q(
             model_version=generation["model"],
             detection__attempt__contract_version=generation["contract_version"],
@@ -154,9 +152,6 @@ def compatible_face_embedding_queryset(
                 "configuration_hash"
             ],
         )
-    if len(configuration_hashes) != 1:
-        raise ValueError("cannot mix face-embedding configurations")
-
     return (
         FaceEmbedding.objects.filter(
             detection__status="kept",

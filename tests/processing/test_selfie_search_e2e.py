@@ -44,6 +44,7 @@ from processing.services.enrollment import (
     GENERATE_PREVIEW_PROCESSOR_VERSION,
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+    SCRFD_FACE_EMBEDDING_CONFIGURATION,
     request_generate_preview,
 )
 from processing.services.jobs import claim_job, complete_attempt
@@ -146,7 +147,7 @@ def _required_file(name: str) -> Path:
         if path.is_file():
             return path
     pytest.skip(
-        "requires local PHOTO_WORKER_YUNET_MODEL_PATH, PHOTO_WORKER_SFACE_MODEL_PATH, "
+        "requires local PHOTO_WORKER_SCRFD_MODEL_PATH, PHOTO_WORKER_SFACE_MODEL_PATH, "
         "and SELFIE_SEARCH_E2E_JPEG_PATH files"
     )
 
@@ -183,7 +184,7 @@ class SelfieSearchEndToEndTests(TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.yunet_model = _required_file("PHOTO_WORKER_YUNET_MODEL_PATH")
+        cls.scrfd_model = _required_file("PHOTO_WORKER_SCRFD_MODEL_PATH")
         cls.sface_model = _required_file("PHOTO_WORKER_SFACE_MODEL_PATH")
         cls.jpeg_path = _required_file("SELFIE_SEARCH_E2E_JPEG_PATH")
         super().setUpClass()
@@ -203,7 +204,8 @@ class SelfieSearchEndToEndTests(TestCase):
             self.jpeg_path,
             max_bytes=_MAX_INPUT_BYTES,
             content_type="image/jpeg",
-            yunet_model_path=self.yunet_model,
+            detection_threshold=0.5,
+            scrfd_model_path=self.scrfd_model,
             sface_model_path=self.sface_model,
         )
         first_photo = self.add_accepted_photo(
@@ -236,6 +238,7 @@ class SelfieSearchEndToEndTests(TestCase):
         )
         self.assertEqual(search.eligible_photo_count, 2)
         self.assertEqual(search.eligible_face_count, 3)
+        self.assertEqual((search.job.contract_version, search.job.processor_version), (1, 2))
         self.assertEqual(
             [
                 (generation["contract_version"], generation["processor_version"])
@@ -465,7 +468,7 @@ class SelfieSearchEndToEndTests(TestCase):
     def add_accepted_preview_photo(
         self, *, event: Event, photo_id: str, vectors: list[list[float]]
     ) -> Photo:
-        """Publish a real accepted preview, then complete its production-enrolled 2/2 face job."""
+        """Publish a real accepted preview, then complete its production-enrolled 2/3 face job."""
         photo = Photo.objects.create(
             id=photo_id,
             event=event,
@@ -528,7 +531,7 @@ class SelfieSearchEndToEndTests(TestCase):
             (face_job.contract_version, face_job.processor_version),
             (PREVIEW_CONTRACT_VERSION, PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION),
         )
-        self.assertEqual(face_job.configuration, FACE_EMBEDDING_CONFIGURATION)
+        self.assertEqual(face_job.configuration, SCRFD_FACE_EMBEDDING_CONFIGURATION)
         self.assertEqual(
             face_job.input_fingerprint,
             {

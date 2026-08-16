@@ -70,16 +70,16 @@ embeddings are mandatory deployment prerequisites; the application and deploymen
 either is unavailable. The approved worker contract uses these ordered values:
 
 ```dotenv
-PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2
+PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/selfie_query/2,2/generate_preview/1,2/face_embedding/3
 PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview
 ```
 
-With a disposable local PostgreSQL database, locally available public YuNet/SFace files, and a
+With a disposable local PostgreSQL database, locally available SCRFD/SFace files, and a
 true-JPEG file, run the host-process application/worker boundary without committing or printing the
 artifact paths:
 
 ```bash
-PHOTO_WORKER_YUNET_MODEL_PATH=/absolute/path/to/yunet.onnx \
+PHOTO_WORKER_SCRFD_MODEL_PATH=/absolute/path/to/det_10g.onnx \
 PHOTO_WORKER_SFACE_MODEL_PATH=/absolute/path/to/sface.onnx \
 SELFIE_SEARCH_E2E_JPEG_PATH=/absolute/path/to/single-face.jpg \
 DB_NAME=app DB_USER=app DB_PASSWORD=app DB_HOST=localhost DB_PORT=5432 \
@@ -87,21 +87,22 @@ SECRET_KEY=local-not-a-secret DEBUG=False ALLOWED_HOSTS=localhost,127.0.0.1 \
 .venv/bin/pytest -q tests/processing/test_selfie_search_e2e.py -m face_models
 ```
 
-The test runs real YuNet/SFace inference for the submitted selfie query. Its gallery side uses
-deterministic accepted embedding fixtures for both face generations; the preview-first fixture
+The test runs real SCRFD/SFace inference for the submitted selfie query. Its gallery side uses
+deterministic accepted embedding fixtures for historical stored v1 and current preview-backed v3
+face evidence; the preview-first fixture
 publishes a verified `2/generate_preview/1` derivative and follows production enrollment into
-`2/face_embedding/2`. It also covers exact event-scoped ranking, selfie cleanup, stable bearer
+`2/face_embedding/3`. It also covers exact event-scoped ranking, selfie cleanup, stable bearer
 results, the narrow paid-result media exception for both gallery generations, and unchanged normal
 paid-gallery denial. It skips when its required local JPEG or model file is absent; a skip is not
 real-model evidence.
 
 This host-process test does not activate Docker Compose or prove the rollout image. The existing
-worker image packages pinned public OpenCV Zoo YuNet/SFace files at immutable container paths and
+worker image packages pinned official SCRFD and OpenCV Zoo SFace files at immutable container paths and
 runs `photo_worker.model_smoke` during its build. Before enabling `selfie_query`, run the same smoke
 against the exact rollout image digest:
 
 ```bash
-docker run --rm --entrypoint python "$WORKER_IMAGE" -m photo_worker.model_smoke
+docker run --rm --network none --entrypoint python "$WORKER_IMAGE" -m photo_worker.model_smoke
 ```
 
 Then apply and verify the exact `selfie-search/` lifecycle, run the explicit scratch-object

@@ -40,7 +40,7 @@ requested_image="$APP_IMAGE"
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
-requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,2/face_embedding/2}"
+requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3}"
 requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
@@ -79,7 +79,7 @@ while :; do
             ;;
     esac
     case "$processor_identity" in
-        1/selfie_query/1|1/capture_metadata/2|1/face_embedding/1|2/generate_preview/1|2/face_embedding/2|3/face_embedding_benchmark/1|3/face_embedding/4)
+        1/selfie_query/2|1/capture_metadata/2|2/generate_preview/1|2/face_embedding/3)
             ;;
         *)
             echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
@@ -176,9 +176,8 @@ if [ "$requested_preview_enabled" = True ]; then
     fi
     for required_photo_identity in \
         1/capture_metadata/2 \
-        1/face_embedding/1 \
         2/generate_preview/1 \
-        2/face_embedding/2; do
+        2/face_embedding/3; do
         case ",$requested_worker_processor_identities," in
             *",$required_photo_identity,"*)
                 ;;

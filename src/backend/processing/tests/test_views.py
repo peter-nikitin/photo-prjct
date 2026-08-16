@@ -39,7 +39,6 @@ from processing.services.enrollment import (
     GENERATE_PREVIEW_CONFIGURATION,
     create_face_embedding_benchmark_run,
     request_capture_metadata,
-    request_face_embedding_candidate_enqueue,
     request_face_embedding_enqueue,
     request_processor,
 )
@@ -549,7 +548,7 @@ class WorkerApiTests(TestCase):
                 )
 
     @patch("processing.views.ExactPreviewStorage.create_download_grant")
-    def test_v4_preview_completion_validates_persists_and_projects_preview_geometry(
+    def test_historical_v4_completion_validates_persists_and_projects_preview_geometry(
         self, preview_grant
     ) -> None:
         preview_grant.return_value.url = "https://storage.example.test/preview?secret"
@@ -558,8 +557,23 @@ class WorkerApiTests(TestCase):
             "quality-v4-preview",
             original_key="originals/dddddddddddddddddddddddddddddddd",
         )
-        self.publish_preview(photo)
-        request_face_embedding_candidate_enqueue(photo)
+        derivative = self.publish_preview(photo)
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=4,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+            input_fingerprint={
+                "object_key": derivative.final_key,
+                "object_size": derivative.byte_size,
+                "object_content_type": derivative.content_type,
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": derivative.width,
+                "pixel_height": derivative.height,
+            },
+        )
 
         response = self.post(
             "/internal/photo-processing/v1/claim",
@@ -710,7 +724,7 @@ class WorkerApiTests(TestCase):
     def test_preview_face_claim_grants_the_accepted_preview_derivative(
         self, preview_storage
     ) -> None:
-        """A v2 face claim must grant its preview input, not validate it as an original."""
+        """A v3 face claim must grant its preview input, not validate it as an original."""
         preview_storage.return_value.create_download_grant.return_value.url = (
             "https://storage.example.test/preview?secret"
         )
@@ -781,7 +795,7 @@ class WorkerApiTests(TestCase):
             self.claim_body(
                 contract_version=2,
                 processor_type="face_embedding",
-                processor_version=2,
+                processor_version=3,
             ),
         )
 
@@ -1664,7 +1678,7 @@ class SelfieWorkerApiTests(TestCase):
         return {
             "contract_version": 1,
             "processor_type": "selfie_query",
-            "processor_version": 1,
+            "processor_version": 2,
             "worker_build": "worker-test",
             "lease_seconds": 120,
         }
@@ -1675,7 +1689,7 @@ class SelfieWorkerApiTests(TestCase):
             "attempt_id": job["attempt_id"],
             "contract_version": 1,
             "processor_type": "selfie_query",
-            "processor_version": 1,
+            "processor_version": 2,
             "worker_build": "worker-test",
             "started_at": "2026-07-30T10:00:00Z",
             "finished_at": "2026-07-30T10:00:03Z",

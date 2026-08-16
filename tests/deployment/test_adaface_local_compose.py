@@ -27,6 +27,8 @@ def test_local_adaface_compose_isolated_runtime_contract() -> None:
             "docker-compose.adaface-local.yml",
             "--profile",
             "manual-seed",
+            "--profile",
+            "worker",
             "config",
         ],
         cwd=ROOT,
@@ -55,6 +57,11 @@ def test_local_adaface_compose_isolated_runtime_contract() -> None:
         "required": True,
     }
     assert compose["services"]["minio"]["healthcheck"]
+    worker_environment = compose["services"]["worker"]["environment"]
+    assert worker_environment["PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO"] == "true"
+    assert (
+        "PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO" not in (ROOT / "docker-compose.yml").read_text()
+    )
     seeder = compose["services"]["seed-local-preview-corpus"]
     assert seeder["profiles"] == ["manual-seed"]
     assert seeder["entrypoint"] == ["python", "manage.py"]

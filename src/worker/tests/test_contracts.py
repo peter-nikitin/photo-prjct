@@ -1001,6 +1001,102 @@ def test_claim_rejects_hostile_wire_identifiers() -> None:
         Claim.from_response(claim_payload(run_id="not-a-uuid"))
 
 
+def test_claim_keeps_http_minio_downloads_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", raising=False)
+
+    with pytest.raises(ContractError):
+        Claim.from_response(
+            claim_payload(
+                download_url=(
+                    "http://minio:9000/adaface-private/previews/photo.jpg?X-Amz-Signature=local"
+                )
+            )
+        )
+
+
+def test_claim_allows_exact_local_minio_http_download_when_explicitly_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", "true")
+
+    claim = Claim.from_response(
+        claim_payload(
+            download_url=(
+                "http://minio:9000/adaface-private/previews/photo.jpg?X-Amz-Signature=local"
+            )
+        )
+    )
+
+    assert claim.job is not None
+
+
+@pytest.mark.parametrize(
+    "download_url",
+    [
+        "http://localhost:9000/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://minio:9001/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://minio/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://MINIO:9000/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://user:password@minio:9000/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://minio:bad/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://minio:9000",
+        "http://minio:9000/?X-Amz-Signature=local",
+        "http://minio:9000////?X-Amz-Signature=local",
+        "http://minio:9000/adaface-private/photo.jpg",
+        "http://minio:9000/adaface-private/photo.jpg?X-Amz-Signature=",
+        "http://minio:9000/adaface-private/photo.jpg?X-Amz-Signature=+",
+        "http://minio:9000/adaface-private/photo.jpg?X-Amz-Signature=%20",
+        (
+            "http://minio:9000/adaface-private/photo.jpg"
+            "?X-Amz-Signature=first&X-Amz-Signature=second"
+        ),
+        (
+            "http://minio:9000/adaface-private/photo.jpg"
+            "?X-Amz-Signature=first&%58-Amz-Signature=second"
+        ),
+        "http://minio:9000/adaface-private/photo.jpg?%58-Amz-Signature=local",
+        "http://minio:9000/adaface-private/photo.jpg?x-amz-signature=local",
+        "http://minio:9000/adaface-private/photo name.jpg?X-Amz-Signature=local",
+    ],
+)
+def test_claim_rejects_every_other_insecure_or_malformed_download_url(
+    monkeypatch: pytest.MonkeyPatch,
+    download_url: str,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", "true")
+
+    with pytest.raises(ContractError):
+        Claim.from_response(claim_payload(download_url=download_url))
+
+
+@pytest.mark.parametrize("flag", ["1", "TRUE", "yes"])
+def test_claim_requires_the_exact_local_minio_gate_value(
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", flag)
+
+    with pytest.raises(ContractError):
+        Claim.from_response(
+            claim_payload(
+                download_url=("http://minio:9000/adaface-private/photo.jpg?X-Amz-Signature=local")
+            )
+        )
+
+
+def test_claim_rejects_credentials_in_https_download_url() -> None:
+    with pytest.raises(ContractError):
+        Claim.from_response(
+            claim_payload(
+                download_url=(
+                    "https://user:password@storage.example.test/photo.jpg?X-Amz-Signature=secret"
+                )
+            )
+        )
+
+
 def test_claim_rejects_a_missing_job_shape_as_a_contract_error() -> None:
     with pytest.raises(ContractError):
         Claim.from_response({"empty": False, "job": {}})

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
+from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1273,8 +1275,40 @@ def _utc_timestamp(value: object) -> bool:
 
 
 def _download_url(value: object) -> bool:
+    if not isinstance(value, str) or len(value) > 8_192 or re.search(r"\s", value):
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or not parsed.path.startswith("/")
+    ):
+        return False
+    if parsed.scheme == "https" and value.startswith("https://"):
+        return True
+    local_minio = (
+        os.environ.get("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO") == "true"
+        and parsed.scheme == "http"
+        and value.startswith("http://")
+        and parsed.netloc == "minio:9000"
+        and parsed.hostname == "minio"
+        and port == 9000
+        and bool(parsed.path.strip("/"))
+    )
+    if not local_minio:
+        return False
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    signatures = [query_value for key, query_value in query if key == "X-Amz-Signature"]
+    literal_signature_fields = [
+        field for field in parsed.query.split("&") if field.partition("=")[0] == "X-Amz-Signature"
+    ]
     return (
-        isinstance(value, str)
-        and len(value) <= 8_192
-        and bool(re.fullmatch(r"https://[^\s]+", value))
+        len(signatures) == 1 and bool(signatures[0].strip()) and len(literal_signature_fields) == 1
     )

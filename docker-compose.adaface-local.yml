@@ -63,6 +63,10 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  worker:
+    environment:
+      PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO: "true"
+
   seed-local-preview-corpus:
     build: .
     profiles: ["manual-seed"]

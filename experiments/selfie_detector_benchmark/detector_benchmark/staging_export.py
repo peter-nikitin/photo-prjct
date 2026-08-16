@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -14,8 +15,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Export the approved private detector snapshot")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    bootstrap_django()
     export_snapshot(_records(), args.output, expected_count=40)
     return 0
+
+
+def bootstrap_django() -> None:
+    """Apply the repository's canonical Django bootstrap before importing ORM-backed modules."""
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+    import django
+
+    django.setup()
 
 
 def _records() -> Iterator[SnapshotRecord]:

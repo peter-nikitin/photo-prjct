@@ -16,6 +16,7 @@ from picflow.models import Event, Photo
 
 from processing.contracts import AttemptCompletion, CompletionConflict
 from processing.models import (
+    EventProcessingRun,
     PhotoDerivative,
     PhotoProcessingState,
     ProcessingAttempt,
@@ -23,9 +24,20 @@ from processing.models import (
     ProcessingLateReceipt,
 )
 from processing.services import jobs
-from processing.services.enrollment import GENERATE_PREVIEW_CONFIGURATION, request_processor
+from processing.services.enrollment import (
+    GENERATE_PREVIEW_CONFIGURATION,
+    PREVIEW_CONTRACT_VERSION,
+    PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+    SCRFD_FACE_EMBEDDING_CONFIGURATION,
+    _configuration_hash,
+    request_processor,
+)
 from processing.services.jobs import claim_job
-from processing.services.previews import complete_preview_attempt, preview_final_key
+from processing.services.previews import (
+    _prelock_preview_face_enrollment,
+    complete_preview_attempt,
+    preview_final_key,
+)
 from processing.storage import ObjectConflict, ObjectMismatch, PreviewObject
 
 
@@ -143,6 +155,21 @@ class _PreviewPublicationFixture:
 
 
 class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_prelock_uses_the_exact_scrfd_generation_hash(self) -> None:
+        photo, claimed = self._claim("preview-prelock-scrfd")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+
+        with patch(
+            "processing.services.enrollment._configuration_hash",
+            wraps=_configuration_hash,
+        ) as configuration_hash:
+            _prelock_preview_face_enrollment(claimed.attempt.id)
+
+        configuration_hash.assert_called_once_with(SCRFD_FACE_EMBEDDING_CONFIGURATION)
+
     def test_current_attempt_verifies_promotes_and_atomically_publishes_an_immutable_derivative(
         self,
     ) -> None:
@@ -178,7 +205,49 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
         photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
         photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        face_state = request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=PREVIEW_CONTRACT_VERSION,
+            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
+            input_fingerprint=None,
+            enabled=False,
+        )
+        existing_run = face_state.current_run
+        assert existing_run is None
+        existing_run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=PREVIEW_CONTRACT_VERSION,
+            processor_type="face_embedding",
+            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=_configuration_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION),
+        )
         object = self._stored_object()
+        existing_job = ProcessingJob.objects.create(
+            event=self.event,
+            run=existing_run,
+            photo=photo,
+            contract_version=PREVIEW_CONTRACT_VERSION,
+            processor_type="face_embedding",
+            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=_configuration_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION),
+            input_fingerprint={
+                "object_key": preview_final_key(
+                    photo_id=photo.id,
+                    attempt_id=claimed.attempt.id,
+                    sha256=object.sha256,
+                ),
+                "object_size": object.byte_size,
+                "object_content_type": object.content_type,
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": object.width,
+                "pixel_height": object.height,
+            },
+        )
 
         complete_preview_attempt(
             claimed.attempt.id, result=self._result(object), storage=FakePreviewStorage(object)
@@ -190,8 +259,17 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         face = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
         self.assertEqual(face.status, PhotoProcessingState.Status.QUEUED)
         self.assertEqual(
-            (face.current_job.contract_version, face.current_job.processor_version), (2, 2)
+            (face.current_job.contract_version, face.current_job.processor_version), (2, 3)
         )
+        self.assertEqual(
+            face.current_job.configuration["face_embedding"]["detection_threshold"], 0.5
+        )
+        self.assertEqual(
+            face.current_job.configuration_hash,
+            _configuration_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION),
+        )
+        self.assertEqual(face.current_job.run_id, existing_run.id)
+        self.assertEqual(face.current_job_id, existing_job.id)
         self.assertEqual(face.current_job.input_fingerprint["media_kind"], "preview-small-v1")
         self.assertEqual(
             ProcessingJob.objects.filter(photo=photo, processor_type="face_embedding").count(), 1

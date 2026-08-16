@@ -46,6 +46,9 @@ services:
     ports: !override
       - "127.0.0.1:${ADAFACE_WEB_HOST_PORT:-18080}:8000"
     environment:
+      MONITORING_ENVIRONMENT: local
+      ADAFACE_LOCAL_EXPERIMENT_ENABLED: "True"
+      ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD: ${ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD:?set ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD explicitly; use a backfill-only placeholder until calibration}
       DB_HOST: db
       MEDIA_STORAGE_BACKEND: s3
       MEDIA_S3_ENDPOINT_URL: http://minio:9000
@@ -66,6 +69,8 @@ services:
   worker:
     environment:
       PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO: "true"
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: 3/face_embedding/5,1/selfie_query/2
+      PHOTO_WORKER_PROCESSOR_TYPES: !reset null
 
   seed-local-preview-corpus:
     build: .

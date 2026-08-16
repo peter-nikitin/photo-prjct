@@ -4,7 +4,7 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import NoReturn, TypedDict, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -32,7 +32,7 @@ CAPTURE_METADATA_PROCESSOR_VERSION = 2
 FACE_EMBEDDING_PROCESSOR_VERSION = 1
 PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
-PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 2
+PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 3
 QUALITY_FACE_CONTRACT_VERSION = 3
 HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION = 3
 QUALITY_FACE_PROCESSOR_VERSION = 4
@@ -113,6 +113,14 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
     },
 }
 
+SCRFD_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
+    **FACE_EMBEDDING_CONFIGURATION,
+    "face_embedding": {
+        **cast(dict[str, object], FACE_EMBEDDING_CONFIGURATION["face_embedding"]),
+        "detection_threshold": 0.5,
+    },
+}
+
 # Provisional calibration points for private benchmark execution only.  Task 6 must replace these
 # values and record a matching approval before this generation can be activated for customer search.
 FACE_EMBEDDING_QUALITY_CONFIGURATION: dict[str, object] = {
@@ -159,7 +167,7 @@ LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "model": "adaface-ir18-webface4m",
         "embedding_dimensions": 512,
         "max_faces": 32,
-        "detection_threshold": 0.75,
+        "detection_threshold": 0.5,
         "normalize_embeddings": True,
         "quality": deepcopy(
             cast(
@@ -170,8 +178,16 @@ LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
             )
         ),
     },
+    "scrfd": {
+        "input_size": [640, 640],
+        "model": "scrfd-10g-kps",
+        "model_artifact_sha256": (
+            "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+        ),
+        "nms_threshold": 0.4,
+    },
     "adaface": {
-        "alignment": "yunet-five-landmark-112x112",
+        "alignment": "scrfd-five-landmark-112x112",
         "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
         "model_artifact_sha256": (
             "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b"
@@ -255,6 +271,14 @@ class CaptureTimeReprocessingEnrollment:
 
 
 @dataclass(frozen=True)
+class FaceEmbeddingCandidateEnrollment:
+    photo_count: int
+    created_job_count: int
+    existing_job_count: int
+    run_count: int
+
+
+@dataclass(frozen=True)
 class CaptureTimeReprocessingTarget:
     event_id: int
     event_name: str
@@ -317,14 +341,6 @@ FACE_EMBEDDING_QUALITY_APPROVAL = FaceEmbeddingGenerationApproval(
     quality_rejected_face_count=18_610,
     approved=True,
 )
-
-
-@dataclass(frozen=True)
-class FaceEmbeddingCandidateEnrollment:
-    photo_count: int
-    created_job_count: int
-    existing_job_count: int
-    run_count: int
 
 
 ACCEPTED_PREVIEW_PROJECTION_FIELDS = (
@@ -428,58 +444,6 @@ def validate_face_embedding_candidate_enrollment(
     if accepted_preview_cohort_hash(event) != selected_approval.accepted_preview_cohort_hash:
         raise ValueError("candidate approval does not match the accepted preview cohort hash")
     return cohort
-
-
-def enroll_event_face_embedding_candidate_reprocessing(
-    event: Event,
-    *,
-    approval: FaceEmbeddingGenerationApproval | None = None,
-) -> FaceEmbeddingCandidateEnrollment:
-    """Enroll the approved preview cohort exactly once, preserving all terminal evidence."""
-    with transaction.atomic():
-        locked_event = Event.objects.select_for_update().get(pk=event.pk)
-        cohort = validate_face_embedding_candidate_enrollment(locked_event, approval=approval)
-        created_job_count = 0
-        existing_job_count = 0
-        run_ids: set[object] = set()
-        for photo in cohort:
-            preview = _accepted_preview(photo)
-            if preview is None:
-                raise ValueError("candidate enrollment lost its accepted preview")
-            expected_fingerprint = _derivative_fingerprint(preview)
-            existing_jobs = list(
-                ProcessingJob.objects.select_for_update()
-                .select_related("run")
-                .filter(
-                    event=locked_event,
-                    photo=photo,
-                    contract_version=QUALITY_FACE_CONTRACT_VERSION,
-                    processor_type=FACE_EMBEDDING_PROCESSOR,
-                    processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-                    configuration_hash=_configuration_hash(FACE_EMBEDDING_QUALITY_CONFIGURATION),
-                )
-                .order_by("created_at", "id")
-            )
-            if len(existing_jobs) > 1:
-                raise ValueError("candidate enrollment has ambiguous existing job identity")
-            if existing_jobs and existing_jobs[0].input_fingerprint != expected_fingerprint:
-                raise ValueError("candidate job input no longer matches the accepted preview")
-            if existing_jobs:
-                existing_job_count += 1
-                run_ids.add(existing_jobs[0].run_id)
-                continue
-            state = request_face_embedding_candidate_enqueue(photo)
-            job = state.current_job
-            if job is None:  # pragma: no cover - validated accepted previews make this unreachable.
-                raise ValueError("candidate enrollment lost its accepted preview")
-            created_job_count += 1
-            run_ids.add(job.run_id)
-        return FaceEmbeddingCandidateEnrollment(
-            photo_count=len(cohort),
-            created_job_count=created_job_count,
-            existing_job_count=existing_job_count,
-            run_count=len(run_ids),
-        )
 
 
 def validate_local_adaface_enrollment(event: Event, *, manifest_sha256: str) -> list[Photo]:
@@ -823,7 +787,7 @@ def request_face_embedding_enqueue(
             processor_type=FACE_EMBEDDING_PROCESSOR,
             contract_version=PREVIEW_CONTRACT_VERSION,
             processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
             input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
             enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
             and preview is not None,
@@ -839,19 +803,10 @@ def request_face_embedding_enqueue(
     )
 
 
-def request_face_embedding_candidate_enqueue(photo: Photo) -> PhotoProcessingState:
-    """Explicitly queue preview-backed quality-v4 work without changing search activation."""
-    preview = _accepted_preview(photo)
-    return request_processor(
-        photo=photo,
-        processor_type=FACE_EMBEDDING_PROCESSOR,
-        contract_version=QUALITY_FACE_CONTRACT_VERSION,
-        processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-        configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
-        input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
-        enabled=preview is not None,
-        replace_terminal_generation=True,
-    )
+def request_face_embedding_candidate_enqueue(photo: Photo) -> NoReturn:
+    """Reject YuNet-calibrated quality work until SCRFD has a new immutable generation."""
+    del photo
+    raise ValueError("SCRFD quality generation is not approved")
 
 
 def request_local_adaface_enqueue(photo: Photo) -> PhotoProcessingState:

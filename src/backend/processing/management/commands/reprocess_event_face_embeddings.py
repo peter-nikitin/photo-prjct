@@ -6,7 +6,6 @@ from picflow.models import Event
 from processing.services.enrollment import (
     FACE_EMBEDDING_QUALITY_APPROVAL,
     FaceEmbeddingGenerationApproval,
-    enroll_event_face_embedding_candidate_reprocessing,
     enroll_local_adaface_reprocessing,
     validate_face_embedding_candidate_enrollment,
     validate_local_adaface_enrollment,
@@ -18,7 +17,10 @@ from processing.services.face_quality import (
 
 
 class Command(BaseCommand):
-    help = "Dry-run or enroll the reviewed preview-backed face-embedding v4 event cohort."
+    help = (
+        "Report the historical face-embedding v4 cohort; --apply is disabled until an SCRFD "
+        "quality generation is approved."
+    )
 
     def add_arguments(self, parser) -> None:
         parser.add_argument("--apply", action="store_true")
@@ -33,6 +35,8 @@ class Command(BaseCommand):
         if options["local_adaface"]:
             self._handle_local_adaface(options)
             return
+        if options["apply"]:
+            raise CommandError("SCRFD quality generation is not approved")
         approval = FACE_EMBEDDING_QUALITY_APPROVAL
         # Keep the command fail-closed if the tracked approval is ever removed.
         if approval is None:  # pragma: no cover
@@ -43,26 +47,14 @@ class Command(BaseCommand):
             raise CommandError("approved event does not exist") from error
         try:
             validate_face_embedding_candidate_enrollment(event, approval=approval)
-            enrollment = (
-                enroll_event_face_embedding_candidate_reprocessing(event, approval=approval)
-                if options["apply"]
-                else None
-            )
         except ValueError as error:
             raise CommandError(str(error)) from error
         report: dict[str, object] = {
             "approval": _approval_identity(approval),
             "counts": candidate_face_embedding_status(event),
             "event_slug": event.slug,
-            "mode": "apply" if options["apply"] else "dry_run",
+            "mode": "dry_run",
         }
-        if enrollment is not None:
-            report["enrollment"] = {
-                "created_job_count": enrollment.created_job_count,
-                "existing_job_count": enrollment.existing_job_count,
-                "photo_count": enrollment.photo_count,
-                "run_count": enrollment.run_count,
-            }
         self.stdout.write(json.dumps(report, separators=(",", ":"), sort_keys=True))
 
     def _handle_local_adaface(self, options) -> None:

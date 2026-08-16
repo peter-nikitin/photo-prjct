@@ -659,15 +659,14 @@ def publish_face_embedding_projection(attempt: ProcessingAttempt) -> None:
     )
 
 
-def baseline_face_embedding_generations() -> tuple[dict[str, object], ...]:
-    """Return the frozen baseline set used by events with no activation history."""
+def historical_baseline_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the original v1/v2 baseline accepted only for existing activation rows."""
     from processing.models import FACE_EMBEDDING_PROCESSOR  # noqa: PLC0415
     from processing.services.enrollment import (  # noqa: PLC0415
         CONTRACT_VERSION,
         FACE_EMBEDDING_CONFIGURATION,
         FACE_EMBEDDING_PROCESSOR_VERSION,
         PREVIEW_CONTRACT_VERSION,
-        PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
     )
 
     configuration_hash = _canonical_hash(FACE_EMBEDDING_CONFIGURATION)
@@ -682,8 +681,29 @@ def baseline_face_embedding_generations() -> tuple[dict[str, object], ...]:
         }
         for contract_version, processor_version in (
             (CONTRACT_VERSION, FACE_EMBEDDING_PROCESSOR_VERSION),
-            (PREVIEW_CONTRACT_VERSION, PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION),
+            (PREVIEW_CONTRACT_VERSION, 2),
         )
+    )
+
+
+def baseline_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the current baseline set for event-scoped gallery reads and new activations."""
+    from processing.models import FACE_EMBEDDING_PROCESSOR  # noqa: PLC0415
+    from processing.services.enrollment import (  # noqa: PLC0415
+        PREVIEW_CONTRACT_VERSION,
+        PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+        SCRFD_FACE_EMBEDDING_CONFIGURATION,
+    )
+
+    return historical_baseline_face_embedding_generations() + (
+        {
+            "contract_version": PREVIEW_CONTRACT_VERSION,
+            "processor_type": FACE_EMBEDDING_PROCESSOR,
+            "processor_version": PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            "configuration": deepcopy(SCRFD_FACE_EMBEDDING_CONFIGURATION),
+            "configuration_hash": _canonical_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION),
+            "model": "sface",
+        },
     )
 
 
@@ -876,7 +896,10 @@ def active_face_embedding_generations(event: Event) -> tuple[dict[str, object], 
     generations = validate_face_embedding_generations(activation.generations)
     if activation.generation_set_hash != _canonical_hash(list(generations)):
         raise ValueError("invalid face-embedding activation record")
-    if generations == baseline_face_embedding_generations():
+    if generations in (
+        historical_baseline_face_embedding_generations(),
+        baseline_face_embedding_generations(),
+    ):
         if activation.approved_configuration_hash or activation.approved_evaluation_report_hash:
             raise ValueError("baseline activation must not claim candidate approval")
     elif generations == candidate_face_embedding_generations():
@@ -983,6 +1006,7 @@ def validate_face_embedding_generations(
     if len(normalized) != len(generations):
         raise ValueError("invalid face-embedding generation set")
     known_generations: tuple[tuple[dict[str, object], ...], ...] = (
+        historical_baseline_face_embedding_generations(),
         baseline_face_embedding_generations(),
         historical_quality_face_embedding_generations(),
         candidate_face_embedding_generations(),
@@ -1076,7 +1100,18 @@ def _validate_local_adaface_activation(
     ):
         raise ValueError("local AdaFace activation requires the exact event and manifest identity")
     status = local_adaface_face_embedding_status(event)
-    eligible_photo_ids = {photo.pk for photo in enrollment.candidate_face_embedding_cohort(event)}
+    eligible_photos = enrollment.candidate_face_embedding_cohort(event)
+    canary_limit = getattr(settings, "ADAFACE_LOCAL_CANARY_LIMIT", 0)
+    if (
+        isinstance(canary_limit, bool)
+        or not isinstance(canary_limit, int)
+        or canary_limit < 0
+        or canary_limit > len(eligible_photos)
+    ):
+        raise ValueError("invalid local AdaFace canary limit")
+    if canary_limit:
+        eligible_photos = eligible_photos[:canary_limit]
+    eligible_photo_ids = {photo.pk for photo in eligible_photos}
     projected_photo_ids = set(
         PhotoFaceEmbeddingProjection.objects.filter(
             photo__event=event,

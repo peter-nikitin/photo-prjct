@@ -1,18 +1,29 @@
+FROM alpine:3.21 AS face-models
+
+RUN apk add --no-cache unzip
+ADD --checksum=sha256:80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip /tmp/buffalo_l.zip
+RUN mkdir -p /models \
+    && unzip -p /tmp/buffalo_l.zip det_10g.onnx > /models/det_10g.onnx \
+    && echo "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91  /models/det_10g.onnx" | sha256sum -c -
+
 FROM python:3.12-slim
 
 WORKDIR /worker
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PHOTO_WORKER_YUNET_MODEL_PATH=/worker/models/face_detection_yunet_2023mar.onnx \
+    PHOTO_WORKER_SCRFD_MODEL_PATH=/worker/models/det_10g.onnx \
+    PHOTO_WORKER_SFACE_MODEL_PATH=/worker/models/face_recognition_sface_2021dec.onnx \
     PHOTO_WORKER_ADAFACE_MODEL_PATH=/worker/models/adaface-ir18-webface4m \
     HF_HUB_OFFLINE=1
 
 COPY src/worker/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --timeout 300 --retries 10 -r requirements.txt
 
 RUN mkdir -p /worker/models/adaface-ir18-webface4m/models/iresnet
-ADD --checksum=sha256:8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4 https://github.com/opencv/opencv_zoo/raw/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_detection_yunet/face_detection_yunet_2023mar.onnx /worker/models/face_detection_yunet_2023mar.onnx
+COPY --from=face-models /models/det_10g.onnx /worker/models/det_10g.onnx
+ADD --checksum=sha256:0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79 https://github.com/opencv/opencv_zoo/raw/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_recognition_sface/face_recognition_sface_2021dec.onnx /worker/models/face_recognition_sface_2021dec.onnx
 ADD --checksum=sha256:3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b https://huggingface.co/minchul/cvlface_adaface_ir18_webface4m/resolve/0dd53f188fa27968b0a1326970ebf4aeb37ce2ca/model.safetensors /worker/models/adaface-ir18-webface4m/model.safetensors
 ADD --checksum=sha256:e31be55c60b538c15151887e911b7535e2f0e1114a13427ba06483e1cd2a63f9 https://huggingface.co/minchul/cvlface_adaface_ir18_webface4m/raw/0dd53f188fa27968b0a1326970ebf4aeb37ce2ca/models/iresnet/model.py /worker/models/adaface-ir18-webface4m/models/iresnet/model.py
 

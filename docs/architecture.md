@@ -66,7 +66,7 @@ The repository currently contains an early Django application:
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first
   policy; when the separate `PHOTO_PROCESSING_PREVIEW_ENABLED` gate is enabled it queues
   `2/generate_preview/1`, publishes a verified immutable preview, and only then queues preview-
-  backed `2/face_embedding/2`. The standalone worker polls the private Django API with one-at-a-
+  backed `2/face_embedding/3` using SCRFD/SFace. The standalone worker polls the private Django API with one-at-a-
   time round-robin identity scheduling, has no Django/database or permanent Object Storage
   credentials, and receives only short-lived grants for exact input/output objects. Local targeted
   tests exercise real-JPEG preview generation, publication, gallery selection, preview-backed face
@@ -99,7 +99,7 @@ The repository currently contains an early Django application:
   crosswalk hash is `055d7c…` with `entries=17043` and `sha_mismatch=17043`. Local and accepted
   preview SHA-256 values therefore differ systematically; the crosswalk binds the two reviewed
   identities and does not claim byte equivalence. The full hashes, exact configuration,
-  comparison-manifest, and YuNet/SFace SHA-256 values are recorded in the
+  comparison-manifest, and historical YuNet/SFace SHA-256 values are recorded in the
   [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence).
   Current-merge-candidate full `make check`/reconciliation, PR and CI, staging
   deployment/replay/activation, production promotion/replay/activation, and live verification
@@ -464,14 +464,15 @@ generation selection. The candidate does not alter the ordinary `0.363` ranking 
 immutable direct and optional cluster-expansion evidence that ADRs 0019, 0024, and 0025 require.
 
 The worker-backed selfie source is implemented in the repository and locally verified with real
-YuNet/SFace inference for the submitted selfie query. The existing selfie E2E's gallery side uses
-deterministic accepted embedding fixtures for both face generations (`1/face_embedding/1` and
-`2/face_embedding/2`); its preview-first member is production-reachable through an accepted,
-verified `2/generate_preview/1` derivative and the resulting enrollment into `2/face_embedding/2`.
+SCRFD/SFace inference for the submitted selfie query. The existing selfie E2E's gallery side uses
+deterministic accepted embedding fixtures for historical stored `1/face_embedding/1` and current
+preview-backed `2/face_embedding/3`; its preview-first member is production-reachable through an
+accepted, verified `2/generate_preview/1` derivative and the resulting enrollment into
+`2/face_embedding/3`.
 That evidence covers a published paid event, frozen event-only candidates, stable ranked results,
 selfie deletion before `ready`, and ready-result media for both generations without opening the
-normal paid gallery. The existing immutable worker image packages pinned public OpenCV Zoo
-YuNet/SFace models and runs a non-root build-time smoke through both `face_embedding` and
+normal paid gallery. The existing immutable worker image packages pinned official SCRFD and OpenCV
+Zoo SFace models and runs a non-root build-time smoke through both `face_embedding` and
 `selfie_query`; the exact rollout image must run that same smoke before activation.
 Public selfie search is always available when its existing processing prerequisites are healthy;
 the retired availability switch is no longer an active setting. No staging lifecycle mutation,

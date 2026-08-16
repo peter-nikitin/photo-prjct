@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from pathlib import Path
 
+import cv2
 import numpy as np
 import photo_worker.face_embedding as face_embedding
 import pytest
@@ -23,7 +24,8 @@ from photo_worker.face_embedding import (
     extract_selfie_embedding,
 )
 from photo_worker.face_quality import FaceQualityError, FaceQualityEvidence, FaceQualityThresholds
-from PIL import Image
+from photo_worker.scrfd import DetectedFace
+from PIL import Image, ImageCms
 
 
 class FakeNumpy:
@@ -34,6 +36,29 @@ class FakeNumpy:
 class DummyImage:
     def __init__(self, width: int, height: int) -> None:
         self.shape = (height, width, 3)
+
+
+class _FakeDetector:
+    def __init__(self, detections: list[dict[str, object]]) -> None:
+        self._detections = detections
+        self.calls: list[float] = []
+
+    def detect(self, image: object, *, threshold: float) -> tuple[DetectedFace, ...]:
+        del image
+        self.calls.append(threshold)
+        return tuple(
+            DetectedFace(
+                bbox=(
+                    float(detection["bbox"][0]),
+                    float(detection["bbox"][1]),
+                    float(detection["bbox"][0]) + float(detection["bbox"][2]),
+                    float(detection["bbox"][1]) + float(detection["bbox"][3]),
+                ),
+                confidence=float(detection["confidence"]),
+                landmarks=detection["landmarks"],
+            )
+            for detection in self._detections
+        )
 
 
 def write_jpeg(path: Path) -> None:
@@ -171,20 +196,22 @@ def test_adaface_rejects_an_artifact_whose_digest_does_not_match(tmp_path: Path)
         verify_file_digest(artifact, "0" * 64)
 
 
-def test_detect_faces_maps_opencv_no_face_tuple_to_empty() -> None:
-    """OpenCV returns ``(retval, None)`` when YuNet finds no faces."""
+def test_detect_faces_adapts_scrfd_source_corners_to_sface_width_and_height() -> None:
+    """Passing SCRFD corner coordinates to SFace unchanged would break alignment."""
 
-    class NoFaceDetector:
-        def setInputSize(self, _size: tuple[int, int]) -> None:  # noqa: N802
-            return None
+    detector = _FakeDetector([_detection(size=10)])
 
-        def detect(self, _image: object) -> tuple[int, None]:
-            return 1, None
+    assert face_embedding._detect_faces(detector, object(), 0.5) == [
+        {
+            "bbox": (1.0, 2.0, 10.0, 10.0),
+            "confidence": 0.99,
+            "landmarks": ((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
+            "score": 0.99,
+        }
+    ]
 
-    assert face_embedding._detect_faces(np, NoFaceDetector(), object(), 320, 320, 0.75) == []
 
-
-def test_extract_face_embeddings_one_face_success(
+def test_scrfd_landmarks_drive_adaface_gallery_embedding(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = tmp_path / "photo.jpg"
@@ -209,25 +236,14 @@ def test_extract_face_embeddings_one_face_success(
     )
     monkeypatch.setattr(
         "photo_worker.face_embedding._load_models",
-        lambda *_args, **_kwargs: (None, None),
-    )
-    monkeypatch.setattr(
-        "photo_worker.face_embedding._detect_faces",
-        lambda *_args, **_kwargs: [
-            {
-                "bbox": (1.0, 2.0, 10.0, 10.0),
-                "confidence": 0.99,
-                "landmarks": ((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
-                "score": 0.99,
-            }
-        ],
+        lambda *_args, **_kwargs: (_FakeDetector([_detection(size=10)]), None),
     )
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
         lambda *_args, **_kwargs: tuple(float(i) for i in range(512)),
     )
 
-    result = extract_face_embeddings(source, max_bytes=1024)
+    result = extract_face_embeddings(source, max_bytes=1024, model=ADAFACE_MODEL_NAME)
 
     assert result.faces == (
         FaceEmbeddingFace(
@@ -249,7 +265,7 @@ def test_extract_face_embeddings_one_face_success(
     }
 
 
-def test_extract_face_embeddings_reuses_models_but_sets_each_image_size(
+def test_extract_face_embeddings_reuses_models_across_image_sizes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = tmp_path / "photo.jpg"
@@ -257,53 +273,33 @@ def test_extract_face_embeddings_reuses_models_but_sets_each_image_size(
     first_image = DummyImage(32, 48)
     second_image = DummyImage(64, 96)
 
-    class Detector:
-        def __init__(self) -> None:
-            self.input_sizes: list[tuple[int, int]] = []
-
-        def setInputSize(self, size: tuple[int, int]) -> None:  # noqa: N802
-            self.input_sizes.append(size)
-
-        def detect(self, _image: object) -> tuple[None, None]:
-            return None, None
-
-    detector = Detector()
-    creations = {"detector": 0, "adaface": 0}
-
-    class FaceDetectorYN:
-        @staticmethod
-        def create(*_args: object) -> Detector:
-            creations["detector"] += 1
-            return detector
-
-    FakeCv2 = type(
-        "FakeCv2",
-        (),
-        {"FaceDetectorYN": FaceDetectorYN},
-    )
-
+    detector = _FakeDetector([])
+    creations = {"detector": 0, "recognizer": 0}
     monkeypatch.setattr("photo_worker.face_embedding._load_numpy", lambda: np)
-    monkeypatch.setattr("photo_worker.face_embedding._load_cv2", lambda: FakeCv2())
+    monkeypatch.setattr("photo_worker.face_embedding._load_cv2", lambda: object())
     images = [first_image, second_image]
     monkeypatch.setattr(
         "photo_worker.face_embedding._decode_image", lambda *_args, **_kwargs: images.pop(0)
     )
-    model_paths = [tmp_path / "yunet.onnx", tmp_path / "adaface"]
+    model_paths = [tmp_path / "scrfd.onnx", tmp_path / "sface.onnx"]
     monkeypatch.setattr(
         "photo_worker.face_embedding._model_path", lambda *_args, **_kwargs: model_paths.pop(0)
     )
     monkeypatch.setattr(face_embedding, "_MODEL_RUNTIMES", {})
-    monkeypatch.setattr(
-        "photo_worker.face_embedding.load_adaface_runtime",
-        lambda *_args: creations.__setitem__("adaface", creations["adaface"] + 1) or object(),
-    )
+
+    def load_models(*_args: object, **_kwargs: object) -> tuple[_FakeDetector, object]:
+        creations["detector"] += 1
+        creations["recognizer"] += 1
+        return detector, object()
+
+    monkeypatch.setattr("photo_worker.face_embedding._load_models", load_models)
 
     extract_face_embeddings(source, max_bytes=1024)
-    model_paths[:] = [tmp_path / "yunet.onnx", tmp_path / "adaface"]
+    model_paths[:] = [tmp_path / "scrfd.onnx", tmp_path / "sface.onnx"]
     extract_face_embeddings(source, max_bytes=1024)
 
-    assert creations == {"detector": 1, "adaface": 1}
-    assert detector.input_sizes == [(32, 48), (64, 96)]
+    assert creations == {"detector": 1, "recognizer": 1}
+    assert detector.calls == [0.5, 0.5]
 
 
 def test_extract_face_embeddings_no_faces_and_no_valid_faces_have_separate_warnings(
@@ -313,6 +309,7 @@ def test_extract_face_embeddings_no_faces_and_no_valid_faces_have_separate_warni
     write_jpeg(source)
 
     image = DummyImage(32, 32)
+    detector = _FakeDetector([])
     monkeypatch.setattr(
         "photo_worker.face_embedding._load_numpy",
         lambda: FakeNumpy((0, 0, 0)),
@@ -331,28 +328,15 @@ def test_extract_face_embeddings_no_faces_and_no_valid_faces_have_separate_warni
     )
     monkeypatch.setattr(
         "photo_worker.face_embedding._load_models",
-        lambda *_args, **_kwargs: (None, None),
+        lambda *_args, **_kwargs: (detector, None),
     )
-    monkeypatch.setattr(
-        "photo_worker.face_embedding._detect_faces",
-        lambda *_args, **_kwargs: [],
-    )
+    monkeypatch.setattr(face_embedding, "_MODEL_RUNTIMES", {})
 
     result = extract_face_embeddings(source, max_bytes=1024)
     assert result.faces == ()
     assert result.warnings == ("no_faces_detected",)
 
-    monkeypatch.setattr(
-        "photo_worker.face_embedding._detect_faces",
-        lambda *_args, **_kwargs: [
-            {
-                "bbox": (1.0, 2.0, 10.0, 10.0),
-                "confidence": 0.99,
-                "landmarks": ((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
-                "score": 0.99,
-            }
-        ],
-    )
+    detector._detections[:] = [_detection(size=10)]
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -417,22 +401,25 @@ def _selfie_model_mocks(
     monkeypatch: pytest.MonkeyPatch,
     image: DummyImage | None,
     detections: list[dict[str, object]],
-) -> None:
+) -> _FakeDetector:
+    detector = _FakeDetector(detections)
     monkeypatch.setattr("photo_worker.face_embedding._load_numpy", lambda: FakeNumpy((0, 0, 0)))
     monkeypatch.setattr("photo_worker.face_embedding._load_cv2", lambda: object())
     if image is not None:
         monkeypatch.setattr(
             "photo_worker.face_embedding._decode_image", lambda *_args, **_kwargs: image
         )
+        monkeypatch.setattr(
+            "photo_worker.face_embedding._decode_selfie_image", lambda *_args, **_kwargs: image
+        )
     monkeypatch.setattr(
         "photo_worker.face_embedding._model_path", lambda *_args, **_kwargs: Path("/tmp/model.bin")
     )
     monkeypatch.setattr(
-        "photo_worker.face_embedding._load_models", lambda *_args, **_kwargs: (None, None)
+        "photo_worker.face_embedding._load_models", lambda *_args, **_kwargs: (detector, None)
     )
-    monkeypatch.setattr(
-        "photo_worker.face_embedding._detect_faces", lambda *_args, **_kwargs: detections
-    )
+    monkeypatch.setattr(face_embedding, "_MODEL_RUNTIMES", {})
+    return detector
 
 
 def _detection(*, size: float = 32.0) -> dict[str, object]:
@@ -651,17 +638,42 @@ def test_extract_selfie_embedding_requires_exactly_one_face_and_normalizes_vecto
 ) -> None:
     source = tmp_path / "selfie.png"
     write_jpeg(source)
-    _selfie_model_mocks(monkeypatch, DummyImage(64, 64), [_detection()])
+    detector = _selfie_model_mocks(monkeypatch, DummyImage(64, 64), [_detection()])
+    monkeypatch.setattr(
+        "photo_worker.face_embedding._extract_embedding",
+        lambda *_args, **_kwargs: tuple(2.0 for _ in range(128)),
+    )
+
+    result = extract_selfie_embedding(source, max_bytes=1024, content_type="image/png")
+
+    assert len(result.embedding) == 128
+    assert sum(value * value for value in result.embedding) == pytest.approx(1.0)
+    assert result.model == "sface"
+    assert detector.calls == [0.5]
+
+
+def test_scrfd_landmarks_drive_transient_adaface_selfie_embedding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "selfie.png"
+    write_jpeg(source)
+    detector = _selfie_model_mocks(monkeypatch, DummyImage(64, 64), [_detection()])
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
         lambda *_args, **_kwargs: tuple(2.0 for _ in range(512)),
     )
 
-    result = extract_selfie_embedding(source, max_bytes=1024, content_type="image/png")
+    result = extract_selfie_embedding(
+        source,
+        max_bytes=1024,
+        content_type="image/png",
+        model=ADAFACE_MODEL_NAME,
+    )
 
+    assert result.model == ADAFACE_MODEL_NAME
     assert len(result.embedding) == 512
     assert sum(value * value for value in result.embedding) == pytest.approx(1.0)
-    assert result.model == ADAFACE_MODEL_NAME
+    assert detector.calls == [0.5]
 
 
 @pytest.mark.parametrize(
@@ -700,7 +712,8 @@ def test_extract_selfie_embedding_rejects_non_finite_vector_and_releases_image(
     image_holder = [ReleasableImage(64, 64)]
     _selfie_model_mocks(monkeypatch, None, [_detection()])
     monkeypatch.setattr(
-        "photo_worker.face_embedding._decode_image", lambda *_args, **_kwargs: image_holder.pop()
+        "photo_worker.face_embedding._decode_selfie_image",
+        lambda *_args, **_kwargs: image_holder.pop(),
     )
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
@@ -712,3 +725,88 @@ def test_extract_selfie_embedding_rejects_non_finite_vector_and_releases_image(
 
     # The worker must not retain decoded pixels after the failed one-shot query.
     assert released == [True]
+
+
+def test_decode_selfie_image_downscales_a_large_selfie_without_reencoding(tmp_path: Path) -> None:
+    """Removing the 1600 px bound would pass a needlessly large selfie to SCRFD."""
+    source = tmp_path / "large-selfie.jpg"
+    image = Image.new("RGB", (2400, 1200), "white")
+    image.save(source, "JPEG")
+    image.close()
+
+    decoded = face_embedding._decode_selfie_image(
+        np,
+        cv2,
+        source,
+        max_bytes=source.stat().st_size,
+        max_pixels=2_880_000,
+    )
+
+    assert decoded.shape == (800, 1600, 3)
+
+
+def test_decode_selfie_image_does_not_upscale_an_accepted_small_selfie(tmp_path: Path) -> None:
+    """Changing normalization to enlarge an 800 px source would fail this test."""
+    source = tmp_path / "small-selfie.png"
+    image = Image.new("RGB", (800, 400), "white")
+    image.save(source, "PNG")
+    image.close()
+
+    decoded = face_embedding._decode_selfie_image(
+        np,
+        cv2,
+        source,
+        max_bytes=source.stat().st_size,
+        max_pixels=320_000,
+    )
+
+    assert decoded.shape == (400, 800, 3)
+
+
+def test_decode_selfie_image_applies_exif_orientation_before_inference(tmp_path: Path) -> None:
+    """Skipping EXIF transpose would leave SCRFD with the camera-file geometry."""
+    source = tmp_path / "oriented-selfie.jpg"
+    image = Image.new("RGB", (40, 20), "white")
+    exif = Image.Exif()
+    exif[274] = 6
+    image.save(source, "JPEG", exif=exif)
+    image.close()
+
+    decoded = face_embedding._decode_selfie_image(
+        np,
+        cv2,
+        source,
+        max_bytes=source.stat().st_size,
+        max_pixels=800,
+    )
+
+    assert decoded.shape == (40, 20, 3)
+
+
+def test_decode_selfie_image_converts_an_embedded_non_srgb_profile_before_bgr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping ICC conversion would pass a tagged non-sRGB JPEG straight to OpenCV."""
+    source = tmp_path / "profiled-selfie.jpg"
+    image = Image.new("RGB", (20, 10), "white")
+    lab_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("LAB"))
+    image.save(source, "JPEG", icc_profile=lab_profile.tobytes())
+    image.close()
+    calls: list[tuple[object, object]] = []
+
+    def convert(*args: object, **kwargs: object) -> Image.Image:
+        calls.append((args[1], args[2]))
+        return args[0].convert("RGB")
+
+    monkeypatch.setattr("PIL.ImageCms.profileToProfile", convert)
+
+    decoded = face_embedding._decode_selfie_image(
+        np,
+        cv2,
+        source,
+        max_bytes=source.stat().st_size,
+        max_pixels=200,
+    )
+
+    assert decoded.shape == (10, 20, 3)
+    assert len(calls) == 1

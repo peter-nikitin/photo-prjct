@@ -7,6 +7,7 @@ from datetime import date
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 from unittest.mock import patch
 
 from botocore.exceptions import ClientError
@@ -177,21 +178,19 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
         with self.assertRaisesMessage(CommandError, "approved crosswalk"):
             self._run_command(
                 apply=True,
-                approval_overrides={
-                    "accepted_preview_cohort_hash": _canonical_sha256(
-                        [
-                            {
-                                "byte_size": len(self._preview_content(self.photo_id)),
-                                "height": 1000,
-                                "oriented_source_height": 1000,
-                                "oriented_source_width": 1600,
-                                "photo_id": self.photo_id,
-                                "sha256": "f" * 64,
-                                "width": 1600,
-                            }
-                        ]
-                    )
-                },
+                accepted_preview_cohort_hash_override=_canonical_sha256(
+                    [
+                        {
+                            "byte_size": len(self._preview_content(self.photo_id)),
+                            "height": 1000,
+                            "oriented_source_height": 1000,
+                            "oriented_source_width": 1600,
+                            "photo_id": self.photo_id,
+                            "sha256": "f" * 64,
+                            "width": 1600,
+                        }
+                    ]
+                ),
             )
 
         self._assert_no_s3_calls()
@@ -278,7 +277,7 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
 
     @patch("processing.management.commands.seed_local_event_preview_corpus.EXPECTED_PHOTO_COUNT", 1)
     def test_refuses_incomplete_or_unresolved_manifest_before_inspecting_local_s3(self) -> None:
-        cases = (
+        cases: tuple[tuple[bool, list[dict[str, str]], str], ...] = (
             (False, [], "manifest is not a complete preview corpus"),
             (True, [{"photo_id": self.photo_id, "error": "failed"}], "unresolved rows"),
         )
@@ -326,7 +325,7 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
         event_slug: str | None = None,
         manifest: str | None = None,
         apply: bool = False,
-        approval_overrides: dict[str, object] | None = None,
+        accepted_preview_cohort_hash_override: str | None = None,
     ) -> str:
         output = StringIO()
         arguments: list[object] = [
@@ -340,11 +339,14 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
         ]
         if apply:
             arguments.append("--apply")
-        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest_payload = cast(
+            dict[str, object], json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        )
+        photos = cast(list[dict[str, object]], manifest_payload["photos"])
         approval = replace(
             FACE_EMBEDDING_QUALITY_APPROVAL,
-            photo_count=len(manifest["photos"]),
-            preview_manifest_hash=manifest["manifest_sha256"],
+            photo_count=len(photos),
+            preview_manifest_hash=cast(str, manifest_payload["manifest_sha256"]),
             local_preview_projection_hash=_canonical_sha256(
                 [
                     {
@@ -359,15 +361,18 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
                             "width",
                         )
                     }
-                    for row in manifest["photos"]
+                    for row in photos
                 ]
             ),
             accepted_preview_cohort_hash=accepted_preview_cohort_hash(self.event),
-            accepted_preview_crosswalk_entry_count=len(manifest["photos"]),
-            accepted_preview_crosswalk_sha_mismatch_count=len(manifest["photos"]),
+            accepted_preview_crosswalk_entry_count=len(photos),
+            accepted_preview_crosswalk_sha_mismatch_count=len(photos),
         )
-        if approval_overrides is not None:
-            approval = replace(approval, **approval_overrides)
+        if accepted_preview_cohort_hash_override is not None:
+            approval = replace(
+                approval,
+                accepted_preview_cohort_hash=accepted_preview_cohort_hash_override,
+            )
         with (
             override_settings(
                 PRIVATE_MEDIA_S3_BUCKET="adaface-private",

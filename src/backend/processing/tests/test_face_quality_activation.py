@@ -38,6 +38,7 @@ from processing.services.face_quality import (
     active_face_embedding_generations,
     baseline_face_embedding_generations,
     candidate_face_embedding_generations,
+    historical_baseline_face_embedding_generations,
     historical_quality_face_embedding_generations,
     local_adaface_face_embedding_generations,
 )
@@ -246,6 +247,44 @@ class FaceEmbeddingActivationTests(TestCase):
             baseline_face_embedding_generations(),
         )
         self.assertFalse(EventFaceEmbeddingActivation.objects.exists())
+
+    def test_baseline_adds_the_new_scrfd_generation_without_rewriting_history(self) -> None:
+        self.assertEqual(
+            [
+                (generation["contract_version"], generation["processor_version"])
+                for generation in historical_baseline_face_embedding_generations()
+            ],
+            [(1, 1), (2, 2)],
+        )
+        self.assertEqual(
+            [
+                (generation["contract_version"], generation["processor_version"])
+                for generation in baseline_face_embedding_generations()
+            ],
+            [(1, 1), (2, 2), (2, 3)],
+        )
+
+    def test_existing_historical_baseline_activation_remains_readable_but_cannot_be_selected(
+        self,
+    ) -> None:
+        generations = list(historical_baseline_face_embedding_generations())
+        EventFaceEmbeddingActivation.objects.create(
+            event=self.event,
+            generations=generations,
+            generation_set_hash=hashlib.sha256(
+                json.dumps(generations, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        )
+
+        self.assertEqual(active_face_embedding_generations(self.event), tuple(generations))
+        with self.assertRaisesRegex(ValueError, "generation set"):
+            activate_face_embedding_generation(
+                event=self.event,
+                generations=generations,
+                approved_configuration_hash="",
+                evaluation_report_hash="",
+                review_confirmed=True,
+            )
 
     def test_v4_is_current_candidate_and_v3_remains_a_distinct_historical_generation(self) -> None:
         candidate = candidate_face_embedding_generations()[0]
@@ -838,6 +877,50 @@ class FaceEmbeddingActivationTests(TestCase):
         self.assertEqual(accepted_attempt.processor_version, 5)
         self.assertEqual(activation.generations, list(generations))
         self.assertEqual(active_face_embedding_generations(self.event), generations)
+
+    @override_settings(
+        ADAFACE_LOCAL_EXPERIMENT_ENABLED=True,
+        ADAFACE_LOCAL_CANARY_LIMIT=1,
+        MONITORING_ENVIRONMENT="local",
+    )
+    def test_local_adaface_canary_activation_validates_only_deterministic_prefix(self) -> None:
+        self.event.slug = "cyclingrace-vechernee-sadovoe"
+        self.event.save(update_fields=["slug"])
+        generations = local_adaface_face_embedding_generations()
+        generation = generations[0]
+        configuration_hash = generation["configuration_hash"]
+        assert isinstance(configuration_hash, str)
+
+        accepted_attempt = self.publish_candidate_projection(
+            event=self.event,
+            photo_id="local-adaface-canary-first",
+            generations=generations,
+        )
+        outside_canary = Photo.objects.create(
+            id="local-adaface-canary-second",
+            event=self.event,
+            uploaded_by=self.user,
+            original_key="originals/00000000000000000000000000000000",
+            original_filename="outside-canary.jpg",
+            original_size=10,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+        with patch(
+            "processing.services.enrollment.candidate_face_embedding_cohort",
+            return_value=[accepted_attempt.photo, outside_canary],
+        ):
+            activation = activate_face_embedding_generation(
+                event=self.event,
+                generations=generations,
+                approved_configuration_hash=configuration_hash,
+                evaluation_report_hash=LOCAL_ADAFACE_MANIFEST_SHA256,
+                review_confirmed=True,
+            )
+            self.assertEqual(active_face_embedding_generations(self.event), generations)
+
+        self.assertEqual(activation.generations, list(generations))
 
     def test_guarded_command_records_only_a_confirmed_baseline_selection(self) -> None:
         with self.assertRaisesMessage(Exception, "review confirmation is required"):

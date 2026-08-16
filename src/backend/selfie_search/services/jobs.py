@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 SELFIE_QUERY_CONTRACT_VERSION = 1
 SELFIE_QUERY_PROCESSOR_TYPE = "selfie_query"
-SELFIE_QUERY_PROCESSOR_VERSION = 1
+SELFIE_QUERY_PROCESSOR_VERSION = 2
 DEFAULT_LEASE_SECONDS = 120
 DEFAULT_RECOVERY_LIMIT = 25
 MAX_ATTEMPTS = 3
@@ -471,14 +471,14 @@ def selfie_worker_configuration(search: SelfieSearch) -> dict[str, object]:
     elif model == "adaface-ir18-webface4m" and dimensions == 512:
         terminal_result_max_bytes = 16_384
     else:
-        raise ValueError("search configuration is incompatible with selfie_query v1")
-    return {
+        raise ValueError("search configuration is incompatible with selfie_query v2")
+    worker_configuration: dict[str, object] = {
         "retry_policy": dict(_RETRY_POLICY),
         "max_cohort_size": 1,
         "report_max_bytes": 262_144,
         "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
         "selfie_query": {
-            "detection_threshold": 0.75,
+            "detection_threshold": 0.5,
             "embedding_dimensions": dimensions,
             "min_face_px": 32,
             "model": model,
@@ -494,6 +494,24 @@ def selfie_worker_configuration(search: SelfieSearch) -> dict[str, object]:
             "terminal_result_max_bytes": terminal_result_max_bytes,
         },
     }
+    if model == "adaface-ir18-webface4m":
+        worker_configuration["scrfd"] = {
+            "input_size": [640, 640],
+            "model": "scrfd-10g-kps",
+            "model_artifact_sha256": (
+                "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+            ),
+            "nms_threshold": 0.4,
+        }
+        worker_configuration["adaface"] = {
+            "alignment": "scrfd-five-landmark-112x112",
+            "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
+            "model_artifact_sha256": (
+                "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b"
+            ),
+            "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
+        }
+    return worker_configuration
 
 
 def _locked_context(

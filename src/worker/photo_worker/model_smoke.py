@@ -1,4 +1,4 @@
-"""Build-time smoke for the pinned YuNet/AdaFace worker models."""
+"""Build-time smoke for the pinned SCRFD, SFace, and AdaFace worker models."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from photo_worker.adaface import ADAFACE_MODEL_NAME, load_adaface_runtime
+from photo_worker.adaface import load_adaface_runtime
 from photo_worker.contracts import MAX_FACE_EMBEDDING_DIMENSIONS
 from photo_worker.face_embedding import (
     FaceEmbeddingError,
@@ -41,12 +41,12 @@ def main() -> None:
 
 
 def _assert_photo_embedding_no_face(path: Path) -> None:
-    result = extract_face_embeddings(path, max_bytes=path.stat().st_size)
-    if (
-        result.model != ADAFACE_MODEL_NAME
-        or result.faces != ()
-        or result.warnings != ("no_faces_detected",)
-    ):
+    result = extract_face_embeddings(
+        path,
+        max_bytes=path.stat().st_size,
+        detection_threshold=0.5,
+    )
+    if result.model != "sface" or result.faces != () or result.warnings != ("no_faces_detected",):
         raise RuntimeError("face_model_smoke_unexpected_photo_result")
 
 
@@ -56,6 +56,7 @@ def _assert_selfie_query_no_face(path: Path) -> None:
             path,
             max_bytes=path.stat().st_size,
             content_type="image/jpeg",
+            detection_threshold=0.5,
         )
     except FaceEmbeddingError as error:
         if error.code == "no_face_detected":

@@ -20,7 +20,6 @@ from photo_worker.client import ApiError, CallbackResult, DownloadError, HttpCli
 from photo_worker.contracts import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     FAILURE_RETRYABLE,
-    HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
     PREVIEW_CONTRACT_VERSION,
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
@@ -28,7 +27,8 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
-    PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
+    PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
+    PROCESSOR_VERSION_SELFIE_QUERY,
     CaptureMetadataResult,
     Claim,
     ClaimedJob,
@@ -54,18 +54,10 @@ _PREVIEW_FAILURE_RETRYABLE = {
 _IDENTITY_PARTS = 3
 _SUPPORTED_IDENTITIES = {
     (1, PROCESSOR_TYPE, 2),
-    (1, PROCESSOR_TYPE_FACE_EMBEDDING, 1),
     (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
-    (2, PROCESSOR_TYPE_FACE_EMBEDDING, 2),
-    (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
-    (
-        3,
-        PROCESSOR_TYPE_FACE_EMBEDDING,
-        HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
-    ),
-    (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
+    (2, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW),
     (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY),
-    (1, PROCESSOR_TYPE_SELFIE_QUERY, 1),
+    (1, PROCESSOR_TYPE_SELFIE_QUERY, PROCESSOR_VERSION_SELFIE_QUERY),
 }
 
 
@@ -136,7 +128,6 @@ class WorkerConfig:
         supported = {
             PROCESSOR_TYPE,
             PROCESSOR_TYPE_FACE_EMBEDDING,
-            PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
             PROCESSOR_TYPE_GENERATE_PREVIEW,
             PROCESSOR_TYPE_SELFIE_QUERY,
         }
@@ -184,10 +175,6 @@ class WorkerConfig:
             if not all(processor_types):
                 raise ValueError("processor types must not contain empty values")
         identities = tuple(item.strip() for item in raw_identities.split(",") if item.strip())
-        # Only the dedicated benchmark deployment is isolated from the product priority list.
-        # Product identity overrides retain their configured type fallbacks.
-        if identities == ("3/face_embedding_benchmark/1",):
-            processor_types = ()
         return (
             cls(
                 worker_build=build,
@@ -823,11 +810,20 @@ def _parse_processor_identity(value: str) -> tuple[int, str, int]:
 
 
 def _default_processor_identity(processor_type: str) -> tuple[int, str, int]:
-    identity = (
-        PREVIEW_CONTRACT_VERSION if processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW else 1,
-        processor_type,
-        CAPTURE_METADATA_PROCESSOR_VERSION if processor_type == PROCESSOR_TYPE else 1,
-    )
+    if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
+        identity = (
+            PREVIEW_CONTRACT_VERSION,
+            processor_type,
+            PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
+        )
+    elif processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+        identity = (1, processor_type, PROCESSOR_VERSION_SELFIE_QUERY)
+    else:
+        identity = (
+            PREVIEW_CONTRACT_VERSION if processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW else 1,
+            processor_type,
+            CAPTURE_METADATA_PROCESSOR_VERSION if processor_type == PROCESSOR_TYPE else 1,
+        )
     if identity not in _SUPPORTED_IDENTITIES:
         raise ValueError("unsupported processor type")
     return identity

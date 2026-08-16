@@ -32,7 +32,6 @@ from processing.services.enrollment import (
     GENERATE_PREVIEW_CONFIGURATION,
     capture_metadata_configuration,
     request_capture_metadata,
-    request_face_embedding_candidate_enqueue,
     request_face_embedding_enqueue,
     request_processor,
 )
@@ -748,8 +747,8 @@ class ProcessingJobServiceTests(TestCase):
         claimed = claim_job(
             contract_version=2,
             processor_type="face_embedding",
-            processor_version=2,
-            worker_build="worker-2",
+            processor_version=3,
+            worker_build="worker-3",
         )
         complete_attempt(
             claimed.attempt.id,
@@ -926,7 +925,7 @@ class ProcessingJobServiceTests(TestCase):
             replacement.attempt.id,
         )
 
-    def test_v3_and_v4_quality_projections_coexist_with_distinct_accepted_attempts(self) -> None:
+    def test_historical_v3_and_v4_projections_coexist_with_distinct_attempts(self) -> None:
         photo = self.private_photo("quality-v3-v4")
         derivative = self.publish_preview(photo)
         fingerprint = {
@@ -965,7 +964,15 @@ class ProcessingJobServiceTests(TestCase):
             | {"input_geometry": geometry},
         )
 
-        request_face_embedding_candidate_enqueue(photo)
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=4,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+            input_fingerprint=fingerprint,
+            replace_terminal_generation=True,
+        )
         candidate = claim_job(
             contract_version=3,
             processor_type="face_embedding",

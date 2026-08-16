@@ -59,6 +59,7 @@ from processing.models import (
 from processing.results import parse_canonical_timestamp
 from processing.services.face_quality import (
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
+    LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_PROCESSOR_VERSIONS,
@@ -1010,6 +1011,11 @@ def _processor_contract(processor_type: str, contract_version: int, processor_ve
             QUALITY_FACE_CONTRACT_VERSION,
             FACE_EMBEDDING_CONTRACT.processor_type,
             QUALITY_FACE_PROCESSOR_VERSION,
+        ),
+        (
+            QUALITY_FACE_CONTRACT_VERSION,
+            FACE_EMBEDDING_CONTRACT.processor_type,
+            LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
         ),
     }
 

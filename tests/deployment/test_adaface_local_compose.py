@@ -14,6 +14,7 @@ def test_local_adaface_compose_isolated_runtime_contract() -> None:
         "COMPOSE_PROJECT_NAME": "photo-adaface-contract",
         "ADAFACE_DB_HOST_PORT": "15433",
         "ADAFACE_WEB_HOST_PORT": "18080",
+        "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD": "0.42",
     }
     result = subprocess.run(
         [
@@ -57,8 +58,17 @@ def test_local_adaface_compose_isolated_runtime_contract() -> None:
         "required": True,
     }
     assert compose["services"]["minio"]["healthcheck"]
+    web_environment = compose["services"]["web"]["environment"]
+    assert web_environment["MONITORING_ENVIRONMENT"] == "local"
+    assert web_environment["ADAFACE_LOCAL_EXPERIMENT_ENABLED"] == "True"
+    assert web_environment["ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD"] == "0.42"
     worker_environment = compose["services"]["worker"]["environment"]
     assert worker_environment["PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO"] == "true"
+    assert worker_environment["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
+        "3/face_embedding/5,1/selfie_query/2"
+    )
+    assert "PHOTO_WORKER_PROCESSOR_TYPE" not in worker_environment
+    assert "PHOTO_WORKER_PROCESSOR_TYPES" not in worker_environment
     assert (
         "PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO" not in (ROOT / "docker-compose.yml").read_text()
     )
@@ -79,3 +89,40 @@ def test_local_adaface_compose_isolated_runtime_contract() -> None:
         volume["name"].startswith("photo-adaface-contract_")
         for volume in compose["volumes"].values()
     )
+
+
+def test_local_adaface_compose_requires_an_explicit_distance_threshold() -> None:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD"
+    }
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "-f",
+            "docker-compose.yml",
+            "-f",
+            "docker-compose.adaface-local.yml",
+            "config",
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD" in result.stderr
+
+
+def test_base_and_production_compose_keep_the_scrfd_sface_contract() -> None:
+    for compose_path in (ROOT / "docker-compose.yml", ROOT / "docker-compose.prod.yml"):
+        content = compose_path.read_text(encoding="utf-8")
+        assert "3/face_embedding/5" not in content
+        assert "ADAFACE_LOCAL_EXPERIMENT_ENABLED" not in content
+        assert "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD" not in content

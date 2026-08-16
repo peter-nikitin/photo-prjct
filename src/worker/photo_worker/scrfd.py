@@ -15,6 +15,8 @@ INPUT_SCALE = 1.0 / 128.0
 STRIDES = (8, 16, 32)
 ANCHORS_PER_LOCATION = 2
 NMS_THRESHOLD = 0.4
+OUTPUT_ROWS = (12800, 3200, 800)
+OUTPUT_COLUMNS = (1, 1, 1, 4, 4, 4, 10, 10, 10)
 
 
 class SCRFDError(ValueError):
@@ -47,7 +49,9 @@ class SCRFDDetector:
             outputs = self._session.get_outputs()
             if len(inputs) != 1 or len(outputs) != 9:
                 raise SCRFDError("invalid_scrfd_model")
-            if tuple(inputs[0].shape) != (1, 3, INPUT_SIZE, INPUT_SIZE):
+            if not _is_supported_input_shape(tuple(inputs[0].shape)):
+                raise SCRFDError("invalid_scrfd_model")
+            if not _has_supported_output_shapes(outputs):
                 raise SCRFDError("invalid_scrfd_model")
             self._input_name = str(inputs[0].name)
         except SCRFDError:
@@ -125,12 +129,12 @@ def _decode_outputs(
         raise ValueError("outputs")
     decoded: list[DetectedFace] = []
     for index, stride in enumerate(STRIDES):
-        rows = (INPUT_SIZE // stride) * (INPUT_SIZE // stride) * ANCHORS_PER_LOCATION
-        scores = _output_array(outputs[index], (1, rows, 1))[:, :, 0]
-        boxes = _output_array(outputs[index + len(STRIDES)], (1, rows, 4))[0] * stride
-        keypoints = _output_array(outputs[index + len(STRIDES) * 2], (1, rows, 10))[0] * stride
+        rows = OUTPUT_ROWS[index]
+        scores = _output_array(outputs[index], rows, 1)[:, 0]
+        boxes = _output_array(outputs[index + len(STRIDES)], rows, 4) * stride
+        keypoints = _output_array(outputs[index + len(STRIDES) * 2], rows, 10) * stride
         centers = _anchor_centers(stride)
-        for row in np.flatnonzero(scores[0] >= threshold):
+        for row in np.flatnonzero(scores >= threshold):
             center_x, center_y = centers[row]
             left, top, right, bottom = boxes[row]
             x1 = (center_x - left) / scale
@@ -147,7 +151,7 @@ def _decode_outputs(
             decoded.append(
                 DetectedFace(
                     bbox=(float(x1), float(y1), float(x2), float(y2)),
-                    confidence=float(scores[0, row]),
+                    confidence=float(scores[row]),
                     landmarks=(
                         landmarks[0],
                         landmarks[1],
@@ -160,9 +164,31 @@ def _decode_outputs(
     return decoded
 
 
-def _output_array(output: Any, expected_shape: tuple[int, ...]) -> np.ndarray:
+def _is_supported_input_shape(shape: tuple[Any, ...]) -> bool:
+    return shape in {(1, 3, INPUT_SIZE, INPUT_SIZE), (1, 3, "?", "?")}
+
+
+def _has_supported_output_shapes(outputs: Any) -> bool:
+    try:
+        return all(
+            tuple(output.shape) in {(rows, columns), (1, rows, columns)}
+            for output, rows, columns in zip(
+                outputs, _output_rows_by_output(), OUTPUT_COLUMNS, strict=True
+            )
+        )
+    except Exception:
+        return False
+
+
+def _output_rows_by_output() -> tuple[int, ...]:
+    return OUTPUT_ROWS + OUTPUT_ROWS + OUTPUT_ROWS
+
+
+def _output_array(output: Any, rows: int, columns: int) -> np.ndarray:
     array = np.asarray(output, dtype=np.float32)
-    if array.shape != expected_shape or not np.isfinite(array).all():
+    if array.shape == (1, rows, columns):
+        array = array[0]
+    if array.shape != (rows, columns) or not np.isfinite(array).all():
         raise ValueError("output")
     return array
 

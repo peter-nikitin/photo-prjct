@@ -11,16 +11,24 @@ from photo_worker.scrfd import SCRFDDetector, SCRFDError
 @dataclass(frozen=True)
 class _ValueInfo:
     name: str
-    shape: tuple[int, ...]
+    shape: tuple[int | str, ...]
 
 
 class _FakeSession:
-    def __init__(self, outputs: list[np.ndarray], *, output_count: int = 9) -> None:
+    def __init__(
+        self,
+        outputs: list[np.ndarray],
+        *,
+        input_shape: tuple[int | str, ...] = (1, 3, 640, 640),
+        output_names: tuple[str, ...] | None = None,
+        output_count: int = 9,
+    ) -> None:
         self._outputs = outputs
-        self._inputs = [_ValueInfo("input.1", (1, 3, 640, 640))]
+        self._inputs = [_ValueInfo("input.1", input_shape)]
+        names = output_names or tuple(f"output-{index}" for index in range(len(outputs)))
         self._output_info = [
-            _ValueInfo(f"output-{index}", tuple(output.shape))
-            for index, output in enumerate(outputs[:output_count])
+            _ValueInfo(name, tuple(output.shape))
+            for name, output in zip(names[:output_count], outputs[:output_count], strict=True)
         ]
         self.calls: list[tuple[list[str] | None, dict[str, np.ndarray]]] = []
 
@@ -44,6 +52,10 @@ def _outputs() -> list[np.ndarray]:
         *(np.zeros((1, count, 4), dtype=np.float32) for count in counts),
         *(np.zeros((1, count, 10), dtype=np.float32) for count in counts),
     ]
+
+
+def _official_det_10g_outputs() -> list[np.ndarray]:
+    return [output[0] for output in _outputs()]
 
 
 def _detector(outputs: list[np.ndarray]) -> tuple[SCRFDDetector, _FakeSession]:
@@ -78,6 +90,18 @@ def test_detect_returns_no_faces_and_builds_the_fixed_normalized_rgb_blob() -> N
     assert blob.shape == (1, 3, 640, 640)
     np.testing.assert_allclose(blob[0, :, 0, 0], (-127.5 / 128, -0.5 / 128, 127.5 / 128))
     np.testing.assert_allclose(blob[0, :, 500, 500], (-127.5 / 128,) * 3)
+
+
+def test_detector_accepts_the_official_dynamic_input_and_unbatched_det_10g_outputs() -> None:
+    """Rejecting the checksum-verified v0.7 graph blocks the worker image before inference."""
+    session = _FakeSession(
+        _official_det_10g_outputs(),
+        input_shape=(1, 3, "?", "?"),
+        output_names=("448", "471", "494", "451", "474", "497", "454", "477", "500"),
+    )
+    detector = SCRFDDetector(Path("det_10g.onnx"), session=session)
+
+    assert detector.detect(np.zeros((320, 320, 3), dtype=np.uint8), threshold=0.5) == ()
 
 
 def test_detect_decodes_one_face_at_the_inclusive_production_threshold() -> None:

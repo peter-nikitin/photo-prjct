@@ -236,6 +236,7 @@ GENERATE_PREVIEW_CONFIGURATION: dict[str, object] = {
 
 DEFAULT_RECONCILIATION_LIMIT = 100
 MAX_RECONCILIATION_LIMIT = 1_000
+LOCAL_ADAFACE_CANARY_MAX_LIMIT = 100
 
 
 class _ReconciliationProcessorConfig(TypedDict):
@@ -494,12 +495,20 @@ def validate_local_adaface_enrollment(event: Event, *, manifest_sha256: str) -> 
 
 
 def enroll_local_adaface_reprocessing(
-    event: Event, *, manifest_sha256: str
+    event: Event, *, manifest_sha256: str, limit: int | None = None
 ) -> FaceEmbeddingCandidateEnrollment:
-    """Enroll only the exact accepted-preview local AdaFace cohort once."""
+    """Enroll the exact local AdaFace cohort, or its canonical bounded canary slice."""
     with transaction.atomic():
         locked_event = Event.objects.select_for_update().get(pk=event.pk)
         cohort = validate_local_adaface_enrollment(locked_event, manifest_sha256=manifest_sha256)
+        if limit is not None:
+            if (
+                not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or not 1 <= limit <= LOCAL_ADAFACE_CANARY_MAX_LIMIT
+            ):
+                raise ValueError(f"limit must be between 1 and {LOCAL_ADAFACE_CANARY_MAX_LIMIT}")
+            cohort = cohort[:limit]
         configuration_hash = _configuration_hash(LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION)
         created_job_count = 0
         existing_job_count = 0

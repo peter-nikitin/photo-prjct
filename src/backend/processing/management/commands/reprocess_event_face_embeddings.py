@@ -25,8 +25,11 @@ class Command(BaseCommand):
         parser.add_argument("--local-adaface", action="store_true")
         parser.add_argument("--event-slug", default="")
         parser.add_argument("--manifest-sha256", default="")
+        parser.add_argument("--limit", type=int)
 
     def handle(self, *args, **options) -> None:
+        if options["limit"] is not None and (not options["local_adaface"] or not options["apply"]):
+            raise CommandError("--limit requires --local-adaface --apply")
         if options["local_adaface"]:
             self._handle_local_adaface(options)
             return
@@ -76,7 +79,11 @@ class Command(BaseCommand):
         try:
             validate_local_adaface_enrollment(event, manifest_sha256=manifest_sha256)
             enrollment = (
-                enroll_local_adaface_reprocessing(event, manifest_sha256=manifest_sha256)
+                enroll_local_adaface_reprocessing(
+                    event,
+                    manifest_sha256=manifest_sha256,
+                    limit=options["limit"],
+                )
                 if options["apply"]
                 else None
             )

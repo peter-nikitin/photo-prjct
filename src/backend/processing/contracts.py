@@ -38,7 +38,7 @@ GENERATE_PREVIEW_CONTRACT = ProcessorContract(
 PREVIEW_FACE_EMBEDDING_CONTRACT = ProcessorContract(
     processor_type="face_embedding",
     contract_version=2,
-    processor_version=2,
+    processor_version=3,
 )
 QUALITY_FACE_EMBEDDING_CONTRACT = ProcessorContract(
     processor_type="face_embedding",
@@ -48,7 +48,7 @@ QUALITY_FACE_EMBEDDING_CONTRACT = ProcessorContract(
 SELFIE_QUERY_CONTRACT = ProcessorContract(
     processor_type="selfie_query",
     contract_version=1,
-    processor_version=1,
+    processor_version=2,
 )
 SELFIE_ATTEMPT_PREFIX = "selfie_"
 

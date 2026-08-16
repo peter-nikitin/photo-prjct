@@ -181,7 +181,7 @@ class SearchJobTests(TestCase):
         return claim_search_job(
             contract_version=1,
             processor_type="selfie_query",
-            processor_version=1,
+            processor_version=2,
             worker_build="worker-test",
             lease_seconds=120,
             now=now,
@@ -212,6 +212,20 @@ class SearchJobTests(TestCase):
         self.assertEqual(claimed.attempt.status, SelfieSearchAttempt.Status.IN_PROGRESS)
         self.assertEqual(search.status, SelfieSearch.Status.PROCESSING)
         self.assertEqual(search_attempt_reference(claimed.attempt), f"selfie_{claimed.attempt.id}")
+
+    def test_claim_rejects_the_superseded_selfie_processor_identity(self) -> None:
+        search = self.make_search()
+
+        claimed = claim_search_job(
+            contract_version=1,
+            processor_type="selfie_query",
+            processor_version=1,
+            worker_build="worker-test",
+        )
+
+        self.assertTrue(claimed.empty)
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
 
     def test_heartbeat_and_download_refresh_require_the_current_unexpired_lease(self) -> None:
         search = self.make_search()

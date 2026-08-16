@@ -87,6 +87,7 @@ def preview_face_configuration() -> dict[str, object]:
             "min_face_px": 32,
             "max_faces_per_photo": 32,
             "normalize_embeddings": True,
+            "detection_threshold": 0.5,
         },
         "worker": {
             "concurrency": 1,
@@ -158,14 +159,14 @@ def test_claim_accepts_v2_preview_with_exact_generic_input_and_upload_slot() -> 
     assert claim.job.output_slots[0].variant == "preview-small-v1"
 
 
-def test_claim_accepts_v2_face_embedding_only_with_generic_preview_input() -> None:
+def test_claim_accepts_v3_scrfd_face_embedding_only_with_generic_preview_input() -> None:
     payload = preview_claim_payload()
     job = payload["job"]
     assert isinstance(job, dict)
     job.update(
         {
             "processor_type": "face_embedding",
-            "processor_version": 2,
+            "processor_version": 3,
             "configuration": preview_face_configuration(),
             "input_fingerprint": {
                 "object_key": "derivatives/previews/photo-1/preview-small-v1/"
@@ -193,11 +194,12 @@ def test_claim_accepts_v2_face_embedding_only_with_generic_preview_input() -> No
 
     assert claim.job is not None
     assert claim.job.contract_version == 2
-    assert claim.job.processor_version == 2
+    assert claim.job.processor_version == 3
+    assert claim.job.configuration.face_detection_threshold == 0.5
     assert claim.job.input_fingerprint.media_kind == "preview-small-v1"
 
 
-def test_v2_face_claim_rejects_a_transport_bound_that_is_neither_legacy_nor_current() -> None:
+def test_v3_scrfd_face_claim_rejects_a_transport_bound_that_is_neither_legacy_nor_current() -> None:
     payload = preview_claim_payload()
     job = payload["job"]
     assert isinstance(job, dict)
@@ -208,7 +210,7 @@ def test_v2_face_claim_rejects_a_transport_bound_that_is_neither_legacy_nor_curr
     job.update(
         {
             "processor_type": "face_embedding",
-            "processor_version": 2,
+            "processor_version": 3,
             "configuration": configuration,
             "input_fingerprint": {
                 "object_key": "derivatives/previews/photo-1/preview-small-v1/"
@@ -236,7 +238,7 @@ def test_v2_face_claim_rejects_a_transport_bound_that_is_neither_legacy_nor_curr
         Claim.from_response(payload)
 
 
-def test_v2_face_claim_rejects_the_superseded_8_kib_transport_snapshot() -> None:
+def test_v3_scrfd_face_claim_rejects_the_superseded_8_kib_transport_snapshot() -> None:
     payload = preview_claim_payload()
     job = payload["job"]
     assert isinstance(job, dict)
@@ -248,7 +250,7 @@ def test_v2_face_claim_rejects_the_superseded_8_kib_transport_snapshot() -> None
     job.update(
         {
             "processor_type": "face_embedding",
-            "processor_version": 2,
+            "processor_version": 3,
             "configuration": configuration,
             "input_fingerprint": {
                 "object_key": "derivatives/previews/photo-1/preview-small-v1/"
@@ -282,9 +284,9 @@ def test_v2_face_claim_rejects_the_superseded_8_kib_transport_snapshot() -> None
         ("generate_preview", 1, "face", "original", True),
         ("generate_preview", 1, "preview", "preview-small-v1", True),
         ("generate_preview", 1, "preview", "original", False),
-        ("face_embedding", 2, "preview", "preview-small-v1", False),
-        ("face_embedding", 2, "face", "original", False),
-        ("face_embedding", 2, "face", "preview-small-v1", True),
+        ("face_embedding", 3, "preview", "preview-small-v1", False),
+        ("face_embedding", 3, "face", "original", False),
+        ("face_embedding", 3, "face", "preview-small-v1", True),
     ],
 )
 def test_v2_claim_rejects_swapped_configuration_media_kind_or_output_slot(
@@ -846,7 +848,7 @@ def selfie_claim_payload(
         "max_pixels": 25_000_000,
     }
     configuration["selfie_query"] = {
-        "detection_threshold": 0.75,
+        "detection_threshold": 0.5,
         "embedding_dimensions": 128,
         "min_face_px": 32,
         "model": "sface",
@@ -856,7 +858,7 @@ def selfie_claim_payload(
         "attempt_id": "00000000-0000-0000-0000-000000000012",
         "contract_version": 1,
         "processor_type": PROCESSOR_TYPE_SELFIE_QUERY,
-        "processor_version": 1,
+        "processor_version": 2,
         "configuration": configuration,
         "event_id": "17",
         "search_id": "00000000-0000-0000-0000-000000000013",
@@ -881,6 +883,8 @@ def test_claim_accepts_only_the_exact_selfie_query_union_variant() -> None:
     assert claim.job.event_id == "17"
     assert claim.job.search_id == "00000000-0000-0000-0000-000000000013"
     assert claim.job.input_fingerprint.temporary_content_type == "image/png"
+    assert claim.job.processor_version == 2
+    assert claim.job.configuration.face_detection_threshold == 0.5
 
 
 @pytest.mark.parametrize(

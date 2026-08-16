@@ -710,7 +710,7 @@ class WorkerApiTests(TestCase):
     def test_preview_face_claim_grants_the_accepted_preview_derivative(
         self, preview_storage
     ) -> None:
-        """A v2 face claim must grant its preview input, not validate it as an original."""
+        """A v3 face claim must grant its preview input, not validate it as an original."""
         preview_storage.return_value.create_download_grant.return_value.url = (
             "https://storage.example.test/preview?secret"
         )
@@ -781,7 +781,7 @@ class WorkerApiTests(TestCase):
             self.claim_body(
                 contract_version=2,
                 processor_type="face_embedding",
-                processor_version=2,
+                processor_version=3,
             ),
         )
 
@@ -1664,7 +1664,7 @@ class SelfieWorkerApiTests(TestCase):
         return {
             "contract_version": 1,
             "processor_type": "selfie_query",
-            "processor_version": 1,
+            "processor_version": 2,
             "worker_build": "worker-test",
             "lease_seconds": 120,
         }
@@ -1675,7 +1675,7 @@ class SelfieWorkerApiTests(TestCase):
             "attempt_id": job["attempt_id"],
             "contract_version": 1,
             "processor_type": "selfie_query",
-            "processor_version": 1,
+            "processor_version": 2,
             "worker_build": "worker-test",
             "started_at": "2026-07-30T10:00:00Z",
             "finished_at": "2026-07-30T10:00:03Z",

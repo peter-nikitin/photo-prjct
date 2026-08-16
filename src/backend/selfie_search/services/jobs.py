@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 SELFIE_QUERY_CONTRACT_VERSION = 1
 SELFIE_QUERY_PROCESSOR_TYPE = "selfie_query"
-SELFIE_QUERY_PROCESSOR_VERSION = 1
+SELFIE_QUERY_PROCESSOR_VERSION = 2
 DEFAULT_LEASE_SECONDS = 120
 DEFAULT_RECOVERY_LIMIT = 25
 MAX_ATTEMPTS = 3
@@ -467,14 +467,14 @@ def selfie_worker_configuration(search: SelfieSearch) -> dict[str, object]:
     model = configuration.get("embedding_model")
     dimensions = configuration.get("embedding_dimensions")
     if model != "sface" or dimensions != 128:
-        raise ValueError("search configuration is incompatible with selfie_query v1")
+        raise ValueError("search configuration is incompatible with selfie_query v2")
     return {
         "retry_policy": dict(_RETRY_POLICY),
         "max_cohort_size": 1,
         "report_max_bytes": 262_144,
         "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
         "selfie_query": {
-            "detection_threshold": 0.75,
+            "detection_threshold": 0.5,
             "embedding_dimensions": dimensions,
             "min_face_px": 32,
             "model": model,

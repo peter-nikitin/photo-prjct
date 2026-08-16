@@ -40,6 +40,7 @@ from processing.services.enrollment import (
     PREVIEW_CONTRACT_VERSION,
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
+    SCRFD_FACE_EMBEDDING_CONFIGURATION,
     FaceEmbeddingGenerationApproval,
     accepted_preview_cohort_hash,
     request_processor,
@@ -321,15 +322,22 @@ class SubmissionTests(TestCase):
                 (
                     PREVIEW_CONTRACT_VERSION,
                     "face_embedding",
+                    2,
+                ),
+                (
+                    PREVIEW_CONTRACT_VERSION,
+                    "face_embedding",
                     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
                 ),
             ],
         )
-        self.assertTrue(
-            all(
-                generation["configuration"] == FACE_EMBEDDING_CONFIGURATION
-                for generation in generations
-            )
+        self.assertEqual(
+            [generation["configuration"] for generation in generations],
+            [
+                FACE_EMBEDDING_CONFIGURATION,
+                FACE_EMBEDDING_CONFIGURATION,
+                SCRFD_FACE_EMBEDDING_CONFIGURATION,
+            ],
         )
         self.assertTrue(
             all(len(generation["configuration_hash"]) == 64 for generation in generations)
@@ -524,7 +532,7 @@ class SubmissionTests(TestCase):
         claimed = claim_search_job(
             contract_version=1,
             processor_type="selfie_query",
-            processor_version=1,
+            processor_version=2,
             worker_build="worker-test",
         )
         self.assertIsInstance(claimed, ClaimedSearchJob)

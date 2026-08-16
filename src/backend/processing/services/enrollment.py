@@ -32,7 +32,7 @@ CAPTURE_METADATA_PROCESSOR_VERSION = 2
 FACE_EMBEDDING_PROCESSOR_VERSION = 1
 PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
-PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 2
+PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 3
 QUALITY_FACE_CONTRACT_VERSION = 3
 HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION = 3
 QUALITY_FACE_PROCESSOR_VERSION = 4
@@ -107,6 +107,14 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "max_pixels": 100_000_000,
         "poll_min_delay_seconds": 5,
         "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
+    },
+}
+
+SCRFD_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
+    **FACE_EMBEDDING_CONFIGURATION,
+    "face_embedding": {
+        **FACE_EMBEDDING_CONFIGURATION["face_embedding"],
+        "detection_threshold": 0.5,
     },
 }
 
@@ -716,7 +724,7 @@ def request_face_embedding_enqueue(
             processor_type=FACE_EMBEDDING_PROCESSOR,
             contract_version=PREVIEW_CONTRACT_VERSION,
             processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
             input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
             enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
             and preview is not None,

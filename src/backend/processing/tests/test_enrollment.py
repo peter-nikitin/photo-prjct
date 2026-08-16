@@ -485,7 +485,10 @@ class CaptureMetadataEnrollmentTests(TestCase):
 
         assert state.current_job is not None
         self.assertEqual(
-            (state.current_job.contract_version, state.current_job.processor_version), (2, 2)
+            (state.current_job.contract_version, state.current_job.processor_version), (2, 3)
+        )
+        self.assertEqual(
+            state.current_job.configuration["face_embedding"]["detection_threshold"], 0.5
         )
         self.assertEqual(
             state.current_job.input_fingerprint,

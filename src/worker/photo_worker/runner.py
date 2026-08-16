@@ -27,7 +27,9 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
+    PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
     PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
+    PROCESSOR_VERSION_SELFIE_QUERY,
     CaptureMetadataResult,
     Claim,
     ClaimedJob,
@@ -53,9 +55,8 @@ _PREVIEW_FAILURE_RETRYABLE = {
 _IDENTITY_PARTS = 3
 _SUPPORTED_IDENTITIES = {
     (1, PROCESSOR_TYPE, 2),
-    (1, PROCESSOR_TYPE_FACE_EMBEDDING, 1),
     (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
-    (2, PROCESSOR_TYPE_FACE_EMBEDDING, 2),
+    (2, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW),
     (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
     (
         3,
@@ -63,7 +64,7 @@ _SUPPORTED_IDENTITIES = {
         HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
     ),
     (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
-    (1, PROCESSOR_TYPE_SELFIE_QUERY, 1),
+    (1, PROCESSOR_TYPE_SELFIE_QUERY, PROCESSOR_VERSION_SELFIE_QUERY),
 }
 
 
@@ -821,11 +822,20 @@ def _parse_processor_identity(value: str) -> tuple[int, str, int]:
 
 
 def _default_processor_identity(processor_type: str) -> tuple[int, str, int]:
-    identity = (
-        PREVIEW_CONTRACT_VERSION if processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW else 1,
-        processor_type,
-        CAPTURE_METADATA_PROCESSOR_VERSION if processor_type == PROCESSOR_TYPE else 1,
-    )
+    if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
+        identity = (
+            PREVIEW_CONTRACT_VERSION,
+            processor_type,
+            PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
+        )
+    elif processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
+        identity = (1, processor_type, PROCESSOR_VERSION_SELFIE_QUERY)
+    else:
+        identity = (
+            PREVIEW_CONTRACT_VERSION if processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW else 1,
+            processor_type,
+            CAPTURE_METADATA_PROCESSOR_VERSION if processor_type == PROCESSOR_TYPE else 1,
+        )
     if identity not in _SUPPORTED_IDENTITIES:
         raise ValueError("unsupported processor type")
     return identity

@@ -154,9 +154,23 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
         self.assertEqual([row.detection_id for row in candidate_rows], [candidate.detection_id])
         self.assertEqual([row.vector for row in candidate_rows], [(0.0, 1.0)])
 
-        with self.assertRaisesRegex(ValueError, "cannot mix face-embedding configurations"):
-            load_compatible_face_embeddings(
-                self.event,
-                (baseline_generation, candidate_generation),
-                2,
-            )
+        mismatched_generation = {
+            **candidate_generation,
+            "contract_version": 9,
+            "configuration": {"face_embedding": {"model": "other"}},
+            "configuration_hash": "0" * 64,
+            "model": "other",
+        }
+        mismatched = self.make_projected_embedding(mismatched_generation, vector=[0.5, 0.5])
+
+        rows = load_compatible_face_embeddings(
+            self.event,
+            (baseline_generation, candidate_generation),
+            2,
+        )
+
+        self.assertEqual(
+            {row.detection_id for row in rows},
+            {baseline.detection_id, candidate.detection_id},
+        )
+        self.assertNotIn(mismatched.detection_id, [row.detection_id for row in rows])

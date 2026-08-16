@@ -278,13 +278,13 @@ def _prelock_preview_face_enrollment(attempt_id: UUID) -> None:
         getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)
     ):
         from processing.services.enrollment import (
-            FACE_EMBEDDING_CONFIGURATION,
             PREVIEW_CONTRACT_VERSION,
             PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            SCRFD_FACE_EMBEDDING_CONFIGURATION,
             _configuration_hash,
         )
 
-        configuration_hash = _configuration_hash(FACE_EMBEDDING_CONFIGURATION)
+        configuration_hash = _configuration_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION)
         runs = EventProcessingRun.objects.select_for_update().filter(
             event=event,
             contract_version=PREVIEW_CONTRACT_VERSION,

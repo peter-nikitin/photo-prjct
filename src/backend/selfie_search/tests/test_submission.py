@@ -148,6 +148,7 @@ class SubmissionTests(TestCase):
             publication_status=(
                 Event.PublicationStatus.PUBLISHED if published else Event.PublicationStatus.DRAFT
             ),
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def make_eligible_embedding(
@@ -345,6 +346,22 @@ class SubmissionTests(TestCase):
         self.assertEqual(created.search.configuration["embedding_model"], "sface")
         self.assertEqual(created.search.configuration["embedding_dimensions"], 128)
         self.assertEqual(paid.search.event_id, self.paid_event.id)
+
+    def test_new_adaface_event_freezes_512d_provisional_search_contract(self) -> None:
+        self.event.face_search_generation = Event.FaceSearchGeneration.ADAFACE_V5
+        self.event.save(update_fields=["face_search_generation"])
+
+        created = submit_selfie_search(
+            event=self.event, selfie=valid_selfie(), storage=RecordingStorage()
+        )
+
+        self.assertEqual(created.search.configuration["embedding_model"], "adaface-ir18-webface4m")
+        self.assertEqual(created.search.configuration["embedding_dimensions"], 512)
+        self.assertEqual(created.search.configuration["cosine_distance_threshold"], 0.42)
+        generations = created.search.configuration["gallery_face_embedding_generations"]
+        self.assertEqual(
+            [(row["contract_version"], row["processor_version"]) for row in generations], [(3, 5)]
+        )
 
     def test_new_search_freezes_the_events_exact_active_generation_set(self) -> None:
         generations = list(candidate_face_embedding_generations())

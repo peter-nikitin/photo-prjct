@@ -79,6 +79,7 @@ class SearchJobTests(TestCase):
             start_date=date(2026, 7, 30),
             end_date=date(2026, 7, 30),
             city="Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.storage = RecordingStorage()
 

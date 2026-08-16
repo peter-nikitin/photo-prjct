@@ -782,6 +782,17 @@ def request_face_embedding_enqueue(
     """Queue a face-embedding job if the feature flag is enabled."""
     preview = _accepted_preview(photo)
     if photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1:
+        if photo.event.face_search_generation == Event.FaceSearchGeneration.ADAFACE_V5:
+            return request_processor(
+                photo=photo,
+                processor_type=FACE_EMBEDDING_PROCESSOR,
+                contract_version=QUALITY_FACE_CONTRACT_VERSION,
+                processor_version=LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
+                configuration=LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+                input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
+                enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
+                and preview is not None,
+            )
         return request_processor(
             photo=photo,
             processor_type=FACE_EMBEDDING_PROCESSOR,

@@ -356,12 +356,13 @@ def _configuration(*, event: Event, content_type: str, content_size: int) -> dic
     gallery_model = gallery_generations[0]["model"]
     if not isinstance(gallery_model, str):
         raise ValueError("invalid face-embedding generation")
+    embedding_dimensions, distance_threshold = _search_parameters(gallery_model)
     return {
         "contract_version": 1,
         "processor": "selfie_query",
         "embedding_model": gallery_model,
-        "embedding_dimensions": settings.SELFIE_SEARCH_EMBEDDING_DIMENSIONS,
-        "cosine_distance_threshold": settings.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD,
+        "embedding_dimensions": embedding_dimensions,
+        "cosine_distance_threshold": distance_threshold,
         "content_type": content_type,
         "content_size": content_size,
         "gallery_face_embedding_generations": list(gallery_generations),
@@ -375,12 +376,13 @@ def _gallery_configuration(
     gallery_model = gallery_generations[0]["model"]
     if not isinstance(gallery_model, str):
         raise ValueError("invalid face-embedding generation")
+    embedding_dimensions, distance_threshold = _search_parameters(gallery_model)
     configuration: dict[str, object] = {
         "contract_version": 1,
         "processor": "gallery_photo_query",
         "embedding_model": gallery_model,
-        "embedding_dimensions": settings.SELFIE_SEARCH_EMBEDDING_DIMENSIONS,
-        "cosine_distance_threshold": settings.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD,
+        "embedding_dimensions": embedding_dimensions,
+        "cosine_distance_threshold": distance_threshold,
         "gallery_face_embedding_generations": list(gallery_generations),
     }
     if photo is not None:
@@ -390,6 +392,14 @@ def _gallery_configuration(
             "detection_id": str(detection_id),
         }
     return configuration
+
+
+def _search_parameters(model: str) -> tuple[int, float]:
+    if model == "sface":
+        return 128, 0.363
+    if model == "adaface-ir18-webface4m":
+        return 512, 0.42
+    raise ValueError("invalid face-embedding generation")
 
 
 def _compatible_candidates(

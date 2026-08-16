@@ -40,7 +40,7 @@ requested_image="$APP_IMAGE"
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
-requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3}"
+requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}"
 requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
@@ -79,7 +79,7 @@ while :; do
             ;;
     esac
     case "$processor_identity" in
-        1/selfie_query/2|1/capture_metadata/2|2/generate_preview/1|2/face_embedding/3)
+        1/selfie_query/2|1/capture_metadata/2|2/generate_preview/1|2/face_embedding/3|3/face_embedding/5)
             ;;
         *)
             echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
@@ -177,7 +177,9 @@ if [ "$requested_preview_enabled" = True ]; then
     for required_photo_identity in \
         1/capture_metadata/2 \
         2/generate_preview/1 \
-        2/face_embedding/3; do
+        2/face_embedding/3 \
+        3/face_embedding/5 \
+        1/selfie_query/2; do
         case ",$requested_worker_processor_identities," in
             *",$required_photo_identity,"*)
                 ;;
@@ -650,7 +652,7 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PHOTO_PROCESSING_FACE_ENABLED=%s\n' "$requested_face_enabled"
     printf 'PHOTO_PROCESSING_WORKER_TOKEN=%s\n' "${PHOTO_PROCESSING_WORKER_TOKEN:-}"
     printf 'PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=%s\n' "${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}"
-    printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-131072}"
+    printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}"
     printf 'PHOTO_WORKER_BUILD=%s\n' "${PHOTO_WORKER_BUILD:-capture-metadata-v1}"
     printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
     printf 'PHOTO_WORKER_PROCESSOR_IDENTITIES=%s\n' "$requested_worker_processor_identities"

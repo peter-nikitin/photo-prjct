@@ -165,6 +165,7 @@ class PageTests(TestCase):
             "end_date": date.today(),
             "city": "Moscow",
             "publication_status": Event.PublicationStatus.PUBLISHED,
+            "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
         }
         values.update(overrides)
         return Event.objects.create(**values)
@@ -354,6 +355,7 @@ class GalleryPageTests(TestCase):
             "end_date": date.today(),
             "city": "Moscow",
             "publication_status": Event.PublicationStatus.PUBLISHED,
+            "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
         }
         values.update(overrides)
         return Event.objects.create(**values)

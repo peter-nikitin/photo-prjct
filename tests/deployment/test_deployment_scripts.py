@@ -1131,7 +1131,8 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
             "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-                "1/selfie_query/2,1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3"
+                "1/selfie_query/2,1/capture_metadata/2,2/generate_preview/1,"
+                "2/face_embedding/3,3/face_embedding/5"
             ),
             "PHOTO_WORKER_PROCESSOR_TYPES": (
                 "selfie_query,face_embedding,capture_metadata,generate_preview"
@@ -1147,7 +1148,7 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
     assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
         "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/2,1/capture_metadata/2,"
-        "2/generate_preview/1,2/face_embedding/3" in deployed_env
+        "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5" in deployed_env
     )
 
 
@@ -1162,7 +1163,6 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
         "3/face_embedding/4",
         "1/capture_metadata/1,2/generate_preview/1,2/face_embedding/3",
         "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,9/bogus/9",
-        "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5",
         "1/capture_metadata/2,2/generate_preview/1,2/generate_preview/1,2/face_embedding/3",
         "1/capture_metadata/2, 2/generate_preview/1,2/face_embedding/3",
         "1/capture_metadata/2,",

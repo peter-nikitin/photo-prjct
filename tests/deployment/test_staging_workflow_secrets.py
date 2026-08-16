@@ -217,14 +217,15 @@ def test_promotion_forwards_explicit_quality_identity_without_activation() -> No
 
     for step in (staging_step, verification_step):
         assert step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2,"
+            "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2' }}"
         )
     for step in (staging_step, production_step):
         assert step["env"]["PHOTO_PROCESSING_PREVIEW_ENABLED"] == (
-            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'True' }}"
         )
         assert step["env"]["PHOTO_PROCESSING_FACE_ENABLED"] == (
-            "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}"
+            "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'True' }}"
         )
 
     assert production_step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
@@ -268,7 +269,8 @@ def test_promotion_reuses_the_staging_verified_identity_and_stops_before_product
     production_step = _step(promote, "Apply production deployment")
 
     assert verify_step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-        "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+        "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2,"
+        "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2' }}"
     )
     assert verify_staging["outputs"]["photo_worker_processor_identities"] == (
         "${{ steps.verified-worker-identity.outputs.photo_worker_processor_identities }}"

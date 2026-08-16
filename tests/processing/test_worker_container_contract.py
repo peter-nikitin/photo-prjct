@@ -180,7 +180,7 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
     assert "PHOTO_PROCESSING_WORKER_TOKEN" in environment["PHOTO_WORKER_TOKEN"]
     assert environment["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
         "${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,"
-        "2/face_embedding/3}"
+        "2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}"
     )
     assert environment["PHOTO_WORKER_PROCESSOR_TYPES"] == (
         "${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,"
@@ -212,7 +212,7 @@ def test_production_worker_profile_is_bounded_and_isolated_from_web_configuratio
         "PHOTO_WORKER_LEASE_SECONDS": "${PHOTO_WORKER_LEASE_SECONDS:-120}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
             "${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,"
-            "2/face_embedding/3}"
+            "2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}"
         ),
         "PHOTO_WORKER_PROCESSOR_TYPES": (
             "${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,"

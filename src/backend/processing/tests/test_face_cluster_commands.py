@@ -35,6 +35,7 @@ class FaceClusterCommandTests(TestCase):
             end_date=date(2026, 8, 5),
             city="Moscow",
             publication_status=Event.PublicationStatus.PUBLISHED,
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.make_embedding()
 

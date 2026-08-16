@@ -173,6 +173,7 @@ class PipelineEndToEndTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Etc/UTC",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.jpeg = self._jpeg_with_capture_time()
         self._face_download_bytes: bytes | None = None

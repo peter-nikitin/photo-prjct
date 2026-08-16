@@ -90,6 +90,7 @@ class _PreviewPublicationFixture:
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def _claim(self, identifier: str = "preview-publication"):

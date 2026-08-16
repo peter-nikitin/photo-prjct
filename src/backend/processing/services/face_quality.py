@@ -749,17 +749,15 @@ def historical_quality_face_embedding_generations() -> tuple[dict[str, object], 
     )
 
 
-def local_adaface_face_embedding_generations() -> tuple[dict[str, object], ...]:
-    """Return the gated local-only AdaFace v5 generation identity."""
+def adaface_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the production AdaFace v5 generation identity."""
     from processing.models import FACE_EMBEDDING_PROCESSOR  # noqa: PLC0415
     from processing.services.enrollment import (  # noqa: PLC0415
         LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
         LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
         QUALITY_FACE_CONTRACT_VERSION,
-        _require_local_adaface_experiment,
     )
 
-    _require_local_adaface_experiment()
     return (
         {
             "contract_version": QUALITY_FACE_CONTRACT_VERSION,
@@ -770,6 +768,14 @@ def local_adaface_face_embedding_generations() -> tuple[dict[str, object], ...]:
             "model": "adaface-ir18-webface4m",
         },
     )
+
+
+def local_adaface_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the locally gated AdaFace v5 generation identity."""
+    from processing.services.enrollment import _require_local_adaface_experiment  # noqa: PLC0415
+
+    _require_local_adaface_experiment()
+    return adaface_face_embedding_generations()
 
 
 def candidate_face_embedding_status(event: Event) -> dict[str, object]:
@@ -892,6 +898,8 @@ def active_face_embedding_generations(event: Event) -> tuple[dict[str, object], 
         .first()
     )
     if activation is None:
+        if event.face_search_generation == Event.FaceSearchGeneration.ADAFACE_V5:
+            return adaface_face_embedding_generations()
         return baseline_face_embedding_generations()
     generations = validate_face_embedding_generations(activation.generations)
     if activation.generation_set_hash != _canonical_hash(list(generations)):

@@ -61,6 +61,7 @@ class WorkerApiTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Europe/Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.headers = {"HTTP_AUTHORIZATION": "Bearer worker-secret"}
 
@@ -1652,6 +1653,7 @@ class SelfieWorkerApiTests(TestCase):
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         configuration = _configuration(
             event=self.event, content_type="image/jpeg", content_size=1024

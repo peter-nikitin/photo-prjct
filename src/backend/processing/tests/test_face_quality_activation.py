@@ -36,6 +36,7 @@ from processing.services.enrollment import (
 from processing.services.face_quality import (
     activate_face_embedding_generation,
     active_face_embedding_generations,
+    adaface_face_embedding_generations,
     baseline_face_embedding_generations,
     candidate_face_embedding_generations,
     historical_baseline_face_embedding_generations,
@@ -58,6 +59,7 @@ class FaceEmbeddingActivationTests(TestCase):
             end_date=date(2026, 8, 8),
             city="Moscow",
             publication_status=Event.PublicationStatus.PUBLISHED,
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def publish_candidate_projection(
@@ -245,6 +247,15 @@ class FaceEmbeddingActivationTests(TestCase):
         self.assertEqual(
             active_face_embedding_generations(self.event),
             baseline_face_embedding_generations(),
+        )
+
+    def test_new_adaface_event_resolves_v5_without_activation(self) -> None:
+        event = self.make_event("adaface")
+        event.face_search_generation = Event.FaceSearchGeneration.ADAFACE_V5
+        event.save(update_fields=["face_search_generation"])
+
+        self.assertEqual(
+            active_face_embedding_generations(event), adaface_face_embedding_generations()
         )
         self.assertFalse(EventFaceEmbeddingActivation.objects.exists())
 

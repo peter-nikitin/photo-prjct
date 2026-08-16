@@ -628,20 +628,21 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
 
     expected = {
         "WORKER_IMAGE": "${{ needs.build.outputs.worker_image }}",
-        "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'True' }}",
         "PHOTO_PROCESSING_PREVIEW_ENABLED": (
-            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'True' }}"
         ),
         "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
             "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
         ),
         "PHOTO_PROCESSING_MAX_REQUEST_BYTES": (
-            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '131072' }}"
+            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '393216' }}"
         ),
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2,"
+            "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2' }}"
         ),
         "PHOTO_WORKER_REPLICAS": "${{ vars.PHOTO_WORKER_REPLICAS || '1' }}",
         "PHOTO_WORKER_PROCESSOR_TYPES": (
@@ -657,16 +658,16 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
 
     production_expected = {
         "WORKER_IMAGE": "ghcr.io/${{ github.repository }}-worker:${{ inputs.image_sha }}",
-        "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_ENABLED": "${{ vars.PHOTO_PROCESSING_ENABLED || 'True' }}",
         "PHOTO_PROCESSING_PREVIEW_ENABLED": (
-            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'True' }}"
         ),
         "PHOTO_PROCESSING_WORKER_TOKEN": "${{ secrets.PHOTO_PROCESSING_WORKER_TOKEN }}",
         "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": (
             "${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}"
         ),
         "PHOTO_PROCESSING_MAX_REQUEST_BYTES": (
-            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '131072' }}"
+            "${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '393216' }}"
         ),
         "PHOTO_WORKER_BUILD": "${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}",
         "PHOTO_WORKER_LEASE_SECONDS": "${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}",
@@ -684,7 +685,8 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
 
     assert verified_identity["id"] == "verified-worker-identity"
     assert verified_identity["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-        "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+        "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2,"
+        "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2' }}"
     )
     assert verify_staging["outputs"]["photo_worker_processor_identities"] == (
         "${{ steps.verified-worker-identity.outputs.photo_worker_processor_identities }}"
@@ -693,7 +695,7 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
     assert "PHOTO_WORKER_PROCESSOR_IDENTITIES" in production_apply["with"]["envs"].split(",")
 
     for name, value in {
-        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'True' }}",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES": (
             "${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}"
         ),
@@ -934,11 +936,12 @@ def test_staging_deployment_forwards_preview_processing_configuration() -> None:
     staging = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Run staging deployment")
     expected = {
         "PHOTO_PROCESSING_PREVIEW_ENABLED": (
-            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'False' }}"
+            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'True' }}"
         ),
-        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'False' }}",
+        "PHOTO_PROCESSING_FACE_ENABLED": "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'True' }}",
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2' }}"
+            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2,"
+            "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2' }}"
         ),
     }
 

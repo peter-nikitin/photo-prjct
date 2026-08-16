@@ -48,6 +48,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Europe/Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def private_photo(
@@ -518,6 +519,24 @@ class CaptureMetadataEnrollmentTests(TestCase):
                 "terminal_result_max_bytes": 8_192,
             },
         )
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_new_adaface_event_enqueues_v5_from_the_published_preview(self) -> None:
+        self.event.face_search_generation = Event.FaceSearchGeneration.ADAFACE_V5
+        self.event.save(update_fields=["face_search_generation"])
+        photo = self.private_photo("adaface-preview")
+        derivative = self.publish_preview(photo)
+
+        state = request_face_embedding_enqueue(photo)
+
+        assert state.current_job is not None
+        self.assertEqual(
+            (state.current_job.contract_version, state.current_job.processor_version), (3, 5)
+        )
+        self.assertEqual(
+            state.current_job.configuration, LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION
+        )
+        self.assertEqual(state.current_job.input_fingerprint["object_key"], derivative.final_key)
 
     def test_empty_verified_etag_is_normalized_to_unavailable_evidence(self) -> None:
         state = request_capture_metadata(self.private_photo("empty-etag"), verified_source_etag="")

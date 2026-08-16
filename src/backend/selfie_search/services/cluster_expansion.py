@@ -7,7 +7,6 @@ from math import isfinite
 from time import perf_counter
 from uuid import UUID
 
-from django.conf import settings
 from django.db import DatabaseError
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from picflow.gallery import gallery_photo_queryset
@@ -254,7 +253,6 @@ def _compatible_corpus(search: SelfieSearch, activation: EventFaceClusterActivat
         or anchor_threshold >= threshold
         or policy_id != POLICY_ID
         or reviewed_direct_threshold != threshold
-        or getattr(settings, "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD", None) != threshold
         or reviewed_anchor_threshold != anchor_threshold
         or reviewed_corpus_hash != corpus.configuration_hash
         or activation.configuration_hash

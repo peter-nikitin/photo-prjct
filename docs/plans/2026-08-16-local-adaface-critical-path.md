@@ -1,7 +1,7 @@
 # Local AdaFace Critical-Path Implementation Plan
 
 - Date: 2026-08-16
-- Status: Proposed
+- Status: Approved in conversation on 2026-08-16
 - Owner: project maintainer
 - Related specification:
   [`docs/superpowers/specs/2026-08-16-local-adaface-critical-path-design.md`](../superpowers/specs/2026-08-16-local-adaface-critical-path-design.md)

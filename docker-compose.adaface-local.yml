@@ -1,0 +1,98 @@
+name: ${COMPOSE_PROJECT_NAME:-photo-prjct-adaface-critical-path}
+
+services:
+  db:
+    ports: !override
+      - "127.0.0.1:${ADAFACE_DB_HOST_PORT:-15433}:5432"
+    volumes:
+      - adaface_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username=$${POSTGRES_USER} --dbname=$${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${ADAFACE_MINIO_ROOT_USER:-adaface-minio}
+      MINIO_ROOT_PASSWORD: ${ADAFACE_MINIO_ROOT_PASSWORD:-adaface-minio-local-only}
+    volumes:
+      - adaface_minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-05-21T01-59-54Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${ADAFACE_MINIO_ROOT_USER:-adaface-minio}
+      MINIO_ROOT_PASSWORD: ${ADAFACE_MINIO_ROOT_PASSWORD:-adaface-minio-local-only}
+      PRIVATE_MEDIA_S3_BUCKET: adaface-private
+      MEDIA_S3_PUBLIC_BUCKET: adaface-public
+    entrypoint: >-
+      /bin/sh -ec 'mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}";
+      mc mb --ignore-existing "local/$${PRIVATE_MEDIA_S3_BUCKET}";
+      mc mb --ignore-existing "local/$${MEDIA_S3_PUBLIC_BUCKET}"'
+
+  web:
+    ports: !override
+      - "127.0.0.1:${ADAFACE_WEB_HOST_PORT:-18080}:8000"
+    environment:
+      DB_HOST: db
+      MEDIA_STORAGE_BACKEND: s3
+      MEDIA_S3_ENDPOINT_URL: http://minio:9000
+      MEDIA_S3_REGION: us-east-1
+      MEDIA_S3_PUBLIC_BUCKET: adaface-public
+      MEDIA_S3_ACCESS_KEY_ID: ${ADAFACE_MINIO_ROOT_USER:-adaface-minio}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${ADAFACE_MINIO_ROOT_PASSWORD:-adaface-minio-local-only}
+      PRIVATE_MEDIA_S3_BUCKET: adaface-private
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ${ADAFACE_MINIO_ROOT_USER:-adaface-minio}
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: ${ADAFACE_MINIO_ROOT_PASSWORD:-adaface-minio-local-only}
+      PRIVATE_MEDIA_ALLOWED_ORIGINS: http://127.0.0.1:${ADAFACE_WEB_HOST_PORT:-18080}
+    depends_on:
+      db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  seed-local-preview-corpus:
+    build: .
+    profiles: ["manual-seed"]
+    entrypoint: ["python", "manage.py"]
+    working_dir: /app/src/backend
+    command: >-
+      seed_local_event_preview_corpus
+      --event-slug cyclingrace-vechernee-sadovoe
+      --manifest /corpus/manifest.json
+      --files-root /corpus
+    environment:
+      DB_NAME: ${DB_NAME:-app}
+      DB_USER: ${DB_USER:-app}
+      DB_PASSWORD: ${DB_PASSWORD:-app}
+      DB_HOST: db
+      DB_PORT: 5432
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      PRIVATE_MEDIA_S3_BUCKET: adaface-private
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ${ADAFACE_MINIO_ROOT_USER:-adaface-minio}
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: ${ADAFACE_MINIO_ROOT_PASSWORD:-adaface-minio-local-only}
+      MEDIA_S3_ENDPOINT_URL: http://minio:9000
+      MEDIA_S3_REGION: us-east-1
+    depends_on:
+      db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - /Users/petrnikitin/Documents/Projects/photo-prjct-private/event-corpora/cyclingrace-vechernee-sadovoe/previews/preview-small-v1:/corpus:ro
+
+volumes:
+  adaface_pgdata:
+  adaface_minio_data:

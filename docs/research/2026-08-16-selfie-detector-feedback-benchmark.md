@@ -118,6 +118,8 @@ Do not adopt either candidate as specified. Any further work needs a separate ap
 alternative-detector comparison or a new study design; this evidence does not authorize tuning,
 activation, deployment, or threshold changes.
 
+The completed foreground-selection follow-up is documented in [Selfie foreground selection benchmark](2026-08-16-selfie-foreground-selection-benchmark.md).
+
 ## Architecture reconciliation
 
 No architecture update required. The benchmark changed no production code, dependency, schema,

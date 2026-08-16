@@ -9,7 +9,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, connection, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -25,10 +25,9 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.enrollment import (
-    FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
-    QUALITY_FACE_CONTRACT_VERSION,
+    LOCAL_ADAFACE_MANIFEST_SHA256,
     QUALITY_FACE_PROCESSOR_VERSION,
     FaceEmbeddingGenerationApproval,
     accepted_preview_cohort_hash,
@@ -37,10 +36,12 @@ from processing.services.enrollment import (
 from processing.services.face_quality import (
     activate_face_embedding_generation,
     active_face_embedding_generations,
+    adaface_face_embedding_generations,
     baseline_face_embedding_generations,
     candidate_face_embedding_generations,
     historical_baseline_face_embedding_generations,
     historical_quality_face_embedding_generations,
+    local_adaface_face_embedding_generations,
 )
 
 
@@ -58,6 +59,7 @@ class FaceEmbeddingActivationTests(TestCase):
             end_date=date(2026, 8, 8),
             city="Moscow",
             publication_status=Event.PublicationStatus.PUBLISHED,
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def publish_candidate_projection(
@@ -66,8 +68,19 @@ class FaceEmbeddingActivationTests(TestCase):
         event: Event,
         photo_id: str,
         prior_attempts: tuple[tuple[str, bool], ...] = (),
+        generations: tuple[dict[str, object], ...] | None = None,
     ) -> ProcessingAttempt:
-        generation = candidate_face_embedding_generations()[0]
+        generation = (generations or candidate_face_embedding_generations())[0]
+        contract_version = generation["contract_version"]
+        processor_type = generation["processor_type"]
+        processor_version = generation["processor_version"]
+        configuration = generation["configuration"]
+        configuration_hash = generation["configuration_hash"]
+        assert isinstance(contract_version, int)
+        assert isinstance(processor_type, str)
+        assert isinstance(processor_version, int)
+        assert isinstance(configuration, dict)
+        assert isinstance(configuration_hash, str)
         photo = Photo.objects.create(
             id=photo_id,
             event=event,
@@ -80,21 +93,21 @@ class FaceEmbeddingActivationTests(TestCase):
         )
         run = EventProcessingRun.objects.create(
             event=event,
-            contract_version=QUALITY_FACE_CONTRACT_VERSION,
-            processor_type="face_embedding",
-            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
-            configuration_hash=generation["configuration_hash"],
+            contract_version=contract_version,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
         )
         job = ProcessingJob.objects.create(
             event=event,
             run=run,
             photo=photo,
-            contract_version=QUALITY_FACE_CONTRACT_VERSION,
-            processor_type="face_embedding",
-            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
-            configuration_hash=generation["configuration_hash"],
+            contract_version=contract_version,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
             input_fingerprint={},
             status=ProcessingJob.Status.SUCCEEDED,
         )
@@ -104,10 +117,10 @@ class FaceEmbeddingActivationTests(TestCase):
                 run=run,
                 job=job,
                 photo=photo,
-                contract_version=QUALITY_FACE_CONTRACT_VERSION,
-                processor_type="face_embedding",
-                processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-                configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+                contract_version=contract_version,
+                processor_type=processor_type,
+                processor_version=processor_version,
+                configuration=configuration,
                 input_fingerprint={},
                 status=status,
                 terminal_at=(
@@ -120,10 +133,10 @@ class FaceEmbeddingActivationTests(TestCase):
             run=run,
             job=job,
             photo=photo,
-            contract_version=QUALITY_FACE_CONTRACT_VERSION,
-            processor_type="face_embedding",
-            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+            contract_version=contract_version,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            configuration=configuration,
             input_fingerprint={},
             status=ProcessingAttempt.Status.SUCCEEDED,
             terminal_at=timezone.now(),
@@ -131,9 +144,9 @@ class FaceEmbeddingActivationTests(TestCase):
         )
         PhotoFaceEmbeddingProjection.objects.create(
             photo=photo,
-            contract_version=QUALITY_FACE_CONTRACT_VERSION,
-            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-            configuration_hash=generation["configuration_hash"],
+            contract_version=contract_version,
+            processor_version=processor_version,
+            configuration_hash=configuration_hash,
             accepted_attempt=attempt,
         )
         preview_state = request_processor(
@@ -234,6 +247,15 @@ class FaceEmbeddingActivationTests(TestCase):
         self.assertEqual(
             active_face_embedding_generations(self.event),
             baseline_face_embedding_generations(),
+        )
+
+    def test_new_adaface_event_resolves_v5_without_activation(self) -> None:
+        event = self.make_event("adaface")
+        event.face_search_generation = Event.FaceSearchGeneration.ADAFACE_V5
+        event.save(update_fields=["face_search_generation"])
+
+        self.assertEqual(
+            active_face_embedding_generations(event), adaface_face_embedding_generations()
         )
         self.assertFalse(EventFaceEmbeddingActivation.objects.exists())
 
@@ -794,6 +816,122 @@ class FaceEmbeddingActivationTests(TestCase):
                         evaluation_report_hash="d" * 64,
                         review_confirmed=True,
                     )
+
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    def test_local_adaface_target_rejects_sface_generation_and_requires_manifest_reconciliation(
+        self,
+    ) -> None:
+        """A local experiment must neither activate SFace nor bypass its manifest evidence."""
+        self.event.slug = "cyclingrace-vechernee-sadovoe"
+        self.event.save(update_fields=["slug"])
+
+        for generations in (
+            baseline_face_embedding_generations(),
+            historical_quality_face_embedding_generations(),
+            candidate_face_embedding_generations(),
+        ):
+            with self.subTest(generations=generations):
+                with self.assertRaisesRegex(
+                    ValueError, "SFace generation cannot enter the local AdaFace cohort"
+                ):
+                    activate_face_embedding_generation(
+                        event=self.event,
+                        generations=generations,
+                        approved_configuration_hash="",
+                        evaluation_report_hash="",
+                        review_confirmed=True,
+                    )
+
+        generation = local_adaface_face_embedding_generations()[0]
+        configuration_hash = generation["configuration_hash"]
+        assert isinstance(configuration_hash, str)
+        with self.assertRaisesRegex(ValueError, "exact event and manifest identity"):
+            activate_face_embedding_generation(
+                event=self.event,
+                generations=local_adaface_face_embedding_generations(),
+                approved_configuration_hash=configuration_hash,
+                evaluation_report_hash="f" * 64,
+                review_confirmed=True,
+            )
+        with self.assertRaisesRegex(ValueError, "incomplete local AdaFace evidence"):
+            activate_face_embedding_generation(
+                event=self.event,
+                generations=local_adaface_face_embedding_generations(),
+                approved_configuration_hash=configuration_hash,
+                evaluation_report_hash=LOCAL_ADAFACE_MANIFEST_SHA256,
+                review_confirmed=True,
+            )
+
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    def test_local_adaface_v5_activation_resolves_complete_accepted_projection(self) -> None:
+        self.event.slug = "cyclingrace-vechernee-sadovoe"
+        self.event.save(update_fields=["slug"])
+        generations = local_adaface_face_embedding_generations()
+        generation = generations[0]
+        configuration_hash = generation["configuration_hash"]
+        assert isinstance(configuration_hash, str)
+
+        accepted_attempt = self.publish_candidate_projection(
+            event=self.event,
+            photo_id="local-adaface-v5",
+            generations=generations,
+        )
+
+        activation = activate_face_embedding_generation(
+            event=self.event,
+            generations=generations,
+            approved_configuration_hash=configuration_hash,
+            evaluation_report_hash=LOCAL_ADAFACE_MANIFEST_SHA256,
+            review_confirmed=True,
+        )
+
+        self.assertEqual(accepted_attempt.processor_version, 5)
+        self.assertEqual(activation.generations, list(generations))
+        self.assertEqual(active_face_embedding_generations(self.event), generations)
+
+    @override_settings(
+        ADAFACE_LOCAL_EXPERIMENT_ENABLED=True,
+        ADAFACE_LOCAL_CANARY_LIMIT=1,
+        MONITORING_ENVIRONMENT="local",
+    )
+    def test_local_adaface_canary_activation_validates_only_deterministic_prefix(self) -> None:
+        self.event.slug = "cyclingrace-vechernee-sadovoe"
+        self.event.save(update_fields=["slug"])
+        generations = local_adaface_face_embedding_generations()
+        generation = generations[0]
+        configuration_hash = generation["configuration_hash"]
+        assert isinstance(configuration_hash, str)
+
+        accepted_attempt = self.publish_candidate_projection(
+            event=self.event,
+            photo_id="local-adaface-canary-first",
+            generations=generations,
+        )
+        outside_canary = Photo.objects.create(
+            id="local-adaface-canary-second",
+            event=self.event,
+            uploaded_by=self.user,
+            original_key="originals/00000000000000000000000000000000",
+            original_filename="outside-canary.jpg",
+            original_size=10,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+
+        with patch(
+            "processing.services.enrollment.candidate_face_embedding_cohort",
+            return_value=[accepted_attempt.photo, outside_canary],
+        ):
+            activation = activate_face_embedding_generation(
+                event=self.event,
+                generations=generations,
+                approved_configuration_hash=configuration_hash,
+                evaluation_report_hash=LOCAL_ADAFACE_MANIFEST_SHA256,
+                review_confirmed=True,
+            )
+            self.assertEqual(active_face_embedding_generations(self.event), generations)
+
+        self.assertEqual(activation.generations, list(generations))
 
     def test_guarded_command_records_only_a_confirmed_baseline_selection(self) -> None:
         with self.assertRaisesMessage(Exception, "review confirmation is required"):

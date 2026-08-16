@@ -21,6 +21,8 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
+    LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+    LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     CaptureTimeReprocessingTarget,
@@ -33,6 +35,7 @@ from processing.services.enrollment import (
     request_face_embedding_enqueue,
     request_processor,
 )
+from processing.services.face_quality import local_adaface_face_embedding_generations
 
 
 class CaptureMetadataEnrollmentTests(TestCase):
@@ -45,6 +48,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Europe/Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def private_photo(
@@ -169,6 +173,59 @@ class CaptureMetadataEnrollmentTests(TestCase):
                 QUALITY_FACE_CONTRACT_VERSION,
                 HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
             ),
+        )
+
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    def test_local_adaface_generation_pins_scrfd_and_adaface_in_v5(self) -> None:
+        """Changing either model must produce a different local experimental generation."""
+        generation = local_adaface_face_embedding_generations()[0]
+
+        self.assertEqual(
+            (
+                generation["contract_version"],
+                generation["processor_type"],
+                generation["processor_version"],
+                generation["model"],
+            ),
+            (3, "face_embedding", 5, "adaface-ir18-webface4m"),
+        )
+        self.assertEqual(LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION, 5)
+        self.assertEqual(
+            LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["face_embedding"],
+            {
+                "model": "adaface-ir18-webface4m",
+                "embedding_dimensions": 512,
+                "max_faces": 32,
+                "detection_threshold": 0.5,
+                "normalize_embeddings": True,
+                "quality": {
+                    "algorithm_version": "normalized-laplacian-v1",
+                    "crop_size": 112,
+                    "minimum_face_px": 32,
+                    "severe_blur_threshold": 25.0,
+                    "borderline_blur_threshold": 50.0,
+                    "minimum_relative_area": 0.0009,
+                    "minimum_confidence": 0.82,
+                },
+            },
+        )
+        self.assertEqual(
+            LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["scrfd"],
+            {
+                "input_size": [640, 640],
+                "model": "scrfd-10g-kps",
+                "model_artifact_sha256": (
+                    "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+                ),
+                "nms_threshold": 0.4,
+            },
+        )
+        self.assertEqual(
+            cast(
+                dict[str, object],
+                LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["adaface"],
+            )["alignment"],
+            "scrfd-five-landmark-112x112",
         )
         self.assertEqual(
             FACE_EMBEDDING_QUALITY_CONFIGURATION["face_embedding"],
@@ -462,6 +519,24 @@ class CaptureMetadataEnrollmentTests(TestCase):
                 "terminal_result_max_bytes": 8_192,
             },
         )
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_new_adaface_event_enqueues_v5_from_the_published_preview(self) -> None:
+        self.event.face_search_generation = Event.FaceSearchGeneration.ADAFACE_V5
+        self.event.save(update_fields=["face_search_generation"])
+        photo = self.private_photo("adaface-preview")
+        derivative = self.publish_preview(photo)
+
+        state = request_face_embedding_enqueue(photo)
+
+        assert state.current_job is not None
+        self.assertEqual(
+            (state.current_job.contract_version, state.current_job.processor_version), (3, 5)
+        )
+        self.assertEqual(
+            state.current_job.configuration, LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION
+        )
+        self.assertEqual(state.current_job.input_fingerprint["object_key"], derivative.final_key)
 
     def test_empty_verified_etag_is_normalized_to_unavailable_evidence(self) -> None:
         state = request_capture_metadata(self.private_photo("empty-etag"), verified_source_etag="")

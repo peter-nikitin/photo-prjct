@@ -4,6 +4,8 @@ import hashlib
 import json
 from datetime import date, timedelta
 from math import sqrt
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -50,6 +52,7 @@ from selfie_search.services.jobs import (
     recover_expired_search_attempts,
     refresh_search_download,
     search_attempt_reference,
+    selfie_worker_configuration,
 )
 from selfie_search.services.submission import _configuration as submission_configuration
 
@@ -76,8 +79,39 @@ class SearchJobTests(TestCase):
             start_date=date(2026, 7, 30),
             end_date=date(2026, 7, 30),
             city="Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.storage = RecordingStorage()
+
+    def test_local_adaface_selfie_claim_pins_scrfd_and_recognizer(self) -> None:
+        """Changing either artifact must make the transient worker claim incompatible."""
+        search = cast(
+            SelfieSearch,
+            SimpleNamespace(
+                configuration={
+                    "embedding_model": "adaface-ir18-webface4m",
+                    "embedding_dimensions": 512,
+                }
+            ),
+        )
+
+        configuration = selfie_worker_configuration(search)
+
+        self.assertEqual(
+            cast(dict[str, object], configuration["scrfd"])["model_artifact_sha256"],
+            "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+        )
+        self.assertEqual(
+            configuration["adaface"],
+            {
+                "alignment": "scrfd-five-landmark-112x112",
+                "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
+                "model_artifact_sha256": (
+                    "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b"
+                ),
+                "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
+            },
+        )
 
     def make_search(self, *, with_candidate: bool = True) -> SelfieSearch:
         ordinal = SelfieSearch.objects.count()

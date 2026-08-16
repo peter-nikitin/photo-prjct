@@ -27,6 +27,11 @@ class EventModelTests(TestCase):
         values.update(overrides)
         return Event.objects.create(**values)
 
+    def test_new_event_defaults_to_adaface_v5(self) -> None:
+        event = self.make_event(name="AdaFace default", slug="adaface-default")
+
+        self.assertEqual(event.face_search_generation, Event.FaceSearchGeneration.ADAFACE_V5)
+
     def test_string_representation_uses_name(self) -> None:
         self.assertEqual(str(self.make_event()), "Test Run")
 

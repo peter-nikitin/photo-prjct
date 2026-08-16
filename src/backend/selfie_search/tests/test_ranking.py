@@ -125,6 +125,33 @@ class RankingTests(TestCase):
         with self.assertRaises(RankingError):
             rank_embeddings(self.search, [1.0] + [0.0] * 126, self.candidates)
 
+    def test_rank_embeddings_uses_the_frozen_adaface_512_threshold_contract(self) -> None:
+        """A local AdaFace search must not silently fall back to the SFace ranking identity."""
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="adaface-ranking".ljust(64, "0"),
+            temporary_object_key="selfie-search/0123456789abcdef0123456789abcdef",
+            configuration={
+                "embedding_model": "adaface-ir18-webface4m",
+                "embedding_dimensions": 512,
+                "cosine_distance_threshold": 0.43,
+            },
+        )
+        candidate = CandidateEmbedding(
+            model_version="adaface-ir18-webface4m",
+            vector=[0.58, sqrt(1 - 0.58**2)] + [0.0] * 510,
+            detection_id=uuid4(),
+            photo_id="adaface-photo",
+            photo_event_id=self.event.id,
+            attempt_event_id=self.event.id,
+            attempt_photo_id="adaface-photo",
+        )
+
+        ranked = rank_embeddings(search, [1.0] + [0.0] * 511, [candidate])
+
+        self.assertEqual([row.photo_id for row in ranked], ["adaface-photo"])
+        self.assertAlmostEqual(ranked[0].cosine_distance, 0.42)
+
     def test_rank_search_fails_closed_for_incompatible_candidate_model_or_dimension(self) -> None:
         self.add_candidate(photo_id="model", distance=0.1, model="other")
 

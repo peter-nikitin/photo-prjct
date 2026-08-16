@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 from photo_worker.contracts import (
     FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
@@ -7,7 +9,7 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE_FACE_EMBEDDING,
     PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_SELFIE_QUERY,
-    V2_FACE_EMBEDDING_CONFIGURATION,
+    SCRFD_FACE_EMBEDDING_CONFIGURATION,
     V2_GENERATE_PREVIEW_CONFIGURATION,
     Claim,
     ContractError,
@@ -22,12 +24,65 @@ def test_preview_contract_caps_current_multibuffer_pipeline_at_24_megapixels() -
     assert worker["max_pixels"] == 24_000_000
 
 
-def test_v2_face_contract_reserves_128_kib_for_a_maximum_typed_terminal_payload() -> None:
-    worker = V2_FACE_EMBEDDING_CONFIGURATION["worker"]
+def test_active_face_contracts_reserve_model_specific_payload_capacity() -> None:
+    sface_worker = SCRFD_FACE_EMBEDDING_CONFIGURATION["worker"]
+    adaface_worker = adaface_quality_configuration()["worker"]
 
+    assert isinstance(sface_worker, dict)
+    assert isinstance(adaface_worker, dict)
+    assert sface_worker["terminal_result_max_bytes"] == 128 * 1024
+    assert sface_worker["api_response_max_bytes"] == 128 * 1024
+    assert adaface_worker["terminal_result_max_bytes"] == 384 * 1024
+    assert adaface_worker["api_response_max_bytes"] == 384 * 1024
+
+
+@pytest.mark.parametrize(
+    ("terminal_result_max_bytes", "api_response_max_bytes", "invalid_field"),
+    [
+        (384 * 1024 - 1, 384 * 1024, "terminal_result_max_bytes"),
+        (384 * 1024, 384 * 1024 - 1, "api_response_max_bytes"),
+    ],
+)
+def test_adaface_v5_claim_rejects_each_transport_bound_below_full_gallery_capacity_for_one_face(
+    terminal_result_max_bytes: int,
+    api_response_max_bytes: int,
+    invalid_field: str,
+) -> None:
+    configuration = adaface_quality_configuration()
+    worker = configuration["worker"]
+    face = configuration["face_embedding"]
     assert isinstance(worker, dict)
-    assert worker["terminal_result_max_bytes"] == 128 * 1024
-    assert worker["api_response_max_bytes"] == 128 * 1024
+    assert isinstance(face, dict)
+    face["max_faces"] = 1
+    worker["api_response_max_bytes"] = api_response_max_bytes
+    worker["terminal_result_max_bytes"] = terminal_result_max_bytes
+
+    with pytest.raises(ContractError, match=invalid_field):
+        payload = quality_preview_claim_payload(processor_version=5)
+        job = payload["job"]
+        assert isinstance(job, dict)
+        job["configuration"] = configuration
+        Claim.from_response(payload)
+
+
+def test_adaface_v5_claim_accepts_exact_full_gallery_transport_capacity_for_one_face() -> None:
+    configuration = adaface_quality_configuration()
+    worker = configuration["worker"]
+    face = configuration["face_embedding"]
+    assert isinstance(worker, dict)
+    assert isinstance(face, dict)
+    face["max_faces"] = 1
+    worker["api_response_max_bytes"] = 384 * 1024
+    worker["terminal_result_max_bytes"] = 384 * 1024
+
+    payload = quality_preview_claim_payload(processor_version=5)
+    job = payload["job"]
+    assert isinstance(job, dict)
+    job["configuration"] = configuration
+    claim = Claim.from_response(payload)
+
+    assert claim.job is not None
+    assert claim.job.configuration.max_faces == 1
 
 
 def preview_configuration() -> dict[str, object]:
@@ -71,35 +126,7 @@ def preview_configuration() -> dict[str, object]:
 
 
 def preview_face_configuration() -> dict[str, object]:
-    return {
-        "retry_policy": {
-            "max_attempts": 3,
-            "base_backoff_seconds": 30,
-            "max_backoff_seconds": 300,
-            "jitter_seconds": 5,
-            "lease_max_seconds": 300,
-        },
-        "max_cohort_size": 16,
-        "report_max_bytes": 262_144,
-        "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
-        "face_embedding": {
-            "model": "sface",
-            "min_face_px": 32,
-            "max_faces_per_photo": 32,
-            "normalize_embeddings": True,
-            "detection_threshold": 0.5,
-        },
-        "worker": {
-            "concurrency": 1,
-            "api_response_max_bytes": 128 * 1024,
-            "heartbeat_interval_seconds": 30,
-            "lease_duration_seconds": 120,
-            "max_input_bytes": 52_428_800,
-            "max_pixels": 100_000_000,
-            "poll_min_delay_seconds": 5,
-            "terminal_result_max_bytes": 128 * 1024,
-        },
-    }
+    return deepcopy(SCRFD_FACE_EMBEDDING_CONFIGURATION)
 
 
 def preview_claim_payload(**overrides: object) -> dict[str, object]:
@@ -350,13 +377,23 @@ def processor_configuration(processor_type: str = PROCESSOR_TYPE) -> dict[str, o
         "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
         "worker": {
             "concurrency": 1,
-            "api_response_max_bytes": 16_384,
+            "api_response_max_bytes": (
+                384 * 1024
+                if processor_type
+                in {PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK}
+                else 16_384
+            ),
             "heartbeat_interval_seconds": 30,
             "lease_duration_seconds": 120,
             "max_input_bytes": 52_428_800,
             "max_pixels": 100_000_000,
             "poll_min_delay_seconds": 5,
-            "terminal_result_max_bytes": 8_192,
+            "terminal_result_max_bytes": (
+                384 * 1024
+                if processor_type
+                in {PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK}
+                else 8_192
+            ),
         },
         **(
             {
@@ -375,6 +412,9 @@ def processor_configuration(processor_type: str = PROCESSOR_TYPE) -> dict[str, o
                 "face_embedding": {
                     "max_faces": 2,
                     "detection_threshold": 0.75,
+                    "model": "adaface-ir18-webface4m",
+                    "embedding_dimensions": 512,
+                    "normalize_embeddings": True,
                 }
             }
         ),
@@ -417,7 +457,7 @@ def claim_payload(
 
 
 def quality_configuration() -> dict[str, object]:
-    return {
+    configuration = {
         **processor_configuration(PROCESSOR_TYPE_FACE_EMBEDDING),
         "face_embedding": {
             "model": "sface",
@@ -435,6 +475,34 @@ def quality_configuration() -> dict[str, object]:
             },
         },
     }
+    worker = configuration["worker"]
+    assert isinstance(worker, dict)
+    worker["api_response_max_bytes"] = 384 * 1024
+    worker["terminal_result_max_bytes"] = 384 * 1024
+    return configuration
+
+
+def adaface_quality_configuration() -> dict[str, object]:
+    configuration = quality_configuration()
+    configuration["face_embedding"] = {
+        **configuration["face_embedding"],
+        "model": "adaface-ir18-webface4m",
+        "embedding_dimensions": 512,
+        "detection_threshold": 0.5,
+    }
+    configuration["adaface"] = {
+        "alignment": "scrfd-five-landmark-112x112",
+        "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
+        "model_artifact_sha256": "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b",
+        "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
+    }
+    configuration["scrfd"] = {
+        "input_size": [640, 640],
+        "model": "scrfd-10g-kps",
+        "model_artifact_sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+        "nms_threshold": 0.4,
+    }
+    return configuration
 
 
 def quality_claim_payload(
@@ -532,6 +600,52 @@ def test_v4_quality_face_claim_accepts_only_preview_input_with_geometry() -> Non
 
     with pytest.raises(ContractError):
         Claim.from_response(quality_claim_payload(processor_version=4))
+
+    payload = quality_preview_claim_payload(processor_version=4)
+    job = payload["job"]
+    assert isinstance(job, dict)
+    job["configuration"] = adaface_quality_configuration()
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
+
+
+def test_v5_adaface_quality_claim_requires_its_pinned_generation_identity() -> None:
+    """A v5 claim without the AdaFace artifact identity would make the cohort ambiguous."""
+    configuration = adaface_quality_configuration()
+
+    payload = quality_preview_claim_payload(processor_version=5)
+    job = payload["job"]
+    assert isinstance(job, dict)
+    job["configuration"] = configuration
+    claim = Claim.from_response(payload)
+
+    assert claim.job is not None
+    assert (claim.job.contract_version, claim.job.processor_version) == (3, 5)
+    with pytest.raises(ContractError):
+        Claim.from_response(quality_preview_claim_payload(processor_version=5))
+
+    for field, value in (("model_artifact_sha256", "f" * 64), ("model_revision", "e" * 40)):
+        with pytest.raises(ContractError):
+            tampered = adaface_quality_configuration()
+            adaface = tampered["adaface"]
+            assert isinstance(adaface, dict)
+            adaface[field] = value
+            payload = quality_preview_claim_payload(processor_version=5)
+            job = payload["job"]
+            assert isinstance(job, dict)
+            job["configuration"] = tampered
+            Claim.from_response(payload)
+
+    tampered = adaface_quality_configuration()
+    scrfd = tampered["scrfd"]
+    assert isinstance(scrfd, dict)
+    scrfd["model_artifact_sha256"] = "f" * 64
+    payload = quality_preview_claim_payload(processor_version=5)
+    job = payload["job"]
+    assert isinstance(job, dict)
+    job["configuration"] = tampered
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
 
 
 def test_v3_quality_face_claim_rejects_a_preview_key_for_another_photo() -> None:
@@ -633,7 +747,7 @@ def test_v3_quality_face_claim_rejects_mixed_or_malformed_input_identity(
         lambda quality: quality.__setitem__("severe_blur_threshold", 20.0),
         lambda quality: quality.__setitem__("unexpected", "value"),
         lambda quality: quality.__setitem__("algorithm_version", "unsupported-algorithm"),
-        lambda quality: quality.__setitem__("model", "sface-v1"),
+        lambda quality: quality.__setitem__("model", "sface"),
     ],
 )
 def test_v3_quality_face_claim_rejects_incomplete_or_invalid_quality_identity(
@@ -653,9 +767,13 @@ def test_v3_quality_face_claim_rejects_incomplete_or_invalid_quality_identity(
 
 @pytest.mark.parametrize(
     "field,value",
-    [("model", "sface-v1"), ("normalize_embeddings", False)],
+    [
+        ("model", "other"),
+        ("embedding_dimensions", 128),
+        ("normalize_embeddings", False),
+    ],
 )
-def test_v3_quality_face_claim_rejects_semantics_the_worker_does_not_implement(
+def test_v3_quality_face_claim_rejects_invalid_sface_generation_semantics(
     field: str, value: object
 ) -> None:
     configuration = quality_configuration()
@@ -667,19 +785,16 @@ def test_v3_quality_face_claim_rejects_semantics_the_worker_does_not_implement(
         Claim.from_response(quality_claim_payload(configuration=configuration))
 
 
-def test_v1_face_claim_keeps_legacy_model_alias_and_normalization_parsing() -> None:
+def test_face_claim_rejects_obsolete_sface_model_identity() -> None:
     configuration = processor_configuration(PROCESSOR_TYPE_FACE_EMBEDDING)
     face = configuration["face_embedding"]
     assert isinstance(face, dict)
-    face.update({"model": "sface-v1", "normalize_embeddings": False})
+    face.update({"model": "sface", "embedding_dimensions": 128})
 
-    claim = Claim.from_response(
-        claim_payload(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING, configuration=configuration)
-    )
-
-    assert claim.job is not None
-    assert claim.job.contract_version == 1
-    assert claim.job.configuration.model == "sface-v1"
+    with pytest.raises(ContractError):
+        Claim.from_response(
+            claim_payload(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING, configuration=configuration)
+        )
 
 
 def test_claim_accepts_only_the_supported_processor_contract() -> None:
@@ -718,16 +833,19 @@ def test_claim_accepts_face_embedding_processor_contract() -> None:
                 "face_embedding": {
                     "max_faces": 3,
                     "detection_threshold": 0.8,
+                    "model": "adaface-ir18-webface4m",
+                    "embedding_dimensions": 512,
+                    "normalize_embeddings": True,
                 },
                 "worker": {
                     "concurrency": 1,
-                    "api_response_max_bytes": 16_384,
+                    "api_response_max_bytes": 384 * 1024,
                     "heartbeat_interval_seconds": 30,
                     "lease_duration_seconds": 120,
                     "max_input_bytes": 52_428_800,
                     "max_pixels": 100_000_000,
                     "poll_min_delay_seconds": 5,
-                    "terminal_result_max_bytes": 8_192,
+                    "terminal_result_max_bytes": 384 * 1024,
                 },
             },
         )
@@ -739,7 +857,7 @@ def test_claim_accepts_face_embedding_processor_contract() -> None:
     assert claim.job.configuration.face_detection_threshold == 0.8
 
 
-def test_claim_accepts_face_embedding_configuration_with_legacy_backend_fields() -> None:
+def test_claim_accepts_exact_adaface_preview_configuration() -> None:
     claim = Claim.from_response(
         claim_payload(
             processor_type=PROCESSOR_TYPE_FACE_EMBEDDING,
@@ -755,20 +873,21 @@ def test_claim_accepts_face_embedding_configuration_with_legacy_backend_fields()
                 "report_max_bytes": 262_144,
                 "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
                 "face_embedding": {
-                    "model": "sface",
+                    "model": "adaface-ir18-webface4m",
+                    "embedding_dimensions": 512,
                     "max_faces_per_photo": 32,
                     "min_face_px": 32,
                     "normalize_embeddings": True,
                 },
                 "worker": {
                     "concurrency": 1,
-                    "api_response_max_bytes": 16_384,
+                    "api_response_max_bytes": 384 * 1024,
                     "heartbeat_interval_seconds": 30,
                     "lease_duration_seconds": 120,
                     "max_input_bytes": 52_428_800,
                     "max_pixels": 100_000_000,
                     "poll_min_delay_seconds": 5,
-                    "terminal_result_max_bytes": 8_192,
+                    "terminal_result_max_bytes": 384 * 1024,
                 },
             },
         )
@@ -777,7 +896,8 @@ def test_claim_accepts_face_embedding_configuration_with_legacy_backend_fields()
     assert claim.job is not None
     assert claim.job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING
     assert claim.job.configuration.max_faces == 32
-    assert claim.job.configuration.model == "sface"
+    assert claim.job.configuration.model == "adaface-ir18-webface4m"
+    assert claim.job.configuration.embedding_dimensions == 512
 
 
 @pytest.mark.parametrize(
@@ -797,16 +917,43 @@ def test_claim_accepts_face_embedding_configuration_with_legacy_backend_fields()
         {"configuration": {}},
         {"unexpected": "value"},
         {
+            "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING,
             "configuration": {
                 **processor_configuration(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING),
-                "face_embedding": {"max_faces": 0},
-            }
+                "face_embedding": {
+                    "max_faces": 0,
+                    "detection_threshold": 0.75,
+                    "model": "adaface-ir18-webface4m",
+                    "embedding_dimensions": 512,
+                    "normalize_embeddings": True,
+                },
+            },
         },
         {
+            "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING,
             "configuration": {
                 **processor_configuration(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING),
-                "face_embedding": {"max_faces": 1000},
-            }
+                "face_embedding": {
+                    "max_faces": 1000,
+                    "detection_threshold": 0.75,
+                    "model": "adaface-ir18-webface4m",
+                    "embedding_dimensions": 512,
+                    "normalize_embeddings": True,
+                },
+            },
+        },
+        {
+            "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING,
+            "configuration": {
+                **processor_configuration(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING),
+                "face_embedding": {
+                    "max_faces": 33,
+                    "detection_threshold": 0.75,
+                    "model": "adaface-ir18-webface4m",
+                    "embedding_dimensions": 512,
+                    "normalize_embeddings": True,
+                },
+            },
         },
     ],
 )
@@ -820,6 +967,102 @@ def test_claim_rejects_hostile_wire_identifiers() -> None:
         Claim.from_response(claim_payload(photo_id="https://storage.example.test/x?token=secret"))
     with pytest.raises(ContractError):
         Claim.from_response(claim_payload(run_id="not-a-uuid"))
+
+
+def test_claim_keeps_http_minio_downloads_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", raising=False)
+
+    with pytest.raises(ContractError):
+        Claim.from_response(
+            claim_payload(
+                download_url=(
+                    "http://minio:9000/adaface-private/previews/photo.jpg?X-Amz-Signature=local"
+                )
+            )
+        )
+
+
+def test_claim_allows_exact_local_minio_http_download_when_explicitly_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", "true")
+
+    claim = Claim.from_response(
+        claim_payload(
+            download_url=(
+                "http://minio:9000/adaface-private/previews/photo.jpg?X-Amz-Signature=local"
+            )
+        )
+    )
+
+    assert claim.job is not None
+
+
+@pytest.mark.parametrize(
+    "download_url",
+    [
+        "http://localhost:9000/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://minio:9001/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://minio/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://MINIO:9000/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://user:password@minio:9000/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://minio:bad/adaface-private/photo.jpg?X-Amz-Signature=local",
+        "http://minio:9000",
+        "http://minio:9000/?X-Amz-Signature=local",
+        "http://minio:9000////?X-Amz-Signature=local",
+        "http://minio:9000/adaface-private/photo.jpg",
+        "http://minio:9000/adaface-private/photo.jpg?X-Amz-Signature=",
+        "http://minio:9000/adaface-private/photo.jpg?X-Amz-Signature=+",
+        "http://minio:9000/adaface-private/photo.jpg?X-Amz-Signature=%20",
+        (
+            "http://minio:9000/adaface-private/photo.jpg"
+            "?X-Amz-Signature=first&X-Amz-Signature=second"
+        ),
+        (
+            "http://minio:9000/adaface-private/photo.jpg"
+            "?X-Amz-Signature=first&%58-Amz-Signature=second"
+        ),
+        "http://minio:9000/adaface-private/photo.jpg?%58-Amz-Signature=local",
+        "http://minio:9000/adaface-private/photo.jpg?x-amz-signature=local",
+        "http://minio:9000/adaface-private/photo name.jpg?X-Amz-Signature=local",
+    ],
+)
+def test_claim_rejects_every_other_insecure_or_malformed_download_url(
+    monkeypatch: pytest.MonkeyPatch,
+    download_url: str,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", "true")
+
+    with pytest.raises(ContractError):
+        Claim.from_response(claim_payload(download_url=download_url))
+
+
+@pytest.mark.parametrize("flag", ["1", "TRUE", "yes"])
+def test_claim_requires_the_exact_local_minio_gate_value(
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", flag)
+
+    with pytest.raises(ContractError):
+        Claim.from_response(
+            claim_payload(
+                download_url=("http://minio:9000/adaface-private/photo.jpg?X-Amz-Signature=local")
+            )
+        )
+
+
+def test_claim_rejects_credentials_in_https_download_url() -> None:
+    with pytest.raises(ContractError):
+        Claim.from_response(
+            claim_payload(
+                download_url=(
+                    "https://user:password@storage.example.test/photo.jpg?X-Amz-Signature=secret"
+                )
+            )
+        )
 
 
 def test_claim_rejects_a_missing_job_shape_as_a_contract_error() -> None:
@@ -846,12 +1089,25 @@ def selfie_claim_payload(
         **configuration["worker"],
         "max_input_bytes": 20 * 1024 * 1024,
         "max_pixels": 25_000_000,
+        "terminal_result_max_bytes": 16_384,
     }
     configuration["selfie_query"] = {
         "detection_threshold": 0.5,
-        "embedding_dimensions": 128,
+        "embedding_dimensions": 512,
         "min_face_px": 32,
-        "model": "sface",
+        "model": "adaface-ir18-webface4m",
+    }
+    configuration["scrfd"] = {
+        "input_size": [640, 640],
+        "model": "scrfd-10g-kps",
+        "model_artifact_sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+        "nms_threshold": 0.4,
+    }
+    configuration["adaface"] = {
+        "alignment": "scrfd-five-landmark-112x112",
+        "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
+        "model_artifact_sha256": "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b",
+        "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
     }
     job: dict[str, object] = {
         "id": "00000000-0000-0000-0000-000000000011",
@@ -892,6 +1148,7 @@ def test_claim_accepts_only_the_exact_selfie_query_union_variant() -> None:
     [
         ("max_input_bytes", 20 * 1024 * 1024 - 1),
         ("max_pixels", 25_000_000 - 1),
+        ("terminal_result_max_bytes", 8_192),
     ],
 )
 def test_selfie_claim_rejects_limits_that_do_not_exactly_match_the_approved_contract(

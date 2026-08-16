@@ -12,6 +12,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, Q
 from picflow.models import Event
@@ -22,11 +23,17 @@ if TYPE_CHECKING:
 QUALITY_FACE_CONTRACT_VERSION = 3
 HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION = 3
 QUALITY_FACE_PROCESSOR_VERSION = 4
+LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION = 5
 QUALITY_FACE_PROCESSOR_VERSIONS = frozenset(
-    {HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION, QUALITY_FACE_PROCESSOR_VERSION}
+    {
+        HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
+        QUALITY_FACE_PROCESSOR_VERSION,
+        LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
+    }
 )
 MAX_QUALITY_FACES = 64
-EMBEDDING_DIMENSIONS = 128
+SFACE_EMBEDDING_DIMENSIONS = 128
+ADAFACE_EMBEDDING_DIMENSIONS = 512
 MAX_SHARPNESS = 1_040_400.0
 
 QUALITY_REJECTION_REASONS = frozenset(
@@ -99,9 +106,10 @@ _PUBLISHED_PREVIEW_KEY = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
     r"[0-9a-f]{64}\.jpg"
 )
-_FACE_CONFIGURATION_FIELDS = frozenset(
+_SFACE_FACE_CONFIGURATION_FIELDS = frozenset(
     {"model", "max_faces", "detection_threshold", "normalize_embeddings", "quality"}
 )
+_ADAFACE_FACE_CONFIGURATION_FIELDS = _SFACE_FACE_CONFIGURATION_FIELDS | {"embedding_dimensions"}
 _QUALITY_CONFIGURATION_FIELDS = frozenset(
     {
         "algorithm_version",
@@ -121,6 +129,8 @@ class FaceQualityResultError(ValueError):
 
 @dataclass(frozen=True)
 class QualityFaceConfiguration:
+    model: str
+    embedding_dimensions: int
     maximum_faces: int
     algorithm_version: str
     crop_size: int
@@ -194,7 +204,7 @@ def validate_quality_face_result(value: object, *, configuration: object) -> Val
     quality_configuration = _validate_quality_configuration(configuration)
     if not isinstance(value, dict) or set(value) not in {_RESULT_FIELDS, _PREVIEW_RESULT_FIELDS}:
         raise FaceQualityResultError("invalid result fields")
-    if value["model"] != "sface":
+    if value["model"] != quality_configuration.model:
         raise FaceQualityResultError("invalid model")
     face_count = value["face_count"]
     faces = value["faces"]
@@ -226,7 +236,7 @@ def validate_quality_face_result(value: object, *, configuration: object) -> Val
     ):
         raise FaceQualityResultError("invalid single-face usability")
     return ValidatedQualityResult(
-        model="sface",
+        model=quality_configuration.model,
         faces=validated_faces,
         has_single_query_face_usable=has_single,
         warnings=list(warnings),
@@ -352,14 +362,24 @@ def _validate_quality_configuration(configuration: object) -> QualityFaceConfigu
     if not isinstance(configuration, dict):
         raise FaceQualityResultError("invalid processor configuration")
     face_configuration = configuration.get("face_embedding")
-    if (
-        not isinstance(face_configuration, dict)
-        or set(face_configuration) != _FACE_CONFIGURATION_FIELDS
-    ):
+    if not isinstance(face_configuration, dict):
+        raise FaceQualityResultError("invalid processor configuration")
+    model = face_configuration.get("model")
+    if model == "sface":
+        expected_fields = _SFACE_FACE_CONFIGURATION_FIELDS
+        embedding_dimensions = SFACE_EMBEDDING_DIMENSIONS
+    elif model == "adaface-ir18-webface4m":
+        expected_fields = _ADAFACE_FACE_CONFIGURATION_FIELDS
+        embedding_dimensions = ADAFACE_EMBEDDING_DIMENSIONS
+    else:
         raise FaceQualityResultError("invalid processor configuration")
     if (
-        face_configuration["model"] != "sface"
+        set(face_configuration) != expected_fields
         or face_configuration["normalize_embeddings"] is not True
+        or (
+            model == "adaface-ir18-webface4m"
+            and face_configuration["embedding_dimensions"] != embedding_dimensions
+        )
     ):
         raise FaceQualityResultError("invalid processor configuration")
     maximum_faces = face_configuration.get("max_faces")
@@ -394,6 +414,8 @@ def _validate_quality_configuration(configuration: object) -> QualityFaceConfigu
     if severe_blur_threshold >= borderline_blur_threshold:
         raise FaceQualityResultError("invalid processor configuration")
     return QualityFaceConfiguration(
+        model=model,
+        embedding_dimensions=embedding_dimensions,
         maximum_faces=maximum_faces,
         algorithm_version="normalized-laplacian-v1",
         crop_size=112,
@@ -429,7 +451,9 @@ def _validate_face(
         quality = _validate_quality(
             value["quality"], expected_decision="accepted", configuration=configuration
         )
-        embedding = _validate_embedding(value["embedding"])
+        embedding = _validate_embedding(
+            value["embedding"], dimensions=configuration.embedding_dimensions
+        )
     elif status == "quality_rejected" and set(value) == _FACE_FIELDS | {"quality"}:
         quality = _validate_quality(
             value["quality"],
@@ -540,8 +564,8 @@ def _quality_rejection_reasons(
     return tuple(reasons)
 
 
-def _validate_embedding(value: object) -> list[float]:
-    if not isinstance(value, list) or len(value) != EMBEDDING_DIMENSIONS:
+def _validate_embedding(value: object, *, dimensions: int) -> list[float]:
+    if not isinstance(value, list) or len(value) != dimensions:
         raise FaceQualityResultError("invalid embedding dimensions")
     embedding = [_finite_number(item, "invalid embedding") for item in value]
     norm = math.sqrt(sum(item * item for item in embedding))
@@ -725,8 +749,48 @@ def historical_quality_face_embedding_generations() -> tuple[dict[str, object], 
     )
 
 
+def adaface_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the production AdaFace v5 generation identity."""
+    from processing.models import FACE_EMBEDDING_PROCESSOR  # noqa: PLC0415
+    from processing.services.enrollment import (  # noqa: PLC0415
+        LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+        LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
+        QUALITY_FACE_CONTRACT_VERSION,
+    )
+
+    return (
+        {
+            "contract_version": QUALITY_FACE_CONTRACT_VERSION,
+            "processor_type": FACE_EMBEDDING_PROCESSOR,
+            "processor_version": LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
+            "configuration": deepcopy(LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION),
+            "configuration_hash": _canonical_hash(LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION),
+            "model": "adaface-ir18-webface4m",
+        },
+    )
+
+
+def local_adaface_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Return the locally gated AdaFace v5 generation identity."""
+    from processing.services.enrollment import _require_local_adaface_experiment  # noqa: PLC0415
+
+    _require_local_adaface_experiment()
+    return adaface_face_embedding_generations()
+
+
 def candidate_face_embedding_status(event: Event) -> dict[str, object]:
     """Return privacy-safe exact v4 candidate processing and projection aggregates."""
+    return _face_embedding_generation_status(event, candidate_face_embedding_generations()[0])
+
+
+def local_adaface_face_embedding_status(event: Event) -> dict[str, object]:
+    """Return privacy-safe exact local AdaFace v5 processing and projection aggregates."""
+    return _face_embedding_generation_status(event, local_adaface_face_embedding_generations()[0])
+
+
+def _face_embedding_generation_status(
+    event: Event, generation: dict[str, object]
+) -> dict[str, object]:
     from processing.models import (  # noqa: PLC0415
         FACE_EMBEDDING_PROCESSOR,
         PhotoFaceDetection,
@@ -736,18 +800,15 @@ def candidate_face_embedding_status(event: Event) -> dict[str, object]:
         ProcessingJob,
     )
     from processing.services.enrollment import (  # noqa: PLC0415
-        QUALITY_FACE_CONTRACT_VERSION,
-        QUALITY_FACE_PROCESSOR_VERSION,
         candidate_face_embedding_cohort,
     )
 
-    candidate = candidate_face_embedding_generations()[0]
     jobs = ProcessingJob.objects.filter(
         event=event,
-        contract_version=QUALITY_FACE_CONTRACT_VERSION,
+        contract_version=generation["contract_version"],
         processor_type=FACE_EMBEDDING_PROCESSOR,
-        processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-        configuration_hash=candidate["configuration_hash"],
+        processor_version=generation["processor_version"],
+        configuration_hash=generation["configuration_hash"],
     )
     attempts = ProcessingAttempt.objects.filter(job__in=jobs)
     states = PhotoProcessingState.objects.filter(
@@ -756,9 +817,9 @@ def candidate_face_embedding_status(event: Event) -> dict[str, object]:
     )
     projections = PhotoFaceEmbeddingProjection.objects.filter(
         photo__event=event,
-        contract_version=QUALITY_FACE_CONTRACT_VERSION,
-        processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-        configuration_hash=candidate["configuration_hash"],
+        contract_version=generation["contract_version"],
+        processor_version=generation["processor_version"],
+        configuration_hash=generation["configuration_hash"],
     )
     detections = PhotoFaceDetection.objects.filter(attempt__job__in=jobs)
 
@@ -837,6 +898,8 @@ def active_face_embedding_generations(event: Event) -> tuple[dict[str, object], 
         .first()
     )
     if activation is None:
+        if event.face_search_generation == Event.FaceSearchGeneration.ADAFACE_V5:
+            return adaface_face_embedding_generations()
         return baseline_face_embedding_generations()
     generations = validate_face_embedding_generations(activation.generations)
     if activation.generation_set_hash != _canonical_hash(list(generations)):
@@ -852,6 +915,14 @@ def active_face_embedding_generations(event: Event) -> tuple[dict[str, object], 
             event=event,
             approved_configuration_hash=activation.approved_configuration_hash,
             evaluation_report_hash=activation.approved_evaluation_report_hash,
+        )
+    elif getattr(settings, "ADAFACE_LOCAL_EXPERIMENT_ENABLED", False) is True and (
+        generations == local_adaface_face_embedding_generations()
+    ):
+        _validate_local_adaface_activation(
+            event=event,
+            approved_configuration_hash=activation.approved_configuration_hash,
+            manifest_sha256=activation.approved_evaluation_report_hash,
         )
     return generations
 
@@ -873,10 +944,17 @@ def activate_face_embedding_generation(
     baseline = baseline_face_embedding_generations()
     candidate = candidate_face_embedding_generations()
     historical = historical_quality_face_embedding_generations()
+    local_adaface = (
+        local_adaface_face_embedding_generations()
+        if getattr(settings, "ADAFACE_LOCAL_EXPERIMENT_ENABLED", False) is True
+        else ()
+    )
     if selected == baseline:
         if approved_configuration_hash or evaluation_report_hash:
             raise ValueError("baseline activation must not claim candidate approval")
     elif selected == candidate:
+        pass
+    elif selected == local_adaface:
         pass
     elif selected != historical:  # pragma: no cover - generation-set validation rejects this.
         raise ValueError("unrecognized face-embedding generation set")
@@ -885,11 +963,23 @@ def activate_face_embedding_generation(
     generation_set_hash = _canonical_hash(serialized_generations)
     with transaction.atomic():
         locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        if (
+            getattr(settings, "ADAFACE_LOCAL_EXPERIMENT_ENABLED", False) is True
+            and locked_event.slug == "cyclingrace-vechernee-sadovoe"
+            and selected != local_adaface
+        ):
+            raise ValueError("SFace generation cannot enter the local AdaFace cohort")
         if selected == candidate:
             _validate_candidate_activation(
                 event=locked_event,
                 approved_configuration_hash=approved_configuration_hash,
                 evaluation_report_hash=evaluation_report_hash,
+            )
+        elif selected == local_adaface:
+            _validate_local_adaface_activation(
+                event=locked_event,
+                approved_configuration_hash=approved_configuration_hash,
+                manifest_sha256=evaluation_report_hash,
             )
         latest = (
             EventFaceEmbeddingActivation.objects.select_for_update()
@@ -923,12 +1013,15 @@ def validate_face_embedding_generations(
     )
     if len(normalized) != len(generations):
         raise ValueError("invalid face-embedding generation set")
-    if normalized not in (
+    known_generations: tuple[tuple[dict[str, object], ...], ...] = (
         historical_baseline_face_embedding_generations(),
         baseline_face_embedding_generations(),
         historical_quality_face_embedding_generations(),
         candidate_face_embedding_generations(),
-    ):
+    )
+    if getattr(settings, "ADAFACE_LOCAL_EXPERIMENT_ENABLED", False) is True:
+        known_generations += (local_adaface_face_embedding_generations(),)
+    if normalized not in known_generations:
         raise ValueError("invalid face-embedding generation set")
     return tuple(deepcopy(generation) for generation in normalized)
 
@@ -999,6 +1092,59 @@ def _validate_candidate_activation(
         or projected_photo_ids != eligible_photo_ids
     ):
         raise ValueError("incomplete candidate evidence")
+
+
+def _validate_local_adaface_activation(
+    *, event: Event, approved_configuration_hash: str, manifest_sha256: str
+) -> None:
+    from processing.models import PhotoFaceEmbeddingProjection  # noqa: PLC0415
+    from processing.services import enrollment  # noqa: PLC0415
+
+    generation = local_adaface_face_embedding_generations()[0]
+    if (
+        event.slug != enrollment.LOCAL_ADAFACE_EVENT_SLUG
+        or approved_configuration_hash != generation["configuration_hash"]
+        or manifest_sha256 != enrollment.LOCAL_ADAFACE_MANIFEST_SHA256
+    ):
+        raise ValueError("local AdaFace activation requires the exact event and manifest identity")
+    status = local_adaface_face_embedding_status(event)
+    eligible_photos = enrollment.candidate_face_embedding_cohort(event)
+    canary_limit = getattr(settings, "ADAFACE_LOCAL_CANARY_LIMIT", 0)
+    if (
+        isinstance(canary_limit, bool)
+        or not isinstance(canary_limit, int)
+        or canary_limit < 0
+        or canary_limit > len(eligible_photos)
+    ):
+        raise ValueError("invalid local AdaFace canary limit")
+    if canary_limit:
+        eligible_photos = eligible_photos[:canary_limit]
+    eligible_photo_ids = {photo.pk for photo in eligible_photos}
+    projected_photo_ids = set(
+        PhotoFaceEmbeddingProjection.objects.filter(
+            photo__event=event,
+            contract_version=generation["contract_version"],
+            processor_version=generation["processor_version"],
+            configuration_hash=generation["configuration_hash"],
+            accepted_attempt__job__contract_version=generation["contract_version"],
+            accepted_attempt__job__processor_version=generation["processor_version"],
+            accepted_attempt__job__configuration_hash=generation["configuration_hash"],
+            accepted_attempt__status="succeeded",
+            accepted_attempt__accepted=True,
+        ).values_list("photo_id", flat=True)
+    )
+    if (
+        not eligible_photo_ids
+        or status["candidate_job_count"] != len(eligible_photo_ids)
+        or status["candidate_projection_count"] != len(eligible_photo_ids)
+        or status["terminal_job_count"] != len(eligible_photo_ids)
+        or status["nonterminal_job_count"] != 0
+        or status["failure_job_count"] != 0
+        or status["unexpected_attempt_count"] != 0
+        or status["technical_failure_face_count"] != 0
+        or projected_photo_ids != eligible_photo_ids
+    ):
+        raise ValueError("incomplete local AdaFace evidence")
 
 
 def _canonical_hash(value: object) -> str:

@@ -55,7 +55,6 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
         "SELFIE_SEARCH_MAX_PIXELS": 25_000_000,
         "SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS": 120,
-        "SELFIE_SEARCH_EMBEDDING_DIMENSIONS": 128,
         "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS": 24,
     }
     for name, expected in expected_values.items():
@@ -66,16 +65,35 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
                     id="selfie_search.E002",
                 )
             )
-    if settings.SELFIE_SEARCH_EMBEDDING_MODEL != "sface":
-        errors.append(
-            Error(
-                "SELFIE_SEARCH_EMBEDDING_MODEL must be 'sface'.",
-                id="selfie_search.E003",
-            )
-        )
     threshold = settings.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD
-    if (
-        isinstance(threshold, bool)
+    if settings.ADAFACE_LOCAL_EXPERIMENT_ENABLED:
+        if settings.MONITORING_ENVIRONMENT != "local":
+            errors.append(
+                Error(
+                    "AdaFace local experiment requires MONITORING_ENVIRONMENT=local.",
+                    id="selfie_search.E003",
+                )
+            )
+        if (
+            settings.SELFIE_SEARCH_EMBEDDING_MODEL != "adaface-ir18-webface4m"
+            or settings.SELFIE_SEARCH_EMBEDDING_DIMENSIONS != 512
+            or isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not math.isfinite(threshold)
+            or not 0.0 <= threshold <= 2.0
+            or threshold == 0.363
+        ):
+            errors.append(
+                Error(
+                    "AdaFace local experiment requires its exact 512-dimensional finite "
+                    "threshold contract.",
+                    id="selfie_search.E004",
+                )
+            )
+    elif (
+        settings.SELFIE_SEARCH_EMBEDDING_MODEL != "sface"
+        or settings.SELFIE_SEARCH_EMBEDDING_DIMENSIONS != 128
+        or isinstance(threshold, bool)
         or not isinstance(threshold, (int, float))
         or not math.isfinite(threshold)
         or threshold != 0.363

@@ -56,6 +56,7 @@ class ProcessingJobServiceTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Europe/Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def private_photo(self, suffix: str, *, event: Event | None = None) -> Photo:

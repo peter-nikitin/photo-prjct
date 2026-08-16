@@ -66,7 +66,10 @@ The repository currently contains an early Django application:
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first
   policy; when the separate `PHOTO_PROCESSING_PREVIEW_ENABLED` gate is enabled it queues
   `2/generate_preview/1`, publishes a verified immutable preview, and only then queues preview-
-  backed `2/face_embedding/3` using SCRFD/SFace. The standalone worker polls the private Django API with one-at-a-
+  backed face work selected by the event's immutable search generation. Events that existed before
+  the AdaFace rollout remain on `2/face_embedding/3` using SCRFD/SFace; newly created events default
+  to `3/face_embedding/5` using SCRFD/AdaFace with 512-dimensional embeddings and provisional direct
+  distance threshold `0.42`. No existing event is replayed or reinterpreted. The standalone worker polls the private Django API with one-at-a-
   time round-robin identity scheduling, has no Django/database or permanent Object Storage
   credentials, and receives only short-lived grants for exact input/output objects. Local targeted
   tests exercise real-JPEG preview generation, publication, gallery selection, preview-backed face

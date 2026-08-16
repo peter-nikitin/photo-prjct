@@ -278,18 +278,29 @@ def _prelock_preview_face_enrollment(attempt_id: UUID) -> None:
         getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)
     ):
         from processing.services.enrollment import (
+            LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+            LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
             PREVIEW_CONTRACT_VERSION,
             PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            QUALITY_FACE_CONTRACT_VERSION,
             SCRFD_FACE_EMBEDDING_CONFIGURATION,
             _configuration_hash,
         )
 
-        configuration_hash = _configuration_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION)
+        if event.face_search_generation == Event.FaceSearchGeneration.ADAFACE_V5:
+            contract_version = QUALITY_FACE_CONTRACT_VERSION
+            processor_version = LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION
+            configuration = LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION
+        else:
+            contract_version = PREVIEW_CONTRACT_VERSION
+            processor_version = PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION
+            configuration = SCRFD_FACE_EMBEDDING_CONFIGURATION
+        configuration_hash = _configuration_hash(configuration)
         runs = EventProcessingRun.objects.select_for_update().filter(
             event=event,
-            contract_version=PREVIEW_CONTRACT_VERSION,
+            contract_version=contract_version,
             processor_type="face_embedding",
-            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=processor_version,
             configuration_hash=configuration_hash,
             status=EventProcessingRun.Status.COLLECTING,
         )

@@ -21,6 +21,8 @@ def load_isolated_selfie_settings(**environment_overrides: str) -> dict[str, obj
         "SELFIE_SEARCH_EMBEDDING_MODEL",
         "SELFIE_SEARCH_EMBEDDING_DIMENSIONS",
         "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD",
+        "ADAFACE_LOCAL_EXPERIMENT_ENABLED",
+        "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD",
         "SELFIE_SEARCH_TEMPORARY_PREFIX",
         "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS",
         "SELFIE_FEEDBACK_ENABLED",
@@ -59,6 +61,9 @@ print(json.dumps({name: getattr(settings, name) for name in json.loads(__import_
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES",
         "SELFIE_SEARCH_MAX_PIXELS",
         "SELFIE_SEARCH_EMBEDDING_MODEL",
+        "SELFIE_SEARCH_EMBEDDING_DIMENSIONS",
+        "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD",
+        "ADAFACE_LOCAL_EXPERIMENT_ENABLED",
         "SELFIE_SEARCH_TEMPORARY_PREFIX",
         "SELFIE_FEEDBACK_ENABLED",
         "SELFIE_FEEDBACK_S3_BUCKET",
@@ -115,6 +120,33 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         self.assertEqual(settings.SELFIE_FEEDBACK_MAX_UPLOAD_BYTES, 20 * 1024 * 1024)
         self.assertEqual(settings.SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS, 60)
 
+    def test_adaface_requires_the_explicit_local_gate_and_non_sface_threshold(self) -> None:
+        """A non-local or inherited SFace threshold must never start the experiment."""
+        with self.assertRaises(subprocess.CalledProcessError):
+            load_isolated_selfie_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED="True")
+        with self.assertRaises(subprocess.CalledProcessError):
+            load_isolated_selfie_settings(
+                ADAFACE_LOCAL_EXPERIMENT_ENABLED="True",
+                ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD="0.363",
+            )
+        with self.assertRaises(subprocess.CalledProcessError):
+            load_isolated_selfie_settings(
+                MONITORING_ENVIRONMENT="staging",
+                ADAFACE_LOCAL_EXPERIMENT_ENABLED="True",
+                ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD="0.42",
+            )
+
+        values = load_isolated_selfie_settings(
+            MONITORING_ENVIRONMENT="local",
+            ADAFACE_LOCAL_EXPERIMENT_ENABLED="True",
+            ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD="0.42",
+        )
+
+        self.assertEqual(values["SELFIE_SEARCH_EMBEDDING_MODEL"], "adaface-ir18-webface4m")
+        self.assertEqual(values["SELFIE_SEARCH_EMBEDDING_DIMENSIONS"], 512)
+        self.assertEqual(values["SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD"], 0.42)
+        self.assertIs(values["ADAFACE_LOCAL_EXPERIMENT_ENABLED"], True)
+
     def test_disabled_feedback_uses_safe_defaults_without_parsing_dormant_overrides(self) -> None:
         values = load_isolated_selfie_settings(
             SELFIE_FEEDBACK_ENABLED="False",
@@ -129,6 +161,9 @@ class SelfieSearchSettingsTests(SimpleTestCase):
                 "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
                 "SELFIE_SEARCH_MAX_PIXELS": 25_000_000,
                 "SELFIE_SEARCH_EMBEDDING_MODEL": "sface",
+                "SELFIE_SEARCH_EMBEDDING_DIMENSIONS": 128,
+                "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD": 0.363,
+                "ADAFACE_LOCAL_EXPERIMENT_ENABLED": False,
                 "SELFIE_SEARCH_TEMPORARY_PREFIX": "selfie-search/",
                 "SELFIE_FEEDBACK_ENABLED": False,
                 "SELFIE_FEEDBACK_S3_BUCKET": "",

@@ -10,6 +10,7 @@ from photo_worker.client import ApiError, CallbackResult, DownloadError
 from photo_worker.contracts import (
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
+    PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     V2_FACE_EMBEDDING_CONFIGURATION,
@@ -21,6 +22,7 @@ from photo_worker.contracts import (
     SelfieEmbeddingResult,
 )
 from photo_worker.face_embedding import FaceEmbeddingError
+from photo_worker.face_quality import FaceQualityEvidence, FaceQualityThresholds
 from photo_worker.runner import Worker, WorkerConfig, _LeaseKeeper, _lifecycle
 from PIL import Image
 
@@ -52,18 +54,53 @@ def configuration(
                 {
                     "selfie_query": {
                         "detection_threshold": 0.5,
-                        "embedding_dimensions": 128,
+                        "embedding_dimensions": 512,
                         "min_face_px": 32,
-                        "model": "sface",
+                        "model": "adaface-ir18-webface4m",
                     }
                 }
                 if processor_type == PROCESSOR_TYPE_SELFIE_QUERY
-                else {"face_embedding": {"max_faces": 2, "detection_threshold": 0.75}}
+                else {
+                    "face_embedding": {
+                        "max_faces": 2,
+                        "detection_threshold": 0.75,
+                        "model": "adaface-ir18-webface4m",
+                        "embedding_dimensions": 512,
+                        "normalize_embeddings": True,
+                    }
+                }
             )
+        ),
+        **(
+            {
+                "scrfd": {
+                    "input_size": [640, 640],
+                    "model": "scrfd-10g-kps",
+                    "model_artifact_sha256": (
+                        "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+                    ),
+                    "nms_threshold": 0.4,
+                },
+                "adaface": {
+                    "alignment": "scrfd-five-landmark-112x112",
+                    "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
+                    "model_artifact_sha256": (
+                        "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b"
+                    ),
+                    "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
+                },
+            }
+            if processor_type == PROCESSOR_TYPE_SELFIE_QUERY
+            else {}
         ),
         "worker": {
             "concurrency": 1,
-            "api_response_max_bytes": 16_384,
+            "api_response_max_bytes": (
+                384 * 1024
+                if processor_type
+                in {PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK}
+                else 16_384
+            ),
             "heartbeat_interval_seconds": heartbeat_interval_seconds,
             "lease_duration_seconds": 120,
             "max_input_bytes": 20 * 1024 * 1024
@@ -73,7 +110,19 @@ def configuration(
             if processor_type == PROCESSOR_TYPE_SELFIE_QUERY
             else 100_000_000,
             "poll_min_delay_seconds": 5,
-            "terminal_result_max_bytes": 8_192,
+            "terminal_result_max_bytes": (
+                16_384
+                if processor_type == PROCESSOR_TYPE_SELFIE_QUERY
+                else (
+                    384 * 1024
+                    if processor_type
+                    in {
+                        PROCESSOR_TYPE_FACE_EMBEDDING,
+                        PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+                    }
+                    else 8_192
+                )
+            ),
         },
     }
 
@@ -515,10 +564,83 @@ def make_face_embedding_result() -> FaceEmbeddingResult:
     )
 
 
-def maximum_face_embedding_result() -> FaceEmbeddingResult:
-    """Representative maximum v2 output: 32 SFace vectors plus every typed field."""
+def quality_face_claim() -> Claim:
+    claim = preview_face_claim()
+    assert claim.job is not None
+    thresholds = FaceQualityThresholds(
+        algorithm_version="normalized-laplacian-v1",
+        crop_size=112,
+        minimum_face_px=20,
+        severe_blur_threshold=10.0,
+        borderline_blur_threshold=20.0,
+        minimum_relative_area=0.1,
+        minimum_confidence=0.8,
+    )
+    return Claim(
+        job=replace(
+            claim.job,
+            contract_version=3,
+            processor_version=5,
+            configuration=replace(
+                claim.job.configuration,
+                model="adaface-ir18-webface4m",
+                embedding_dimensions=512,
+                face_detection_threshold=0.5,
+                api_response_max_bytes=384 * 1024,
+                terminal_result_max_bytes=384 * 1024,
+                quality_thresholds=thresholds,
+            ),
+        ),
+        suggested_delay_seconds=None,
+    )
+
+
+def quality_preview_face_claim(*, processor_version: int = 5) -> Claim:
+    claim = quality_face_claim()
+    assert claim.job is not None
+    return Claim(
+        job=replace(
+            claim.job,
+            processor_version=processor_version,
+        ),
+        suggested_delay_seconds=None,
+    )
+
+
+def quality_face_embedding_result() -> FaceEmbeddingResult:
+    quality = FaceQualityEvidence(
+        algorithm_version="normalized-laplacian-v1",
+        crop_size=112,
+        confidence=0.96,
+        minimum_side_px=32.0,
+        relative_area=0.1,
+        sharpness=30.0,
+        decision="quality_rejected",
+        reasons=("borderline_blur", "low_confidence"),
+    )
     return FaceEmbeddingResult(
-        model="sface",
+        model="adaface-ir18-webface4m",
+        faces=(
+            FaceEmbeddingFace(
+                index=0,
+                bbox=(1.0, 2.0, 32.0, 32.0),
+                confidence=0.96,
+                landmarks=((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)),
+                embedding=None,
+                status="quality_rejected",
+                quality=quality,
+            ),
+        ),
+        has_single_query_face_usable=False,
+        warnings=(),
+        timings={"decode_ms": 1, "model_load_ms": 2, "detect_ms": 3, "embed_ms": 4, "total_ms": 10},
+    )
+
+
+def maximum_face_embedding_result() -> FaceEmbeddingResult:
+    """Measured maximum v2 output: 32 AdaFace vectors plus every typed field."""
+    return FaceEmbeddingResult(
+        model="adaface-ir18-webface4m",
         faces=tuple(
             FaceEmbeddingFace(
                 index=index,
@@ -531,8 +653,8 @@ def maximum_face_embedding_result() -> FaceEmbeddingResult:
                     (700.1234567, 800.1234567),
                     (900.1234567, 999.1234567),
                 ),
-                # ``float(np.float32(1 / 128))`` uses this full wire representation.
-                embedding=tuple(0.007812500465661287 for _ in range(128)),
+                # ``float(np.float32(1 / sqrt(512)))`` uses this full wire representation.
+                embedding=tuple(0.04419417306780815 for _ in range(512)),
             )
             for index in range(32)
         ),
@@ -550,8 +672,8 @@ def maximum_face_embedding_result() -> FaceEmbeddingResult:
 
 def make_selfie_embedding_result() -> SelfieEmbeddingResult:
     return SelfieEmbeddingResult(
-        model="sface",
-        embedding=tuple(1.0 / 128**0.5 for _ in range(128)),
+        model="adaface-ir18-webface4m",
+        embedding=tuple(1.0 / 512**0.5 for _ in range(512)),
         bbox=(1.0, 2.0, 32.0, 32.0),
         confidence=0.96,
         landmarks=((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)),
@@ -620,8 +742,8 @@ def test_worker_submits_typed_selfie_result_without_logging_vector(
     )
 
     assert worker.run_once() is None
-    assert client.completed[0]["result"]["model"] == "sface"
-    assert len(client.completed[0]["result"]["embedding"]) == 128
+    assert client.completed[0]["result"]["model"] == "adaface-ir18-webface4m"
+    assert len(client.completed[0]["result"]["embedding"]) == 512
     assert "0.088388" not in caplog.text
 
 
@@ -1085,6 +1207,38 @@ def test_worker_processes_face_embedding_claim_and_submits_typed_result(
     assert "phase=succeeded" in caplog.text
 
 
+def test_worker_submits_v5_adaface_quality_records_and_passes_the_frozen_thresholds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing v3 thresholds or a rejected record's status would break the terminal contract."""
+    claim = quality_preview_face_claim()
+    assert claim.job is not None
+    observed: dict[str, object] = {}
+
+    def extract(*_args: object, **kwargs: object) -> FaceEmbeddingResult:
+        observed["thresholds"] = kwargs["quality_thresholds"]
+        return quality_face_embedding_result()
+
+    monkeypatch.setattr("photo_worker.runner.extract_face_embeddings", extract)
+    client = Client(claim)
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_identities=("3/face_embedding/5",),
+        ),
+    ).run_once()
+
+    assert observed["thresholds"] == claim.job.configuration.quality_thresholds
+    face = client.completed[0]["result"]["faces"][0]
+    assert face["status"] == "quality_rejected"
+    assert face["quality"]["reasons"] == ["borderline_blur", "low_confidence"]
+    assert "embedding" not in face
+
+
 def test_worker_submits_preview_face_result_with_declared_geometry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1117,11 +1271,11 @@ def test_worker_submits_preview_face_result_with_declared_geometry(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_worker_submits_maximum_v3_face_embedding_payload_within_contract_bound(
+def test_worker_submits_maximum_v5_adaface_payload_within_contract_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = Client(preview_face_claim())
+    client = Client(quality_preview_face_claim())
     monkeypatch.setattr(
         "photo_worker.runner.extract_face_embeddings",
         lambda *_args, **_kwargs: maximum_face_embedding_result(),
@@ -1133,14 +1287,14 @@ def test_worker_submits_maximum_v3_face_embedding_payload_within_contract_bound(
             worker_build="worker-test",
             lease_seconds=60,
             temp_dir=tmp_path,
-            processor_identities=("2/face_embedding/3",),
+            processor_identities=("3/face_embedding/5",),
         ),
     ).run_once()
 
     assert len(client.completed) == 1
     assert client.completed[0]["result"]["face_count"] == 32
     payload_size = len(json.dumps(client.completed[0], separators=(",", ":")).encode())
-    assert 64 * 1024 < payload_size <= 128 * 1024
+    assert 320 * 1024 < payload_size <= 384 * 1024
     assert list(tmp_path.iterdir()) == []
 
 

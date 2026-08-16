@@ -13,6 +13,8 @@ _NORMALIZATION_TOLERANCE = 1e-6
 _SELFIE_QUERY_MODEL = "sface"
 _SELFIE_QUERY_DIMENSIONS = 128
 _SELFIE_QUERY_THRESHOLD = 0.363
+_ADAFACE_QUERY_MODEL = "adaface-ir18-webface4m"
+_ADAFACE_QUERY_DIMENSIONS = 512
 
 
 class RankingError(ValueError):
@@ -99,15 +101,24 @@ def _configuration(search: SelfieSearch) -> _SearchConfiguration:
     model = configuration.get("embedding_model")
     dimensions = configuration.get("embedding_dimensions")
     threshold = configuration.get("cosine_distance_threshold")
+    if isinstance(dimensions, bool) or not isinstance(dimensions, int):
+        raise RankingError("search configuration is invalid")
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        raise RankingError("search configuration is invalid")
+    if not math.isfinite(threshold) or not 0.0 <= threshold <= 2.0:
+        raise RankingError("search configuration is invalid")
     if (
-        model != _SELFIE_QUERY_MODEL
-        or isinstance(dimensions, bool)
-        or not isinstance(dimensions, int)
-        or dimensions != _SELFIE_QUERY_DIMENSIONS
-        or isinstance(threshold, bool)
-        or not isinstance(threshold, (int, float))
-        or not math.isfinite(threshold)
-        or not math.isclose(
+        model == _SELFIE_QUERY_MODEL
+        and dimensions == _SELFIE_QUERY_DIMENSIONS
+        and math.isclose(
+            threshold, _SELFIE_QUERY_THRESHOLD, rel_tol=0.0, abs_tol=_NORMALIZATION_TOLERANCE
+        )
+    ):
+        return _SearchConfiguration(model=model, dimensions=dimensions, threshold=float(threshold))
+    if (
+        model != _ADAFACE_QUERY_MODEL
+        or dimensions != _ADAFACE_QUERY_DIMENSIONS
+        or math.isclose(
             threshold, _SELFIE_QUERY_THRESHOLD, rel_tol=0.0, abs_tol=_NORMALIZATION_TOLERANCE
         )
     ):

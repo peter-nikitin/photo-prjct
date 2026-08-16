@@ -10,11 +10,17 @@ from typing import Any, cast
 
 from PIL import Image, ImageCms, ImageOps
 
+from photo_worker.adaface import (
+    ADAFACE_EMBEDDING_DIMENSIONS,
+    ADAFACE_MODEL_NAME,
+    AdaFaceError,
+    load_adaface_runtime,
+)
 from photo_worker.contracts import (
-    MAX_FACE_EMBEDDING_DIMENSIONS,
     MAX_PIXELS_CAP,
     SELFIE_MAX_INPUT_BYTES,
     SELFIE_MAX_PIXELS,
+    SFACE_EMBEDDING_DIMENSIONS,
     FaceEmbeddingFace,
     FaceEmbeddingResult,
     SelfieEmbeddingResult,
@@ -41,7 +47,7 @@ class _ModelRuntime:
     recognizer: Any
 
 
-_MODEL_RUNTIMES: dict[tuple[Path, Path], _ModelRuntime] = {}
+_MODEL_RUNTIMES: dict[tuple[Path, Path, str], _ModelRuntime] = {}
 
 
 def extract_selfie_embedding(
@@ -55,6 +61,7 @@ def extract_selfie_embedding(
     model: str = "sface",
     scrfd_model_path: Path | None = None,
     sface_model_path: Path | None = None,
+    adaface_model_path: Path | None = None,
 ) -> SelfieEmbeddingResult:
     """Return one transient query embedding or a stable selfie-domain failure."""
     if (
@@ -63,7 +70,7 @@ def extract_selfie_embedding(
         or not 0 < max_pixels <= SELFIE_MAX_PIXELS
         or minimum_face_px != 32
         or not 0.0 <= detection_threshold <= 1.0
-        or model != "sface"
+        or model not in {"sface", ADAFACE_MODEL_NAME}
     ):
         raise FaceEmbeddingError("unsupported_input")
 
@@ -76,10 +83,12 @@ def extract_selfie_embedding(
         image = _decode_selfie_image(np, cv2, path, max_bytes=max_bytes, max_pixels=max_pixels)
         decode_ms = _elapsed_ms(started)
         model_started = monotonic()
-        runtime = _get_model_runtime(
+        runtime = _runtime_for_model(
             cv2,
-            _model_path(scrfd_model_path, "PHOTO_WORKER_SCRFD_MODEL_PATH"),
-            _model_path(sface_model_path, "PHOTO_WORKER_SFACE_MODEL_PATH"),
+            model=model,
+            scrfd_model_path=scrfd_model_path,
+            sface_model_path=sface_model_path,
+            adaface_model_path=adaface_model_path,
         )
         model_ms = _elapsed_ms(model_started)
         detect_started = monotonic()
@@ -94,8 +103,8 @@ def extract_selfie_embedding(
         if min(float(bbox[2]), float(bbox[3])) < minimum_face_px:
             raise FaceEmbeddingError("quality_rejected")
         embed_started = monotonic()
-        embedding = _extract_embedding(np, runtime.recognizer, image, detection)
-        normalized = _normalized_selfie_vector(embedding)
+        embedding = _extract_embedding(np, runtime.recognizer, image, detection, model=model)
+        normalized = _normalized_selfie_vector(embedding, dimensions=_embedding_dimensions(model))
         embed_ms = _elapsed_ms(embed_started)
         return SelfieEmbeddingResult(
             model=model,
@@ -124,10 +133,8 @@ def extract_selfie_embedding(
         del cv2
 
 
-def _normalized_selfie_vector(vector: tuple[float, ...]) -> tuple[float, ...]:
-    if len(vector) != MAX_FACE_EMBEDDING_DIMENSIONS or not all(
-        math.isfinite(value) for value in vector
-    ):
+def _normalized_selfie_vector(vector: tuple[float, ...], *, dimensions: int) -> tuple[float, ...]:
+    if len(vector) != dimensions or not all(math.isfinite(value) for value in vector):
         raise FaceEmbeddingError("quality_rejected")
     norm = math.sqrt(sum(value * value for value in vector))
     if not math.isfinite(norm) or norm <= 0.0:
@@ -148,9 +155,10 @@ def extract_face_embeddings(
     model: str = "sface",
     scrfd_model_path: Path | None = None,
     sface_model_path: Path | None = None,
+    adaface_model_path: Path | None = None,
     quality_thresholds: FaceQualityThresholds | None = None,
 ) -> FaceEmbeddingResult:
-    """Extract faces from a local JPEG file with SCRFD + SFace."""
+    """Extract faces with SCRFD and the explicitly selected pinned recognizer."""
     if max_faces < 1:
         raise FaceEmbeddingError("unsupported_input")
     if max_bytes < 1:
@@ -158,6 +166,8 @@ def extract_face_embeddings(
     if not (0.0 <= detection_threshold <= 1.0):
         raise FaceEmbeddingError("unsupported_input")
     if max_pixels <= 0 or max_pixels > MAX_PIXELS_CAP:
+        raise FaceEmbeddingError("unsupported_input")
+    if model not in {"sface", ADAFACE_MODEL_NAME}:
         raise FaceEmbeddingError("unsupported_input")
 
     np = _load_numpy()
@@ -169,9 +179,13 @@ def extract_face_embeddings(
         decode_ms = _elapsed_ms(started)
 
         model_started = monotonic()
-        scrfd_model = _model_path(scrfd_model_path, "PHOTO_WORKER_SCRFD_MODEL_PATH")
-        sface_model = _model_path(sface_model_path, "PHOTO_WORKER_SFACE_MODEL_PATH")
-        runtime = _get_model_runtime(cv2, scrfd_model, sface_model)
+        runtime = _runtime_for_model(
+            cv2,
+            model=model,
+            scrfd_model_path=scrfd_model_path,
+            sface_model_path=sface_model_path,
+            adaface_model_path=adaface_model_path,
+        )
         model_ms = _elapsed_ms(model_started)
 
         detect_started = monotonic()
@@ -226,7 +240,9 @@ def extract_face_embeddings(
                     )
                     continue
             try:
-                embedding = _extract_embedding(np, runtime.recognizer, image, detection)
+                embedding = _extract_embedding(
+                    np, runtime.recognizer, image, detection, model=model
+                )
             except FaceEmbeddingError as error:
                 warnings.append("face_embedding_failed")
                 if quality is not None:
@@ -395,7 +411,7 @@ def _decode_selfie_image(
     return image
 
 
-def _model_path(path: Path | None, env_var: str) -> Path:
+def _model_path(path: Path | None, env_var: str, *, directory: bool = False) -> Path:
     if path is not None:
         model = Path(path)
     else:
@@ -404,21 +420,42 @@ def _model_path(path: Path | None, env_var: str) -> Path:
             raise FaceEmbeddingError("model_inference_error")
         model = Path(candidate)
 
-    if not model.is_file():
+    if not (model.is_dir() if directory else model.is_file()):
         raise FaceEmbeddingError("model_inference_error")
 
     return model.resolve()
 
 
+def _runtime_for_model(
+    cv2: Any,
+    *,
+    model: str,
+    scrfd_model_path: Path | None,
+    sface_model_path: Path | None,
+    adaface_model_path: Path | None,
+) -> _ModelRuntime:
+    scrfd_model = _model_path(scrfd_model_path, "PHOTO_WORKER_SCRFD_MODEL_PATH")
+    if model == ADAFACE_MODEL_NAME:
+        recognizer_model = _model_path(
+            adaface_model_path,
+            "PHOTO_WORKER_ADAFACE_MODEL_PATH",
+            directory=True,
+        )
+    else:
+        recognizer_model = _model_path(sface_model_path, "PHOTO_WORKER_SFACE_MODEL_PATH")
+    return _get_model_runtime(cv2, scrfd_model, recognizer_model, model)
+
+
 def _get_model_runtime(
     cv2: Any,
     scrfd_model: Path,
-    sface_model: Path,
+    recognizer_model: Path,
+    model: str,
 ) -> _ModelRuntime:
-    key = (scrfd_model.resolve(), sface_model.resolve())
+    key = (scrfd_model.resolve(), recognizer_model.resolve(), model)
     runtime = _MODEL_RUNTIMES.get(key)
     if runtime is None:
-        detector, recognizer = _load_models(cv2, scrfd_model, sface_model)
+        detector, recognizer = _load_models(cv2, scrfd_model, recognizer_model, model)
         runtime = _ModelRuntime(detector=detector, recognizer=recognizer)
         _MODEL_RUNTIMES[key] = runtime
     return runtime
@@ -427,11 +464,18 @@ def _get_model_runtime(
 def _load_models(
     cv2: Any,
     scrfd_model: Path,
-    sface_model: Path,
+    recognizer_model: Path,
+    model: str,
 ) -> tuple[Any, Any]:
     try:
         detector = SCRFDDetector(scrfd_model)
-        recognizer = cv2.FaceRecognizerSF.create(str(sface_model), "")
+        recognizer = (
+            load_adaface_runtime(recognizer_model)
+            if model == ADAFACE_MODEL_NAME
+            else cv2.FaceRecognizerSF.create(str(recognizer_model), "")
+        )
+    except AdaFaceError as error:
+        raise FaceEmbeddingError("model_inference_error") from error
     except Exception as error:
         raise FaceEmbeddingError("model_inference_error") from error
 
@@ -465,8 +509,19 @@ def _detect_faces(
 
 
 def _extract_embedding(
-    np: Any, recognizer: Any, image: Any, detection: dict[str, Any]
+    np: Any,
+    recognizer: Any,
+    image: Any,
+    detection: dict[str, Any],
+    *,
+    model: str,
 ) -> tuple[float, ...]:
+    if model == ADAFACE_MODEL_NAME:
+        try:
+            return recognizer.extract(np, _load_cv2(), image, detection["landmarks"])
+        except AdaFaceError as error:
+            raise FaceEmbeddingError("model_inference_error") from error
+
     aligned_input = np.asarray(
         [
             *detection["bbox"],
@@ -484,36 +539,21 @@ def _extract_embedding(
 
     try:
         values = np.asarray(vector, dtype=np.float32).reshape(-1)
-    except Exception as error:
-        raise FaceEmbeddingError("model_inference_error") from error
-
-    if values.size == 0:
-        raise FaceEmbeddingError("model_inference_error")
-    if not np.isfinite(values).all():
-        raise FaceEmbeddingError("model_inference_error")
-    if values.ndim != 1:
-        values = values.ravel()
-
-    try:
         norm = float(np.linalg.norm(values))
     except Exception as error:
         raise FaceEmbeddingError("model_inference_error") from error
-
+    if values.size < SFACE_EMBEDDING_DIMENSIONS or not np.isfinite(values).all():
+        raise FaceEmbeddingError("model_inference_error")
     if norm <= 0.0 or not np.isfinite(norm):
         raise FaceEmbeddingError("model_inference_error")
-
     normalized = values / norm
-    if normalized.size < MAX_FACE_EMBEDDING_DIMENSIONS:
-        raise FaceEmbeddingError("model_inference_error")
+    return tuple(float(value) for value in normalized[:SFACE_EMBEDDING_DIMENSIONS])
 
-    normalized = normalized[:MAX_FACE_EMBEDDING_DIMENSIONS]
-    payload = tuple(float(value) for value in normalized)
-    try:
-        del values
-        del normalized
-    except Exception:
-        pass
-    return payload
+
+def _embedding_dimensions(model: str) -> int:
+    return (
+        ADAFACE_EMBEDDING_DIMENSIONS if model == ADAFACE_MODEL_NAME else SFACE_EMBEDDING_DIMENSIONS
+    )
 
 
 def _load_numpy() -> Any:

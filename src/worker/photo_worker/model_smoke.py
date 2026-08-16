@@ -1,12 +1,14 @@
-"""Build-time smoke for the YuNet/SFace models shipped with the worker image."""
+"""Build-time smoke for the pinned YuNet/AdaFace worker models."""
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 from pathlib import Path
 from typing import Any
 
+from photo_worker.adaface import ADAFACE_MODEL_NAME, load_adaface_runtime
 from photo_worker.contracts import MAX_FACE_EMBEDDING_DIMENSIONS
 from photo_worker.face_embedding import (
     FaceEmbeddingError,
@@ -34,13 +36,17 @@ def main() -> None:
 
     if decoded is None:
         raise RuntimeError("face_model_smoke_decode_failed")
-    _exercise_sface_feature(cv2, np, decoded)
+    _exercise_adaface_feature(cv2, np, decoded)
     print("face-model-smoke-ok")
 
 
 def _assert_photo_embedding_no_face(path: Path) -> None:
     result = extract_face_embeddings(path, max_bytes=path.stat().st_size)
-    if result.model != "sface" or result.faces != () or result.warnings != ("no_faces_detected",):
+    if (
+        result.model != ADAFACE_MODEL_NAME
+        or result.faces != ()
+        or result.warnings != ("no_faces_detected",)
+    ):
         raise RuntimeError("face_model_smoke_unexpected_photo_result")
 
 
@@ -58,16 +64,26 @@ def _assert_selfie_query_no_face(path: Path) -> None:
     raise RuntimeError("face_model_smoke_expected_no_face")
 
 
-def _exercise_sface_feature(cv2: Any, np: Any, image: Any) -> None:
-    model_path = Path(os.environ["PHOTO_WORKER_SFACE_MODEL_PATH"])
-    recognizer = cv2.FaceRecognizerSF.create(str(model_path), "")
-    face = np.asarray(
-        [64, 48, 192, 224, 120, 128, 200, 128, 160, 168, 128, 224, 192, 224, 1.0],
-        dtype=np.float32,
-    ).reshape(1, 15)
-    aligned = recognizer.alignCrop(image, face)
-    feature = recognizer.feature(aligned)
-    if np.asarray(feature).reshape(-1).size != MAX_FACE_EMBEDDING_DIMENSIONS:
+def _exercise_adaface_feature(cv2: Any, np: Any, image: Any) -> None:
+    model_path = Path(os.environ["PHOTO_WORKER_ADAFACE_MODEL_PATH"])
+    runtime = load_adaface_runtime(model_path)
+    feature = runtime.extract(
+        np,
+        cv2,
+        image,
+        (
+            (120.0, 128.0),
+            (200.0, 128.0),
+            (160.0, 168.0),
+            (128.0, 224.0),
+            (192.0, 224.0),
+        ),
+    )
+    if len(feature) != MAX_FACE_EMBEDDING_DIMENSIONS:
+        raise RuntimeError("face_model_smoke_invalid_feature")
+    if not all(math.isfinite(value) for value in feature):
+        raise RuntimeError("face_model_smoke_invalid_feature")
+    if not math.isclose(sum(value * value for value in feature), 1.0, rel_tol=1e-5):
         raise RuntimeError("face_model_smoke_invalid_feature")
 
 

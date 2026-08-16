@@ -7,6 +7,11 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from photo_worker.adaface import (
+    ADAFACE_MODEL_NAME,
+    AdaFaceError,
+    load_adaface_runtime,
+)
 from photo_worker.contracts import (
     MAX_FACE_EMBEDDING_DIMENSIONS,
     MAX_PIXELS_CAP,
@@ -48,9 +53,9 @@ def extract_selfie_embedding(
     max_pixels: int = SELFIE_MAX_PIXELS,
     detection_threshold: float = 0.75,
     minimum_face_px: int = 32,
-    model: str = "sface",
+    model: str = ADAFACE_MODEL_NAME,
     yunet_model_path: Path | None = None,
-    sface_model_path: Path | None = None,
+    adaface_model_path: Path | None = None,
 ) -> SelfieEmbeddingResult:
     """Return one transient query embedding or a stable selfie-domain failure."""
     if (
@@ -59,7 +64,7 @@ def extract_selfie_embedding(
         or not 0 < max_pixels <= SELFIE_MAX_PIXELS
         or minimum_face_px != 32
         or not 0.0 <= detection_threshold <= 1.0
-        or model != "sface"
+        or model != ADAFACE_MODEL_NAME
     ):
         raise FaceEmbeddingError("unsupported_input")
 
@@ -78,7 +83,11 @@ def extract_selfie_embedding(
             width,
             height,
             _model_path(yunet_model_path, "PHOTO_WORKER_YUNET_MODEL_PATH"),
-            _model_path(sface_model_path, "PHOTO_WORKER_SFACE_MODEL_PATH"),
+            _model_path(
+                adaface_model_path,
+                "PHOTO_WORKER_ADAFACE_MODEL_PATH",
+                directory=True,
+            ),
             detection_threshold,
         )
         model_ms = _elapsed_ms(model_started)
@@ -145,12 +154,12 @@ def extract_face_embeddings(
     max_pixels: int = MAX_PIXELS_CAP,
     max_faces: int = 1,
     detection_threshold: float = 0.75,
-    model: str = "sface",
+    model: str = ADAFACE_MODEL_NAME,
     yunet_model_path: Path | None = None,
-    sface_model_path: Path | None = None,
+    adaface_model_path: Path | None = None,
     quality_thresholds: FaceQualityThresholds | None = None,
 ) -> FaceEmbeddingResult:
-    """Extract faces from a local JPEG file with YuNet + SFace."""
+    """Extract faces from a local JPEG file with YuNet and pinned AdaFace."""
     if max_faces < 1:
         raise FaceEmbeddingError("unsupported_input")
     if max_bytes < 1:
@@ -158,6 +167,8 @@ def extract_face_embeddings(
     if not (0.0 <= detection_threshold <= 1.0):
         raise FaceEmbeddingError("unsupported_input")
     if max_pixels <= 0 or max_pixels > MAX_PIXELS_CAP:
+        raise FaceEmbeddingError("unsupported_input")
+    if model != ADAFACE_MODEL_NAME:
         raise FaceEmbeddingError("unsupported_input")
 
     np = _load_numpy()
@@ -171,9 +182,13 @@ def extract_face_embeddings(
         width, height = image.shape[1], image.shape[0]
         model_started = monotonic()
         yunet_model = _model_path(yunet_model_path, "PHOTO_WORKER_YUNET_MODEL_PATH")
-        sface_model = _model_path(sface_model_path, "PHOTO_WORKER_SFACE_MODEL_PATH")
+        adaface_model = _model_path(
+            adaface_model_path,
+            "PHOTO_WORKER_ADAFACE_MODEL_PATH",
+            directory=True,
+        )
         runtime = _get_model_runtime(
-            cv2, width, height, yunet_model, sface_model, detection_threshold
+            cv2, width, height, yunet_model, adaface_model, detection_threshold
         )
         model_ms = _elapsed_ms(model_started)
 
@@ -330,7 +345,7 @@ def _decode_image(
     return image
 
 
-def _model_path(path: Path | None, env_var: str) -> Path:
+def _model_path(path: Path | None, env_var: str, *, directory: bool = False) -> Path:
     if path is not None:
         model = Path(path)
     else:
@@ -339,7 +354,7 @@ def _model_path(path: Path | None, env_var: str) -> Path:
             raise FaceEmbeddingError("model_inference_error")
         model = Path(candidate)
 
-    if not model.is_file():
+    if not (model.is_dir() if directory else model.is_file()):
         raise FaceEmbeddingError("model_inference_error")
 
     return model.resolve()
@@ -350,13 +365,15 @@ def _get_model_runtime(
     width: int,
     height: int,
     yunet_model: Path,
-    sface_model: Path,
+    adaface_model: Path,
     threshold: float,
 ) -> _ModelRuntime:
-    key = (yunet_model.resolve(), sface_model.resolve(), threshold)
+    key = (yunet_model.resolve(), adaface_model.resolve(), threshold)
     runtime = _MODEL_RUNTIMES.get(key)
     if runtime is None:
-        detector, recognizer = _load_models(cv2, width, height, yunet_model, sface_model, threshold)
+        detector, recognizer = _load_models(
+            cv2, width, height, yunet_model, adaface_model, threshold
+        )
         runtime = _ModelRuntime(detector=detector, recognizer=recognizer)
         _MODEL_RUNTIMES[key] = runtime
     return runtime
@@ -367,7 +384,7 @@ def _load_models(
     width: int,
     height: int,
     yunet_model: Path,
-    sface_model: Path,
+    adaface_model: Path,
     threshold: float,
 ) -> tuple[Any, Any]:
     try:
@@ -383,8 +400,8 @@ def _load_models(
         raise FaceEmbeddingError("model_inference_error") from error
 
     try:
-        recognizer = cv2.FaceRecognizerSF.create(str(sface_model), "")
-    except Exception as error:
+        recognizer = load_adaface_runtime(adaface_model)
+    except AdaFaceError as error:
         raise FaceEmbeddingError("model_inference_error") from error
 
     return detector, recognizer
@@ -484,53 +501,10 @@ def _normalize_detection(
 def _extract_embedding(
     np: Any, recognizer: Any, image: Any, detection: dict[str, Any]
 ) -> tuple[float, ...]:
-    aligned_input = np.asarray(
-        [
-            *detection["bbox"],
-            *[coord for point in detection["landmarks"] for coord in point],
-            detection["confidence"],
-        ],
-        dtype=np.float32,
-    ).reshape(1, 15)
-
     try:
-        aligned = recognizer.alignCrop(image, aligned_input)
-        vector = recognizer.feature(aligned)
-    except Exception as error:
+        return recognizer.extract(np, _load_cv2(), image, detection["landmarks"])
+    except AdaFaceError as error:
         raise FaceEmbeddingError("model_inference_error") from error
-
-    try:
-        values = np.asarray(vector, dtype=np.float32).reshape(-1)
-    except Exception as error:
-        raise FaceEmbeddingError("model_inference_error") from error
-
-    if values.size == 0:
-        raise FaceEmbeddingError("model_inference_error")
-    if not np.isfinite(values).all():
-        raise FaceEmbeddingError("model_inference_error")
-    if values.ndim != 1:
-        values = values.ravel()
-
-    try:
-        norm = float(np.linalg.norm(values))
-    except Exception as error:
-        raise FaceEmbeddingError("model_inference_error") from error
-
-    if norm <= 0.0 or not np.isfinite(norm):
-        raise FaceEmbeddingError("model_inference_error")
-
-    normalized = values / norm
-    if normalized.size < MAX_FACE_EMBEDDING_DIMENSIONS:
-        raise FaceEmbeddingError("model_inference_error")
-
-    normalized = normalized[:MAX_FACE_EMBEDDING_DIMENSIONS]
-    payload = tuple(float(value) for value in normalized)
-    try:
-        del values
-        del normalized
-    except Exception:
-        pass
-    return payload
 
 
 def _load_numpy() -> Any:

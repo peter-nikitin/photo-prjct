@@ -13,6 +13,7 @@ from django.test import Client, override_settings
 
 ROOT = Path(__file__).resolve().parents[2]
 OPENCV_ZOO_REVISION = "47534e27c9851bb1128ccc0102f1145e27f23f98"
+ADAFACE_REVISION = "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca"
 FACE_MODEL_ARTIFACTS = (
     (
         "PHOTO_WORKER_YUNET_MODEL_PATH",
@@ -20,11 +21,18 @@ FACE_MODEL_ARTIFACTS = (
         "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
         "models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
     ),
+)
+ADAFACE_MODEL_DIRECTORY = "/worker/models/adaface-ir18-webface4m"
+ADAFACE_ARTIFACTS = (
     (
-        "PHOTO_WORKER_SFACE_MODEL_PATH",
-        "face_recognition_sface_2021dec.onnx",
-        "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
-        "models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+        "model.safetensors",
+        "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b",
+        "resolve",
+    ),
+    (
+        "models/iresnet/model.py",
+        "e31be55c60b538c15151887e911b7535e2f0e1114a13427ba06483e1cd2a63f9",
+        "raw",
     ),
 )
 FORBIDDEN_SETTINGS = {
@@ -68,6 +76,22 @@ def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() 
         if f"{environment_name}={destination}" not in dockerfile:
             failures.append(f"missing {environment_name} container path")
 
+    for relative_path, checksum, endpoint in ADAFACE_ARTIFACTS:
+        source = (
+            "https://huggingface.co/minchul/cvlface_adaface_ir18_webface4m/"
+            f"{endpoint}/{ADAFACE_REVISION}/{relative_path}"
+        )
+        destination = f"{ADAFACE_MODEL_DIRECTORY}/{relative_path}"
+        instruction = f"ADD --checksum=sha256:{checksum} {source} {destination}"
+        if instruction not in dockerfile:
+            failures.append(f"missing immutable AdaFace {relative_path} artifact")
+    if f"PHOTO_WORKER_ADAFACE_MODEL_PATH={ADAFACE_MODEL_DIRECTORY}" not in dockerfile:
+        failures.append("missing pinned local AdaFace model path")
+    if "pretrained_model/model.pt" in dockerfile or "trust_remote_code" in dockerfile:
+        failures.append("worker image allows the unverified pickle/remote-code loader")
+    if "HF_HUB_OFFLINE=1" not in dockerfile:
+        failures.append("runtime does not declare offline model loading")
+
     smoke_command = "RUN python -m photo_worker.model_smoke"
     if smoke_command not in dockerfile:
         failures.append("missing build-time face model smoke")
@@ -87,11 +111,25 @@ def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() 
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
-        missing_paths = {"extract_face_embeddings", "extract_selfie_embedding"} - called_names
+        missing_paths = {
+            "extract_face_embeddings",
+            "extract_selfie_embedding",
+            "load_adaface_runtime",
+        } - called_names
         if missing_paths:
             failures.append(f"smoke misses shared inference path(s): {sorted(missing_paths)}")
-        if "MAX_FACE_EMBEDDING_DIMENSIONS" not in smoke_path.read_text(encoding="utf-8"):
-            failures.append("smoke does not validate the SFace feature dimension")
+        smoke_source = smoke_path.read_text(encoding="utf-8")
+        if "MAX_FACE_EMBEDDING_DIMENSIONS" not in smoke_source:
+            failures.append("smoke does not validate the AdaFace feature dimension")
+        if "PHOTO_WORKER_ADAFACE_MODEL_PATH" not in smoke_source:
+            failures.append("smoke does not load the pinned local AdaFace snapshot")
+
+    adapter_source = (ROOT / "src/worker/photo_worker/adaface.py").read_text(encoding="utf-8")
+    assert "model.safetensors" in adapter_source
+    assert "safetensors.torch" in adapter_source
+    assert "pretrained_model/model.pt" not in adapter_source
+    assert "trust_remote_code" not in adapter_source
+    assert "huggingface_hub" not in adapter_source
 
     assert failures == [], "\n".join(failures)
 

@@ -11,6 +11,7 @@ from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from photo_worker.adaface import ADAFACE_EMBEDDING_DIMENSIONS, ADAFACE_MODEL_NAME
 from photo_worker.face_quality import FaceQualityError, FaceQualityEvidence, FaceQualityThresholds
 
 CONTRACT_VERSION = 1
@@ -28,11 +29,12 @@ PROCESSOR_VERSION_GENERATE_PREVIEW = 1
 PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW = 2
 PROCESSOR_TYPE_SELFIE_QUERY = "selfie_query"
 PROCESSOR_VERSION_SELFIE_QUERY = 1
-MAX_FACE_EMBEDDINGS_PER_JOB = 64
-MAX_FACE_EMBEDDING_DIMENSIONS = 128
-FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
+MAX_FACE_EMBEDDINGS_PER_JOB = 32
+MAX_FACE_EMBEDDING_DIMENSIONS = ADAFACE_EMBEDDING_DIMENSIONS
+FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 384 * 1024
 SELFIE_MAX_INPUT_BYTES = 20 * 1024 * 1024
 SELFIE_MAX_PIXELS = 25_000_000
+SELFIE_TERMINAL_PAYLOAD_MAX_BYTES = 16 * 1024
 DEFAULT_FACE_DETECTION_THRESHOLD = 0.75
 MAX_JSON_FIELD_BYTES = FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES
 MAX_INPUT_BYTES_CAP = 50 * 1024 * 1024
@@ -92,7 +94,8 @@ V2_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
     "report_max_bytes": 262_144,
     "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
     "face_embedding": {
-        "model": "sface",
+        "model": ADAFACE_MODEL_NAME,
+        "embedding_dimensions": MAX_FACE_EMBEDDING_DIMENSIONS,
         "min_face_px": 32,
         "max_faces_per_photo": 32,
         "normalize_embeddings": True,
@@ -303,7 +306,7 @@ class ProcessorConfiguration:
     terminal_result_max_bytes: int
     max_faces: int = 1
     face_detection_threshold: float = DEFAULT_FACE_DETECTION_THRESHOLD
-    model: str = "sface"
+    model: str = ADAFACE_MODEL_NAME
     preview_variant: str | None = None
     embedding_dimensions: int = MAX_FACE_EMBEDDING_DIMENSIONS
     minimum_face_px: int = 1
@@ -314,7 +317,7 @@ class ProcessorConfiguration:
     def from_value(cls, value: object) -> ProcessorConfiguration:
         max_faces: object = 1
         face_threshold: object = DEFAULT_FACE_DETECTION_THRESHOLD
-        model: object = "sface"
+        model: object = ADAFACE_MODEL_NAME
         event_timezone: str | None = None
         quality_thresholds: FaceQualityThresholds | None = None
         normalization = "utc_assume_utc_if_missing"
@@ -430,7 +433,6 @@ class ProcessorConfiguration:
             and _positive_int(worker["max_pixels"])
             and worker["max_pixels"] <= MAX_PIXELS_CAP
             and _positive_int(worker["terminal_result_max_bytes"])
-            and worker["terminal_result_max_bytes"] <= worker["api_response_max_bytes"]
         ):
             raise ContractError("invalid processor configuration")
 
@@ -451,17 +453,18 @@ class ProcessorConfiguration:
                 isinstance(selfie_config, dict)
                 and set(selfie_config)
                 == {"detection_threshold", "embedding_dimensions", "min_face_px", "model"}
-                and selfie_config["model"] == "sface"
+                and selfie_config["model"] == ADAFACE_MODEL_NAME
                 and selfie_config["embedding_dimensions"] == MAX_FACE_EMBEDDING_DIMENSIONS
                 and selfie_config["min_face_px"] == 32
                 and _bounded_probability(selfie_config["detection_threshold"])
                 and worker["max_input_bytes"] == SELFIE_MAX_INPUT_BYTES
                 and worker["max_pixels"] == SELFIE_MAX_PIXELS
+                and worker["terminal_result_max_bytes"] == SELFIE_TERMINAL_PAYLOAD_MAX_BYTES
             ):
                 raise ContractError("invalid processor configuration")
             max_faces = 1
             face_threshold = selfie_config["detection_threshold"]
-            model = "sface"
+            model = ADAFACE_MODEL_NAME
             embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
             minimum_face_px = 32
         elif capture is not None:
@@ -478,7 +481,7 @@ class ProcessorConfiguration:
             normalization = cast(str, capture["normalization"])
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
-            model = "sface"
+            model = ADAFACE_MODEL_NAME
             embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
             minimum_face_px = 1
         elif face_config is not None:
@@ -489,6 +492,7 @@ class ProcessorConfiguration:
                 "max_faces",
                 "detection_threshold",
                 "model",
+                "embedding_dimensions",
                 "max_faces_per_photo",
                 "min_face_px",
                 "normalize_embeddings",
@@ -500,12 +504,14 @@ class ProcessorConfiguration:
                     "max_faces",
                     "detection_threshold",
                     "model",
+                    "embedding_dimensions",
                     "normalize_embeddings",
                     "quality",
                 }:
                     raise ContractError("invalid processor configuration")
                 if (
-                    face_config["model"] != "sface"
+                    face_config["model"] != ADAFACE_MODEL_NAME
+                    or face_config["embedding_dimensions"] != MAX_FACE_EMBEDDING_DIMENSIONS
                     or face_config["normalize_embeddings"] is not True
                 ):
                     raise ContractError("invalid processor configuration")
@@ -537,10 +543,13 @@ class ProcessorConfiguration:
                 face_config["normalize_embeddings"], bool
             ):
                 raise ContractError("invalid processor configuration")
-            if "model" in face_config:
-                model = str(face_config["model"])
-            else:
-                model = "sface"
+            if not (
+                face_config.get("model") == ADAFACE_MODEL_NAME
+                and face_config.get("embedding_dimensions") == MAX_FACE_EMBEDDING_DIMENSIONS
+                and face_config.get("normalize_embeddings") is True
+            ):
+                raise ContractError("invalid processor configuration")
+            model = ADAFACE_MODEL_NAME
             if (
                 not _positive_int(configured_max_faces)
                 or cast(int, configured_max_faces) > MAX_FACE_EMBEDDINGS_PER_JOB
@@ -548,9 +557,11 @@ class ProcessorConfiguration:
                 raise ContractError("invalid processor configuration")
             if not _bounded_probability(configured_face_threshold):
                 raise ContractError("invalid processor configuration")
-            if not isinstance(model, str) or model not in {"sface", "sface-v1", "sface_v1"}:
-                raise ContractError("invalid processor configuration")
             max_faces = cast(int, configured_max_faces)
+            if worker["terminal_result_max_bytes"] < FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES:
+                raise ContractError("terminal_result_max_bytes cannot carry face result")
+            if worker["api_response_max_bytes"] < FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES:
+                raise ContractError("api_response_max_bytes cannot carry face result")
             face_threshold = cast(float, configured_face_threshold)
             embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
             minimum_face_px = (
@@ -566,9 +577,12 @@ class ProcessorConfiguration:
                 raise ContractError("invalid processor configuration")
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
-            model = "sface"
+            model = ADAFACE_MODEL_NAME
             embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
             minimum_face_px = 1
+
+        if worker["terminal_result_max_bytes"] > worker["api_response_max_bytes"]:
+            raise ContractError("invalid processor configuration")
 
         return cls(
             configuration_kind=configuration_kind,

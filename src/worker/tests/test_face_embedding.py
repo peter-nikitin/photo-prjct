@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
 import photo_worker.face_embedding as face_embedding
 import pytest
+from photo_worker.adaface import (
+    ADAFACE_EMBEDDING_DIMENSIONS,
+    ADAFACE_MODEL_NAME,
+    AdaFaceError,
+    AdaFaceRuntime,
+    align_face,
+    normalize_embedding,
+    prepare_input,
+    verify_file_digest,
+)
 from photo_worker.contracts import FaceEmbeddingFace
 from photo_worker.face_embedding import (
     FaceEmbeddingError,
@@ -29,6 +40,135 @@ def write_jpeg(path: Path) -> None:
     image = Image.new("RGB", (32, 32), "white")
     image.save(path, "JPEG")
     image.close()
+
+
+def test_adaface_recovers_canonical_crop_from_displaced_scaled_rotated_landmarks() -> None:
+    import cv2
+
+    y, x = np.indices((112, 112), dtype=np.uint16)
+    canonical = np.stack(
+        (
+            (x * 2) % 256,
+            (y * 2) % 256,
+            (x + y) % 256,
+        ),
+        axis=2,
+    ).astype(np.uint8)
+    canonical_landmarks = np.asarray(
+        (
+            (38.2946, 51.6963),
+            (73.5318, 51.5014),
+            (56.0252, 71.7366),
+            (41.5493, 92.3655),
+            (70.7299, 92.2041),
+        ),
+        dtype=np.float32,
+    )
+    angle = np.deg2rad(23.0)
+    scale = 1.4
+    canonical_to_source = np.asarray(
+        (
+            (scale * np.cos(angle), -scale * np.sin(angle), 72.0),
+            (scale * np.sin(angle), scale * np.cos(angle), 28.0),
+        ),
+        dtype=np.float32,
+    )
+    image = cv2.warpAffine(canonical, canonical_to_source, (260, 240))
+    landmarks_array = np.concatenate(
+        (canonical_landmarks, np.ones((5, 1), dtype=np.float32)), axis=1
+    )
+    displaced_landmarks = landmarks_array @ canonical_to_source.T
+
+    aligned = align_face(
+        np,
+        cv2,
+        image,
+        tuple(tuple(float(value) for value in point) for point in displaced_landmarks),
+    )
+
+    assert aligned.shape == (112, 112, 3)
+    assert np.mean(np.abs(aligned[5:-5].astype(np.int16) - canonical[5:-5])) < 1.0
+    assert aligned[52, 38].tolist() == pytest.approx(canonical[52, 38].tolist(), abs=2)
+    assert aligned[92, 71].tolist() == pytest.approx(canonical[92, 71].tolist(), abs=2)
+
+
+def test_adaface_converts_bgr_to_rgb_and_normalizes_each_channel() -> None:
+    aligned = np.empty((112, 112, 3), dtype=np.uint8)
+    aligned[:, :] = (0, 127, 255)
+
+    prepared = prepare_input(np, aligned)
+
+    assert prepared.shape == (1, 3, 112, 112)
+    assert prepared.dtype == np.float32
+    assert prepared[0, :, 0, 0].tolist() == pytest.approx([1.0, (127.0 / 255.0 - 0.5) / 0.5, -1.0])
+
+
+def test_adaface_runtime_runs_preprocessed_input_and_normalizes_512_values() -> None:
+    class Output:
+        def detach(self) -> Output:
+            return self
+
+        def cpu(self) -> Output:
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return np.arange(1, ADAFACE_EMBEDDING_DIMENSIONS + 1, dtype=np.float32)[None, :]
+
+    observed: list[np.ndarray] = []
+
+    class Model:
+        def __call__(self, value: np.ndarray) -> Output:
+            observed.append(value)
+            return Output()
+
+    class Torch:
+        @staticmethod
+        def from_numpy(value: np.ndarray) -> np.ndarray:
+            return value
+
+        @staticmethod
+        def inference_mode() -> object:
+            return nullcontext()
+
+    import cv2
+
+    runtime = AdaFaceRuntime(model=Model(), torch=Torch())
+    image = np.full((112, 112, 3), (0, 127, 255), dtype=np.uint8)
+    landmarks = (
+        (38.2946, 51.6963),
+        (73.5318, 51.5014),
+        (56.0252, 71.7366),
+        (41.5493, 92.3655),
+        (70.7299, 92.2041),
+    )
+
+    embedding = runtime.extract(np, cv2, image, landmarks)
+
+    assert observed[0].shape == (1, 3, 112, 112)
+    assert observed[0][0, :, 0, 0].tolist() == pytest.approx([1.0, -0.00392157, -1.0])
+    assert len(embedding) == ADAFACE_EMBEDDING_DIMENSIONS
+    assert sum(value * value for value in embedding) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.ones(511, dtype=np.float32),
+        np.full(512, np.nan, dtype=np.float32),
+        np.zeros(512, dtype=np.float32),
+    ],
+)
+def test_adaface_rejects_wrong_dimension_non_finite_and_zero_vectors(values: np.ndarray) -> None:
+    with pytest.raises(AdaFaceError):
+        normalize_embedding(np, values)
+
+
+def test_adaface_rejects_an_artifact_whose_digest_does_not_match(tmp_path: Path) -> None:
+    artifact = tmp_path / "model.safetensors"
+    artifact.write_bytes(b"not-the-pinned-model")
+
+    with pytest.raises(AdaFaceError):
+        verify_file_digest(artifact, "0" * 64)
 
 
 def test_detect_faces_maps_opencv_no_face_tuple_to_empty() -> None:
@@ -84,7 +224,7 @@ def test_extract_face_embeddings_one_face_success(
     )
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
-        lambda *_args, **_kwargs: tuple(float(i) for i in range(128)),
+        lambda *_args, **_kwargs: tuple(float(i) for i in range(512)),
     )
 
     result = extract_face_embeddings(source, max_bytes=1024)
@@ -95,7 +235,7 @@ def test_extract_face_embeddings_one_face_success(
             bbox=(1.0, 2.0, 10.0, 10.0),
             confidence=0.99,
             landmarks=((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
-            embedding=tuple(float(i) for i in range(128)),
+            embedding=tuple(float(i) for i in range(512)),
         ),
     )
     assert result.has_single_query_face_usable is True
@@ -128,7 +268,7 @@ def test_extract_face_embeddings_reuses_models_but_sets_each_image_size(
             return None, None
 
     detector = Detector()
-    creations = {"detector": 0, "recognizer": 0}
+    creations = {"detector": 0, "adaface": 0}
 
     class FaceDetectorYN:
         @staticmethod
@@ -136,16 +276,10 @@ def test_extract_face_embeddings_reuses_models_but_sets_each_image_size(
             creations["detector"] += 1
             return detector
 
-    class FaceRecognizerSF:
-        @staticmethod
-        def create(*_args: object) -> object:
-            creations["recognizer"] += 1
-            return object()
-
     FakeCv2 = type(
         "FakeCv2",
         (),
-        {"FaceDetectorYN": FaceDetectorYN, "FaceRecognizerSF": FaceRecognizerSF},
+        {"FaceDetectorYN": FaceDetectorYN},
     )
 
     monkeypatch.setattr("photo_worker.face_embedding._load_numpy", lambda: np)
@@ -154,17 +288,21 @@ def test_extract_face_embeddings_reuses_models_but_sets_each_image_size(
     monkeypatch.setattr(
         "photo_worker.face_embedding._decode_image", lambda *_args, **_kwargs: images.pop(0)
     )
-    model_paths = [tmp_path / "yunet.onnx", tmp_path / "sface.onnx"]
+    model_paths = [tmp_path / "yunet.onnx", tmp_path / "adaface"]
     monkeypatch.setattr(
         "photo_worker.face_embedding._model_path", lambda *_args, **_kwargs: model_paths.pop(0)
     )
     monkeypatch.setattr(face_embedding, "_MODEL_RUNTIMES", {})
+    monkeypatch.setattr(
+        "photo_worker.face_embedding.load_adaface_runtime",
+        lambda *_args: creations.__setitem__("adaface", creations["adaface"] + 1) or object(),
+    )
 
     extract_face_embeddings(source, max_bytes=1024)
-    model_paths[:] = [tmp_path / "yunet.onnx", tmp_path / "sface.onnx"]
+    model_paths[:] = [tmp_path / "yunet.onnx", tmp_path / "adaface"]
     extract_face_embeddings(source, max_bytes=1024)
 
-    assert creations == {"detector": 1, "recognizer": 1}
+    assert creations == {"detector": 1, "adaface": 1}
     assert detector.input_sizes == [(32, 48), (64, 96)]
 
 
@@ -331,10 +469,10 @@ def _quality(decision: str) -> FaceQualityEvidence:
     )
 
 
-def test_quality_rejection_skips_sface_and_keeps_explicit_evidence(
+def test_quality_rejection_skips_adaface_and_keeps_explicit_evidence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A rejected gallery detection must never reach SFace or carry a vector."""
+    """A rejected gallery detection must never reach AdaFace or carry a vector."""
     source = tmp_path / "photo.jpg"
     write_jpeg(source)
     _selfie_model_mocks(monkeypatch, DummyImage(100, 100), [_detection(size=30)])
@@ -344,7 +482,7 @@ def test_quality_rejection_skips_sface_and_keeps_explicit_evidence(
     )
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
-        lambda *_args, **_kwargs: pytest.fail("SFace must not run for quality rejection"),
+        lambda *_args, **_kwargs: pytest.fail("AdaFace must not run for quality rejection"),
     )
 
     result = extract_face_embeddings(
@@ -360,7 +498,7 @@ def test_quality_rejection_skips_sface_and_keeps_explicit_evidence(
 def test_quality_gate_keeps_accepted_vectors_and_isolates_face_failures(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """One technical SFace failure must not discard a successful sibling face."""
+    """One technical AdaFace failure must not discard a successful sibling face."""
     source = tmp_path / "photo.jpg"
     write_jpeg(source)
     _selfie_model_mocks(
@@ -376,7 +514,7 @@ def test_quality_gate_keeps_accepted_vectors_and_isolates_face_failures(
         "photo_worker.face_embedding.evaluate_face_quality",
         lambda *_args, **_kwargs: _quality("accepted"),
     )
-    calls = iter((FaceEmbeddingError("model_inference_error"), tuple(2.0 for _ in range(128))))
+    calls = iter((FaceEmbeddingError("model_inference_error"), tuple(2.0 for _ in range(512))))
 
     def extract(*_args: object, **_kwargs: object) -> tuple[float, ...]:
         result = next(calls)
@@ -396,7 +534,7 @@ def test_quality_gate_keeps_accepted_vectors_and_isolates_face_failures(
     assert result.faces[0].embedding is None
     assert result.faces[0].error_code == "model_inference_error"
     assert result.faces[1].status == "kept"
-    assert result.faces[1].embedding == tuple(2.0 for _ in range(128))
+    assert result.faces[1].embedding == tuple(2.0 for _ in range(512))
 
 
 def test_quality_measurement_failure_is_a_technical_record_without_a_vector(
@@ -431,7 +569,7 @@ def test_face_record_rejects_every_contradictory_v3_state() -> None:
     """A terminal record must not combine acceptance, rejection, vector, and error states."""
     accepted = _quality("accepted")
     rejected = _quality("quality_rejected")
-    vector = tuple(2.0 for _ in range(128))
+    vector = tuple(2.0 for _ in range(512))
     shared = {
         "index": 0,
         "bbox": (1.0, 2.0, 30.0, 30.0),
@@ -472,7 +610,7 @@ def test_face_record_retains_legacy_and_intended_terminal_forms() -> None:
     """State validation must retain the v1/v2 kept record and both v3 technical forms."""
     accepted = _quality("accepted")
     rejected = _quality("quality_rejected")
-    vector = tuple(2.0 for _ in range(128))
+    vector = tuple(2.0 for _ in range(512))
     shared = {
         "index": 0,
         "bbox": (1.0, 2.0, 30.0, 30.0),
@@ -516,14 +654,14 @@ def test_extract_selfie_embedding_requires_exactly_one_face_and_normalizes_vecto
     _selfie_model_mocks(monkeypatch, DummyImage(64, 64), [_detection()])
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
-        lambda *_args, **_kwargs: tuple(2.0 for _ in range(128)),
+        lambda *_args, **_kwargs: tuple(2.0 for _ in range(512)),
     )
 
     result = extract_selfie_embedding(source, max_bytes=1024, content_type="image/png")
 
-    assert len(result.embedding) == 128
+    assert len(result.embedding) == 512
     assert sum(value * value for value in result.embedding) == pytest.approx(1.0)
-    assert result.model == "sface"
+    assert result.model == ADAFACE_MODEL_NAME
 
 
 @pytest.mark.parametrize(
@@ -566,7 +704,7 @@ def test_extract_selfie_embedding_rejects_non_finite_vector_and_releases_image(
     )
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
-        lambda *_args, **_kwargs: (float("nan"),) * 128,
+        lambda *_args, **_kwargs: (float("nan"),) * 512,
     )
 
     with pytest.raises(FaceEmbeddingError, match="quality_rejected"):

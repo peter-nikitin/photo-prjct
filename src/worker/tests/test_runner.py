@@ -56,18 +56,31 @@ def configuration(
                 {
                     "selfie_query": {
                         "detection_threshold": 0.75,
-                        "embedding_dimensions": 128,
+                        "embedding_dimensions": 512,
                         "min_face_px": 32,
-                        "model": "sface",
+                        "model": "adaface-ir18-webface4m",
                     }
                 }
                 if processor_type == PROCESSOR_TYPE_SELFIE_QUERY
-                else {"face_embedding": {"max_faces": 2, "detection_threshold": 0.75}}
+                else {
+                    "face_embedding": {
+                        "max_faces": 2,
+                        "detection_threshold": 0.75,
+                        "model": "adaface-ir18-webface4m",
+                        "embedding_dimensions": 512,
+                        "normalize_embeddings": True,
+                    }
+                }
             )
         ),
         "worker": {
             "concurrency": 1,
-            "api_response_max_bytes": 16_384,
+            "api_response_max_bytes": (
+                384 * 1024
+                if processor_type
+                in {PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK}
+                else 16_384
+            ),
             "heartbeat_interval_seconds": heartbeat_interval_seconds,
             "lease_duration_seconds": 120,
             "max_input_bytes": 20 * 1024 * 1024
@@ -77,7 +90,19 @@ def configuration(
             if processor_type == PROCESSOR_TYPE_SELFIE_QUERY
             else 100_000_000,
             "poll_min_delay_seconds": 5,
-            "terminal_result_max_bytes": 8_192,
+            "terminal_result_max_bytes": (
+                16_384
+                if processor_type == PROCESSOR_TYPE_SELFIE_QUERY
+                else (
+                    384 * 1024
+                    if processor_type
+                    in {
+                        PROCESSOR_TYPE_FACE_EMBEDDING,
+                        PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+                    }
+                    else 8_192
+                )
+            ),
         },
     }
 
@@ -492,14 +517,14 @@ def test_second_temporary_context_close_failure_removes_all_files_without_public
 
 def make_face_embedding_result() -> FaceEmbeddingResult:
     return FaceEmbeddingResult(
-        model="sface",
+        model="adaface-ir18-webface4m",
         faces=(
             FaceEmbeddingFace(
                 index=0,
                 bbox=(1.0, 2.0, 32.0, 32.0),
                 confidence=0.96,
                 landmarks=((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)),
-                embedding=tuple(float(i) / 128 for i in range(128)),
+                embedding=tuple(float(i) / 512 for i in range(512)),
             ),
         ),
         has_single_query_face_usable=True,
@@ -575,7 +600,7 @@ def quality_face_embedding_result() -> FaceEmbeddingResult:
         reasons=("borderline_blur", "low_confidence"),
     )
     return FaceEmbeddingResult(
-        model="sface",
+        model="adaface-ir18-webface4m",
         faces=(
             FaceEmbeddingFace(
                 index=0,
@@ -594,9 +619,9 @@ def quality_face_embedding_result() -> FaceEmbeddingResult:
 
 
 def maximum_face_embedding_result() -> FaceEmbeddingResult:
-    """Representative maximum v2 output: 32 SFace vectors plus every typed field."""
+    """Measured maximum v2 output: 32 AdaFace vectors plus every typed field."""
     return FaceEmbeddingResult(
-        model="sface",
+        model="adaface-ir18-webface4m",
         faces=tuple(
             FaceEmbeddingFace(
                 index=index,
@@ -609,8 +634,8 @@ def maximum_face_embedding_result() -> FaceEmbeddingResult:
                     (700.1234567, 800.1234567),
                     (900.1234567, 999.1234567),
                 ),
-                # ``float(np.float32(1 / 128))`` uses this full wire representation.
-                embedding=tuple(0.007812500465661287 for _ in range(128)),
+                # ``float(np.float32(1 / sqrt(512)))`` uses this full wire representation.
+                embedding=tuple(0.04419417306780815 for _ in range(512)),
             )
             for index in range(32)
         ),
@@ -628,8 +653,8 @@ def maximum_face_embedding_result() -> FaceEmbeddingResult:
 
 def make_selfie_embedding_result() -> SelfieEmbeddingResult:
     return SelfieEmbeddingResult(
-        model="sface",
-        embedding=tuple(1.0 / 128**0.5 for _ in range(128)),
+        model="adaface-ir18-webface4m",
+        embedding=tuple(1.0 / 512**0.5 for _ in range(512)),
         bbox=(1.0, 2.0, 32.0, 32.0),
         confidence=0.96,
         landmarks=((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)),
@@ -698,8 +723,8 @@ def test_worker_submits_typed_selfie_result_without_logging_vector(
     )
 
     assert worker.run_once() is None
-    assert client.completed[0]["result"]["model"] == "sface"
-    assert len(client.completed[0]["result"]["embedding"]) == 128
+    assert client.completed[0]["result"]["model"] == "adaface-ir18-webface4m"
+    assert len(client.completed[0]["result"]["embedding"]) == 512
     assert "0.088388" not in caplog.text
 
 
@@ -1298,7 +1323,7 @@ def test_worker_benchmark_runs_face_extraction_but_submits_metrics_only(
     ).run_once()
 
     assert client.completed[0]["result"] == {
-        "model": "sface",
+        "model": "adaface-ir18-webface4m",
         "face_count": 1,
         "warnings": [],
         "timings": {
@@ -1367,7 +1392,7 @@ def test_worker_submits_maximum_v2_face_embedding_payload_within_contract_bound(
     assert len(client.completed) == 1
     assert client.completed[0]["result"]["face_count"] == 32
     payload_size = len(json.dumps(client.completed[0], separators=(",", ":")).encode())
-    assert 64 * 1024 < payload_size <= 128 * 1024
+    assert 320 * 1024 < payload_size <= 384 * 1024
     assert list(tmp_path.iterdir()) == []
 
 

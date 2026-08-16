@@ -1,6 +1,6 @@
 # Local AdaFace Critical-Path Comparison Design
 
-- **Status:** Approved in conversation on 2026-08-16; written review pending
+- **Status:** Approved in conversation and written review on 2026-08-16
 - **Date:** 2026-08-16
 - **Owner:** FindMe Photo
 - **Related architecture:** [`docs/architecture.md`](../../architecture.md), event-scoped selfie
@@ -96,9 +96,10 @@ adding runtime model selection. This is the smallest path that exercises the cur
 SFace remains the control on the separately opened main site.
 
 The worker retains YuNet for detection and five-landmark geometry. The AdaFace adapter aligns each
-accepted face to the model's required `112x112` BGR input, applies the official normalization, runs
-the pinned IR-18 WebFace4M inference artifact, validates 512 finite values, and L2-normalizes the
-output. Gallery processing and selfie-query processing call the same adapter.
+accepted face to the selected current CVLFace model's required `112x112` RGB input, normalizes every
+channel with mean `0.5` and standard deviation `0.5`, runs the pinned IR-18 WebFace4M inference
+artifact, validates 512 finite values, and L2-normalizes the output. Gallery processing and
+selfie-query processing call the same adapter.
 
 The official AdaFace and CVLFace source repositories are MIT-licensed. The checkpoint is used only
 for a private local quality experiment. Its origin, upstream revision, download URL, conversion
@@ -150,13 +151,15 @@ Its `manifest.json` declares event `9`, slug `cyclingrace-vechernee-sadovoe`, 17
 unresolved items, the production-equivalent 1600px JPEG preview contract, and a complete corpus.
 Before processing, the experiment validates the manifest's completeness, event identity, photo-ID
 coverage against the cloned database, source/production contract hashes, and per-file size and
-SHA-256. Inputs mount read-only into the worker and resolve by manifest `photo_id`; arbitrary paths,
+SHA-256. The corpus mounts read-only into a one-shot seeding service, which copies only validated
+files to their exact preview object keys in the experiment's isolated local S3-compatible store.
+The normal Django grant and worker-download path then reads only that local store. Arbitrary paths,
 unmanifested files, missing files, checksum mismatches, and event mismatches fail before enqueue.
 
-The worktree does not copy or link the main checkout's `.env`. Backfill needs no Object Storage
-credential, signed URL, remote download, or cloud IAM change. Ordinary local selfie submission may
-use the existing local filesystem media backend; it does not broaden access to the saved event
-corpus.
+The worktree does not copy or link the main checkout's `.env`. Backfill needs no Yandex Object
+Storage credential, remote download, or cloud IAM change. The isolated local S3-compatible store
+also provides the existing temporary-selfie upload, worker grant, cleanup, and result-preview
+interfaces without broadening access to the saved host corpus.
 
 ## Data flow
 

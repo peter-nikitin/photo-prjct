@@ -2,7 +2,7 @@ import hashlib
 import json
 from datetime import date
 from io import StringIO
-from typing import NotRequired, TypedDict, cast
+from typing import TypedDict, cast
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -13,6 +13,7 @@ from django.utils import timezone
 from picflow.models import Event, Photo
 
 from processing.models import (
+    EventProcessingRun,
     PhotoDerivative,
     PhotoProcessingState,
     ProcessingAttempt,
@@ -40,14 +41,8 @@ class CandidateCounts(TypedDict):
     terminal_job_count: int
 
 
-class EnrollmentCounts(TypedDict):
-    created_job_count: int
-    existing_job_count: int
-
-
 class CommandReport(TypedDict):
     counts: CandidateCounts
-    enrollment: NotRequired[EnrollmentCounts]
     mode: str
 
 
@@ -207,10 +202,6 @@ class FaceQualityReprocessingCommandTests(TestCase):
         call_command("reprocess_event_face_embeddings", apply=apply, stdout=output)
         return cast(CommandReport, json.loads(output.getvalue()))
 
-    def enrollment(self, report: CommandReport) -> EnrollmentCounts:
-        self.assertIn("enrollment", report)
-        return report["enrollment"]
-
     def test_tracked_approval_binds_exact_reviewed_artifacts_without_loss_counters(self) -> None:
         """Changing reviewed artifacts or inventing recall-loss fields must fail this contract."""
         assert FACE_EMBEDDING_QUALITY_APPROVAL is not None
@@ -289,7 +280,7 @@ class FaceQualityReprocessingCommandTests(TestCase):
         self.assertFalse(ProcessingJob.objects.filter(processor_version=4).exists())
 
     def test_same_count_with_changed_derivative_sha_fails_before_any_candidate_write(self) -> None:
-        """A same-size cohort with changed accepted media identity must fail dry-run and apply."""
+        """A same-size cohort with changed accepted media identity must fail dry-run validation."""
         photo = self.accepted_preview_photo("changed-sha", sha256="9" * 64)
         approval = self.approval(cohort_hash=self.reviewed_cohort_hash(photo))
 
@@ -299,8 +290,6 @@ class FaceQualityReprocessingCommandTests(TestCase):
         ):
             with self.assertRaisesRegex(CommandError, "accepted preview cohort"):
                 self.command()
-            with self.assertRaisesRegex(CommandError, "accepted preview cohort"):
-                self.command(apply=True)
 
         self.assertFalse(
             ProcessingJob.objects.filter(
@@ -318,7 +307,7 @@ class FaceQualityReprocessingCommandTests(TestCase):
             approval,
         ):
             with self.assertRaisesRegex(CommandError, "accepted preview cohort"):
-                self.command(apply=True)
+                self.command()
 
         self.assertFalse(
             ProcessingJob.objects.filter(
@@ -336,7 +325,7 @@ class FaceQualityReprocessingCommandTests(TestCase):
             approval,
         ):
             with self.assertRaisesRegex(CommandError, "accepted preview cohort"):
-                self.command(apply=True)
+                self.command()
 
         self.assertFalse(
             ProcessingJob.objects.filter(
@@ -345,88 +334,23 @@ class FaceQualityReprocessingCommandTests(TestCase):
             ).exists()
         )
 
-    def test_apply_enrolls_only_accepted_preview_photos_and_is_idempotent(self) -> None:
-        """Enrolling a photo without an accepted preview or duplicating replays must fail."""
-        accepted = self.accepted_preview_photo("preview-accepted")
-        Photo.objects.create(
-            id="no-preview",
-            event=self.event,
-            uploaded_by=self.user,
-            original_key="originals/no-preview",
-            original_filename="no-preview.jpg",
-            original_size=10,
-            original_content_type="image/jpeg",
-            uploaded_at=timezone.now(),
-        )
+    def test_apply_rejects_yunet_quality_generation_before_creating_a_job_or_run(self) -> None:
+        """The retained operator command cannot enqueue v4 for the SCRFD-only worker."""
+        self.accepted_preview_photo("preview-accepted")
+        run_count = EventProcessingRun.objects.count()
+        job_count = ProcessingJob.objects.count()
         with patch(
             "processing.management.commands.reprocess_event_face_embeddings.FACE_EMBEDDING_QUALITY_APPROVAL",
             self.approval(),
         ):
-            first = self.command(apply=True)
-            replay = self.command(apply=True)
-
-        jobs = ProcessingJob.objects.filter(
-            event=self.event,
-            contract_version=QUALITY_FACE_CONTRACT_VERSION,
-            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-        )
-        self.assertEqual(list(jobs.values_list("photo_id", flat=True)), [accepted.pk])
-        self.assertEqual(self.enrollment(first)["created_job_count"], 1)
-        self.assertEqual(self.enrollment(replay)["created_job_count"], 0)
-        self.assertEqual(self.enrollment(replay)["existing_job_count"], 1)
-
-    def test_apply_reuses_the_existing_job_after_its_run_closes(self) -> None:
-        """Creating a collecting run on a sealed replay must fail this idempotence contract."""
-        self.accepted_preview_photo("preview-closed-run")
-        with patch(
-            "processing.management.commands.reprocess_event_face_embeddings.FACE_EMBEDDING_QUALITY_APPROVAL",
-            self.approval(),
-        ):
-            self.command(apply=True)
-            job = ProcessingJob.objects.get(
-                event=self.event,
-                contract_version=QUALITY_FACE_CONTRACT_VERSION,
-                processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-            )
-            job.run.status = job.run.Status.CLOSED
-            job.run.save(update_fields=["status"])
-            before_jobs = ProcessingJob.objects.count()
-            before_runs = job.run.__class__.objects.count()
-
-            replay = self.command(apply=True)
-
-        self.assertEqual(ProcessingJob.objects.count(), before_jobs)
-        self.assertEqual(job.run.__class__.objects.count(), before_runs)
-        self.assertEqual(self.enrollment(replay)["created_job_count"], 0)
-        self.assertEqual(self.enrollment(replay)["existing_job_count"], 1)
-
-    def test_changed_or_incomplete_cohort_fails_closed_and_status_reports_all_counts(self) -> None:
-        """Allowing a cohort count mismatch or hiding nonterminal state must fail this test."""
-        photo = self.accepted_preview_photo("preview-incomplete")
-        with patch(
-            "processing.management.commands.reprocess_event_face_embeddings.FACE_EMBEDDING_QUALITY_APPROVAL",
-            self.approval(photo_count=2),
-        ):
-            with self.assertRaisesRegex(CommandError, "approval"):
+            with self.assertRaisesRegex(CommandError, "SCRFD quality generation is not approved"):
                 self.command(apply=True)
 
-        with patch(
-            "processing.management.commands.reprocess_event_face_embeddings.FACE_EMBEDDING_QUALITY_APPROVAL",
-            self.approval(),
-        ):
-            report = self.command(apply=True)
-
-        self.assertEqual(report["counts"]["candidate_job_count"], 1)
-        self.assertEqual(report["counts"]["nonterminal_job_count"], 1)
-        self.assertEqual(report["counts"]["terminal_job_count"], 0)
-        self.assertEqual(report["counts"]["failure_job_count"], 0)
-        self.assertEqual(report["counts"]["candidate_projection_count"], 0)
-        self.assertEqual(report["counts"]["candidate_state_counts"]["queued"], 1)
-        self.assertEqual(
-            ProcessingJob.objects.get(
-                photo=photo,
+        self.assertEqual(EventProcessingRun.objects.count(), run_count)
+        self.assertEqual(ProcessingJob.objects.count(), job_count)
+        self.assertFalse(
+            ProcessingJob.objects.filter(
                 contract_version=QUALITY_FACE_CONTRACT_VERSION,
                 processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-            ).status,
-            ProcessingJob.Status.QUEUED,
+            ).exists()
         )

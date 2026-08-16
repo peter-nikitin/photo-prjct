@@ -8,10 +8,8 @@ from pathlib import Path
 import pytest
 from photo_worker.client import ApiError, CallbackResult, DownloadError
 from photo_worker.contracts import (
-    FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
-    PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     V2_FACE_EMBEDDING_CONFIGURATION,
@@ -20,11 +18,9 @@ from photo_worker.contracts import (
     Claim,
     FaceEmbeddingFace,
     FaceEmbeddingResult,
-    InputFingerprint,
     SelfieEmbeddingResult,
 )
 from photo_worker.face_embedding import FaceEmbeddingError
-from photo_worker.face_quality import FaceQualityEvidence, FaceQualityThresholds
 from photo_worker.runner import Worker, WorkerConfig, _LeaseKeeper, _lifecycle
 from PIL import Image
 
@@ -519,91 +515,6 @@ def make_face_embedding_result() -> FaceEmbeddingResult:
     )
 
 
-def quality_face_claim() -> Claim:
-    claim = make_claim(processor_type=PROCESSOR_TYPE_FACE_EMBEDDING)
-    assert claim.job is not None
-    thresholds = FaceQualityThresholds(
-        algorithm_version="normalized-laplacian-v1",
-        crop_size=112,
-        minimum_face_px=20,
-        severe_blur_threshold=10.0,
-        borderline_blur_threshold=20.0,
-        minimum_relative_area=0.1,
-        minimum_confidence=0.8,
-    )
-    return Claim(
-        job=replace(
-            claim.job,
-            contract_version=3,
-            processor_version=3,
-            configuration=replace(claim.job.configuration, quality_thresholds=thresholds),
-        ),
-        suggested_delay_seconds=None,
-    )
-
-
-def quality_preview_face_claim(*, processor_version: int = 3) -> Claim:
-    claim = quality_face_claim()
-    assert claim.job is not None
-    return Claim(
-        job=replace(
-            claim.job,
-            processor_version=processor_version,
-            input_fingerprint=InputFingerprint(
-                object_key=(
-                    "derivatives/previews/photo-1/preview-small-v1/"
-                    "00000000-0000-0000-0000-000000000012-"
-                    f"{'a' * 64}.jpg"
-                ),
-                object_size=1024,
-                object_content_type="image/jpeg",
-                object_etag=None,
-                media_kind="preview-small-v1",
-                pixel_width=1600,
-                pixel_height=1000,
-            ),
-            input_geometry={
-                "coordinate_space": "preview-small-v1",
-                "pixel_width": 1600,
-                "pixel_height": 1000,
-                "oriented_source_width": 3200,
-                "oriented_source_height": 2000,
-            },
-        ),
-        suggested_delay_seconds=None,
-    )
-
-
-def quality_face_embedding_result() -> FaceEmbeddingResult:
-    quality = FaceQualityEvidence(
-        algorithm_version="normalized-laplacian-v1",
-        crop_size=112,
-        confidence=0.96,
-        minimum_side_px=32.0,
-        relative_area=0.1,
-        sharpness=30.0,
-        decision="quality_rejected",
-        reasons=("borderline_blur", "low_confidence"),
-    )
-    return FaceEmbeddingResult(
-        model="sface",
-        faces=(
-            FaceEmbeddingFace(
-                index=0,
-                bbox=(1.0, 2.0, 32.0, 32.0),
-                confidence=0.96,
-                landmarks=((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)),
-                embedding=None,
-                status="quality_rejected",
-                quality=quality,
-            ),
-        ),
-        has_single_query_face_usable=False,
-        warnings=(),
-        timings={"decode_ms": 1, "model_load_ms": 2, "detect_ms": 3, "embed_ms": 4, "total_ms": 10},
-    )
-
-
 def maximum_face_embedding_result() -> FaceEmbeddingResult:
     """Representative maximum v2 output: 32 SFace vectors plus every typed field."""
     return FaceEmbeddingResult(
@@ -1002,7 +913,14 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
 
 @pytest.mark.parametrize(
     "identity",
-    ("1/selfie_query/1", "1/face_embedding/1", "2/face_embedding/2"),
+    (
+        "1/selfie_query/1",
+        "1/face_embedding/1",
+        "2/face_embedding/2",
+        "3/face_embedding_benchmark/1",
+        "3/face_embedding/3",
+        "3/face_embedding/4",
+    ),
 )
 def test_environment_configuration_rejects_retired_execution_identities(
     monkeypatch: pytest.MonkeyPatch, identity: str
@@ -1013,24 +931,6 @@ def test_environment_configuration_rejects_retired_execution_identities(
 
     with pytest.raises(ValueError, match="unsupported processor identity"):
         WorkerConfig.from_env()
-
-
-def test_environment_benchmark_identity_is_authoritative_over_product_types(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
-    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
-    monkeypatch.setenv(
-        "PHOTO_WORKER_PROCESSOR_TYPES",
-        "selfie_query,face_embedding,capture_metadata,generate_preview",
-    )
-    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", "3/face_embedding_benchmark/1")
-
-    config, _client = WorkerConfig.from_env()
-    client = Client(Claim.empty(7))
-
-    assert Worker(client, config).run_once() == 7
-    assert client.claim_identities == [(3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1)]
 
 
 def test_environment_product_identity_preserves_product_type_fallbacks(
@@ -1183,159 +1083,6 @@ def test_worker_processes_face_embedding_claim_and_submits_typed_result(
     assert len(json.dumps(client.completed[0], separators=(",", ":")).encode()) <= 8_192
     assert list(tmp_path.iterdir()) == []
     assert "phase=succeeded" in caplog.text
-
-
-def test_worker_submits_v3_quality_face_records_and_passes_the_frozen_thresholds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Removing v3 thresholds or a rejected record's status would break the terminal contract."""
-    claim = quality_face_claim()
-    assert claim.job is not None
-    observed: dict[str, object] = {}
-
-    def extract(*_args: object, **kwargs: object) -> FaceEmbeddingResult:
-        observed["thresholds"] = kwargs["quality_thresholds"]
-        return quality_face_embedding_result()
-
-    monkeypatch.setattr("photo_worker.runner.extract_face_embeddings", extract)
-    client = Client(claim)
-
-    Worker(
-        client,
-        WorkerConfig(
-            worker_build="worker-test",
-            lease_seconds=60,
-            temp_dir=tmp_path,
-            processor_identities=("3/face_embedding/3",),
-        ),
-    ).run_once()
-
-    assert observed["thresholds"] == claim.job.configuration.quality_thresholds
-    face = client.completed[0]["result"]["faces"][0]
-    assert face["status"] == "quality_rejected"
-    assert face["quality"]["reasons"] == ["borderline_blur", "low_confidence"]
-    assert "embedding" not in face
-
-
-def test_worker_preserves_v3_preview_geometry_through_download_and_terminal_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    claim = quality_preview_face_claim()
-    client = Client(claim)
-    monkeypatch.setattr(
-        "photo_worker.runner.extract_face_embeddings",
-        lambda *_args, **_kwargs: quality_face_embedding_result(),
-    )
-
-    Worker(
-        client,
-        WorkerConfig(
-            worker_build="worker-test",
-            lease_seconds=60,
-            temp_dir=tmp_path,
-            processor_identities=("3/face_embedding/3",),
-        ),
-    ).run_once()
-
-    assert client.failed == []
-    assert client.completed[0]["result"]["input_geometry"] == {
-        "coordinate_space": "preview-small-v1",
-        "pixel_width": 1600,
-        "pixel_height": 1000,
-        "oriented_source_width": 3200,
-        "oriented_source_height": 2000,
-    }
-
-
-def test_worker_dispatches_v4_preview_claim_through_quality_extraction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    claim = quality_preview_face_claim(processor_version=4)
-    observed: dict[str, object] = {}
-
-    def extract(*_args: object, **kwargs: object) -> FaceEmbeddingResult:
-        observed["thresholds"] = kwargs["quality_thresholds"]
-        return quality_face_embedding_result()
-
-    monkeypatch.setattr("photo_worker.runner.extract_face_embeddings", extract)
-    client = Client(claim)
-
-    Worker(
-        client,
-        WorkerConfig(
-            worker_build="worker-test",
-            lease_seconds=60,
-            temp_dir=tmp_path,
-            processor_identities=("3/face_embedding/4",),
-        ),
-    ).run_once()
-
-    assert observed["thresholds"] == claim.job.configuration.quality_thresholds
-    assert client.failed == []
-    assert client.completed[0]["processor_version"] == 4
-    assert client.completed[0]["result"]["input_geometry"] == claim.job.input_geometry
-
-
-def test_worker_benchmark_runs_face_extraction_but_submits_metrics_only(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    caplog.set_level("INFO")
-    claim = Claim.from_response(
-        {
-            "empty": False,
-            "job": {
-                "id": "00000000-0000-0000-0000-000000000011",
-                "attempt_id": "00000000-0000-0000-0000-000000000012",
-                "contract_version": 3,
-                "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
-                "processor_version": 1,
-                "configuration": FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
-                "photo_id": "photo-1",
-                "event_id": "00000000-0000-0000-0000-000000000013",
-                "run_id": "00000000-0000-0000-0000-000000000014",
-                "input_fingerprint": {
-                    "original_key": "originals/0123456789abcdef0123456789abcdef",
-                    "original_size": 1024,
-                    "original_content_type": "image/jpeg",
-                    "verified_source_etag": None,
-                    "version_evidence": "unavailable",
-                },
-                "input_limits": {"max_bytes": 1024, "content_type": "image/jpeg"},
-                "lease_expires_at": "2026-07-29T10:03:00+00:00",
-                "download_url": "https://storage.example.test/x?signature=secret",
-                "download_expires_at": "2026-07-29T10:01:00+00:00",
-            },
-        }
-    )
-    client = Client(claim)
-    monkeypatch.setattr(
-        "photo_worker.runner.extract_face_embeddings",
-        lambda *_args, **_kwargs: make_face_embedding_result(),
-    )
-
-    Worker(
-        client,
-        WorkerConfig(
-            worker_build="worker-test",
-            lease_seconds=60,
-            temp_dir=tmp_path,
-            processor_identities=("3/face_embedding_benchmark/1",),
-        ),
-    ).run_once()
-
-    assert client.completed[0]["result"] == {
-        "model": "sface",
-        "face_count": 1,
-        "warnings": [],
-        "timings": {
-            "decode_ms": 1,
-            "model_load_ms": 2,
-            "detect_ms": 3,
-            "embed_ms": 4,
-            "total_ms": 10,
-        },
-    }
-    assert "photo-1" not in caplog.text
 
 
 def test_worker_submits_preview_face_result_with_declared_geometry(

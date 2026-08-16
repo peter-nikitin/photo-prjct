@@ -160,7 +160,7 @@ def test_extract_face_embeddings_reuses_models_across_image_sizes(
     extract_face_embeddings(source, max_bytes=1024)
 
     assert creations == {"detector": 1, "recognizer": 1}
-    assert detector.calls == [0.75, 0.75]
+    assert detector.calls == [0.5, 0.5]
 
 
 def test_extract_face_embeddings_no_faces_and_no_valid_faces_have_separate_warnings(
@@ -262,7 +262,7 @@ def _selfie_model_mocks(
     monkeypatch: pytest.MonkeyPatch,
     image: DummyImage | None,
     detections: list[dict[str, object]],
-) -> None:
+) -> _FakeDetector:
     detector = _FakeDetector(detections)
     monkeypatch.setattr("photo_worker.face_embedding._load_numpy", lambda: FakeNumpy((0, 0, 0)))
     monkeypatch.setattr("photo_worker.face_embedding._load_cv2", lambda: object())
@@ -280,6 +280,7 @@ def _selfie_model_mocks(
         "photo_worker.face_embedding._load_models", lambda *_args, **_kwargs: (detector, None)
     )
     monkeypatch.setattr(face_embedding, "_MODEL_RUNTIMES", {})
+    return detector
 
 
 def _detection(*, size: float = 32.0) -> dict[str, object]:
@@ -498,7 +499,7 @@ def test_extract_selfie_embedding_requires_exactly_one_face_and_normalizes_vecto
 ) -> None:
     source = tmp_path / "selfie.png"
     write_jpeg(source)
-    _selfie_model_mocks(monkeypatch, DummyImage(64, 64), [_detection()])
+    detector = _selfie_model_mocks(monkeypatch, DummyImage(64, 64), [_detection()])
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
         lambda *_args, **_kwargs: tuple(2.0 for _ in range(128)),
@@ -509,6 +510,7 @@ def test_extract_selfie_embedding_requires_exactly_one_face_and_normalizes_vecto
     assert len(result.embedding) == 128
     assert sum(value * value for value in result.embedding) == pytest.approx(1.0)
     assert result.model == "sface"
+    assert detector.calls == [0.5]
 
 
 @pytest.mark.parametrize(

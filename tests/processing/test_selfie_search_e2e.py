@@ -204,6 +204,7 @@ class SelfieSearchEndToEndTests(TestCase):
             self.jpeg_path,
             max_bytes=_MAX_INPUT_BYTES,
             content_type="image/jpeg",
+            detection_threshold=0.5,
             scrfd_model_path=self.scrfd_model,
             sface_model_path=self.sface_model,
         )

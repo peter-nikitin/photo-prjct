@@ -39,7 +39,6 @@ from processing.services.enrollment import (
     GENERATE_PREVIEW_CONFIGURATION,
     create_face_embedding_benchmark_run,
     request_capture_metadata,
-    request_face_embedding_candidate_enqueue,
     request_face_embedding_enqueue,
     request_processor,
 )
@@ -549,7 +548,7 @@ class WorkerApiTests(TestCase):
                 )
 
     @patch("processing.views.ExactPreviewStorage.create_download_grant")
-    def test_v4_preview_completion_validates_persists_and_projects_preview_geometry(
+    def test_historical_v4_completion_validates_persists_and_projects_preview_geometry(
         self, preview_grant
     ) -> None:
         preview_grant.return_value.url = "https://storage.example.test/preview?secret"
@@ -558,8 +557,23 @@ class WorkerApiTests(TestCase):
             "quality-v4-preview",
             original_key="originals/dddddddddddddddddddddddddddddddd",
         )
-        self.publish_preview(photo)
-        request_face_embedding_candidate_enqueue(photo)
+        derivative = self.publish_preview(photo)
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=3,
+            processor_version=4,
+            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+            input_fingerprint={
+                "object_key": derivative.final_key,
+                "object_size": derivative.byte_size,
+                "object_content_type": derivative.content_type,
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": derivative.width,
+                "pixel_height": derivative.height,
+            },
+        )
 
         response = self.post(
             "/internal/photo-processing/v1/claim",

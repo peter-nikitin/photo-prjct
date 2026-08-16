@@ -4,7 +4,7 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import NoReturn, TypedDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -291,14 +291,6 @@ FACE_EMBEDDING_QUALITY_APPROVAL = FaceEmbeddingGenerationApproval(
 )
 
 
-@dataclass(frozen=True)
-class FaceEmbeddingCandidateEnrollment:
-    photo_count: int
-    created_job_count: int
-    existing_job_count: int
-    run_count: int
-
-
 ACCEPTED_PREVIEW_PROJECTION_FIELDS = (
     "byte_size",
     "height",
@@ -400,58 +392,6 @@ def validate_face_embedding_candidate_enrollment(
     if accepted_preview_cohort_hash(event) != selected_approval.accepted_preview_cohort_hash:
         raise ValueError("candidate approval does not match the accepted preview cohort hash")
     return cohort
-
-
-def enroll_event_face_embedding_candidate_reprocessing(
-    event: Event,
-    *,
-    approval: FaceEmbeddingGenerationApproval | None = None,
-) -> FaceEmbeddingCandidateEnrollment:
-    """Enroll the approved preview cohort exactly once, preserving all terminal evidence."""
-    with transaction.atomic():
-        locked_event = Event.objects.select_for_update().get(pk=event.pk)
-        cohort = validate_face_embedding_candidate_enrollment(locked_event, approval=approval)
-        created_job_count = 0
-        existing_job_count = 0
-        run_ids: set[object] = set()
-        for photo in cohort:
-            preview = _accepted_preview(photo)
-            if preview is None:
-                raise ValueError("candidate enrollment lost its accepted preview")
-            expected_fingerprint = _derivative_fingerprint(preview)
-            existing_jobs = list(
-                ProcessingJob.objects.select_for_update()
-                .select_related("run")
-                .filter(
-                    event=locked_event,
-                    photo=photo,
-                    contract_version=QUALITY_FACE_CONTRACT_VERSION,
-                    processor_type=FACE_EMBEDDING_PROCESSOR,
-                    processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-                    configuration_hash=_configuration_hash(FACE_EMBEDDING_QUALITY_CONFIGURATION),
-                )
-                .order_by("created_at", "id")
-            )
-            if len(existing_jobs) > 1:
-                raise ValueError("candidate enrollment has ambiguous existing job identity")
-            if existing_jobs and existing_jobs[0].input_fingerprint != expected_fingerprint:
-                raise ValueError("candidate job input no longer matches the accepted preview")
-            if existing_jobs:
-                existing_job_count += 1
-                run_ids.add(existing_jobs[0].run_id)
-                continue
-            state = request_face_embedding_candidate_enqueue(photo)
-            job = state.current_job
-            if job is None:  # pragma: no cover - validated accepted previews make this unreachable.
-                raise ValueError("candidate enrollment lost its accepted preview")
-            created_job_count += 1
-            run_ids.add(job.run_id)
-        return FaceEmbeddingCandidateEnrollment(
-            photo_count=len(cohort),
-            created_job_count=created_job_count,
-            existing_job_count=existing_job_count,
-            run_count=len(run_ids),
-        )
 
 
 def validate_capture_time_reprocessing_enrollment(
@@ -740,19 +680,10 @@ def request_face_embedding_enqueue(
     )
 
 
-def request_face_embedding_candidate_enqueue(photo: Photo) -> PhotoProcessingState:
-    """Explicitly queue preview-backed quality-v4 work without changing search activation."""
-    preview = _accepted_preview(photo)
-    return request_processor(
-        photo=photo,
-        processor_type=FACE_EMBEDDING_PROCESSOR,
-        contract_version=QUALITY_FACE_CONTRACT_VERSION,
-        processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-        configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
-        input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
-        enabled=preview is not None,
-        replace_terminal_generation=True,
-    )
+def request_face_embedding_candidate_enqueue(photo: Photo) -> NoReturn:
+    """Reject YuNet-calibrated quality work until SCRFD has a new immutable generation."""
+    del photo
+    raise ValueError("SCRFD quality generation is not approved")
 
 
 def request_generate_preview(

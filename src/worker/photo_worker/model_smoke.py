@@ -39,7 +39,11 @@ def main() -> None:
 
 
 def _assert_photo_embedding_no_face(path: Path) -> None:
-    result = extract_face_embeddings(path, max_bytes=path.stat().st_size)
+    result = extract_face_embeddings(
+        path,
+        max_bytes=path.stat().st_size,
+        detection_threshold=0.5,
+    )
     if result.model != "sface" or result.faces != () or result.warnings != ("no_faces_detected",):
         raise RuntimeError("face_model_smoke_unexpected_photo_result")
 
@@ -50,6 +54,7 @@ def _assert_selfie_query_no_face(path: Path) -> None:
             path,
             max_bytes=path.stat().st_size,
             content_type="image/jpeg",
+            detection_threshold=0.5,
         )
     except FaceEmbeddingError as error:
         if error.code == "no_face_detected":

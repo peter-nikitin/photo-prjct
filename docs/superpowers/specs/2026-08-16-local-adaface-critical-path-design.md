@@ -25,8 +25,9 @@ submit a selfie through the existing gallery interface, and inspect an AdaFace-b
 the same customer path as the SFace-backed main site. The maintainer compares the two sites in
 separate browser windows; the experiment adds no comparison UI or model selector.
 
-The local application uses a cloned staging database and a complete AdaFace face-embedding cohort
-for that event. It never mutates staging, production, the main checkout, or another agent's local
+The local application uses a cloned staging database, the already saved local preview corpus, and a
+complete AdaFace face-embedding cohort for that event. It never reads event photos from Object
+Storage and never mutates staging, production, the main checkout, or another agent's local
 containers, database, volumes, or ports.
 
 ## Success criteria
@@ -39,6 +40,9 @@ The critical path succeeds when:
   host port already used by another checkout;
 - the isolated PostgreSQL database contains a validated clone of staging and only the selected
   event receives experimental face reprocessing;
+- every backfill input resolves through the complete local preview manifest under
+  `/Users/petrnikitin/Documents/Projects/photo-prjct-private/event-corpora/` and no backfill request
+  reads remote media;
 - YuNet detection and the active face-quality eligibility contract remain unchanged while both
   gallery faces and selfie queries use one pinned AdaFace model artifact and identical alignment,
   preprocessing, output normalization, model identity, and dimensions;
@@ -65,6 +69,8 @@ The critical path succeeds when:
   embeddings.
 - Exact cosine ranking and the current gallery/result templates.
 - A bounded local backfill for `cyclingrace-vechernee-sadovoe` on a staging database clone.
+- The existing immutable local `preview-small-v1` corpus for all 17,043 event photos as the sole
+  backfill image source.
 - A short local threshold calibration using explicitly supplied comparison queries.
 - Isolated Docker Compose project naming, volumes, loopback host ports, database, web, and worker.
 - Focused contract, adapter, ranking, enrollment, event-scope, privacy, and critical-path checks.
@@ -79,6 +85,7 @@ The critical path succeeds when:
 - Persisting ordinary selfie queries, query vectors, or new biometric history.
 - Claiming that the provisional threshold or visual comparison proves a production quality gain.
 - Packaging or distributing third-party model weights as a repository or application artifact.
+- Downloading event photos again or using Yandex Object Storage credentials for the backfill.
 
 ## Selected design
 
@@ -137,28 +144,42 @@ replacement confirmation. It does not stop, attach to, rename, or reuse another 
 The experiment records the resolved Compose project and container names before clone, backfill, and
 shutdown, and verifies the neighboring containers remain unchanged afterward.
 
-Media access for reprocessing uses the existing private short-lived exact-object worker grants. The
-worktree does not copy or link the main checkout's `.env`. If the isolated environment lacks the
-least-privilege credentials needed to issue those grants, execution pauses for explicit credential
-provisioning rather than reading another checkout's secrets or changing cloud IAM.
+The sole image source for backfill is
+`/Users/petrnikitin/Documents/Projects/photo-prjct-private/event-corpora/cyclingrace-vechernee-sadovoe/previews/preview-small-v1`.
+Its `manifest.json` declares event `9`, slug `cyclingrace-vechernee-sadovoe`, 17,043 photos, zero
+unresolved items, the production-equivalent 1600px JPEG preview contract, and a complete corpus.
+Before processing, the experiment validates the manifest's completeness, event identity, photo-ID
+coverage against the cloned database, source/production contract hashes, and per-file size and
+SHA-256. Inputs mount read-only into the worker and resolve by manifest `photo_id`; arbitrary paths,
+unmanifested files, missing files, checksum mismatches, and event mismatches fail before enqueue.
+
+The worktree does not copy or link the main checkout's `.env`. Backfill needs no Object Storage
+credential, signed URL, remote download, or cloud IAM change. Ordinary local selfie submission may
+use the existing local filesystem media backend; it does not broaden access to the saved event
+corpus.
 
 ## Data flow
 
-1. Build or obtain the pinned local AdaFace inference artifact and pass its smoke check.
-2. Start the isolated database, web, and worker services under the unique Compose project.
-3. Clone staging PostgreSQL into that database through the existing guarded clone workflow.
-4. Resolve `cyclingrace-vechernee-sadovoe` and freeze its eligible preview-backed photo cohort.
-5. Enqueue the new AdaFace generation only for that cohort and let the isolated worker process it.
-6. Reconcile attempts, projections, compatibility, and coverage; activate the generation locally
+1. Validate the complete local 17,043-photo preview manifest without modifying its files.
+2. Build or obtain the pinned local AdaFace inference artifact and pass its smoke check.
+3. Start the isolated database, web, and worker services under the unique Compose project.
+4. Clone staging PostgreSQL into that database through the existing guarded clone workflow.
+5. Resolve `cyclingrace-vechernee-sadovoe`, join its eligible photos to the local manifest by
+   `photo_id`, and freeze that preview-backed cohort.
+6. Enqueue the new AdaFace generation only for that cohort and let the isolated worker read the
+   manifest-approved local preview files.
+7. Reconcile attempts, projections, compatibility, and coverage; activate the generation locally
    only after the selected event is complete.
-7. Calibrate and freeze the provisional local AdaFace cosine-distance threshold.
-8. Open the normal local event page, submit a selfie, and publish the ordinary result through the
+8. Calibrate and freeze the provisional local AdaFace cosine-distance threshold.
+9. Open the normal local event page, submit a selfie, and publish the ordinary result through the
    unchanged privacy and cleanup path.
-9. Compare the local AdaFace result with the same query submitted to the main SFace site.
+10. Compare the local AdaFace result with the same query submitted to the main SFace site.
 
 ## Failure and rollback semantics
 
 - Model download, checksum, conversion, load, dimensionality, or smoke failure stops before backfill.
+- An incomplete, mismatched, missing, or checksum-invalid local event corpus stops before enqueue;
+  the experiment never falls back to remote media.
 - Clone validation failure leaves the prior isolated local database recoverable under the existing
   clone workflow and does not touch any other project.
 - A partial or failed backfill is not activated. It remains isolated derived data and can resume by
@@ -176,6 +197,8 @@ The handoff records:
 - branch, worktree, source SHA, Compose project, host ports, and container names;
 - upstream model identity, revision, local artifact SHA-256, and smoke output;
 - staging-clone validation result without credentials or private media identifiers;
+- local preview manifest identity, declared photo count, completeness, contract hashes, and validated
+  database join count without enumerating private filenames;
 - selected event identity and bounded backfill totals by accepted, quality-rejected, failed, and
   unresolved outcome;
 - generation compatibility and activation reconciliation;

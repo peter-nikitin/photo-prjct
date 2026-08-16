@@ -1131,8 +1131,8 @@ def test_preview_first_activation_accepts_and_persists_all_worker_identities(
             "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-                "1/selfie_query/1,1/capture_metadata/2,1/face_embedding/1,"
-                "2/generate_preview/1,2/face_embedding/2,3/face_embedding_benchmark/1"
+                "1/selfie_query/2,1/capture_metadata/2,2/generate_preview/1,"
+                "2/face_embedding/3,3/face_embedding_benchmark/1"
             ),
             "PHOTO_WORKER_PROCESSOR_TYPES": (
                 "selfie_query,face_embedding,capture_metadata,generate_preview"
@@ -1147,8 +1147,8 @@ def test_preview_first_activation_accepts_and_persists_all_worker_identities(
     assert "PHOTO_PROCESSING_PREVIEW_ENABLED=True" in deployed_env
     assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/1,1/capture_metadata/2,"
-        "1/face_embedding/1,2/generate_preview/1,2/face_embedding/2,"
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/2,1/capture_metadata/2,"
+        "2/generate_preview/1,2/face_embedding/3,"
         "3/face_embedding_benchmark/1" in deployed_env
     )
 
@@ -1166,8 +1166,7 @@ def test_quality_gate_candidate_identity_is_opt_in_and_preserved_without_preview
             "PHOTO_PROCESSING_PREVIEW_ENABLED": "False",
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-                "1/capture_metadata/2,1/face_embedding/1,2/generate_preview/1,"
-                "2/face_embedding/2,3/face_embedding/4"
+                "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/4"
             ),
         }
     )
@@ -1180,8 +1179,8 @@ def test_quality_gate_candidate_identity_is_opt_in_and_preserved_without_preview
     assert "PHOTO_PROCESSING_PREVIEW_ENABLED=False" in deployed_env
     assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/face_embedding/1,"
-        "2/generate_preview/1,2/face_embedding/2,3/face_embedding/4" in deployed_env
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,"
+        "2/face_embedding/3,3/face_embedding/4" in deployed_env
     )
     commands = _apply_log(tmp_path)
     assert not any("reprocess_event_face_embeddings --apply" in command for command in commands)
@@ -1191,11 +1190,14 @@ def test_quality_gate_candidate_identity_is_opt_in_and_preserved_without_preview
 @pytest.mark.parametrize(
     "identities",
     [
-        "1/capture_metadata/1,2/generate_preview/1,2/face_embedding/2",
-        "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/2,9/bogus/9",
-        "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/2,3/face_embedding/5",
-        "1/capture_metadata/2,2/generate_preview/1,2/generate_preview/1,2/face_embedding/2",
-        "1/capture_metadata/2, 2/generate_preview/1,2/face_embedding/2",
+        "1/selfie_query/1",
+        "1/face_embedding/1",
+        "2/face_embedding/2",
+        "1/capture_metadata/1,2/generate_preview/1,2/face_embedding/3",
+        "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,9/bogus/9",
+        "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5",
+        "1/capture_metadata/2,2/generate_preview/1,2/generate_preview/1,2/face_embedding/3",
+        "1/capture_metadata/2, 2/generate_preview/1,2/face_embedding/3",
         "1/capture_metadata/2,",
     ],
 )
@@ -1273,9 +1275,8 @@ def test_preview_first_activation_rejects_partial_or_implicit_configuration(
     "missing_identity",
     (
         "1/capture_metadata/2",
-        "1/face_embedding/1",
         "2/generate_preview/1",
-        "2/face_embedding/2",
+        "2/face_embedding/3",
     ),
 )
 def test_preview_activation_requires_every_approved_photo_identity_before_mutation(
@@ -1283,9 +1284,8 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
 ) -> None:
     required_identities = (
         "1/capture_metadata/2",
-        "1/face_embedding/1",
         "2/generate_preview/1",
-        "2/face_embedding/2",
+        "2/face_embedding/3",
     )
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(

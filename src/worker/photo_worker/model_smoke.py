@@ -1,4 +1,4 @@
-"""Build-time smoke for the YuNet/SFace models shipped with the worker image."""
+"""Build-time smoke for the SCRFD/SFace models shipped with the worker image."""
 
 from __future__ import annotations
 

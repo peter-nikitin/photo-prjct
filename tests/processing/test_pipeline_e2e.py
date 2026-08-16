@@ -40,7 +40,7 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingAttempt,
 )
-from processing.services.enrollment import request_capture_metadata, request_face_embedding_enqueue
+from processing.services.enrollment import request_capture_metadata
 from processing.storage import DownloadGrant, PreviewObject, PreviewUploadGrant
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -151,6 +151,9 @@ class _PreviewStorage:
         self._final.setdefault(final_key, content)
         return self.verify(key=final_key, max_bytes=10_485_760)
 
+    def published_preview(self) -> bytes:
+        return next(iter(self._final.values()))
+
 
 @override_settings(
     PHOTO_PROCESSING_ENABLED=True,
@@ -172,11 +175,12 @@ class PipelineEndToEndTests(TestCase):
             timezone_name="Etc/UTC",
         )
         self.jpeg = self._jpeg_with_capture_time()
+        self._face_download_bytes: bytes | None = None
         self._make_completion_stale = False
         self._preview_storage: _PreviewStorage | None = None
         self._preview_staging_key: str | None = None
 
-    def test_confirmed_preview_first_jpeg_is_published_for_gallery_before_face_v2_is_queued(
+    def test_confirmed_preview_first_jpeg_is_published_for_gallery_before_face_v3_is_queued(
         self,
     ) -> None:
         """Catch any bypass of confirmation → preview → publication → preview-backed ML."""
@@ -212,7 +216,7 @@ class PipelineEndToEndTests(TestCase):
         )
         self.assertEqual(face.status, PhotoProcessingState.Status.QUEUED)
         self.assertEqual(
-            (face.current_job.contract_version, face.current_job.processor_version), (2, 2)
+            (face.current_job.contract_version, face.current_job.processor_version), (2, 3)
         )
         self.assertEqual(face.current_job.input_fingerprint["media_kind"], "preview-small-v1")
         self.assertEqual(face.current_job.input_fingerprint["object_key"], derivative.final_key)
@@ -374,21 +378,13 @@ class PipelineEndToEndTests(TestCase):
             ("unsupported_input", False, "processor"),
         )
 
-        for index, (error_code, retryable, failure_phase) in enumerate(cases, start=1):
+        for error_code, retryable, failure_phase in cases:
             with self.subTest(error_code=error_code):
-                photo_id = f"{index:032x}"
-                photo = Photo.objects.create(
-                    id=photo_id,
-                    event=self.event,
-                    src="",
-                    uploaded_by=self.user,
-                    original_key=f"originals/{photo_id}",
-                    original_filename="face-failure.jpg",
-                    original_size=len(self.jpeg),
-                    original_content_type="image/jpeg",
-                    uploaded_at=timezone.now(),
-                )
-                request_face_embedding_enqueue(photo)
+                self._face_download_bytes = None
+                photo = self._confirmed_preview_photo()
+                preview_storage = _PreviewStorage()
+                self._run_preview_worker(preview_storage)
+                self._face_download_bytes = preview_storage.published_preview()
 
                 with tempfile.TemporaryDirectory() as temp_dir:
                     client = HttpClient(
@@ -401,7 +397,7 @@ class PipelineEndToEndTests(TestCase):
                         WorkerConfig(
                             worker_build="pipeline-face-failure-e2e",
                             lease_seconds=120,
-                            processor_identities=("1/face_embedding/1",),
+                            processor_identities=("2/face_embedding/3",),
                             temp_dir=Path(temp_dir),
                         ),
                     )
@@ -424,6 +420,13 @@ class PipelineEndToEndTests(TestCase):
                                 expires_at=timezone.now() + timedelta(seconds=30),
                             ),
                         ),
+                        patch(
+                            "processing.views.ExactPreviewStorage.create_download_grant",
+                            return_value=DownloadGrant(
+                                url=_OBJECT_URL,
+                                expires_at=timezone.now() + timedelta(seconds=30),
+                            ),
+                        ),
                         failure,
                     ):
                         self.assertIsNone(worker.run_once())
@@ -441,11 +444,12 @@ class PipelineEndToEndTests(TestCase):
     def _open(self, request: Request, *, timeout: float) -> _Response:
         parsed = urlsplit(request.full_url)
         if request.full_url == _OBJECT_URL:
+            body = self._face_download_bytes or self.jpeg
             return _Response(
-                self.jpeg,
+                body,
                 {
                     "Content-Type": "image/jpeg",
-                    "Content-Length": str(len(self.jpeg)),
+                    "Content-Length": str(len(body)),
                     "ETag": '"original-etag"',
                 },
             )

@@ -1000,6 +1000,21 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
     assert singular.processor_types == (PROCESSOR_TYPE_FACE_EMBEDDING,)
 
 
+@pytest.mark.parametrize(
+    "identity",
+    ("1/selfie_query/1", "1/face_embedding/1", "2/face_embedding/2"),
+)
+def test_environment_configuration_rejects_retired_execution_identities(
+    monkeypatch: pytest.MonkeyPatch, identity: str
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", identity)
+
+    with pytest.raises(ValueError, match="unsupported processor identity"):
+        WorkerConfig.from_env()
+
+
 def test_environment_benchmark_identity_is_authoritative_over_product_types(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

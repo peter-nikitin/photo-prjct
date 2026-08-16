@@ -120,6 +120,9 @@ The derivation rejects a source whose complete identity is not
 cohort, altered source evidence, or an existing destination. Verify the derived bundle before
 building review labels. The finalizer accepts exactly one label per row, all bound to the derived
 run identity, and rejects `uncertain`, duplicate, missing, or foreign labels.
+It also requires the complete 108-row source detector review CSV bound to the frozen source-run
+identity. The immutable foreground analysis embeds changed, helped, harmed, and neutral totals for
+both normalized source variants; it never accepts a partial or foreign source label set.
 
 ```sh
 PYTHONPATH=experiments/selfie_detector_benchmark .venv/bin/python -m detector_benchmark \
@@ -130,5 +133,6 @@ PYTHONPATH=experiments/selfie_detector_benchmark .venv/bin/python -m detector_be
 PYTHONPATH=experiments/selfie_detector_benchmark .venv/bin/python -m detector_benchmark \
   finalize-foreground --run /private/runs/detector-001-foreground \
   --labels-csv /private/review-bundles/detector-001-foreground/review.csv \
+  --source-labels-csv /private/review-bundles/detector-001/review.csv \
   --output /private/runs/detector-001-foreground-analysis
 ```

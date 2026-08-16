@@ -51,6 +51,7 @@ def main() -> int:
     finalize_foreground = commands.add_parser("finalize-foreground")
     finalize_foreground.add_argument("--run", type=Path, required=True)
     finalize_foreground.add_argument("--labels-csv", type=Path, required=True)
+    finalize_foreground.add_argument("--source-labels-csv", type=Path, required=True)
     finalize_foreground.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "snapshot":
@@ -95,7 +96,10 @@ def main() -> int:
     else:
         print(
             json.dumps(
-                finalize_foreground_review(args.run, args.labels_csv, args.output), sort_keys=True
+                finalize_foreground_review(
+                    args.run, args.labels_csv, args.source_labels_csv, args.output
+                ),
+                sort_keys=True,
             )
         )
     return 0

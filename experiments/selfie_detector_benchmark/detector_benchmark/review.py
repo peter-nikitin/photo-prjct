@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -123,15 +123,16 @@ def finalize_run_review(run: Path, labels_csv: Path, output: Path) -> dict[str, 
 
 
 def finalize_identity_bound_review(
-    rows: Iterable[ReviewRow], run_identity: str, labels_csv: Path, output: Path
+    rows: Iterable[ReviewRow],
+    run_identity: str,
+    labels_csv: Path,
+    output: Path,
+    *,
+    additional: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Publish authoritative analysis only for one complete identity-bound review."""
     values = _validate_rows(rows)
-    _validate_run_identity(run_identity)
-    labels = _load_labels(labels_csv, run_identity)
-    expected = {(row.case_id, row.variant) for row in values}
-    if set(labels) != expected:
-        raise ValueError("review is incomplete or does not match this run")
+    labels = load_identity_bound_labels(values, run_identity, labels_csv)
     result = {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "detector-analysis",
@@ -145,6 +146,10 @@ def finalize_identity_bound_review(
             for variant in sorted({row.variant for row in values})
         },
     }
+    if additional:
+        if set(result) & set(additional):
+            raise ValueError("analysis additions overlap required fields")
+        result.update(additional)
     publish_immutable(output, lambda stage: _write_json(stage / "analysis.json", result))
     return result
 
@@ -154,13 +159,22 @@ def require_certain_identity_bound_review(
 ) -> None:
     """Reject incomplete or uncertain labels where a frozen study requires a definite decision."""
     values = _validate_rows(rows)
+    labels = load_identity_bound_labels(values, run_identity, labels_csv)
+    if any(label == "uncertain" for label in labels.values()):
+        raise ValueError("review labels remain uncertain")
+
+
+def load_identity_bound_labels(
+    rows: Iterable[ReviewRow], run_identity: str, labels_csv: Path
+) -> dict[tuple[str, str], str]:
+    """Load one complete label set after binding its identity and keys to immutable review rows."""
+    values = _validate_rows(rows)
     _validate_run_identity(run_identity)
     labels = _load_labels(labels_csv, run_identity)
     expected = {(row.case_id, row.variant) for row in values}
     if set(labels) != expected:
         raise ValueError("review is incomplete or does not match this run")
-    if any(label == "uncertain" for label in labels.values()):
-        raise ValueError("review labels remain uncertain")
+    return labels
 
 
 def _validate_rows(rows: Iterable[ReviewRow]) -> tuple[ReviewRow, ...]:

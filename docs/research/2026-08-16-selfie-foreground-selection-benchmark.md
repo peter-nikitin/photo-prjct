@@ -23,7 +23,7 @@ not invoked again. The reviewed identities are:
 | Reviewed harness revision | `bec612a7f2b79cb368a0cc7f1ff7a81db430556e` |
 | Verified source evidence identity | `19f58e027c3aca32487d13ef3e420fca9ade15fc189c7bd7d70625b39cc101aa` |
 | Verified derived foreground identity | `aa6a3af2849bd37e2181fa6c862294fcf4b3c82239f2330a2f9e81f28c0d196e` |
-| Final analysis SHA-256 | `b59caeb5697dd4bd9932c57c0324e6de30ac8c424d4617c0baa80333dbb730c4` |
+| Final analysis SHA-256 (v2) | `882d784daec44e6fbcc3201eef04835b479e0ccb7f2ab8085959f477c70aa17d` |
 
 The source cohort contains exactly 36 cases: 17 historical `no_face` cases, 16 successful-result
 controls, and 3 genuine multiple-face controls. All 36 derived outcomes received a complete
@@ -78,6 +78,7 @@ Here, `changed` means that the derived outcome differs from the named frozen sou
 `helped` means a changed case moved from incorrect to correct review judgment; and `harmed` means
 a changed case moved from correct to incorrect review judgment. The two comparisons were
 independently recomputed from the exact source and derived evidence.
+They are embedded in the immutable v2 analysis JSON bound to both completed review identities.
 
 ## Limitations and boundary
 

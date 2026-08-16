@@ -16,9 +16,10 @@ from .review import (
     ReviewRow,
     build_identity_bound_review,
     finalize_identity_bound_review,
+    load_identity_bound_labels,
     require_certain_identity_bound_review,
 )
-from .runner import Detection, validate_detector_cohort
+from .runner import VARIANTS, Detection, classify_detections, validate_detector_cohort
 
 SOURCE_RUN_IDENTITY = "19f58e027c3aca32487d13ef3e420fca9ade15fc189c7bd7d70625b39cc101aa"
 SOURCE_VARIANT = "normalized-1600"
@@ -208,12 +209,105 @@ def build_foreground_review(run: Path, output: Path) -> None:
     build_identity_bound_review(load_foreground_review_rows(run), identity, output)
 
 
-def finalize_foreground_review(run: Path, labels_csv: Path, output: Path) -> dict[str, Any]:
+def finalize_foreground_review(
+    run: Path, labels_csv: Path, source_labels_csv: Path, output: Path
+) -> dict[str, Any]:
     """Finalize only a complete, certain review of the exact derived foreground run."""
     identity = verify_foreground_run(run)
     rows = load_foreground_review_rows(run)
     require_certain_identity_bound_review(rows, identity, labels_csv)
-    return finalize_identity_bound_review(rows, identity, labels_csv, output)
+    source_identity = _source_run_identity(run)
+    cases = _load_derived_cases(run)
+    source_rows, comparison_rows = _source_rows(cases)
+    source_labels = load_identity_bound_labels(source_rows, source_identity, source_labels_csv)
+    foreground_labels = load_identity_bound_labels(rows, identity, labels_csv)
+    return finalize_identity_bound_review(
+        rows,
+        identity,
+        labels_csv,
+        output,
+        additional={
+            "source_run_identity": source_identity,
+            "comparisons": _comparison_totals(
+                comparison_rows, rows, foreground_labels, source_labels
+            ),
+        },
+    )
+
+
+def _source_run_identity(run: Path) -> str:
+    try:
+        value = _read_json(run / "manifest.json")["source_run_identity"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("foreground run manifest is invalid") from error
+    if value != SOURCE_RUN_IDENTITY:
+        raise ValueError("foreground run manifest is invalid")
+    return value
+
+
+def _source_rows(
+    cases: Sequence[Mapping[str, object]],
+) -> tuple[tuple[ReviewRow, ...], dict[str, tuple[ReviewRow, ...]]]:
+    all_rows: list[ReviewRow] = []
+    comparison_rows: dict[str, list[ReviewRow]] = {
+        SOURCE_VARIANT: [],
+        QUALITY_VARIANT: [],
+    }
+    for case in cases:
+        case_id, cohort = str(case["case_id"]), str(case["cohort"])
+        detections = tuple(_detection_from_payload(item) for item in case["source_detections"])
+        quality = tuple(_quality_payload(item) for item in case["source_quality"])
+        source_outcomes = {
+            SOURCE_VARIANT: classify_detections(
+                detections, accepted=None, quality_enabled=False
+            ).outcome,
+            QUALITY_VARIANT: classify_detections(
+                detections,
+                accepted=tuple(value["decision"] == "accepted" for value in quality),
+                quality_enabled=True,
+            ).outcome,
+        }
+        for variant in VARIANTS:
+            row = ReviewRow(case_id, variant, cohort, source_outcomes.get(variant, ""))
+            all_rows.append(row)
+            if variant in comparison_rows:
+                comparison_rows[variant].append(row)
+    return (
+        tuple(all_rows),
+        {variant: tuple(rows) for variant, rows in comparison_rows.items()},
+    )
+
+
+def _comparison_totals(
+    source_rows: Mapping[str, Sequence[ReviewRow]],
+    foreground_rows: Sequence[ReviewRow],
+    foreground_labels: Mapping[tuple[str, str], str],
+    source_labels: Mapping[tuple[str, str], str],
+) -> dict[str, dict[str, int]]:
+    foreground_outcomes = {row.case_id: row.outcome for row in foreground_rows}
+    foreground_by_case = {
+        case_id: label
+        for (case_id, variant), label in foreground_labels.items()
+        if variant == FOREGROUND_VARIANT
+    }
+    totals: dict[str, dict[str, int]] = {}
+    for variant in (SOURCE_VARIANT, QUALITY_VARIANT):
+        values = {"changed": 0, "helped": 0, "harmed": 0, "neutral": 0}
+        for source in source_rows[variant]:
+            foreground_label = foreground_by_case[source.case_id]
+            source_label = source_labels[(source.case_id, variant)]
+            foreground_outcome = foreground_outcomes[source.case_id]
+            if source.outcome == foreground_outcome:
+                continue
+            values["changed"] += 1
+            if source_label == "incorrect" and foreground_label == "correct":
+                values["helped"] += 1
+            elif source_label == "correct" and foreground_label == "incorrect":
+                values["harmed"] += 1
+            else:
+                values["neutral"] += 1
+        totals[variant] = values
+    return totals
 
 
 def _load_source_cases(source_run: Path) -> tuple[dict[str, Any], ...]:

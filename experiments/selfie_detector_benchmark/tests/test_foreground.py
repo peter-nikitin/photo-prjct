@@ -127,6 +127,18 @@ def _write_source_run(root: Path, *, case_count: int = 36) -> str:
             if number <= 33
             else "multiple_faces"
         )
+        quality = (
+            [_source_quality("quality_rejected", "severe_blur"), _source_quality("accepted")]
+            if number == 3
+            else [_source_quality("accepted"), _source_quality("quality_rejected", "too_small")]
+        )
+        detections = [
+            _payload(x=5, y=5, width=40, height=40, confidence=0.95),
+            _payload(x=60, y=5, width=20, height=20, confidence=0.8),
+        ]
+        if number > 3:
+            detections = detections[:1]
+            quality = [_source_quality("accepted")]
         cases.append(
             {
                 "case_id": case_id,
@@ -134,26 +146,17 @@ def _write_source_run(root: Path, *, case_count: int = 36) -> str:
                 "variants": [
                     {
                         "variant": "normalized-1600",
-                        "raw_detection_count": 2,
-                        "outcome": "multiple_faces",
-                        "detections": [
-                            _payload(x=5, y=5, width=40, height=40, confidence=0.95),
-                            _payload(x=60, y=5, width=20, height=20, confidence=0.8),
-                        ],
+                        "raw_detection_count": len(detections),
+                        "outcome": "multiple_faces" if number <= 3 else "single_face",
+                        "detections": detections,
                         "quality": None,
                     },
                     {
                         "variant": "normalized-1600-quality",
-                        "raw_detection_count": 2,
+                        "raw_detection_count": len(detections),
                         "outcome": "single_face",
-                        "detections": [
-                            _payload(x=5, y=5, width=40, height=40, confidence=0.95),
-                            _payload(x=60, y=5, width=20, height=20, confidence=0.8),
-                        ],
-                        "quality": [
-                            _source_quality("accepted"),
-                            _source_quality("quality_rejected", "too_small"),
-                        ],
+                        "detections": detections,
+                        "quality": quality,
                     },
                 ],
             }
@@ -163,7 +166,7 @@ def _write_source_run(root: Path, *, case_count: int = 36) -> str:
                 "case_id": case_id,
                 "variant": "normalized-1600",
                 "cohort": cohort,
-                "outcome": "multiple_faces",
+                "outcome": "multiple_faces" if number <= 3 else "single_face",
             }
         )
         rows.append(
@@ -300,6 +303,20 @@ def _rehash_foreground_run(run: Path) -> None:
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
+def _write_complete_source_labels(path: Path, identity: str) -> None:
+    rows = ["review_rows_sha256,case_id,variant,label"]
+    for number in range(1, 37):
+        case_id = f"case-{number:03d}"
+        for variant in (
+            "baseline-original",
+            "normalized-1600",
+            "normalized-1600-quality",
+        ):
+            label = "incorrect" if case_id in {"case-001", "case-003"} else "correct"
+            rows.append(f"{identity},{case_id},{variant},{label}")
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
 def test_derivation_rejects_a_verified_but_incomplete_source_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -331,6 +348,8 @@ def test_identity_bound_foreground_review_rejects_incomplete_uncertain_duplicate
     lines = (bundle / "review.csv").read_text(encoding="utf-8").splitlines()
     header, first = lines[:2]
     labels = tmp_path / "labels.csv"
+    source_labels = tmp_path / "source-labels.csv"
+    _write_complete_source_labels(source_labels, source_identity)
 
     for contents, message in (
         ("\n".join((header, f"{first}correct")), "incomplete"),
@@ -362,15 +381,71 @@ def test_identity_bound_foreground_review_rejects_incomplete_uncertain_duplicate
     ):
         labels.write_text(contents + "\n", encoding="utf-8")
         with pytest.raises(ValueError, match=message):
-            foreground.finalize_foreground_review(run, labels, tmp_path / "analysis")
+            foreground.finalize_foreground_review(run, labels, source_labels, tmp_path / "analysis")
         assert not (tmp_path / "analysis").exists()
 
     labels.write_text(
         "\n".join([header, *(f"{line}correct" for line in lines[1:])]) + "\n",
         encoding="utf-8",
     )
-    result = foreground.finalize_foreground_review(run, labels, tmp_path / "analysis")
+    result = foreground.finalize_foreground_review(
+        run, labels, source_labels, tmp_path / "analysis"
+    )
     assert result["run_identity"] == identity
+
+
+def test_foreground_finalization_requires_complete_source_labels_and_embeds_comparisons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Source labels must exactly bind both frozen source variants before comparison publication."""
+    from detector_benchmark import foreground
+
+    source = tmp_path / "source"
+    source_identity = _write_source_run(source)
+    monkeypatch.setattr(foreground, "SOURCE_RUN_IDENTITY", source_identity)
+    run = tmp_path / "derived"
+    foreground.derive_foreground_run(source, run, experiment_revision="d" * 40)
+    bundle = tmp_path / "bundle"
+    foreground.build_foreground_review(run, bundle)
+    labels = tmp_path / "foreground-labels.csv"
+    header, *foreground_rows = (bundle / "review.csv").read_text(encoding="utf-8").splitlines()
+    labels.write_text(
+        "\n".join(
+            [
+                header,
+                *(
+                    f"{row}{'incorrect' if 'case-002' in row else 'correct'}"
+                    for row in foreground_rows
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_labels = tmp_path / "source-labels.csv"
+    _write_complete_source_labels(source_labels, source_identity)
+
+    for contents, message in (
+        ("review_rows_sha256,case_id,variant,label\n", "incomplete"),
+        (
+            source_labels.read_text(encoding="utf-8").replace(source_identity, "a" * 64),
+            "identity",
+        ),
+    ):
+        source_labels.write_text(contents, encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            foreground.finalize_foreground_review(run, labels, source_labels, tmp_path / "analysis")
+        assert not (tmp_path / "analysis").exists()
+
+    _write_complete_source_labels(source_labels, source_identity)
+    result = foreground.finalize_foreground_review(
+        run, labels, source_labels, tmp_path / "analysis"
+    )
+
+    assert result["comparisons"] == {
+        "normalized-1600": {"changed": 2, "helped": 1, "harmed": 1, "neutral": 0},
+        "normalized-1600-quality": {"changed": 1, "helped": 1, "harmed": 0, "neutral": 0},
+    }
 
 
 def test_identity_bound_helper_keeps_detector_uncertainty_as_review_evidence(

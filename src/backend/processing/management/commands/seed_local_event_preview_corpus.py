@@ -16,9 +16,15 @@ from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import F
 from picflow.models import Event, Photo
 
-from processing.models import PhotoDerivative
+from processing.models import GENERATE_PREVIEW_PROCESSOR, PhotoDerivative, PhotoProcessingState
+from processing.services.enrollment import (
+    FACE_EMBEDDING_QUALITY_APPROVAL,
+    accepted_preview_cohort_hash,
+)
+from processing.services.previews import preview_final_key
 
 EVENT_ID = 9
 EVENT_SLUG = "cyclingrace-vechernee-sadovoe"
@@ -83,6 +89,10 @@ class _ManifestPhoto:
     photo_id: str
     preview_path: Path
     byte_size: int
+    width: int
+    height: int
+    oriented_source_width: int
+    oriented_source_height: int
     sha256: str
 
 
@@ -92,6 +102,7 @@ class _ValidatedCorpus:
     production_contract_sha256: str
     source_manifest_sha256: str
     photos: tuple[_ManifestPhoto, ...]
+    derivatives: dict[str, PhotoDerivative]
 
 
 class Command(BaseCommand):
@@ -130,16 +141,8 @@ class Command(BaseCommand):
         existing_count = 0
         if options["apply"]:
             client = _local_s3_client()
-            derivatives = {
-                derivative.photo_id: derivative
-                for derivative in PhotoDerivative.objects.filter(
-                    photo__event=event,
-                    variant="preview-small-v1",
-                    accepted_attempt_id__isnull=False,
-                )
-            }
             for item in corpus.photos:
-                derivative = derivatives[item.photo_id]
+                derivative = corpus.derivatives[item.photo_id]
                 existing = _existing_object_matches(
                     client, key=derivative.final_key, byte_size=item.byte_size, sha256=item.sha256
                 )
@@ -226,6 +229,10 @@ def _validate_manifest(*, manifest_path: Path, files_root: Path, event: Event) -
         photo_id = row["photo_id"]
         preview_filename = row["preview_filename"]
         byte_size = row["byte_size"]
+        width = row["width"]
+        height = row["height"]
+        oriented_source_width = row["oriented_source_width"]
+        oriented_source_height = row["oriented_source_height"]
         sha256 = row["sha256"]
         if (
             not isinstance(photo_id, str)
@@ -248,6 +255,10 @@ def _validate_manifest(*, manifest_path: Path, files_root: Path, event: Event) -
         ):
             raise CommandError("manifest contains an invalid preview identity")
         assert isinstance(byte_size, int)
+        assert isinstance(width, int)
+        assert isinstance(height, int)
+        assert isinstance(oriented_source_width, int)
+        assert isinstance(oriented_source_height, int)
         assert isinstance(preview_filename, str)
         assert isinstance(sha256, str)
         preview_path = (roots / preview_filename).resolve()
@@ -268,6 +279,10 @@ def _validate_manifest(*, manifest_path: Path, files_root: Path, event: Event) -
                 photo_id=photo_id,
                 preview_path=preview_path,
                 byte_size=byte_size,
+                width=width,
+                height=height,
+                oriented_source_width=oriented_source_width,
+                oriented_source_height=oriented_source_height,
                 sha256=sha256,
             )
         )
@@ -279,25 +294,97 @@ def _validate_manifest(*, manifest_path: Path, files_root: Path, event: Event) -
         raise CommandError(
             f"manifest does not exactly cover the {EXPECTED_PHOTO_COUNT}-photo database join"
         )
-    derivatives = {
-        derivative.photo_id: derivative
-        for derivative in PhotoDerivative.objects.filter(
-            photo__event=event,
-            variant="preview-small-v1",
-            accepted_attempt_id__isnull=False,
-        )
-    }
-    if set(derivatives) != seen_photo_ids:
-        raise CommandError("manifest does not exactly cover accepted preview projections")
-    for item in photos:
-        derivative = derivatives[item.photo_id]
-        if derivative.byte_size != item.byte_size or derivative.sha256 != item.sha256:
-            raise CommandError("manifest preview facts do not match the accepted projection")
     return _ValidatedCorpus(
         manifest_sha256=manifest_sha256,
         source_manifest_sha256=source_manifest_sha256,
         production_contract_sha256=production_contract_sha256,
         photos=tuple(photos),
+        derivatives=_validate_approved_crosswalk(
+            event=event,
+            manifest_sha256=manifest_sha256,
+            photos=photos,
+        ),
+    )
+
+
+def _validate_approved_crosswalk(
+    *, event: Event, manifest_sha256: str, photos: list[_ManifestPhoto]
+) -> dict[str, PhotoDerivative]:
+    approval = FACE_EMBEDDING_QUALITY_APPROVAL
+    if (
+        approval is None
+        or approval.approved is not True
+        or approval.event_slug != event.slug
+        or approval.photo_count != EXPECTED_PHOTO_COUNT
+        or approval.preview_manifest_hash != manifest_sha256
+        or not _is_sha256(approval.local_preview_projection_hash)
+        or not _is_sha256(approval.accepted_preview_cohort_hash)
+        or not _is_sha256(approval.accepted_preview_crosswalk_hash)
+        or approval.accepted_preview_crosswalk_entry_count != EXPECTED_PHOTO_COUNT
+        or approval.accepted_preview_crosswalk_sha_mismatch_count != EXPECTED_PHOTO_COUNT
+    ):
+        raise CommandError("approved crosswalk does not match this local corpus")
+    if _local_preview_projection_hash(photos) != approval.local_preview_projection_hash:
+        raise CommandError("approved crosswalk local preview projection does not match")
+    if accepted_preview_cohort_hash(event) != approval.accepted_preview_cohort_hash:
+        raise CommandError("approved crosswalk accepted preview cohort does not match")
+    derivatives = {
+        derivative.photo_id: derivative
+        for derivative in PhotoDerivative.objects.filter(
+            photo__event=event,
+            variant="preview-small-v1",
+            photo__processing_states__processor_type=GENERATE_PREVIEW_PROCESSOR,
+            photo__processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
+            photo__processing_states__accepted_attempt_id=F("accepted_attempt_id"),
+        ).select_related("accepted_attempt")
+    }
+    photo_ids = {item.photo_id for item in photos}
+    if set(derivatives) != photo_ids:
+        raise CommandError("approved crosswalk does not cover accepted preview projections")
+    sha_mismatch_count = 0
+    for item in photos:
+        derivative = derivatives[item.photo_id]
+        if derivative.accepted_attempt_id is None:
+            raise CommandError("approved crosswalk accepted preview state does not match")
+        try:
+            expected_final_key = preview_final_key(
+                photo_id=derivative.photo_id,
+                attempt_id=derivative.accepted_attempt_id,
+                sha256=derivative.sha256,
+            )
+        except ValueError as error:
+            raise CommandError("approved crosswalk accepted preview key does not match") from error
+        if derivative.final_key != expected_final_key:
+            raise CommandError("approved crosswalk accepted preview key does not match")
+        if (
+            derivative.byte_size != item.byte_size
+            or derivative.width != item.width
+            or derivative.height != item.height
+            or derivative.oriented_source_width != item.oriented_source_width
+            or derivative.oriented_source_height != item.oriented_source_height
+        ):
+            raise CommandError("approved crosswalk preview facts do not match")
+        if derivative.sha256 != item.sha256:
+            sha_mismatch_count += 1
+    if sha_mismatch_count != approval.accepted_preview_crosswalk_sha_mismatch_count:
+        raise CommandError("approved crosswalk SHA-256 mismatch count does not match")
+    return derivatives
+
+
+def _local_preview_projection_hash(photos: list[_ManifestPhoto]) -> str:
+    return _canonical_sha256(
+        [
+            {
+                "byte_size": item.byte_size,
+                "height": item.height,
+                "oriented_source_height": item.oriented_source_height,
+                "oriented_source_width": item.oriented_source_width,
+                "photo_id": item.photo_id,
+                "sha256": item.sha256,
+                "width": item.width,
+            }
+            for item in photos
+        ]
     )
 
 

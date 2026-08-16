@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import date
 from io import StringIO
 from pathlib import Path
@@ -15,7 +16,18 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from picflow.models import Event, Photo
 
-from processing.models import EventProcessingRun, PhotoDerivative, ProcessingAttempt, ProcessingJob
+from processing.models import (
+    EventProcessingRun,
+    PhotoDerivative,
+    PhotoProcessingState,
+    ProcessingAttempt,
+    ProcessingJob,
+)
+from processing.services.enrollment import (
+    FACE_EMBEDDING_QUALITY_APPROVAL,
+    accepted_preview_cohort_hash,
+)
+from processing.services.previews import preview_final_key
 
 PREVIEW_CONTRACT = {
     "apply_exif_orientation": True,
@@ -102,7 +114,7 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
 
     @patch("processing.management.commands.seed_local_event_preview_corpus.EXPECTED_PHOTO_COUNT", 1)
     def test_apply_uploads_each_verified_manifest_file_to_its_accepted_preview_key(self) -> None:
-        derivative = self._make_valid_preview(photo_id=self.photo_id)
+        derivative = self._make_valid_preview(photo_id=self.photo_id, derivative_sha256="f" * 64)
         content = self._preview_content(self.photo_id)
         sha256 = hashlib.sha256(content).hexdigest()
         self._write_manifest(photos=[self._photo_row(photo_id=self.photo_id)])
@@ -123,6 +135,110 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
         repeated_report = json.loads(self._run_command(apply=True))
         self.assertEqual(repeated_report["uploaded_photo_count"], 0)
         self.assertEqual(repeated_report["existing_photo_count"], 1)
+
+    @patch("processing.management.commands.seed_local_event_preview_corpus.EXPECTED_PHOTO_COUNT", 1)
+    def test_refuses_approved_crosswalk_with_an_unexpected_sha_match_before_inspecting_local_s3(
+        self,
+    ) -> None:
+        self._make_valid_preview(photo_id=self.photo_id)
+        self._write_manifest(photos=[self._photo_row(photo_id=self.photo_id)])
+
+        with self.assertRaisesMessage(CommandError, "approved crosswalk"):
+            self._run_command(apply=True)
+
+        self._assert_no_s3_calls()
+
+    @patch("processing.management.commands.seed_local_event_preview_corpus.EXPECTED_PHOTO_COUNT", 2)
+    def test_refuses_approved_crosswalk_with_mixed_sha_matches_before_inspecting_local_s3(
+        self,
+    ) -> None:
+        other_photo_id = "1" * 32
+        self._make_valid_preview(photo_id=self.photo_id, derivative_sha256="f" * 64)
+        self._make_valid_preview(photo_id=other_photo_id)
+        self._write_manifest(
+            photos=[
+                self._photo_row(photo_id=self.photo_id),
+                self._photo_row(photo_id=other_photo_id),
+            ]
+        )
+
+        with self.assertRaisesMessage(CommandError, "approved crosswalk"):
+            self._run_command(apply=True)
+
+        self._assert_no_s3_calls()
+
+    @patch("processing.management.commands.seed_local_event_preview_corpus.EXPECTED_PHOTO_COUNT", 1)
+    def test_refuses_approved_crosswalk_with_an_accepted_sha_mutation_before_inspecting_local_s3(
+        self,
+    ) -> None:
+        self._make_valid_preview(photo_id=self.photo_id, derivative_sha256="e" * 64)
+        self._write_manifest(photos=[self._photo_row(photo_id=self.photo_id)])
+
+        with self.assertRaisesMessage(CommandError, "approved crosswalk"):
+            self._run_command(
+                apply=True,
+                approval_overrides={
+                    "accepted_preview_cohort_hash": _canonical_sha256(
+                        [
+                            {
+                                "byte_size": len(self._preview_content(self.photo_id)),
+                                "height": 1000,
+                                "oriented_source_height": 1000,
+                                "oriented_source_width": 1600,
+                                "photo_id": self.photo_id,
+                                "sha256": "f" * 64,
+                                "width": 1600,
+                            }
+                        ]
+                    )
+                },
+            )
+
+        self._assert_no_s3_calls()
+
+    @patch("processing.management.commands.seed_local_event_preview_corpus.EXPECTED_PHOTO_COUNT", 1)
+    def test_refuses_approved_crosswalk_with_an_accepted_key_mutation_before_inspecting_local_s3(
+        self,
+    ) -> None:
+        self._make_valid_preview(
+            photo_id=self.photo_id,
+            derivative_sha256="f" * 64,
+            final_key="derivatives/previews/tampered.jpg",
+        )
+        self._write_manifest(photos=[self._photo_row(photo_id=self.photo_id)])
+
+        with self.assertRaisesMessage(CommandError, "approved crosswalk"):
+            self._run_command(apply=True)
+
+        self._assert_no_s3_calls()
+
+    @patch("processing.management.commands.seed_local_event_preview_corpus.EXPECTED_PHOTO_COUNT", 1)
+    def test_refuses_approved_crosswalk_size_mismatch_before_inspecting_local_s3(self) -> None:
+        self._make_valid_preview(
+            photo_id=self.photo_id,
+            derivative_sha256="f" * 64,
+            byte_size=len(self._preview_content(self.photo_id)) + 1,
+        )
+        self._write_manifest(photos=[self._photo_row(photo_id=self.photo_id)])
+
+        with self.assertRaisesMessage(CommandError, "approved crosswalk"):
+            self._run_command(apply=True)
+
+        self._assert_no_s3_calls()
+
+    @patch("processing.management.commands.seed_local_event_preview_corpus.EXPECTED_PHOTO_COUNT", 1)
+    def test_refuses_approved_crosswalk_geometry_mismatch_before_inspecting_local_s3(self) -> None:
+        self._make_valid_preview(
+            photo_id=self.photo_id,
+            derivative_sha256="f" * 64,
+            width=1599,
+        )
+        self._write_manifest(photos=[self._photo_row(photo_id=self.photo_id)])
+
+        with self.assertRaisesMessage(CommandError, "approved crosswalk"):
+            self._run_command(apply=True)
+
+        self._assert_no_s3_calls()
 
     def test_command_requires_the_exact_event_slug_and_absolute_corpus_paths(self) -> None:
         self._write_manifest(photos=[])
@@ -210,6 +326,7 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
         event_slug: str | None = None,
         manifest: str | None = None,
         apply: bool = False,
+        approval_overrides: dict[str, object] | None = None,
     ) -> str:
         output = StringIO()
         arguments: list[object] = [
@@ -223,6 +340,34 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
         ]
         if apply:
             arguments.append("--apply")
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        approval = replace(
+            FACE_EMBEDDING_QUALITY_APPROVAL,
+            photo_count=len(manifest["photos"]),
+            preview_manifest_hash=manifest["manifest_sha256"],
+            local_preview_projection_hash=_canonical_sha256(
+                [
+                    {
+                        field: row[field]
+                        for field in (
+                            "byte_size",
+                            "height",
+                            "oriented_source_height",
+                            "oriented_source_width",
+                            "photo_id",
+                            "sha256",
+                            "width",
+                        )
+                    }
+                    for row in manifest["photos"]
+                ]
+            ),
+            accepted_preview_cohort_hash=accepted_preview_cohort_hash(self.event),
+            accepted_preview_crosswalk_entry_count=len(manifest["photos"]),
+            accepted_preview_crosswalk_sha_mismatch_count=len(manifest["photos"]),
+        )
+        if approval_overrides is not None:
+            approval = replace(approval, **approval_overrides)
         with (
             override_settings(
                 PRIVATE_MEDIA_S3_BUCKET="adaface-private",
@@ -232,6 +377,12 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
                 PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY="adaface-secret",
             ),
             patch("boto3.client", return_value=self.client),
+            patch(
+                "processing.management.commands.seed_local_event_preview_corpus."
+                "FACE_EMBEDDING_QUALITY_APPROVAL",
+                approval,
+                create=True,
+            ),
         ):
             call_command(*arguments, stdout=output)
         return output.getvalue()
@@ -299,26 +450,48 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
     def _preview_content(self, photo_id: str) -> bytes:
         return f"validated preview bytes for {photo_id}".encode()
 
-    def _make_valid_preview(self, *, photo_id: str) -> PhotoDerivative:
+    def _make_valid_preview(
+        self,
+        *,
+        photo_id: str,
+        derivative_sha256: str | None = None,
+        byte_size: int | None = None,
+        width: int = 1600,
+        final_key: str | None = None,
+    ) -> PhotoDerivative:
         self._write_preview_file(photo_id=photo_id)
         content = self._preview_content(photo_id)
         return self._accepted_preview(
             photo_id=photo_id,
-            byte_size=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
+            byte_size=len(content) if byte_size is None else byte_size,
+            sha256=(
+                hashlib.sha256(content).hexdigest()
+                if derivative_sha256 is None
+                else derivative_sha256
+            ),
+            width=width,
+            final_key=final_key,
         )
 
     def _assert_no_s3_calls(self) -> None:
         self.assertEqual(self.client.head_calls, 0)
         self.assertEqual(self.client.put_calls, 0)
 
-    def _accepted_preview(self, *, photo_id: str, byte_size: int, sha256: str) -> PhotoDerivative:
-        user = get_user_model().objects.create_user(username="local-corpus-owner")
+    def _accepted_preview(
+        self,
+        *,
+        photo_id: str,
+        byte_size: int,
+        sha256: str,
+        width: int = 1600,
+        final_key: str | None = None,
+    ) -> PhotoDerivative:
+        user, _ = get_user_model().objects.get_or_create(username="local-corpus-owner")
         photo = Photo.objects.create(
             id=photo_id,
             event=self.event,
             uploaded_by=user,
-            original_key="originals/0123456789abcdef0123456789abcdef",
+            original_key=f"originals/{photo_id}",
             original_filename="preview-source.jpg",
             original_size=1,
             original_content_type="image/jpeg",
@@ -357,16 +530,35 @@ class SeedLocalEventPreviewCorpusTests(TestCase):
             terminal_at=timezone.now(),
             accepted=True,
         )
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo,
+            processor_type="generate_preview",
+            defaults={
+                "status": PhotoProcessingState.Status.SUCCEEDED,
+                "current_run": run,
+                "current_job": job,
+                "current_attempt": attempt,
+                "accepted_attempt": attempt,
+                "succeeded_at": timezone.now(),
+            },
+        )
+        PhotoProcessingState.objects.filter(pk=state.pk).update(
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            current_run=run,
+            current_job=job,
+            current_attempt=attempt,
+            accepted_attempt=attempt,
+            succeeded_at=timezone.now(),
+        )
+        assert state.pk
         return PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-small-v1",
-            final_key=(
-                f"derivatives/previews/{photo_id}/preview-small-v1/"
-                f"00000000-0000-0000-0000-000000000001-{sha256}.jpg"
-            ),
+            final_key=final_key
+            or preview_final_key(photo_id=photo_id, attempt_id=attempt.id, sha256=sha256),
             byte_size=byte_size,
             content_type="image/jpeg",
-            width=1600,
+            width=width,
             height=1000,
             oriented_source_width=1600,
             oriented_source_height=1000,

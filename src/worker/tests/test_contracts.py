@@ -510,8 +510,7 @@ def quality_configuration() -> dict[str, object]:
     configuration = {
         **processor_configuration(PROCESSOR_TYPE_FACE_EMBEDDING),
         "face_embedding": {
-            "model": "adaface-ir18-webface4m",
-            "embedding_dimensions": 512,
+            "model": "sface",
             "max_faces": 32,
             "detection_threshold": 0.75,
             "normalize_embeddings": True,
@@ -530,6 +529,22 @@ def quality_configuration() -> dict[str, object]:
     assert isinstance(worker, dict)
     worker["api_response_max_bytes"] = 384 * 1024
     worker["terminal_result_max_bytes"] = 384 * 1024
+    return configuration
+
+
+def adaface_quality_configuration() -> dict[str, object]:
+    configuration = quality_configuration()
+    configuration["face_embedding"] = {
+        **configuration["face_embedding"],
+        "model": "adaface-ir18-webface4m",
+        "embedding_dimensions": 512,
+    }
+    configuration["adaface"] = {
+        "alignment": "yunet-five-landmark-112x112",
+        "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
+        "model_artifact_sha256": "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b",
+        "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
+    }
     return configuration
 
 
@@ -628,6 +643,41 @@ def test_v4_quality_face_claim_accepts_only_preview_input_with_geometry() -> Non
 
     with pytest.raises(ContractError):
         Claim.from_response(quality_claim_payload(processor_version=4))
+
+    payload = quality_preview_claim_payload(processor_version=4)
+    job = payload["job"]
+    assert isinstance(job, dict)
+    job["configuration"] = adaface_quality_configuration()
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
+
+
+def test_v5_adaface_quality_claim_requires_its_pinned_generation_identity() -> None:
+    """A v5 claim without the AdaFace artifact identity would make the cohort ambiguous."""
+    configuration = adaface_quality_configuration()
+
+    payload = quality_preview_claim_payload(processor_version=5)
+    job = payload["job"]
+    assert isinstance(job, dict)
+    job["configuration"] = configuration
+    claim = Claim.from_response(payload)
+
+    assert claim.job is not None
+    assert (claim.job.contract_version, claim.job.processor_version) == (3, 5)
+    with pytest.raises(ContractError):
+        Claim.from_response(quality_preview_claim_payload(processor_version=5))
+
+    for field, value in (("model_artifact_sha256", "f" * 64), ("model_revision", "e" * 40)):
+        with pytest.raises(ContractError):
+            tampered = adaface_quality_configuration()
+            adaface = tampered["adaface"]
+            assert isinstance(adaface, dict)
+            adaface[field] = value
+            payload = quality_preview_claim_payload(processor_version=5)
+            job = payload["job"]
+            assert isinstance(job, dict)
+            job["configuration"] = tampered
+            Claim.from_response(payload)
 
 
 def test_v3_quality_face_claim_rejects_a_preview_key_for_another_photo() -> None:
@@ -750,12 +800,12 @@ def test_v3_quality_face_claim_rejects_incomplete_or_invalid_quality_identity(
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("model", "sface"),
+        ("model", "other"),
         ("embedding_dimensions", 128),
         ("normalize_embeddings", False),
     ],
 )
-def test_v3_quality_face_claim_rejects_semantics_the_worker_does_not_implement(
+def test_v3_quality_face_claim_rejects_invalid_sface_generation_semantics(
     field: str, value: object
 ) -> None:
     configuration = quality_configuration()

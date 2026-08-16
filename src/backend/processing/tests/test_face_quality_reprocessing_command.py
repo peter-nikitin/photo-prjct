@@ -8,7 +8,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -21,6 +21,7 @@ from processing.models import (
 from processing.services.enrollment import (
     FACE_EMBEDDING_QUALITY_APPROVAL,
     GENERATE_PREVIEW_CONFIGURATION,
+    LOCAL_ADAFACE_MANIFEST_SHA256,
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     FaceEmbeddingGenerationApproval,
@@ -206,6 +207,29 @@ class FaceQualityReprocessingCommandTests(TestCase):
         output = StringIO()
         call_command("reprocess_event_face_embeddings", apply=apply, stdout=output)
         return cast(CommandReport, json.loads(output.getvalue()))
+
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    def test_local_adaface_mode_requires_the_explicit_event_and_manifest_identity(self) -> None:
+        """Removing either local corpus identity must stop before any v5 job is written."""
+        output = StringIO()
+        with self.assertRaisesRegex(CommandError, "manifest"):
+            call_command(
+                "reprocess_event_face_embeddings",
+                local_adaface=True,
+                event_slug=self.event_slug,
+                manifest_sha256="f" * 64,
+                apply=True,
+                stdout=output,
+            )
+
+        self.assertFalse(ProcessingJob.objects.filter(processor_version=5).exists())
+        with self.assertRaisesRegex(CommandError, "event-slug"):
+            call_command(
+                "reprocess_event_face_embeddings",
+                local_adaface=True,
+                manifest_sha256=LOCAL_ADAFACE_MANIFEST_SHA256,
+                stdout=output,
+            )
 
     def enrollment(self, report: CommandReport) -> EnrollmentCounts:
         self.assertIn("enrollment", report)

@@ -21,6 +21,8 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
+    LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+    LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSION,
     CaptureTimeReprocessingTarget,
@@ -33,6 +35,7 @@ from processing.services.enrollment import (
     request_face_embedding_enqueue,
     request_processor,
 )
+from processing.services.face_quality import local_adaface_face_embedding_generations
 
 
 class CaptureMetadataEnrollmentTests(TestCase):
@@ -169,6 +172,45 @@ class CaptureMetadataEnrollmentTests(TestCase):
                 QUALITY_FACE_CONTRACT_VERSION,
                 HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
             ),
+        )
+
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    def test_local_adaface_generation_is_a_distinct_512_dimensional_v5_identity(self) -> None:
+        """Replacing the local model must not enqueue the SFace quality generation."""
+        generation = local_adaface_face_embedding_generations()[0]
+
+        self.assertEqual(
+            (
+                generation["contract_version"],
+                generation["processor_type"],
+                generation["processor_version"],
+                generation["model"],
+            ),
+            (3, "face_embedding", 5, "adaface-ir18-webface4m"),
+        )
+        self.assertEqual(LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION, 5)
+        self.assertEqual(
+            generation["configuration_hash"],
+            "15caf0006d830c7751e36209018619f261795a0621e40301477e7b8467fd62c0",
+        )
+        self.assertEqual(
+            LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["face_embedding"],
+            {
+                "model": "adaface-ir18-webface4m",
+                "embedding_dimensions": 512,
+                "max_faces": 32,
+                "detection_threshold": 0.75,
+                "normalize_embeddings": True,
+                "quality": {
+                    "algorithm_version": "normalized-laplacian-v1",
+                    "crop_size": 112,
+                    "minimum_face_px": 32,
+                    "severe_blur_threshold": 25.0,
+                    "borderline_blur_threshold": 50.0,
+                    "minimum_relative_area": 0.0009,
+                    "minimum_confidence": 0.82,
+                },
+            },
         )
         self.assertEqual(
             FACE_EMBEDDING_QUALITY_CONFIGURATION["face_embedding"],

@@ -466,7 +466,11 @@ def selfie_worker_configuration(search: SelfieSearch) -> dict[str, object]:
         raise ValueError("search configuration is invalid")
     model = configuration.get("embedding_model")
     dimensions = configuration.get("embedding_dimensions")
-    if model != "sface" or dimensions != 128:
+    if model == "sface" and dimensions == 128:
+        terminal_result_max_bytes = 8_192
+    elif model == "adaface-ir18-webface4m" and dimensions == 512:
+        terminal_result_max_bytes = 16_384
+    else:
         raise ValueError("search configuration is incompatible with selfie_query v1")
     return {
         "retry_policy": dict(_RETRY_POLICY),
@@ -487,7 +491,7 @@ def selfie_worker_configuration(search: SelfieSearch) -> dict[str, object]:
             "max_input_bytes": 20 * 1024 * 1024,
             "max_pixels": 25_000_000,
             "poll_min_delay_seconds": 5,
-            "terminal_result_max_bytes": 8_192,
+            "terminal_result_max_bytes": terminal_result_max_bytes,
         },
     }
 

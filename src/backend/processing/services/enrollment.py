@@ -4,7 +4,7 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import TypedDict, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -36,9 +36,12 @@ PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 2
 QUALITY_FACE_CONTRACT_VERSION = 3
 HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION = 3
 QUALITY_FACE_PROCESSOR_VERSION = 4
+LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION = 5
 FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION = 3
 FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION = 1
 FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
+LOCAL_ADAFACE_EVENT_SLUG = "cyclingrace-vechernee-sadovoe"
+LOCAL_ADAFACE_MANIFEST_SHA256 = "62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879"
 
 _CAPTURE_METADATA_CONFIGURATION_BASE: dict[str, object] = {
     "retry_policy": {
@@ -148,6 +151,38 @@ FACE_EMBEDDING_QUALITY_CONFIGURATION: dict[str, object] = {
         "poll_min_delay_seconds": 5,
         "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
     },
+}
+
+LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
+    **deepcopy(FACE_EMBEDDING_QUALITY_CONFIGURATION),
+    "face_embedding": {
+        "model": "adaface-ir18-webface4m",
+        "embedding_dimensions": 512,
+        "max_faces": 32,
+        "detection_threshold": 0.75,
+        "normalize_embeddings": True,
+        "quality": deepcopy(
+            cast(
+                dict[str, object],
+                cast(dict[str, object], FACE_EMBEDDING_QUALITY_CONFIGURATION["face_embedding"])[
+                    "quality"
+                ],
+            )
+        ),
+    },
+    "adaface": {
+        "alignment": "yunet-five-landmark-112x112",
+        "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
+        "model_artifact_sha256": (
+            "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b"
+        ),
+        "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
+    },
+}
+LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["worker"] = {
+    **deepcopy(cast(dict[str, object], FACE_EMBEDDING_QUALITY_CONFIGURATION["worker"])),
+    "api_response_max_bytes": 384 * 1024,
+    "terminal_result_max_bytes": 384 * 1024,
 }
 
 FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
@@ -436,6 +471,69 @@ def enroll_event_face_embedding_candidate_reprocessing(
             job = state.current_job
             if job is None:  # pragma: no cover - validated accepted previews make this unreachable.
                 raise ValueError("candidate enrollment lost its accepted preview")
+            created_job_count += 1
+            run_ids.add(job.run_id)
+        return FaceEmbeddingCandidateEnrollment(
+            photo_count=len(cohort),
+            created_job_count=created_job_count,
+            existing_job_count=existing_job_count,
+            run_count=len(run_ids),
+        )
+
+
+def validate_local_adaface_enrollment(event: Event, *, manifest_sha256: str) -> list[Photo]:
+    """Validate the one explicitly identified local AdaFace backfill cohort without writes."""
+    _require_local_adaface_experiment()
+    if event.slug != LOCAL_ADAFACE_EVENT_SLUG:
+        raise ValueError("event does not match the local AdaFace target")
+    if manifest_sha256 != LOCAL_ADAFACE_MANIFEST_SHA256:
+        raise ValueError("manifest does not match the approved local AdaFace corpus")
+    if not _is_sha256(manifest_sha256):
+        raise ValueError("manifest identity is invalid")
+    return candidate_face_embedding_cohort(event)
+
+
+def enroll_local_adaface_reprocessing(
+    event: Event, *, manifest_sha256: str
+) -> FaceEmbeddingCandidateEnrollment:
+    """Enroll only the exact accepted-preview local AdaFace cohort once."""
+    with transaction.atomic():
+        locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        cohort = validate_local_adaface_enrollment(locked_event, manifest_sha256=manifest_sha256)
+        configuration_hash = _configuration_hash(LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION)
+        created_job_count = 0
+        existing_job_count = 0
+        run_ids: set[object] = set()
+        for photo in cohort:
+            preview = _accepted_preview(photo)
+            if preview is None:
+                raise ValueError("AdaFace enrollment lost its accepted preview")
+            expected_fingerprint = _derivative_fingerprint(preview)
+            existing_jobs = list(
+                ProcessingJob.objects.select_for_update()
+                .select_related("run")
+                .filter(
+                    event=locked_event,
+                    photo=photo,
+                    contract_version=QUALITY_FACE_CONTRACT_VERSION,
+                    processor_type=FACE_EMBEDDING_PROCESSOR,
+                    processor_version=LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
+                    configuration_hash=configuration_hash,
+                )
+                .order_by("created_at", "id")
+            )
+            if len(existing_jobs) > 1:
+                raise ValueError("AdaFace enrollment has ambiguous existing job identity")
+            if existing_jobs and existing_jobs[0].input_fingerprint != expected_fingerprint:
+                raise ValueError("AdaFace job input no longer matches the accepted preview")
+            if existing_jobs:
+                existing_job_count += 1
+                run_ids.add(existing_jobs[0].run_id)
+                continue
+            state = request_local_adaface_enqueue(photo)
+            job = state.current_job
+            if job is None:  # pragma: no cover - validated accepted previews make this unreachable.
+                raise ValueError("AdaFace enrollment lost its accepted preview")
             created_job_count += 1
             run_ids.add(job.run_id)
         return FaceEmbeddingCandidateEnrollment(
@@ -741,6 +839,22 @@ def request_face_embedding_candidate_enqueue(photo: Photo) -> PhotoProcessingSta
         contract_version=QUALITY_FACE_CONTRACT_VERSION,
         processor_version=QUALITY_FACE_PROCESSOR_VERSION,
         configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
+        input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
+        enabled=preview is not None,
+        replace_terminal_generation=True,
+    )
+
+
+def request_local_adaface_enqueue(photo: Photo) -> PhotoProcessingState:
+    """Explicitly queue local AdaFace v5 work without altering production SFace jobs."""
+    _require_local_adaface_experiment()
+    preview = _accepted_preview(photo)
+    return request_processor(
+        photo=photo,
+        processor_type=FACE_EMBEDDING_PROCESSOR,
+        contract_version=QUALITY_FACE_CONTRACT_VERSION,
+        processor_version=LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
+        configuration=LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
         input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
         enabled=preview is not None,
         replace_terminal_generation=True,
@@ -1169,6 +1283,14 @@ def _derivative_fingerprint(
 def _configuration_hash(configuration: dict[str, object]) -> str:
     encoded = json.dumps(configuration, separators=(",", ":"), sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_local_adaface_experiment() -> None:
+    if (
+        getattr(settings, "ADAFACE_LOCAL_EXPERIMENT_ENABLED", False) is not True
+        or getattr(settings, "MONITORING_ENVIRONMENT", "") != "local"
+    ):
+        raise ValueError("local AdaFace experiment is not enabled")
 
 
 def _is_sha256(value: object) -> bool:

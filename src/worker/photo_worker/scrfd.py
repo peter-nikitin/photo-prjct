@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import cv2
 import numpy as np
@@ -17,6 +18,19 @@ ANCHORS_PER_LOCATION = 2
 NMS_THRESHOLD = 0.4
 OUTPUT_ROWS = (12800, 3200, 800)
 OUTPUT_COLUMNS = (1, 1, 1, 4, 4, 4, 10, 10, 10)
+
+
+class _SessionValue(Protocol):
+    name: object
+    shape: Sequence[Any]
+
+
+class _InferenceSession(Protocol):
+    def get_inputs(self) -> Sequence[_SessionValue]: ...
+
+    def get_outputs(self) -> Sequence[_SessionValue]: ...
+
+    def run(self, output_names: list[str] | None, inputs: dict[str, np.ndarray]) -> Any: ...
 
 
 class SCRFDError(ValueError):
@@ -41,7 +55,7 @@ class DetectedFace:
 class SCRFDDetector:
     """Run the fixed-shape SCRFD-10G_KPS graph on one BGR image at a time."""
 
-    def __init__(self, model_path: Path, *, session: object | None = None) -> None:
+    def __init__(self, model_path: Path, *, session: _InferenceSession | None = None) -> None:
         self._model_path = Path(model_path)
         try:
             self._session = session if session is not None else _load_session(self._model_path)
@@ -83,7 +97,7 @@ class SCRFDDetector:
             raise SCRFDError("scrfd_inference_failed") from error
 
 
-def _load_session(model_path: Path) -> Any:
+def _load_session(model_path: Path) -> _InferenceSession:
     try:
         import onnxruntime
 
@@ -195,7 +209,8 @@ def _output_array(output: Any, rows: int, columns: int) -> np.ndarray:
 
 def _anchor_centers(stride: int) -> np.ndarray:
     grid = INPUT_SIZE // stride
-    centers = np.stack(np.mgrid[:grid, :grid][::-1], axis=-1).astype(np.float32) * stride
+    coordinates = np.mgrid[:grid, :grid]
+    centers = np.stack((coordinates[1], coordinates[0]), axis=-1).astype(np.float32) * stride
     return np.repeat(centers.reshape(-1, 2), ANCHORS_PER_LOCATION, axis=0)
 
 

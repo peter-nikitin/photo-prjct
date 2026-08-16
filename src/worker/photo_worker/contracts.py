@@ -111,7 +111,7 @@ V2_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
 SCRFD_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
     **V2_FACE_EMBEDDING_CONFIGURATION,
     "face_embedding": {
-        **V2_FACE_EMBEDDING_CONFIGURATION["face_embedding"],
+        **cast(dict[str, object], V2_FACE_EMBEDDING_CONFIGURATION["face_embedding"]),
         "detection_threshold": 0.5,
     },
 }

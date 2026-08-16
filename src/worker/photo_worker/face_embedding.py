@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, cast
 
 from PIL import Image, ImageCms, ImageOps
 
@@ -350,11 +350,14 @@ def _decode_selfie_image(
             try:
                 profile_bytes = oriented.info.get("icc_profile")
                 if profile_bytes:
-                    normalized = ImageCms.profileToProfile(
-                        oriented,
-                        ImageCms.ImageCmsProfile(BytesIO(profile_bytes)),
-                        ImageCms.createProfile("sRGB"),
-                        outputMode="RGB",
+                    normalized = cast(
+                        Image.Image,
+                        ImageCms.profileToProfile(
+                            oriented,
+                            ImageCms.ImageCmsProfile(BytesIO(profile_bytes)),
+                            ImageCms.createProfile("sRGB"),
+                            outputMode="RGB",
+                        ),
                     )
                 else:
                     normalized = oriented.convert("RGB")

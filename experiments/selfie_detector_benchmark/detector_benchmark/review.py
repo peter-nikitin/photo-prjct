@@ -56,11 +56,19 @@ def build_review_from_run(run: Path, output: Path) -> None:
     identity = verify_run(run)
     rows = _validate_rows(load_review_rows(run))
 
+    build_identity_bound_review(rows, identity, output)
+
+
+def build_identity_bound_review(rows: Iterable[ReviewRow], run_identity: str, output: Path) -> None:
+    """Create an editable label bundle that is bound to one verified immutable run."""
+    values = _validate_rows(rows)
+    _validate_run_identity(run_identity)
+
     def write(stage: Path) -> None:
         (stage / "review.csv").write_text(
             ",".join(_CSV_HEADERS)
             + "\n"
-            + "".join(f"{identity},{row.case_id},{row.variant},\n" for row in rows),
+            + "".join(f"{run_identity},{row.case_id},{row.variant},\n" for row in values),
             encoding="utf-8",
         )
         _write_json(
@@ -68,8 +76,8 @@ def build_review_from_run(run: Path, output: Path) -> None:
             {
                 "schema_version": SCHEMA_VERSION,
                 "artifact_type": "detector-review",
-                "run_identity": identity,
-                "row_count": len(rows),
+                "run_identity": run_identity,
+                "row_count": len(values),
             },
         )
 
@@ -111,25 +119,48 @@ def finalize_run_review(run: Path, labels_csv: Path, output: Path) -> dict[str, 
 
     identity = verify_run(run)
     rows = _validate_rows(load_review_rows(run))
-    labels = _load_labels(labels_csv, identity)
-    expected = {(row.case_id, row.variant) for row in rows}
+    return finalize_identity_bound_review(rows, identity, labels_csv, output)
+
+
+def finalize_identity_bound_review(
+    rows: Iterable[ReviewRow], run_identity: str, labels_csv: Path, output: Path
+) -> dict[str, Any]:
+    """Publish authoritative analysis only for one complete identity-bound review."""
+    values = _validate_rows(rows)
+    _validate_run_identity(run_identity)
+    labels = _load_labels(labels_csv, run_identity)
+    expected = {(row.case_id, row.variant) for row in values}
     if set(labels) != expected:
         raise ValueError("review is incomplete or does not match this run")
     result = {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "detector-analysis",
-        "run_identity": identity,
-        "reviewed_rows": len(rows),
-        "metrics": _metrics(rows, labels),
+        "run_identity": run_identity,
+        "reviewed_rows": len(values),
+        "metrics": _metrics(values, labels),
         "acceptance": {
             variant: acceptance_metrics(
-                tuple(row for row in rows if row.variant == variant), labels
+                tuple(row for row in values if row.variant == variant), labels
             )
-            for variant in sorted({row.variant for row in rows})
+            for variant in sorted({row.variant for row in values})
         },
     }
     publish_immutable(output, lambda stage: _write_json(stage / "analysis.json", result))
     return result
+
+
+def require_certain_identity_bound_review(
+    rows: Iterable[ReviewRow], run_identity: str, labels_csv: Path
+) -> None:
+    """Reject incomplete or uncertain labels where a frozen study requires a definite decision."""
+    values = _validate_rows(rows)
+    _validate_run_identity(run_identity)
+    labels = _load_labels(labels_csv, run_identity)
+    expected = {(row.case_id, row.variant) for row in values}
+    if set(labels) != expected:
+        raise ValueError("review is incomplete or does not match this run")
+    if any(label == "uncertain" for label in labels.values()):
+        raise ValueError("review labels remain uncertain")
 
 
 def _validate_rows(rows: Iterable[ReviewRow]) -> tuple[ReviewRow, ...]:
@@ -161,6 +192,11 @@ def _load_labels(path: Path, expected_identity: str) -> dict[tuple[str, str], st
             raise ValueError("review labels are invalid")
         labels[key] = row["label"]
     return labels
+
+
+def _validate_run_identity(value: str) -> None:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("run identity is invalid")
 
 
 def _metrics(rows: tuple[ReviewRow, ...], labels: dict[tuple[str, str], str]) -> dict[str, object]:

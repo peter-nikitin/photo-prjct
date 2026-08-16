@@ -4,7 +4,13 @@ import argparse
 import json
 from pathlib import Path
 
-from .offline import run_offline
+from .foreground import (
+    build_foreground_review,
+    derive_foreground_run,
+    finalize_foreground_review,
+    verify_foreground_run,
+)
+from .offline import run_offline, verify_run
 from .review import build_review_from_run, finalize_run_review
 from .snapshot import SnapshotRecord, export_snapshot, load_snapshot
 
@@ -24,6 +30,8 @@ def main() -> int:
     run.add_argument("--yunet-model", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--experiment-revision", required=True)
+    verify_run_command = commands.add_parser("verify-run")
+    verify_run_command.add_argument("--run", type=Path, required=True)
     review = commands.add_parser("build-review")
     review.add_argument("--run", type=Path, required=True)
     review.add_argument("--output", type=Path, required=True)
@@ -31,6 +39,19 @@ def main() -> int:
     finalize.add_argument("--run", type=Path, required=True)
     finalize.add_argument("--labels-csv", type=Path, required=True)
     finalize.add_argument("--output", type=Path, required=True)
+    derive_foreground = commands.add_parser("derive-foreground")
+    derive_foreground.add_argument("--source-run", type=Path, required=True)
+    derive_foreground.add_argument("--output", type=Path, required=True)
+    derive_foreground.add_argument("--experiment-revision", required=True)
+    verify_foreground = commands.add_parser("verify-foreground")
+    verify_foreground.add_argument("--run", type=Path, required=True)
+    build_foreground = commands.add_parser("build-foreground-review")
+    build_foreground.add_argument("--run", type=Path, required=True)
+    build_foreground.add_argument("--output", type=Path, required=True)
+    finalize_foreground = commands.add_parser("finalize-foreground")
+    finalize_foreground.add_argument("--run", type=Path, required=True)
+    finalize_foreground.add_argument("--labels-csv", type=Path, required=True)
+    finalize_foreground.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "snapshot":
         export_snapshot(
@@ -54,11 +75,28 @@ def main() -> int:
             experiment_revision=args.experiment_revision,
         )
         print(json.dumps({"cases": len(rows) // 3, "variant_results": len(rows)}))
+    elif args.command == "verify-run":
+        print(json.dumps({"run_identity": verify_run(args.run)}))
     elif args.command == "build-review":
         build_review_from_run(args.run, args.output)
-    else:
+    elif args.command == "finalize":
         print(
             json.dumps(finalize_run_review(args.run, args.labels_csv, args.output), sort_keys=True)
+        )
+    elif args.command == "derive-foreground":
+        rows = derive_foreground_run(
+            args.source_run, args.output, experiment_revision=args.experiment_revision
+        )
+        print(json.dumps({"cases": len(rows), "variant": "normalized-1600-foreground"}))
+    elif args.command == "verify-foreground":
+        print(json.dumps({"run_identity": verify_foreground_run(args.run)}))
+    elif args.command == "build-foreground-review":
+        build_foreground_review(args.run, args.output)
+    else:
+        print(
+            json.dumps(
+                finalize_foreground_review(args.run, args.labels_csv, args.output), sort_keys=True
+            )
         )
     return 0
 

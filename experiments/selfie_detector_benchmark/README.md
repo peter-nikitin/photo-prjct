@@ -85,3 +85,50 @@ PYTHONPATH=experiments/selfie_detector_benchmark .venv/bin/python -m detector_be
   --labels-csv /private/review-bundles/detector-001/review.csv \
   --output /private/runs/detector-001-analysis
 ```
+
+## Frozen foreground derivation
+
+This follow-up is a local derivation, not another detector run: it consumes only the verified
+`normalized-1600` evidence and bounded review visuals in the approved immutable detector run. Before
+starting, set `EXPECTED_REVISION` to the independently reviewed full Task 1 commit. The harness
+checkout must be clean at that exact revision, the source must verify to the approved source identity,
+its directory must be mounted read-only, and the output root must be private and empty. Do not run any
+of these commands with network access.
+
+```sh
+EXPECTED_REVISION="${EXPECTED_REVISION:?set the reviewed full Task 1 revision}"
+REVISION="$(git rev-parse HEAD)"
+test -z "$(git status --porcelain)"
+test "${#EXPECTED_REVISION}" -eq 40
+test "$REVISION" = "$EXPECTED_REVISION"
+
+PYTHONPATH=experiments/selfie_detector_benchmark \
+.venv/bin/python -m detector_benchmark verify-run --run /private/runs/detector-001
+
+docker run --rm --network none --read-only --tmpfs /tmp:rw,size=256m \
+  -v "$PWD/experiments/selfie_detector_benchmark:/harness:ro" \
+  -v /private/runs/detector-001:/source:ro \
+  -v /private/runs:/runs:rw \
+  --entrypoint sh "$WORKER_IMAGE" -ec '
+    PYTHONPATH=/harness python -m detector_benchmark derive-foreground \
+      --source-run /source --output /runs/detector-001-foreground \
+      --experiment-revision "'"$EXPECTED_REVISION"'"'
+```
+
+The derivation rejects a source whose complete identity is not
+`19f58e027c3aca32487d13ef3e420fca9ade15fc189c7bd7d70625b39cc101aa`, an incomplete 36-case
+cohort, altered source evidence, or an existing destination. Verify the derived bundle before
+building review labels. The finalizer accepts exactly one label per row, all bound to the derived
+run identity, and rejects `uncertain`, duplicate, missing, or foreign labels.
+
+```sh
+PYTHONPATH=experiments/selfie_detector_benchmark .venv/bin/python -m detector_benchmark \
+  verify-foreground --run /private/runs/detector-001-foreground
+PYTHONPATH=experiments/selfie_detector_benchmark .venv/bin/python -m detector_benchmark \
+  build-foreground-review --run /private/runs/detector-001-foreground \
+  --output /private/review-bundles/detector-001-foreground
+PYTHONPATH=experiments/selfie_detector_benchmark .venv/bin/python -m detector_benchmark \
+  finalize-foreground --run /private/runs/detector-001-foreground \
+  --labels-csv /private/review-bundles/detector-001-foreground/review.csv \
+  --output /private/runs/detector-001-foreground-analysis
+```

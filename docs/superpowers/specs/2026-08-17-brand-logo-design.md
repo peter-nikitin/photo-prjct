@@ -35,6 +35,11 @@ footprint and removes the old text-mark background, color, and typography rules.
 The supporting line is exactly `найди моё фото`, including lowercase letters and `ё`. Existing
 mobile rules continue to hide that line below 760 pixels and hide all brand copy below 480 pixels.
 
+## Architecture and ADR Impact
+
+None — this is a reversible presentation detail within the existing server-rendered Django UI and
+local static-asset boundary. It requires no ADR or `docs/architecture.md` update.
+
 ## Verification
 
 - Validate the optimized SVG as well-formed XML and confirm the old header copy and production
@@ -43,4 +48,3 @@ mobile rules continue to hide that line below 760 pixels and hide all brand copy
 - Refresh only snapshots affected by the shared production header, inspect every changed desktop
   and mobile image, then run the visual suite without update mode.
 - Run focused Django/template checks and the repository-required final checks.
-

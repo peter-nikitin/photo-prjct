@@ -218,14 +218,14 @@ but it never repairs or rewrites authoritative evidence.
 ## Gallery query behavior
 
 After successful reconciliation, the manual filter retains all approved form semantics: event-local
-interpretation, inclusive ten-minute widening, optional end time through the event end, validation,
-pagination, empty/error states, privacy, and no query persistence.
+interpretation, independent optional bounds, exact inclusive comparisons, validation, pagination,
+empty/error states, privacy, and no query persistence.
 
 The filtered gallery starts with the existing media-eligibility queryset and applies only:
 
 ```text
-photo.capture_time >= widened_start_utc
-AND photo.capture_time <= widened_end_utc
+photo.capture_time >= start_utc  (when `from` is supplied)
+photo.capture_time <= end_utc    (when `to` is supplied)
 ```
 
 Null projections are excluded by the range predicate. The user-facing request does not inspect or
@@ -381,7 +381,7 @@ download policies.
 9. Filtered galleries use only the indexed `Photo.capture_time` range after existing media
    eligibility; the direct processing JSON join/cast path is removed and unfiltered behavior is
    unchanged.
-10. Event-local form semantics, inclusive ten-minute widening, 100-item numbered pages,
+10. Event-local form semantics, independent optional exact bounds, 100-item numbered pages,
     filename-plus-ID order, no-JavaScript operation, empty/error states, and query privacy remain
     unchanged.
 11. The local accepted-clone and live candidate benchmarks both cover first, midpoint, and last

@@ -31,7 +31,7 @@ bounds without a delayed scroll jump, and read each known event-local photo time
 - Making card times clickable or copying them into the filter.
 - Creating an automatic plus/minus-five-minute search from a card.
 - Showing a date, seconds, timezone abbreviation, or capture time in the lightbox.
-- Changing the existing ten-minute tolerance around each supplied manual time bound.
+- Adding automatic padding around a supplied manual time bound.
 - Inferring missing capture times or changing metadata extraction and backfill behavior.
 - Changing folder choices, gallery eligibility, media delivery, selfie-search behavior, or the
   customer-approved selfie/privacy wording.
@@ -45,11 +45,11 @@ affect the queryset, or appear in pagination URLs.
 
 Each bound is independent:
 
-- `from` only applies a lower bound from the entered event-local time, including the existing ten
-  minutes of tolerance before it, with no upper time predicate;
-- `to` only applies an upper bound through the entered event-local time, including the existing ten
-  minutes of tolerance after it, with no lower time predicate;
-- both values apply the existing tolerant bounded interval;
+- `from` only applies an inclusive lower bound at the entered event-local time, with no upper time
+  predicate;
+- `to` only applies an inclusive upper bound at the entered event-local time, with no lower time
+  predicate;
+- both values apply the inclusive bounded interval between the entered times;
 - neither value applies no time predicate.
 
 Parsing, event-date validation, ambiguous/nonexistent local-time rejection, repeated-parameter
@@ -147,7 +147,7 @@ Focused automated coverage must prove:
 
 - blank browser-submitted time fields allow folder-only filtering and are omitted from pagination;
 - start-only, end-only, and bounded requests produce the correct one-sided or two-sided UTC bounds,
-  including the existing tolerance around every supplied value;
+  using each supplied value as an exact inclusive bound;
 - malformed, repeated, outside-event, DST-invalid, and inverted ranges remain invalid;
 - active one-sided bounds combine with folders using `AND` and persist through numbered pages;
 - manual filter submission produces a query URL without `#gallery` and keeps `scrollY` stable with

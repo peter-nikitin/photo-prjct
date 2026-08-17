@@ -1087,13 +1087,13 @@ class EventDetailManualTimeFilterTests(TestCase):
         excluded = self.photo("start-excluded", filename="b.jpg")
         self.photo("start-missing", filename="c.jpg")
         included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:00:00Z")
-        excluded_attempt = self.capture_evidence(excluded, capture_time="2026-06-10T08:49:00Z")
+        excluded_attempt = self.capture_evidence(excluded, capture_time="2026-06-10T08:59:00Z")
         Photo.objects.filter(pk=included.pk).update(
             capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
             capture_time_source_attempt=included_attempt,
         )
         Photo.objects.filter(pk=excluded.pk).update(
-            capture_time=datetime(2026, 6, 10, 8, 49, tzinfo=UTC),
+            capture_time=datetime(2026, 6, 10, 8, 59, tzinfo=UTC),
             capture_time_source_attempt=excluded_attempt,
         )
 
@@ -1113,14 +1113,14 @@ class EventDetailManualTimeFilterTests(TestCase):
         included = self.photo("end-included", filename="a.jpg")
         excluded = self.photo("end-excluded", filename="b.jpg")
         self.photo("end-missing", filename="c.jpg")
-        included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:10:00Z")
-        excluded_attempt = self.capture_evidence(excluded, capture_time="2026-06-10T09:11:00Z")
+        included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:00:00Z")
+        excluded_attempt = self.capture_evidence(excluded, capture_time="2026-06-10T09:01:00Z")
         Photo.objects.filter(pk=included.pk).update(
-            capture_time=datetime(2026, 6, 10, 9, 10, tzinfo=UTC),
+            capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
             capture_time_source_attempt=included_attempt,
         )
         Photo.objects.filter(pk=excluded.pk).update(
-            capture_time=datetime(2026, 6, 10, 9, 11, tzinfo=UTC),
+            capture_time=datetime(2026, 6, 10, 9, 1, tzinfo=UTC),
             capture_time_source_attempt=excluded_attempt,
         )
 
@@ -1143,14 +1143,14 @@ class EventDetailManualTimeFilterTests(TestCase):
         other_folder = self.photo("other-folder-start", filename="c.jpg")
         Photo.objects.filter(pk__in=(included.pk, too_early.pk)).update(folder=folder)
         included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:00:00Z")
-        too_early_attempt = self.capture_evidence(too_early, capture_time="2026-06-10T08:49:00Z")
+        too_early_attempt = self.capture_evidence(too_early, capture_time="2026-06-10T08:59:00Z")
         other_attempt = self.capture_evidence(other_folder, capture_time="2026-06-10T09:00:00Z")
         Photo.objects.filter(pk=included.pk).update(
             capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
             capture_time_source_attempt=included_attempt,
         )
         Photo.objects.filter(pk=too_early.pk).update(
-            capture_time=datetime(2026, 6, 10, 8, 49, tzinfo=UTC),
+            capture_time=datetime(2026, 6, 10, 8, 59, tzinfo=UTC),
             capture_time_source_attempt=too_early_attempt,
         )
         Photo.objects.filter(pk=other_folder.pk).update(
@@ -1177,19 +1177,19 @@ class EventDetailManualTimeFilterTests(TestCase):
         too_late = self.photo("folder-end-too-late", filename="b.jpg")
         other_folder = self.photo("other-folder-end", filename="c.jpg")
         Photo.objects.filter(pk__in=(included.pk, too_late.pk)).update(folder=folder)
-        included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:10:00Z")
-        too_late_attempt = self.capture_evidence(too_late, capture_time="2026-06-10T09:11:00Z")
-        other_attempt = self.capture_evidence(other_folder, capture_time="2026-06-10T09:10:00Z")
+        included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:00:00Z")
+        too_late_attempt = self.capture_evidence(too_late, capture_time="2026-06-10T09:01:00Z")
+        other_attempt = self.capture_evidence(other_folder, capture_time="2026-06-10T09:00:00Z")
         Photo.objects.filter(pk=included.pk).update(
-            capture_time=datetime(2026, 6, 10, 9, 10, tzinfo=UTC),
+            capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
             capture_time_source_attempt=included_attempt,
         )
         Photo.objects.filter(pk=too_late.pk).update(
-            capture_time=datetime(2026, 6, 10, 9, 11, tzinfo=UTC),
+            capture_time=datetime(2026, 6, 10, 9, 1, tzinfo=UTC),
             capture_time_source_attempt=too_late_attempt,
         )
         Photo.objects.filter(pk=other_folder.pk).update(
-            capture_time=datetime(2026, 6, 10, 9, 10, tzinfo=UTC),
+            capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
             capture_time_source_attempt=other_attempt,
         )
 

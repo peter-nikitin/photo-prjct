@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from dataclasses import replace
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -20,6 +21,7 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
+from picflow.gallery import GalleryPhotoFactory
 from picflow.models import Event, Photo
 from PIL import Image
 from processing.models import (
@@ -1138,6 +1140,45 @@ class PublicSelfieResultViewTests(TestCase):
                 f"data-description='{lightbox_download}'",
             )
         self.assertNotContains(first_open, "gallery-photo-id")
+
+    def test_ready_page_renders_available_capture_time_on_result_card(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        first = self.make_private_photo(search.event, photo_id="timed-result")
+        second = self.make_private_photo(search.event, photo_id="untimed-result")
+        self.add_result(search=search, photo=first, rank=1)
+        self.add_result(search=search, photo=second, rank=2)
+
+        original_factory = GalleryPhotoFactory.from_photo
+
+        def presentation_with_time(**kwargs):
+            presentation = original_factory(**kwargs)
+            if kwargs["photo"].id == first.id:
+                return replace(presentation, capture_time_display="15:34")
+            return presentation
+
+        with patch(
+            "selfie_search.views.GalleryPhotoFactory.from_photo",
+            side_effect=presentation_with_time,
+        ):
+            response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<time class="gallery-card-time">15:34</time>')
+        self.assertContains(response, 'class="gallery-card-time"', count=1)
+
+    def test_result_page_uses_the_compact_event_metadata_header(self) -> None:
+        search, token = self.make_search()
+
+        response = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<header class="event-detail-header">', count=1)
+        self.assertContains(response, '<h1 id="selfie-search-result-title">City Run</h1>')
+        self.assertContains(
+            response,
+            '<p class="event-detail-meta"><span>Moscow</span><span>30.07.2026</span></p>',
+        )
+        self.assertContains(response, "Поиск показывает вероятные совпадения.")
 
     @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_terminal_feedback_markup_uses_the_saved_result_membership_and_exact_consent(

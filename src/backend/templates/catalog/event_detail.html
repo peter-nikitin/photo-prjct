@@ -9,10 +9,7 @@
 {% endblock %}
 {% block content %}
   <article class="event-detail">
-    <header class="event-detail-header">
-      <h1>{{ event.name }}</h1>
-      <p class="event-detail-meta"><span>{{ event.city }}</span><span>{{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</span></p>
-    </header>
+    {% include "ui/event_detail_header.html" with event=event %}
     {% if manual_time_filter_form %}
       <section id="gallery" class="event-discovery-wrap">
         <details class="event-discovery" data-event-discovery{% if not gallery_filters_active %} open{% endif %}>

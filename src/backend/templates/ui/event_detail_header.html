@@ -1,0 +1,4 @@
+<header class="event-detail-header">
+  <h1{% if heading_id %} id="{{ heading_id }}"{% endif %}>{{ event.name }}</h1>
+  <p class="event-detail-meta"><span>{{ event.city }}</span><span>{{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</span></p>
+</header>

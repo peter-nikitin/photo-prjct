@@ -254,6 +254,12 @@ GALLERY_PHOTOS = (
     _gallery_photo("3125", "/static/images/run-expo-3125.png"),
 )
 
+SELFIE_RESULT_PHOTOS = (
+    _gallery_photo("1048", "/static/images/run-city-1842.png", capture_time_display="09:18"),
+    _gallery_photo("1190", "/static/images/run-track-1190.png", capture_time_display="10:07"),
+    _gallery_photo("1316", "/static/images/run-finish-1842.png"),
+)
+
 
 def _gallery_face(
     photo_id: str,
@@ -702,7 +708,7 @@ def selfie_search_error(request: HttpRequest) -> HttpResponse:
 
 
 def selfie_search_ready(request: HttpRequest) -> HttpResponse:
-    photos = GALLERY_PHOTOS[:3]
+    photos = SELFIE_RESULT_PHOTOS
     results = tuple(
         FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
         for index in range(1, 4)
@@ -746,7 +752,7 @@ def selfie_search_feedback_problem(request: HttpRequest) -> HttpResponse:
 
 
 def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
-    photos = GALLERY_PHOTOS[:3]
+    photos = SELFIE_RESULT_PHOTOS
     results = tuple(
         FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000000{index}")
         for index in range(1, 4)

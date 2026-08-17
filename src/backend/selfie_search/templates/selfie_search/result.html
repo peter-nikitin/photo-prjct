@@ -11,7 +11,7 @@
 
 {% block content %}
   <article class="selfie-search-result" aria-labelledby="selfie-search-result-title" data-selfie-search-result data-event-slug="{{ event.slug }}" data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" data-gallery-origin="{{ is_gallery_origin|yesno:'true,false' }}" data-result-digest="{{ public_token_digest }}"{% if selfie_feedback_correlation %} data-feedback-correlation="{{ selfie_feedback_correlation }}"{% endif %}{% if not is_terminal %} data-status-url="{{ status_url }}"{% endif %}>
-    <h1 id="selfie-search-result-title">{{ event.name }}</h1>
+    {% include "ui/event_detail_header.html" with event=event heading_id="selfie-search-result-title" %}
     {% if is_gallery_origin %}
       <p class="selfie-search-lead">Поиск показывает вероятные совпадения среди фотографий этого события. Результат увидит любой, у кого есть эта ссылка.</p>
     {% else %}
@@ -47,9 +47,12 @@
                       <button class="gallery-feedback-choice" type="button" data-feedback-result-id="{{ result.pk }}" data-feedback-label="absent" aria-pressed="false" aria-label="На фотографии {{ forloop.counter }}: меня нет">Меня нет</button>
                     </div>
                   {% endif %}
-                  <a class="gallery-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал">
-                    <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg>
-                  </a>
+                  <div class="gallery-card-download">
+                    {% if photo.capture_time_display %}<time class="gallery-card-time">{{ photo.capture_time_display }}</time>{% endif %}
+                    <a class="gallery-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал">
+                      <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg>
+                    </a>
+                  </div>
                 </div>
               </figure>
             {% endfor %}

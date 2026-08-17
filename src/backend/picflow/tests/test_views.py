@@ -1043,11 +1043,34 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertEqual(ProcessingJob.objects.count(), jobs_before)
         self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
 
+    def test_folder_filter_works_when_browser_submits_blank_time_fields(self) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Старт")
+        included = self.photo("folder-only", filename="a.jpg")
+        self.photo("folder-only-unfiled", filename="b.jpg")
+        Photo.objects.filter(pk=included.pk).update(folder=folder)
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"folder": str(folder.pk), "from": "", "to": ""},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item.photo_id for item in response.context["gallery_photos"]],
+            [included.pk],
+        )
+        self.assertFalse(response.context["manual_time_filter_form"].is_requested)
+        self.assertFalse(response.context["manual_time_filter_invalid"])
+        self.assertEqual(
+            response.context["gallery_pagination_query_pairs"],
+            (("folder", str(folder.pk)),),
+        )
+
     def test_manual_time_discovery_renders_event_local_controls_and_invalid_errors(self) -> None:
         """Invalid input must retain correction controls, not broad gallery results."""
         response = self.client.get(
             reverse("event_detail", kwargs={"slug": self.event.slug}),
-            {"from": ""},
+            {"to": "2026-06-10T10:00"},
         )
 
         self.assertEqual(response.status_code, 200)

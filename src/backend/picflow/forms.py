@@ -69,7 +69,14 @@ class EventGalleryTimeFilterForm(forms.Form):
 
     def __init__(self, event: Event, data=None, **kwargs) -> None:
         self.event = event
-        self.is_requested = bool(data and ("from" in data or "to" in data))
+        self.is_requested = bool(
+            data
+            and any(
+                value
+                for name in ("from", "to")
+                for value in (data.getlist(name) if hasattr(data, "getlist") else (data.get(name),))
+            )
+        )
         self._repeated_fields = {
             name
             for name in ("from", "to")

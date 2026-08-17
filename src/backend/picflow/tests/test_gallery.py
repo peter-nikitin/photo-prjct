@@ -419,6 +419,13 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
         self.assertTrue(form.is_valid())
         self.assertIsNone(form.utc_bounds)
 
+    def test_blank_browser_values_do_not_request_a_time_filter(self) -> None:
+        form = self.form(self.make_event(), "from=&to=")
+
+        self.assertFalse(form.is_requested)
+        self.assertTrue(form.is_valid())
+        self.assertIsNone(form.utc_bounds)
+
     def test_from_is_required_when_a_manual_filter_is_requested(self) -> None:
         form = self.form(self.make_event(), "to=2026-06-10T12:00")
 
@@ -469,6 +476,8 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
         event = self.make_event()
         cases = (
             "from=2026-06-10T12:00&from=2026-06-10T12:01",
+            "from=&from=2026-06-10T12:00",
+            "from=2026-06-10T12:00&from=",
             "from=2026-06-10T12:00&to=2026-06-10T12:01&to=2026-06-10T12:02",
             "from=2026-06-10",
             "from=2026-06-10T12:00Z",

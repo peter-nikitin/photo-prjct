@@ -1,6 +1,7 @@
 const { expect, test } = require('@playwright/test');
 
 const DESKTOP_VIEWPORT = { width: 1440, height: 1000 };
+const INTERMEDIATE_DESKTOP_VIEWPORT = { width: 1072, height: 780 };
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const SELFIE_SEARCH_HISTORY_STORAGE_KEY = 'findme_selfie_search_history:v1';
 const SAVED_SELFIE_SEARCH_HISTORY = [
@@ -989,6 +990,33 @@ test('desktop discovery keeps upload and time controls aligned without overlap',
   expect(layout.selfieFile.right).toBeLessThanOrEqual(layout.selfieSubmit.left);
   expect(layout.timeFrom.right).toBeLessThanOrEqual(layout.timeTo.left);
   expect(layout.timeTo.right).toBeLessThanOrEqual(layout.timeSubmit.left);
+
+  await page.setViewportSize(INTERMEDIATE_DESKTOP_VIEWPORT);
+  await page.reload();
+  await settlePage(page);
+  const intermediate = await page.evaluate(() => {
+    const bounds = (selector) => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const { bottom, left, right, top } = element.getBoundingClientRect();
+      return { bottom, left, right, top };
+    };
+    return {
+      selfie: bounds('#selfie-search'),
+      selfieFile: bounds('#selfie-search input[type="file"]'),
+      selfieSubmit: bounds('#selfie-search button[type="submit"]'),
+      manual: bounds('.manual-time-filter'),
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+  expect(intermediate.selfieFile).not.toBeNull();
+  expect(intermediate.selfieSubmit).not.toBeNull();
+  expect(intermediate.selfie).not.toBeNull();
+  expect(intermediate.manual).not.toBeNull();
+  expect(intermediate.selfieFile.bottom).toBeLessThanOrEqual(intermediate.selfieSubmit.top);
+  expect(intermediate.selfie.right).toBeLessThanOrEqual(intermediate.manual.left);
+  expect(intermediate.scrollWidth).toBeLessThanOrEqual(intermediate.clientWidth);
 });
 
 test('mobile compact header omits back action and guidance summary preserves its touch target', async ({ page }) => {

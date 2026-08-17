@@ -219,10 +219,12 @@ class PageTests(TestCase):
             list(self.client.get(reverse("event_catalog")).context["events"]), [near, far, past]
         )
 
-    def test_event_detail_renders_published_event(self) -> None:
+    def test_event_detail_renders_compact_published_event_header(self) -> None:
         event = self.make_event(description="Race description")
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
-        self.assertContains(response, "Race description")
+        self.assertContains(response, event.name)
+        self.assertContains(response, event.city)
+        self.assertNotContains(response, "Race description")
 
     def test_public_pages_use_shared_accessible_shell(self) -> None:
         event = self.make_event()

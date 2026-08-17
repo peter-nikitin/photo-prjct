@@ -443,7 +443,7 @@
 }
 
 .event-discovery .selfie-search form {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   max-width: none;
 }
 
@@ -856,17 +856,6 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
     order: 3;
     flex-basis: 100%;
     justify-content: center;
-  }
-}
-
-@media (max-width: 1200px) {
-  .event-discovery .selfie-search form {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .event-discovery .selfie-search form > label,
-  .event-discovery .selfie-search form > .selfie-search-error {
-    grid-column: auto;
   }
 }
 

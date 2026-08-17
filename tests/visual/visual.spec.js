@@ -464,6 +464,12 @@ test('saved selfie-search history sits beside the form on desktop and below it o
     await history.locator('summary').click();
 
     const geometry = await page.evaluate(() => {
+      const bounds = (selector) => {
+        const element = document.querySelector(selector);
+        if (!element) return null;
+        const { bottom, top } = element.getBoundingClientRect();
+        return { bottom, top };
+      };
       const form = document.querySelector('[data-selfie-search-form]');
       const history = document.querySelector('[data-selfie-search-history]');
       const rows = Array.from(document.querySelectorAll('.selfie-search-history-row')).map((row) => {
@@ -488,12 +494,19 @@ test('saved selfie-search history sits beside the form on desktop and below it o
         historyBelowForm: Boolean(
           formRect && historyRect && historyRect.top >= formRect.bottom - 1,
         ),
+        selfieFile: bounds('#selfie-search input[type="file"]'),
+        selfieSubmit: bounds('#selfie-search button[type="submit"]'),
         rows,
       };
     });
 
     expect(geometry[`history${expectation === 'beside' ? 'Beside' : 'Below'}Form`]).toBe(true);
     expect(geometry.rows).toEqual([{ sameLine: true, compact: true }, { sameLine: true, compact: true }]);
+    if (expectation === 'beside') {
+      expect(geometry.selfieFile).not.toBeNull();
+      expect(geometry.selfieSubmit).not.toBeNull();
+      expect(geometry.selfieFile.bottom).toBeLessThanOrEqual(geometry.selfieSubmit.top);
+    }
   }
 });
 
@@ -986,8 +999,7 @@ test('desktop discovery keeps upload and time controls aligned without overlap',
   expect(layout.timeFrom).not.toBeNull();
   expect(layout.timeTo).not.toBeNull();
   expect(layout.timeSubmit).not.toBeNull();
-  expect(Math.abs(layout.selfieFile.top - layout.selfieSubmit.top)).toBeLessThanOrEqual(1);
-  expect(layout.selfieFile.right).toBeLessThanOrEqual(layout.selfieSubmit.left);
+  expect(layout.selfieFile.bottom).toBeLessThanOrEqual(layout.selfieSubmit.top);
   expect(layout.timeFrom.right).toBeLessThanOrEqual(layout.timeTo.left);
   expect(layout.timeTo.right).toBeLessThanOrEqual(layout.timeSubmit.left);
 

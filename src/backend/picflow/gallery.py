@@ -3,6 +3,7 @@ import math
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol, Self
+from zoneinfo import ZoneInfo
 
 from django.core.paginator import Page, Paginator
 from django.db.models import F, Q, QuerySet
@@ -115,6 +116,7 @@ class GalleryPhoto:
     download_url: str
     alt: str
     faces: tuple[GalleryFaceCrop, ...] = ()
+    capture_time_display: str | None = None
 
 
 class GalleryPhotoFactory:
@@ -154,6 +156,11 @@ class GalleryPhotoFactory:
             ),
             alt=f"Фото {photo.pk} с события {photo.event.name}",
             faces=faces,
+            capture_time_display=(
+                photo.capture_time.astimezone(ZoneInfo(photo.event.timezone_name)).strftime("%H:%M")
+                if photo.capture_time is not None
+                else None
+            ),
         )
 
 
@@ -191,14 +198,11 @@ def gallery_photo_queryset(
         if include_unfiled:
             folder_filter |= Q(folder_id__isnull=True)
         queryset = queryset.filter(folder_filter)
-    if capture_time_start is None and capture_time_end is None:
-        return queryset
-    if capture_time_start is None or capture_time_end is None:
-        raise ValueError("capture time bounds must be supplied together")
-    return queryset.filter(
-        capture_time__gte=capture_time_start,
-        capture_time__lte=capture_time_end,
-    )
+    if capture_time_start is not None:
+        queryset = queryset.filter(capture_time__gte=capture_time_start)
+    if capture_time_end is not None:
+        queryset = queryset.filter(capture_time__lte=capture_time_end)
+    return queryset
 
 
 def gallery_folder_choices(

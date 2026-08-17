@@ -5,13 +5,16 @@ const test = require('node:test');
 
 const modulePath = '../../src/backend/static/ui/event-gallery.js';
 
-function loadGalleryModule({ root = null, glightbox = null } = {}) {
+function loadGalleryModule({ root = null, discovery = null, glightbox = null, matchMedia = null } = {}) {
   const originalDocument = global.document;
   const originalGLightbox = global.GLightbox;
   delete require.cache[require.resolve(modulePath)];
   global.document = {
     readyState: 'complete',
-    querySelector: (selector) => (selector === '.event-gallery' ? root : null),
+    querySelector: (selector) => {
+      if (selector === '[data-event-discovery]') return discovery;
+      return selector === '.event-gallery' ? root : null;
+    },
     addEventListener() {
       throw new Error('The complete document must initialize synchronously.');
     },
@@ -21,6 +24,9 @@ function loadGalleryModule({ root = null, glightbox = null } = {}) {
   } else {
     delete global.GLightbox;
   }
+  const originalMatchMedia = global.matchMedia;
+  if (matchMedia) global.matchMedia = matchMedia;
+  else delete global.matchMedia;
   try {
     return require(modulePath);
   } finally {
@@ -28,6 +34,8 @@ function loadGalleryModule({ root = null, glightbox = null } = {}) {
     else global.document = originalDocument;
     if (originalGLightbox === undefined) delete global.GLightbox;
     else global.GLightbox = originalGLightbox;
+    if (originalMatchMedia === undefined) delete global.matchMedia;
+    else global.matchMedia = originalMatchMedia;
   }
 }
 
@@ -44,6 +52,15 @@ test('initializes GLightbox once with local gallery options', () => {
   assert.equal(calls[0].touchNavigation, true);
   assert.equal(calls[0].loop, false);
   assert.equal(calls[0].descPosition, 'bottom');
+});
+
+test('opens discovery on desktop without focus, scroll, or URL mutation', () => {
+  const discovery = { open: false };
+  const { initializeDiscovery } = loadGalleryModule();
+
+  initializeDiscovery(discovery, { matchMedia: () => ({ matches: true }) });
+
+  assert.equal(discovery.open, true);
 });
 
 test('keeps only the active built-in description download in GLightbox keyboard order', () => {

@@ -90,7 +90,8 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             if gallery_folder_filter_form.include_unfiled:
                 query_pairs.append(("unfiled", "1"))
             if manual_time_filter_form.is_requested:
-                query_pairs.append(("from", manual_time_filter_form.cleaned_data["from"]))
+                if manual_time_filter_form.cleaned_data["from"]:
+                    query_pairs.append(("from", manual_time_filter_form.cleaned_data["from"]))
                 if manual_time_filter_form.cleaned_data["to"]:
                     query_pairs.append(("to", manual_time_filter_form.cleaned_data["to"]))
             gallery_pagination_query_pairs = tuple(query_pairs)

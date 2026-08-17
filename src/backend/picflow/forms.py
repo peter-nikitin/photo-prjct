@@ -90,7 +90,7 @@ class EventGalleryTimeFilterForm(forms.Form):
         )
 
     @property
-    def utc_bounds(self) -> tuple[datetime, datetime] | None:
+    def utc_bounds(self) -> tuple[datetime | None, datetime | None] | None:
         if not self.is_bound or not self.is_valid() or not self.is_requested:
             return None
         return self.cleaned_data["utc_bounds"]
@@ -104,20 +104,17 @@ class EventGalleryTimeFilterForm(forms.Form):
 
         from_value = cleaned_data.get("from")
         to_value = cleaned_data.get("to")
-        if not from_value:
-            self.add_error("from", "Укажите время начала.")
         start = self._parse_event_time(from_value, "from") if from_value else None
         end = self._parse_event_time(to_value, "to") if to_value else None
-        if start is None:
+        if (from_value and start is None) or (to_value and end is None):
             return cleaned_data
-        if to_value and end is None:
-            return cleaned_data
-        if end is None:
-            end = self._event_end_utc()
-        if end <= start:
+        if start is not None and end is not None and end <= start:
             self.add_error("to", "Время окончания должно быть позже времени начала.")
             return cleaned_data
-        cleaned_data["utc_bounds"] = (start - timedelta(minutes=10), end + timedelta(minutes=10))
+        cleaned_data["utc_bounds"] = (
+            start - timedelta(minutes=10) if start is not None else None,
+            end + timedelta(minutes=10) if end is not None else None,
+        )
         return cleaned_data
 
     def _parse_event_time(self, value: str, field_name: str) -> datetime | None:
@@ -132,13 +129,6 @@ class EventGalleryTimeFilterForm(forms.Form):
             self.add_error(field_name, "Выберите время в пределах дат события.")
             return None
         return self._unambiguous_utc(local, field_name)
-
-    def _event_end_utc(self) -> datetime:
-        return (
-            datetime.combine(self.event.end_date + timedelta(days=1), time.min)
-            .replace(tzinfo=ZoneInfo(self.event.timezone_name))
-            .astimezone(UTC)
-        )
 
     def _unambiguous_utc(self, local: datetime, field_name: str) -> datetime | None:
         zone = ZoneInfo(self.event.timezone_name)

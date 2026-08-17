@@ -50,6 +50,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
             preview_media_small=small,
             preview_media_large=large,
             download_url="/events/city-run/photos/photo-42/download/",
+            capture_time_display="11:03",
             faces=(
                 GalleryFaceCrop(
                     detection_id="face-42",
@@ -67,6 +68,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
         self.assertEqual(gallery_photo.preview_media_small, small)
         self.assertEqual(gallery_photo.preview_media_large, large)
         self.assertEqual(gallery_photo.download_url, "/events/city-run/photos/photo-42/download/")
+        self.assertEqual(gallery_photo.capture_time_display, "11:03")
         self.assertEqual(
             gallery_photo.faces,
             (
@@ -120,6 +122,7 @@ class GalleryPresentationContractTests(SimpleTestCase):
         )
         self.assertEqual(gallery_photo.download_url, "/events/city-run/photos/photo-42/download/")
         self.assertEqual(gallery_photo.faces, ())
+        self.assertIsNone(gallery_photo.capture_time_display)
         self.assertEqual(gallery_photo.alt, "Фото photo-42 с события City Run")
         self.assertEqual(
             reverse.call_args_list,
@@ -150,6 +153,24 @@ class GalleryPresentationContractTests(SimpleTestCase):
                 ),
             ],
         )
+        boto3_client.assert_not_called()
+
+    @patch("boto3.client")
+    def test_factory_formats_known_capture_time_in_the_event_timezone(self, boto3_client) -> None:
+        event = Event(
+            name="City Run",
+            slug="city-run",
+            timezone_name="Europe/London",
+        )
+        photo = Photo(
+            id="photo-42",
+            event=event,
+            capture_time=datetime(2026, 6, 10, 10, 3, tzinfo=UTC),
+        )
+
+        gallery_photo = GalleryPhotoFactory.from_photo(photo=photo, event_slug=event.slug)
+
+        self.assertEqual(gallery_photo.capture_time_display, "11:03")
         boto3_client.assert_not_called()
 
     @patch("boto3.client")
@@ -426,14 +447,14 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
         self.assertTrue(form.is_valid())
         self.assertIsNone(form.utc_bounds)
 
-    def test_from_is_required_when_a_manual_filter_is_requested(self) -> None:
+    def test_end_only_uses_a_tolerant_upper_bound(self) -> None:
         form = self.form(self.make_event(), "to=2026-06-10T12:00")
 
         self.assertTrue(form.is_requested)
-        self.assertFalse(form.is_valid())
-        self.assertIn("from", form.errors)
+        self.assertTrue(form.is_valid())
+        self.assertEqual(form.utc_bounds, (None, datetime(2026, 6, 10, 11, 10, tzinfo=UTC)))
 
-    def test_to_can_be_blank_and_uses_the_exclusive_midnight_after_event_end(self) -> None:
+    def test_start_only_uses_a_tolerant_lower_bound(self) -> None:
         event = self.make_event()
         form = self.form(event, "from=2026-06-11T23:50&to=")
 
@@ -442,7 +463,7 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
             form.utc_bounds,
             (
                 datetime(2026, 6, 11, 22, 40, tzinfo=UTC),
-                datetime(2026, 6, 12, 23, 10, tzinfo=UTC),
+                None,
             ),
         )
 

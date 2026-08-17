@@ -9,111 +9,74 @@
 {% endblock %}
 {% block content %}
   <article class="event-detail">
-    <a class="back-link" href="{% url 'event_catalog' %}">
-      <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#arrow-left"></use></svg>
-      Все события
-    </a>
-    <div class="event-detail-grid">
-      <div class="detail-cover-wrap">
-        {% if event.cover %}
-          <img class="detail-cover" src="{{ event.cover.url }}" alt="Обложка события {{ event.name }}">
-        {% else %}
-          <div class="detail-cover cover-placeholder" role="img" aria-label="У события {{ event.name }} пока нет обложки">
-            <span aria-hidden="true">FM</span>
-          </div>
-        {% endif %}
-      </div>
-      <div class="event-detail-body">
-        <span class="event-type">{{ event.get_access_type_display }}</span>
-        <h1>{{ event.name }}</h1>
-        <dl class="event-detail-meta">
-          <div>
-            <dt><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#map-pin"></use></svg> Город</dt>
-            <dd>{{ event.city }}</dd>
-          </div>
-          <div>
-            <dt><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#calendar"></use></svg> Даты</dt>
-            <dd>{{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</dd>
-          </div>
-        </dl>
-        {% if event.description %}
-          <section class="description" aria-labelledby="description-title">
-            <h2 id="description-title">О событии</h2>
-            {{ event.description|linebreaks }}
-          </section>
-        {% endif %}
-      </div>
-    </div>
+    <header class="event-detail-header">
+      <a class="back-link" href="{% url 'event_catalog' %}" aria-label="Все события">
+        <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#arrow-left"></use></svg>
+        <span>Все события</span>
+      </a>
+      <h1>{{ event.name }}</h1>
+      <p class="event-detail-meta"><span>{{ event.city }}</span><span>{{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</span></p>
+    </header>
     {% if manual_time_filter_form %}
-      <section id="gallery" class="event-discovery" aria-labelledby="discovery-title">
-        <h2 id="discovery-title">Найти свои фото</h2>
-        <div class="event-discovery-layout">
-          {% if selfie_search_form %}
-            <section id="selfie-search" class="selfie-search event-discovery-column" aria-labelledby="selfie-search-title">
-              <h3 id="selfie-search-title">Поиск по селфи</h3>
-              <p>Мы ищем вероятные совпадения только среди фотографий этого события.</p>
-              <p>Загрузите чёткую фотографию, где лицо хорошо видно. Лучше использовать фото с дня мероприятия, особенно если на мероприятии вы были в очках или головном уборе.</p>
-              <ul class="selfie-search-disclosures">
-                <li>Селфи удаляется после подготовки поиска.</li>
-                <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
-              </ul>
-              <div class="selfie-search-layout">
-                <form data-selfie-search-form data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" action="{% url 'selfie_search:submit' event_slug=event.slug %}#selfie-search" method="post" enctype="multipart/form-data">
-                  {% csrf_token %}
-                  {% if selfie_feedback_enabled %}<input type="hidden" name="feedback_correlation" value="">{% endif %}
-                  {% if selfie_search_form.non_field_errors or selfie_search_form.selfie.errors %}
-                    <div id="selfie-search-error" class="selfie-search-error" data-selfie-search-error role="alert" tabindex="-1">
-                      {% for error in selfie_search_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
-                      {% if not selfie_search_form.non_field_errors %}
-                        {% for error in selfie_search_form.selfie.errors %}<p>{{ error }}</p>{% endfor %}
-                      {% endif %}
-                    </div>
-                  {% endif %}
-                  <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
-                  {{ selfie_search_form.selfie }}
-                  <button class="button" type="submit">Найти мои фото</button>
-                </form>
-                <section class="selfie-search-history" data-selfie-search-history data-event-slug="{{ event.slug }}" hidden>
-                  <div data-selfie-search-history-list></div>
-                </section>
-              </div>
-            </section>
-          {% endif %}
-          <section class="manual-time-filter event-discovery-column" aria-labelledby="manual-time-filter-title">
-            <h3 id="manual-time-filter-title">Ручной поиск</h3>
-            <p class="manual-time-filter-guidance">Даты события: {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}. Время указано для города проведения.</p>
-            <form class="manual-time-filter-form" data-manual-time-filter-form action="{% url 'event_detail' slug=event.slug %}#gallery" method="get">
-              {% if gallery_folder_choices %}
-                <fieldset class="gallery-folder-filter">
-                  <legend>Папки</legend>
-                  {% for folder in gallery_folder_choices %}
-                    <label>
-                      <input type="checkbox" name="folder" value="{{ folder.pk }}"{% if folder.pk in gallery_folder_filter_form.selected_folder_ids %} checked{% endif %}>
-                      {{ folder.name }}
-                    </label>
-                  {% endfor %}
-                  {% if gallery_folder_filter_form.show_unfiled %}
-                    <label>
-                      <input type="checkbox" name="unfiled" value="1"{% if gallery_folder_filter_form.include_unfiled %} checked{% endif %}>
-                      Без папки
-                    </label>
-                  {% endif %}
-                </fieldset>
-              {% endif %}
-              {% for field in manual_time_filter_form %}
-                <div class="manual-time-filter-field">
-                  <label for="{{ field.id_for_label }}">{% if field.name == "from" %}Время начала{% else %}Время окончания{% endif %}</label>
-                  {{ field }}
-                  {% for error in field.errors %}<p class="manual-time-filter-error" role="alert">{{ error }}</p>{% endfor %}
+      <section id="gallery" class="event-discovery-wrap">
+        <details class="event-discovery" data-event-discovery{% if not gallery_filters_active %} open{% endif %}>
+          <summary>{% if gallery_filters_active %}Фильтры применены{% else %}Найти свои фото{% endif %}</summary>
+          <div class="event-discovery-layout">
+            {% if selfie_search_form %}
+              <section id="selfie-search" class="selfie-search event-discovery-column" aria-labelledby="selfie-search-title">
+                <h2 id="selfie-search-title">Поиск по селфи</h2>
+                <p>Мы ищем вероятные совпадения только среди фотографий этого события.</p>
+                <details class="selfie-search-guidance">
+                  <summary>Как это работает</summary>
+                  <p>Загрузите чёткую фотографию, где лицо хорошо видно. Лучше использовать фото с дня мероприятия, особенно если на мероприятии вы были в очках или головном уборе.</p>
+                  <ul class="selfie-search-disclosures">
+                    <li>Селфи удаляется после подготовки поиска.</li>
+                    <li>Любой, у кого есть ссылка на результат, сможет его открыть.</li>
+                  </ul>
+                </details>
+                <div class="selfie-search-layout">
+                  <form data-selfie-search-form data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" action="{% url 'selfie_search:submit' event_slug=event.slug %}#selfie-search" method="post" enctype="multipart/form-data">
+                    {% csrf_token %}
+                    {% if selfie_feedback_enabled %}<input type="hidden" name="feedback_correlation" value="">{% endif %}
+                    {% if selfie_search_form.non_field_errors or selfie_search_form.selfie.errors %}
+                      <div id="selfie-search-error" class="selfie-search-error" data-selfie-search-error role="alert" tabindex="-1">
+                        {% for error in selfie_search_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+                        {% if not selfie_search_form.non_field_errors %}{% for error in selfie_search_form.selfie.errors %}<p>{{ error }}</p>{% endfor %}{% endif %}
+                      </div>
+                    {% endif %}
+                    <label for="{{ selfie_search_form.selfie.id_for_label }}">Селфи</label>
+                    {{ selfie_search_form.selfie }}
+                    <button class="button" type="submit">Найти мои фото</button>
+                  </form>
+                  <section class="selfie-search-history" data-selfie-search-history data-event-slug="{{ event.slug }}" hidden><div data-selfie-search-history-list></div></section>
                 </div>
-              {% endfor %}
-              <button class="button" type="submit">Показать фотографии</button>
-            </form>
-            {% if gallery_filters_active or manual_time_filter_form.is_requested %}
-              <a class="manual-time-filter-reset" href="{% url 'event_detail' slug=event.slug %}#gallery">Сбросить фильтр</a>
+              </section>
             {% endif %}
-          </section>
-        </div>
+            <section class="manual-time-filter event-discovery-column" aria-labelledby="manual-time-filter-title">
+              <h2 id="manual-time-filter-title">Ручной поиск</h2>
+              <p class="manual-time-filter-guidance">Даты события: {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}. Время указано для города проведения.</p>
+              <form class="manual-time-filter-form" data-manual-time-filter-form action="{% url 'event_detail' slug=event.slug %}" method="get">
+                {% if gallery_folder_choices %}
+                  <fieldset class="gallery-folder-filter">
+                    <legend>Папки</legend>
+                    {% for folder in gallery_folder_choices %}<label><input type="checkbox" name="folder" value="{{ folder.pk }}"{% if folder.pk in gallery_folder_filter_form.selected_folder_ids %} checked{% endif %}>{{ folder.name }}</label>{% endfor %}
+                    {% if gallery_folder_filter_form.show_unfiled %}<label><input type="checkbox" name="unfiled" value="1"{% if gallery_folder_filter_form.include_unfiled %} checked{% endif %}>Без папки</label>{% endif %}
+                  </fieldset>
+                {% endif %}
+                <div class="manual-time-filter-controls">
+                  {% for field in manual_time_filter_form %}
+                    <div class="manual-time-filter-field">
+                      <label for="{{ field.id_for_label }}">{% if field.name == "from" %}Время начала{% else %}Время окончания{% endif %}</label>
+                      {{ field }}{% for error in field.errors %}<p class="manual-time-filter-error" role="alert">{{ error }}</p>{% endfor %}
+                    </div>
+                  {% endfor %}
+                  <button class="button" type="submit">Показать фотографии</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </details>
+        {% if gallery_filters_active %}<a class="manual-time-filter-reset" href="{% url 'event_detail' slug=event.slug %}#gallery">Сбросить фильтр</a>{% endif %}
       </section>
     {% endif %}
     {% if not manual_time_filter_invalid %}
@@ -184,9 +147,12 @@
                     {% endif %}
                   </div>
                 {% endif %}
-                <a class="gallery-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал">
-                  <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg>
-                </a>
+                <div class="gallery-card-download">
+                  {% if photo.capture_time_display %}<time class="gallery-card-time">{{ photo.capture_time_display }}</time>{% endif %}
+                  <a class="gallery-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал">
+                    <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg>
+                  </a>
+                </div>
               </div>
             </figure>
           {% endfor %}

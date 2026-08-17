@@ -69,3 +69,7 @@ combined folder/time selection, and controls that remain visible for a zero-resu
 On 2026-08-17, the production shared-shell baselines were refreshed for the approved optimized
 logo used by the favicon and decorative header mark; desktop baselines also cover the updated
 supporting line `найди моё фото`. No visual route, status, or snapshot-name mapping changed.
+
+On 2026-08-17, the populated production event-gallery fixture added optional event-local photo
+times beside download. The existing desktop and 390px mobile populated snapshots cover known and
+missing capture-time states without adding a new route.

@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- `from` only means `capture_time >= from - 10 minutes`; `to` only means `capture_time <= to + 10 minutes`; both means the existing tolerant bounded interval; neither means no time predicate.
+- `from` only means `capture_time >= from`; `to` only means `capture_time <= to`; both means the exact inclusive bounded interval; neither means no time predicate.
 - Photos without a comparable persisted `capture_time` do not match an active one-sided or two-sided time filter.
 - Malformed, repeated, outside-event, DST-invalid, and inverted inputs remain invalid.
 - Active folder and time predicates combine with `AND`; pagination preserves only non-empty active fields.
@@ -57,12 +57,12 @@
 
 - [ ] **Step 1: Add failing form and view tests for both open-ended ranges**
 
-Add form cases for start-only and end-only tolerant UTC bounds, and retain coverage for both empty, bounded, inverted, malformed, repeated, event-boundary, and DST-invalid submissions. Update the old only-`to` invalid expectation: it is now valid.
+Add form cases for start-only and end-only exact UTC bounds, and retain coverage for both empty, bounded, inverted, malformed, repeated, event-boundary, and DST-invalid submissions. Update the old only-`to` invalid expectation: it is now valid.
 
 Add view cases proving:
 
-- start-only includes known capture times after its lower tolerant bound and excludes earlier or missing times;
-- end-only includes known capture times before its upper tolerant bound and excludes later or missing times;
+- start-only includes known capture times at or after its exact lower bound and excludes earlier or missing times;
+- end-only includes known capture times at or before its exact upper bound and excludes later or missing times;
 - folder plus either one-sided boundary combines with `AND`;
 - pagination query pairs include only non-empty `from`, `to`, and folder values;
 - invalid UI coverage uses a genuinely malformed request rather than a missing boundary.
@@ -75,7 +75,7 @@ make test TESTS="src/backend/picflow/tests/test_gallery.py::EventGalleryTimeFilt
 
 - [ ] **Step 2: Implement nullable time bounds end to end**
 
-In the form, parse each supplied scalar independently. Only compare the values when both exist. Produce `(start - 10 minutes if present else None, end + 10 minutes if present else None)` and remove any behavior that substitutes the event end for a missing upper boundary.
+In the form, parse each supplied scalar independently. Only compare the values when both exist. Produce `(start if present else None, end if present else None)` and remove any behavior that substitutes the event end for a missing upper boundary.
 
 Keep repeated-parameter and timezone/event-range validation. In the view, append only non-empty filter fields to pagination query pairs. Pass nullable bounds through the existing gallery page function, which already supports optional lower and upper predicates.
 

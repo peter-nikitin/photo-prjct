@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
 from django import forms
@@ -112,8 +112,8 @@ class EventGalleryTimeFilterForm(forms.Form):
             self.add_error("to", "Время окончания должно быть позже времени начала.")
             return cleaned_data
         cleaned_data["utc_bounds"] = (
-            start - timedelta(minutes=10) if start is not None else None,
-            end + timedelta(minutes=10) if end is not None else None,
+            start,
+            end,
         )
         return cleaned_data
 

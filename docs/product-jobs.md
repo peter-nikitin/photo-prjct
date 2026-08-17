@@ -262,7 +262,7 @@ storing a manual query.
 - Status: In progress
 - Evidence: The approved [event gallery time-filter design](superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
   and [capture-time projection design](superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
-  define the event-local form, inclusive tolerance, privacy boundary, and two-release gate.
+  define the event-local form, exact inclusive bounds, privacy boundary, and two-release gate.
   Accepted Release A staging evidence establishes the synchronous writer, direct reader, clean
   global reconciliation at 17,043 event-9 pairs, and rollback-only lifecycle smoke. The current
   Release B candidate uses the projection-only filtered reader and has a clean immutable-local-clone

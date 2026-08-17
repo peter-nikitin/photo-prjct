@@ -447,14 +447,14 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
         self.assertTrue(form.is_valid())
         self.assertIsNone(form.utc_bounds)
 
-    def test_end_only_uses_a_tolerant_upper_bound(self) -> None:
+    def test_end_only_uses_the_entered_upper_bound(self) -> None:
         form = self.form(self.make_event(), "to=2026-06-10T12:00")
 
         self.assertTrue(form.is_requested)
         self.assertTrue(form.is_valid())
-        self.assertEqual(form.utc_bounds, (None, datetime(2026, 6, 10, 11, 10, tzinfo=UTC)))
+        self.assertEqual(form.utc_bounds, (None, datetime(2026, 6, 10, 11, 0, tzinfo=UTC)))
 
-    def test_start_only_uses_a_tolerant_lower_bound(self) -> None:
+    def test_start_only_uses_the_entered_lower_bound(self) -> None:
         event = self.make_event()
         form = self.form(event, "from=2026-06-11T23:50&to=")
 
@@ -462,7 +462,7 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
         self.assertEqual(
             form.utc_bounds,
             (
-                datetime(2026, 6, 11, 22, 40, tzinfo=UTC),
+                datetime(2026, 6, 11, 22, 50, tzinfo=UTC),
                 None,
             ),
         )
@@ -476,8 +476,8 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
         self.assertEqual(
             form.utc_bounds,
             (
-                datetime(2026, 6, 10, 10, 53, tzinfo=UTC),
-                datetime(2026, 6, 10, 11, 14, tzinfo=UTC),
+                datetime(2026, 6, 10, 11, 3, tzinfo=UTC),
+                datetime(2026, 6, 10, 11, 4, tzinfo=UTC),
             ),
         )
 
@@ -488,8 +488,8 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
         self.assertEqual(
             form.utc_bounds,
             (
-                datetime(2026, 6, 9, 22, 50, tzinfo=UTC),
-                datetime(2026, 6, 12, 23, 9, tzinfo=UTC),
+                datetime(2026, 6, 9, 23, 0, tzinfo=UTC),
+                datetime(2026, 6, 12, 22, 59, tzinfo=UTC),
             ),
         )
 

@@ -15,8 +15,8 @@ area above the gallery: the existing privacy-safe selfie search and a new manual
 side by side on wide screens and stack on mobile.
 
 The manual search uses trustworthy, current capture-time evidence only.  A customer enters an
-event-local starting time and may enter an event-local ending time.  The server converts those
-wall-clock values using the event's own IANA timezone, applies the approved ten-minute tolerance,
+event-local starting time and may enter an event-local ending time.  The server converts each
+supplied wall-clock value using the event's own IANA timezone, uses it as an inclusive UTC bound,
 and returns only otherwise eligible gallery photos.  It neither creates a search record nor stores
 the customer query.
 
@@ -85,15 +85,13 @@ The manual form submits the same URL with these optional query parameters:
 
 | Parameter | Meaning |
 | --- | --- |
-| `from` | Required once a manual search is requested.  A `datetime-local` wall-clock value in the event timezone. |
-| `to` | Optional `datetime-local` wall-clock value in the same timezone. |
+| `from` | Optional `datetime-local` wall-clock lower bound in the event timezone. |
+| `to` | Optional `datetime-local` wall-clock upper bound in the same timezone. |
 | `page` | The existing one-based numbered gallery page. |
 
-The event's date range is available to the form as its local minimum and maximum.  A selectable
-instant starts at `start_date 00:00:00` and ends at `end_date 23:59:59.999999` in
-`Event.timezone_name`.  The implicit end used when `to` is absent is the exclusive local midnight
-immediately after `end_date`.  Thus a customer can search the whole final event day without typing
-an artificial next-day value.
+The event's date range is available to the form as its local minimum and maximum.  Each supplied
+bound must be between `start_date 00:00:00` and `end_date 23:59:59.999999` in
+`Event.timezone_name`; an omitted bound leaves that side of the query unbounded.
 
 `from` and `to` are scalar parameters and may occur at most once.  A repeated value is an invalid
 manual search rather than an implicit choice of first or last value.
@@ -102,17 +100,19 @@ The page has these three mutually exclusive gallery states:
 
 1. **Unfiltered:** neither `from` nor `to` is supplied; the existing gallery and its existing
    empty state behave unchanged.
-2. **Valid filtered:** `from` is valid and `to`, if supplied, is valid and later than `from`.
-   The resulting gallery or its distinct filtered-empty state is rendered below `#gallery`.
+2. **Valid filtered:** at least one of `from` or `to` is supplied and valid; when both are
+   supplied, `to` is later than `from`.  The resulting gallery or its distinct filtered-empty
+   state is rendered below `#gallery`.
 3. **Invalid manual search:** either parameter is supplied but the request does not meet the
    validation contract below.  The manual form displays the field error in the normal page
    response and no gallery cards, pager, or ordinary empty-gallery message are rendered.  This
    prevents an invalid request from looking like a broader unfiltered result.
 
 The form has no `page` field, so submitting a new time selection always starts at page 1.  Pager
-links and the numbered-page GET form preserve the validated `from` and `to` values alongside
-`page`; an unfiltered pager continues to use only `page`.  The reset control links to the canonical
-event-detail URL with no query parameters, including no `page`, `from`, or `to`.
+links and the numbered-page GET form preserve whichever validated `from` and `to` values were
+supplied alongside `page`; an unfiltered pager continues to use only `page`.  The reset control
+links to the canonical event-detail URL with no query parameters, including no `page`, `from`, or
+`to`.
 
 ## Manual-time semantics
 
@@ -130,25 +130,25 @@ For each supplied value, the server must:
 4. convert the unambiguous local wall time to its canonical UTC instant using
    `Event.timezone_name`.
 
-`from` is mandatory for a manual search.  A blank, malformed, out-of-range, nonexistent, or
-ambiguous `from` is an error.  `to` may be blank/absent; when present it has the same validity
-requirements and, after conversion, must be strictly later than `from`.  Equal values and values
-earlier than `from` are errors.  Errors are attached to the manual-search UI, use the normal
-successful page response rather than a redirect or a partial gallery, and retain the customer's
-safe-to-re-render form values.
+At least one non-empty `from` or `to` requests a manual search.  Each supplied value must be
+complete, inside the event-local date range, nonexistent/ambiguous-time safe, and convertible to
+an unambiguous UTC instant.  An omitted bound leaves that side of the query unbounded.  When both
+are supplied, `to` must be strictly later than `from`; equal values and values earlier than `from`
+are errors.  Errors are attached to the manual-search UI, use the normal successful page response
+rather than a redirect or a partial gallery, and retain the customer's safe-to-re-render form
+values.
 
-For a valid search, let `start` be the UTC `from` instant and let `end` be the UTC `to` instant, or
-the UTC instant for the implicit end of the event when `to` is absent.  The inclusive query window
-is:
+For a valid search, let `start` be the UTC `from` instant when supplied and let `end` be the UTC
+`to` instant when supplied.  The inclusive query bounds are:
 
 ```text
-capture_time >= start - 10 minutes
-AND capture_time <= end + 10 minutes
+capture_time >= start       (when `from` is supplied)
+capture_time <= end         (when `to` is supplied)
 ```
 
-The tolerance is deliberately not exposed as a user-adjustable setting or described as a separate
-time range.  It absorbs ordinary camera-clock drift while keeping the chosen interval predictable.
-Both comparisons are inclusive: evidence exactly on either widened boundary belongs in the result.
+There is no automatic widening or tolerance around a supplied bound.  Each comparison is
+inclusive: evidence exactly on the entered lower or upper boundary belongs in the result, while a
+photo even one minute outside that boundary does not.
 
 ## Evidence selection and gallery behavior
 
@@ -156,7 +156,7 @@ The filter begins with the existing gallery-media eligibility predicate.  It the
 event scope, publication/access rules, preview readiness where required, media authorization, and
 the existing `original_filename, id` ordering.  It then intersects that queryset with direct
 current accepted `capture_metadata` evidence whose processor version is 2 and whose accepted
-result has a non-null canonical UTC `capture_time` in the widened window.
+result has a non-null canonical UTC `capture_time` within the requested bounds.
 
 “Current accepted version 2” is a single contract, not a convenient JSON lookup: the current
 capture-metadata state and its accepted successful attempt must agree on the version-2 identity and
@@ -243,13 +243,12 @@ the direct evidence source of truth.
    supported mobile layout stacks them before the gallery; visual coverage protects both layouts.
 3. The manual form works when JavaScript is disabled: valid GET submission reaches `#gallery`,
    errors are visible in the returned HTML, and all gallery/pager/reset controls remain operable.
-4. `from` is required for a requested manual search; `to` is optional; valid values are interpreted
-   in `Event.timezone_name`, not browser/server timezone.  Tests cover a deliberate browser/server
-   timezone mismatch.
-5. Tests cover a multi-day event, midnight crossing, an omitted `to` through the event end, an
-   explicit valid `to`, and rejection when `to <= from`.
-6. Tests prove both `-10 minutes` and `+10 minutes` widening, inclusive lower/upper boundaries,
-   and exclusion immediately outside each boundary.
+4. Either `from` or `to` may be supplied; valid values are interpreted in `Event.timezone_name`,
+   not browser/server timezone.  Tests cover a deliberate browser/server timezone mismatch.
+5. Tests cover a multi-day event, midnight crossing, each one-sided bound, an explicit bounded
+   range, and rejection when `to <= from`.
+6. Tests prove exact UTC bounds, inclusive lower/upper boundaries, and exclusion immediately
+   outside each boundary.
 7. Only current accepted non-null `capture_metadata` version-2 evidence can include a photo.
    Tests exclude version 1, stale/unaccepted/failed evidence, missing capture time, other events,
    and otherwise ineligible gallery media.

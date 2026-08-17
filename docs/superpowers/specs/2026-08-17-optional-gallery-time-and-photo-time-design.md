@@ -1,85 +1,176 @@
-# Optional Gallery Time and Photo Time Design
+# Compact Event Gallery Discovery Design
 
 ## Status
 
-Approved on 2026-08-17.
+Expanded design approved on 2026-08-17.
 
 - Related design: [`2026-08-15-event-photo-folders-design.md`](2026-08-15-event-photo-folders-design.md).
 - Related architecture: [`docs/architecture.md`](../../architecture.md), public event gallery.
-- ADR impact: none. This change refines the existing gallery-filter and presentation contracts.
+- ADR impact: none. This refines the existing server-rendered event gallery, filters, and
+  presentation contracts without changing durable architecture.
 
 ## Goal
 
-Let a visitor filter an event gallery by folder without knowing a capture time, and show each
-photo's known event-local capture time beside its download action without adding visual noise.
+Let visitors reach event photos sooner, filter by any combination of folders and optional time
+bounds without a delayed scroll jump, and read each known event-local photo time beside download.
 
 ## Scope
 
 ### Included
 
-- Treat empty gallery time fields as no time filter, including when a folder is selected.
-- Preserve the existing combination of an active folder filter and an active time range with
-  `AND`.
-- Show a known photo capture time as `HH:MM` in the event's IANA timezone.
-- Place the time immediately before the card's download action using small, muted text.
-- Render no placeholder when a photo has no capture time.
+- Allow folder-only, start-only, end-only, bounded, and completely unfiltered gallery requests.
+- Keep `AND` between active folder and time predicates.
+- Remove the delayed fragment scroll after submitting the manual filter.
+- Replace the tall event hero with one compact metadata bar.
+- Reduce desktop discovery height while keeping selfie and privacy copy available.
+- Collapse the complete discovery block on mobile after a filter is applied and through pagination.
+- Show known photo capture time as `HH:MM` beside download using small, muted text.
 
 ### Excluded
 
-- Changing the existing rule that an end time cannot be used without a start time.
+- Making card times clickable or copying them into the filter.
+- Creating an automatic plus/minus-five-minute search from a card.
 - Showing a date, seconds, timezone abbreviation, or capture time in the lightbox.
+- Changing the existing ten-minute tolerance around each supplied manual time bound.
 - Inferring missing capture times or changing metadata extraction and backfill behavior.
-- Changing folder choices, gallery eligibility, pagination, media delivery, or selfie search.
+- Changing folder choices, gallery eligibility, media delivery, selfie-search behavior, or the
+  customer-approved selfie/privacy wording.
+- Replacing server-rendered filtering or pagination with JavaScript.
 
-## Behavior
+## Time Filtering
 
-The time form is active only when at least one submitted time value is non-empty. Browsers may
-still submit empty `from` and `to` parameters with a folder-only request; those empty parameters
-must not trigger time validation, affect the queryset, or appear in pagination URLs.
+The time form is active only when at least one submitted `from` or `to` value is non-empty.
+Browsers may submit both empty fields with a folder-only request; they must not trigger validation,
+affect the queryset, or appear in pagination URLs.
 
-If `from` is present, the existing open-ended and bounded range behavior is unchanged. If only
-`to` is present, the form keeps reporting that a start time is required. Folder selections remain
-independently active and continue to narrow the base public gallery.
+Each bound is independent:
 
-Each gallery presentation object exposes an optional display value derived from the persisted
-`Photo.capture_time`. The value is converted from its stored instant into `event.timezone_name`
-and formatted as a zero-padded 24-hour `HH:MM` string. A missing capture time produces no display
-value and no empty UI element.
+- `from` only applies a lower bound from the entered event-local time, including the existing ten
+  minutes of tolerance before it, with no upper time predicate;
+- `to` only applies an upper bound through the entered event-local time, including the existing ten
+  minutes of tolerance after it, with no lower time predicate;
+- both values apply the existing tolerant bounded interval;
+- neither value applies no time predicate.
 
-In each gallery card's action row, the optional time and existing download link form the
-right-hand action group. Face-search controls remain on the left. The time uses a smaller size and
-the existing muted color token so it stays readable without competing with the photograph or
-actions. The layout must remain stable on desktop and 390px mobile widths.
+Parsing, event-date validation, ambiguous/nonexistent local-time rejection, repeated-parameter
+rejection, and event IANA timezone conversion remain unchanged. A supplied upper bound must still
+be later than a supplied lower bound. One-sided time filters include only photos with a comparable
+persisted capture time; missing capture times are not inferred.
+
+Folder selections remain independently active and narrow the base public gallery. Active folder
+and time predicates combine with `AND`. Pagination preserves only normalized active parameters.
+
+## Stable Navigation
+
+The manual filter remains a native GET form and works without JavaScript. Its action no longer
+contains the `#gallery` fragment. The resulting page loads at the top and stays there instead of
+starting at the top and then scrolling hundreds of pixels as the browser resolves the fragment
+against a changing layout. No focus-management or scroll-restoration JavaScript is added.
+
+Numbered pagination keeps `#gallery` so moving between result pages continues at the photo area.
+This change targets filter submission only; it does not alter pagination mechanics.
+
+## Compact Event Header
+
+The tall event hero on the event-detail page is replaced by one thin horizontal metadata bar. It
+contains the back action, event name, city, and event date or date range. The name truncates safely
+on narrow widths while metadata remains readable. The event cover and long description are not
+rendered on this page; catalog cards remain unchanged and continue to present the cover.
+
+The bar uses the existing production design tokens, clear focus treatment, and a compact touch-safe
+back action. It introduces no sticky behavior and consumes the minimum practical vertical space.
+
+## Compact Discovery
+
+On desktop, `Найти свои фото` remains visible as two compact columns:
+
+- the selfie column keeps the upload control and submit action on one row;
+- the approved selfie guidance moves into a compact native disclosure;
+- the approved deletion and link-access privacy meaning remains present without rewritten copy;
+- the manual column places folder checkboxes on their own wrapping row;
+- start, end, and `Показать` occupy a separate stable row, so folder count cannot shift the time
+  fields or button sideways.
+
+The existing selfie and manual-search backend contracts remain unchanged. The layout reduces
+spacing and duplication and uses native disclosures rather than a custom disclosure widget.
+
+On mobile, the entire `Найти свои фото` section—including selfie and manual search—is one native
+disclosure:
+
+- it is open by default when no gallery filter is active, so first-time visitors discover search;
+- it is closed by default when any valid folder or time filter is active, including numbered pages;
+- its closed summary says `Фильтры применены` when applicable;
+- the active-filter reset remains accessible without requiring the disclosure to be opened;
+- opening the disclosure reveals the same controls and approved copy, stacked for the viewport.
+
+The server renders an active-filter disclosure closed and an unfiltered disclosure open. A small
+progressive-enhancement initializer opens it on desktop, where discovery always remains exposed;
+native disclosure and GET-form behavior remain usable without JavaScript. This avoids duplicate
+forms or client-owned filter state.
+
+## Photo Time Presentation
+
+Each immutable gallery presentation object exposes an optional display value derived from
+`Photo.capture_time`. The value is converted from its stored instant into `event.timezone_name` and
+formatted as zero-padded 24-hour `HH:MM`. Missing capture time produces no display value.
+
+In each card action row, the optional time and existing download link form the right-hand group.
+Face-search controls remain on the left. The time uses a smaller size, tabular numerals, and the
+existing muted color token. When time is missing, no placeholder, empty element, or reserved gap is
+rendered. Card time remains plain text in this increment.
 
 ## Data Flow
 
 1. The event detail view binds folder and time forms from the same GET request.
-2. Empty time values normalize to an inactive time filter; valid folder selections remain active.
-3. The gallery queryset applies only the active predicates and pagination preserves only their
-   normalized parameters.
-4. The gallery factory converts each known capture time to the event timezone and exposes its
-   display string to the canonical production template.
-5. The template renders the string before the download action, or renders only the download
-   action when the string is absent.
+2. Each supplied time value independently becomes an optional UTC bound; empty values stay absent.
+3. The gallery queryset applies active folder and time predicates, then numbered pagination.
+4. Valid normalized parameters are preserved; filter submission omits a fragment while pagination
+   retains `#gallery`.
+5. The gallery factory converts each known capture instant into an event-local display string.
+6. The canonical event-detail template renders the compact header, responsive discovery, gallery,
+   and optional card times.
+
+## Failure and Accessibility Semantics
+
+- Malformed, repeated, outside-event, nonexistent, ambiguous, and inverted supplied times retain
+  the existing accessible validation behavior and do not fall back to broad results.
+- A single valid bound is not an error and never invents the missing opposite bound.
+- Folder and time query parameters can only narrow the already-authorized base gallery.
+- Native GET submission, native disclosures, labels, legends, keyboard access, focus visibility,
+  and 44px interactive targets remain available without JavaScript.
+- Responsive collapsing must not duplicate form controls, lose selected values, or create horizontal
+  overflow at 390px.
 
 ## Validation Contract
 
 Focused automated coverage must prove:
 
-- a folder-only request containing empty browser-submitted time fields succeeds and filters by
-  folder without time errors;
-- empty time parameters are absent from preserved pagination state;
-- existing start-only, bounded, invalid, and end-only time behavior does not regress;
-- a known UTC capture instant is displayed as `HH:MM` in the event timezone;
-- a photo without capture time renders no time label or empty placeholder;
-- the desktop and mobile production gallery snapshots show the subdued time beside download while
-  preserving face controls and card alignment.
+- blank browser-submitted time fields allow folder-only filtering and are omitted from pagination;
+- start-only, end-only, and bounded requests produce the correct one-sided or two-sided UTC bounds,
+  including the existing tolerance around every supplied value;
+- malformed, repeated, outside-event, DST-invalid, and inverted ranges remain invalid;
+- active one-sided bounds combine with folders using `AND` and persist through numbered pages;
+- manual filter submission produces a query URL without `#gallery` and keeps `scrollY` stable with
+  `BODY` as the active element after page load;
+- pagination links still target `#gallery`;
+- a known UTC capture instant displays as event-local `HH:MM`, while a missing value renders no
+  label or gap;
+- desktop visual coverage shows the one-line event bar, compact two-column discovery, stable folder
+  and time rows, and subdued card times;
+- mobile visual and interaction coverage shows initial-open, filtered-closed, user-reopen, reset,
+  pagination, known-time, and missing-time states without overflow;
+- existing selfie upload, history, privacy copy, face controls, lightbox, download, and public gallery
+  authorization contracts remain intact.
 
 ## Acceptance Criteria
 
-- A visitor can select one or more folders, leave both time fields empty, submit, paginate, and
-  see only the selected folders' eligible photos.
-- Entering a time continues to combine it with selected folders using `AND`.
-- Every gallery card with known capture time shows its event-local `HH:MM` next to download.
-- Cards without known capture time show no replacement text.
-- The new metadata remains visually secondary and does not crowd the desktop or mobile gallery.
+- A visitor can use folders alone, either time boundary alone, both boundaries, or neither.
+- One-sided filters extend through the rest of the event in the missing-bound direction.
+- Applying a filter reloads at the top without a delayed jump or focus change.
+- The event header is one compact line and no longer spends vertical space on cover or description.
+- Desktop folders never push the time inputs or submit action sideways.
+- Mobile visitors see search on first entry and a compact closed summary while paging filtered photos.
+- Every known photo time appears as quiet event-local `HH:MM` beside download; unknown time shows
+  nothing.
+- Photos become visible materially earlier on both desktop and mobile without weakening existing
+  privacy, authorization, accessibility, or no-JavaScript behavior.

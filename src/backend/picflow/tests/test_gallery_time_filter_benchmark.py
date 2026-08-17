@@ -229,7 +229,10 @@ class EventGalleryTimeFilterBenchmarkCommandTests(TestCase):
             self.assertEqual(first["page_number"], expected_page)
             self.assertEqual(filtered["page_number"], expected_page)
             self.assertEqual(first["filter_data"], {})
-            self.assertEqual(filtered["filter_data"], {"from": "2026-01-01T00:00"})
+            self.assertEqual(
+                filtered["filter_data"],
+                {"from": "2026-01-01T00:00", "to": "2026-01-01T23:59"},
+            )
             self.assertIsNone(first["capture_time_start"])
             self.assertIsNone(first["capture_time_end"])
             self.assertIsNotNone(filtered["capture_time_start"])

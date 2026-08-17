@@ -53,6 +53,8 @@ class Command(BaseCommand):
         if not filter_form.is_valid() or filter_form.utc_bounds is None:
             raise CommandError("event 9 cannot construct a valid full-event time filter")
         capture_time_start, capture_time_end = filter_form.utc_bounds
+        if capture_time_start is None or capture_time_end is None:
+            raise CommandError("event 9 cannot construct a valid full-event time filter")
 
         filtered_first_page = gallery_page(
             event=event,
@@ -134,7 +136,13 @@ class Command(BaseCommand):
         first_local = datetime.combine(event.start_date, time.min).replace(
             tzinfo=ZoneInfo(event.timezone_name)
         )
-        return {"from": first_local.strftime("%Y-%m-%dT%H:%M")}
+        last_local = datetime.combine(event.end_date, time(23, 59)).replace(
+            tzinfo=ZoneInfo(event.timezone_name)
+        )
+        return {
+            "from": first_local.strftime("%Y-%m-%dT%H:%M"),
+            "to": last_local.strftime("%Y-%m-%dT%H:%M"),
+        }
 
     @staticmethod
     def _page_numbers(*, tokens: Iterable[str], total_pages: int) -> tuple[tuple[str, int], ...]:

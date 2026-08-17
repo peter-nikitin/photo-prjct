@@ -38,10 +38,12 @@ Execute this plan with `$execute-implementation-plan`.
 - **Depends on:** Supplied source file `/Users/petrnikitin/Downloads/Logo_without_text_black_full.svg`.
 - **Produces:** One optimized `ui/logo.svg` consumed by the shared production header and favicon.
 
-- [ ] Add a focused branding contract test that requires a well-formed `ui/logo.svg` with
-  `viewBox="0 0 1500 1500"`; requires exactly two `ui/logo.svg` template references; requires the
-  decorative `<img class="brand-mark" ... alt="">`, `найди моё фото`, and the unchanged accessible
-  brand label; rejects the old production `FM` mark, `фотографии событий`, and `ui/favicon.svg`.
+- [ ] Add a focused Django Client branding test that renders the real catalog page and requires its
+  response to expose exactly two identical `/static/ui/logo.svg` URLs: one favicon and one
+  decorative `<img class="brand-mark" ... alt="">`. Require `найди моё фото`, the unchanged
+  accessible brand label, and the absence of the old header mark and copy. Resolve `ui/logo.svg`
+  through Django staticfiles, parse the resolved asset as XML, and require
+  `viewBox="0 0 1500 1500"`.
 - [ ] Run `make test TESTS="tests/test_branding.py"` and confirm failure because the new logo and
   template contract do not exist yet.
 - [ ] Run

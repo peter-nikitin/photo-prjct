@@ -194,16 +194,9 @@ textarea {
 }
 
 .brand-mark {
-  display: grid;
   width: 42px;
   height: 42px;
   flex: 0 0 42px;
-  place-items: center;
-  border-radius: 9px;
-  background: var(--charcoal);
-  color: var(--amber);
-  font-weight: 900;
-  letter-spacing: -0.05em;
 }
 
 .brand-copy strong,

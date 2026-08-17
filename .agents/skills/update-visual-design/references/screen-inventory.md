@@ -65,3 +65,7 @@ no-JavaScript submit, filtered paging, reset, column order, and overflow.
 On 2026-08-15, the production event-gallery fixtures added stable named-folder and `Без папки`
 checkboxes. The populated and filtered-empty desktop and 390px mobile baselines cover no selection,
 combined folder/time selection, and controls that remain visible for a zero-result intersection.
+
+On 2026-08-17, the production shared-shell baselines were refreshed for the approved optimized
+logo used by the favicon and decorative header mark; desktop baselines also cover the updated
+supporting line `найди моё фото`. No visual route, status, or snapshot-name mapping changed.

@@ -859,6 +859,17 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
   }
 }
 
+@media (max-width: 1200px) {
+  .event-discovery .selfie-search form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .event-discovery .selfie-search form > label,
+  .event-discovery .selfie-search form > .selfie-search-error {
+    grid-column: auto;
+  }
+}
+
 @media (max-width: 620px) {
   .event-detail-header {
     grid-template-columns: auto minmax(0, 1fr);
@@ -904,15 +915,6 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
 
   .manual-time-filter-controls .button {
     width: 100%;
-  }
-
-  .event-discovery .selfie-search form {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .event-discovery .selfie-search form > label,
-  .event-discovery .selfie-search form > .selfie-search-error {
-    grid-column: auto;
   }
 }
 

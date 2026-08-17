@@ -15,6 +15,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .reference-shell { min-height: 100vh; }
 .reference-topbar { position: sticky; z-index: 10; top: 0; display: flex; align-items: center; gap: 2rem; min-height: 76px; padding: 0 2.2rem; border-bottom: 1px solid var(--ref-line); background: rgb(255 255 255 / 96%); backdrop-filter: blur(12px); }
 .reference-topbar .brand { flex: 0 0 auto; color: inherit; text-decoration: none; }
+.reference-topbar .brand-mark { display: grid; width: 42px; height: 42px; flex: 0 0 42px; place-items: center; border-radius: 9px; color: var(--amber); background: var(--charcoal); font-weight: 900; letter-spacing: -.05em; }
 .reference-nav { display: flex; gap: .25rem; overflow-x: auto; }
 .reference-nav a { padding: .7rem .8rem; border-radius: 9px; color: #51605e; font-size: .86rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
 .reference-nav a:hover, .reference-nav a[aria-current="page"] { color: var(--ref-accent); background: var(--ref-accent-soft); }

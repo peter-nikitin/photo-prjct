@@ -28,4 +28,7 @@ class BrandingTests(TestCase):
 
         logo_path = finders.find("ui/logo.svg")
         self.assertIsNotNone(logo_path)
-        self.assertEqual(ElementTree.parse(logo_path).getroot().attrib["viewBox"], "0 0 1500 1500")
+        self.assertEqual(
+            ElementTree.parse(logo_path).getroot().attrib["viewBox"],
+            "0 0 1616.88 1500",
+        )

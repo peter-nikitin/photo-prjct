@@ -798,14 +798,20 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
   color: var(--muted);
 }
 
-.gallery-pagination a {
+.gallery-pagination-next {
   min-height: 44px;
   padding: 11px 14px;
   border-radius: 10px;
-  background: var(--surface-soft);
-  color: var(--ink);
+  background: var(--teal);
+  color: var(--surface);
   font-weight: 800;
   text-decoration: none;
+}
+
+.gallery-pagination-next:hover {
+  border-color: var(--teal-strong);
+  background: var(--teal-strong);
+  color: var(--surface);
 }
 
 .gallery-pagination-form {
@@ -828,17 +834,17 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
 .gallery-pagination-button {
   min-height: 44px;
   padding: 11px 14px;
-  border: 1px solid var(--teal);
+  border: 1px solid var(--surface);
   border-radius: 10px;
-  background: var(--teal);
-  color: var(--surface);
+  background: var(--surface-soft);
+  color: var(--ink);
   font-weight: 800;
   cursor: pointer;
 }
 
 .gallery-pagination-button:hover {
-  border-color: var(--teal-strong);
-  background: var(--teal-strong);
+  border-color: var(--surface-strong);
+  background: var(--surface-strong);
 }
 
 @media (max-width: 480px) {

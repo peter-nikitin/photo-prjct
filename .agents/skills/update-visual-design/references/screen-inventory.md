@@ -73,3 +73,7 @@ supporting line `найди моё фото`. No visual route, status, or snapsh
 On 2026-08-17, the populated production event-gallery fixture added optional event-local photo
 times beside download. The existing desktop and 390px mobile populated snapshots cover known and
 missing capture-time states without adding a new route.
+
+On 2026-08-17, the shared text-free full logo replaced the previous mark, and event-gallery
+baselines were refreshed for the compact header without a back action and the updated pagination
+emphasis. No visual route, status, or snapshot-name mapping changed.

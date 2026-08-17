@@ -15,5 +15,5 @@
     >
     <button class="gallery-pagination-button" type="submit">Перейти</button>
   </form>
-  {% if pagination_page.has_next %}<a href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ pagination_page.next_page_number }}{% if pagination_anchor %}#{{ pagination_anchor }}{% endif %}">Вперёд</a>{% endif %}
+  {% if pagination_page.has_next %}<a class="gallery-pagination-next" href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ pagination_page.next_page_number }}{% if pagination_anchor %}#{{ pagination_anchor }}{% endif %}">Вперёд</a>{% endif %}
 </nav>

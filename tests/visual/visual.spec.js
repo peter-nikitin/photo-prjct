@@ -991,11 +991,11 @@ test('desktop discovery keeps upload and time controls aligned without overlap',
   expect(layout.timeTo.right).toBeLessThanOrEqual(layout.timeSubmit.left);
 });
 
-test('mobile compact back action and guidance summary preserve accessible touch targets', async ({ page }) => {
+test('mobile compact header omits back action and guidance summary preserves its touch target', async ({ page }) => {
   await page.setViewportSize(MOBILE_VIEWPORT);
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/event/gallery-populated/');
-  await expect(page.locator('.event-detail-header .back-link')).toHaveAccessibleName('Все события');
+  await expect(page.locator('.event-detail-header .back-link')).toHaveCount(0);
   const dimensions = await page.evaluate(() => {
     const bounds = (selector) => {
       const element = document.querySelector(selector);
@@ -1004,14 +1004,10 @@ test('mobile compact back action and guidance summary preserve accessible touch 
       return { height, width };
     };
     return {
-      back: bounds('.event-detail-header .back-link'),
       guidance: bounds('.selfie-search-guidance > summary'),
     };
   });
-  expect(dimensions.back).toEqual({ height: expect.any(Number), width: expect.any(Number) });
   expect(dimensions.guidance).toEqual({ height: expect.any(Number), width: expect.any(Number) });
-  expect(dimensions.back.width).toBeGreaterThanOrEqual(44);
-  expect(dimensions.back.height).toBeGreaterThanOrEqual(44);
   expect(dimensions.guidance.height).toBeGreaterThanOrEqual(44);
 });
 

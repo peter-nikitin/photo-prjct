@@ -10,10 +10,6 @@
 {% block content %}
   <article class="event-detail">
     <header class="event-detail-header">
-      <a class="back-link" href="{% url 'event_catalog' %}" aria-label="Все события">
-        <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#arrow-left"></use></svg>
-        <span>Все события</span>
-      </a>
       <h1>{{ event.name }}</h1>
       <p class="event-detail-meta"><span>{{ event.city }}</span><span>{{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</span></p>
     </header>

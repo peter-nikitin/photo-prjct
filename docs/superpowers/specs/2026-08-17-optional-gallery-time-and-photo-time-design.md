@@ -21,10 +21,12 @@ bounds without a delayed scroll jump, and read each known event-local photo time
 - Allow folder-only, start-only, end-only, bounded, and completely unfiltered gallery requests.
 - Keep `AND` between active folder and time predicates.
 - Remove the delayed fragment scroll after submitting the manual filter.
-- Replace the tall event hero with one compact metadata bar.
+- Replace the tall event hero with one compact metadata bar on the event gallery and selfie-search
+  result pages.
 - Reduce desktop discovery height while keeping selfie and privacy copy available.
 - Collapse the complete discovery block on mobile after a filter is applied and through pagination.
-- Show known photo capture time as `HH:MM` beside download using small, muted text.
+- Show known photo capture time as `HH:MM` beside download using small, muted text in the event
+  gallery and on ready selfie-search result cards.
 
 ### Excluded
 
@@ -33,8 +35,8 @@ bounds without a delayed scroll jump, and read each known event-local photo time
 - Showing a date, seconds, timezone abbreviation, or capture time in the lightbox.
 - Adding automatic padding around a supplied manual time bound.
 - Inferring missing capture times or changing metadata extraction and backfill behavior.
-- Changing folder choices, gallery eligibility, media delivery, selfie-search behavior, or the
-  customer-approved selfie/privacy wording.
+- Changing folder choices, gallery eligibility, media delivery, selfie-search matching, ranking,
+  result membership, or the customer-approved selfie/privacy wording.
 - Replacing server-rendered filtering or pagination with JavaScript.
 
 ## Time Filtering
@@ -80,6 +82,11 @@ rendered on this page; catalog cards remain unchanged and continue to present th
 The bar uses the existing production design tokens, clear focus treatment, and a compact touch-safe
 back action. It introduces no sticky behavior and consumes the minimum practical vertical space.
 
+Selfie-search result pages reuse the same header include and classes as the event gallery. They show
+the event name, city, and event date or date range above the existing result-specific privacy lead;
+queued, processing, terminal, and ready states all use this shared header. This is a presentation
+change only: bearer authorization, saved result membership, matching, and ranking remain unchanged.
+
 ## Compact Discovery
 
 On desktop, `Найти свои фото` remains visible as two compact columns:
@@ -110,14 +117,16 @@ forms or client-owned filter state.
 
 ## Photo Time Presentation
 
-Each immutable gallery presentation object exposes an optional display value derived from
-`Photo.capture_time`. The value is converted from its stored instant into `event.timezone_name` and
-formatted as zero-padded 24-hour `HH:MM`. Missing capture time produces no display value.
+Each immutable gallery presentation object used by the event gallery and ready selfie-search result
+cards exposes an optional display value derived from `Photo.capture_time`. The value is converted
+from its stored instant into `event.timezone_name` and formatted as zero-padded 24-hour `HH:MM`.
+Missing capture time produces no display value.
 
-In each card action row, the optional time and existing download link form the right-hand group.
-Face-search controls remain on the left. The time uses a smaller size, tabular numerals, and the
-existing muted color token. When time is missing, no placeholder, empty element, or reserved gap is
-rendered. Card time remains plain text in this increment.
+In each event-gallery or ready selfie-search result card action row, the optional time and existing
+download link form the right-hand group. Face-search feedback controls remain on the left. The time
+uses a smaller size, tabular numerals, and the existing muted color token. When time is missing, no
+placeholder, empty element, or reserved gap is rendered. Card time remains plain text in this
+increment; the lightbox description remains download-only.
 
 ## Data Flow
 
@@ -128,7 +137,10 @@ rendered. Card time remains plain text in this increment.
    retains `#gallery`.
 5. The gallery factory converts each known capture instant into an event-local display string.
 6. The canonical event-detail template renders the compact header, responsive discovery, gallery,
-   and optional card times.
+   and optional gallery card times.
+7. Selfie-search result templates reuse the same compact header include and classes, while the ready
+   result view reuses the same presentation objects and renders the same optional card times without
+   changing saved result membership or ranking.
 
 ## Failure and Accessibility Semantics
 
@@ -153,10 +165,12 @@ Focused automated coverage must prove:
 - manual filter submission produces a query URL without `#gallery` and keeps `scrollY` stable with
   `BODY` as the active element after page load;
 - pagination links still target `#gallery`;
-- a known UTC capture instant displays as event-local `HH:MM`, while a missing value renders no
-  label or gap;
+- a known UTC capture instant displays as event-local `HH:MM` in both the event gallery and ready
+  selfie-search result cards, while a missing value renders no label or gap in either surface;
+- server-rendered selfie-search result pages expose the same compact event metadata header as the
+  event gallery without changing the approved result privacy lead or bearer behavior;
 - desktop visual coverage shows the one-line event bar, compact two-column discovery, stable folder
-  and time rows, and subdued card times;
+  and time rows, and subdued card times in the gallery and ready selfie-search result;
 - mobile visual and interaction coverage shows initial-open, filtered-closed, user-reopen, reset,
   pagination, known-time, and missing-time states without overflow;
 - existing selfie upload, history, privacy copy, face controls, lightbox, download, and public gallery
@@ -167,10 +181,11 @@ Focused automated coverage must prove:
 - A visitor can use folders alone, either time boundary alone, both boundaries, or neither.
 - One-sided filters extend through the rest of the event in the missing-bound direction.
 - Applying a filter reloads at the top without a delayed jump or focus change.
-- The event header is one compact line and no longer spends vertical space on cover or description.
+- The event and selfie-search result headers are one compact line and no longer spend vertical space
+  on cover or description.
 - Desktop folders never push the time inputs or submit action sideways.
 - Mobile visitors see search on first entry and a compact closed summary while paging filtered photos.
-- Every known photo time appears as quiet event-local `HH:MM` beside download; unknown time shows
-  nothing.
+- Every known photo time appears as quiet event-local `HH:MM` beside download in the event gallery
+  and ready selfie-search results; unknown time shows nothing.
 - Photos become visible materially earlier on both desktop and mobile without weakening existing
   privacy, authorization, accessibility, or no-JavaScript behavior.

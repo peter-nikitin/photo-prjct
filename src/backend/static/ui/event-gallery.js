@@ -43,6 +43,11 @@
     });
   }
 
+  function initializeDiscovery(discovery, windowObject = globalThis) {
+    if (!discovery || typeof windowObject?.matchMedia !== 'function') return;
+    if (windowObject.matchMedia('(min-width: 621px)').matches) discovery.open = true;
+  }
+
   function initializeEventGallery(root, GLightbox) {
     if (!root || typeof GLightbox !== 'function') return null;
     const descriptionDownload = (slide) => slide?.querySelector('.gallery-lightbox-download');
@@ -77,11 +82,14 @@
     });
   }
 
-  return { initializeEventGallery, initializeFaceChoosers };
+  return { initializeDiscovery, initializeEventGallery, initializeFaceChoosers };
 });
 
 if (typeof document !== 'undefined') {
   const start = () => {
+    globalThis.FindMeEventGallery.initializeDiscovery(
+      document.querySelector('[data-event-discovery]'),
+    );
     const root = document.querySelector('[data-event-gallery]') ?? document.querySelector('.event-gallery');
     globalThis.FindMeEventGallery.initializeFaceChoosers(root);
     globalThis.FindMeEventGallery.initializeEventGallery(root, globalThis.GLightbox);

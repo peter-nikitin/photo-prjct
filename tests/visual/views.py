@@ -120,6 +120,7 @@ class FixtureGalleryPhoto:
     download_url: str
     alt: str
     faces: tuple[FixtureGalleryFace, ...] = ()
+    capture_time_display: str | None = None
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,8 @@ def _gallery_photo(
     photo_id: str,
     image: str,
     faces: tuple[FixtureGalleryFace, ...] = (),
+    *,
+    capture_time_display: str | None = None,
 ) -> FixtureGalleryPhoto:
     return FixtureGalleryPhoto(
         photo_id=photo_id,
@@ -240,6 +243,7 @@ def _gallery_photo(
         download_url=f"/__visual__/downloads/{photo_id}/",
         alt=f"Фото {photo_id} с события London 10K",
         faces=faces,
+        capture_time_display=capture_time_display,
     )
 
 
@@ -274,6 +278,7 @@ GALLERY_FACE_PHOTOS = (
         "1190",
         "/static/images/run-track-1190.png",
         (_gallery_face("1190", 1, 45, 45, 9),),
+        capture_time_display="10:07",
     ),
     _gallery_photo(
         "1316",
@@ -282,6 +287,7 @@ GALLERY_FACE_PHOTOS = (
             _gallery_face("1316", 1, 22, 60, 9),
             _gallery_face("1316", 2, 75, 60, 9),
         ),
+        capture_time_display="10:43",
     ),
     _gallery_photo(
         "3125",
@@ -552,7 +558,8 @@ def _gallery_context(
     if gallery_folder_filter_form.include_unfiled:
         pagination_query_pairs.append(("unfiled", "1"))
     if manual_time_filter_form.is_requested and not manual_time_filter_invalid:
-        pagination_query_pairs.append(("from", manual_time_filter_form.cleaned_data["from"]))
+        if manual_time_filter_form.cleaned_data["from"]:
+            pagination_query_pairs.append(("from", manual_time_filter_form.cleaned_data["from"]))
         if manual_time_filter_form.cleaned_data["to"]:
             pagination_query_pairs.append(("to", manual_time_filter_form.cleaned_data["to"]))
     return {
@@ -564,7 +571,8 @@ def _gallery_context(
         "gallery_folder_choices": gallery_folder_choices,
         "gallery_folder_filter_form": gallery_folder_filter_form,
         "gallery_filters_active": (
-            manual_time_filter_form.is_requested or gallery_folder_filter_form.is_requested
+            (manual_time_filter_form.is_requested and not manual_time_filter_invalid)
+            or gallery_folder_filter_form.is_requested
         ),
         "gallery_pagination_query": urlencode(pagination_query_pairs),
         "gallery_pagination_query_pairs": tuple(pagination_query_pairs),
@@ -610,7 +618,9 @@ def event_gallery_filtered_empty(request: HttpRequest) -> HttpResponse:
 
 
 def event_gallery_manual_invalid(request: HttpRequest) -> HttpResponse:
-    return _render(request, "catalog/event_detail.html", _gallery_context(data={"from": ""}))
+    return _render(
+        request, "catalog/event_detail.html", _gallery_context(data={"from": "not-a-time"})
+    )
 
 
 def visual_event_detail(request: HttpRequest) -> HttpResponse:

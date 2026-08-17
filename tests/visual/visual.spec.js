@@ -857,7 +857,7 @@ test('manual gallery search works without JavaScript and keeps its validated que
     await form.locator('input[name="from"]').fill('2026-06-08T09:00');
     await form.locator('input[name="to"]').fill('2026-06-08T10:00');
     await form.locator('input[name="to"]').press('Enter', { noWaitAfter: true });
-    await expect(page).toHaveURL(/\?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00#gallery$/);
+    await expect(page).toHaveURL(/\?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00$/);
     await expect(page.locator('#gallery')).toBeVisible();
     await expect(page.locator('.event-gallery')).toBeVisible();
     const nextPageLink = page.getByRole('link', { name: 'Вперёд' });
@@ -876,12 +876,26 @@ test('manual gallery search works without JavaScript and keeps its validated que
     await resetLink.press('Enter', { noWaitAfter: true });
     await expect(page).toHaveURL('/events/london-10k/#gallery');
 
-    await page.goto('/events/london-10k/?from=');
-    await expect(page.locator('.manual-time-filter-error')).toHaveText('Укажите время начала.');
+    await page.goto('/events/london-10k/?from=not-a-time');
+    await expect(page.locator('.manual-time-filter-error')).toHaveText('Введите дату и время события.');
     await expect(page.locator('.event-gallery')).toHaveCount(0);
   } finally {
     await context.close();
   }
+});
+
+test('manual gallery search stays at the top after JavaScript navigation', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  await page.goto('/events/london-10k/');
+  const form = page.locator('[data-manual-time-filter-form]');
+  await form.locator('input[name="from"]').fill('2026-06-08T09:00');
+  await form.locator('input[name="to"]').fill('2026-06-08T10:00');
+  await form.locator('button[type="submit"]').click();
+  await page.waitForTimeout(1_200);
+  await expect(page).toHaveURL(/\?from=2026-06-08T09%3A00&to=2026-06-08T10%3A00$/);
+  await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('BODY');
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
 });
 
 test('folder controls stay visible and usable in populated and zero-result gallery states', async ({ page }) => {
@@ -893,6 +907,7 @@ test('folder controls stay visible and usable in populated and zero-result galle
     await preloadCookieAcknowledgement(page);
     await page.goto(path);
     await settlePage(page);
+    if (selected) await page.locator('[data-event-discovery]').evaluate((details) => { details.open = true; });
     const folders = page.locator('.gallery-folder-filter');
     await expect(folders).toBeVisible();
     await expect(folders.getByRole('checkbox')).toHaveCount(3);
@@ -931,6 +946,80 @@ test('discovery columns are side by side on desktop and stack before the gallery
     expect(layout.vertical).toBe(mobile);
     expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
   }
+});
+
+test('filtered discovery is closed on mobile with an accessible reset', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  await page.goto('/__visual__/event/gallery-filtered-empty/');
+  const discovery = page.locator('[data-event-discovery]');
+  await expect(discovery).not.toHaveAttribute('open', '');
+  await expect(discovery.locator('summary').first()).toHaveText('Фильтры применены');
+  await expect(page.getByRole('link', { name: 'Сбросить фильтр' })).toBeVisible();
+  await discovery.locator('summary').first().click();
+  await expect(page.locator('.manual-time-filter')).toBeVisible();
+});
+
+test('desktop discovery keeps upload and time controls aligned without overlap', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  await page.goto('/__visual__/event/gallery-populated/');
+  await settlePage(page);
+  const layout = await page.evaluate(() => {
+    const bounds = (selector) => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const { bottom, height, left, right, top, width } = element.getBoundingClientRect();
+      return { bottom, height, left, right, top, width };
+    };
+    return {
+      selfieFile: bounds('#selfie-search input[type="file"]'),
+      selfieSubmit: bounds('#selfie-search button[type="submit"]'),
+      timeFrom: bounds('.manual-time-filter input[name="from"]'),
+      timeTo: bounds('.manual-time-filter input[name="to"]'),
+      timeSubmit: bounds('.manual-time-filter button[type="submit"]'),
+    };
+  });
+  expect(layout.selfieFile).not.toBeNull();
+  expect(layout.selfieSubmit).not.toBeNull();
+  expect(layout.timeFrom).not.toBeNull();
+  expect(layout.timeTo).not.toBeNull();
+  expect(layout.timeSubmit).not.toBeNull();
+  expect(Math.abs(layout.selfieFile.top - layout.selfieSubmit.top)).toBeLessThanOrEqual(1);
+  expect(layout.selfieFile.right).toBeLessThanOrEqual(layout.selfieSubmit.left);
+  expect(layout.timeFrom.right).toBeLessThanOrEqual(layout.timeTo.left);
+  expect(layout.timeTo.right).toBeLessThanOrEqual(layout.timeSubmit.left);
+});
+
+test('mobile compact header omits back action and guidance summary preserves its touch target', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  await page.goto('/__visual__/event/gallery-populated/');
+  await expect(page.locator('.event-detail-header .back-link')).toHaveCount(0);
+  const dimensions = await page.evaluate(() => {
+    const bounds = (selector) => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const { height, width } = element.getBoundingClientRect();
+      return { height, width };
+    };
+    return {
+      guidance: bounds('.selfie-search-guidance > summary'),
+    };
+  });
+  expect(dimensions.guidance).toEqual({ height: expect.any(Number), width: expect.any(Number) });
+  expect(dimensions.guidance.height).toBeGreaterThanOrEqual(44);
+});
+
+test('desktop malformed manual filter stays open for correction without reset', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  await page.goto('/__visual__/event/gallery-manual-invalid/');
+  const discovery = page.locator('[data-event-discovery]');
+  await expect(discovery.locator('summary').first()).toHaveText('Найти свои фото');
+  await expect(discovery).toHaveAttribute('open', '');
+  await expect(page.getByRole('link', { name: 'Сбросить фильтр' })).toHaveCount(0);
+  await expect(page.locator('.manual-time-filter-error')).toBeVisible();
 });
 
 for (const [name, viewport] of [

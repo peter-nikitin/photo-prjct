@@ -219,10 +219,12 @@ class PageTests(TestCase):
             list(self.client.get(reverse("event_catalog")).context["events"]), [near, far, past]
         )
 
-    def test_event_detail_renders_published_event(self) -> None:
+    def test_event_detail_renders_compact_published_event_header(self) -> None:
         event = self.make_event(description="Race description")
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
-        self.assertContains(response, "Race description")
+        self.assertContains(response, event.name)
+        self.assertContains(response, event.city)
+        self.assertNotContains(response, "Race description")
 
     def test_public_pages_use_shared_accessible_shell(self) -> None:
         event = self.make_event()
@@ -374,6 +376,45 @@ class GalleryPageTests(TestCase):
         }
         values.update(overrides)
         return Photo.objects.create(**values)
+
+    def capture_evidence(self, photo: Photo, *, capture_time: str) -> ProcessingAttempt:
+        configuration = {"capture_metadata": {"event_timezone": photo.event.timezone_name}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            configuration_hash=uuid4().hex + uuid4().hex,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        return ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=CAPTURE_METADATA_PROCESSOR,
+            processor_version=2,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+            result={"capture_time": capture_time},
+        )
 
     def publish_preview(self, photo: Photo, *, final_key: str) -> PhotoDerivative:
         configuration = {"generate_preview": {"variant": "preview-small-v1"}}
@@ -681,14 +722,22 @@ class GalleryPageTests(TestCase):
         storage_class.assert_not_called()
 
     def test_event_detail_gallery_markup_and_loading_policy(self) -> None:
-        event = self.make_event()
+        event = self.make_event(timezone_name="Europe/London")
         photos = [self.make_private_photo(event, id=f"gallery-{index}") for index in range(1, 6)]
+        capture_attempt = self.capture_evidence(photos[0], capture_time="2026-06-10T10:03:00Z")
+        Photo.objects.filter(pk=photos[0].pk).update(
+            capture_time=datetime(2026, 6, 10, 10, 3, tzinfo=UTC),
+            capture_time_source_attempt=capture_attempt,
+        )
 
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertContains(response, "Фотографии")
         self.assertContains(response, 'class="event-gallery"')
         self.assertContains(response, 'class="event-gallery-count">5 фото</span>')
+        self.assertContains(response, '<div class="gallery-card-download">')
+        self.assertContains(response, '<time class="gallery-card-time">11:03</time>')
+        self.assertContains(response, 'class="gallery-card-time"', count=1)
         self.assertContains(response, "/static/ui/glightbox.min.css")
         self.assertContains(response, "/static/ui/glightbox.min.js")
         self.assertContains(response, "/static/ui/event-gallery.js")
@@ -733,6 +782,17 @@ class GalleryPageTests(TestCase):
             else:
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
         self.assertNotContains(response, "gallery-photo-id")
+
+    def test_event_detail_uses_the_compact_metadata_header_without_hero_content(self) -> None:
+        event = self.make_event(description="Подробное описание события")
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertContains(response, 'class="event-detail-header"')
+        self.assertContains(response, "City Run")
+        self.assertContains(response, "Moscow")
+        self.assertNotContains(response, 'class="event-detail-grid"')
+        self.assertNotContains(response, "Подробное описание события")
 
     def test_event_detail_maps_all_usable_faces_to_exact_submission_urls(self) -> None:
         """The production break caught here is losing a selectable face or addressing it vaguely."""
@@ -1022,6 +1082,130 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertTrue(response.context["manual_time_filter_form"].is_valid())
         self.assertFalse(response.context["manual_time_filter_invalid"])
 
+    def test_start_only_filter_keeps_later_known_times_and_excludes_missing_times(self) -> None:
+        included = self.photo("start-included", filename="a.jpg")
+        excluded = self.photo("start-excluded", filename="b.jpg")
+        self.photo("start-missing", filename="c.jpg")
+        included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:00:00Z")
+        excluded_attempt = self.capture_evidence(excluded, capture_time="2026-06-10T08:49:00Z")
+        Photo.objects.filter(pk=included.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
+            capture_time_source_attempt=included_attempt,
+        )
+        Photo.objects.filter(pk=excluded.pk).update(
+            capture_time=datetime(2026, 6, 10, 8, 49, tzinfo=UTC),
+            capture_time_source_attempt=excluded_attempt,
+        )
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"from": "2026-06-10T10:00"},
+        )
+
+        self.assertEqual(
+            [item.photo_id for item in response.context["gallery_photos"]], [included.pk]
+        )
+        self.assertEqual(
+            response.context["gallery_pagination_query_pairs"], (("from", "2026-06-10T10:00"),)
+        )
+
+    def test_end_only_filter_keeps_earlier_known_times_and_excludes_missing_times(self) -> None:
+        included = self.photo("end-included", filename="a.jpg")
+        excluded = self.photo("end-excluded", filename="b.jpg")
+        self.photo("end-missing", filename="c.jpg")
+        included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:10:00Z")
+        excluded_attempt = self.capture_evidence(excluded, capture_time="2026-06-10T09:11:00Z")
+        Photo.objects.filter(pk=included.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 10, tzinfo=UTC),
+            capture_time_source_attempt=included_attempt,
+        )
+        Photo.objects.filter(pk=excluded.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 11, tzinfo=UTC),
+            capture_time_source_attempt=excluded_attempt,
+        )
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"to": "2026-06-10T10:00"},
+        )
+
+        self.assertEqual(
+            [item.photo_id for item in response.context["gallery_photos"]], [included.pk]
+        )
+        self.assertEqual(
+            response.context["gallery_pagination_query_pairs"], (("to", "2026-06-10T10:00"),)
+        )
+
+    def test_folder_and_start_only_filter_combine_with_and(self) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Старт")
+        included = self.photo("folder-start-included", filename="a.jpg")
+        too_early = self.photo("folder-start-too-early", filename="b.jpg")
+        other_folder = self.photo("other-folder-start", filename="c.jpg")
+        Photo.objects.filter(pk__in=(included.pk, too_early.pk)).update(folder=folder)
+        included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:00:00Z")
+        too_early_attempt = self.capture_evidence(too_early, capture_time="2026-06-10T08:49:00Z")
+        other_attempt = self.capture_evidence(other_folder, capture_time="2026-06-10T09:00:00Z")
+        Photo.objects.filter(pk=included.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
+            capture_time_source_attempt=included_attempt,
+        )
+        Photo.objects.filter(pk=too_early.pk).update(
+            capture_time=datetime(2026, 6, 10, 8, 49, tzinfo=UTC),
+            capture_time_source_attempt=too_early_attempt,
+        )
+        Photo.objects.filter(pk=other_folder.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
+            capture_time_source_attempt=other_attempt,
+        )
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"folder": str(folder.pk), "from": "2026-06-10T10:00"},
+        )
+
+        self.assertEqual(
+            [item.photo_id for item in response.context["gallery_photos"]], [included.pk]
+        )
+        self.assertEqual(
+            response.context["gallery_pagination_query_pairs"],
+            (("folder", str(folder.pk)), ("from", "2026-06-10T10:00")),
+        )
+
+    def test_folder_and_end_only_filter_combine_with_and(self) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Финиш")
+        included = self.photo("folder-end-included", filename="a.jpg")
+        too_late = self.photo("folder-end-too-late", filename="b.jpg")
+        other_folder = self.photo("other-folder-end", filename="c.jpg")
+        Photo.objects.filter(pk__in=(included.pk, too_late.pk)).update(folder=folder)
+        included_attempt = self.capture_evidence(included, capture_time="2026-06-10T09:10:00Z")
+        too_late_attempt = self.capture_evidence(too_late, capture_time="2026-06-10T09:11:00Z")
+        other_attempt = self.capture_evidence(other_folder, capture_time="2026-06-10T09:10:00Z")
+        Photo.objects.filter(pk=included.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 10, tzinfo=UTC),
+            capture_time_source_attempt=included_attempt,
+        )
+        Photo.objects.filter(pk=too_late.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 11, tzinfo=UTC),
+            capture_time_source_attempt=too_late_attempt,
+        )
+        Photo.objects.filter(pk=other_folder.pk).update(
+            capture_time=datetime(2026, 6, 10, 9, 10, tzinfo=UTC),
+            capture_time_source_attempt=other_attempt,
+        )
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"folder": str(folder.pk), "to": "2026-06-10T10:00"},
+        )
+
+        self.assertEqual(
+            [item.photo_id for item in response.context["gallery_photos"]], [included.pk]
+        )
+        self.assertEqual(
+            response.context["gallery_pagination_query_pairs"],
+            (("folder", str(folder.pk)), ("to", "2026-06-10T10:00")),
+        )
+
     def test_invalid_manual_values_return_200_without_gallery_or_saved_search_side_effects(
         self,
     ) -> None:
@@ -1043,11 +1227,34 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertEqual(ProcessingJob.objects.count(), jobs_before)
         self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
 
+    def test_folder_filter_works_when_browser_submits_blank_time_fields(self) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Старт")
+        included = self.photo("folder-only", filename="a.jpg")
+        self.photo("folder-only-unfiled", filename="b.jpg")
+        Photo.objects.filter(pk=included.pk).update(folder=folder)
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": self.event.slug}),
+            {"folder": str(folder.pk), "from": "", "to": ""},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item.photo_id for item in response.context["gallery_photos"]],
+            [included.pk],
+        )
+        self.assertFalse(response.context["manual_time_filter_form"].is_requested)
+        self.assertFalse(response.context["manual_time_filter_invalid"])
+        self.assertEqual(
+            response.context["gallery_pagination_query_pairs"],
+            (("folder", str(folder.pk)),),
+        )
+
     def test_manual_time_discovery_renders_event_local_controls_and_invalid_errors(self) -> None:
         """Invalid input must retain correction controls, not broad gallery results."""
         response = self.client.get(
             reverse("event_detail", kwargs={"slug": self.event.slug}),
-            {"from": ""},
+            {"from": "not-a-time"},
         )
 
         self.assertEqual(response.status_code, 200)
@@ -1057,12 +1264,18 @@ class EventDetailManualTimeFilterTests(TestCase):
         self.assertContains(response, "Ручной поиск")
         self.assertContains(response, "Даты события: 10.06.2026–12.06.2026")
         self.assertContains(response, 'name="from"')
+        event_url = reverse("event_detail", kwargs={"slug": self.event.slug})
+        self.assertContains(
+            response,
+            f'<form class="manual-time-filter-form" data-manual-time-filter-form '
+            f'action="{event_url}" method="get">',
+        )
+        self.assertContains(response, '<details class="event-discovery" data-event-discovery open>')
         self.assertContains(response, 'min="2026-06-10T00:00"')
         self.assertContains(response, 'max="2026-06-12T23:59"')
         self.assertNotContains(response, 'name="page"')
-        self.assertContains(response, "Укажите время начала.")
-        reset_url = f"{reverse('event_detail', kwargs={'slug': self.event.slug})}#gallery"
-        self.assertContains(response, f'href="{reset_url}"')
+        self.assertContains(response, "Введите дату и время события.")
+        self.assertNotContains(response, 'class="manual-time-filter-reset"')
         self.assertNotContains(response, 'class="event-gallery"')
 
     def test_folder_controls_are_stable_and_filter_named_and_unfiled_photos(self) -> None:
@@ -1112,6 +1325,9 @@ class EventDetailManualTimeFilterTests(TestCase):
         )
         self.assertContains(filtered, f'name="folder" value="{start.pk}" checked')
         self.assertContains(filtered, 'name="unfiled" value="1" checked')
+        self.assertContains(filtered, '<details class="event-discovery" data-event-discovery>')
+        self.assertContains(filtered, "<summary>Фильтры применены</summary>")
+        self.assertContains(filtered, 'class="manual-time-filter-reset"')
         self.assertNotContains(filtered, "Чужая")
         self.assertTrue(Photo.objects.filter(pk=hidden.pk).exists())
 
@@ -1195,6 +1411,30 @@ class EventDetailManualTimeFilterTests(TestCase):
         )[1]
         self.assertNotIn('name="from"', unfiltered_pager)
         self.assertNotIn('name="to"', unfiltered_pager)
+
+    @patch("config.views.gallery_page")
+    def test_one_sided_pagination_preserves_each_active_time_parameter(
+        self, gallery_page_mock
+    ) -> None:
+        photo = self.photo("one-sided-pagination", filename="pagination.jpg")
+        pages = Paginator((photo, photo), 1)
+        gallery_page_mock.side_effect = lambda **kwargs: pages.page(int(kwargs["page_number"] or 1))
+        url = reverse("event_detail", kwargs={"slug": self.event.slug})
+
+        for field_name in ("from", "to"):
+            with self.subTest(field_name=field_name):
+                response = self.client.get(url, {field_name: "2026-06-10T10:00", "page": "1"})
+
+                self.assertContains(
+                    response,
+                    f'href="?{field_name}=2026-06-10T10%3A00&amp;page=2#gallery"',
+                )
+                pager = response.content.decode(response.charset).split(
+                    'class="gallery-pagination-form"', 1
+                )[1]
+                self.assertIn(f'name="{field_name}" value="2026-06-10T10:00"', pager)
+                other_field = "to" if field_name == "from" else "from"
+                self.assertNotIn(f'name="{other_field}"', pager)
 
     def test_valid_zero_match_renders_filtered_empty_state(self) -> None:
         """An empty valid filter must not look like unpublished photos."""

@@ -57,6 +57,7 @@ jobs:
       requires_observability_bootstrap: ${{ steps.classify.outputs.requires_observability_bootstrap }}
       observability_source_manifest_sha256: ${{ steps.classify.outputs.observability_source_manifest_sha256 }}
       release_sha: ${{ steps.classify.outputs.release_sha }}
+      worker_inputs_changed: ${{ steps.classify.outputs.worker_inputs_changed }}
     steps:
       - name: Check out push range
         uses: actions/checkout@v4
@@ -71,6 +72,7 @@ jobs:
           set -eu
           release_sha="${{ github.sha }}"
           requires_observability_bootstrap=false
+          worker_inputs_changed=true
           manifest_sha256=
           pause_reason=
           if [ "${{ github.event_name }}" = workflow_dispatch ] && \
@@ -98,6 +100,9 @@ jobs:
               requires_observability_bootstrap=true
               pause_reason="Commit ${GITHUB_SHA} changes the privileged selfie-observability package."
             fi
+            if git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- Dockerfile.worker .dockerignore src/worker; then
+              worker_inputs_changed=false
+            fi
           fi
 
           if [ "$requires_observability_bootstrap" = true ] || \
@@ -114,6 +119,7 @@ jobs:
           echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
           echo "requires_observability_bootstrap=$requires_observability_bootstrap" >> "$GITHUB_OUTPUT"
           echo "observability_source_manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
+          echo "worker_inputs_changed=$worker_inputs_changed" >> "$GITHUB_OUTPUT"
           if [ "$requires_observability_bootstrap" = true ]; then
             {
               echo "## Staging release paused"
@@ -200,6 +206,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
       - name: Select image references
         id: image
         run: |
@@ -213,13 +223,29 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ${{ steps.image.outputs.app_image }}
+          cache-from: type=gha,scope=staging-web
+          cache-to: type=gha,mode=max,scope=staging-web,ignore-error=true
+      - name: Reuse unchanged worker image
+        id: reuse-worker
+        if: ${{ github.event_name == 'push' && needs.classify-staging-release.outputs.worker_inputs_changed == 'false' }}
+        continue-on-error: true
+        env:
+          PREVIOUS_WORKER_IMAGE: ghcr.io/${{ github.repository }}-worker:${{ github.event.before }}
+          WORKER_IMAGE: ${{ steps.image.outputs.worker_image }}
+        run: |
+          digest="$(docker buildx imagetools inspect "$PREVIOUS_WORKER_IMAGE" --format '{{.Manifest.Digest}}')"
+          test -n "$digest"
+          docker buildx imagetools create --tag "$WORKER_IMAGE" "$PREVIOUS_WORKER_IMAGE@$digest"
       - name: Build and push worker image
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.classify-staging-release.outputs.worker_inputs_changed == 'true' || steps.reuse-worker.outcome != 'success' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile.worker
           push: true
           tags: ${{ steps.image.outputs.worker_image }}
+          cache-from: type=gha,scope=staging-worker
+          cache-to: type=gha,mode=max,scope=staging-worker,ignore-error=true
 
   deploy:
     name: Deploy staging
@@ -387,9 +413,10 @@ jobs:
             conclusion=failure
             phase="$(
               gh run view "$GITHUB_RUN_ID" --log-failed 2>/dev/null | awk '
-                /(^|[[:space:]])DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)$/ {
+                /(^|[[:space:]])DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+$/ {
                   phase = $0
                   sub(/^.*DEPLOY_PHASE=/, "", phase)
+                  sub(/ elapsed_seconds=[0-9]+$/, "", phase)
                 }
                 END {
                   if (phase != "") {

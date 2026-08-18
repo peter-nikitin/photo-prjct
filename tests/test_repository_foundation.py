@@ -252,7 +252,7 @@ def test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritativ
         "DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|"
         "migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|"
         "compose-reconcile|local-health|worker-health|public-health|observability-verify|"
-        "commit)"
+        "commit) elapsed_seconds=[0-9]+$"
     ) in run
     assert "unknown" in run
     warning = _workflow_step(
@@ -321,17 +321,22 @@ def test_notification_workflow_forwards_exact_sha_for_push_failure_and_manual_su
 def test_notification_phase_parser_executes_against_prefixed_failed_logs(tmp_path: Path) -> None:
     prefixed_log = "\n".join(
         (
-            "deploy\tApply staging deployment\t2026-08-07T10:00:00Z DEPLOY_PHASE=validate",
-            "deploy\tApply staging deployment\t2026-08-07T10:01:00Z DEPLOY_PHASE=compose-reconcile",
-            "deploy\tApply staging deployment\t2026-08-07T10:02:00Z DEPLOY_PHASE=commit-extra",
-            "deploy\tApply staging deployment\t2026-08-07T10:03:00Z ignored DEPLOY_PHASE=commit",
+            "deploy\tApply staging deployment\t2026-08-07T10:00:00Z "
+            "DEPLOY_PHASE=validate elapsed_seconds=1",
+            "deploy\tApply staging deployment\t2026-08-07T10:01:00Z "
+            "DEPLOY_PHASE=compose-reconcile elapsed_seconds=2",
+            "deploy\tApply staging deployment\t2026-08-07T10:02:00Z "
+            "DEPLOY_PHASE=commit-extra elapsed_seconds=3",
+            "deploy\tApply staging deployment\t2026-08-07T10:03:00Z "
+            "ignored DEPLOY_PHASE=commit elapsed_seconds=4",
         )
     )
     near_matches_only = "\n".join(
         (
-            "deploy\tApply staging deployment\tDEPLOY_PHASE=compose-reconcile-extra",
-            "deploy\tApply staging deployment\tprefixDEPLOY_PHASE=commit",
-            "deploy\tApply staging deployment\tDEPLOY_PHASE=unknown",
+            "deploy\tApply staging deployment\t"
+            "DEPLOY_PHASE=compose-reconcile-extra elapsed_seconds=1",
+            "deploy\tApply staging deployment\tprefixDEPLOY_PHASE=commit elapsed_seconds=1",
+            "deploy\tApply staging deployment\tDEPLOY_PHASE=unknown elapsed_seconds=1",
         )
     )
 
@@ -624,6 +629,8 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
         "file": "./Dockerfile.worker",
         "push": True,
         "tags": "${{ steps.image.outputs.worker_image }}",
+        "cache-from": "type=gha,scope=staging-worker",
+        "cache-to": "type=gha,mode=max,scope=staging-worker,ignore-error=true",
     }
 
     expected = {
@@ -730,6 +737,50 @@ def test_staging_builds_and_both_deployments_forward_an_immutable_opt_in_worker_
     assert "verify_selfie_search_storage --confirm-real-storage" in (
         ROOT / "deploy/run-staging-remote.sh"
     ).read_text(encoding="utf-8")
+
+
+def test_staging_worker_build_has_isolated_cache_and_reuses_unchanged_digest() -> None:
+    """A web-only push should retag the prior worker manifest instead of rebuilding it."""
+    staging = _load_workflow("deploy.yml")
+    classify = staging["jobs"]["classify-staging-release"]
+
+    assert classify["outputs"]["worker_inputs_changed"] == (
+        "${{ steps.classify.outputs.worker_inputs_changed }}"
+    )
+    classify_run = _workflow_step(staging, "classify-staging-release", "Classify staging release")[
+        "run"
+    ]
+    assert "Dockerfile.worker .dockerignore src/worker" in classify_run
+    assert "worker_inputs_changed=false" in classify_run
+
+    buildx = _workflow_step(staging, "build", "Set up Docker Buildx")
+    assert buildx["uses"] == "docker/setup-buildx-action@v3"
+    assert buildx["with"]["driver"] == "docker-container"
+    web_build = _workflow_step(staging, "build", "Build and push image")
+    worker_build = _workflow_step(staging, "build", "Build and push worker image")
+    assert web_build["with"]["cache-from"] == "type=gha,scope=staging-web"
+    assert web_build["with"]["cache-to"] == "type=gha,mode=max,scope=staging-web,ignore-error=true"
+    assert worker_build["with"]["cache-from"] == "type=gha,scope=staging-worker"
+    assert worker_build["with"]["cache-to"] == (
+        "type=gha,mode=max,scope=staging-worker,ignore-error=true"
+    )
+
+    reuse = _workflow_step(staging, "build", "Reuse unchanged worker image")
+    assert reuse["if"] == (
+        "${{ github.event_name == 'push' && "
+        "needs.classify-staging-release.outputs.worker_inputs_changed == 'false' }}"
+    )
+    assert reuse["continue-on-error"] is True
+    assert "docker buildx imagetools inspect" in reuse["run"]
+    assert "docker buildx imagetools create" in reuse["run"]
+    assert reuse["env"]["PREVIOUS_WORKER_IMAGE"] == (
+        "ghcr.io/${{ github.repository }}-worker:${{ github.event.before }}"
+    )
+    assert worker_build["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' || "
+        "needs.classify-staging-release.outputs.worker_inputs_changed == 'true' || "
+        "steps.reuse-worker.outcome != 'success' }}"
+    )
 
 
 def test_public_environments_share_one_https_edge_overlay() -> None:
@@ -1068,6 +1119,7 @@ def test_staging_deployment_pauses_and_stages_exact_privileged_source_before_bui
             "${{ steps.classify.outputs.observability_source_manifest_sha256 }}"
         ),
         "release_sha": "${{ steps.classify.outputs.release_sha }}",
+        "worker_inputs_changed": "${{ steps.classify.outputs.worker_inputs_changed }}",
     }
     assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
     assert 'git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- ' in classify["run"]

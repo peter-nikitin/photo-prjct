@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import subprocess
 from pathlib import Path
 from shutil import copy2
 from tempfile import TemporaryDirectory
 
+import pytest
 import yaml
 from django.test import Client, override_settings
 
@@ -157,6 +159,91 @@ def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() 
     assert "huggingface_hub" not in adapter_source
 
     assert failures == [], "\n".join(failures)
+
+
+def test_worker_image_uses_cpu_only_torch_and_verifies_its_runtime_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The published worker must not accidentally acquire CUDA payloads."""
+    dockerfile = (ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+    requirements = (ROOT / "src/worker/requirements.txt").read_text(encoding="utf-8")
+    cpu_requirements = (ROOT / "src/worker/requirements.cpu.txt").read_text(encoding="utf-8")
+
+    assert "torch==2.8.0" not in requirements
+    assert cpu_requirements.splitlines() == [
+        "--index-url https://download.pytorch.org/whl/cpu",
+        "torch==2.8.0",
+    ]
+    assert "COPY src/worker/requirements.cpu.txt" in dockerfile
+    assert "pip install --timeout 300 --retries 10 -r requirements.cpu.txt" in dockerfile
+    assert "python -m photo_worker.runtime_contract" in dockerfile
+    assert dockerfile.index("python -m photo_worker.runtime_contract") < dockerfile.index(
+        "python -m photo_worker.model_smoke"
+    )
+
+    module_path = ROOT / "src/worker/photo_worker/runtime_contract.py"
+    spec = importlib.util.spec_from_file_location("worker_runtime_contract", module_path)
+    assert spec is not None and spec.loader is not None
+    runtime_contract = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime_contract)
+
+    site_packages = tmp_path / "site-packages"
+    models = tmp_path / "models"
+    site_packages.mkdir()
+    models.mkdir()
+    (site_packages / "runtime.bin").write_bytes(b"x" * 10)
+    (models / "model.bin").write_bytes(b"x" * 10)
+
+    class CpuTorch:
+        class version:
+            cuda = None
+
+    class Distribution:
+        def __init__(self, name: str) -> None:
+            self.metadata = {"Name": name}
+
+    runtime_contract.verify_runtime_contract(
+        torch_module=CpuTorch,
+        site_package_directories=[site_packages],
+        model_directories=[models],
+        distributions=[Distribution("torch")],
+    )
+
+    class CudaTorch:
+        class version:
+            cuda = "12.8"
+
+    with pytest.raises(RuntimeError, match="CUDA"):
+        runtime_contract.verify_runtime_contract(
+            torch_module=CudaTorch,
+            site_package_directories=[site_packages],
+            model_directories=[models],
+            distributions=[Distribution("torch")],
+        )
+
+    with pytest.raises(RuntimeError, match="NVIDIA"):
+        runtime_contract.verify_runtime_contract(
+            torch_module=CpuTorch,
+            site_package_directories=[site_packages],
+            model_directories=[models],
+            distributions=[Distribution("nvidia-cublas-cu12")],
+        )
+
+    monkeypatch.setattr(runtime_contract, "MAX_RUNTIME_BYTES", 20)
+    runtime_contract.verify_runtime_contract(
+        torch_module=CpuTorch,
+        site_package_directories=[site_packages],
+        model_directories=[models],
+        distributions=[Distribution("torch")],
+    )
+    (models / "one-byte-over-budget.bin").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="2048 MiB"):
+        runtime_contract.verify_runtime_contract(
+            torch_module=CpuTorch,
+            site_package_directories=[site_packages],
+            model_directories=[models],
+            distributions=[Distribution("torch")],
+        )
 
 
 def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract() -> None:

@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -751,7 +752,11 @@ SUCCESS_PHASES = [
 
 
 def _deployment_markers(result: subprocess.CompletedProcess[str]) -> list[str]:
-    return [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_")]
+    return [
+        re.sub(r" elapsed_seconds=\d+$", "", line)
+        for line in result.stdout.splitlines()
+        if line.startswith("DEPLOY_")
+    ]
 
 
 def _env_metadata(path: Path) -> tuple[int, int, int, int]:
@@ -766,6 +771,79 @@ def _env_metadata(path: Path) -> tuple[int, int, int, int]:
 
 def _assert_no_env_temporary_files(tmp_path: Path) -> None:
     assert list(tmp_path.glob(".env.*")) == []
+
+
+def test_apply_markers_include_elapsed_seconds(tmp_path: Path, fake_bin: Path) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    markers = [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_")]
+    assert markers
+    assert all(
+        re.fullmatch(r"DEPLOY_PHASE=[a-z-]+ elapsed_seconds=\d+", line) for line in markers[:-1]
+    )
+    assert re.fullmatch(
+        r"DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=\d+",
+        markers[-1],
+    )
+
+
+def test_successful_remote_deploy_relays_only_validated_deployment_markers(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    secret = "remote-secret-must-not-be-relayed"
+    key_file = tmp_path / "key"
+    key_file.write_text("private key\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    environment_file = tmp_path / "environment"
+    environment_file.write_text(f'VM_SSH_KEY_FILE="{key_file}"\n', encoding="utf-8")
+    environment_file.chmod(0o600)
+    remote_values = (
+        (ROOT / "deploy/run-staging-remote.sh")
+        .read_text(encoding="utf-8")
+        .split("REMOTE_DEPLOYMENT_VALUES='", maxsplit=1)[1]
+        .split("'\n\nrun_public_monitor", maxsplit=1)[0]
+        .split()
+    )
+    _write_executable(fake_bin / "scp", "exit 0")
+    _write_executable(
+        fake_bin / "ssh",
+        f"""
+cat >/dev/null
+printf '%s\\n' \\
+  '{secret}' \\
+  'DEPLOY_PHASE=validate elapsed_seconds=1' \\
+  'DEPLOY_PHASE=commit elapsed_seconds=2 unexpected=value' \\
+  'DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=3'
+""",
+    )
+    environment = {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FINDME_ENV_FILE": str(environment_file),
+        "STAGING_VM_HOST": "example.test",
+        "STAGING_VM_USER": "deployer",
+        "STAGING_SSH_KNOWN_HOSTS": "example.test ssh-ed25519 AAAA",
+        **{name: "value" for name in remote_values},
+    }
+
+    result = subprocess.run(
+        ["sh", ROOT / "deploy/run-staging-remote.sh", "deploy"],
+        env={**os.environ, **environment},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "DEPLOY_PHASE=validate elapsed_seconds=1",
+        "DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=3",
+        "[staging-remote] stage=deploy status=ok",
+    ]
+    assert secret not in result.stdout
 
 
 def test_apply_propagates_private_media_read_settings(tmp_path: Path, fake_bin: Path) -> None:
@@ -866,6 +944,10 @@ def test_validate_failure_emits_one_sanitized_result_before_any_mutation(
         "DEPLOY_PHASE=validate",
         "DEPLOY_RESULT=failure phase=validate rollback=not-needed",
     ]
+    assert re.fullmatch(
+        r"DEPLOY_RESULT=failure phase=validate rollback=not-needed elapsed_seconds=\d+",
+        [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_RESULT=")][-1],
+    )
     output = f"{result.stdout}\n{result.stderr}"
     assert "validate-db-secret-must-not-appear" not in output
     assert "validate-object-secret-must-not-appear" not in output
@@ -1866,6 +1948,10 @@ def test_post_mutation_compose_failure_reports_the_recovery_outcome(
             f"DEPLOY_RESULT=failure phase=compose-reconcile rollback={rollback}"
         )
         == 1
+    )
+    assert re.fullmatch(
+        rf"DEPLOY_RESULT=failure phase=compose-reconcile rollback={rollback} elapsed_seconds=\d+",
+        [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_RESULT=")][-1],
     )
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = _apply_log(tmp_path)

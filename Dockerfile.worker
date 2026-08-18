@@ -17,6 +17,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PHOTO_WORKER_ADAFACE_MODEL_PATH=/worker/models/adaface-ir18-webface4m \
     HF_HUB_OFFLINE=1
 
+COPY src/worker/requirements.cpu.txt ./requirements.cpu.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --timeout 300 --retries 10 -r requirements.cpu.txt
+
 COPY src/worker/requirements.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --timeout 300 --retries 10 -r requirements.txt
@@ -33,6 +37,7 @@ RUN chown -R worker:worker /worker
 
 USER worker
 
+RUN python -m photo_worker.runtime_contract
 RUN python -m photo_worker.model_smoke
 
 CMD ["python", "-m", "photo_worker"]

@@ -342,4 +342,3 @@ canonical path has passed its focused live checks.
 - Copying production data into a future test deployment.
 - Renaming historical ADR, plan, specification, or postmortem prose that accurately records the
   former system.
-

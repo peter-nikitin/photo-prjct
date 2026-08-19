@@ -146,4 +146,3 @@ deployment becomes operationally cheaper than the accepted residual risk.
 - [ADR 0011](0011-use-minimal-shared-https-rollout.md)
 - [ADR 0018](0018-use-managed-yandex-monitoring.md)
 - [ADR 0026](0026-use-lockbox-for-environment-secrets.md)
-

@@ -581,4 +581,3 @@ deleted in the same operation that activates its replacement.
 ## Open questions
 
 None.
-

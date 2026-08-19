@@ -267,6 +267,42 @@ def test_confirmed_cutover_backups_before_creating_canonical_volumes_and_uses_ge
     assert "volume create photo-prjct-staging" not in commands
 
 
+def test_confirmed_cutover_accepts_a_regular_readable_non_executable_generic_entrypoint(
+    tmp_path: Path,
+) -> None:
+    env = _cutover_env(tmp_path)
+    entrypoint = Path(env["DEPLOY_ROOT"]) / "deploy" / "apply-deployment.sh"
+    entrypoint.chmod(0o644)
+
+    result = _run(
+        "--confirm-canonical-compose-identity-cutover", "--backup-dir", env["BACKUP_DIR"], env=env
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = Path(env["COMMAND_LOG"]).read_text(encoding="utf-8")
+    assert "apply:photo-prjct" in commands
+
+
+@pytest.mark.parametrize("entrypoint_kind", ["missing", "directory"])
+def test_cutover_rejects_a_missing_or_nonregular_generic_entrypoint(
+    tmp_path: Path, entrypoint_kind: str
+) -> None:
+    env = _cutover_env(tmp_path)
+    entrypoint = Path(env["DEPLOY_ROOT"]) / "deploy" / "apply-deployment.sh"
+    if entrypoint_kind == "missing":
+        entrypoint.unlink()
+    else:
+        entrypoint.unlink()
+        entrypoint.mkdir()
+
+    result = _run("--dry-run", "--backup-dir", env["BACKUP_DIR"], env=env)
+
+    assert result.returncode != 0
+    assert "generic deployment entrypoint is required" in result.stderr
+    commands = Path(env["COMMAND_LOG"]).read_text(encoding="utf-8")
+    assert "volume create" not in commands
+
+
 @pytest.mark.parametrize(
     ("state", "arguments", "message"),
     [

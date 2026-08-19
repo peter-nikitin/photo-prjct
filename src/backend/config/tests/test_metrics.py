@@ -38,7 +38,7 @@ urlpatterns = [
 ]
 
 
-@override_settings(ROOT_URLCONF=__name__, MONITORING_ENVIRONMENT="test")
+@override_settings(ROOT_URLCONF=__name__)
 class HttpMetricsMiddlewareTests(SimpleTestCase):
     def exposition(self) -> str:
         from prometheus_client import generate_latest
@@ -51,12 +51,11 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         exposition = self.exposition()
         self.assertIn(
-            'findme_http_requests_total{environment="test",method="GET",'
-            'route="test_ok",status_class="2xx"} 1.0',
+            'findme_http_requests_total{method="GET",route="test_ok",status_class="2xx"} 1.0',
             exposition,
         )
         self.assertIn(
-            'findme_http_request_duration_seconds_count{environment="test",method="GET",'
+            'findme_http_request_duration_seconds_count{method="GET",'
             'route="test_ok",status_class="2xx"} 1.0',
             exposition,
         )
@@ -68,8 +67,7 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertIn(
-            'findme_http_requests_total{environment="test",method="GET",'
-            'route="test_error",status_class="5xx"} 1.0',
+            'findme_http_requests_total{method="GET",route="test_error",status_class="5xx"} 1.0',
             self.exposition(),
         )
         self.assertNotIn("storage object 9f2a2f9e is unavailable", self.exposition())
@@ -82,8 +80,7 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         exposition = self.exposition()
         self.assertIn(
-            'findme_http_requests_total{environment="test",method="other",'
-            'route="test_ok",status_class="2xx"} 1.0',
+            'findme_http_requests_total{method="other",route="test_ok",status_class="2xx"} 1.0',
             exposition,
         )
         self.assertNotIn(arbitrary_method, exposition)
@@ -95,10 +92,10 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 404)
         exposition = self.exposition()
-        self.assertIn(
-            'findme_http_requests_total{environment="test",method="GET",'
-            'route="unmatched",status_class="4xx"} 1.0',
+        self.assertRegex(
             exposition,
+            r'findme_http_requests_total\{method="GET",route="unmatched",'
+            r'status_class="4xx"\} [1-9][0-9]*\.0',
         )
         for forbidden_value in (
             "not-found",
@@ -115,8 +112,7 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         exposition = self.exposition()
         self.assertIn(
-            'findme_http_requests_total{environment="test",method="GET",'
-            'route="dynamic_photo",status_class="2xx"} 1.0',
+            'findme_http_requests_total{method="GET",route="dynamic_photo",status_class="2xx"} 1.0',
             exposition,
         )
         self.assertNotIn("private-run", exposition)
@@ -129,9 +125,7 @@ class MultiprocessMetricsTests(SimpleTestCase):
         worker = """
             from config.metrics import HTTP_REQUEST_DURATION, HTTP_REQUESTS
 
-            labels = {
-                "environment": "staging",
-                "route": "health",
+            labels = {                "route": "health",
                 "method": "GET",
                 "status_class": "2xx",
             }
@@ -187,17 +181,16 @@ class MultiprocessMetricsTests(SimpleTestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            'findme_http_requests_total{environment="staging",method="GET",'
+            'findme_http_requests_total{method="GET",route="health",status_class="2xx"} 2.0',
+            result.stdout,
+        )
+        self.assertIn(
+            'findme_http_request_duration_seconds_count{method="GET",'
             'route="health",status_class="2xx"} 2.0',
             result.stdout,
         )
         self.assertIn(
-            'findme_http_request_duration_seconds_count{environment="staging",method="GET",'
-            'route="health",status_class="2xx"} 2.0',
-            result.stdout,
-        )
-        self.assertIn(
-            'findme_http_request_duration_seconds_sum{environment="staging",method="GET",'
+            'findme_http_request_duration_seconds_sum{method="GET",'
             'route="health",status_class="2xx"} 1.0',
             result.stdout,
         )

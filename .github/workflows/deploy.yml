@@ -1,8 +1,6 @@
-name: Deploy staging
+name: Deploy
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       verify_private_storage:
@@ -16,7 +14,7 @@ on:
         default: false
         type: boolean
       configure_monitoring_agent:
-        description: Configure the staging Yandex Unified Agent without deploying the application
+        description: Configure the Yandex Unified Agent without deploying the application
         required: true
         default: false
         type: boolean
@@ -26,7 +24,7 @@ on:
         default: false
         type: boolean
       validate_deploy_issue:
-        description: Exercise the bounded staging deployment issue notification drill
+        description: Exercise the bounded deployment issue notification drill
         required: true
         default: false
         type: boolean
@@ -40,15 +38,20 @@ on:
         required: true
         default: false
         type: boolean
+      stage_paused_observability_release:
+        description: Stage the checksum-bound privileged observability package for deployment_sha
+        required: true
+        default: false
+        type: boolean
       preflight:
-        description: Validate all staging Lockbox projections without mutating staging
+        description: Validate all Lockbox projections without mutating the deployment
         required: true
         default: false
         type: boolean
 
 jobs:
-  classify-staging-release:
-    name: Classify staging release
+  classify-release:
+    name: Classify deployment release
     if: ${{ !inputs.preflight }}
     runs-on: ubuntu-latest
     permissions:
@@ -59,19 +62,19 @@ jobs:
       release_sha: ${{ steps.classify.outputs.release_sha }}
       worker_inputs_changed: ${{ steps.classify.outputs.worker_inputs_changed }}
     steps:
-      - name: Check out push range
+      - name: Check out release history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Classify staging release
+      - name: Classify deployment release
         id: classify
         env:
           DEPLOYMENT_SHA: ${{ inputs.deployment_sha }}
         run: |
           set -eu
           release_sha="${{ github.sha }}"
-          requires_observability_bootstrap=false
+          requires_observability_bootstrap=${{ inputs.stage_paused_observability_release }}
           worker_inputs_changed=true
           manifest_sha256=
           pause_reason=
@@ -113,8 +116,8 @@ jobs:
                   source_digest="$(git show "$release_sha:$source_path" | sha256sum | cut -d ' ' -f 1)"
                   printf '%s  %s\n' "$source_digest" "$source_path"
                 done \
-              > staging-observability-source.sha256
-            manifest_sha256="$(sha256sum staging-observability-source.sha256 | cut -d ' ' -f 1)"
+              > observability-source.sha256
+            manifest_sha256="$(sha256sum observability-source.sha256 | cut -d ' ' -f 1)"
           fi
           echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
           echo "requires_observability_bootstrap=$requires_observability_bootstrap" >> "$GITHUB_OUTPUT"
@@ -122,71 +125,68 @@ jobs:
           echo "worker_inputs_changed=$worker_inputs_changed" >> "$GITHUB_OUTPUT"
           if [ "$requires_observability_bootstrap" = true ]; then
             {
-              echo "## Staging release paused"
-              echo "Commit: ${GITHUB_SHA}. ${pause_reason}"
+              echo "## Privileged observability package staged"
+              echo "Commit: ${release_sha}. ${pause_reason}"
               echo
-              echo "An operator must complete these reviewed actions before manually running the Deploy staging workflow:"
-              echo "1. Wait for the Stage paused observability source job to succeed, then run: ssh -l petrnikitin 111.88.151.64"
-              echo "2. cd /opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA}"
-              echo "3. test \"\$(cat staging-observability-release-sha)\" = \"${GITHUB_SHA}\""
-              echo "4. printf '%s  staging-observability-source.sha256\\n' '${manifest_sha256}' | sha256sum --check -"
-              echo "5. sha256sum --check staging-observability-source.sha256"
-              echo "6. DEPLOY_ROOT=/opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA} sh /opt/photo-prjct/privileged-observability-releases/${GITHUB_SHA}/deploy/bootstrap-selfie-observability.sh"
+              echo "Before deploying this package, complete these reviewed checks:"
+              echo "1. cd /opt/photo-prjct/privileged-observability-releases/${release_sha}"
+              echo "2. test \"\$(cat observability-release-sha)\" = \"${release_sha}\""
+              echo "4. printf '%s  observability-source.sha256\\n' '${manifest_sha256}' | sha256sum --check -"
+              echo "5. sha256sum --check observability-source.sha256"
+              echo "6. DEPLOY_ROOT=/opt/photo-prjct/privileged-observability-releases/${release_sha} sh /opt/photo-prjct/privileged-observability-releases/${release_sha}/deploy/bootstrap-selfie-observability.sh"
               echo "7. sudo /usr/local/sbin/findme-selfie-observability verify"
-              echo "8. gh workflow run deploy.yml --ref main -f deployment_sha=${GITHUB_SHA} -f verify_paused_observability_release=true"
+              echo "8. Manually run Deploy with deployment_sha=${release_sha} and verify_paused_observability_release=true."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
   stage-observability-release:
-    name: Stage paused observability source
-    if: ${{ github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'true' && !inputs.preflight }}
+    name: Stage privileged observability source
+    if: ${{ inputs.stage_paused_observability_release && !inputs.preflight }}
     runs-on: ubuntu-latest
-    needs: [classify-staging-release]
-    environment: staging
+    needs: [classify-release]
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Check out paused commit
+      - name: Check out staged commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.classify-release.outputs.release_sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Bind staged source to paused commit
+      - name: Bind source to staged commit
         run: |
           set -eu
-          release_sha="${{ github.sha }}"
+          release_sha="${{ needs.classify-release.outputs.release_sha }}"
           test "$(git rev-parse HEAD)" = "$release_sha"
-          printf '%s\n' "$release_sha" > staging-observability-release-sha
+          printf '%s\n' "$release_sha" > observability-release-sha
       - name: Create staged source manifest
         run: |
           set -eu
-          git ls-tree -r --name-only "${{ github.sha }}" -- \
+          git ls-tree -r --name-only "${{ needs.classify-release.outputs.release_sha }}" -- \
             deploy/bootstrap-selfie-observability.sh deploy/selfie-observability \
             | while IFS= read -r source_path; do sha256sum "$source_path"; done \
-            > staging-observability-source.sha256
-          manifest_sha256="$(sha256sum staging-observability-source.sha256 | cut -d ' ' -f 1)"
-          test "$manifest_sha256" = "${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}"
+            > observability-source.sha256
+          manifest_sha256="$(sha256sum observability-source.sha256 | cut -d ' ' -f 1)"
+          test "$manifest_sha256" = "${{ needs.classify-release.outputs.observability_source_manifest_sha256 }}"
       - name: Stage privileged observability source
         env:
-          STAGING_VM_HOST: ${{ vars.VM_HOST }}
-          STAGING_VM_USER: ${{ vars.VM_USER }}
-          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
-          RELEASE_SHA: ${{ github.sha }}
-          OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+          RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
+          OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-release.outputs.observability_source_manifest_sha256 }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-remote-check \
+            --consumer remote-check \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh stage-paused-observability-release
+            -- deploy/run-remote.sh stage-paused-observability-release
 
   build:
     name: Build immutable image
-    if: ${{ (github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight) }}
+    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release }}
     runs-on: ubuntu-latest
-    needs: [classify-staging-release]
+    needs: [classify-release]
     permissions:
       contents: read
       packages: write
@@ -197,7 +197,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.classify-staging-release.outputs.release_sha }}
+          ref: ${{ needs.classify-release.outputs.release_sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Log in to GHCR
@@ -213,7 +213,7 @@ jobs:
       - name: Select image references
         id: image
         run: |
-          release_sha="${{ needs.classify-staging-release.outputs.release_sha }}"
+          release_sha="${{ needs.classify-release.outputs.release_sha }}"
           echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${release_sha}" >> "$GITHUB_OUTPUT"
           echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" >> "$GITHUB_OUTPUT"
       - name: Build and push image
@@ -223,11 +223,11 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ${{ steps.image.outputs.app_image }}
-          cache-from: type=gha,scope=staging-web
-          cache-to: type=gha,mode=max,scope=staging-web,ignore-error=true
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web,ignore-error=true
       - name: Reuse unchanged worker image
         id: reuse-worker
-        if: ${{ github.event_name == 'push' && needs.classify-staging-release.outputs.worker_inputs_changed == 'false' }}
+        if: ${{ github.event_name == 'push' && needs.classify-release.outputs.worker_inputs_changed == 'false' }}
         continue-on-error: true
         env:
           PREVIOUS_WORKER_IMAGE: ghcr.io/${{ github.repository }}-worker:${{ github.event.before }}
@@ -237,55 +237,52 @@ jobs:
           test -n "$digest"
           docker buildx imagetools create --tag "$WORKER_IMAGE" "$PREVIOUS_WORKER_IMAGE@$digest"
       - name: Build and push worker image
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.classify-staging-release.outputs.worker_inputs_changed == 'true' || steps.reuse-worker.outcome != 'success' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.classify-release.outputs.worker_inputs_changed == 'true' || steps.reuse-worker.outcome != 'success' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile.worker
           push: true
           tags: ${{ steps.image.outputs.worker_image }}
-          cache-from: type=gha,scope=staging-worker
-          cache-to: type=gha,mode=max,scope=staging-worker,ignore-error=true
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker,ignore-error=true
 
   deploy:
-    name: Deploy staging
-    if: ${{ (github.event_name == 'push' && needs.classify-staging-release.outputs.requires_observability_bootstrap == 'false') || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight) }}
+    name: Deploy
+    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release }}
     runs-on: ubuntu-latest
-    needs: [classify-staging-release, build]
-    environment: staging
+    needs: [classify-release, build]
     permissions:
       contents: read
       id-token: write
     concurrency:
-      group: deploy-staging
+      group: deploy
       cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.classify-staging-release.outputs.release_sha }}
+          ref: ${{ needs.classify-release.outputs.release_sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Verify staged paused observability release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_paused_observability_release }}
         env:
-          STAGING_VM_HOST: ${{ vars.VM_HOST }}
-          STAGING_VM_USER: ${{ vars.VM_USER }}
-          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
-          RELEASE_SHA: ${{ needs.classify-staging-release.outputs.release_sha }}
-          OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-staging-release.outputs.observability_source_manifest_sha256 }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+          RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
+          OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-release.outputs.observability_source_manifest_sha256 }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-remote-check \
+            --consumer remote-check \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh verify-paused-observability-release
-      - name: Run staging deployment
+            -- deploy/run-remote.sh verify-paused-observability-release
+      - name: Run deployment
         env:
-          STAGING_VM_HOST: ${{ vars.VM_HOST }}
-          STAGING_VM_USER: ${{ vars.VM_USER }}
-          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
-          DEPLOYMENT_TARGET: staging
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
           WORKER_IMAGE: ${{ needs.build.outputs.worker_image }}
           DEBUG: "False"
@@ -336,56 +333,52 @@ jobs:
           GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-deploy \
+            --consumer deploy \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh deploy
+            -- deploy/run-remote.sh deploy
       - name: Verify private upload storage contract
         if: ${{ inputs.verify_private_storage }}
         env:
-          STAGING_VM_HOST: ${{ vars.VM_HOST }}
-          STAGING_VM_USER: ${{ vars.VM_USER }}
-          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           PRIVATE_MEDIA_ALLOWED_ORIGINS: ${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-remote-check \
+            --consumer remote-check \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh private-storage
+            -- deploy/run-remote.sh private-storage
       - name: Verify selfie-search temporary storage contract
         if: ${{ inputs.verify_selfie_search_storage }}
         env:
-          STAGING_VM_HOST: ${{ vars.VM_HOST }}
-          STAGING_VM_USER: ${{ vars.VM_USER }}
-          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-remote-check \
+            --consumer remote-check \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh selfie-storage
+            -- deploy/run-remote.sh selfie-storage
       - name: Verify selfie-feedback storage contract
         if: ${{ inputs.verify_selfie_feedback_storage }}
         env:
-          STAGING_VM_HOST: ${{ vars.VM_HOST }}
-          STAGING_VM_USER: ${{ vars.VM_USER }}
-          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}
           SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}
           SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-deploy \
+            --consumer deploy \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh selfie-feedback-storage
+            -- deploy/run-remote.sh selfie-feedback-storage
 
-  reconcile-staging-deploy-issue:
-    name: Reconcile staging deployment issue
-    if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight)) }}
+  reconcile-deploy-issue:
+    name: Reconcile deployment issue
+    if: ${{ always() && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release }}
     runs-on: ubuntu-latest
-    needs: [classify-staging-release, build, deploy]
+    needs: [classify-release, build, deploy]
     permissions:
       actions: read
       contents: read
@@ -429,23 +422,22 @@ jobs:
             )"
           fi
 
-          python scripts/reconcile_staging_deploy_issue.py \
+          python scripts/reconcile_deploy_issue.py \
             --repository "$GITHUB_REPOSITORY" \
             --token-env GITHUB_TOKEN \
-            --mode production \
+            --mode deploy \
             --conclusion "$conclusion" \
-            --sha "${{ needs.classify-staging-release.outputs.release_sha }}" \
+            --sha "${{ needs.classify-release.outputs.release_sha }}" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --phase "$phase"
       - name: Warn when issue reconciliation fails
         if: ${{ steps.reconcile.outcome == 'failure' }}
-        run: echo "::warning::Staging deployment issue reconciliation failed; the deployment result remains authoritative."
+        run: echo "::warning::Deployment issue reconciliation failed; the deployment result remains authoritative."
 
-  validate-staging-deploy-issue:
-    name: Validate staging deployment issue notification
+  validate-deploy-issue:
+    name: Validate deployment issue notification
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && !inputs.preflight }}
     runs-on: ubuntu-latest
-    environment: staging
     permissions:
       contents: read
       issues: write
@@ -458,21 +450,21 @@ jobs:
           persist-credentials: false
       - name: Create validation issue
         run: |
-          python scripts/reconcile_staging_deploy_issue.py \
+          python scripts/reconcile_deploy_issue.py \
             --repository "$GITHUB_REPOSITORY" --token-env GITHUB_TOKEN --mode validation \
             --conclusion failure --sha "$GITHUB_SHA" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --phase validate
       - name: Update validation issue
         run: |
-          python scripts/reconcile_staging_deploy_issue.py \
+          python scripts/reconcile_deploy_issue.py \
             --repository "$GITHUB_REPOSITORY" --token-env GITHUB_TOKEN --mode validation \
             --conclusion failure --sha "$GITHUB_SHA" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --phase snapshot
       - name: Close validation issue
         run: |
-          python scripts/reconcile_staging_deploy_issue.py \
+          python scripts/reconcile_deploy_issue.py \
             --repository "$GITHUB_REPOSITORY" --token-env GITHUB_TOKEN --mode validation \
             --conclusion success --sha "$GITHUB_SHA" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
@@ -481,17 +473,16 @@ jobs:
         run: |
           if gh api \
             "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
-            --jq '.[] | select((.pull_request | not) and .title == "[staging deployment validation] notification drill") | .number' \
+            --jq '.[] | select((.pull_request | not) and .title == "[deployment validation] notification drill") | .number' \
             | grep -q .; then
             echo "Validation issue remains open" >&2
             exit 1
           fi
 
   configure-monitoring-agent:
-    name: Configure staging Unified Agent
+    name: Configure Unified Agent
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight }}
     runs-on: ubuntu-latest
-    environment: staging
     permissions:
       contents: read
       id-token: write
@@ -500,24 +491,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Configure staging Unified Agent
+      - name: Configure Unified Agent
         env:
-          STAGING_VM_HOST: ${{ vars.VM_HOST }}
-          STAGING_VM_USER: ${{ vars.VM_USER }}
-          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-remote-check \
+            --consumer remote-check \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh configure-monitoring
+            -- deploy/run-remote.sh configure-monitoring
 
   lockbox-preflight:
-    name: Validate staging Lockbox projections
+    name: Validate Lockbox projections
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight }}
     runs-on: ubuntu-latest
-    environment: staging
     permissions:
       contents: read
       id-token: write
@@ -529,20 +518,29 @@ jobs:
       - name: "Verify Lockbox projection: local-web"
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging --consumer local-web --identity github-oidc \
+            --consumer local-web --identity github-oidc \
             -- python scripts/verify-environment-secret-projection.py local-web
-      - name: "Verify Lockbox projection: staging-deploy"
+      - name: "Verify Lockbox projection: deploy"
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging --consumer staging-deploy --identity github-oidc \
-            -- python scripts/verify-environment-secret-projection.py staging-deploy
-      - name: "Verify Lockbox projection: staging-remote-check"
+            --consumer deploy --identity github-oidc \
+            -- python scripts/verify-environment-secret-projection.py deploy
+      - name: "Verify Lockbox projection: remote-check"
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging --consumer staging-remote-check --identity github-oidc \
-            -- python scripts/verify-environment-secret-projection.py staging-remote-check
-      - name: "Verify Lockbox projection: staging-public-monitor"
+            --consumer remote-check --identity github-oidc \
+            -- python scripts/verify-environment-secret-projection.py remote-check
+      - name: "Verify Lockbox projection: public-monitor"
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging --consumer staging-public-monitor --identity github-oidc \
-            -- python scripts/verify-environment-secret-projection.py staging-public-monitor
+            --consumer public-monitor --identity github-oidc \
+            -- python scripts/verify-environment-secret-projection.py public-monitor
+      - name: Verify read-only remote preflight
+        env:
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --consumer remote-check --identity github-oidc \
+            -- deploy/run-remote.sh remote-preflight

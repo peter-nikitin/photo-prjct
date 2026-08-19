@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -13,7 +12,6 @@ from uuid import UUID
 SCHEMA_VERSION = 1
 SERVICE = "worker"
 MAX_BOUNDED_INTEGER = 2**31 - 1
-_ENVIRONMENTS = frozenset({"local", "test", "staging", "production"})
 _UUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
@@ -133,7 +131,6 @@ def _validated_payload(fields: dict[str, object]) -> dict[str, object]:
         "event": SelfieWorkerEventName.ATTEMPT_FINISHED.value,
         "occurred_at": _timestamp(),
         "service": SERVICE,
-        "environment": _environment(),
         "event_id": _opaque_id(fields["event_id"]),
         "search_id": _opaque_id(fields["search_id"], allow_integer=False),
         "job_id": _opaque_id(fields["job_id"], allow_integer=False),
@@ -180,11 +177,6 @@ def _opaque_id(value: object, *, allow_integer: bool = True) -> str:
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def _environment() -> str:
-    value = os.environ.get("DEPLOYMENT_TARGET", "local").strip().lower()
-    return value if value in _ENVIRONMENTS else "local"
 
 
 def _emit_failure_marker(logger: logging.Logger) -> None:

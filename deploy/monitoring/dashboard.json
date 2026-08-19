@@ -1,10 +1,9 @@
 {
   "folderId": "__YANDEX_CLOUD_FOLDER_ID__",
-  "name": "findme-photo-staging-overview",
-  "title": "FindMe Photo staging overview",
+  "name": "findme-photo-deployment-overview",
+  "title": "FindMe Photo deployment overview",
   "description": "Import template for the current public HTTPS path. Replace __YANDEX_CLOUD_FOLDER_ID__ before DashboardService.Create.",
   "labels": {
-    "environment": "staging",
     "managed-by": "repository"
   },
   "widgets": [
@@ -15,9 +14,9 @@
     {
       "position": {"x": "0", "y": "4", "w": "18", "h": "8"},
       "chart": {"id": "external-health", "title": "External health", "queries": {"targets": [
-        {"query": "\"findme_probe_success\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\", check=\"canonical-health\"}"},
-        {"query": "\"findme_probe_duration_seconds\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\", check=\"canonical-health\"}"},
-        {"query": "\"findme_probe_tls_days_remaining\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\", check=\"canonical-health\"}"}
+        {"query": "\"findme_probe_success\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", check=\"canonical-health\"}"},
+        {"query": "\"findme_probe_duration_seconds\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", check=\"canonical-health\"}"},
+        {"query": "\"findme_probe_tls_days_remaining\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", check=\"canonical-health\"}"}
       ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
     },
     {
@@ -70,20 +69,20 @@
     {
       "position": {"x": "18", "y": "28", "w": "18", "h": "8"},
       "chart": {"id": "request-rate", "title": "Django request rate", "queries": {"targets": [
-        {"query": "non_negative_derivative(\"app.findme_http_requests_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\"})"}
+        {"query": "non_negative_derivative(\"app.findme_http_requests_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"})"}
       ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
     },
     {
       "position": {"x": "0", "y": "36", "w": "18", "h": "8"},
       "chart": {"id": "http-5xx", "title": "Django 5xx responses", "queries": {"targets": [
-        {"query": "non_negative_derivative(\"app.findme_http_requests_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\", status_class=\"5xx\"})"}
+        {"query": "non_negative_derivative(\"app.findme_http_requests_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", status_class=\"5xx\"})"}
       ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
     },
     {
       "position": {"x": "18", "y": "36", "w": "18", "h": "8"},
       "chart": {"id": "http-latency", "title": "Django request latency (p50 / p95)", "queries": {"targets": [
-        {"query": "histogram_percentile(50, \"app.findme_http_request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\"})"},
-        {"query": "histogram_percentile(95, \"app.findme_http_request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\", environment=\"staging\"})"}
+        {"query": "histogram_percentile(50, \"app.findme_http_request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"})"},
+        {"query": "histogram_percentile(95, \"app.findme_http_request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"})"}
       ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
     }
   ]

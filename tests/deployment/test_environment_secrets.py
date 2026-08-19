@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-MANIFEST_PATH = REPOSITORY_ROOT / "deploy/environment-secrets/staging.json"
+MANIFEST_PATH = REPOSITORY_ROOT / "deploy/environment-secrets.json"
 RESOLVER_PATH = REPOSITORY_ROOT / "scripts/run-with-environment-secrets.py"
 VERIFIER_PATH = REPOSITORY_ROOT / "scripts/verify-environment-secret-projection.py"
 
@@ -64,7 +64,7 @@ def resolver() -> ModuleType:
 
 @pytest.fixture(scope="module")
 def manifest() -> dict[str, Any]:
-    assert MANIFEST_PATH.is_file(), "staging environment manifest is missing"
+    assert MANIFEST_PATH.is_file(), "deployment environment manifest is missing"
     return json.loads(MANIFEST_PATH.read_text())
 
 
@@ -162,8 +162,6 @@ def _run_main(
     monkeypatch.setattr(resolver, "urlopen", http)
     return resolver.main(
         [
-            "--environment",
-            "staging",
             "--consumer",
             consumer,
             "--identity",
@@ -174,8 +172,7 @@ def _run_main(
     )
 
 
-def test_manifest_pins_the_reviewed_staging_identity(manifest: dict[str, Any]) -> None:
-    assert manifest["environment"] == "staging"
+def test_manifest_pins_the_reviewed_deployment_identity(manifest: dict[str, Any]) -> None:
     assert manifest["lockbox"] == {
         "secret_id": "e6q85jjl76r45maigtfb",
         "folder_id": "b1g2qttgfhb4gdunvlge",
@@ -183,19 +180,15 @@ def test_manifest_pins_the_reviewed_staging_identity(manifest: dict[str, Any]) -
     assert manifest["github_oidc"] == {
         "issuer": "https://token.actions.githubusercontent.com",
         "audience": "https://github.com/peter-nikitin",
-        "subject": "repo:peter-nikitin/photo-prjct:environment:staging",
+        "subject": "repo:peter-nikitin/photo-prjct:ref:refs/heads/main",
         "repository": "peter-nikitin/photo-prjct",
-        "environment": "staging",
+        "ref": "refs/heads/main",
         "service_account_id": "ajeaekiue94ogksguh0h",
         "federation_id": "ajeula3gd46omgf9jiko",
         "allowed_workflows": [
             "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
-            "peter-nikitin/photo-prjct/.github/workflows/promote-production.yml@refs/heads/main",
-            (
-                "peter-nikitin/photo-prjct/.github/workflows/"
-                "staging-face-embedding-benchmark.yml@refs/heads/main"
-            ),
+            "peter-nikitin/photo-prjct/.github/workflows/face-embedding-benchmark.yml@refs/heads/main",
         ],
     }
 
@@ -216,9 +209,9 @@ def test_manifest_declares_complete_schema_and_closed_projections(
     assert {key for key, entry in entries.items() if entry["local"]} == LOCAL_WEB_KEYS
     assert {name: set(keys) for name, keys in manifest["consumers"].items()} == {
         "local-web": LOCAL_WEB_KEYS,
-        "staging-deploy": DEPLOY_KEYS,
-        "staging-remote-check": {"VM_SSH_KEY"},
-        "staging-public-monitor": {"YANDEX_MONITORING_API_KEY"},
+        "deploy": DEPLOY_KEYS,
+        "remote-check": {"VM_SSH_KEY"},
+        "public-monitor": {"YANDEX_MONITORING_API_KEY"},
     }
 
 
@@ -227,21 +220,6 @@ def test_manifest_declares_complete_schema_and_closed_projections(
     [
         (
             [
-                "--environment",
-                "production",
-                "--consumer",
-                "local-web",
-                "--identity",
-                "yc",
-                "--",
-                "true",
-            ],
-            "unknown_environment",
-        ),
-        (
-            [
-                "--environment",
-                "staging",
                 "--consumer",
                 "arbitrary",
                 "--identity",
@@ -253,7 +231,7 @@ def test_manifest_declares_complete_schema_and_closed_projections(
         ),
     ],
 )
-def test_unknown_environment_and_consumer_fail_before_identity(
+def test_unknown_consumer_fails_before_identity(
     resolver: ModuleType,
     capsys: pytest.CaptureFixture[str],
     arguments: list[str],
@@ -276,9 +254,7 @@ def test_yc_identity_failure_is_sanitized_and_stops_before_http(
     http = _HttpBoundary([])
     monkeypatch.setattr(resolver, "urlopen", http)
 
-    exit_code = resolver.main(
-        ["--environment", "staging", "--consumer", "local-web", "--identity", "yc", "--", "true"]
-    )
+    exit_code = resolver.main(["--consumer", "local-web", "--identity", "yc", "--", "true"])
 
     captured = capsys.readouterr()
     assert exit_code == 2
@@ -467,7 +443,7 @@ def test_text_and_binary_values_preserve_boundaries_without_shell_evaluation(
     projected_targets = [
         entry["target"]
         for entry in manifest["entries"]
-        if entry["key"] in manifest["consumers"]["staging-deploy"]
+        if entry["key"] in manifest["consumers"]["deploy"]
     ]
     compose_path.write_text(
         "services:\n"
@@ -533,7 +509,7 @@ def test_text_and_binary_values_preserve_boundaries_without_shell_evaluation(
         monkeypatch,
         tmp_path,
         http,
-        consumer="staging-deploy",
+        consumer="deploy",
         command=[
             sys.executable,
             "-c",
@@ -551,7 +527,7 @@ def test_text_and_binary_values_preserve_boundaries_without_shell_evaluation(
     ]
     expected_text_values: dict[str, str] = {}
     for entry in manifest["entries"]:
-        if entry["key"] in manifest["consumers"]["staging-deploy"] and entry["type"] == "text":
+        if entry["key"] in manifest["consumers"]["deploy"] and entry["type"] == "text":
             value = values[entry["key"]]
             assert isinstance(value, str)
             expected_text_values[entry["target"]] = value
@@ -628,9 +604,9 @@ def test_child_environment_cannot_bypass_projection_or_environment_files(
     ("consumer", "expected"),
     [
         ("local-web", LOCAL_WEB_KEYS),
-        ("staging-deploy", (DEPLOY_KEYS - {"VM_SSH_KEY"}) | {"VM_SSH_KEY_FILE"}),
-        ("staging-remote-check", {"VM_SSH_KEY_FILE"}),
-        ("staging-public-monitor", {"YANDEX_MONITORING_API_KEY"}),
+        ("deploy", (DEPLOY_KEYS - {"VM_SSH_KEY"}) | {"VM_SSH_KEY_FILE"}),
+        ("remote-check", {"VM_SSH_KEY_FILE"}),
+        ("public-monitor", {"YANDEX_MONITORING_API_KEY"}),
     ],
 )
 def test_each_consumer_receives_exactly_its_projection(
@@ -678,7 +654,7 @@ def test_each_consumer_receives_exactly_its_projection(
 
 @pytest.mark.parametrize(
     "consumer",
-    ["local-web", "staging-deploy", "staging-remote-check", "staging-public-monitor"],
+    ["local-web", "deploy", "remote-check", "public-monitor"],
 )
 def test_resolver_runs_the_projection_verifier_without_exposing_payload_values(
     resolver: ModuleType,
@@ -705,7 +681,7 @@ def test_resolver_runs_the_projection_verifier_without_exposing_payload_values(
 
     captured = capfd.readouterr()
     assert captured.out == (
-        f"[environment-secrets] stage=resolve status=ok environment=staging "
+        f"[environment-secrets] stage=resolve status=ok "
         f"consumer={consumer} version_id=version-exact\n"
         f"[environment-secret-projection] consumer={consumer} status=ok\n"
     )
@@ -743,7 +719,7 @@ def test_private_files_are_removed_after_child_exit(
         monkeypatch,
         tmp_path,
         http,
-        consumer="staging-remote-check",
+        consumer="remote-check",
         command=[sys.executable, "-c", checker, str(result_path)],
     )
 
@@ -767,7 +743,7 @@ def test_private_files_are_removed_when_child_cannot_start(
         monkeypatch,
         tmp_path,
         http,
-        consumer="staging-remote-check",
+        consumer="remote-check",
         command=[str(tmp_path / "missing-command")],
     )
 
@@ -804,7 +780,7 @@ def test_cleanup_failure_reports_the_exact_retained_private_path(
             monkeypatch,
             tmp_path,
             http,
-            consumer="staging-remote-check",
+            consumer="remote-check",
         )
 
         captured = capsys.readouterr()
@@ -890,10 +866,8 @@ def test_signal_is_forwarded_and_private_files_are_removed(
     command = [
         sys.executable,
         str(wrapper),
-        "--environment",
-        "staging",
         "--consumer",
-        "staging-remote-check",
+        "remote-check",
         "--identity",
         "yc",
         "--",
@@ -943,10 +917,8 @@ def test_signal_between_materialization_and_child_start_removes_private_files(
     command = [
         sys.executable,
         str(wrapper),
-        "--environment",
-        "staging",
         "--consumer",
-        "staging-remote-check",
+        "remote-check",
         "--identity",
         "yc",
         "--",
@@ -1023,10 +995,8 @@ def test_github_identity_rejects_an_untrusted_token_request_url(
 
     exit_code = resolver.main(
         [
-            "--environment",
-            "staging",
             "--consumer",
-            "staging-public-monitor",
+            "public-monitor",
             "--identity",
             "github-oidc",
             "--",
@@ -1063,7 +1033,7 @@ def test_github_oidc_claims_and_token_exchange_are_closed(
         "aud": manifest["github_oidc"]["audience"],
         "sub": manifest["github_oidc"]["subject"],
         "repository": manifest["github_oidc"]["repository"],
-        "environment": manifest["github_oidc"]["environment"],
+        "ref": manifest["github_oidc"]["ref"],
         "workflow_ref": manifest["github_oidc"]["allowed_workflows"][0],
     }
     encoded_claims = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
@@ -1083,10 +1053,8 @@ def test_github_oidc_claims_and_token_exchange_are_closed(
 
     exit_code = resolver.main(
         [
-            "--environment",
-            "staging",
             "--consumer",
-            "staging-public-monitor",
+            "public-monitor",
             "--identity",
             "github-oidc",
             "--",
@@ -1136,7 +1104,7 @@ def test_github_oidc_rejects_a_workflow_ref_outside_the_exact_manifest_allowlist
         "aud": manifest["github_oidc"]["audience"],
         "sub": manifest["github_oidc"]["subject"],
         "repository": manifest["github_oidc"]["repository"],
-        "environment": manifest["github_oidc"]["environment"],
+        "ref": manifest["github_oidc"]["ref"],
     }
     if workflow_ref is not None:
         claims["workflow_ref"] = workflow_ref
@@ -1151,10 +1119,8 @@ def test_github_oidc_rejects_a_workflow_ref_outside_the_exact_manifest_allowlist
 
     exit_code = resolver.main(
         [
-            "--environment",
-            "staging",
             "--consumer",
-            "staging-public-monitor",
+            "public-monitor",
             "--identity",
             "github-oidc",
             "--",

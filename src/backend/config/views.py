@@ -14,6 +14,7 @@ from ingestion.storage import (
     StorageError,
     StorageUnavailable,
 )
+from picflow.access import mark_event_staff_preview
 from picflow.forms import EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from picflow.gallery import (
     GALLERY_VARIANTS,
@@ -43,14 +44,17 @@ def metrics(request):  # noqa: ARG001
 
 def event_catalog(request):
     today = date.today()
-    published = Event.objects.published()
-    upcoming = list(published.filter(end_date__gte=today).order_by("start_date", "name"))
-    past = list(published.filter(end_date__lt=today).order_by("-start_date", "name"))
-    return render(request, "catalog/event_catalog.html", {"events": [*upcoming, *past]})
+    visible = Event.objects.site_visible_to(request.user)
+    upcoming = list(visible.filter(end_date__gte=today).order_by("start_date", "name"))
+    past = list(visible.filter(end_date__lt=today).order_by("-start_date", "name"))
+    events = [*upcoming, *past]
+    mark_event_staff_preview(request, events)
+    return render(request, "catalog/event_catalog.html", {"events": events})
 
 
 def event_detail(request, slug: str, *, selfie_search_form=None):
-    event = get_object_or_404(Event.objects.published(), slug=slug)
+    event = get_object_or_404(Event.objects.site_visible_to(request.user), slug=slug)
+    mark_event_staff_preview(request, (event,))
     if selfie_search_form is None and event.access_type == Event.AccessType.FREE:
         selfie_search_form = SelfieSearchUploadForm()
     selfie_feedback_enabled = bool(settings.SELFIE_FEEDBACK_ENABLED)
@@ -163,11 +167,13 @@ def _public_media_resolver() -> PublicMediaResolver:
 
 
 @require_GET
-def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse:  # noqa: ARG001
+def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse:
     if variant not in GALLERY_VARIANTS:
         return HttpResponse(status=404)
     event = get_object_or_404(
-        Event.objects.published(), slug=slug, access_type=Event.AccessType.FREE
+        Event.objects.site_visible_to(request.user),
+        slug=slug,
+        access_type=Event.AccessType.FREE,
     )
     photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
     try:
@@ -180,9 +186,11 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
 
 
 @require_GET
-def photo_download(request, slug: str, photo_id: str) -> HttpResponse:  # noqa: ARG001
+def photo_download(request, slug: str, photo_id: str) -> HttpResponse:
     event = get_object_or_404(
-        Event.objects.published(), slug=slug, access_type=Event.AccessType.FREE
+        Event.objects.site_visible_to(request.user),
+        slug=slug,
+        access_type=Event.AccessType.FREE,
     )
     photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
     try:

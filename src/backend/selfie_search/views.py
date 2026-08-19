@@ -16,6 +16,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
+from picflow.access import mark_event_staff_preview
 from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhotoFactory,
@@ -62,10 +63,15 @@ logger = logging.getLogger(__name__)
 
 @require_POST
 def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id):  # noqa: ARG001
-    event = get_object_or_404(Event.objects.published(), slug=event_slug)
+    event = get_object_or_404(Event.objects.site_visible_to(request.user), slug=event_slug)
     photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
     try:
-        created = submit_gallery_photo_search(event=event, photo=photo, detection_id=detection_id)
+        created = submit_gallery_photo_search(
+            event=event,
+            photo=photo,
+            detection_id=detection_id,
+            user=request.user,
+        )
     except GallerySearchUnavailable:
         return _not_found_response()
     except GallerySearchFailed:
@@ -80,7 +86,7 @@ def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id): 
 @require_POST
 def submit(request, event_slug: str):
     started_at = monotonic()
-    event = get_object_or_404(Event.objects.published(), slug=event_slug)
+    event = get_object_or_404(Event.objects.site_visible_to(request.user), slug=event_slug)
     feedback_correlation = (
         _validated_feedback_correlation(request.POST.get("feedback_correlation", ""))
         if settings.SELFIE_FEEDBACK_ENABLED
@@ -105,6 +111,7 @@ def submit(request, event_slug: str):
             event=event,
             selfie=selfie,
             storage=TemporarySelfieStorage(),
+            user=request.user,
         )
     except StorageUnavailable:
         _emit_submission_finished(
@@ -169,7 +176,7 @@ def _emit_submission_finished(
 
 
 def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa: ARG001
-    search = _public_search(event_slug=event_slug, public_token=public_token)
+    search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
     is_gallery_origin = search.configuration.get("processor") == "gallery_photo_query"
@@ -261,7 +268,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
 
 @require_POST
 def process_gallery_search(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa: ARG001
-    search = _public_search(event_slug=event_slug, public_token=public_token)
+    search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if (
         search is None
         or search.status != SelfieSearch.Status.QUEUED
@@ -282,7 +289,7 @@ def process_gallery_search(request, event_slug: str, public_token: str) -> HttpR
 
 
 def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
-    search = _public_search(event_slug=event_slug, public_token=public_token)
+    search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
     return JsonResponse(public_status_payload(search))
@@ -292,7 +299,7 @@ def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # 
 def feedback(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
     if not settings.SELFIE_FEEDBACK_ENABLED:
         return _not_found_response()
-    search = _public_search(event_slug=event_slug, public_token=public_token)
+    search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None or search.configuration.get("processor") == "gallery_photo_query":
         return _not_found_response()
     form = FeedbackSubmissionForm(data=request.POST, files=request.FILES)
@@ -324,7 +331,7 @@ def result_media(
 ) -> HttpResponseBase:  # noqa: ARG001
     if variant not in GALLERY_VARIANTS:
         return _not_found_response()
-    search = _public_search(event_slug=event_slug, public_token=public_token)
+    search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
     photo = saved_ready_result_photo(search=search, photo_id=photo_id)
@@ -341,7 +348,7 @@ def result_media(
 
 @require_GET
 def result_download(request, event_slug: str, public_token: str, photo_id: str) -> HttpResponseBase:  # noqa: ARG001
-    search = _public_search(event_slug=event_slug, public_token=public_token)
+    search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
     photo = saved_ready_result_photo(search=search, photo_id=photo_id)
@@ -376,11 +383,17 @@ _TERMINAL_SEARCH_STATUSES = frozenset(
 )
 
 
-def _public_search(*, event_slug: str, public_token: str) -> SelfieSearch | None:
+def _public_search(request, *, event_slug: str, public_token: str) -> SelfieSearch | None:
     try:
-        return resolve_public_result(event_slug=event_slug, public_token=public_token)
+        search = resolve_public_result(
+            event_slug=event_slug,
+            public_token=public_token,
+            user=request.user,
+        )
     except PublicSearchNotFound:
         return None
+    mark_event_staff_preview(request, (search.event,))
+    return search
 
 
 def _result_media_url_builder(*, event_slug: str, public_token: str):

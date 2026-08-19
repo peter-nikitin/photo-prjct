@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_dashboard_is_importable_and_covers_only_configured_monitoring_streams() -> None:
     dashboard = json.loads((ROOT / "deploy/monitoring/dashboard.json").read_text(encoding="utf-8"))
 
-    assert dashboard["name"] == "findme-photo-staging-overview"
+    assert dashboard["name"] == "findme-photo-deployment-overview"
     assert dashboard["folderId"] == "__YANDEX_CLOUD_FOLDER_ID__"
-    assert dashboard["labels"] == {"environment": "staging", "managed-by": "repository"}
+    assert dashboard["labels"] == {"managed-by": "repository"}
 
     charts = {
         widget["chart"]["title"]: widget["chart"]
@@ -39,7 +39,7 @@ def test_dashboard_is_importable_and_covers_only_configured_monitoring_streams()
         "app.findme_http_request_duration_seconds",
     ):
         assert metric in rendered_queries
-    assert 'environment="staging"' in rendered_queries
+    assert 'environment="staging"' not in rendered_queries
     assert 'check="canonical-health"' in rendered_queries
     assert 'service="custom"' in rendered_queries
     assert all(
@@ -127,8 +127,8 @@ def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() ->
     runbook = (ROOT / "docs/runbooks/minimal-monitoring.md").read_text(encoding="utf-8")
 
     for required in (
-        "findme-photo-staging-overview",
-        "findme-photo-staging-public-service-unavailable",
+        "findme-photo-deployment-overview",
+        "findme-photo-deployment-public-service-unavailable",
         "YANDEX_MONITORING_API_KEY",
         "YANDEX_CLOUD_FOLDER_ID",
         "Not activated",

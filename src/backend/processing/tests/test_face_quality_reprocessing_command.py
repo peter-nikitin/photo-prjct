@@ -227,7 +227,7 @@ class FaceQualityReprocessingCommandTests(TestCase):
         call_command("reprocess_event_face_embeddings", **options)
         return cast(CommandReport, json.loads(output.getvalue()))
 
-    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, DEBUG=True)
     def test_local_adaface_mode_requires_the_explicit_event_and_manifest_identity(self) -> None:
         """Removing either local corpus identity must stop before any v5 job is written."""
         output = StringIO()
@@ -249,7 +249,7 @@ class FaceQualityReprocessingCommandTests(TestCase):
                 stdout=output,
             )
 
-    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, DEBUG=True)
     def test_local_adaface_apply_limit_enrolls_the_canonical_canary_then_full_cohort(
         self,
     ) -> None:
@@ -311,7 +311,7 @@ class FaceQualityReprocessingCommandTests(TestCase):
             ["canary-a", "canary-b"],
         )
 
-    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, DEBUG=True)
     def test_limit_is_local_apply_only_and_validates_before_canary_slice(self) -> None:
         self.accepted_preview_photo("canary-validation")
 

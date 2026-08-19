@@ -4,7 +4,7 @@ set -eu
 umask 077
 
 fail() {
-    printf '%s\n' "[staging-local] stage=preflight status=error code=$1" >&2
+    printf '%s\n' "[local-web] stage=preflight status=error code=$1" >&2
     exit 1
 }
 
@@ -19,7 +19,7 @@ cleanup() {
     fi
     if ! rm -rf "$temporary_root" >/dev/null 2>&1; then
         printf '%s\n' \
-            "[staging-local] stage=cleanup status=error code=cleanup_failed retained_path=$temporary_root" \
+            "[local-web] stage=cleanup status=error code=cleanup_failed retained_path=$temporary_root" \
             >&2
         return 1
     fi
@@ -35,7 +35,7 @@ finish() {
         exit 1
     fi
     if [ "$ready" -eq 1 ]; then
-        printf '%s\n' '[staging-local] stage=launch status=ready'
+        printf '%s\n' '[local-web] stage=launch status=ready'
     fi
     exit "$status"
 }
@@ -144,13 +144,13 @@ docker compose version >/dev/null 2>&1 || fail docker_compose_missing
 
 if [ "$resolved" -eq 0 ]; then
     exec "$python_bin" "$repository_root/scripts/run-with-environment-secrets.py" \
-        --environment staging --consumer local-web --identity yc -- \
-        "$repository_root/scripts/staging-local.sh" --resolved
+        --consumer local-web --identity yc -- \
+        "$repository_root/scripts/local-web.sh" --resolved
 fi
 
 [ -n "${FINDME_ENV_FILE:-}" ] && [ -f "$FINDME_ENV_FILE" ] || fail resolved_environment_missing
 
-temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/findme-staging-local.XXXXXX") || fail temporary_file_failed
+temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/findme-local-web.XXXXXX") || fail temporary_file_failed
 trap on_exit EXIT
 trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
@@ -161,7 +161,7 @@ overrides_path="$temporary_root/overrides.env"
 overlay_path="$temporary_root/compose.yml"
 governed_path="$temporary_root/governed-names"
 
-if ! "$python_bin" - "$repository_root/deploy/environment-secrets/staging.json" "$overrides_path" \
+if ! "$python_bin" - "$repository_root/deploy/environment-secrets.json" "$overrides_path" \
     "$overlay_path" "$governed_path" <<'PY'
 import json
 import re
@@ -229,11 +229,11 @@ while IFS= read -r governed_name; do
     unset "$governed_name"
 done < "$governed_path"
 
-printf '%s\n' '[staging-local] warning=staging-capable-local-process'
+printf '%s\n' '[local-web] warning=local-capable-process'
 cd "$repository_root"
 if ! docker compose --env-file "$FINDME_ENV_FILE" --env-file "$overrides_path" \
     -f "$repository_root/docker-compose.yml" -f "$overlay_path" up -d db web >/dev/null 2>&1; then
-    printf '%s\n' '[staging-local] stage=launch status=error code=compose_failed' >&2
+    printf '%s\n' '[local-web] stage=launch status=error code=compose_failed' >&2
     finish 1 0
 fi
 finish 0 1

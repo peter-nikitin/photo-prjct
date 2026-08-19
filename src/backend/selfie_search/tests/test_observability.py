@@ -135,7 +135,6 @@ def test_ranking_v2_emits_only_bounded_expansion_fields_and_reconciles_counts() 
         "event",
         "occurred_at",
         "service",
-        "environment",
         *(_ranking_v2_fields().keys()),
     }
 
@@ -346,7 +345,6 @@ def test_probe_has_only_the_common_envelope_and_random_non_secret_id() -> None:
         "event",
         "occurred_at",
         "service",
-        "environment",
         "probe_id",
     }
     assert payload["event"] == "selfie_observability_probe"
@@ -468,13 +466,11 @@ def test_backend_events_have_exact_compact_envelope_and_event_fields(
         "event",
         "occurred_at",
         "service",
-        "environment",
         *expected_fields,
     }
     assert payload["schema_version"] == (1 if event is SelfieEventName.SUBMISSION_FINISHED else 2)
     assert payload["event"] == event.value
     assert payload["service"] == "web"
-    assert isinstance(payload["environment"], str)
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", payload["occurred_at"])
     datetime.strptime(payload["occurred_at"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
     assert payload["event_id"] == "17"

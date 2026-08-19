@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-HELPER = ROOT / "deploy/run-staging-remote.sh"
+HELPER = ROOT / "deploy/run-remote.sh"
 
 
 def test_remote_helper_is_directly_executable_by_the_resolver() -> None:
@@ -36,10 +36,9 @@ def _resolver_step(
     step = _step(job, name)
     command = step["run"]
     assert "scripts/run-with-environment-secrets.py" in command
-    assert "--environment staging" in command
     assert f"--consumer {consumer}" in command
     assert "--identity github-oidc" in command
-    assert "deploy/run-staging-remote.sh" in command
+    assert "deploy/run-remote.sh" in command
     assert "${{ secrets." not in command
     if records_verified_identity:
         assert "photo_worker_processor_identities=%s\\n" in command
@@ -48,238 +47,81 @@ def _resolver_step(
         assert "GITHUB_OUTPUT" not in command
 
 
-def test_every_migrated_staging_consumer_uses_environment_oidc_and_its_projection() -> None:
+def test_generic_workflows_use_only_the_canonical_secret_consumers() -> None:
     deploy = _workflow("deploy.yml")
     monitor = _workflow("monitor-public-health.yml")
-    promotion = _workflow("promote-production.yml")
-    benchmark = _workflow("staging-face-embedding-benchmark.yml")
+    benchmark = _workflow("face-embedding-benchmark.yml")
 
-    expected = [
-        (
-            "stage-observability-release",
-            deploy["jobs"]["stage-observability-release"],
-            [
-                ("Stage privileged observability source", "staging-remote-check"),
-            ],
-        ),
-        (
-            "deploy",
-            deploy["jobs"]["deploy"],
-            [
-                ("Verify staged paused observability release", "staging-remote-check"),
-                ("Run staging deployment", "staging-deploy"),
-                ("Verify private upload storage contract", "staging-remote-check"),
-                ("Verify selfie-search temporary storage contract", "staging-remote-check"),
-                ("Verify selfie-feedback storage contract", "staging-deploy"),
-            ],
-        ),
-        (
-            "configure-monitoring-agent",
-            deploy["jobs"]["configure-monitoring-agent"],
-            [
-                ("Configure staging Unified Agent", "staging-remote-check"),
-            ],
-        ),
-        (
-            "probe",
-            monitor["jobs"]["probe"],
-            [
-                ("Probe public health and write metrics", "staging-public-monitor"),
-            ],
-        ),
-        (
-            "verify-staging",
-            promotion["jobs"]["verify-staging"],
-            [
-                ("Confirm image was deployed successfully to staging", "staging-remote-check"),
-            ],
-        ),
-        (
-            "benchmark",
-            benchmark["jobs"]["benchmark"],
-            [
-                ("Run bounded benchmark operation", "staging-remote-check"),
-            ],
-        ),
-    ]
-
-    for _name, job, steps in expected:
-        assert job["environment"] == "staging"
-        assert job["permissions"] == {"contents": "read", "id-token": "write"}
-        for step_name, consumer in steps:
-            _resolver_step(
-                job,
-                step_name,
-                consumer,
-                records_verified_identity=(_name == "verify-staging"),
-            )
-
-
-def test_every_resolver_job_checks_out_without_persisting_credentials() -> None:
-    jobs = [
-        _workflow("deploy.yml")["jobs"]["stage-observability-release"],
-        _workflow("deploy.yml")["jobs"]["deploy"],
-        _workflow("deploy.yml")["jobs"]["configure-monitoring-agent"],
-        _workflow("monitor-public-health.yml")["jobs"]["probe"],
-        _workflow("promote-production.yml")["jobs"]["verify-staging"],
-        _workflow("staging-face-embedding-benchmark.yml")["jobs"]["benchmark"],
-    ]
-    expected_options = [
-        {
-            "ref": "${{ github.sha }}",
-            "fetch-depth": 1,
-            "persist-credentials": False,
-        },
-        {
-            "ref": "${{ needs.classify-staging-release.outputs.release_sha }}",
-            "fetch-depth": 1,
-            "persist-credentials": False,
-        },
-        {"persist-credentials": False},
-        {"persist-credentials": False},
-        {"persist-credentials": False},
-        {"persist-credentials": False},
-    ]
-    for job, expected in zip(jobs, expected_options, strict=True):
-        checkout = [step for step in job["steps"] if step.get("uses") == "actions/checkout@v4"]
-        assert len(checkout) == 1
-        assert checkout[0]["with"] == expected
-
-
-def test_build_and_pull_request_jobs_do_not_receive_oidc_or_lockbox_access() -> None:
-    deploy = _workflow("deploy.yml")
-    ci = _workflow("ci.yml")
-
-    assert deploy["jobs"]["build"]["permissions"] == {"contents": "read", "packages": "write"}
-    assert "id-token" not in deploy["jobs"]["build"]["permissions"]
-    assert "run-with-environment-secrets.py" not in str(deploy["jobs"]["build"])
-    for job in ci["jobs"].values():
-        assert "id-token" not in job.get("permissions", {})
-        assert "run-with-environment-secrets.py" not in str(job)
-
-
-def test_migrated_staging_jobs_have_no_github_secret_expressions_or_secret_outputs() -> None:
-    workflows = {
-        "deploy.yml": ("stage-observability-release", "deploy", "configure-monitoring-agent"),
-        "monitor-public-health.yml": ("probe",),
-        "promote-production.yml": ("verify-staging",),
-        "staging-face-embedding-benchmark.yml": ("benchmark",),
-    }
-    for workflow_name, job_names in workflows.items():
-        workflow = _workflow(workflow_name)
-        for job_name in job_names:
-            rendered = str(workflow["jobs"][job_name])
-            assert "${{ secrets." not in rendered
-            if workflow_name == "promote-production.yml" and job_name == "verify-staging":
-                output_step = _step(
-                    workflow["jobs"][job_name], "Confirm image was deployed successfully to staging"
-                )
-                assert output_step["id"] == "verified-worker-identity"
-                assert "photo_worker_processor_identities=%s\\n" in output_step["run"]
-                assert (
-                    '"$PHOTO_WORKER_PROCESSOR_IDENTITIES" >> "$GITHUB_OUTPUT"' in output_step["run"]
-                )
-            else:
-                assert "GITHUB_OUTPUT" not in rendered
-
-    build = _workflow("deploy.yml")["jobs"]["build"]
-    assert "${{ secrets.GITHUB_TOKEN }}" in str(build)
-    assert str(build).count("secrets.GITHUB_TOKEN") == 1
-
-
-def test_staging_workflows_supply_remote_host_user_and_deployment_identity_from_variables() -> None:
-    deploy = _workflow("deploy.yml")
-    promotion = _workflow("promote-production.yml")
-
-    deploy_step = _step(deploy["jobs"]["deploy"], "Run staging deployment")
-    verify_step = _step(
-        promotion["jobs"]["verify-staging"], "Confirm image was deployed successfully to staging"
+    assert set(deploy[True]) == {"workflow_dispatch"}
+    assert deploy["name"] == "Deploy"
+    assert deploy["jobs"]["deploy"]["concurrency"]["group"] == "deploy"
+    assert all("environment" not in job for job in deploy["jobs"].values())
+    _resolver_step(
+        deploy["jobs"]["stage-observability-release"],
+        "Stage privileged observability source",
+        "remote-check",
     )
-    for step in (deploy_step, verify_step):
-        assert step["env"]["STAGING_VM_HOST"] == "${{ vars.VM_HOST }}"
-        assert step["env"]["STAGING_VM_USER"] == "${{ vars.VM_USER }}"
-        assert step["env"]["STAGING_SSH_KNOWN_HOSTS"] == "${{ vars.STAGING_SSH_KNOWN_HOSTS }}"
-    assert deploy_step["env"]["DB_NAME"] == "${{ vars.DB_NAME }}"
-    assert deploy_step["env"]["DB_USER"] == "${{ vars.DB_USER }}"
-    assert deploy_step["env"]["ALLOWED_HOSTS"] == "${{ vars.ALLOWED_HOSTS }}"
-    assert deploy_step["env"]["GHCR_USERNAME"] == "${{ vars.GHCR_USERNAME }}"
-
-
-def test_promotion_forwards_explicit_quality_identity_without_activation() -> None:
-    """The rollout can opt in to v4 through deployment variables without changing worker state."""
-    deploy = _workflow("deploy.yml")
-    promotion = _workflow("promote-production.yml")
-    staging_step = _step(deploy["jobs"]["deploy"], "Run staging deployment")
-    verification_step = _step(
-        promotion["jobs"]["verify-staging"], "Confirm image was deployed successfully to staging"
+    _resolver_step(deploy["jobs"]["deploy"], "Run deployment", "deploy")
+    _resolver_step(
+        monitor["jobs"]["probe"], "Probe public health and write metrics", "public-monitor"
     )
-    production_step = _step(promotion["jobs"]["promote"], "Apply production deployment")
-
-    for step in (staging_step, verification_step):
-        assert step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-            "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2,"
-            "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2' }}"
-        )
-    for step in (staging_step, production_step):
-        assert step["env"]["PHOTO_PROCESSING_PREVIEW_ENABLED"] == (
-            "${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'True' }}"
-        )
-        assert step["env"]["PHOTO_PROCESSING_FACE_ENABLED"] == (
-            "${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'True' }}"
-        )
-
-    assert production_step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-        "${{ needs.verify-staging.outputs.photo_worker_processor_identities }}"
+    _resolver_step(
+        benchmark["jobs"]["benchmark"], "Run bounded benchmark operation", "remote-check"
     )
-    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES" in production_step["with"]["envs"].split(",")
 
 
-def test_promotion_reuses_the_staging_verified_identity_and_stops_before_production_on_mismatch(
-    tmp_path: Path, remote_boundary: Path
+def test_remote_helper_keeps_secret_material_out_of_transport_arguments() -> None:
+    source = HELPER.read_text(encoding="utf-8")
+
+    assert 'require_private_file "$FINDME_ENV_FILE"' in source
+    assert "docker-compose.deployment.yml docker-compose.https.yml deploy" in source
+    assert 'write_remote_environment "$FINDME_ENV_FILE"' in source
+    assert "findme.service=web findme.environment" not in source
+
+
+def test_public_monitor_helper_accepts_the_exact_projected_environment_without_network(
+    tmp_path: Path,
 ) -> None:
-    """A staging marker mismatch must stop promotion before a different identity is selected."""
-    identity = "1/capture_metadata/2,3/face_embedding/4"
-    environment, _sentinel = _remote_environment(tmp_path, remote_boundary)
-    environment["PHOTO_WORKER_PROCESSOR_IDENTITIES"] = identity
-    remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
-    (remote_root / ".env").write_text(
-        f"PHOTO_WORKER_PROCESSOR_IDENTITIES={identity}\n", encoding="utf-8"
-    )
-
-    verified = _run_helper(["verify-staging-image"], environment)
-
-    assert verified.returncode == 0, verified.stderr
-    assert f'PHOTO_WORKER_PROCESSOR_IDENTITIES="{identity}"' in Path(
-        environment["SSH_STDIN"]
-    ).read_text(encoding="utf-8")
-
-    (remote_root / ".env").write_text(
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/face_embedding/2\n",
+    private_environment = tmp_path / "public-monitor.env"
+    private_environment.write_text('YANDEX_MONITORING_API_KEY="private-monitor-token"\n')
+    private_environment.chmod(0o600)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    invocation = tmp_path / "monitor-invocation"
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'printf \'%s|%s|%s|%s\\n\' "$MONITOR_TARGET" "$MONITOR_CHECK" '
+        '"$YANDEX_CLOUD_FOLDER_ID" "$*" > "$PUBLIC_MONITOR_INVOCATION"\n',
         encoding="utf-8",
     )
-    mismatch = _run_helper(["verify-staging-image"], environment)
+    fake_python.chmod(0o755)
 
-    assert mismatch.returncode == 2
-    assert mismatch.stderr == "[staging-remote] stage=remote status=error code=remote_failed\n"
+    result = subprocess.run(
+        ["sh", HELPER, "public-monitor"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "FINDME_ENV_FILE": str(private_environment),
+            "MONITOR_TARGET": "https://findme-photo.ru/health/",
+            "MONITOR_CHECK": "canonical-health",
+            "YANDEX_CLOUD_FOLDER_ID": "folder-id",
+            "PUBLIC_MONITOR_INVOCATION": str(invocation),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
-    workflow = _workflow("promote-production.yml")
-    verify_staging = workflow["jobs"]["verify-staging"]
-    promote = workflow["jobs"]["promote"]
-    verify_step = _step(verify_staging, "Confirm image was deployed successfully to staging")
-    production_step = _step(promote, "Apply production deployment")
-
-    assert verify_step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-        "${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2,"
-        "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2' }}"
-    )
-    assert verify_staging["outputs"]["photo_worker_processor_identities"] == (
-        "${{ steps.verified-worker-identity.outputs.photo_worker_processor_identities }}"
-    )
-    assert production_step["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-        "${{ needs.verify-staging.outputs.photo_worker_processor_identities }}"
-    )
-    assert promote["needs"] == "verify-staging"
-    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES" in production_step["with"]["envs"].split(",")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[remote] stage=public-monitor status=ok\n"
+    assert stat.S_IMODE(private_environment.stat().st_mode) == 0o600
+    invocation_line = invocation.read_text(encoding="utf-8")
+    assert invocation_line.startswith("https://findme-photo.ru/health/|canonical-health|folder-id|")
+    assert str(private_environment) in invocation_line
+    assert "private-monitor-token" not in result.stdout + result.stderr
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -291,7 +133,6 @@ def _deployment_values() -> dict[str, str]:
     return {
         "APP_IMAGE": "ghcr.io/peter-nikitin/photo-prjct:test-image",
         "WORKER_IMAGE": "ghcr.io/peter-nikitin/photo-prjct-worker:test-image",
-        "DEPLOYMENT_TARGET": "staging",
         "DEBUG": "False",
         "ALLOWED_HOSTS": "staging.findme-photo.ru",
         "GUNICORN_WORKERS": "5",
@@ -362,8 +203,8 @@ def remote_boundary(tmp_path: Path) -> Path:
         done
         release_sha=${RELEASE_SHA:-missing-release-sha}
         release_root="/opt/photo-prjct/privileged-observability-releases/$release_sha"
-        root_target="$STAGING_VM_USER@$STAGING_VM_HOST:$release_root/"
-        deploy_target="$STAGING_VM_USER@$STAGING_VM_HOST:$release_root/deploy/"
+        root_target="$VM_USER@$VM_HOST:$release_root/"
+        deploy_target="$VM_USER@$VM_HOST:$release_root/deploy/"
         case "$target" in
           "$root_target")
             destination="$REMOTE_RELEASES/$release_sha"
@@ -393,11 +234,11 @@ def remote_boundary(tmp_path: Path) -> Path:
           esac
           source_count=$((source_count + 1))
           case "$target_kind:$argument" in
-            root:staging-observability-release-sha)
-              : > "$destination/staging-observability-release-sha"
+            root:observability-release-sha)
+              : > "$destination/observability-release-sha"
               ;;
-            root:staging-observability-source.sha256)
-              : > "$destination/staging-observability-source.sha256"
+            root:observability-source.sha256)
+              : > "$destination/observability-source.sha256"
               ;;
             deploy:deploy/bootstrap-selfie-observability.sh)
               : > "$destination/bootstrap-selfie-observability.sh"
@@ -447,7 +288,7 @@ def remote_boundary(tmp_path: Path) -> Path:
           exit 0
         fi
         case "$remote_command" in
-          *" 'verify-staging-image'")
+          *" 'verify-deployed-image'")
             escaped_remote_root=$(printf '%s' "$REMOTE_DEPLOY_ROOT" | sed 's/[&|]/\\&/g')
             rewritten_command="$(
               printf '%s' "$remote_command" | sed "s|/opt/photo-prjct|$escaped_remote_root|g"
@@ -487,9 +328,9 @@ def _remote_environment(tmp_path: Path, remote_boundary: Path) -> tuple[dict[str
         "PATH": f"{remote_boundary}{os.pathsep}{os.environ['PATH']}",
         "TMPDIR": str(tmp_path),
         "FINDME_ENV_FILE": str(environment_file),
-        "STAGING_VM_HOST": "staging.example.test",
-        "STAGING_VM_USER": "deployer",
-        "STAGING_SSH_KNOWN_HOSTS": "staging.example.test ssh-ed25519 known-host-sentinel",
+        "VM_HOST": "staging.example.test",
+        "VM_USER": "deployer",
+        "VM_SSH_KNOWN_HOSTS": "staging.example.test ssh-ed25519 known-host-sentinel",
         "SCP_ARGUMENTS": str(tmp_path / "scp-arguments"),
         "SCP_CALLS": str(tmp_path / "scp-calls"),
         "SSH_ARGUMENTS": str(tmp_path / "ssh-arguments"),
@@ -559,7 +400,7 @@ def test_deploy_helper_uses_private_files_and_ssh_stdin_without_disclosing_value
     scp_arguments = Path(environment["SCP_ARGUMENTS"]).read_text(encoding="utf-8")
     ssh_arguments = Path(environment["SSH_ARGUMENTS"]).read_text(encoding="utf-8")
     ssh_stdin = Path(environment["SSH_STDIN"]).read_text(encoding="utf-8")
-    assert "docker-compose.prod.yml" in scp_arguments
+    assert "docker-compose.deployment.yml" in scp_arguments
     assert "-r" in scp_arguments.splitlines()
     assert "deploy" in scp_arguments
     assert "StrictHostKeyChecking=yes" in ssh_arguments
@@ -570,8 +411,8 @@ def test_deploy_helper_uses_private_files_and_ssh_stdin_without_disclosing_value
     assert "VM_SSH_KEY_FILE" not in ssh_stdin
     for output in (result.stdout, result.stderr, scp_arguments, ssh_arguments):
         assert sentinel not in output
-    assert result.stdout == "[staging-remote] stage=deploy status=ok\n"
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert result.stdout == "[remote] stage=deploy status=ok\n"
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 def test_deploy_helper_stops_before_ssh_when_copy_fails_and_cleans_private_files(
@@ -584,17 +425,17 @@ def test_deploy_helper_stops_before_ssh_when_copy_fails_and_cleans_private_files
 
     assert result.returncode == 2
     assert not Path(environment["SSH_ARGUMENTS"]).exists()
-    assert result.stderr == "[staging-remote] stage=copy status=error code=copy_failed\n"
+    assert result.stderr == "[remote] stage=copy status=error code=copy_failed\n"
     assert sentinel not in result.stdout
     assert sentinel not in result.stderr
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
-def test_deploy_helper_preserves_the_existing_staging_apply_boundary() -> None:
+def test_deploy_helper_preserves_the_existing_deployment_apply_boundary() -> None:
     source = HELPER.read_text(encoding="utf-8")
 
     assert "DEPLOY_ROOT=/opt/photo-prjct" in source
-    assert "COMPOSE_PROJECT_NAME=photo-prjct-staging" in source
+    assert "COMPOSE_PROJECT_NAME=photo-prjct" in source
     assert "exec sh /opt/photo-prjct/deploy/apply-deployment.sh" in source
 
 
@@ -635,6 +476,30 @@ def test_monitoring_configuration_copies_its_tracked_inputs_before_remote_execut
     assert sentinel not in result.stderr
 
 
+def test_remote_preflight_proves_private_ssh_projection_without_remote_mutation(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    environment, sentinel = _remote_environment(tmp_path, remote_boundary)
+
+    result = _run_helper(["remote-preflight"], environment)
+
+    assert result.returncode == 0, result.stderr
+    ssh_arguments = Path(environment["SSH_ARGUMENTS"]).read_text(encoding="utf-8")
+    ssh_stdin = Path(environment["SSH_STDIN"]).read_text(encoding="utf-8")
+    assert "StrictHostKeyChecking=yes" in ssh_arguments
+    assert "UserKnownHostsFile=" in ssh_arguments
+    assert str(tmp_path / "staging-key") in ssh_arguments
+    assert "deployer@staging.example.test" in ssh_arguments
+    assert "test -d /opt/photo-prjct && test -r /opt/photo-prjct/deployed-image" in ssh_arguments
+    assert "docker compose" not in ssh_arguments
+    assert "mkdir" not in ssh_arguments
+    assert ssh_stdin == ""
+    for output in (result.stdout, result.stderr, ssh_arguments, ssh_stdin):
+        assert sentinel not in output
+    assert result.stdout == "[remote] stage=remote-preflight status=ok\n"
+    assert not list(tmp_path.glob("findme-remote.*"))
+
+
 def test_paused_observability_stage_creates_and_populates_the_exact_release_tree_over_private_ssh(
     tmp_path: Path, remote_boundary: Path
 ) -> None:
@@ -649,8 +514,8 @@ def test_paused_observability_stage_creates_and_populates_the_exact_release_tree
 
     assert result.returncode == 0, result.stderr
     release_root = Path(environment["REMOTE_RELEASES"]) / release_sha
-    assert (release_root / "staging-observability-release-sha").is_file()
-    assert (release_root / "staging-observability-source.sha256").is_file()
+    assert (release_root / "observability-release-sha").is_file()
+    assert (release_root / "observability-source.sha256").is_file()
     assert (release_root / "deploy/bootstrap-selfie-observability.sh").is_file()
     assert (release_root / "deploy/selfie-observability").is_dir()
     assert not (release_root / "bootstrap-selfie-observability.sh").exists()
@@ -679,9 +544,9 @@ def test_paused_observability_stage_creates_and_populates_the_exact_release_tree
         f"/opt/photo-prjct/privileged-observability-releases/{release_sha}/deploy"
     ) in ssh_arguments
     assert Path(environment["SSH_STDIN"]).read_text(encoding="utf-8") == ""
-    assert result.stdout == "[staging-remote] stage=stage-paused-observability-release status=ok\n"
+    assert result.stdout == "[remote] stage=stage-paused-observability-release status=ok\n"
     assert sentinel not in result.stdout + result.stderr + "\n".join(scp_arguments) + ssh_arguments
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 @pytest.mark.parametrize(
@@ -709,11 +574,11 @@ def test_paused_observability_operations_reject_invalid_release_identifiers_befo
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr == f"[staging-remote] stage=observability status=error code={error}\n"
+    assert result.stderr == f"[remote] stage=observability status=error code={error}\n"
     assert not Path(environment["SCP_ARGUMENTS"]).exists()
     assert not Path(environment["SSH_ARGUMENTS"]).exists()
     assert sentinel not in result.stdout + result.stderr
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 def test_paused_observability_stage_stops_on_copy_failure_without_disclosure(
@@ -729,11 +594,11 @@ def test_paused_observability_stage_stops_on_copy_failure_without_disclosure(
     result = _run_helper(["stage-paused-observability-release"], environment)
 
     assert result.returncode == 2
-    assert result.stderr == "[staging-remote] stage=copy status=error code=copy_failed\n"
+    assert result.stderr == "[remote] stage=copy status=error code=copy_failed\n"
     assert Path(environment["SSH_ARGUMENTS"]).exists()
     assert Path(environment["SCP_CALLS"]).read_text(encoding="utf-8").splitlines() == ["call"]
     assert sentinel not in result.stdout + result.stderr
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 def test_paused_observability_stage_stops_before_copy_when_directory_creation_fails(
@@ -749,11 +614,11 @@ def test_paused_observability_stage_stops_before_copy_when_directory_creation_fa
     result = _run_helper(["stage-paused-observability-release"], environment)
 
     assert result.returncode == 2
-    assert result.stderr == "[staging-remote] stage=remote status=error code=remote_failed\n"
+    assert result.stderr == "[remote] stage=remote status=error code=remote_failed\n"
     assert Path(environment["SSH_ARGUMENTS"]).exists()
     assert not Path(environment["SCP_ARGUMENTS"]).exists()
     assert sentinel not in result.stdout + result.stderr
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 def test_paused_observability_verification_forwards_only_safe_identifiers_to_ssh(
@@ -778,8 +643,8 @@ def test_paused_observability_verification_forwards_only_safe_identifiers_to_ssh
     assert f'RELEASE_SHA="{release_sha}"' in ssh_stdin
     assert f'OBSERVABILITY_SOURCE_MANIFEST_SHA256="{source_manifest_sha256}"' in ssh_stdin
     assert sentinel not in result.stdout + result.stderr + ssh_arguments
-    assert result.stdout == "[staging-remote] stage=verify-paused-observability-release status=ok\n"
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert result.stdout == "[remote] stage=verify-paused-observability-release status=ok\n"
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 def test_paused_observability_verification_reports_ssh_failure_without_disclosure(
@@ -795,9 +660,9 @@ def test_paused_observability_verification_reports_ssh_failure_without_disclosur
     result = _run_helper(["verify-paused-observability-release"], environment)
 
     assert result.returncode == 2
-    assert result.stderr == "[staging-remote] stage=remote status=error code=remote_failed\n"
+    assert result.stderr == "[remote] stage=remote status=error code=remote_failed\n"
     assert sentinel not in result.stdout + result.stderr
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 def test_benchmark_operation_preserves_inputs_inside_the_remote_environment(
@@ -820,7 +685,7 @@ def test_benchmark_operation_preserves_inputs_inside_the_remote_environment(
     assert 'BENCHMARK_SOURCE_RUN_UUID=""' in remote_environment
     assert result.stdout == (
         "BENCHMARK_RUN_ID=00000000-0000-0000-0000-000000000000\n"
-        "[staging-remote] stage=face-embedding-benchmark status=ok\n"
+        "[remote] stage=face-embedding-benchmark status=ok\n"
     )
     assert sentinel not in result.stdout + result.stderr
 
@@ -831,12 +696,12 @@ def test_remote_failure_is_sanitized_and_cleans_private_files(
     environment, sentinel = _remote_environment(tmp_path, remote_boundary)
     environment["FAIL_SSH"] = "1"
 
-    result = _run_helper(["verify-staging-image"], environment)
+    result = _run_helper(["verify-deployed-image"], environment)
 
     assert result.returncode == 2
-    assert result.stderr == "[staging-remote] stage=remote status=error code=remote_failed\n"
+    assert result.stderr == "[remote] stage=remote status=error code=remote_failed\n"
     assert sentinel not in result.stdout + result.stderr
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 @pytest.mark.parametrize("signal_number", [signal.SIGHUP, signal.SIGINT, signal.SIGTERM])
@@ -846,7 +711,7 @@ def test_signals_reach_active_transport_and_cleanup_private_files(
     environment, sentinel = _remote_environment(tmp_path, remote_boundary)
     environment["BLOCK_SSH"] = "1"
     process = subprocess.Popen(
-        [HELPER, "verify-staging-image"],
+        [HELPER, "verify-deployed-image"],
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
@@ -872,7 +737,7 @@ def test_signals_reach_active_transport_and_cleanup_private_files(
     ]
     assert (stdout, stderr) == ("", "")
     assert sentinel not in stdout + stderr
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 def test_resistant_transport_is_forced_down_before_the_resolver_deadline(
@@ -881,7 +746,7 @@ def test_resistant_transport_is_forced_down_before_the_resolver_deadline(
     environment, sentinel = _remote_environment(tmp_path, remote_boundary)
     environment.update(BLOCK_SSH="1", RESIST_FIRST_SIGNAL="1")
     process = subprocess.Popen(
-        [HELPER, "verify-staging-image"],
+        [HELPER, "verify-deployed-image"],
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
@@ -908,7 +773,7 @@ def test_resistant_transport_is_forced_down_before_the_resolver_deadline(
     ]
     assert (stdout, stderr) == ("", "")
     assert sentinel not in stdout + stderr
-    assert not list(tmp_path.glob("findme-staging-remote.*"))
+    assert not list(tmp_path.glob("findme-remote.*"))
 
 
 def test_public_monitor_keeps_api_key_out_of_argv_output_and_remote_transport(
@@ -917,7 +782,7 @@ def test_public_monitor_keeps_api_key_out_of_argv_output_and_remote_transport(
     checkout = tmp_path / "checkout"
     (checkout / "deploy").mkdir(parents=True)
     (checkout / "scripts").mkdir()
-    helper = checkout / "deploy/run-staging-remote.sh"
+    helper = checkout / "deploy/run-remote.sh"
     helper.write_bytes(HELPER.read_bytes())
     helper.chmod(0o755)
     record = tmp_path / "monitor-record"
@@ -931,7 +796,6 @@ def test_public_monitor_keeps_api_key_out_of_argv_output_and_remote_transport(
             class ProbeConfig:
                 target: str
                 folder_id: str
-                environment: str
                 check_name: str
                 api_key: str
 
@@ -951,7 +815,6 @@ def test_public_monitor_keeps_api_key_out_of_argv_output_and_remote_transport(
     )
     environment.update(
         MONITOR_TARGET="https://findme-photo.ru/health/",
-        MONITOR_ENVIRONMENT="staging",
         MONITOR_CHECK="canonical-health",
         YANDEX_CLOUD_FOLDER_ID="folder-id",
     )
@@ -974,11 +837,11 @@ def test_remote_helper_rejects_non_private_ssh_key_before_any_remote_command(
     key.chmod(0o644)
     assert stat.S_IMODE(key.stat().st_mode) == 0o644
 
-    result = _run_helper(["verify-staging-image"], environment)
+    result = _run_helper(["verify-deployed-image"], environment)
 
     assert result.returncode == 2
     assert not Path(environment["SCP_ARGUMENTS"]).exists()
     assert not Path(environment["SSH_ARGUMENTS"]).exists()
-    assert result.stderr == "[staging-remote] stage=key status=error code=key_not_private\n"
+    assert result.stderr == "[remote] stage=key status=error code=key_not_private\n"
     assert sentinel not in result.stdout
     assert sentinel not in result.stderr

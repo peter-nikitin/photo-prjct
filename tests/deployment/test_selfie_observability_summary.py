@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import subprocess
 import sys
 from dataclasses import asdict
@@ -10,6 +11,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "deploy" / "selfie-observability" / "summarize.py"
+
+
+class _WorkerEventLogger(logging.Logger):
+    def __init__(self) -> None:
+        super().__init__("worker-summary-contract")
+        self.lines: list[str] = []
+
+    def log(self, level: int, message: str) -> None:  # type: ignore[override]
+        self.lines.append(message)
 
 
 def _load_module():
@@ -29,7 +39,6 @@ def _event(name: str, occurred_at: str, *, schema_version: int = 1, **fields: ob
             "event": name,
             "occurred_at": occurred_at,
             "service": service,
-            "environment": "staging",
             **fields,
         },
         separators=(",", ":"),
@@ -167,6 +176,32 @@ def _terminal_v2(
 
 def _search_id(number: int) -> str:
     return f"00000000-0000-0000-0000-{number:012d}"
+
+
+def test_worker_event_is_accepted_by_the_canonical_summary_envelope() -> None:
+    from photo_worker.observability import emit_selfie_worker_event
+
+    logger = _WorkerEventLogger()
+    emit_selfie_worker_event(
+        logger,
+        event="selfie_worker_attempt_finished",
+        event_id=17,
+        search_id=_search_id(1),
+        job_id=_search_id(2),
+        attempt_id=_search_id(3),
+        outcome="succeeded",
+        reason_code="",
+        retryable=False,
+        download_ms=4,
+        compute_ms=7,
+        total_ms=11,
+    )
+
+    payload = json.loads(logger.lines[0])
+    assert "environment" not in payload
+    summary = _load_module().summarize_jsonl(logger.lines, report_date=date.today())
+    assert summary.worker_attempts["total"] == 1
+    assert summary.integrity["malformed_events"] == 0
 
 
 def test_daily_summary_counts_the_critical_funnel_and_integrity_boundaries() -> None:

@@ -23,9 +23,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATHS = {
-    "staging": REPOSITORY_ROOT / "deploy/environment-secrets/staging.json",
-}
+MANIFEST_PATH = REPOSITORY_ROOT / "deploy/environment-secrets.json"
 LOCKBOX_API_BASE = "https://lockbox.api.cloud.yandex.net"
 LOCKBOX_PAYLOAD_BASE = "https://payload.lockbox.api.cloud.yandex.net"
 YANDEX_TOKEN_EXCHANGE_URL = "https://auth.yandex.cloud/oauth/token"
@@ -60,15 +58,12 @@ def _fail(stage: str, code: str) -> NoReturn:
     raise ResolverError(stage, code)
 
 
-def _load_manifest(environment: str) -> dict[str, Any]:
-    path = MANIFEST_PATHS.get(environment)
-    if path is None:
-        _fail("manifest", "unknown_environment")
+def _load_manifest() -> dict[str, Any]:
     try:
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(MANIFEST_PATH.read_text())
     except (OSError, json.JSONDecodeError):
         _fail("manifest", "manifest_invalid")
-    if not isinstance(manifest, dict) or manifest.get("environment") != environment:
+    if not isinstance(manifest, dict):
         _fail("manifest", "manifest_invalid")
     return manifest
 
@@ -211,7 +206,7 @@ def _github_identity(manifest: Mapping[str, Any], environment: Mapping[str, str]
         "audience": oidc.get("audience"),
         "subject": oidc.get("subject"),
         "repository": oidc.get("repository"),
-        "environment": oidc.get("environment"),
+        "ref": oidc.get("ref"),
         "service_account_id": oidc.get("service_account_id"),
     }
     if (
@@ -237,7 +232,7 @@ def _github_identity(manifest: Mapping[str, Any], environment: Mapping[str, str]
         "aud": expected_fields["audience"],
         "sub": expected_fields["subject"],
         "repository": expected_fields["repository"],
-        "environment": expected_fields["environment"],
+        "ref": expected_fields["ref"],
     }
     if any(claims.get(name) != value for name, value in expected_claims.items()):
         _fail("identity", "identity_claims_mismatch")
@@ -507,8 +502,8 @@ def _run_child(
             signal.signal(number, handler)
 
 
-def _resolve_and_run(environment: str, consumer: str, identity: str, command: Sequence[str]) -> int:
-    manifest = _load_manifest(environment)
+def _resolve_and_run(consumer: str, identity: str, command: Sequence[str]) -> int:
+    manifest = _load_manifest()
     entries = _manifest_entries(manifest)
     projection = _consumer_projection(manifest, consumer, entries)
     iam_token = _obtain_identity(identity, manifest, os.environ)
@@ -534,7 +529,7 @@ def _resolve_and_run(environment: str, consumer: str, identity: str, command: Se
             environment_path = _materialize(temporary_root, projection, entries, values)
             print(
                 f"[environment-secrets] stage=resolve status=ok "
-                f"environment={environment} consumer={consumer} version_id={version_id}"
+                f"consumer={consumer} version_id={version_id}"
             )
             exit_code = _run_child(command, environment_path, manifest, entries, consumer)
         except ResolverError as error:
@@ -563,7 +558,6 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run one command with reviewed environment secrets"
     )
-    parser.add_argument("--environment", required=True)
     parser.add_argument("--consumer", required=True)
     parser.add_argument("--identity", required=True)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -582,7 +576,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         return 2
     try:
-        return _resolve_and_run(parsed.environment, parsed.consumer, parsed.identity, command)
+        return _resolve_and_run(parsed.consumer, parsed.identity, command)
     except ResolverError as error:
         retained_path = f" retained_path={error.retained_path}" if error.retained_path else ""
         print(

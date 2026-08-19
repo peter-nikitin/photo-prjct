@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -20,7 +19,6 @@ RANKING_SCHEMA_VERSION = 2
 TERMINAL_SCHEMA_VERSION = 2
 SERVICE = "web"
 MAX_BOUNDED_INTEGER = 2**31 - 1
-_ENVIRONMENTS = frozenset({"local", "test", "staging", "production"})
 _UUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
@@ -268,7 +266,6 @@ def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dic
         "event": event.value,
         "occurred_at": _timestamp(),
         "service": SERVICE,
-        "environment": _environment(),
         **normalized,
     }
 
@@ -505,11 +502,6 @@ def _nullable_hash(value: object) -> str | None:
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def _environment() -> str:
-    value = os.environ.get("DEPLOYMENT_TARGET", "local").strip().lower()
-    return value if value in _ENVIRONMENTS else "local"
 
 
 def emit_selfie_observability_failure(logger: logging.Logger) -> None:

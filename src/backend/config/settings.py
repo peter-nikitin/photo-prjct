@@ -35,7 +35,6 @@ DATABASES = {
     }
 }
 DEBUG = env.bool("DEBUG", default=False)
-MONITORING_ENVIRONMENT = env("MONITORING_ENVIRONMENT", default="local")
 YANDEX_METRIKA_COUNTER_ID = 111239706
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
@@ -48,6 +47,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "feature_flags.apps.FeatureFlagsConfig",
     "ingestion.apps.IngestionConfig",
     "picflow.apps.PicflowConfig",
     "processing.apps.ProcessingConfig",
@@ -144,8 +144,8 @@ SELFIE_SEARCH_MAX_PIXELS = env.int("SELFIE_SEARCH_MAX_PIXELS", default=25_000_00
 SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS = env.int("SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS", default=120)
 ADAFACE_LOCAL_EXPERIMENT_ENABLED = _exact_environment_boolean("ADAFACE_LOCAL_EXPERIMENT_ENABLED")
 if ADAFACE_LOCAL_EXPERIMENT_ENABLED:
-    if MONITORING_ENVIRONMENT != "local":
-        raise ImproperlyConfigured("AdaFace local experiment requires MONITORING_ENVIRONMENT=local")
+    if not DEBUG:
+        raise ImproperlyConfigured("AdaFace local experiment requires DEBUG=True")
     ADAFACE_LOCAL_CANARY_LIMIT = env.int("ADAFACE_LOCAL_CANARY_LIMIT", default=0)
     if ADAFACE_LOCAL_CANARY_LIMIT not in (0, 100):
         raise ImproperlyConfigured("ADAFACE_LOCAL_CANARY_LIMIT must be 0 or 100")

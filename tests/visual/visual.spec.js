@@ -24,10 +24,12 @@ const SAVED_SELFIE_SEARCH_HISTORY = [
 
 const desktopPages = [
   ['catalog-populated', '/__visual__/catalog/populated/'],
+  ['catalog-staff-preview', '/__visual__/catalog/staff-preview/'],
   ['catalog-empty', '/__visual__/catalog/empty/'],
   ['event-covered', '/__visual__/event/covered/'],
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
+  ['event-gallery-staff-preview', '/__visual__/event/gallery-staff-preview/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-gallery-filtered-empty', '/__visual__/event/gallery-filtered-empty/'],
   ['event-gallery-manual-invalid', '/__visual__/event/gallery-manual-invalid/'],
@@ -37,6 +39,7 @@ const desktopPages = [
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-ready-staff-preview', '/__visual__/event/selfie-search/ready/staff-preview/'],
   ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
@@ -54,10 +57,12 @@ const desktopPages = [
 
 const mobilePages = [
   ['catalog-populated', '/__visual__/catalog/populated/'],
+  ['catalog-staff-preview', '/__visual__/catalog/staff-preview/'],
   ['catalog-empty', '/__visual__/catalog/empty/'],
   ['event-covered', '/__visual__/event/covered/'],
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
+  ['event-gallery-staff-preview', '/__visual__/event/gallery-staff-preview/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-gallery-filtered-empty', '/__visual__/event/gallery-filtered-empty/'],
   ['event-gallery-manual-invalid', '/__visual__/event/gallery-manual-invalid/'],
@@ -67,6 +72,7 @@ const mobilePages = [
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-ready-staff-preview', '/__visual__/event/selfie-search/ready/staff-preview/'],
   ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
   ['selfie-search-feedback-marking', '/__visual__/event/selfie-search/feedback-marking/'],
   ['legal', '/__visual__/legal/'],

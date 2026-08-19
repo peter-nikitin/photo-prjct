@@ -3,6 +3,7 @@ from datetime import date
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
 from django.test import TestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
@@ -14,7 +15,11 @@ from processing.models import (
     ProcessingJob,
 )
 from selfie_search.models import SelfieSearch, SelfieSearchDirectEvidence, SelfieSearchResult
-from selfie_search.services.results import saved_ready_result_page
+from selfie_search.services.results import (
+    PublicSearchNotFound,
+    resolve_public_result,
+    saved_ready_result_page,
+)
 
 
 class SavedReadyResultPageTests(TestCase):
@@ -117,3 +122,61 @@ class SavedReadyResultPageTests(TestCase):
 
         self.assertEqual(tuple(page.object_list), ())
         self.assertFalse(page.has_next())
+
+    def test_bearer_resolution_uses_the_shared_site_visibility_decision(self) -> None:
+        draft = Event.objects.create(
+            name="Draft result",
+            slug="draft-result",
+            start_date=date(2026, 7, 30),
+            end_date=date(2026, 7, 30),
+            city="Moscow",
+            publication_status=Event.PublicationStatus.DRAFT,
+            timezone_name="Europe/Moscow",
+        )
+        unavailable = Event.objects.create(
+            name="Unavailable result",
+            slug="unavailable-result",
+            start_date=date(2026, 7, 30),
+            end_date=date(2026, 7, 30),
+            city="Moscow",
+            publication_status=Event.PublicationStatus.UNAVAILABLE,
+        )
+        draft_token = "draft-result-token"
+        unavailable_token = "unavailable-result-token"
+        draft_search = SelfieSearch.objects.create(
+            event=draft,
+            public_token_digest=hashlib.sha256(draft_token.encode()).hexdigest(),
+            temporary_object_key="",
+            configuration={"public-contract": 1},
+        )
+        SelfieSearch.objects.create(
+            event=unavailable,
+            public_token_digest=hashlib.sha256(unavailable_token.encode()).hexdigest(),
+            temporary_object_key="",
+            configuration={"public-contract": 1},
+        )
+        ordinary_user = get_user_model().objects.create_user(username="result-ordinary")
+        staff_user = get_user_model().objects.create_user(username="result-staff", is_staff=True)
+
+        for user in (AnonymousUser(), ordinary_user):
+            with self.subTest(user=getattr(user, "username", "anonymous")):
+                with self.assertRaises(PublicSearchNotFound):
+                    resolve_public_result(
+                        event_slug=draft.slug,
+                        public_token=draft_token,
+                        user=user,
+                    )
+        self.assertEqual(
+            resolve_public_result(
+                event_slug=draft.slug,
+                public_token=draft_token,
+                user=staff_user,
+            ).pk,
+            draft_search.pk,
+        )
+        with self.assertRaises(PublicSearchNotFound):
+            resolve_public_result(
+                event_slug=unavailable.slug,
+                public_token=unavailable_token,
+                user=staff_user,
+            )

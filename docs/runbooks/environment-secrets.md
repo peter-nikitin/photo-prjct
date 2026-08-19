@@ -106,9 +106,9 @@ yc lockbox secret list-versions --id e6q85jjl76r45maigtfb --format json
 ```
 
 Compare those names with the migration table and every manifest key and consumer in
-`deploy/environment-secrets/staging.json`. Classify the seven visible non-secret configuration
+`deploy/environment-secrets.json`. Classify the seven visible non-secret configuration
 names as GitHub Environment variables: `ALLOWED_HOSTS`, `DB_NAME`, `DB_USER`, `GHCR_USERNAME`,
-`STAGING_SSH_KNOWN_HOSTS`, `VM_HOST`, and `VM_USER`. `STAGING_SSH_KNOWN_HOSTS` is the reviewed SSH
+`VM_SSH_KNOWN_HOSTS`, `VM_HOST`, and `VM_USER`. `VM_SSH_KNOWN_HOSTS` is the reviewed SSH
 host-key record, not a Lockbox entry or migrated GitHub Secret. All other migrated names are
 Lockbox entries.
 
@@ -172,7 +172,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 chmod 600 "$candidate_payload"
 "${EDITOR:?set EDITOR to a non-logging local editor}" "$candidate_payload"
-.venv/bin/python - "$candidate_payload" deploy/environment-secrets/staging.json <<'PY'
+.venv/bin/python - "$candidate_payload" deploy/environment-secrets.json <<'PY'
 import base64
 import json
 import sys
@@ -260,19 +260,19 @@ an authenticated authorized human `yc` identity. Do not add a repository or work
 The only supported launcher is:
 
 ```bash
-make staging-local
+make local-web
 ```
 
-It invokes `scripts/run-with-environment-secrets.py --environment staging --consumer local-web
---identity yc -- scripts/staging-local.sh --resolved`. The launcher applies the manifest's mandatory
+It invokes `scripts/run-with-environment-secrets.py --consumer local-web
+--identity yc -- scripts/local-web.sh --resolved`. The launcher applies the manifest's mandatory
 local overrides: `DEBUG=True`, local-only hosts and bind address, `DB_HOST=db`, local database
-identity, and empty deployment target/VM host.
+identity, and empty VM host.
 
 ### Success evidence
 
 Expect only `[environment-secrets]` stage markers and
-`[staging-local] stage=launch status=ready`. Confirm the running Compose services are the local
-`db` and `web` services and the process is staging-capable but connected to the local database.
+`[local-web] stage=launch status=ready`. Confirm the running Compose services are the local
+`db` and `web` services and the process is local-capable but connected to the local database.
 Confirm the resolver's temporary file no longer exists after it returns; do not retain or inspect it.
 
 ### Rollback
@@ -285,7 +285,7 @@ docker compose stop web db
 
 If the resolver fails, it must not start the child service. Do not use this launcher to clone
 staging data, deploy, SSH to staging, upload media, rotate a credential, or manage storage.
-`make db-clone-staging` remains a separately chosen workflow.
+`make db-clone-deployed` remains a separately chosen workflow.
 
 ### Non-disclosure
 
@@ -311,10 +311,10 @@ inventory. The resolver exactly enforces `workflow_ref` against the full reposit
 allowlist before exchanging the OIDC token. The approved resolver call for each projection is:
 
 ```text
-python scripts/run-with-environment-secrets.py --environment staging --consumer local-web --identity github-oidc -- python scripts/verify-environment-secret-projection.py local-web
-python scripts/run-with-environment-secrets.py --environment staging --consumer staging-deploy --identity github-oidc -- python scripts/verify-environment-secret-projection.py staging-deploy
-python scripts/run-with-environment-secrets.py --environment staging --consumer staging-remote-check --identity github-oidc -- python scripts/verify-environment-secret-projection.py staging-remote-check
-python scripts/run-with-environment-secrets.py --environment staging --consumer staging-public-monitor --identity github-oidc -- python scripts/verify-environment-secret-projection.py staging-public-monitor
+python scripts/run-with-environment-secrets.py --consumer local-web --identity github-oidc -- python scripts/verify-environment-secret-projection.py local-web
+python scripts/run-with-environment-secrets.py --consumer deploy --identity github-oidc -- python scripts/verify-environment-secret-projection.py deploy
+python scripts/run-with-environment-secrets.py --consumer remote-check --identity github-oidc -- python scripts/verify-environment-secret-projection.py remote-check
+python scripts/run-with-environment-secrets.py --consumer public-monitor --identity github-oidc -- python scripts/verify-environment-secret-projection.py public-monitor
 ```
 
 The verifier reads neither payload contents nor values. It accepts only the resolver-created
@@ -375,7 +375,7 @@ from pathlib import Path
 
 secret = json.load(sys.stdin)
 manifest = json.loads(
-    Path("deploy/environment-secrets/staging.json").read_text(encoding="utf-8")
+    Path("deploy/environment-secrets.json").read_text(encoding="utf-8")
 )
 expected_keys = {entry["key"] for entry in manifest["entries"]}
 current = secret.get("current_version")
@@ -583,7 +583,7 @@ is:
 - `DB_NAME`
 - `DB_USER`
 - `GHCR_USERNAME`
-- `STAGING_SSH_KNOWN_HOSTS`
+- `VM_SSH_KNOWN_HOSTS`
 - `VM_HOST`
 - `VM_USER`
 

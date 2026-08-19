@@ -18,7 +18,6 @@ jobs:
   probe:
     name: Probe public health
     runs-on: ubuntu-latest
-    environment: staging
     permissions:
       contents: read
       id-token: write
@@ -30,12 +29,11 @@ jobs:
       - name: Probe public health and write metrics
         env:
           MONITOR_TARGET: ${{ github.event_name == 'schedule' && 'https://findme-photo.ru/health/' || inputs.target }}
-          MONITOR_ENVIRONMENT: ${{ github.event_name == 'schedule' && 'staging' || 'validation' }}
           MONITOR_CHECK: ${{ github.event_name == 'schedule' && 'canonical-health' || 'validation-health' }}
           YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-public-monitor \
+            \
+            --consumer public-monitor \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh public-monitor
+            -- deploy/run-remote.sh public-monitor

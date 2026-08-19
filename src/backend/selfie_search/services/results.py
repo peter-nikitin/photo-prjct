@@ -19,16 +19,15 @@ class PublicSearchNotFound(LookupError):
 SELFIE_SEARCH_RESULT_PAGE_SIZE: Final = 100
 
 
-def resolve_public_result(*, event_slug: str, public_token: str) -> SelfieSearch:
-    """Resolve one stable bearer result only while its event remains published."""
+def resolve_public_result(*, event_slug: str, public_token: str, user) -> SelfieSearch:
+    """Resolve one stable bearer result only while its event is site-visible to the caller."""
     try:
         public_token_digest = hashlib.sha256(public_token.encode("ascii")).hexdigest()
     except UnicodeEncodeError:
         raise PublicSearchNotFound from None
     try:
         return SelfieSearch.objects.select_related("event").get(
-            event__slug=event_slug,
-            event__publication_status=Event.PublicationStatus.PUBLISHED,
+            event__in=Event.objects.site_visible_to(user).filter(slug=event_slug),
             public_token_digest=public_token_digest,
         )
     except SelfieSearch.DoesNotExist:

@@ -10,6 +10,7 @@
 {% block content %}
   <article class="event-detail">
     {% include "ui/event_detail_header.html" with event=event %}
+    {% if event.publication_status == "draft" %}<p class="event-draft-warning">Черновик — виден только администраторам</p>{% endif %}
     {% if manual_time_filter_form %}
       <section id="gallery" class="event-discovery-wrap">
         <details class="event-discovery" data-event-discovery{% if not gallery_filters_active %} open{% endif %}>

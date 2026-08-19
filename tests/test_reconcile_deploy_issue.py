@@ -6,11 +6,11 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = ROOT / "scripts/reconcile_staging_deploy_issue.py"
+SCRIPT_PATH = ROOT / "scripts/reconcile_deploy_issue.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("reconcile_staging_deploy_issue", SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location("reconcile_deploy_issue", SCRIPT_PATH)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -47,7 +47,7 @@ def _arguments(*, conclusion: str) -> list[str]:
         "--token-env",
         "GITHUB_TOKEN",
         "--mode",
-        "production",
+        "deploy",
         "--conclusion",
         conclusion,
         "--sha",
@@ -67,7 +67,7 @@ def _main_head(sha: str = "a" * 40) -> _Response:
     return _Response(200, {"commit": {"sha": sha}})
 
 
-def test_obsolete_production_sha_stops_after_main_head_lookup(monkeypatch) -> None:
+def test_obsolete_deploy_sha_stops_after_main_head_lookup(monkeypatch) -> None:
     module = _load_module()
     api = _Api([_main_head("b" * 40)])
     monkeypatch.setenv("GITHUB_TOKEN", "private-token")
@@ -96,7 +96,7 @@ def test_malformed_main_head_response_is_sanitized_and_stops(monkeypatch, capsys
     assert "response body" not in captured.err
 
 
-def test_validation_mode_stays_isolated_from_main_head_and_production_title(monkeypatch) -> None:
+def test_validation_mode_stays_isolated_from_main_head_and_deploy_title(monkeypatch) -> None:
     module = _load_module()
     api = _Api([_Response(200, []), _Response(201, {"number": 8})])
     monkeypatch.setenv("GITHUB_TOKEN", "private-token")
@@ -111,11 +111,11 @@ def test_validation_mode_stays_isolated_from_main_head_and_production_title(monk
         "https://api.github.com/repos/findme/photo/issues",
     ]
     assert _request_body(api.requests[1][0])["title"] == (
-        "[staging deployment validation] notification drill"
+        "[deployment validation] notification drill"
     )
 
 
-def test_first_failure_creates_one_sanitized_production_issue(monkeypatch) -> None:
+def test_first_failure_creates_one_sanitized_deploy_issue(monkeypatch) -> None:
     module = _load_module()
     api = _Api([_main_head(), _Response(200, []), _Response(201, {"number": 7})])
     monkeypatch.setenv("GITHUB_TOKEN", "private-token")
@@ -132,7 +132,7 @@ def test_first_failure_creates_one_sanitized_production_issue(monkeypatch) -> No
     )
     assert create_request.full_url == "https://api.github.com/repos/findme/photo/issues"
     assert _request_body(create_request) == {
-        "title": "[staging deployment] main is not deployed",
+        "title": "[deployment] main is not deployed",
         "body": (
             f"commit={'a' * 40}\n"
             "run_url=https://github.com/findme/photo/actions/runs/42\n"
@@ -151,7 +151,7 @@ def test_repeated_failure_comments_on_the_matching_open_issue(monkeypatch) -> No
     api = _Api(
         [
             _main_head(),
-            _Response(200, [{"number": 7, "title": "[staging deployment] main is not deployed"}]),
+            _Response(200, [{"number": 7, "title": "[deployment] main is not deployed"}]),
             _Response(201, {"id": 9}),
         ]
     )
@@ -173,7 +173,7 @@ def test_success_comments_then_closes_the_matching_open_issue(monkeypatch) -> No
     api = _Api(
         [
             _main_head(),
-            _Response(200, [{"number": 7, "title": "[staging deployment] main is not deployed"}]),
+            _Response(200, [{"number": 7, "title": "[deployment] main is not deployed"}]),
             _Response(201, {"id": 9}),
             _Response(200, {"number": 7, "state": "closed"}),
         ]
@@ -202,7 +202,7 @@ def test_success_with_no_open_matching_issue_does_nothing(monkeypatch) -> None:
 def test_matching_is_exact_and_bounded_to_first_one_hundred_open_issues(monkeypatch) -> None:
     module = _load_module()
     issues = [
-        {"number": number, "title": "[staging deployment] main is not deployed now"}
+        {"number": number, "title": "[deployment] main is not deployed now"}
         for number in range(1, 101)
     ]
     api = _Api([_main_head(), _Response(200, issues), _Response(201, {"number": 101})])

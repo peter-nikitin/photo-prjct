@@ -61,12 +61,12 @@ class _MissingGallerySourceResult(RuntimeError):
     pass
 
 
-def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage) -> CreatedSearch:
+def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user) -> CreatedSearch:
     """Persist one validated selfie submission and its immutable current event cohort."""
     try:
-        event = Event.objects.get(pk=event.pk, publication_status=Event.PublicationStatus.PUBLISHED)
+        event = Event.objects.site_visible_to(user).get(pk=event.pk)
     except Event.DoesNotExist:
-        raise ValueError("selfie search requires a published event") from None
+        raise ValueError("selfie search requires an event visible to the current user") from None
 
     content = selfie.content
     content_type = selfie.content_type
@@ -124,17 +124,14 @@ def gallery_search_faces_by_photo(
 
 
 def submit_gallery_photo_search(
-    *, event: Event, photo: Photo, detection_id, now: datetime | None = None
+    *, event: Event, photo: Photo, detection_id, user, now: datetime | None = None
 ) -> CreatedSearch:
     """Validate one selected gallery face and create its queued bearer result."""
     now = now or timezone.now()
     try:
         with transaction.atomic():
             try:
-                event = Event.objects.get(
-                    pk=event.pk,
-                    publication_status=Event.PublicationStatus.PUBLISHED,
-                )
+                event = Event.objects.site_visible_to(user).get(pk=event.pk)
             except Event.DoesNotExist:
                 raise GallerySearchUnavailable() from None
             photo = gallery_photo_queryset(event=event).filter(pk=photo.pk).first()
@@ -269,10 +266,6 @@ def _terminal_gallery_failure(*, search_id, status: str, now: datetime) -> Selfi
 def _gallery_source_candidate(
     *, event: Event, configuration: dict[str, object]
 ) -> CandidateEmbedding:
-    if not Event.objects.filter(
-        pk=event.pk, publication_status=Event.PublicationStatus.PUBLISHED
-    ).exists():
-        raise GallerySearchUnavailable()
     source = configuration.get("query_source")
     if (
         not isinstance(source, dict)

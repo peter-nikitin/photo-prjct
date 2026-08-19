@@ -80,21 +80,21 @@ PY
     fi
 }
 
-backup_dir="${BACKUP_DIR:-var/backups/staging}"
-staging_dump_file="${STAGING_DUMP_FILE:-}"
+backup_dir="${BACKUP_DIR:-var/backups/deployed}"
+deployed_dump_file="${DEPLOYED_DUMP_FILE:-}"
 
-if [ -n "$staging_dump_file" ]; then
+if [ -n "$deployed_dump_file" ]; then
     dump_source="retained"
 else
-    dump_source="staging"
-    : "${STAGING_SSH_TARGET:?Set STAGING_SSH_TARGET to the staging SSH destination}"
+    dump_source="deployed"
+    : "${VM_SSH_TARGET:?Set VM_SSH_TARGET to the deployed SSH destination}"
 fi
 
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to validate rendered Compose configuration"
 command -v docker >/dev/null 2>&1 || fail "docker is required"
 validate_local_docker_endpoint
 docker compose version >/dev/null 2>&1 || fail "docker compose is required"
-if [ "$dump_source" = staging ]; then
+if [ "$dump_source" = deployed ]; then
     command -v ssh >/dev/null 2>&1 || fail "ssh is required"
 fi
 
@@ -161,8 +161,8 @@ trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 
-config_tmp="$(mktemp "${TMPDIR:-/tmp}/clone-staging-db.config.XXXXXX")" || fail "Could not create temporary Compose configuration"
-resolved_tmp="$(mktemp "${TMPDIR:-/tmp}/clone-staging-db.resolved.XXXXXX")" || fail "Could not create temporary Compose resolution"
+config_tmp="$(mktemp "${TMPDIR:-/tmp}/clone-deployed-db.config.XXXXXX")" || fail "Could not create temporary Compose configuration"
+resolved_tmp="$(mktemp "${TMPDIR:-/tmp}/clone-deployed-db.resolved.XXXXXX")" || fail "Could not create temporary Compose resolution"
 
 if ! docker compose config --format json > "$config_tmp"; then
     fail "Could not render the local Docker Compose configuration"
@@ -334,12 +334,12 @@ require_postgres_16 "Local" "$local_version"
 
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ')" || fail "Could not create backup timestamp"
 if [ "$dump_source" = retained ]; then
-    [ -f "$staging_dump_file" ] && [ -r "$staging_dump_file" ] || \
-        fail "STAGING_DUMP_FILE must name a readable regular dump file"
-    retained_checksum_path="$staging_dump_file.sha256"
+    [ -f "$deployed_dump_file" ] && [ -r "$deployed_dump_file" ] || \
+        fail "DEPLOYED_DUMP_FILE must name a readable regular dump file"
+    retained_checksum_path="$deployed_dump_file.sha256"
     [ -f "$retained_checksum_path" ] && [ -r "$retained_checksum_path" ] || \
-        fail "STAGING_DUMP_FILE checksum is missing or unreadable"
-    if ! python3 - "$staging_dump_file" "$retained_checksum_path" <<'PY'
+        fail "DEPLOYED_DUMP_FILE checksum is missing or unreadable"
+    if ! python3 - "$deployed_dump_file" "$retained_checksum_path" <<'PY'
 import hashlib
 import os
 import re
@@ -373,34 +373,34 @@ except OSError:
 raise SystemExit(digest.hexdigest().encode("ascii") != entry.group(1))
 PY
     then
-        fail "STAGING_DUMP_FILE checksum validation failed"
+        fail "DEPLOYED_DUMP_FILE checksum validation failed"
     fi
 
-    dump_path="$staging_dump_file"
+    dump_path="$deployed_dump_file"
     toc_tmp="$(mktemp "$backup_dir/$timestamp.retained.toc.XXXXXX")" || \
         fail "Could not create retained dump table-of-contents file"
     if ! docker run --rm --network none --volume "$dump_path:/dump:ro" "$local_db_image" \
         pg_restore --list /dump > "$toc_tmp"; then
-        fail "Could not validate staging dump"
+        fail "Could not validate deployed dump"
     fi
     rm -f "$toc_tmp"
     toc_tmp=""
 else
-    remote_compose='docker compose --project-name photo-prjct-staging -f /opt/photo-prjct/docker-compose.prod.yml'
-    remote_version="$(ssh "$STAGING_SSH_TARGET" "$remote_compose exec -T db postgres --version")" || \
-        fail "Could not determine staging PostgreSQL version"
-    require_postgres_16 "Staging" "$remote_version"
+    remote_compose='docker compose --project-name photo-prjct -f /opt/photo-prjct/docker-compose.deployment.yml'
+    remote_version="$(ssh "$VM_SSH_TARGET" "$remote_compose exec -T db postgres --version")" || \
+        fail "Could not determine deployed PostgreSQL version"
+    require_postgres_16 "Deployed" "$remote_version"
 
-    source_database="$(ssh "$STAGING_SSH_TARGET" "$remote_compose exec -T db printenv POSTGRES_DB")" || \
-        fail "Could not determine staging database name"
-    [ -n "$source_database" ] || fail "Staging database name is empty"
-    source_user="$(ssh "$STAGING_SSH_TARGET" "$remote_compose exec -T db printenv POSTGRES_USER")" || \
-        fail "Could not determine staging database user"
-    [ -n "$source_user" ] || fail "Staging database user is empty"
-    reject_control_characters "$source_database" "Staging database name"
-    reject_control_characters "$source_user" "Staging database user"
-    source_database_quoted="$(shell_quote "$source_database")" || fail "Could not safely quote staging database name"
-    source_user_quoted="$(shell_quote "$source_user")" || fail "Could not safely quote staging database user"
+    source_database="$(ssh "$VM_SSH_TARGET" "$remote_compose exec -T db printenv POSTGRES_DB")" || \
+        fail "Could not determine deployed database name"
+    [ -n "$source_database" ] || fail "Deployed database name is empty"
+    source_user="$(ssh "$VM_SSH_TARGET" "$remote_compose exec -T db printenv POSTGRES_USER")" || \
+        fail "Could not determine deployed database user"
+    [ -n "$source_user" ] || fail "Deployed database user is empty"
+    reject_control_characters "$source_database" "Deployed database name"
+    reject_control_characters "$source_user" "Deployed database user"
+    source_database_quoted="$(shell_quote "$source_database")" || fail "Could not safely quote deployed database name"
+    source_user_quoted="$(shell_quote "$source_user")" || fail "Could not safely quote deployed database user"
 
     dump_name="$timestamp.dump"
     dump_path="$backup_dir/$dump_name"
@@ -410,16 +410,16 @@ else
         fail "Backup output already exists for timestamp $timestamp"
 
     dump_tmp="$(mktemp "$backup_dir/$timestamp.dump.XXXXXX")" || fail "Could not create temporary dump file"
-    if ! ssh "$STAGING_SSH_TARGET" \
+    if ! ssh "$VM_SSH_TARGET" \
         "$remote_compose exec -T db pg_dump --format=custom --no-owner --no-acl --username=$source_user_quoted --dbname=$source_database_quoted" \
         > "$dump_tmp"; then
-        fail "Staging dump stream failed"
+        fail "Deployed dump stream failed"
     fi
-    [ -s "$dump_tmp" ] || fail "Staging dump was empty"
+    [ -s "$dump_tmp" ] || fail "Deployed dump was empty"
 
     toc_tmp="$(mktemp "$backup_dir/$timestamp.toc.XXXXXX")" || fail "Could not create temporary dump table-of-contents file"
     if ! docker run --rm --network none --volume "$dump_tmp:/dump:ro" "$local_db_image" pg_restore --list /dump > "$toc_tmp"; then
-        fail "Could not validate staging dump"
+        fail "Could not validate deployed dump"
     fi
 
     toc_entries="$(awk 'END { print NR + 0 }' "$toc_tmp")"
@@ -433,7 +433,7 @@ with open(sys.argv[1], "rb") as source:
         digest.update(chunk)
 print(digest.hexdigest())
 PY
-)" || fail "Could not summarize staging dump table of contents"
+)" || fail "Could not summarize deployed dump table of contents"
 
     checksum_tmp="$(mktemp "$backup_dir/$timestamp.dump.sha256.XXXXXX")" || fail "Could not create temporary dump checksum"
     if ! python3 - "$dump_tmp" "$checksum_tmp" "$dump_name" <<'PY'
@@ -449,33 +449,33 @@ with open(output_path, "w", encoding="utf-8") as output:
     output.write(f"{digest.hexdigest()}  {archive_name}\n")
 PY
     then
-        fail "Could not checksum staging dump"
+        fail "Could not checksum deployed dump"
     fi
 
     metadata_tmp="$(mktemp "$backup_dir/$timestamp.metadata.XXXXXX")" || fail "Could not create temporary dump metadata"
-    staging_host_label="${STAGING_SSH_TARGET#*@}"
+    deployed_host_label="${VM_SSH_TARGET#*@}"
     if ! {
         printf 'timestamp=%s\n' "$timestamp"
-        printf 'staging_host=%s\n' "$staging_host_label"
+        printf 'deployed_host=%s\n' "$deployed_host_label"
         printf 'postgresql_major=16\n'
         printf 'database=%s\n' "$source_database"
         printf 'dump_toc_entries=%s\n' "$toc_entries"
         printf 'dump_toc_sha256=%s\n' "$toc_sha256"
     } > "$metadata_tmp"; then
-        fail "Could not write staging dump metadata"
+        fail "Could not write deployed dump metadata"
     fi
-    chmod 600 "$dump_tmp" "$checksum_tmp" "$metadata_tmp" || fail "Could not secure staging dump artifacts"
+    chmod 600 "$dump_tmp" "$checksum_tmp" "$metadata_tmp" || fail "Could not secure deployed dump artifacts"
 
     published_checksum="$checksum_path"
-    mv "$checksum_tmp" "$checksum_path" || fail "Could not publish staging dump checksum"
+    mv "$checksum_tmp" "$checksum_path" || fail "Could not publish deployed dump checksum"
     checksum_tmp=""
     published_metadata="$metadata_path"
-    mv "$metadata_tmp" "$metadata_path" || fail "Could not publish staging dump metadata"
+    mv "$metadata_tmp" "$metadata_path" || fail "Could not publish deployed dump metadata"
     metadata_tmp=""
     rm -f "$toc_tmp"
     toc_tmp=""
     published_dump="$dump_path"
-    mv "$dump_tmp" "$dump_path" || fail "Could not publish staging dump"
+    mv "$dump_tmp" "$dump_path" || fail "Could not publish deployed dump"
     dump_tmp=""
     publication_complete=1
 fi
@@ -565,7 +565,7 @@ if applied_migrations - set(loader.disk_migrations):
         validation_status=$?
         case "$validation_status" in
             10)
-                fail "Restored database has no applied Django migrations; confirm the staging dump before developing migrations."
+                fail "Restored database has no applied Django migrations; confirm the deployed dump before developing migrations."
                 ;;
             11)
                 fail "Restored database contains applied Django migration names absent from this checkout; update the branch before developing migrations."
@@ -640,12 +640,12 @@ if ! recreate_local_database; then
 fi
 
 if ! restore_local_dump "$dump_path"; then
-    attempt_safety_recovery "Staging restore failed" || true
+    attempt_safety_recovery "Deployed restore failed" || true
     exit 1
 fi
 
 replacement_committed=1
 validate_restored_database
 
-printf 'Local database replacement completed using validated staging dump %s.\n' "$dump_path" >&2
+printf 'Local database replacement completed using validated deployed dump %s.\n' "$dump_path" >&2
 printf 'Local web service remains stopped; restart it explicitly after validation with: docker compose up -d web\n' >&2

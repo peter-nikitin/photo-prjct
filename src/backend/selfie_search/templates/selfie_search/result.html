@@ -12,6 +12,7 @@
 {% block content %}
   <article class="selfie-search-result" aria-labelledby="selfie-search-result-title" data-selfie-search-result data-event-slug="{{ event.slug }}" data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" data-gallery-origin="{{ is_gallery_origin|yesno:'true,false' }}" data-result-digest="{{ public_token_digest }}"{% if selfie_feedback_correlation %} data-feedback-correlation="{{ selfie_feedback_correlation }}"{% endif %}{% if not is_terminal %} data-status-url="{{ status_url }}"{% endif %}>
     {% include "ui/event_detail_header.html" with event=event heading_id="selfie-search-result-title" %}
+    {% if event.publication_status == "draft" %}<p class="event-draft-warning">Черновик — виден только администраторам</p>{% endif %}
     {% if is_gallery_origin %}
       <p class="selfie-search-lead">Поиск показывает вероятные совпадения среди фотографий этого события. Результат увидит любой, у кого есть эта ссылка.</p>
     {% else %}

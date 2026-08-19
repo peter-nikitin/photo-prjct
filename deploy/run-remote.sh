@@ -52,7 +52,7 @@ trap 'relay_signal INT 130' INT
 trap 'relay_signal TERM 143' TERM
 
 fail() {
-    printf '[staging-remote] stage=%s status=error code=%s\n' "$1" "$2" >&2
+    printf '[remote] stage=%s status=error code=%s\n' "$1" "$2" >&2
     exit 2
 }
 
@@ -246,9 +246,9 @@ preview_enabled="$(sed -n 's/^PHOTO_PROCESSING_PREVIEW_ENABLED=//p' .env | head 
 test "$preview_enabled" = False
 
 run_web() {
-  docker compose --project-name photo-prjct-staging \
+  docker compose --project-name photo-prjct \
     --env-file .env \
-    -f docker-compose.prod.yml \
+    -f docker-compose.deployment.yml \
     -f docker-compose.https.yml \
     exec -T -e BENCHMARK_SOURCE_RUN_UUID web python manage.py "$@"
 }
@@ -264,7 +264,7 @@ case "$BENCHMARK_OPERATION" in
     benchmark_run_id="$(run_web run_face_embedding_benchmark \
       --event "$BENCHMARK_EVENT_SLUG" \
       --limit 114 \
-      --label staging-baseline-one-replica)"
+      --label deployment-baseline-one-replica)"
     require_uuid "$benchmark_run_id"
     printf 'BENCHMARK_RUN_ID=%s\n' "$benchmark_run_id"
     ;;
@@ -273,7 +273,7 @@ case "$BENCHMARK_OPERATION" in
     require_uuid "$BENCHMARK_SOURCE_RUN_UUID"
     benchmark_run_id="$(run_web run_face_embedding_benchmark \
       --source-run "$BENCHMARK_SOURCE_RUN_UUID" \
-      --label staging-replay-two-replicas)"
+      --label deployment-replay-two-replicas)"
     require_uuid "$benchmark_run_id"
     printf 'BENCHMARK_RUN_ID=%s\n' "$benchmark_run_id"
     ;;
@@ -388,12 +388,12 @@ print(json.dumps(output, sort_keys=True))
     ;;
 esac'''
 commands = {
-    'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging exec sh /opt/photo-prjct/deploy/apply-deployment.sh',
-    'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
-    'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
-    'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct-staging --env-file .env -f docker-compose.prod.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
+    'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct exec sh /opt/photo-prjct/deploy/apply-deployment.sh',
+    'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
+    'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
+    'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
     'configure-monitoring': 'exec sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"',
-    'verify-staging-image': r'''set -eu
+    'verify-deployed-image': r'''set -eu
 test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"
 test "$(sed -n 's/^PHOTO_WORKER_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_PROCESSOR_IDENTITIES"''',
     'verify-paused-observability-release': r'''set -eu
@@ -408,9 +408,9 @@ test "${#OBSERVABILITY_SOURCE_MANIFEST_SHA256}" -eq 64
 
 staged_root="/opt/photo-prjct/privileged-observability-releases/$RELEASE_SHA"
 cd "$staged_root"
-test "$(cat staging-observability-release-sha)" = "$RELEASE_SHA"
-printf '%s  staging-observability-source.sha256\n' "$OBSERVABILITY_SOURCE_MANIFEST_SHA256" | sha256sum --check -
-sha256sum --check staging-observability-source.sha256
+test "$(cat observability-release-sha)" = "$RELEASE_SHA"
+printf '%s  observability-source.sha256\n' "$OBSERVABILITY_SOURCE_MANIFEST_SHA256" | sha256sum --check -
+sha256sum --check observability-source.sha256
 cmp -s deploy/selfie-observability/root-helper.sh "/usr/local/sbin/findme-selfie-observability"
 for name in journald.conf selfie-search-summary.service selfie-search-summary.timer run-daily-summary.sh summarize.py; do
   cmp -s "deploy/selfie-observability/$name" "/usr/local/lib/findme-selfie-observability-package/$name"
@@ -427,7 +427,6 @@ PY
 REMOTE_DEPLOYMENT_VALUES='
 APP_IMAGE
 WORKER_IMAGE
-DEPLOYMENT_TARGET
 DEBUG
 ALLOWED_HOSTS
 GUNICORN_WORKERS
@@ -473,7 +472,7 @@ SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED
 GHCR_USERNAME'
 
 run_public_monitor() {
-    for name in MONITOR_TARGET MONITOR_ENVIRONMENT MONITOR_CHECK YANDEX_CLOUD_FOLDER_ID; do
+    for name in MONITOR_TARGET MONITOR_CHECK YANDEX_CLOUD_FOLDER_ID; do
         printenv "$name" >/dev/null 2>&1 || fail monitor missing_configuration
     done
     monitor_runner=$temporary_root/public-monitor.py
@@ -523,22 +522,20 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 config = module.ProbeConfig(
     target=os.environ['MONITOR_TARGET'],
-    folder_id=os.environ['YANDEX_CLOUD_FOLDER_ID'],
-    environment=os.environ['MONITOR_ENVIRONMENT'],
-    check_name=os.environ['MONITOR_CHECK'],
+    folder_id=os.environ['YANDEX_CLOUD_FOLDER_ID'],    check_name=os.environ['MONITOR_CHECK'],
     api_key=api_key,
 )
 raise SystemExit(module.run_probe(config))
 PY
     chmod 600 "$monitor_runner"
     run_quietly monitor monitor_failed python3 "$monitor_runner" "$FINDME_ENV_FILE" "$REPOSITORY_ROOT"
-    printf '[staging-remote] stage=public-monitor status=ok\n'
+    printf '[remote] stage=public-monitor status=ok\n'
 }
 
 [ "$#" = 1 ] || fail arguments invalid_arguments
 mode=$1
 case "$mode" in
-    deploy|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-staging-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|stage-paused-observability-release) ;;
+    deploy|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
     *) fail arguments unknown_operation ;;
 esac
 
@@ -550,7 +547,7 @@ esac
 
 [ -n "${FINDME_ENV_FILE:-}" ] || fail input missing_environment_file
 require_private_file "$FINDME_ENV_FILE" input environment_not_private environment_not_private
-temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/findme-staging-remote.XXXXXX") || fail temporary create_failed
+temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/findme-remote.XXXXXX") || fail temporary create_failed
 command_output=$temporary_root/command-output
 
 if [ "$mode" = public-monitor ]; then
@@ -558,30 +555,36 @@ if [ "$mode" = public-monitor ]; then
     exit 0
 fi
 
-[ -n "${STAGING_VM_HOST:-}" ] || fail input missing_host
-[ -n "${STAGING_VM_USER:-}" ] || fail input missing_user
-[ -n "${STAGING_SSH_KNOWN_HOSTS:-}" ] || fail input missing_known_hosts
+[ -n "${VM_HOST:-}" ] || fail input missing_host
+[ -n "${VM_USER:-}" ] || fail input missing_user
+[ -n "${VM_SSH_KNOWN_HOSTS:-}" ] || fail input missing_known_hosts
 key_file=$(decode_value VM_SSH_KEY_FILE 2>"$command_output") || fail input invalid_environment_file
 require_private_file "$key_file" key key_missing key_not_private
 
 known_hosts=$temporary_root/known_hosts
-printf '%s\n' "$STAGING_SSH_KNOWN_HOSTS" >"$known_hosts"
+printf '%s\n' "$VM_SSH_KNOWN_HOSTS" >"$known_hosts"
 require_private_file "$known_hosts" known-hosts write_failed known_hosts_not_private
-remote_target=$STAGING_VM_USER@$STAGING_VM_HOST
+remote_target=$VM_USER@$VM_HOST
 cd "$REPOSITORY_ROOT"
+
+if [ "$mode" = remote-preflight ]; then
+    run_quietly remote remote_failed ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" "$remote_target" "test -d /opt/photo-prjct && test -r /opt/photo-prjct/deployed-image"
+    printf '[remote] stage=%s status=ok\n' "$mode"
+    exit 0
+fi
 
 if [ "$mode" = stage-paused-observability-release ]; then
     release_root=/opt/photo-prjct/privileged-observability-releases/$RELEASE_SHA
     run_quietly remote remote_failed ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" "$remote_target" "mkdir -p -- $release_root $release_root/deploy"
-    run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" staging-observability-release-sha staging-observability-source.sha256 "$remote_target:$release_root/"
+    run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" observability-release-sha observability-source.sha256 "$remote_target:$release_root/"
     run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" deploy/bootstrap-selfie-observability.sh deploy/selfie-observability "$remote_target:$release_root/deploy/"
-    printf '[staging-remote] stage=%s status=ok\n' "$mode"
+    printf '[remote] stage=%s status=ok\n' "$mode"
     exit 0
 fi
 
 case "$mode" in
     deploy)
-        run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" docker-compose.prod.yml docker-compose.https.yml deploy "$remote_target:/opt/photo-prjct/"
+        run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" docker-compose.deployment.yml docker-compose.https.yml deploy "$remote_target:/opt/photo-prjct/"
         remote_environment=$temporary_root/remote.env
         # shellcheck disable=SC2086
         if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" $REMOTE_DEPLOYMENT_VALUES >"$command_output" 2>&1; then
@@ -612,7 +615,7 @@ case "$mode" in
             fail environment materialization_failed
         fi
         ;;
-    verify-staging-image)
+    verify-deployed-image)
         remote_environment=$temporary_root/remote.env
         if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" APP_IMAGE PHOTO_WORKER_PROCESSOR_IDENTITIES >"$command_output" 2>&1; then
             fail environment materialization_failed
@@ -640,4 +643,4 @@ fi
 if [ "$mode" = deploy ]; then
     relay_deployment_markers
 fi
-printf '[staging-remote] stage=%s status=ok\n' "$mode"
+printf '[remote] stage=%s status=ok\n' "$mode"

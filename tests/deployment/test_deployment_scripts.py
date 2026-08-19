@@ -214,15 +214,12 @@ def _apply_env(
     fake_bin: Path,
     *,
     scenario: str,
-    target: str = "production",
 ) -> dict[str, str]:
     (tmp_path / ".env").write_bytes(PREVIOUS_ENV)
     (tmp_path / ".env").chmod(0o640)
     (tmp_path / "previous-env.expected").write_bytes(PREVIOUS_ENV)
     (tmp_path / "deployed-image").write_text("old-image\n", encoding="utf-8")
-    (tmp_path / "deployment-target").write_text("old-target\n", encoding="utf-8")
-    (tmp_path / "compose-project-name").write_text("old-project\n", encoding="utf-8")
-    for name in ("docker-compose.prod.yml", "docker-compose.https.yml"):
+    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
         (tmp_path / name).write_text("services: {}\n", encoding="utf-8")
     cert_dir = tmp_path / "deploy" / "certbot"
     cert_dir.mkdir(parents=True)
@@ -698,9 +695,8 @@ esac
         "PREVIOUS_ENV_EXPECTED": str(tmp_path / "previous-env.expected"),
         "GALLERY_PREFLIGHT_HARNESS": str(gallery_preflight_harness),
         "APPLY_SCENARIO": scenario,
-        "DEPLOYMENT_TARGET": target,
         "DEPLOY_ROOT": str(tmp_path),
-        "COMPOSE_PROJECT_NAME": f"photo-{target}",
+        "COMPOSE_PROJECT_NAME": "photo-prjct",
         "APP_IMAGE": "new-image",
         "SECRET_KEY": "new-secret",
         "EXPECTED_REQUESTED_SECRET": "new-secret",
@@ -802,7 +798,7 @@ def test_successful_remote_deploy_relays_only_validated_deployment_markers(
     environment_file.write_text(f'VM_SSH_KEY_FILE="{key_file}"\n', encoding="utf-8")
     environment_file.chmod(0o600)
     remote_values = (
-        (ROOT / "deploy/run-staging-remote.sh")
+        (ROOT / "deploy/run-remote.sh")
         .read_text(encoding="utf-8")
         .split("REMOTE_DEPLOYMENT_VALUES='", maxsplit=1)[1]
         .split("'\n\nrun_public_monitor", maxsplit=1)[0]
@@ -823,14 +819,14 @@ printf '%s\\n' \\
     environment = {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FINDME_ENV_FILE": str(environment_file),
-        "STAGING_VM_HOST": "example.test",
-        "STAGING_VM_USER": "deployer",
-        "STAGING_SSH_KNOWN_HOSTS": "example.test ssh-ed25519 AAAA",
+        "VM_HOST": "example.test",
+        "VM_USER": "deployer",
+        "VM_SSH_KNOWN_HOSTS": "example.test ssh-ed25519 AAAA",
         **{name: "value" for name in remote_values},
     }
 
     result = subprocess.run(
-        ["sh", ROOT / "deploy/run-staging-remote.sh", "deploy"],
+        ["sh", ROOT / "deploy/run-remote.sh", "deploy"],
         env={**os.environ, **environment},
         text=True,
         capture_output=True,
@@ -841,7 +837,7 @@ printf '%s\\n' \\
     assert result.stdout.splitlines() == [
         "DEPLOY_PHASE=validate elapsed_seconds=1",
         "DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=3",
-        "[staging-remote] stage=deploy status=ok",
+        "[remote] stage=deploy status=ok",
     ]
     assert secret not in result.stdout
 
@@ -1521,7 +1517,7 @@ def test_release_b_runs_projection_gates_without_the_retired_release_a_image_gat
     fake_bin: Path,
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-deployment")
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+    for name in (".env", "deployed-image"):
         (tmp_path / name).unlink()
 
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -1534,7 +1530,7 @@ def test_release_b_runs_projection_gates_without_the_retired_release_a_image_gat
         "DEPLOY_RESULT=success phase=commit rollback=not-needed",
     ]
     commands = _apply_log(tmp_path)
-    assert commands.count("volume-inspect photo-production_pgdata") == 1
+    assert commands.count("volume-inspect photo-prjct_pgdata") == 1
     assert any(" pull web" in command for command in commands)
     assert not any("manage.py shell --no-imports" in command for command in commands)
     assert not any("candidate-migration-history" in command for command in commands)
@@ -1551,10 +1547,10 @@ def test_retained_postgres_volume_alone_forces_migration_preflight(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="migration-history-database-unavailable")
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+    for name in (".env", "deployed-image"):
         (tmp_path / name).unlink()
     env["EXPECT_CANONICAL_ENV"] = "absent"
-    volume_state = tmp_path / ".docker-volume-photo-production_pgdata"
+    volume_state = tmp_path / ".docker-volume-photo-prjct_pgdata"
     volume_state.write_text("retained\n", encoding="utf-8")
 
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -1571,15 +1567,15 @@ def test_retained_postgres_volume_alone_forces_migration_preflight(
         "DEPLOY_RESULT=failure phase=migration-preflight rollback=not-needed",
     ]
     commands = _apply_log(tmp_path)
-    assert commands.count("volume-inspect photo-production_pgdata") == 1
+    assert commands.count("volume-inspect photo-prjct_pgdata") == 1
     assert (
-        commands.index("volume-inspect photo-production_pgdata")
+        commands.index("volume-inspect photo-prjct_pgdata")
         < next(index for index, command in enumerate(commands) if " pull web" in command)
         < commands.index("candidate-migration-history database-unavailable")
     )
     assert "candidate-migration-plan" not in commands
     assert volume_state.read_text(encoding="utf-8") == "retained\n"
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+    for name in (".env", "deployed-image"):
         assert not (tmp_path / name).exists()
     assert not any("observability-" in command for command in commands)
     assert not any(" stop nginx" in command for command in commands)
@@ -1593,7 +1589,7 @@ def test_postgres_volume_inspection_error_fails_safely_before_mutation(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="volume-inspection-error")
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+    for name in (".env", "deployed-image"):
         (tmp_path / name).unlink()
     env["EXPECT_CANONICAL_ENV"] = "absent"
 
@@ -1608,8 +1604,8 @@ def test_postgres_volume_inspection_error_fails_safely_before_mutation(
         "DEPLOY_PHASE=snapshot",
         "DEPLOY_RESULT=failure phase=snapshot rollback=not-needed",
     ]
-    assert _apply_log(tmp_path) == ["volume-inspect photo-production_pgdata"]
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+    assert _apply_log(tmp_path) == ["volume-inspect photo-prjct_pgdata"]
+    for name in (".env", "deployed-image"):
         assert not (tmp_path / name).exists()
     _assert_no_env_temporary_files(tmp_path)
 
@@ -1617,7 +1613,7 @@ def test_postgres_volume_inspection_error_fails_safely_before_mutation(
 def test_failed_fresh_deployment_leaves_the_no_env_state(tmp_path: Path, fake_bin: Path) -> None:
     """A failed initial rollout must not leave deployment metadata to recover."""
     env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-health-failure")
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+    for name in (".env", "deployed-image"):
         (tmp_path / name).unlink()
 
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -1625,8 +1621,6 @@ def test_failed_fresh_deployment_leaves_the_no_env_state(tmp_path: Path, fake_bi
     assert result.returncode != 0
     assert not (tmp_path / ".env").exists()
     assert not (tmp_path / "deployed-image").exists()
-    assert not (tmp_path / "deployment-target").exists()
-    assert not (tmp_path / "compose-project-name").exists()
     commands = _apply_log(tmp_path)
     assert any(" down --remove-orphans" in command for command in commands)
     assert any(" up -d --remove-orphans" in command for command in commands)
@@ -1638,13 +1632,13 @@ def test_failed_first_deployment_after_metadata_markers_restores_no_env_state(
 ) -> None:
     """A late failed initial rollout removes the metadata that it created before failing."""
     env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-marker-failure")
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+    for name in (".env", "deployed-image"):
         (tmp_path / name).unlink()
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode != 0
-    for name in (".env", "deployed-image", "deployment-target", "compose-project-name"):
+    for name in (".env", "deployed-image"):
         assert not (tmp_path / name).exists()
     _assert_no_env_temporary_files(tmp_path)
 
@@ -1797,8 +1791,6 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
     assert "private config detail" not in result.stderr
     assert "database unavailable detail" not in result.stderr
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
-    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert _env_metadata(tmp_path / ".env") == previous_metadata
     commands = _apply_log(tmp_path)
@@ -1840,8 +1832,6 @@ def test_failed_candidate_migration_history_stops_before_any_deployment_mutation
     assert "Candidate migration preflight failed" in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "old-target\n"
-    assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == "old-project\n"
     assert _deployment_markers(result) == [
         "DEPLOY_PHASE=validate",
         "DEPLOY_PHASE=snapshot",
@@ -1884,8 +1874,6 @@ def test_failed_candidate_migration_history_stops_before_any_deployment_mutation
     ("established_signal", "expected_content"),
     [
         (".env", PREVIOUS_ENV),
-        ("deployment-target", b"old-target\n"),
-        ("compose-project-name", b"old-project\n"),
         ("deployed-image", b"old-image\n"),
     ],
 )
@@ -1896,7 +1884,7 @@ def test_each_durable_deployment_signal_alone_requires_migration_preflight(
     expected_content: bytes,
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="migration-history-database-unavailable")
-    durable_signals = (".env", "deployment-target", "compose-project-name", "deployed-image")
+    durable_signals = (".env", "deployed-image")
     for signal in durable_signals:
         if signal != established_signal:
             (tmp_path / signal).unlink()
@@ -1975,8 +1963,6 @@ def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliat
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert _env_metadata(tmp_path / ".env") == previous_metadata
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
-    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
-    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = _apply_log(tmp_path)
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
@@ -1986,32 +1972,13 @@ def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliat
     _assert_no_env_temporary_files(tmp_path)
 
 
-def test_workflows_forward_private_media_settings() -> None:
-    staging = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-    production = (ROOT / ".github/workflows/promote-production.yml").read_text(encoding="utf-8")
+def test_workflow_forwards_private_media_settings_through_the_deploy_consumer() -> None:
+    workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
 
-    assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in staging
-    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" not in staging
-    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" not in staging
-    assert "--consumer staging-deploy" in staging
-
-    assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in production
-    assert (
-        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID: "
-        "${{ secrets.PRIVATE_MEDIA_S3_ACCESS_KEY_ID }}" in production
-    )
-    assert (
-        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: "
-        "${{ secrets.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY }}" in production
-    )
-    forwarded = next(
-        line
-        for line in production.splitlines()
-        if "envs: APP_IMAGE" in line and "SECRET_KEY" in line
-    )
-    assert "PRIVATE_MEDIA_S3_BUCKET" in forwarded
-    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in forwarded
-    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in forwarded
+    assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in workflow
+    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" not in workflow
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" not in workflow
+    assert "--consumer deploy" in workflow
 
 
 def test_deployment_path_performs_no_iam_mutation(tmp_path: Path, fake_bin: Path) -> None:
@@ -2037,32 +2004,34 @@ def test_deployment_path_performs_no_iam_mutation(tmp_path: Path, fake_bin: Path
     assert "bucket-policy" not in commands
 
 
-def test_staging_apply_activates_https_edge_and_public_checks(
+def test_deployment_apply_activates_https_edge_and_public_checks(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     result = _run(
         "deploy/apply-deployment.sh",
-        env=_apply_env(tmp_path, fake_bin, scenario="success", target="staging"),
+        env=_apply_env(tmp_path, fake_bin, scenario="success"),
     )
 
     assert result.returncode == 0, result.stderr
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert "docker-compose.https.yml" in commands
-    assert "docker-compose.staging.yml" not in commands
+    assert "docker-compose.deployment.yml" in commands
     assert "stop nginx" in commands
     assert "reconcile-certificate" in commands
     assert "https://findme-photo.ru/health/" in commands
     assert "verify-public-edge" in commands
 
 
-def test_staging_apply_labels_web_metrics_as_staging(tmp_path: Path, fake_bin: Path) -> None:
+def test_deployment_apply_does_not_write_a_runtime_environment_label(
+    tmp_path: Path, fake_bin: Path
+) -> None:
     result = _run(
         "deploy/apply-deployment.sh",
-        env=_apply_env(tmp_path, fake_bin, scenario="success", target="staging"),
+        env=_apply_env(tmp_path, fake_bin, scenario="success"),
     )
 
     assert result.returncode == 0, result.stderr
-    assert "MONITORING_ENVIRONMENT=staging\n" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "MONITORING_ENVIRONMENT=" not in (tmp_path / ".env").read_text(encoding="utf-8")
 
 
 def test_apply_success_commits_deployed_image_only_after_checks(
@@ -2076,8 +2045,6 @@ def test_apply_success_commits_deployed_image_only_after_checks(
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
-    assert (tmp_path / "deployment-target").read_text(encoding="utf-8") == "production\n"
-    assert (tmp_path / "compose-project-name").read_text(encoding="utf-8") == ("photo-production\n")
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") == 1
     assert commands.count("requested-env-promoted-before-stop") == 1
@@ -2097,8 +2064,6 @@ def test_apply_failure_restores_previous_image_and_overlay_without_marker_change
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
-    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --remove-orphans") >= 2
 
@@ -2138,8 +2103,6 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     assert "Previous application and worker profile reconciled" in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
-    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
-    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = _apply_log(tmp_path)
     assert commands.count("candidate-requested-env-with-canonical-untouched") == 4
     assert not any(" stop nginx" in command for command in commands)
@@ -2166,8 +2129,6 @@ def test_failed_env_promotion_removes_secret_bearing_requested_temp(
     assert result.returncode != 0
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
-    assert (tmp_path / "deployment-target").read_bytes() == b"old-target\n"
-    assert (tmp_path / "compose-project-name").read_bytes() == b"old-project\n"
     commands = _apply_log(tmp_path)
     assert sum(" up -d --remove-orphans" in command for command in commands) == 1
     assert requested_secret not in result.stdout
@@ -2291,14 +2252,14 @@ def test_feedback_workflow_forwards_web_credentials_and_keeps_them_out_of_worker
 ):
     """The workflow is the only feedback-credential ingress; worker never gets them."""
     workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-    compose = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    compose = (ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8")
 
     assert "SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}" in workflow
     assert "SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}" in workflow
     assert "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID" not in workflow
     assert "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY" not in workflow
     assert "SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}" in workflow
-    assert "--consumer staging-deploy" in workflow
+    assert "--consumer deploy" in workflow
     assert "selfie-feedback-storage" in workflow
     worker_section = compose.split("  worker:\n", maxsplit=1)[1]
     assert "SELFIE_FEEDBACK_" not in worker_section
@@ -2659,7 +2620,6 @@ def test_installed_runner_uses_managed_sibling_after_candidate_changes(
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "DEPLOY_ROOT": str(tmp_path),
-            "DEPLOYMENT_TARGET": "staging",
             "PYTHON_BIN": os.sys.executable,
         },
         text=True,
@@ -2793,8 +2753,8 @@ printf '{"probe_id":"00000000-0000-0000-0000-000000000001"}\n'
 
     assert (result.returncode == 0) is expected_success, result.stderr
     journal_calls = (tmp_path / "systemctl.log.probe-journal").read_text(encoding="utf-8")
-    assert "CONTAINER_TAG=findme.service=web findme.environment=staging" in journal_calls
-    assert "CONTAINER_TAG=findme.service=web findme.environment=production" in journal_calls
+    assert "CONTAINER_TAG=findme.service=web" in journal_calls
+    assert "findme.environment=" not in journal_calls
 
 
 @pytest.mark.parametrize(
@@ -3068,7 +3028,7 @@ def test_observability_verifier_checks_caps_timer_driver_tags_and_probe(
     tmp_path: Path, fake_bin: Path, scenario: str, expected_success: bool
 ) -> None:
     (tmp_path / ".env").write_text("APP_IMAGE=test\n", encoding="utf-8")
-    (tmp_path / "docker-compose.prod.yml").write_text("services: {}\n", encoding="utf-8")
+    (tmp_path / "docker-compose.deployment.yml").write_text("services: {}\n", encoding="utf-8")
     (tmp_path / "docker-compose.https.yml").write_text("services: {}\n", encoding="utf-8")
     (tmp_path / "journal").mkdir()
     _write_executable(
@@ -3092,10 +3052,10 @@ case "$*" in
   *" ps -q nginx") printf 'nginx-id\n' ;;
   *"inspect "*web-id*)
     [ "$VERIFY_SCENARIO" = wrong-tag ] && printf 'json-file|wrong\n' || \
-      printf 'journald|findme.service=web findme.environment=staging\n'
+      printf 'journald|findme.service=web\n'
     ;;
   *"inspect "*nginx-id*)
-    printf 'journald|findme.service=nginx findme.environment=staging\n'
+    printf 'journald|findme.service=nginx\n'
     ;;
   *" exec -T web "*) printf '%s\n' "$*" > "$PROBE_COMMAND_LOG" ;;
 esac
@@ -3131,8 +3091,7 @@ esac
     env = {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DEPLOY_ROOT": str(tmp_path),
-        "COMPOSE_PROJECT_NAME": "photo-staging",
-        "DEPLOYMENT_TARGET": "staging",
+        "COMPOSE_PROJECT_NAME": "photo-prjct",
         "SELFIE_OBSERVABILITY_JOURNAL_DIR": str(tmp_path / "journal"),
         "VERIFY_SCENARIO": scenario,
         "EXPECTED_PROBE_LINE": '"probe_id":"00000000-0000-0000-0000-000000000001"',

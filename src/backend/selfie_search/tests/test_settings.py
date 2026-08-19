@@ -23,6 +23,7 @@ def load_isolated_selfie_settings(**environment_overrides: str) -> dict[str, obj
         "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD",
         "ADAFACE_LOCAL_EXPERIMENT_ENABLED",
         "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD",
+        "DEBUG",
         "SELFIE_SEARCH_TEMPORARY_PREFIX",
         "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS",
         "SELFIE_FEEDBACK_ENABLED",
@@ -121,7 +122,7 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         self.assertEqual(settings.SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS, 60)
 
     def test_adaface_requires_the_explicit_local_gate_and_non_sface_threshold(self) -> None:
-        """A non-local or inherited SFace threshold must never start the experiment."""
+        """A non-debug process or inherited SFace threshold must never start the experiment."""
         with self.assertRaises(subprocess.CalledProcessError):
             load_isolated_selfie_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED="True")
         with self.assertRaises(subprocess.CalledProcessError):
@@ -131,13 +132,13 @@ class SelfieSearchSettingsTests(SimpleTestCase):
             )
         with self.assertRaises(subprocess.CalledProcessError):
             load_isolated_selfie_settings(
-                MONITORING_ENVIRONMENT="staging",
+                DEBUG="False",
                 ADAFACE_LOCAL_EXPERIMENT_ENABLED="True",
                 ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD="0.42",
             )
 
         values = load_isolated_selfie_settings(
-            MONITORING_ENVIRONMENT="local",
+            DEBUG="True",
             ADAFACE_LOCAL_EXPERIMENT_ENABLED="True",
             ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD="0.42",
         )

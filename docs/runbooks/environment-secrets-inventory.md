@@ -1,18 +1,18 @@
 # Staging environment secrets inventory
 
 This is the reviewed, non-secret inventory for the one logical `staging` environment. The
-manifest at [`deploy/environment-secrets/staging.json`](../../deploy/environment-secrets/staging.json)
+manifest at [`deploy/environment-secrets.json`](../../deploy/environment-secrets.json)
 is the schema authority; this file makes its operational ownership visible. It is not evidence
 that the payload has been populated or that any workflow has run.
 
 No payload value, payload export, credential fragment, or Lockbox version ID belongs in this
 repository, a ticket, command line, CI output, or shell history.
 
-## Stable staging identity ledger
+## Stable deployment identity ledger
 
 | Item | Reviewed value | Operator check |
 | --- | --- | --- |
-| Logical environment | `staging` | `deploy/environment-secrets/staging.json` |
+| Logical environment | `staging` | `deploy/environment-secrets.json` |
 | Lockbox secret ID | `e6q85jjl76r45maigtfb` | `yc lockbox secret get --id e6q85jjl76r45maigtfb --format json` |
 | Folder ID | `b1g2qttgfhb4gdunvlge` | `yc resource-manager folder get --id b1g2qttgfhb4gdunvlge --format json` |
 | GitHub OIDC issuer | `https://token.actions.githubusercontent.com` | Read-only federation and resolver check |
@@ -27,8 +27,7 @@ Allowed GitHub workflow identities are:
 
 - `peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main`
 - `peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main`
-- `peter-nikitin/photo-prjct/.github/workflows/promote-production.yml@refs/heads/main`
-- `peter-nikitin/photo-prjct/.github/workflows/staging-face-embedding-benchmark.yml@refs/heads/main`
+- `peter-nikitin/photo-prjct/.github/workflows/face-embedding-benchmark.yml@refs/heads/main`
 
 The resolver exactly enforces the GitHub OIDC `workflow_ref` claim against this full list before
 exchanging the OIDC token. A matching path without the reviewed repository or `refs/heads/main`
@@ -47,31 +46,31 @@ and the federated-credential ID are operational evidence, not repository constan
 
 ## Manifest key schema and consumer projections
 
-`local` means a key may be materialized to the supported staging-capable local launcher; it does
+`local` means a key may be materialized to the supported local-capable local launcher; it does
 not mean that a value is local-only. `VM_SSH_KEY` is binary and materializes only as the private
 path target `VM_SSH_KEY_FILE`.
 
 | Manifest key | Target | Type | Local | Consumers |
 | --- | --- | --- | --- | --- |
-| `SECRET_KEY` | `SECRET_KEY` | text | yes | `local-web`, `staging-deploy` |
-| `DB_PASSWORD` | `DB_PASSWORD` | text | no | `staging-deploy` |
-| `LETSENCRYPT_EMAIL` | `LETSENCRYPT_EMAIL` | text | no | `staging-deploy` |
-| `MEDIA_S3_ACCESS_KEY_ID` | `MEDIA_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `staging-deploy` |
-| `MEDIA_S3_SECRET_ACCESS_KEY` | `MEDIA_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `staging-deploy` |
-| `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` | `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `staging-deploy` |
-| `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY` | `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `staging-deploy` |
-| `PHOTO_PROCESSING_WORKER_TOKEN` | `PHOTO_PROCESSING_WORKER_TOKEN` | text | yes | `local-web`, `staging-deploy` |
-| `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `staging-deploy` |
-| `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `staging-deploy` |
-| `VM_SSH_KEY` | `VM_SSH_KEY_FILE` | binary | no | `staging-deploy`, `staging-remote-check` |
-| `GHCR_READ_TOKEN` | `GHCR_READ_TOKEN` | text | no | `staging-deploy` |
-| `YANDEX_MONITORING_API_KEY` | `YANDEX_MONITORING_API_KEY` | text | no | `staging-public-monitor` |
+| `SECRET_KEY` | `SECRET_KEY` | text | yes | `local-web`, `deploy` |
+| `DB_PASSWORD` | `DB_PASSWORD` | text | no | `deploy` |
+| `LETSENCRYPT_EMAIL` | `LETSENCRYPT_EMAIL` | text | no | `deploy` |
+| `MEDIA_S3_ACCESS_KEY_ID` | `MEDIA_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `deploy` |
+| `MEDIA_S3_SECRET_ACCESS_KEY` | `MEDIA_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `deploy` |
+| `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` | `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `deploy` |
+| `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY` | `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `deploy` |
+| `PHOTO_PROCESSING_WORKER_TOKEN` | `PHOTO_PROCESSING_WORKER_TOKEN` | text | yes | `local-web`, `deploy` |
+| `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `deploy` |
+| `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `deploy` |
+| `VM_SSH_KEY` | `VM_SSH_KEY_FILE` | binary | no | `deploy`, `remote-check` |
+| `GHCR_READ_TOKEN` | `GHCR_READ_TOKEN` | text | no | `deploy` |
+| `YANDEX_MONITORING_API_KEY` | `YANDEX_MONITORING_API_KEY` | text | no | `public-monitor` |
 
 The resolver command boundary is fixed:
 
 ```text
 scripts/run-with-environment-secrets.py \
-  --environment staging --consumer <local-web|staging-deploy|staging-remote-check|staging-public-monitor> \
+  --consumer <local-web|deploy|remote-check|public-monitor> \
   --identity <yc|github-oidc> -- <child command>
 ```
 
@@ -120,11 +119,11 @@ The exact required non-secret `staging` GitHub Environment variable-name set is:
 - `DB_NAME`
 - `DB_USER`
 - `GHCR_USERNAME`
-- `STAGING_SSH_KNOWN_HOSTS`
+- `VM_SSH_KNOWN_HOSTS`
 - `VM_HOST`
 - `VM_USER`
 
-`STAGING_SSH_KNOWN_HOSTS` is a required non-secret `staging` GitHub Environment variable containing
+`VM_SSH_KNOWN_HOSTS` is a required non-secret `staging` GitHub Environment variable containing
 the reviewed SSH host-key record. It is neither a Lockbox entry nor a migrated GitHub Secret.
 
 ## Payload-version evidence ledger

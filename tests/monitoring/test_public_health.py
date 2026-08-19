@@ -30,7 +30,6 @@ def config(probe: ModuleType):
     return probe.ProbeConfig(
         target="https://findme-photo.ru/health/",
         folder_id="folder-id",
-        environment="staging",
         check_name="canonical-health",
         api_key="api-key-that-must-not-leak",
     )
@@ -67,10 +66,7 @@ def test_success_writes_only_the_agreed_metrics_and_bounded_labels(
         "findme_probe_duration_seconds",
         "findme_probe_tls_days_remaining",
     }
-    assert all(
-        metric["labels"] == {"environment": "staging", "check": "canonical-health"}
-        for metric in metrics
-    )
+    assert all(metric["labels"] == {"check": "canonical-health"} for metric in metrics)
     assert all(metric["type"] == "DGAUGE" for metric in metrics)
     assert (
         next(metric for metric in metrics if metric["name"] == "findme_probe_success")["value"]
@@ -253,19 +249,19 @@ def test_probe_captures_only_agreed_metrics_for_local_deterministic_boundaries(
         "metrics": [
             {
                 "name": "findme_probe_success",
-                "labels": {"environment": "staging", "check": "canonical-health"},
+                "labels": {"check": "canonical-health"},
                 "value": 1.0,
                 "type": "DGAUGE",
             },
             {
                 "name": "findme_probe_duration_seconds",
-                "labels": {"environment": "staging", "check": "canonical-health"},
+                "labels": {"check": "canonical-health"},
                 "value": 0.5,
                 "type": "DGAUGE",
             },
             {
                 "name": "findme_probe_tls_days_remaining",
-                "labels": {"environment": "staging", "check": "canonical-health"},
+                "labels": {"check": "canonical-health"},
                 "value": 2.0,
                 "type": "DGAUGE",
             },

@@ -302,8 +302,12 @@ class SubmissionTests(TestCase):
         self.make_eligible_embedding(event=self.paid_event, photo_id="e")
         storage = RecordingStorage()
 
-        created = submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
-        paid = submit_selfie_search(event=self.paid_event, selfie=valid_selfie(), storage=storage)
+        created = submit_selfie_search(
+            event=self.event, selfie=valid_selfie(), storage=storage, user=self.user
+        )
+        paid = submit_selfie_search(
+            event=self.paid_event, selfie=valid_selfie(), storage=storage, user=self.user
+        )
 
         self.assertEqual(SelfieSearchJob.objects.filter(search=created.search).count(), 1)
         self.assertEqual(created.search.eligible_photo_count, 0)
@@ -352,7 +356,10 @@ class SubmissionTests(TestCase):
         self.event.save(update_fields=["face_search_generation"])
 
         created = submit_selfie_search(
-            event=self.event, selfie=valid_selfie(), storage=RecordingStorage()
+            event=self.event,
+            selfie=valid_selfie(),
+            storage=RecordingStorage(),
+            user=self.user,
         )
 
         self.assertEqual(created.search.configuration["embedding_model"], "adaface-ir18-webface4m")
@@ -500,7 +507,10 @@ class SubmissionTests(TestCase):
             )
 
             created = submit_selfie_search(
-                event=self.event, selfie=valid_selfie(), storage=RecordingStorage()
+                event=self.event,
+                selfie=valid_selfie(),
+                storage=RecordingStorage(),
+                user=self.user,
             )
 
         self.assertEqual(
@@ -523,7 +533,9 @@ class SubmissionTests(TestCase):
         storage = RecordingStorage()
 
         with self.assertRaisesRegex(ValueError, "approved benchmark evidence"):
-            submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
+            submit_selfie_search(
+                event=self.event, selfie=valid_selfie(), storage=storage, user=self.user
+            )
 
         self.assertEqual(storage.objects, {})
         self.assertFalse(SelfieSearch.objects.filter(event=self.event).exists())
@@ -582,7 +594,9 @@ class SubmissionTests(TestCase):
         source = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
         storage = RecordingStorage()
 
-        created = submit_selfie_search(event=self.event, selfie=selfie, storage=storage)
+        created = submit_selfie_search(
+            event=self.event, selfie=selfie, storage=storage, user=self.user
+        )
 
         self.assertEqual(storage.objects[next(iter(storage.objects))], selfie.content)
         self.assertNotEqual(storage.objects[next(iter(storage.objects))], source)
@@ -653,15 +667,46 @@ class SubmissionTests(TestCase):
         storage = RecordingStorage()
 
         with self.assertRaises(ValueError):
-            submit_selfie_search(event=self.draft, selfie=valid_selfie(), storage=storage)
+            submit_selfie_search(
+                event=self.draft, selfie=valid_selfie(), storage=storage, user=self.user
+            )
 
         self.assertEqual(storage.objects, {})
         self.assertFalse(SelfieSearch.objects.filter(event=self.draft).exists())
 
+    def test_active_staff_can_submit_draft_but_not_unavailable_selfie_searches(self) -> None:
+        staff_user = get_user_model().objects.create_user(
+            username="selfie-service-staff", is_staff=True
+        )
+        draft_storage = RecordingStorage()
+
+        created = submit_selfie_search(
+            event=self.draft,
+            selfie=valid_selfie(),
+            storage=draft_storage,
+            user=staff_user,
+        )
+        self.draft.publication_status = Event.PublicationStatus.UNAVAILABLE
+        self.draft.save(update_fields=["publication_status"])
+        unavailable_storage = RecordingStorage()
+        with self.assertRaises(ValueError):
+            submit_selfie_search(
+                event=self.draft,
+                selfie=valid_selfie(),
+                storage=unavailable_storage,
+                user=staff_user,
+            )
+
+        self.assertEqual(created.search.event_id, self.draft.pk)
+        self.assertTrue(draft_storage.objects)
+        self.assertEqual(unavailable_storage.objects, {})
+
     def test_stores_only_a_sha256_digest_of_a_random_bearer_token(self) -> None:
         storage = RecordingStorage()
 
-        created = submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
+        created = submit_selfie_search(
+            event=self.event, selfie=valid_selfie(), storage=storage, user=self.user
+        )
 
         self.assertEqual(len(created.public_token), 43)
         self.assertEqual(len(created.search.public_token_digest), 64)
@@ -679,7 +724,9 @@ class SubmissionTests(TestCase):
             side_effect=IntegrityError,
         ):
             with self.assertRaises(IntegrityError):
-                submit_selfie_search(event=self.event, selfie=valid_selfie(), storage=storage)
+                submit_selfie_search(
+                    event=self.event, selfie=valid_selfie(), storage=storage, user=self.user
+                )
 
         self.assertEqual(storage.objects, {})
         self.assertEqual(len(storage.deleted), 1)
@@ -1014,6 +1061,7 @@ class GalleryPhotoSubmissionTests(TestCase):
                         event=self.event,
                         photo=invalid_source,
                         detection_id=detection_id,
+                        user=self.user,
                     )
                 self.assertEqual(SelfieSearch.objects.count(), 0)
 
@@ -1029,6 +1077,7 @@ class GalleryPhotoSubmissionTests(TestCase):
             event=self.event,
             photo=source,
             detection_id=source_embedding.detection_id,
+            user=self.user,
         ).search
 
         self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
@@ -1043,6 +1092,45 @@ class GalleryPhotoSubmissionTests(TestCase):
                 "detection_id": str(source_embedding.detection_id),
             },
         )
+
+    def test_staff_preview_gallery_search_can_finish_after_visibility_is_removed(self) -> None:
+        draft = self.make_event("draft-gallery-worker", "free", published=False)
+        source_embedding = self.make_eligible_embedding(
+            event=draft,
+            photo_id="draft-gallery-worker-source",
+            vector=[1.0] + [0.0] * 127,
+        )
+        staff_user = get_user_model().objects.create_user(
+            username="gallery-worker-staff", is_staff=True
+        )
+        with self.assertRaises(GallerySearchUnavailable):
+            submit_gallery_photo_search(
+                event=draft,
+                photo=source_embedding.detection.attempt.photo,
+                detection_id=source_embedding.detection_id,
+                user=self.user,
+            )
+        search = submit_gallery_photo_search(
+            event=draft,
+            photo=source_embedding.detection.attempt.photo,
+            detection_id=source_embedding.detection_id,
+            user=staff_user,
+        ).search
+        draft.publication_status = Event.PublicationStatus.UNAVAILABLE
+        draft.save(update_fields=["publication_status"])
+
+        processed = process_gallery_photo_search(search=search)
+        with self.assertRaises(GallerySearchUnavailable):
+            submit_gallery_photo_search(
+                event=draft,
+                photo=source_embedding.detection.attempt.photo,
+                detection_id=source_embedding.detection_id,
+                user=staff_user,
+            )
+
+        self.assertEqual(processed.status, SelfieSearch.Status.READY)
+        self.assertGreater(processed.results.count(), 0)
+        self.assertEqual(SelfieSearch.objects.filter(event=draft).count(), 1)
 
     def test_processing_queued_gallery_search_publishes_exact_immutable_result_once(self) -> None:
         source_embedding = self.make_eligible_embedding(
@@ -1077,6 +1165,7 @@ class GalleryPhotoSubmissionTests(TestCase):
             photo=source,
             detection_id=source_embedding.detection_id,
             now=now,
+            user=self.user,
         ).search
         processed = process_gallery_photo_search(search=search, now=now)
         replay = process_gallery_photo_search(search=search, now=now)
@@ -1141,11 +1230,13 @@ class GalleryPhotoSubmissionTests(TestCase):
             event=self.event,
             photo=source,
             detection_id=first.detection_id,
+            user=self.user,
         ).search
         second_search = submit_gallery_photo_search(
             event=self.event,
             photo=source,
             detection_id=second.detection_id,
+            user=self.user,
         ).search
         process_gallery_photo_search(search=first_search)
         process_gallery_photo_search(search=second_search)
@@ -1190,6 +1281,7 @@ class GalleryPhotoSubmissionTests(TestCase):
             event=self.event,
             photo=source,
             detection_id=source_embedding.detection_id,
+            user=self.user,
         ).search
         process_gallery_photo_search(search=search)
 
@@ -1211,7 +1303,10 @@ class GalleryPhotoSubmissionTests(TestCase):
             side_effect=RankingError("broken ranking"),
         ):
             search = submit_gallery_photo_search(
-                event=self.event, photo=source, detection_id=source_embedding.detection_id
+                event=self.event,
+                photo=source,
+                detection_id=source_embedding.detection_id,
+                user=self.user,
             ).search
             process_gallery_photo_search(search=search)
 
@@ -1227,7 +1322,10 @@ class GalleryPhotoSubmissionTests(TestCase):
         )
         source = source_embedding.detection.attempt.photo
         search = submit_gallery_photo_search(
-            event=self.event, photo=source, detection_id=source_embedding.detection_id
+            event=self.event,
+            photo=source,
+            detection_id=source_embedding.detection_id,
+            user=self.user,
         ).search
 
         with patch(
@@ -1252,6 +1350,7 @@ class GalleryPhotoSubmissionTests(TestCase):
             event=self.event,
             photo=source,
             detection_id=source_embedding.detection_id,
+            user=self.user,
         ).search
         PhotoProcessingState.objects.filter(photo=source).update(accepted_attempt=None)
 

@@ -389,6 +389,13 @@ print(json.dumps(output, sort_keys=True))
 esac'''
 commands = {
     'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct exec sh /opt/photo-prjct/deploy/apply-deployment.sh',
+    'cutover-compose-identity': r'''set -eu
+test "$COMPOSE_IDENTITY_CUTOVER_CONFIRMATION" = confirm-canonical-compose-identity-cutover
+cd /opt/photo-prjct
+DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging \
+  exec sh /opt/photo-prjct/deploy/cutover-compose-identity.sh \
+    --confirm-canonical-compose-identity-cutover \
+    --backup-dir /opt/photo-prjct/backups/compose-identity-cutover''',
     'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
     'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
     'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
@@ -535,7 +542,16 @@ PY
 [ "$#" = 1 ] || fail arguments invalid_arguments
 mode=$1
 case "$mode" in
-    deploy|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
+    cutover-compose-identity)
+        remote_deployment_values="$REMOTE_DEPLOYMENT_VALUES COMPOSE_IDENTITY_CUTOVER_CONFIRMATION"
+        ;;
+    *)
+        remote_deployment_values="$REMOTE_DEPLOYMENT_VALUES"
+        ;;
+esac
+
+case "$mode" in
+    deploy|cutover-compose-identity|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
     *) fail arguments unknown_operation ;;
 esac
 
@@ -583,11 +599,11 @@ if [ "$mode" = stage-paused-observability-release ]; then
 fi
 
 case "$mode" in
-    deploy)
+    deploy|cutover-compose-identity)
         run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" docker-compose.deployment.yml docker-compose.https.yml deploy "$remote_target:/opt/photo-prjct/"
         remote_environment=$temporary_root/remote.env
         # shellcheck disable=SC2086
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" $REMOTE_DEPLOYMENT_VALUES >"$command_output" 2>&1; then
+        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" $remote_deployment_values >"$command_output" 2>&1; then
             fail environment materialization_failed
         fi
         ;;

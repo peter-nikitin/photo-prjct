@@ -439,6 +439,33 @@ def test_deploy_helper_preserves_the_existing_deployment_apply_boundary() -> Non
     assert "exec sh /opt/photo-prjct/deploy/apply-deployment.sh" in source
 
 
+def test_manual_compose_cutover_is_an_exact_secret_safe_remote_operation(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    environment, sentinel = _remote_environment(tmp_path, remote_boundary)
+    environment["COMPOSE_IDENTITY_CUTOVER_CONFIRMATION"] = (
+        "confirm-canonical-compose-identity-cutover"
+    )
+
+    result = _run_helper(["cutover-compose-identity"], environment)
+
+    assert result.returncode == 0, result.stderr
+    remote_environment = Path(environment["SSH_STDIN"]).read_text(encoding="utf-8")
+    assert "COMPOSE_IDENTITY_CUTOVER_CONFIRMATION" in remote_environment
+    assert sentinel not in result.stdout + result.stderr
+    assert "cutover-compose-identity.sh" in HELPER.read_text(encoding="utf-8")
+    workflow = _workflow("deploy.yml")
+    assert workflow[True]["workflow_dispatch"]["inputs"]["cutover_compose_identity"] == {
+        "description": "Run the one-time canonical Compose identity cutover",
+        "required": True,
+        "default": False,
+        "type": "boolean",
+    }
+    run = _step(workflow["jobs"]["deploy"], "Run deployment")["run"]
+    assert "inputs.cutover_compose_identity" in run
+    assert "deploy/run-remote.sh cutover-compose-identity" in run
+
+
 def test_helper_falls_back_to_gnu_stat_when_stat_f_is_not_a_file_mode(
     tmp_path: Path, remote_boundary: Path
 ) -> None:

@@ -4,6 +4,11 @@ from tests.visual import views
 
 visual_patterns = [
     path("catalog/populated/", views.catalog_populated, name="visual_catalog_populated"),
+    path(
+        "catalog/staff-preview/",
+        views.catalog_staff_preview,
+        name="visual_catalog_staff_preview",
+    ),
     path("catalog/empty/", views.catalog_empty, name="visual_catalog_empty"),
     path("event/covered/", views.event_covered, name="visual_event_covered"),
     path("event/uncovered/", views.event_uncovered, name="visual_event_uncovered"),
@@ -11,6 +16,11 @@ visual_patterns = [
         "event/gallery-populated/",
         views.event_gallery_populated,
         name="visual_event_gallery_populated",
+    ),
+    path(
+        "event/gallery-staff-preview/",
+        views.event_gallery_staff_preview,
+        name="visual_event_gallery_staff_preview",
     ),
     path(
         "event/gallery-empty/",
@@ -57,6 +67,11 @@ visual_patterns = [
         "event/selfie-search/ready/",
         views.selfie_search_ready,
         name="visual_selfie_search_ready",
+    ),
+    path(
+        "event/selfie-search/ready/staff-preview/",
+        views.selfie_search_ready_staff_preview,
+        name="visual_selfie_search_ready_staff_preview",
     ),
     path(
         "event/selfie-search/feedback-problem/",

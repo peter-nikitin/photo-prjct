@@ -50,6 +50,13 @@ class EventAdminTests(TestCase):
 
         self.assertContains(response, 'name="timezone_name"')
 
+    def test_admin_exposes_russian_publication_labels_with_unavailable_selected(self) -> None:
+        response = self.client.get(reverse("admin:picflow_event_add"))
+
+        self.assertContains(response, '<option value="unavailable" selected>Недоступно</option>')
+        self.assertContains(response, '<option value="draft">Черновик</option>')
+        self.assertContains(response, '<option value="published">Опубликовано</option>')
+
     def test_photo_admin_does_not_expose_capture_time_projection_fields(self) -> None:
         response = self.client.get(reverse("admin:picflow_photo_add"))
 
@@ -123,6 +130,23 @@ class EventAdminTests(TestCase):
 
         self.assertContains(response, "Timezone is required for published events")
         self.assertFalse(Event.objects.filter(slug="published-without-timezone").exists())
+
+    def test_admin_rejects_draft_event_without_timezone(self) -> None:
+        response = self.client.post(
+            reverse("admin:picflow_event_add"),
+            {
+                "name": "Draft without timezone",
+                "slug": "draft-without-timezone",
+                "start_date": date.today(),
+                "end_date": date.today(),
+                "city": "Moscow",
+                "access_type": Event.AccessType.FREE,
+                "publication_status": Event.PublicationStatus.DRAFT,
+            },
+        )
+
+        self.assertContains(response, "Timezone is required for draft events")
+        self.assertFalse(Event.objects.filter(slug="draft-without-timezone").exists())
 
     def test_admin_rejects_invalid_dates(self) -> None:
         response = self.client.post(

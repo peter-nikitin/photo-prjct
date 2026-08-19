@@ -17,6 +17,20 @@ class EventQuerySet(models.QuerySet):
     def published(self):
         return self.filter(publication_status=Event.PublicationStatus.PUBLISHED)
 
+    def site_visible_to(self, user):
+        if (
+            getattr(user, "is_authenticated", False)
+            and getattr(user, "is_active", False)
+            and getattr(user, "is_staff", False)
+        ):
+            return self.filter(
+                publication_status__in=(
+                    Event.PublicationStatus.DRAFT,
+                    Event.PublicationStatus.PUBLISHED,
+                )
+            )
+        return self.published()
+
 
 class Event(models.Model):
     class FaceSearchGeneration(models.TextChoices):
@@ -28,8 +42,9 @@ class Event(models.Model):
         PAID = "paid", "Paid"
 
     class PublicationStatus(models.TextChoices):
-        DRAFT = "draft", "Draft"
-        PUBLISHED = "published", "Published"
+        UNAVAILABLE = "unavailable", "Недоступно"
+        DRAFT = "draft", "Черновик"
+        PUBLISHED = "published", "Опубликовано"
 
     name = models.CharField(max_length=255, unique=True)
     slug = models.SlugField(max_length=255, unique=True, allow_unicode=True)
@@ -47,8 +62,8 @@ class Event(models.Model):
     publication_status = models.CharField(
         max_length=12,
         choices=PublicationStatus,
-        default=PublicationStatus.DRAFT,
-        db_default=PublicationStatus.DRAFT,
+        default=PublicationStatus.UNAVAILABLE,
+        db_default=PublicationStatus.UNAVAILABLE,
     )
     timezone_name = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001
     face_search_generation = models.CharField(
@@ -82,8 +97,11 @@ class Event(models.Model):
                 ZoneInfo(self.timezone_name)
             except (ValueError, ZoneInfoNotFoundError):
                 errors["timezone_name"] = "Timezone must be a valid IANA timezone identifier."
-        elif self.publication_status == self.PublicationStatus.PUBLISHED:
-            errors["timezone_name"] = "Timezone is required for published events."
+        elif self.publication_status in {
+            self.PublicationStatus.DRAFT,
+            self.PublicationStatus.PUBLISHED,
+        }:
+            errors["timezone_name"] = f"Timezone is required for {self.publication_status} events."
         if errors:
             raise ValidationError(errors)
 

@@ -3,8 +3,10 @@ from uuid import uuid4
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
+from django.db.migrations.loader import MigrationLoader
 from django.db.models.deletion import ProtectedError
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -42,13 +44,79 @@ class EventModelTests(TestCase):
         event.refresh_from_db()
         self.assertEqual(event.slug, "test-run")
 
-    def test_published_queryset_excludes_drafts(self) -> None:
+    def test_published_queryset_excludes_nonpublished_events(self) -> None:
         published = self.make_event(publication_status=Event.PublicationStatus.PUBLISHED)
-        self.make_event(name="Draft", slug="draft")
+        self.make_event(
+            name="Draft",
+            slug="draft",
+            publication_status=Event.PublicationStatus.DRAFT,
+        )
+        self.make_event(name="Unavailable", slug="unavailable")
         self.assertEqual(list(Event.objects.published()), [published])
 
-    def test_draft_event_accepts_no_timezone(self) -> None:
+    def test_publication_statuses_have_russian_labels_and_safe_defaults(self) -> None:
+        field = Event._meta.get_field("publication_status")
+
+        self.assertEqual(
+            Event.PublicationStatus.choices,
+            [
+                ("unavailable", "Недоступно"),
+                ("draft", "Черновик"),
+                ("published", "Опубликовано"),
+            ],
+        )
+        self.assertEqual(field.default, Event.PublicationStatus.UNAVAILABLE)
+        self.assertEqual(field.db_default, Event.PublicationStatus.UNAVAILABLE)
+        self.assertEqual(self.make_event().publication_status, Event.PublicationStatus.UNAVAILABLE)
+
+    def test_site_visible_to_enforces_the_exact_publication_matrix(self) -> None:
+        unavailable = self.make_event(name="Unavailable", slug="unavailable")
+        draft = self.make_event(
+            name="Draft",
+            slug="draft",
+            publication_status=Event.PublicationStatus.DRAFT,
+        )
+        published = self.make_event(
+            name="Published",
+            slug="published",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+        ordinary_user = get_user_model().objects.create_user(username="ordinary")
+        active_staff = get_user_model().objects.create_user(username="staff", is_staff=True)
+        inactive_staff = get_user_model().objects.create_user(
+            username="inactive-staff", is_staff=True, is_active=False
+        )
+
+        cases = (
+            (AnonymousUser(), {published.pk}),
+            (ordinary_user, {published.pk}),
+            (active_staff, {draft.pk, published.pk}),
+            (inactive_staff, {published.pk}),
+        )
+        fixtures = Event.objects.filter(pk__in=(unavailable.pk, draft.pk, published.pk))
+        for user, expected_ids in cases:
+            with self.subTest(user=getattr(user, "username", "anonymous")):
+                self.assertEqual(
+                    set(fixtures.site_visible_to(user).values_list("pk", flat=True)),
+                    expected_ids,
+                )
+                self.assertNotIn(unavailable.pk, expected_ids)
+
+    def test_unavailable_event_accepts_no_timezone(self) -> None:
         self.make_event().full_clean()
+
+    def test_draft_event_rejects_no_timezone(self) -> None:
+        event = Event(
+            name="Draft without timezone",
+            slug="draft-without-timezone",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            publication_status=Event.PublicationStatus.DRAFT,
+        )
+
+        with self.assertRaises(ValidationError):
+            event.full_clean()
 
     def test_published_event_rejects_no_timezone(self) -> None:
         event = Event(
@@ -128,6 +196,16 @@ class EventModelTests(TestCase):
         event = self.make_event()
         key = Event._meta.get_field("cover").upload_to(event, "Race Banner.JPG")
         self.assertRegex(key, r"^event-covers/[0-9a-f-]{36}\.jpg$")
+
+    def test_publication_state_migration_is_schema_only(self) -> None:
+        migration = MigrationLoader(connection).get_migration(
+            "picflow", "0011_event_publication_states"
+        )
+
+        self.assertEqual(
+            [operation.__class__.__name__ for operation in migration.operations],
+            ["AlterField"],
+        )
 
 
 class PhotoModelTests(TestCase):

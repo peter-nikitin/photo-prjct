@@ -253,6 +253,57 @@ class FeedbackSubmissionTests(TestCase):
         self.assertEqual(csrf.status_code, 403)
         storage.put.assert_not_called()
 
+    def test_draft_feedback_is_staff_only_and_unavailable_is_hidden_before_storage(self) -> None:
+        search, token = self.make_search()
+        feedback_url = self.feedback_url(token=token)
+        self.client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
+        csrf_token = self.client.cookies["csrftoken"].value
+        self.event.publication_status = Event.PublicationStatus.DRAFT
+        self.event.timezone_name = "Europe/Moscow"
+        self.event.save(update_fields=["publication_status", "timezone_name"])
+        ordinary_user = get_user_model().objects.create_user(username="feedback-ordinary")
+        staff_user = get_user_model().objects.create_user(
+            username="feedback-preview-staff", is_staff=True
+        )
+        storage = Mock()
+        storage.put.return_value = Mock(
+            key="0123456789abcdef0123456789abcdef", size=100, content_type="image/jpeg"
+        )
+
+        with patch("selfie_search.views.FeedbackSelfieStorage", return_value=storage) as factory:
+            anonymous = self.client.post(
+                feedback_url,
+                self.submission_data(),
+                HTTP_X_CSRFTOKEN=csrf_token,
+            )
+            self.client.force_login(ordinary_user)
+            ordinary = self.client.post(
+                feedback_url,
+                self.submission_data(),
+                HTTP_X_CSRFTOKEN=csrf_token,
+            )
+            factory.assert_not_called()
+            self.client.force_login(staff_user)
+            staff = self.client.post(
+                feedback_url,
+                self.submission_data(),
+                HTTP_X_CSRFTOKEN=csrf_token,
+            )
+            self.event.publication_status = Event.PublicationStatus.UNAVAILABLE
+            self.event.save(update_fields=["publication_status"])
+            unavailable = self.client.post(
+                feedback_url,
+                self.submission_data(),
+                HTTP_X_CSRFTOKEN=csrf_token,
+            )
+
+        self.assertEqual([anonymous.status_code, ordinary.status_code], [404, 404])
+        self.assertEqual(staff.status_code, 201)
+        self.assertEqual(unavailable.status_code, 404)
+        self.assertEqual(SelfieSearchFeedback.objects.filter(search=search).count(), 1)
+        self.assertEqual(factory.call_count, 1)
+        self.assertEqual(storage.put.call_count, 1)
+
     def test_changed_visible_result_rejects_the_whole_label_set(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         result = self.make_result(search=search)

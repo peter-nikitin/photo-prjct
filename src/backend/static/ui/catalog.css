@@ -163,6 +163,23 @@
   padding: 22px;
 }
 
+.event-draft-warning {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #e9b949;
+  border-radius: 10px;
+  background: #fff5d8;
+  color: #6d4c00;
+  font-size: 0.84rem;
+  font-weight: 850;
+  line-height: 1.35;
+}
+
+.event-card .event-draft-warning {
+  width: 100%;
+  margin: 0 0 14px;
+}
+
 .event-card h2 {
   margin: 16px 0 14px;
 }

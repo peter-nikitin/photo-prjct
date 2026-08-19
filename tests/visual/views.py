@@ -1,6 +1,6 @@
 """Deterministic, database-free fixture views for visual review."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
@@ -24,6 +24,8 @@ class FixtureImage:
 class FixtureUser:
     username: str
     is_authenticated: bool = True
+    is_active: bool = True
+    is_staff: bool = False
 
     def get_username(self) -> str:
         return self.username
@@ -62,6 +64,7 @@ class FixtureEvent:
     cover: FixtureImage | None = None
     timezone_name: str = "Europe/London"
     folders: FixtureFolderCollection = FixtureFolderCollection()
+    publication_status: str = "published"
 
     @property
     def pk(self) -> str:
@@ -164,6 +167,13 @@ EVENTS = (
         "Доступ по коду",
         FixtureImage("/static/images/run-expo-3125.png"),
     ),
+)
+
+DRAFT_EVENT = replace(
+    EVENTS[0],
+    name="London 10K — предпросмотр",
+    slug="london-10k-preview",
+    publication_status="draft",
 )
 
 UNFINISHED_UPLOADS = (
@@ -529,6 +539,10 @@ def _render(request: HttpRequest, template: str, context: dict[str, Any]) -> Htt
     return render(request, template, context)
 
 
+def _as_staff(request: HttpRequest) -> None:
+    request.user = FixtureUser("Администратор", is_staff=True)
+
+
 def _header_only_event(response: HttpResponse) -> HttpResponse:
     fixture_style = (
         b'\n    <style data-visual-header-only="true">.event-gallery { display: none; }</style>\n  '
@@ -590,6 +604,15 @@ def catalog_populated(request: HttpRequest) -> HttpResponse:
     return _render(request, "catalog/event_catalog.html", {"events": EVENTS})
 
 
+def catalog_staff_preview(request: HttpRequest) -> HttpResponse:
+    _as_staff(request)
+    return _render(
+        request,
+        "catalog/event_catalog.html",
+        {"events": (DRAFT_EVENT, EVENTS[1])},
+    )
+
+
 def catalog_empty(request: HttpRequest) -> HttpResponse:
     return _render(request, "catalog/event_catalog.html", {"events": ()})
 
@@ -604,6 +627,13 @@ def event_uncovered(request: HttpRequest) -> HttpResponse:
 
 def event_gallery_populated(request: HttpRequest) -> HttpResponse:
     return _render(request, "catalog/event_detail.html", _gallery_context())
+
+
+def event_gallery_staff_preview(request: HttpRequest) -> HttpResponse:
+    _as_staff(request)
+    context = _gallery_context()
+    context["event"] = DRAFT_EVENT
+    return _render(request, "catalog/event_detail.html", context)
 
 
 def event_gallery_empty(request: HttpRequest) -> HttpResponse:
@@ -707,7 +737,7 @@ def selfie_search_error(request: HttpRequest) -> HttpResponse:
     )
 
 
-def selfie_search_ready(request: HttpRequest) -> HttpResponse:
+def _selfie_search_ready(request: HttpRequest, *, event: FixtureEvent) -> HttpResponse:
     photos = SELFIE_RESULT_PHOTOS
     results = tuple(
         FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
@@ -717,7 +747,7 @@ def selfie_search_ready(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
-            "event": EVENTS[0],
+            "event": event,
             "gallery_photos": photos,
             "gallery_result_items": tuple(zip(results, photos, strict=True)),
             "selfie_search_page": Paginator(photos, 2).page(1),
@@ -726,6 +756,15 @@ def selfie_search_ready(request: HttpRequest) -> HttpResponse:
             "status_url": "",
         },
     )
+
+
+def selfie_search_ready(request: HttpRequest) -> HttpResponse:
+    return _selfie_search_ready(request, event=EVENTS[0])
+
+
+def selfie_search_ready_staff_preview(request: HttpRequest) -> HttpResponse:
+    _as_staff(request)
+    return _selfie_search_ready(request, event=DRAFT_EVENT)
 
 
 def selfie_search_feedback_problem(request: HttpRequest) -> HttpResponse:

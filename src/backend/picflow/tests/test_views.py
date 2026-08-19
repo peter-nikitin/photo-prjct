@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from config import views
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Permission
+from django.contrib.auth.models import AnonymousUser, Permission
 from django.core.paginator import Paginator
 from django.test import (
     RequestFactory,
@@ -186,14 +186,76 @@ class PageTests(TestCase):
         response = self.client.get(reverse("event_catalog"))
         self.assertContains(response, "Событий пока нет")
 
-    def test_catalog_only_shows_published_events(self) -> None:
-        self.make_event()
-        self.make_event(
-            name="Secret", slug="secret", publication_status=Event.PublicationStatus.DRAFT
+    def test_catalog_and_detail_apply_the_shared_publication_matrix(self) -> None:
+        published = self.make_event()
+        draft = self.make_event(
+            name="Draft",
+            slug="draft",
+            publication_status=Event.PublicationStatus.DRAFT,
+            timezone_name="Europe/Moscow",
         )
-        response = self.client.get(reverse("event_catalog"))
-        self.assertContains(response, "City Run")
-        self.assertNotContains(response, "Secret")
+        unavailable = self.make_event(
+            name="Unavailable",
+            slug="unavailable",
+            publication_status=Event.PublicationStatus.UNAVAILABLE,
+        )
+        ordinary_user = get_user_model().objects.create_user(username="ordinary-preview")
+        staff_user = get_user_model().objects.create_user(username="staff-preview", is_staff=True)
+
+        for user in (None, ordinary_user):
+            with self.subTest(user=getattr(user, "username", "anonymous")):
+                if user is not None:
+                    self.client.force_login(user)
+                catalog = self.client.get(reverse("event_catalog"))
+                self.assertContains(catalog, published.name)
+                self.assertNotContains(catalog, draft.name)
+                self.assertNotContains(catalog, unavailable.name)
+                self.assertEqual(
+                    self.client.get(
+                        reverse("event_detail", kwargs={"slug": draft.slug})
+                    ).status_code,
+                    404,
+                )
+                self.client.logout()
+
+        self.client.force_login(staff_user)
+        staff_catalog = self.client.get(reverse("event_catalog"))
+        self.assertContains(staff_catalog, published.name)
+        self.assertContains(staff_catalog, draft.name)
+        self.assertNotContains(staff_catalog, unavailable.name)
+        self.assertEqual(
+            self.client.get(reverse("event_detail", kwargs={"slug": draft.slug})).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get(reverse("event_detail", kwargs={"slug": unavailable.slug})).status_code,
+            404,
+        )
+
+    def test_staff_draft_preview_warns_and_emits_no_public_analytics(self) -> None:
+        published = self.make_event()
+        draft = self.make_event(
+            name="Draft",
+            slug="draft",
+            publication_status=Event.PublicationStatus.DRAFT,
+            timezone_name="Europe/Moscow",
+        )
+        staff_user = get_user_model().objects.create_user(username="warning-staff", is_staff=True)
+        self.client.force_login(staff_user)
+        warning = "Черновик — виден только администраторам"
+
+        catalog = self.client.get(reverse("event_catalog"))
+        draft_detail = self.client.get(reverse("event_detail", kwargs={"slug": draft.slug}))
+        published_detail = self.client.get(reverse("event_detail", kwargs={"slug": published.slug}))
+
+        self.assertContains(catalog, warning)
+        self.assertContains(draft_detail, warning)
+        self.assertNotContains(published_detail, warning)
+        for response in (catalog, draft_detail):
+            with self.subTest(path=response.request["PATH_INFO"]):
+                self.assertIsNone(response.context["yandex_metrika_counter_id"])
+                self.assertNotContains(response, "mc.yandex.ru/metrika/tag.js")
+                self.assertNotContains(response, "mc.yandex.ru/watch/")
 
     def test_catalog_orders_upcoming_then_past(self) -> None:
         today = date.today()
@@ -283,7 +345,7 @@ class PageTests(TestCase):
 
                 self.client.logout()
 
-    def test_event_detail_returns_404_for_draft_event(self) -> None:
+    def test_event_detail_returns_404_for_draft_event_anonymously(self) -> None:
         draft = self.make_event(
             name="Draft", slug="draft", publication_status=Event.PublicationStatus.DRAFT
         )
@@ -1602,10 +1664,12 @@ class GalleryMediaViewTests(TransactionTestCase):
         resolver.resolve_signed.return_value = (
             "https://storage.example.test/preview?signature=secret"
         )
+        request = RequestFactory().get(self.media_url(event=event, photo=photo))
+        request.user = AnonymousUser()
 
         with patch("config.views._public_media_resolver", return_value=resolver):
             response = views.photo_media(
-                RequestFactory().get(self.media_url(event=event, photo=photo)),
+                request,
                 event.slug,
                 photo.id,
                 "preview-small",
@@ -1641,6 +1705,54 @@ class GalleryMediaViewTests(TransactionTestCase):
 
                 self.assertEqual(response.status_code, 404)
                 resolver_factory.assert_not_called()
+
+    def test_staff_can_sign_draft_media_but_unavailable_and_nonstaff_requests_cannot(self) -> None:
+        draft = self.make_event(
+            name="Draft",
+            slug="draft-signing",
+            publication_status=Event.PublicationStatus.DRAFT,
+            timezone_name="Europe/Moscow",
+        )
+        unavailable = self.make_event(
+            name="Unavailable",
+            slug="unavailable-signing",
+            publication_status=Event.PublicationStatus.UNAVAILABLE,
+        )
+        draft_photo = self.make_private_photo(draft, id="draft-signing-photo")
+        unavailable_photo = self.make_private_photo(unavailable, id="unavailable-signing-photo")
+        ordinary_user = get_user_model().objects.create_user(username="ordinary-signing")
+        staff_user = get_user_model().objects.create_user(username="staff-signing", is_staff=True)
+        draft_urls = (
+            self.media_url(event=draft, photo=draft_photo),
+            self.download_url(event=draft, photo=draft_photo),
+        )
+
+        with patch("config.views._public_media_resolver") as resolver_factory:
+            anonymous = tuple(self.client.get(url) for url in draft_urls)
+            self.client.force_login(ordinary_user)
+            ordinary = tuple(self.client.get(url) for url in draft_urls)
+            self.client.logout()
+            resolver_factory.assert_not_called()
+
+        resolver = Mock()
+        resolver.resolve_signed.return_value = "https://storage.example.test/preview?signed"
+        resolver.resolve_download.return_value = "https://storage.example.test/original?signed"
+        self.client.force_login(staff_user)
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            staff = tuple(self.client.get(url) for url in draft_urls)
+            unavailable_responses = (
+                self.client.get(self.media_url(event=unavailable, photo=unavailable_photo)),
+                self.client.get(self.download_url(event=unavailable, photo=unavailable_photo)),
+            )
+
+        self.assertEqual([response.status_code for response in (*anonymous, *ordinary)], [404] * 4)
+        self.assertEqual([response.status_code for response in staff], [302, 302])
+        self.assertEqual(
+            [response.status_code for response in unavailable_responses],
+            [404, 404],
+        )
+        resolver.resolve_signed.assert_called_once_with(photo=draft_photo, variant="preview-small")
+        resolver.resolve_download.assert_called_once_with(photo=draft_photo)
 
     def test_photo_media_hides_new_photo_until_its_preview_is_accepted(self) -> None:
         event = self.make_event()
@@ -1762,13 +1874,15 @@ class GalleryMediaViewTests(TransactionTestCase):
         photo = self.make_private_photo(event)
         resolver = Mock()
         resolver.resolve_signed.side_effect = ValueError("programmer bug")
+        request = RequestFactory().get(self.media_url(event=event, photo=photo))
+        request.user = AnonymousUser()
 
         with (
             patch("config.views._public_media_resolver", return_value=resolver),
             self.assertRaisesRegex(ValueError, "programmer bug"),
         ):
             views.photo_media(
-                RequestFactory().get(self.media_url(event=event, photo=photo)),
+                request,
                 event.slug,
                 photo.id,
                 "preview-small",

@@ -8,7 +8,7 @@ from pathlib import Path
 from struct import pack
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import Mock, call, patch
+from unittest.mock import ANY, Mock, call, patch
 from urllib.parse import quote
 from uuid import uuid4
 from zlib import crc32
@@ -395,7 +395,32 @@ class GalleryPhotoSearchViewTests(TestCase):
             fetch_redirect_response=False,
         )
         submit_gallery_photo_search.assert_called_once_with(
-            event=self.event, photo=self.photo, detection_id=self.detection_id
+            event=self.event,
+            photo=self.photo,
+            detection_id=self.detection_id,
+            user=ANY,
+        )
+
+    @patch("selfie_search.views.submit_gallery_photo_search")
+    def test_active_staff_can_submit_a_draft_gallery_face(
+        self, submit_gallery_photo_search
+    ) -> None:
+        draft = self.make_event(slug="draft-gallery-preview", published=False)
+        draft_photo = self.make_gallery_photo(event=draft, photo_id="draft-gallery-source")
+        staff_user = get_user_model().objects.create_user(
+            username="gallery-preview-staff", is_staff=True
+        )
+        submit_gallery_photo_search.return_value = SimpleNamespace(public_token="draft-token")
+        self.client.force_login(staff_user)
+
+        response = self.client.post(self.url(event=draft, photo_id=draft_photo.pk))
+
+        self.assertEqual(response.status_code, 302)
+        submit_gallery_photo_search.assert_called_once_with(
+            event=draft,
+            photo=draft_photo,
+            detection_id=self.detection_id,
+            user=staff_user,
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
@@ -430,7 +455,10 @@ class GalleryPhotoSearchViewTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.content, b"")
         submit_gallery_photo_search.assert_called_once_with(
-            event=self.event, photo=self.photo, detection_id=forged_detection_id
+            event=self.event,
+            photo=self.photo,
+            detection_id=forged_detection_id,
+            user=ANY,
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
@@ -452,7 +480,10 @@ class GalleryPhotoSearchViewTests(TestCase):
             fetch_redirect_response=False,
         )
         submit_gallery_photo_search.assert_called_once_with(
-            event=self.event, photo=self.photo, detection_id=self.detection_id
+            event=self.event,
+            photo=self.photo,
+            detection_id=self.detection_id,
+            user=ANY,
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
@@ -743,6 +774,46 @@ class SelfieSubmissionFeedbackTests(TestCase):
                     declared_type=declared_type,
                 )
 
+    def test_draft_selfie_submission_is_staff_only_before_storage_or_search_write(self) -> None:
+        draft = Event.objects.create(
+            name="Draft selfie preview",
+            slug="draft-selfie-preview",
+            start_date=date(2026, 7, 30),
+            end_date=date(2026, 7, 30),
+            city="Moscow",
+            access_type=Event.AccessType.FREE,
+            publication_status=Event.PublicationStatus.DRAFT,
+            timezone_name="Europe/Moscow",
+        )
+        url = reverse("selfie_search:submit", kwargs={"event_slug": draft.slug})
+        staff_user = get_user_model().objects.create_user(
+            username="selfie-preview-staff", is_staff=True
+        )
+        created = SimpleNamespace(
+            search=SimpleNamespace(pk=uuid4()), public_token="staff-preview-token"
+        )
+
+        with (
+            patch("selfie_search.views.TemporarySelfieStorage") as storage_factory,
+            patch(
+                "selfie_search.views.submit_selfie_search", return_value=created
+            ) as submit_service,
+        ):
+            anonymous = self.client.post(url, {"selfie": _view_jpeg_upload()})
+            submit_service.assert_not_called()
+            storage_factory.assert_not_called()
+            self.client.force_login(staff_user)
+            staff = self.client.post(url, {"selfie": _view_jpeg_upload()})
+
+        self.assertEqual(anonymous.status_code, 404)
+        self.assertEqual(staff.status_code, 302)
+        submit_service.assert_called_once_with(
+            event=draft,
+            selfie=ANY,
+            storage=storage_factory.return_value,
+            user=staff_user,
+        )
+
     def test_normalized_oversize_rejection_is_safe_and_customer_correctable(self) -> None:
         fixture = Path(__file__).parent.joinpath("fixtures", "iphone-oriented.heic").read_bytes()
         upload = SimpleUploadedFile("iphone.heic", fixture, content_type="image/heic")
@@ -986,6 +1057,12 @@ class PublicSelfieResultViewTests(TestCase):
     def status_url(self, *, event: Event, token: str) -> str:
         return reverse(
             "selfie_search:status",
+            kwargs={"event_slug": event.slug, "public_token": token},
+        )
+
+    def process_url(self, *, event: Event, token: str) -> str:
+        return reverse(
+            "selfie_search:process_gallery_search",
             kwargs={"event_slug": event.slug, "public_token": token},
         )
 
@@ -1423,6 +1500,104 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(mismatch.status_code, 404)
         self.assertEqual(draft.status_code, 404)
         self.assertEqual(unpublished.status_code, 404)
+
+    def test_draft_bearer_result_and_signed_media_are_staff_only(self) -> None:
+        draft_event = self.make_event(
+            name="Draft bearer preview",
+            slug="draft-bearer-preview",
+            publication_status=Event.PublicationStatus.DRAFT,
+            timezone_name="Europe/Moscow",
+        )
+        search, token = self.make_search(
+            event=draft_event,
+            status=SelfieSearch.Status.READY,
+            matched_photo_count=1,
+        )
+        photo = self.make_private_photo(draft_event, photo_id="draft-bearer-photo")
+        self.add_result(search=search, photo=photo, rank=1)
+        urls = (
+            self.result_url(event=draft_event, token=token),
+            self.status_url(event=draft_event, token=token),
+            self.result_media_url(
+                event=draft_event,
+                token=token,
+                photo=photo,
+                variant="preview-small",
+            ),
+            self.result_download_url(event=draft_event, token=token, photo=photo),
+        )
+        ordinary_user = get_user_model().objects.create_user(username="draft-bearer-ordinary")
+        staff_user = get_user_model().objects.create_user(
+            username="draft-bearer-staff", is_staff=True
+        )
+
+        with patch("selfie_search.views._public_media_resolver") as resolver_factory:
+            anonymous = tuple(self.client.get(url) for url in urls)
+            self.client.force_login(ordinary_user)
+            ordinary = tuple(self.client.get(url) for url in urls)
+            resolver_factory.assert_not_called()
+
+        resolver = Mock()
+        resolver.resolve_signed.return_value = "https://storage.example.test/preview?signed"
+        resolver.resolve_download.return_value = "https://storage.example.test/original?signed"
+        self.client.force_login(staff_user)
+        with patch("selfie_search.views._public_media_resolver", return_value=resolver):
+            staff = tuple(self.client.get(url) for url in urls)
+
+        self.assertEqual([response.status_code for response in (*anonymous, *ordinary)], [404] * 8)
+        self.assertEqual([response.status_code for response in staff], [200, 200, 302, 302])
+        self.assertContains(staff[0], "Черновик — виден только администраторам")
+        resolver.resolve_signed.assert_called_once_with(photo=photo, variant="preview-small")
+        resolver.resolve_download.assert_called_once_with(photo=photo)
+
+    @patch("selfie_search.views.process_gallery_photo_search")
+    def test_draft_gallery_process_requires_current_staff_visibility(
+        self, process_gallery_photo_search
+    ) -> None:
+        draft_event = self.make_event(
+            name="Draft process preview",
+            slug="draft-process-preview",
+            publication_status=Event.PublicationStatus.DRAFT,
+            timezone_name="Europe/Moscow",
+        )
+        search, token = self.make_search(event=draft_event)
+        search.configuration = {"processor": "gallery_photo_query"}
+        search.save(update_fields=["configuration"])
+        process_gallery_photo_search.return_value = search
+        url = self.process_url(event=draft_event, token=token)
+        ordinary_user = get_user_model().objects.create_user(username="draft-process-ordinary")
+        staff_user = get_user_model().objects.create_user(
+            username="draft-process-staff", is_staff=True
+        )
+
+        anonymous = self.client.post(url)
+
+        self.assertEqual(anonymous.status_code, 404)
+        process_gallery_photo_search.assert_not_called()
+
+        self.client.force_login(ordinary_user)
+        ordinary = self.client.post(url)
+
+        self.assertEqual(ordinary.status_code, 404)
+        process_gallery_photo_search.assert_not_called()
+
+        self.client.force_login(staff_user)
+        staff = self.client.post(url)
+
+        self.assertRedirects(
+            staff,
+            self.result_url(event=draft_event, token=token),
+            fetch_redirect_response=False,
+        )
+        process_gallery_photo_search.assert_called_once_with(search=search)
+
+        process_gallery_photo_search.reset_mock()
+        draft_event.publication_status = Event.PublicationStatus.UNAVAILABLE
+        draft_event.save(update_fields=["publication_status"])
+        unavailable = self.client.post(url)
+
+        self.assertEqual(unavailable.status_code, 404)
+        process_gallery_photo_search.assert_not_called()
 
     def test_unknown_bearer_routes_keep_private_response_headers(self) -> None:
         photo = self.make_private_photo(self.event, photo_id="missing-result-member")

@@ -48,6 +48,11 @@ on:
         required: true
         default: false
         type: boolean
+      cutover_compose_identity:
+        description: Run the one-time canonical Compose identity cutover
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   classify-release:
@@ -332,10 +337,18 @@ jobs:
           SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED: ${{ vars.SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED || 'False' }}
           GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
         run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer deploy \
-            --identity github-oidc \
-            -- deploy/run-remote.sh deploy
+          if [ "${{ inputs.cutover_compose_identity }}" = true ]; then
+            COMPOSE_IDENTITY_CUTOVER_CONFIRMATION=confirm-canonical-compose-identity-cutover \
+              python scripts/run-with-environment-secrets.py \
+                --consumer deploy \
+                --identity github-oidc \
+                -- deploy/run-remote.sh cutover-compose-identity
+          else
+            python scripts/run-with-environment-secrets.py \
+              --consumer deploy \
+              --identity github-oidc \
+              -- deploy/run-remote.sh deploy
+          fi
       - name: Verify private upload storage contract
         if: ${{ inputs.verify_private_storage }}
         env:

@@ -175,7 +175,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
             ),
         )
 
-    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, DEBUG=True)
     def test_local_adaface_generation_pins_scrfd_and_adaface_in_v5(self) -> None:
         """Changing either model must produce a different local experimental generation."""
         generation = local_adaface_face_embedding_generations()[0]

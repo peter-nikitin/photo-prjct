@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reconcile the bounded staging-deployment notification issue."""
+"""Reconcile the bounded deployment notification issue."""
 
 import argparse
 import json
@@ -14,10 +14,10 @@ from typing import Any
 
 API_ROOT = "https://api.github.com"
 REQUEST_TIMEOUT_SECONDS = 10
-USER_AGENT = "findme-photo-staging-deploy-reconciler/1.0"
+USER_AGENT = "findme-photo-deploy-reconciler/1.0"
 TITLES = {
-    "production": "[staging deployment] main is not deployed",
-    "validation": "[staging deployment validation] notification drill",
+    "deploy": "[deployment] main is not deployed",
+    "validation": "[deployment validation] notification drill",
 }
 PHASES = frozenset(
     {
@@ -174,7 +174,7 @@ def _response_identifier(response: Any, field: str) -> int:
 
 
 def reconcile(arguments: argparse.Namespace, token: str) -> None:
-    if arguments.mode == "production" and _current_main_sha(token, arguments.repository) != (
+    if arguments.mode == "deploy" and _current_main_sha(token, arguments.repository) != (
         arguments.sha
     ):
         return
@@ -215,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ReconciliationError
         reconcile(arguments, token)
     except (ReconciliationError, ValueError):
-        print("error: staging deployment issue reconciliation failed", file=sys.stderr)
+        print("error: deployment issue reconciliation failed", file=sys.stderr)
         return 1
     return 0
 

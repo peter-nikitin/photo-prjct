@@ -67,10 +67,10 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
             )
     threshold = settings.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD
     if settings.ADAFACE_LOCAL_EXPERIMENT_ENABLED:
-        if settings.MONITORING_ENVIRONMENT != "local":
+        if settings.DEBUG is not True:
             errors.append(
                 Error(
-                    "AdaFace local experiment requires MONITORING_ENVIRONMENT=local.",
+                    "AdaFace local experiment requires DEBUG=True.",
                     id="selfie_search.E003",
                 )
             )

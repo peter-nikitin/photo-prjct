@@ -19,7 +19,6 @@ trap 'exit 129' HUP
 
 printf 'DEPLOY_PHASE=validate\n'
 
-: "${DEPLOYMENT_TARGET:?Set DEPLOYMENT_TARGET to staging or production}"
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
 : "${APP_IMAGE:?Set APP_IMAGE}"
@@ -115,15 +114,6 @@ case "${PHOTO_UPLOAD_ENABLED:-False}" in
         ;;
     *)
         echo "PHOTO_UPLOAD_ENABLED must be True or False" >&2
-        exit 2
-        ;;
-esac
-
-case "$DEPLOYMENT_TARGET" in
-    staging|production)
-        ;;
-    *)
-        echo "DEPLOYMENT_TARGET must be staging or production" >&2
         exit 2
         ;;
 esac
@@ -279,7 +269,7 @@ compose_with_env_file() {
     APP_ENV_FILE="$compose_env_file" \
     docker compose --project-name "$COMPOSE_PROJECT_NAME" \
         --env-file "$compose_env_file" \
-        -f "$DEPLOY_ROOT/docker-compose.prod.yml" \
+        -f "$DEPLOY_ROOT/docker-compose.deployment.yml" \
         -f "$overlay_file" "$@"
 }
 
@@ -350,8 +340,6 @@ fail_worker_runtime_verification() {
 requested_env_tmp=""
 recovery_env_tmp=""
 previous_env_tmp=""
-previous_deployment_target_tmp=""
-previous_compose_project_name_tmp=""
 previous_deployed_image_tmp=""
 marker_tmp=""
 mutation_started=0
@@ -364,26 +352,11 @@ cleanup() {
         ${requested_env_tmp:+"$requested_env_tmp"} \
         ${recovery_env_tmp:+"$recovery_env_tmp"} \
         ${previous_env_tmp:+"$previous_env_tmp"} \
-        ${previous_deployment_target_tmp:+"$previous_deployment_target_tmp"} \
-        ${previous_compose_project_name_tmp:+"$previous_compose_project_name_tmp"} \
         ${previous_deployed_image_tmp:+"$previous_deployed_image_tmp"} \
         ${marker_tmp:+"$marker_tmp"}
 }
 
 restore_previous_deployment_markers() {
-    if [ "$previous_deployment_target_exists" -eq 1 ]; then
-        mv "$previous_deployment_target_tmp" "$DEPLOY_ROOT/deployment-target" || return 1
-        previous_deployment_target_tmp=""
-    else
-        rm -f "$DEPLOY_ROOT/deployment-target" || return 1
-    fi
-
-    if [ "$previous_compose_project_name_exists" -eq 1 ]; then
-        mv "$previous_compose_project_name_tmp" "$DEPLOY_ROOT/compose-project-name" || return 1
-        previous_compose_project_name_tmp=""
-    else
-        rm -f "$DEPLOY_ROOT/compose-project-name" || return 1
-    fi
     if [ "$previous_deployed_image_exists" -eq 1 ]; then
         mv "$previous_deployed_image_tmp" "$DEPLOY_ROOT/deployed-image" || return 1
         previous_deployed_image_tmp=""
@@ -539,8 +512,6 @@ previous_upload_enabled="False"
 previous_processing_enabled="False"
 previous_worker_replicas=1
 previous_env_exists=0
-previous_deployment_target_exists=0
-previous_compose_project_name_exists=0
 previous_deployed_image_exists=0
 has_successful_deployment=0
 has_established_deployment=0
@@ -576,18 +547,6 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
             ;;
     esac
 fi
-if [ -f "$DEPLOY_ROOT/deployment-target" ]; then
-    has_established_deployment=1
-    previous_deployment_target_exists=1
-    previous_deployment_target_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.previous.XXXXXX")" || fail "Could not snapshot deployment target marker"
-    cp -p "$DEPLOY_ROOT/deployment-target" "$previous_deployment_target_tmp" || fail "Could not snapshot deployment target marker"
-fi
-if [ -f "$DEPLOY_ROOT/compose-project-name" ]; then
-    has_established_deployment=1
-    previous_compose_project_name_exists=1
-    previous_compose_project_name_tmp="$(mktemp "$DEPLOY_ROOT/.compose-project-name.previous.XXXXXX")" || fail "Could not snapshot compose project marker"
-    cp -p "$DEPLOY_ROOT/compose-project-name" "$previous_compose_project_name_tmp" || fail "Could not snapshot compose project marker"
-fi
 if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
     has_established_deployment=1
     has_successful_deployment=1
@@ -621,7 +580,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'APP_IMAGE=%s\n' "$requested_image"
     printf 'SECRET_KEY=%s\n' "$SECRET_KEY"
     printf 'DEBUG=%s\n' "$DEBUG"
-    printf 'MONITORING_ENVIRONMENT=%s\n' "$DEPLOYMENT_TARGET"
     printf 'ALLOWED_HOSTS=%s\n' "$ALLOWED_HOSTS"
     printf 'DB_NAME=%s\n' "$DB_NAME"
     printf 'DB_USER=%s\n' "$DB_USER"
@@ -896,16 +854,6 @@ if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
 fi
 
 phase commit
-marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployment-target.XXXXXX")"
-printf '%s\n' "$DEPLOYMENT_TARGET" > "$marker_tmp"
-mv "$marker_tmp" "$DEPLOY_ROOT/deployment-target"
-marker_tmp=""
-
-marker_tmp="$(mktemp "$DEPLOY_ROOT/.compose-project-name.XXXXXX")"
-printf '%s\n' "$COMPOSE_PROJECT_NAME" > "$marker_tmp"
-mv "$marker_tmp" "$DEPLOY_ROOT/compose-project-name"
-marker_tmp=""
-
 if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
 else

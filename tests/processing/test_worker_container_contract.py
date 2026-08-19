@@ -190,9 +190,9 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
     assert "PHOTO_WORKER_CONCURRENCY" not in environment
 
 
-def test_production_worker_profile_is_bounded_and_isolated_from_web_configuration() -> None:
+def test_deployment_worker_profile_is_bounded_and_isolated_from_web_configuration() -> None:
     """The deployed worker has only its private API contract and declared resource bounds."""
-    compose = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
     worker = compose["services"]["worker"]
 
     assert worker["image"] == "${WORKER_IMAGE:-}"
@@ -205,7 +205,6 @@ def test_production_worker_profile_is_bounded_and_isolated_from_web_configuratio
     assert worker["mem_limit"] == "2g"
     assert worker["pids_limit"] == 64
     assert worker["environment"] == {
-        "DEPLOYMENT_TARGET": "${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}",
         "PHOTO_WORKER_API_URL": "http://web:8000/internal/photo-processing/v1",
         "PHOTO_WORKER_TOKEN": "${PHOTO_PROCESSING_WORKER_TOKEN:-}",
         "PHOTO_WORKER_BUILD": "${PHOTO_WORKER_BUILD:-capture-metadata-v1}",

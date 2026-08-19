@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts/clone-staging-db.sh"
+SCRIPT = ROOT / "scripts/clone-deployed-db.sh"
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -288,7 +288,7 @@ exec "$REAL_MV" "$@"
         "COMPOSE_CONFIG": str(config),
         "DOCKER_CONTEXT": "clone-test",
         "DOCKER_CONTEXT_ENDPOINT": "unix:///var/run/docker.sock",
-        "STAGING_SSH_TARGET": "developer@staging.example",
+        "VM_SSH_TARGET": "developer@staging.example",
     }
 
 
@@ -365,16 +365,38 @@ def _write_malformed_checksum(dump_path: Path) -> None:
     )
 
 
-def test_guard_requires_staging_ssh_target_before_any_remote_or_local_action(
+def test_guard_requires_deployed_ssh_target_before_any_remote_or_local_action(
     clone_env: dict[str, str],
 ) -> None:
-    env = {key: value for key, value in clone_env.items() if key != "STAGING_SSH_TARGET"}
+    env = {key: value for key, value in clone_env.items() if key != "VM_SSH_TARGET"}
 
     result = _run(env=env)
 
     assert result.returncode != 0
-    assert "STAGING_SSH_TARGET" in result.stderr
+    assert "VM_SSH_TARGET" in result.stderr
     _assert_no_remote_or_local_replacement(env)
+
+
+def test_deployed_dump_requires_ssh_before_any_remote_dump_action(
+    clone_env: dict[str, str],
+) -> None:
+    fake_bin = Path(clone_env["PATH"].split(os.pathsep)[0])
+    (fake_bin / "ssh").unlink()
+    _write_executable(fake_bin / "python3", "exit 0")
+    os.symlink("/usr/bin/dirname", fake_bin / "dirname")
+    os.symlink("/bin/sh", fake_bin / "sh")
+
+    result = _run(
+        env={
+            **clone_env,
+            "PATH": str(fake_bin),
+            "CONFIRM_REPLACE_LOCAL_DB": "yes",
+        }
+    )
+
+    assert result.returncode != 0
+    assert "ssh is required" in result.stderr
+    assert "ssh " not in _commands(clone_env)
 
 
 def test_guard_stops_when_interactive_confirmation_is_declined(
@@ -389,7 +411,7 @@ def test_guard_stops_when_interactive_confirmation_is_declined(
     _assert_no_remote_or_local_replacement(clone_env)
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize(
     ("config", "expected_message"),
     [
@@ -425,7 +447,7 @@ def test_guard_rejects_unsafe_rendered_local_database_configuration(
     _assert_no_remote_or_local_replacement(clone_env)
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize(
     ("field", "unsafe_value"),
     [
@@ -552,15 +574,15 @@ def test_guard_rejects_remote_docker_endpoint_before_confirmation_dump_or_databa
         ),
         pytest.param(
             {"DOCKER_CONTEXT": "", "DOCKER_HOST": "tcp://127.25.0.1:2375"},
-            marks=pytest.mark.clone_staging_slow,
+            marks=pytest.mark.clone_deployed_slow,
         ),
         pytest.param(
             {"DOCKER_CONTEXT": "", "DOCKER_HOST": "tcp://[::1]:2375"},
-            marks=pytest.mark.clone_staging_slow,
+            marks=pytest.mark.clone_deployed_slow,
         ),
         pytest.param(
             {"DOCKER_CONTEXT": "", "DOCKER_HOST": "tcp://localhost:2375"},
-            marks=pytest.mark.clone_staging_slow,
+            marks=pytest.mark.clone_deployed_slow,
         ),
     ],
     ids=("docker-desktop-unix", "ipv4-loopback", "ipv6-loopback", "localhost"),
@@ -616,15 +638,15 @@ def test_dump_stream_uses_remote_container_and_publishes_validated_artifacts(
         for path in (dump_path, checksum_path, metadata_path)
     )
     metadata = metadata_path.read_text(encoding="utf-8")
-    assert "staging_host=staging.example" in metadata
+    assert "deployed_host=staging.example" in metadata
     assert "postgresql_major=16" in metadata
     assert "database=staging app; not-a-command" in metadata
     assert "dump_toc_entries=2" in metadata
 
     commands = _commands(clone_env)
     assert (
-        "docker compose --project-name photo-prjct-staging "
-        "-f /opt/photo-prjct/docker-compose.prod.yml exec -T db postgres --version"
+        "docker compose --project-name photo-prjct "
+        "-f /opt/photo-prjct/docker-compose.deployment.yml exec -T db postgres --version"
     ) in commands
     assert (
         "docker run --rm --network none postgres:16.6@sha256:deadbeef postgres --version"
@@ -805,9 +827,9 @@ def test_existing_dump_retry_avoids_staging_and_uses_the_guarded_local_restore(
         **clone_env,
         "BACKUP_DIR": str(tmp_path / "backups"),
         "CONFIRM_REPLACE_LOCAL_DB": "yes",
-        "STAGING_DUMP_FILE": str(dump_path),
+        "DEPLOYED_DUMP_FILE": str(dump_path),
     }
-    env.pop("STAGING_SSH_TARGET")
+    env.pop("VM_SSH_TARGET")
 
     result = _run(env=env)
 
@@ -823,7 +845,7 @@ def test_existing_dump_retry_avoids_staging_and_uses_the_guarded_local_restore(
     assert len(list((tmp_path / "backups").glob("*.local-safety.dump"))) == 1
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize(
     ("prepare_dump", "extra_env", "expected_message"),
     [
@@ -868,9 +890,9 @@ def test_existing_dump_retry_rejects_untrusted_input_before_local_database_mutat
         **extra_env,
         "BACKUP_DIR": str(tmp_path / "backups"),
         "CONFIRM_REPLACE_LOCAL_DB": "yes",
-        "STAGING_DUMP_FILE": str(dump_path),
+        "DEPLOYED_DUMP_FILE": str(dump_path),
     }
-    env.pop("STAGING_SSH_TARGET")
+    env.pop("VM_SSH_TARGET")
 
     result = _run(env=env)
 
@@ -907,7 +929,7 @@ def test_migration_validation_uses_one_off_read_only_web_containers(
     )
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize(
     ("database_state", "expected_message"),
     [
@@ -944,7 +966,7 @@ def test_migration_validation_keeps_restored_artifacts_for_actionable_failures(
     assert _commands(clone_env).count('DROP DATABASE IF EXISTS "local_app"') == 1
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 def test_invalid_published_local_safety_dump_aborts_before_database_replacement(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -985,7 +1007,7 @@ def test_invalid_published_local_safety_dump_aborts_before_database_replacement(
     assert "pg_restore --exit-on-error" not in commands
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize(
     ("restore_mode", "expected_message"),
     [
@@ -1034,7 +1056,7 @@ def test_signal_during_replacement_recovers_from_retained_safety_dump(
     assert commands.count("pg_restore --exit-on-error") == 1
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 def test_signal_during_connection_termination_does_not_replace_local_database(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1074,7 +1096,7 @@ def test_signal_during_connection_termination_does_not_replace_local_database(
     assert "pg_restore --exit-on-error" not in commands
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 def test_signal_during_django_validation_retains_the_successfully_restored_database(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1128,7 +1150,7 @@ def test_restore_failure_recovers_local_database_from_retained_safety_dump(
     )
 
     assert result.returncode != 0
-    assert "Staging restore failed" in result.stderr
+    assert "Deployed restore failed" in result.stderr
     assert "Local database recovery from safety dump succeeded" in result.stderr
     assert "Local database replacement completed" not in result.stderr
     assert len(list(backup_dir.glob("*.dump"))) == 2
@@ -1136,7 +1158,7 @@ def test_restore_failure_recovers_local_database_from_retained_safety_dump(
     assert _commands(clone_env).count('DROP DATABASE IF EXISTS "local_app"') == 2
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 def test_restore_failure_reports_when_safety_recovery_also_fails(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1153,14 +1175,14 @@ def test_restore_failure_reports_when_safety_recovery_also_fails(
     )
 
     assert result.returncode != 0
-    assert "Staging restore failed" in result.stderr
+    assert "Deployed restore failed" in result.stderr
     assert "Local database recovery from safety dump failed" in result.stderr
     assert "Local database replacement completed" not in result.stderr
     assert len(list(backup_dir.glob("*.dump"))) == 2
     assert Path(clone_env["PG_RESTORE_COUNT_FILE"]).read_text(encoding="utf-8") == "2\n"
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize(
     ("restore_mode", "expected_message"),
     [
@@ -1205,7 +1227,7 @@ def test_create_failure_after_drop_attempts_exact_safety_dump_recovery_and_stays
     )
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 def test_parallel_clone_fails_on_atomic_project_database_lock_before_ssh_or_sql(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1256,7 +1278,7 @@ def test_parallel_clone_fails_on_atomic_project_database_lock_before_ssh_or_sql(
     assert first_process.returncode == 0, stdout + stderr
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 def test_stale_clone_lock_is_not_removed_automatically(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1426,7 +1448,7 @@ case "$*" in
   *'postgres --version'*) printf 'postgres (PostgreSQL) 16.6\\n' ;;
   *'printenv POSTGRES_DB'*) printf 'staging_app\\n' ;;
   *'printenv POSTGRES_USER'*) printf 'staging_user\\n' ;;
-  *'pg_dump '*) cat "$INTEGRATION_STAGING_DUMP" ;;
+  *'pg_dump '*) cat "$INTEGRATION_DEPLOYED_DUMP" ;;
 esac
 """,
         )
@@ -1436,10 +1458,10 @@ esac
             env={
                 **compose_env,
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
-                "STAGING_SSH_TARGET": "local-test@not-staging.invalid",
+                "VM_SSH_TARGET": "local-test@not-staging.invalid",
                 "CONFIRM_REPLACE_LOCAL_DB": "yes",
                 "BACKUP_DIR": str(backup_dir),
-                "INTEGRATION_STAGING_DUMP": str(staging_dump),
+                "INTEGRATION_DEPLOYED_DUMP": str(staging_dump),
                 "REAL_DOCKER": str(shutil.which("docker")),
                 "VALIDATION_DOCKER_LOG": str(validation_docker_log),
             }
@@ -1668,7 +1690,7 @@ case "$*" in
   *'postgres --version'*) printf 'postgres (PostgreSQL) 16.6\\n' ;;
   *'printenv POSTGRES_DB'*) printf 'staging_app\\n' ;;
   *'printenv POSTGRES_USER'*) printf 'staging_user\\n' ;;
-  *'pg_dump '*) cat "$INTEGRATION_STAGING_DUMP" ;;
+  *'pg_dump '*) cat "$INTEGRATION_DEPLOYED_DUMP" ;;
 esac
 """,
         )
@@ -1677,10 +1699,10 @@ esac
             env={
                 **compose_env,
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
-                "STAGING_SSH_TARGET": "local-fixture@no-staging-network.invalid",
+                "VM_SSH_TARGET": "local-fixture@no-staging-network.invalid",
                 "CONFIRM_REPLACE_LOCAL_DB": "yes",
                 "BACKUP_DIR": str(backup_dir),
-                "INTEGRATION_STAGING_DUMP": str(staging_dump),
+                "INTEGRATION_DEPLOYED_DUMP": str(staging_dump),
                 "REAL_DOCKER": str(shutil.which("docker")),
                 "CLONE_DOCKER_LOG": str(clone_docker_log),
                 "CLONE_SSH_LOG": str(clone_ssh_log),
@@ -1776,7 +1798,7 @@ esac
         compose("rm", "-s", "-f", "web", "db", check=False)
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize(
     ("extra_env", "expected_message"),
     [
@@ -1812,7 +1834,7 @@ def test_dump_pre_restore_failure_preserves_the_local_database(
     _assert_local_database_was_not_touched(clone_env)
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize("failed_move", (1, 2, 3))
 def test_dump_publication_rename_failure_leaves_no_partial_artifacts(
     clone_env: dict[str, str], tmp_path: Path, failed_move: int
@@ -1834,7 +1856,7 @@ def test_dump_publication_rename_failure_leaves_no_partial_artifacts(
     _assert_local_database_was_not_touched(clone_env)
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 def test_dump_publication_hup_terminates_without_published_artifacts(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1868,7 +1890,7 @@ def test_dump_publication_hup_terminates_without_published_artifacts(
     _assert_local_database_was_not_touched(clone_env)
 
 
-@pytest.mark.clone_staging_slow
+@pytest.mark.clone_deployed_slow
 @pytest.mark.parametrize(
     ("field", "value"),
     [

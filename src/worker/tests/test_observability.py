@@ -73,7 +73,6 @@ def test_worker_event_has_exact_compact_envelope_and_uuid_conversion() -> None:
         "event",
         "occurred_at",
         "service",
-        "environment",
         *fields,
     }
     assert payload["schema_version"] == 1

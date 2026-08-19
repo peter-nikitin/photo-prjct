@@ -56,7 +56,7 @@ Local `make test` and the pytest portion of `make check` include the critical cl
 but skip its exhaustive matrix. Run the exhaustive clone-staging suite separately with:
 
 ```bash
-make test-clone-staging
+make test-clone-deployed
 ```
 
 `make check` runs local Python formatting, lint, type, coverage, Django, and migration checks. Its
@@ -305,7 +305,7 @@ logical dump from staging. It is destructive to that local database; it is not a
 service-backup, or disaster-recovery procedure.
 
 Before running it, create the checkout-local `.env`, ensure Docker and Docker Compose are available,
-and confirm that `STAGING_SSH_TARGET` can connect to the staging host. Keep enough local disk space
+and confirm that `VM_SSH_TARGET` can connect to the staging host. Keep enough local disk space
 for both the incoming staging dump and a safety dump of the current local database. Logical dumps can
 contain personal data: keep them on an encrypted developer disk, do not upload them to shared
 services, and delete them manually when the migration branch no longer needs them.
@@ -319,18 +319,18 @@ Run the one-command clone interactively so it displays the exact local Compose p
 before asking for `yes`:
 
 ```bash
-STAGING_SSH_TARGET=<user>@<staging-host> make db-clone-staging
+VM_SSH_TARGET=<user>@<staging-host> make db-clone-deployed
 ```
 
 For non-interactive automation, set the explicit confirmation only after independently confirming
 that the current checkout is the intended local target:
 
 ```bash
-STAGING_SSH_TARGET=<user>@<staging-host> CONFIRM_REPLACE_LOCAL_DB=yes make db-clone-staging
+VM_SSH_TARGET=<user>@<staging-host> CONFIRM_REPLACE_LOCAL_DB=yes make db-clone-deployed
 ```
 
 The command streams and validates a PostgreSQL custom-format dump before changing local data, writes
-the staging dump, checksum, and metadata under `var/backups/staging/`, and first makes a local safety
+the staging dump, checksum, and metadata under `var/backups/deployed/`, and first makes a local safety
 dump in the same directory. The artifacts are mode `0600` and ignored by Git. A failed staging restore
 attempts to recover the original local database from its safety dump; all dumps remain available for
 diagnosis.
@@ -362,12 +362,12 @@ To retry from an existing retained dump without contacting staging, keep its mat
 next to it and run:
 
 ```bash
-STAGING_DUMP_FILE=/absolute/path/to/<timestamp>.dump make db-clone-staging
+DEPLOYED_DUMP_FILE=/absolute/path/to/<timestamp>.dump make db-clone-deployed
 ```
 
 This mode verifies the checksum and PostgreSQL custom archive before any local SQL, then uses the
 same confirmation, safety dump, replacement, recovery, and Django validation path. It never modifies
-the supplied dump or checksum, and it does not require or contact `STAGING_SSH_TARGET`.
+the supplied dump or checksum, and it does not require or contact `VM_SSH_TARGET`.
 
 The [direct staging database plan](docs/plans/2026-07-22-local-read-only-staging-database.md) is a
 draft plan, not an implemented workflow. Never point normal Django or Compose startup at staging: the

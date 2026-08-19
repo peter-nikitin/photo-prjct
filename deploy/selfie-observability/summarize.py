@@ -31,8 +31,7 @@ PROBE_EVENT = "selfie_observability_probe"
 OBSERVABILITY_FAILURE_MARKER = "selfie_observability_emit_failed"
 LOG_LEVEL_PREFIXES = ("DEBUG ", "INFO ", "WARNING ", "ERROR ", "CRITICAL ")
 MAX_BOUNDED_INTEGER = 2**31 - 1
-ENVIRONMENTS = {"local", "test", "staging", "production"}
-COMMON_FIELDS = {"schema_version", "event", "occurred_at", "service", "environment"}
+COMMON_FIELDS = {"schema_version", "event", "occurred_at", "service"}
 SUBMISSION_OUTCOMES = ("accepted", "rejected", "storage_unavailable")
 REJECTION_REASONS = (
     "missing_or_empty",
@@ -415,7 +414,6 @@ def _consume_line(
             value.get("schema_version") == 1
             and set(value) == expected
             and value.get("service") == "web"
-            and value.get("environment") in ENVIRONMENTS
         ):
             try:
                 _timestamp(value.get("occurred_at"))
@@ -472,7 +470,6 @@ def _validate_envelope(value: dict[str, Any]) -> None:
     expected_service = "worker" if event == "selfie_worker_attempt_finished" else "web"
     if value.get("service") != expected_service:
         raise ValueError("invalid service")
-    _choice(value, "environment", tuple(ENVIRONMENTS))
 
 
 def _validate_event(value: dict[str, Any]) -> None:

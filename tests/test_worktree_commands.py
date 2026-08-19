@@ -134,7 +134,7 @@ def test_make_test_renders_requested_selection_with_project_runner() -> None:
 
     assert result.stdout == (
         "sh scripts/run-in-test-env.sh .venv/bin/pytest "
-        '-m "not clone_staging_slow" '
+        '-m "not clone_deployed_slow" '
         "tests/test_create_worktree.py::test_rejects_unsafe_name_before_creating_git_state\n"
     )
 

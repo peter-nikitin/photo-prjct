@@ -6,17 +6,6 @@ DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/photo-prjct}"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 SUMMARIZER="$SCRIPT_DIR/summarize.py"
-if [ -z "${DEPLOYMENT_TARGET:-}" ]; then
-    DEPLOYMENT_TARGET=$(sed -n '1p' "$DEPLOY_ROOT/deployment-target")
-fi
-case "$DEPLOYMENT_TARGET" in
-    staging|production) ;;
-    *)
-        echo "selfie summary requires a valid deployment target" >&2
-        exit 2
-        ;;
-esac
-
 if [ "$#" -gt 1 ]; then
     echo "usage: run-daily-summary.sh [YYYY-MM-DD]" >&2
     exit 2
@@ -45,9 +34,9 @@ journalctl \
     --since "$window_start" \
     --until "$window_end" \
     --output=cat \
-    "CONTAINER_TAG=findme.service=web findme.environment=$DEPLOYMENT_TARGET" + \
-    "CONTAINER_TAG=findme.service=worker findme.environment=$DEPLOYMENT_TARGET" + \
-    "CONTAINER_TAG=findme.service=nginx findme.environment=$DEPLOYMENT_TARGET" \
+    "CONTAINER_TAG=findme.service=web" + \
+    "CONTAINER_TAG=findme.service=worker" + \
+    "CONTAINER_TAG=findme.service=nginx" \
     > "$journal_input"
 
 if [ "$recomputed" = True ]; then

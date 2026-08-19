@@ -83,7 +83,7 @@ case "$*" in
       elif [ "${capture_next:-}" = yes ]; then
         cp "$argument" "$COMPOSE_CAPTURE/$index"
         case "$argument" in
-          *findme-staging-local.*)
+          *findme-local-web.*)
             "$REAL_PYTHON" -c \
               'import os,sys;p=sys.argv[1];print(f"{os.stat(p).st_mode&0o777:o} {p}")' \
               "$argument" >> "$MATERIAL_LOG"
@@ -163,14 +163,14 @@ exec "$REAL_PYTHON" "$@"
 
 def _install_launcher(environment: dict[str, str]) -> Path:
     root = Path(environment["CHECKOUT"])
-    launcher = root / "scripts" / "staging-local.sh"
-    launcher.write_text((ROOT / "scripts" / "staging-local.sh").read_text(encoding="utf-8"))
+    launcher = root / "scripts" / "local-web.sh"
+    launcher.write_text((ROOT / "scripts" / "local-web.sh").read_text(encoding="utf-8"))
     launcher.chmod(0o755)
     (root / "scripts" / "run-with-environment-secrets.py").write_text(
         "# resolver path is asserted by the fake Python boundary\n", encoding="utf-8"
     )
-    (root / "deploy" / "environment-secrets" / "staging.json").write_text(
-        (ROOT / "deploy" / "environment-secrets" / "staging.json").read_text(encoding="utf-8"),
+    (root / "deploy" / "environment-secrets.json").write_text(
+        (ROOT / "deploy" / "environment-secrets.json").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     (root / "docker-compose.yml").write_text(
@@ -186,7 +186,7 @@ def _run_make(environment: dict[str, str], **extra: str) -> subprocess.Completed
     assert MAKE is not None
     root = _install_launcher(environment)
     return subprocess.run(
-        [MAKE, "staging-local"],
+        [MAKE, "local-web"],
         cwd=root,
         env={**os.environ, **environment, **extra},
         text=True,
@@ -223,16 +223,15 @@ def test_make_staging_local_resolves_the_exact_local_web_projection_and_starts_o
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "[staging-local] warning=staging-capable-local-process\n"
-        "[staging-local] stage=launch status=ready\n"
+        "[local-web] warning=local-capable-process\n[local-web] stage=launch status=ready\n"
     )
     assert result.stderr == ""
     commands = _commands(local_launcher_environment)
-    assert "--environment staging --consumer local-web --identity yc -- " in commands
-    assert "/scripts/staging-local.sh --resolved" in commands
+    assert "--consumer local-web --identity yc -- " in commands
+    assert "/scripts/local-web.sh --resolved" in commands
     assert " up -d db web" in commands
     assert "worker" not in commands
-    assert "clone-staging" not in commands
+    assert "clone-deployed" not in commands
     assert "ssh" not in commands
     assert "apply-deployment" not in commands
     assert "upload" not in commands
@@ -304,7 +303,6 @@ def test_real_compose_merge_excludes_checkout_deployment_only_environment(
         "DB_PASSWORD": "app",
         "DB_HOST": "db",
         "DB_PORT": "5432",
-        "DEPLOYMENT_TARGET": "",
         "VM_HOST": "",
     }
     without_reset = captures / "without-reset.yml"
@@ -362,8 +360,8 @@ def test_compose_failure_is_sanitized_and_cleans_private_material(
     result = _run_make(local_launcher_environment, DOCKER_COMPOSE_EXIT="17")
 
     assert result.returncode != 0
-    assert result.stdout == "[staging-local] warning=staging-capable-local-process\n"
-    assert "[staging-local] stage=launch status=error code=compose_failed" in result.stderr
+    assert result.stdout == "[local-web] warning=local-capable-process\n"
+    assert "[local-web] stage=launch status=error code=compose_failed" in result.stderr
     assert "compose-output-sentinel" not in result.stdout + result.stderr
     assert "compose-error-sentinel" not in result.stdout + result.stderr
     _assert_material_removed(local_launcher_environment)
@@ -391,9 +389,9 @@ def test_cleanup_failure_after_success_is_nonzero_and_never_reports_readiness(
 
     try:
         assert result.returncode != 0
-        assert result.stdout == "[staging-local] warning=staging-capable-local-process\n"
+        assert result.stdout == "[local-web] warning=local-capable-process\n"
         assert result.stderr.splitlines()[0] == (
-            "[staging-local] stage=cleanup status=error code=cleanup_failed "
+            "[local-web] stage=cleanup status=error code=cleanup_failed "
             f"retained_path={retained_root}"
         )
         assert "stage=launch status=ready" not in result.stdout + result.stderr
@@ -502,7 +500,7 @@ def test_signals_clean_private_material_without_relaying_compose_output(
     assert MAKE is not None
     root = _install_launcher(local_launcher_environment)
     process = subprocess.Popen(
-        [MAKE, "staging-local"],
+        [MAKE, "local-web"],
         cwd=root,
         env={**os.environ, **local_launcher_environment, "DOCKER_COMPOSE_MODE": "wait"},
         text=True,
@@ -549,7 +547,7 @@ def test_signals_clean_private_material_without_relaying_compose_output(
         stdout, stderr = _finish_signal_test_process(process, local_launcher_environment)
 
         assert process.returncode != 0
-        assert stdout == "[staging-local] warning=staging-capable-local-process\n"
+        assert stdout == "[local-web] warning=local-capable-process\n"
         assert "compose-output-sentinel" not in stdout + stderr
         assert "compose-error-sentinel" not in stdout + stderr
         _assert_material_removed(local_launcher_environment)

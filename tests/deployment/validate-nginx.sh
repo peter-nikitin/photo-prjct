@@ -484,11 +484,6 @@ validate_variant() {
 validate_variant alias www.findme-photo.ru
 validate_variant no-alias ""
 
-docker run --rm \
-    --add-host web:127.0.0.1 \
-    -v "$root_dir/deploy/nginx/staging.conf:/etc/nginx/conf.d/default.conf:ro" \
-    nginx:1.27-alpine nginx -t
-
 expect_render_rejected() {
     name="$1"
     domain="$2"

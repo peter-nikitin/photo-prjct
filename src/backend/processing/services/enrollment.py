@@ -1263,7 +1263,7 @@ def _configuration_hash(configuration: dict[str, object]) -> str:
 def _require_local_adaface_experiment() -> None:
     if (
         getattr(settings, "ADAFACE_LOCAL_EXPERIMENT_ENABLED", False) is not True
-        or getattr(settings, "MONITORING_ENVIRONMENT", "") != "local"
+        or getattr(settings, "DEBUG", False) is not True
     ):
         raise ValueError("local AdaFace experiment is not enabled")
 

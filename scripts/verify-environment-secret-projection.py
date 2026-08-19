@@ -9,9 +9,9 @@ from pathlib import Path
 
 CONSUMERS = {
     "local-web",
-    "staging-deploy",
-    "staging-remote-check",
-    "staging-public-monitor",
+    "deploy",
+    "remote-check",
+    "public-monitor",
 }
 PRIVATE_FILE_MODE = 0o600
 PRIVATE_DIRECTORY_MODE = 0o700

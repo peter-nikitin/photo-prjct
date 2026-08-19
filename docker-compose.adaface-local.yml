@@ -46,7 +46,6 @@ services:
     ports: !override
       - "127.0.0.1:${ADAFACE_WEB_HOST_PORT:-18080}:8000"
     environment:
-      MONITORING_ENVIRONMENT: local
       ADAFACE_LOCAL_EXPERIMENT_ENABLED: "True"
       ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD: ${ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD:?set ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD explicitly; use a backfill-only placeholder until calibration}
       DB_HOST: db

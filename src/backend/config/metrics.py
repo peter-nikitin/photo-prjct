@@ -1,6 +1,5 @@
 import time
 
-from django.conf import settings
 from prometheus_client import (
     CollectorRegistry,
     Counter,
@@ -9,7 +8,7 @@ from prometheus_client import (
     multiprocess,
 )
 
-_LABEL_NAMES = ("environment", "route", "method", "status_class")
+_LABEL_NAMES = ("route", "method", "status_class")
 _ALLOWED_HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 
 HTTP_REQUESTS = Counter(
@@ -41,7 +40,6 @@ class HttpMetricsMiddleware:
         started_at = time.perf_counter()
         response = self.get_response(request)
         labels = {
-            "environment": settings.MONITORING_ENVIRONMENT,
             "route": self._route_name(request),
             "method": self._method_name(request),
             "status_class": f"{response.status_code // 100}xx",

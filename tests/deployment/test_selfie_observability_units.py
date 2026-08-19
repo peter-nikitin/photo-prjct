@@ -65,7 +65,6 @@ def test_host_runner_uses_unambiguous_utc_window_tags_and_marks_explicit_recompu
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "DEPLOY_ROOT": str(ROOT),
-            "DEPLOYMENT_TARGET": "staging",
             "PYTHON_BIN": sys.executable,
             "JOURNAL_ARGS": str(tmp_path / "journal-args"),
         },
@@ -82,11 +81,11 @@ def test_host_runner_uses_unambiguous_utc_window_tags_and_marks_explicit_recompu
         "--until",
         "2026-08-03T21:00:00Z",
         "--output=cat",
-        "CONTAINER_TAG=findme.service=web findme.environment=staging",
+        "CONTAINER_TAG=findme.service=web",
         "+",
-        "CONTAINER_TAG=findme.service=worker findme.environment=staging",
+        "CONTAINER_TAG=findme.service=worker",
         "+",
-        "CONTAINER_TAG=findme.service=nginx findme.environment=staging",
+        "CONTAINER_TAG=findme.service=nginx",
     ]
     summary = json.loads(result.stdout)
     assert summary["report_date"] == "2026-08-03"
@@ -108,7 +107,6 @@ def test_host_runner_propagates_journal_failure_without_emitting_an_empty_summar
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "DEPLOY_ROOT": str(ROOT),
-            "DEPLOYMENT_TARGET": "staging",
             "PYTHON_BIN": sys.executable,
         },
         text=True,
@@ -121,7 +119,7 @@ def test_host_runner_propagates_journal_failure_without_emitting_an_empty_summar
 
 
 def test_public_services_use_journald_stable_nonsecret_tags_only() -> None:
-    product = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8"))
+    product = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
     https = yaml.safe_load((ROOT / "docker-compose.https.yml").read_text(encoding="utf-8"))
     services = {
         "web": product["services"]["web"],
@@ -132,12 +130,7 @@ def test_public_services_use_journald_stable_nonsecret_tags_only() -> None:
     for name, service in services.items():
         assert service["logging"] == {
             "driver": "journald",
-            "options": {
-                "tag": (
-                    f"findme.service={name} "
-                    "findme.environment=${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set}"
-                )
-            },
+            "options": {"tag": f"findme.service={name}"},
         }
         serialized = json.dumps(service["logging"])
         assert "TOKEN" not in serialized
@@ -145,32 +138,27 @@ def test_public_services_use_journald_stable_nonsecret_tags_only() -> None:
     assert "logging" not in product["services"]["db"]
 
 
-def test_deployment_workflows_pass_the_nonsecret_target_for_compose_tags() -> None:
-    staging = yaml.safe_load(
+def test_deployment_workflow_uses_canonical_compose_tags() -> None:
+    deployment = yaml.safe_load(
         (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     )
-    production = (ROOT / ".github" / "workflows" / "promote-production.yml").read_text(
-        encoding="utf-8"
-    )
-    helper = (ROOT / "deploy" / "run-staging-remote.sh").read_text(encoding="utf-8")
+    helper = (ROOT / "deploy" / "run-remote.sh").read_text(encoding="utf-8")
     deploy_step = next(
         step
-        for step in staging["jobs"]["deploy"]["steps"]
-        if step.get("name") == "Run staging deployment"
+        for step in deployment["jobs"]["deploy"]["steps"]
+        if step.get("name") == "Run deployment"
     )
     projected_deployment_values = helper.partition("REMOTE_DEPLOYMENT_VALUES='")[2].partition(
         "'\n"
     )[0]
 
-    assert deploy_step["env"]["DEPLOYMENT_TARGET"] == "staging"
+    assert "DEPLOYMENT_TARGET" not in deploy_step["env"]
     assert "scripts/run-with-environment-secrets.py" in deploy_step["run"]
-    assert "--consumer staging-deploy" in deploy_step["run"]
+    assert "--consumer deploy" in deploy_step["run"]
     assert "--identity github-oidc" in deploy_step["run"]
-    assert "deploy/run-staging-remote.sh deploy" in deploy_step["run"]
-    assert "DEPLOYMENT_TARGET" in projected_deployment_values
+    assert "deploy/run-remote.sh deploy" in deploy_step["run"]
+    assert "DEPLOYMENT_TARGET" not in projected_deployment_values
     assert (
-        "'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging "
+        "'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct "
         "exec sh /opt/photo-prjct/deploy/apply-deployment.sh'"
     ) in helper
-    assert "DEPLOYMENT_TARGET: production" in production
-    assert "envs: APP_IMAGE" in production and ",DEPLOYMENT_TARGET" in production

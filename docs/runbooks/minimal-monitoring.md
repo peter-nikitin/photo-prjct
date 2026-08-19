@@ -1,17 +1,17 @@
-# Minimal staging monitoring runbook
+# Minimal deployment monitoring runbook
 
 Use this runbook for first response only. Monitoring does not restart containers or the VM, deploy
 an image, run migrations, or perform rollback automatically.
 
 ## Resources and credentials
 
-- Dashboard resource name: `findme-photo-staging-overview`.
-- Alert resource names: `findme-photo-staging-public-service-unavailable`,
-  `findme-photo-staging-tls-certificate-expiring`,
-  `findme-photo-staging-vm-telemetry-missing`,
-  `findme-photo-staging-disk-space-critical`, `findme-photo-staging-memory-pressure`,
-  `findme-photo-staging-cpu-pressure`, and
-  `findme-photo-staging-application-5xx-degradation`.
+- Dashboard resource name: `findme-photo-deployment-overview`.
+- Alert resource names: `findme-photo-deployment-public-service-unavailable`,
+  `findme-photo-deployment-tls-certificate-expiring`,
+  `findme-photo-deployment-vm-telemetry-missing`,
+  `findme-photo-deployment-disk-space-critical`, `findme-photo-deployment-memory-pressure`,
+  `findme-photo-deployment-cpu-pressure`, and
+  `findme-photo-deployment-application-5xx-degradation`.
 - GitHub Actions keeps `YANDEX_MONITORING_API_KEY` as an environment secret and
   `YANDEX_CLOUD_FOLDER_ID` as configuration. Do not print either value, put it in a command line,
   or copy it into tickets.
@@ -28,19 +28,19 @@ email, dashboard, agent, or scheduled probe is live.
 - Manual GitHub Actions agent-configuration run
   [`30564435043`](https://github.com/peter-nikitin/photo-prjct/actions/runs/30564435043) reached
   the agent step. The normal build and deploy paths were skipped.
-- The agent step failed before installation because the staging SSH user did not have passwordless
+- The agent step failed before installation because the deployment SSH user did not have passwordless
   `sudo`. Temporary OS Login roles were granted solely to recover access, then removed after
   certificate authentication also failed.
-- The approved rollback was completed and verified: the staging VM remained `RUNNING` with no
+- The approved rollback was completed and verified: the deployment VM remained `RUNNING` with no
   attached service account; the dedicated monitoring service account, its `monitoring.editor`
-  binding, its API key, and the GitHub staging monitoring secret and folder variable were absent.
+  binding, its API key, and the GitHub deployment monitoring secret and folder variable were absent.
 - No Unified Agent, dashboard, alert, notification channel, or scheduled probe was activated.
   The application, PostgreSQL data, media, deployment state, and volumes were untouched.
 
 ## First response
 
 1. Open the external GitHub Actions health-check result and dashboard
-   `findme-photo-staging-overview`. Classify the alert before taking any recovery action:
+   `findme-photo-deployment-overview`. Classify the alert before taking any recovery action:
    public endpoint failure; VM/host telemetry loss; application 5xx degradation; resource pressure;
    or agent-only failure.
 2. For a public endpoint failure, independently run
@@ -64,7 +64,7 @@ email, dashboard, agent, or scheduled probe is live.
 ## Controlled validation after activation
 
 Use the manual workflow's **controlled failing target** with its `environment=validation` label to
-prove one probe failure and one recovery email without touching the staging alert selector. Separately
+prove one probe failure and one recovery email without touching the deployment alert selector. Separately
 stop or isolate only Unified Agent long enough to prove missing telemetry while a successful public
 probe remains evidence that the service is up; restore the agent immediately. Do not fill disks,
 consume all CPU or memory, expire the real certificate, stop the application, or expose `/metrics/`

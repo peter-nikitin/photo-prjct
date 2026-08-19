@@ -23,7 +23,6 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 class ProbeConfig:
     target: str
     folder_id: str
-    environment: str
     check_name: str
     api_key: str
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
@@ -94,7 +93,7 @@ def build_metrics(
     duration_seconds: float,
     tls_days_remaining: float | None,
 ) -> list[Metric]:
-    labels = {"environment": config.environment, "check": config.check_name}
+    labels = {"check": config.check_name}
     metrics: list[Metric] = [
         {
             "name": "findme_probe_success",
@@ -207,7 +206,6 @@ def parse_arguments(arguments: Sequence[str] | None = None) -> ProbeConfig:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True)
     parser.add_argument("--folder-id", required=True)
-    parser.add_argument("--environment", required=True)
     parser.add_argument("--check", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
@@ -229,7 +227,6 @@ def parse_arguments(arguments: Sequence[str] | None = None) -> ProbeConfig:
     return ProbeConfig(
         target=args.target,
         folder_id=args.folder_id,
-        environment=args.environment,
         check_name=args.check,
         api_key=args.api_key,
         timeout_seconds=args.timeout_seconds,

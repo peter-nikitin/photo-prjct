@@ -817,7 +817,7 @@ class FaceEmbeddingActivationTests(TestCase):
                         review_confirmed=True,
                     )
 
-    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, DEBUG=True)
     def test_local_adaface_target_rejects_sface_generation_and_requires_manifest_reconciliation(
         self,
     ) -> None:
@@ -862,7 +862,7 @@ class FaceEmbeddingActivationTests(TestCase):
                 review_confirmed=True,
             )
 
-    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, MONITORING_ENVIRONMENT="local")
+    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, DEBUG=True)
     def test_local_adaface_v5_activation_resolves_complete_accepted_projection(self) -> None:
         self.event.slug = "cyclingrace-vechernee-sadovoe"
         self.event.save(update_fields=["slug"])
@@ -892,7 +892,7 @@ class FaceEmbeddingActivationTests(TestCase):
     @override_settings(
         ADAFACE_LOCAL_EXPERIMENT_ENABLED=True,
         ADAFACE_LOCAL_CANARY_LIMIT=1,
-        MONITORING_ENVIRONMENT="local",
+        DEBUG=True,
     )
     def test_local_adaface_canary_activation_validates_only_deterministic_prefix(self) -> None:
         self.event.slug = "cyclingrace-vechernee-sadovoe"

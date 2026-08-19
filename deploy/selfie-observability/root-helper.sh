@@ -249,9 +249,7 @@ case "$action" in
         done
         {
             journalctl --since '2 minutes ago' \
-                CONTAINER_TAG='findme.service=web findme.environment=staging' -o cat
-            journalctl --since '2 minutes ago' \
-                CONTAINER_TAG='findme.service=web findme.environment=production' -o cat
+                CONTAINER_TAG='findme.service=web' -o cat
         } | grep -Fq "\"probe_id\":\"$probe_id\"" || {
                 echo "emitted observability probe is unreadable" >&2
                 exit 1

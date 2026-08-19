@@ -3,14 +3,13 @@ set -eu
 
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
-: "${DEPLOYMENT_TARGET:?Set DEPLOYMENT_TARGET}"
 OBSERVABILITY_HELPER=/usr/local/sbin/findme-selfie-observability
 
 for command in docker python3 sed sudo; do
     command -v "$command" >/dev/null 2>&1 || { echo "missing observability dependency: $command" >&2; exit 1; }
 done
 
-compose() { APP_ENV_FILE="$DEPLOY_ROOT/.env" docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ROOT/.env" -f "$DEPLOY_ROOT/docker-compose.prod.yml" -f "$DEPLOY_ROOT/docker-compose.https.yml" "$@"; }
+compose() { APP_ENV_FILE="$DEPLOY_ROOT/.env" docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ROOT/.env" -f "$DEPLOY_ROOT/docker-compose.deployment.yml" -f "$DEPLOY_ROOT/docker-compose.https.yml" "$@"; }
 processing_enabled="$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
 for service in web nginx worker; do
     containers="$(compose ps -q "$service")"
@@ -21,7 +20,7 @@ for service in web nginx worker; do
     fi
     for container in $containers; do
         actual="$(docker inspect --format '{{.HostConfig.LogConfig.Type}}|{{index .HostConfig.LogConfig.Config "tag"}}' "$container")"
-        [ "$actual" = "journald|findme.service=$service findme.environment=$DEPLOYMENT_TARGET" ] || { echo "container logging contract mismatch: $service" >&2; exit 1; }
+        [ "$actual" = "journald|findme.service=$service" ] || { echo "container logging contract mismatch: $service" >&2; exit 1; }
     done
 done
 probe_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"

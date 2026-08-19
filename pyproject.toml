@@ -26,7 +26,7 @@ testpaths = ["src/backend", "src/worker/tests", "tests"]
 addopts = "--strict-config --strict-markers --import-mode=importlib"
 markers = [
   "face_models: requires locally supplied YuNet and SFace model files",
-  "clone_staging_slow: exhaustive staging database clone coverage",
+  "clone_deployed_slow: exhaustive staging database clone coverage",
 ]
 
 [tool.coverage.run]

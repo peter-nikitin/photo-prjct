@@ -1,4 +1,4 @@
-name: Staging face-embedding benchmark
+name: Face-embedding benchmark
 
 on:
   workflow_dispatch:
@@ -24,12 +24,11 @@ jobs:
   benchmark:
     name: Run bounded benchmark operation
     runs-on: ubuntu-latest
-    environment: staging
     permissions:
       contents: read
       id-token: write
     concurrency:
-      group: deploy-staging
+      group: deploy
       cancel-in-progress: false
     steps:
       - name: Check out repository
@@ -41,12 +40,12 @@ jobs:
           BENCHMARK_OPERATION: ${{ inputs.operation }}
           BENCHMARK_EVENT_SLUG: ${{ inputs.event_slug }}
           BENCHMARK_SOURCE_RUN_UUID: ${{ inputs.source_run_uuid }}
-          STAGING_VM_HOST: ${{ vars.VM_HOST }}
-          STAGING_VM_USER: ${{ vars.VM_USER }}
-          STAGING_SSH_KNOWN_HOSTS: ${{ vars.STAGING_SSH_KNOWN_HOSTS }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
         run: |
           python scripts/run-with-environment-secrets.py \
-            --environment staging \
-            --consumer staging-remote-check \
+            \
+            --consumer remote-check \
             --identity github-oidc \
-            -- deploy/run-staging-remote.sh face-embedding-benchmark
+            -- deploy/run-remote.sh face-embedding-benchmark

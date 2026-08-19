@@ -864,7 +864,7 @@ def test_existing_dump_retry_avoids_staging_and_uses_the_guarded_local_restore(
         (_replace_checksum_with_other_file, {}, "checksum validation failed"),
         (_append_another_checksum_entry, {}, "checksum validation failed"),
         (_write_malformed_checksum, {}, "checksum validation failed"),
-        (lambda dump_path: None, {"PG_RESTORE_MODE": "fail"}, "Could not validate staging dump"),
+        (lambda dump_path: None, {"PG_RESTORE_MODE": "fail"}, "Could not validate deployed dump"),
     ],
     ids=(
         "missing-checksum",
@@ -1802,14 +1802,14 @@ esac
 @pytest.mark.parametrize(
     ("extra_env", "expected_message"),
     [
-        ({"SSH_DUMP_MODE": "interrupted"}, "Staging dump stream failed"),
-        ({"SSH_DUMP_MODE": "empty"}, "Staging dump was empty"),
+        ({"SSH_DUMP_MODE": "interrupted"}, "Deployed dump stream failed"),
+        ({"SSH_DUMP_MODE": "empty"}, "Deployed dump was empty"),
         (
             {"SSH_DUMP_MODE": "truncated", "PG_RESTORE_MODE": "fail"},
-            "Could not validate staging dump",
+            "Could not validate deployed dump",
         ),
         ({"DF_MODE": "insufficient"}, "Not enough free space"),
-        ({"REMOTE_POSTGRES_VERSION": "15.9"}, "Staging PostgreSQL must be major 16"),
+        ({"REMOTE_POSTGRES_VERSION": "15.9"}, "Deployed PostgreSQL must be major 16"),
         ({"LOCAL_POSTGRES_VERSION": "15.9"}, "Local PostgreSQL must be major 16"),
     ],
     ids=("interrupted", "empty", "truncated", "insufficient-space", "remote-major", "local-major"),
@@ -1851,7 +1851,7 @@ def test_dump_publication_rename_failure_leaves_no_partial_artifacts(
     )
 
     assert result.returncode != 0
-    assert "Could not publish staging dump" in result.stderr
+    assert "Could not publish deployed dump" in result.stderr
     assert not _published_backup_artifacts(backup_dir)
     _assert_local_database_was_not_touched(clone_env)
 

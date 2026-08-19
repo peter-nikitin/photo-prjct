@@ -1323,17 +1323,20 @@ def test_deployment_issue_reconciliation_forwards_the_classified_release_sha(
 def test_deployment_issue_phase_parser_accepts_only_exact_phases(tmp_path: Path) -> None:
     prefixed_log = "\n".join(
         (
-            "deploy\tRun deployment\t2026-08-19T10:00:00Z DEPLOY_PHASE=validate",
-            "deploy\tRun deployment\t2026-08-19T10:01:00Z DEPLOY_PHASE=compose-reconcile",
-            "deploy\tRun deployment\t2026-08-19T10:02:00Z DEPLOY_PHASE=commit-extra",
-            "deploy\tRun deployment\t2026-08-19T10:03:00Z ignored DEPLOY_PHASE=commit",
+            "deploy\tRun deployment\t2026-08-19T10:00:00Z DEPLOY_PHASE=validate elapsed_seconds=1",
+            "deploy\tRun deployment\t2026-08-19T10:01:00Z "
+            "DEPLOY_PHASE=compose-reconcile elapsed_seconds=2",
+            "deploy\tRun deployment\t2026-08-19T10:02:00Z "
+            "DEPLOY_PHASE=commit-extra elapsed_seconds=3",
+            "deploy\tRun deployment\t2026-08-19T10:03:00Z "
+            "ignored DEPLOY_PHASE=commit elapsed_seconds=4",
         )
     )
     near_matches_only = "\n".join(
         (
-            "deploy\tRun deployment\tDEPLOY_PHASE=compose-reconcile-extra",
-            "deploy\tRun deployment\tprefixDEPLOY_PHASE=commit",
-            "deploy\tRun deployment\tDEPLOY_PHASE=unknown",
+            "deploy\tRun deployment\tDEPLOY_PHASE=compose-reconcile-extra elapsed_seconds=1",
+            "deploy\tRun deployment\tprefixDEPLOY_PHASE=commit elapsed_seconds=1",
+            "deploy\tRun deployment\tDEPLOY_PHASE=unknown elapsed_seconds=1",
         )
     )
 
@@ -1424,6 +1427,8 @@ def test_deployment_builds_and_forwards_the_immutable_worker_image() -> None:
         "file": "./Dockerfile.worker",
         "push": True,
         "tags": "${{ steps.image.outputs.worker_image }}",
+        "cache-from": "type=gha,scope=worker",
+        "cache-to": "type=gha,mode=max,scope=worker,ignore-error=true",
     }
     expected = {
         "WORKER_IMAGE": "${{ needs.build.outputs.worker_image }}",
@@ -1442,6 +1447,47 @@ def test_deployment_builds_and_forwards_the_immutable_worker_image() -> None:
         assert name in _envs(deployment)
     assert "PHOTO_PROCESSING_WORKER_TOKEN" not in deployment["env"]
     assert "--consumer deploy" in deployment["run"]
+
+
+def test_deployment_worker_build_has_isolated_cache_and_reuses_unchanged_digest() -> None:
+    workflow = _load_workflow("deploy.yml")
+    classify = workflow["jobs"]["classify-release"]
+
+    assert classify["outputs"]["worker_inputs_changed"] == (
+        "${{ steps.classify.outputs.worker_inputs_changed }}"
+    )
+    classify_run = _workflow_step(workflow, "classify-release", "Classify deployment release")[
+        "run"
+    ]
+    assert "Dockerfile.worker .dockerignore src/worker" in classify_run
+    assert "worker_inputs_changed=false" in classify_run
+
+    buildx = _workflow_step(workflow, "build", "Set up Docker Buildx")
+    assert buildx["uses"] == "docker/setup-buildx-action@v3"
+    assert buildx["with"]["driver"] == "docker-container"
+    web_build = _workflow_step(workflow, "build", "Build and push image")
+    worker_build = _workflow_step(workflow, "build", "Build and push worker image")
+    assert web_build["with"]["cache-from"] == "type=gha,scope=web"
+    assert web_build["with"]["cache-to"] == "type=gha,mode=max,scope=web,ignore-error=true"
+    assert worker_build["with"]["cache-from"] == "type=gha,scope=worker"
+    assert worker_build["with"]["cache-to"] == ("type=gha,mode=max,scope=worker,ignore-error=true")
+
+    reuse = _workflow_step(workflow, "build", "Reuse unchanged worker image")
+    assert reuse["if"] == (
+        "${{ github.event_name == 'push' && "
+        "needs.classify-release.outputs.worker_inputs_changed == 'false' }}"
+    )
+    assert reuse["continue-on-error"] is True
+    assert "docker buildx imagetools inspect" in reuse["run"]
+    assert "docker buildx imagetools create" in reuse["run"]
+    assert reuse["env"]["PREVIOUS_WORKER_IMAGE"] == (
+        "ghcr.io/${{ github.repository }}-worker:${{ github.event.before }}"
+    )
+    assert worker_build["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' || "
+        "needs.classify-release.outputs.worker_inputs_changed == 'true' || "
+        "steps.reuse-worker.outcome != 'success' }}"
+    )
 
 
 def test_manual_storage_probes_forward_each_input_to_its_exact_consumer_and_mode() -> None:

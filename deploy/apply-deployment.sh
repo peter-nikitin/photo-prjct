@@ -3,12 +3,19 @@
 set -eu
 
 deployment_phase=validate
+deployment_started_at=$(date +%s)
+
+elapsed_seconds() {
+    now=$(date +%s)
+    printf '%s' "$((now - deployment_started_at))"
+}
 
 on_exit() {
     status=$?
     [ "$status" -ne 0 ] || status=2
     trap - EXIT INT TERM HUP
-    printf 'DEPLOY_RESULT=failure phase=validate rollback=not-needed\n'
+    printf 'DEPLOY_RESULT=failure phase=validate rollback=not-needed elapsed_seconds=%s\n' \
+        "$(elapsed_seconds)"
     exit "$status"
 }
 
@@ -17,7 +24,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-printf 'DEPLOY_PHASE=validate\n'
+printf 'DEPLOY_PHASE=validate elapsed_seconds=%s\n' "$(elapsed_seconds)"
 
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
@@ -477,9 +484,11 @@ on_exit() {
 
     cleanup
     if [ "$deployment_committed" -eq 1 ] && [ "$status" -eq 0 ]; then
-        printf 'DEPLOY_RESULT=success phase=commit rollback=not-needed\n'
+        printf 'DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=%s\n' \
+            "$(elapsed_seconds)"
     else
-        printf 'DEPLOY_RESULT=failure phase=%s rollback=%s\n' "$deployment_phase" "$rollback_result"
+        printf 'DEPLOY_RESULT=failure phase=%s rollback=%s elapsed_seconds=%s\n' \
+            "$deployment_phase" "$rollback_result" "$(elapsed_seconds)"
     fi
     exit "$status"
 }
@@ -498,7 +507,7 @@ phase() {
     case "$1" in
         validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
             deployment_phase="$1"
-            printf 'DEPLOY_PHASE=%s\n' "$1"
+            printf 'DEPLOY_PHASE=%s elapsed_seconds=%s\n' "$1" "$(elapsed_seconds)"
             ;;
         *)
             exit 2

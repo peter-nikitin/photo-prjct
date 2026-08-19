@@ -56,7 +56,7 @@ esac
 [ -f "$DEPLOY_ROOT/.env" ] || fail "DEPLOY_ROOT/.env is required"
 [ -f "$DEPLOY_ROOT/docker-compose.deployment.yml" ] || fail "deployment Compose file is required"
 [ -f "$DEPLOY_ROOT/docker-compose.https.yml" ] || fail "HTTPS Compose file is required"
-[ -x "$DEPLOY_ROOT/deploy/apply-deployment.sh" ] || fail "generic deployment entrypoint is required"
+[ -f "$DEPLOY_ROOT/deploy/apply-deployment.sh" ] && [ -r "$DEPLOY_ROOT/deploy/apply-deployment.sh" ] || fail "generic deployment entrypoint is required"
 [ -d "$backup_dir" ] || fail "backup directory must already exist"
 [ -w "$backup_dir" ] || fail "backup directory is not writable"
 

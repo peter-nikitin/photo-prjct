@@ -27,7 +27,7 @@ Approved in conversation and repository review by the project maintainer on 2026
   [ADR 0019](../../adr/0019-use-public-event-selfie-search.md),
   [ADR 0020](../../adr/0020-use-signed-direct-object-storage-media-delivery.md),
   [ADR 0021](../../adr/0021-allow-original-download-for-authorized-photos.md), and
-  [ADR 0022](../../adr/0022-use-numbered-gallery-pages.md), and proposed
+  [ADR 0022](../../adr/0022-use-numbered-gallery-pages.md), and
   [ADR 0029](../../adr/0029-use-watermarked-previews-for-paid-photos.md)
 - ADR impact: **Conforms to ADR 0029.** The ADR authorizes the normal published paid-event
   gallery for photos with an accepted watermarked preview; replace ADR 0019's paid-result original

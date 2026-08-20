@@ -9,7 +9,8 @@ from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
 from django.utils import timezone
-from picflow.models import Photo
+from picflow.models import Event, Photo
+from picflow.photo_policy import policy_for_new_photo
 from PIL import Image
 from processing.services.enrollment import (
     GENERATE_PREVIEW_CONFIGURATION,
@@ -165,15 +166,20 @@ def confirm_upload_item(
                 _require_authorized(item)
                 if not checkpoint or item.verified_source_etag != checkpoint:
                     raise ObjectChanged()
+                event = Event.objects.select_for_update().get(pk=batch.event_id)
                 if item.folder_id is not None and item.folder.event_id != batch.event_id:
                     raise ItemStateConflict(
                         "folder_event_mismatch", "The upload folder does not belong to this event."
                     )
 
                 now = timezone.now()
+                processing_generation, gallery_media_policy = policy_for_new_photo(
+                    event,
+                    uploader,
+                )
                 photo = Photo.objects.create(
                     id=item.id.hex,
-                    event=batch.event,
+                    event=event,
                     folder=item.folder,
                     src="",
                     uploaded_by=batch.uploader,
@@ -182,18 +188,10 @@ def confirm_upload_item(
                     original_size=item.expected_size,
                     original_content_type=item.declared_content_type,
                     uploaded_at=now,
-                    processing_generation=(
-                        Photo.ProcessingGeneration.PREVIEW_FIRST_V1
-                        if preview_first
-                        else Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
-                    ),
-                    gallery_media_policy=(
-                        Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
-                        if preview_first
-                        else Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
-                    ),
+                    processing_generation=processing_generation,
+                    gallery_media_policy=gallery_media_policy,
                 )
-                if batch.event.timezone_name is not None:
+                if event.timezone_name is not None:
                     request_capture_metadata(
                         photo,
                         verified_source_etag=item.verified_source_etag,

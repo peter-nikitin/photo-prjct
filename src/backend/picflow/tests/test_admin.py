@@ -182,10 +182,74 @@ class EventAdminTests(TestCase):
             "access_type": event.access_type,
             "publication_status": event.publication_status,
             "timezone_name": event.timezone_name or "",
+            "folders-TOTAL_FORMS": "0",
+            "folders-INITIAL_FORMS": "0",
+            "folders-MIN_NUM_FORMS": "0",
+            "folders-MAX_NUM_FORMS": "1000",
             "_save": "Save",
         }
         values.update(overrides)
         return values
+
+    def test_admin_changes_access_type_before_the_first_photo(self) -> None:
+        event = Event.objects.create(
+            name="Editable access",
+            slug="editable-access",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+
+        response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, access_type=Event.AccessType.PAID),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        event.refresh_from_db()
+        self.assertEqual(event.access_type, Event.AccessType.PAID)
+
+    def test_admin_rejects_access_type_change_after_the_first_photo(self) -> None:
+        event = Event.objects.create(
+            name="Frozen access",
+            slug="frozen-access",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        Photo.objects.create(id="first-photo", event=event, src="photos/first.jpg")
+
+        response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, access_type=Event.AccessType.PAID),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Access type cannot be changed after the event has photos.",
+            response.context["adminform"].form.errors["access_type"],
+        )
+        event.refresh_from_db()
+        self.assertEqual(event.access_type, Event.AccessType.FREE)
+
+    def test_admin_keeps_unrelated_event_fields_editable_after_the_first_photo(self) -> None:
+        event = Event.objects.create(
+            name="Editable metadata",
+            slug="editable-metadata",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        Photo.objects.create(id="metadata-photo", event=event, src="photos/metadata.jpg")
+
+        response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, description="Updated description"),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        event.refresh_from_db()
+        self.assertEqual(event.description, "Updated description")
 
     def test_admin_adds_a_folder_on_the_event_change_page(self) -> None:
         event = Event.objects.create(

@@ -142,10 +142,18 @@ class Photo(models.Model):
     class ProcessingGeneration(models.TextChoices):
         LEGACY_ORIGINAL_V1 = "legacy_original_v1", "Legacy original v1"
         PREVIEW_FIRST_V1 = "preview_first_v1", "Preview first v1"
+        PREVIEW_FIRST_WATERMARKED_V1 = (
+            "preview_first_watermarked_v1",
+            "Preview first watermarked v1",
+        )
 
     class GalleryMediaPolicy(models.TextChoices):
         LEGACY_ORIGINAL_ALLOWED = "legacy_original_allowed", "Legacy original allowed"
         PREVIEW_REQUIRED = "preview_required", "Preview required"
+        WATERMARKED_PREVIEW_REQUIRED = (
+            "watermarked_preview_required",
+            "Watermarked preview required",
+        )
 
     id = models.CharField(max_length=32, primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="photos")
@@ -236,6 +244,10 @@ class Photo(models.Model):
                         processing_generation="preview_first_v1",
                         gallery_media_policy="preview_required",
                     )
+                    | models.Q(
+                        processing_generation="preview_first_watermarked_v1",
+                        gallery_media_policy="watermarked_preview_required",
+                    )
                 ),
                 name="picflow_photo_processing_policy_pair_chk",
             ),
@@ -263,6 +275,10 @@ class Photo(models.Model):
             (
                 self.ProcessingGeneration.PREVIEW_FIRST_V1,
                 self.GalleryMediaPolicy.PREVIEW_REQUIRED,
+            ),
+            (
+                self.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+                self.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
             ),
         }
         if (self.processing_generation, self.gallery_media_policy) not in valid_pairs:

@@ -180,6 +180,7 @@ class ConfirmationTests(TransactionTestCase):
             "city": self.event.city,
             "description": self.event.description,
             "access_type": access_type,
+            "price_per_photo_rub": "300.00" if access_type == Event.AccessType.PAID else "",
             "publication_status": self.event.publication_status,
             "timezone_name": self.event.timezone_name or "",
             "folders-TOTAL_FORMS": "0",
@@ -321,7 +322,10 @@ class ConfirmationTests(TransactionTestCase):
     @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_enabled_paid_confirmation_persists_the_watermarked_pair(self) -> None:
         self.set_preview_payload()
-        Event.objects.filter(pk=self.event.pk).update(access_type=Event.AccessType.PAID)
+        Event.objects.filter(pk=self.event.pk).update(
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
         FeatureFlag.objects.create(
             key="paid-watermarked-previews",
             description="Paid watermarked previews",

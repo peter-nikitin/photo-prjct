@@ -139,18 +139,21 @@ class SubmissionTests(TestCase):
         self.draft = self.make_event("draft", "free", published=False)
 
     def make_event(self, suffix: str, access_type: str, *, published: bool = True) -> Event:
-        return Event.objects.create(
-            name=f"Event {suffix}",
-            slug=f"event-{suffix}",
-            start_date=date(2026, 7, 30),
-            end_date=date(2026, 7, 30),
-            city="Moscow",
-            access_type=access_type,
-            publication_status=(
+        values: dict[str, object] = {
+            "name": f"Event {suffix}",
+            "slug": f"event-{suffix}",
+            "start_date": date(2026, 7, 30),
+            "end_date": date(2026, 7, 30),
+            "city": "Moscow",
+            "access_type": access_type,
+            "publication_status": (
                 Event.PublicationStatus.PUBLISHED if published else Event.PublicationStatus.DRAFT
             ),
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
-        )
+            "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
+        }
+        if access_type == Event.AccessType.PAID:
+            values["price_per_photo_kopecks"] = 30000
+        return Event.objects.create(**values)
 
     def make_eligible_embedding(
         self,

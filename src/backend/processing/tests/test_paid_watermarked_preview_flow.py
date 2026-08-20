@@ -146,17 +146,20 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
         self.jpeg = encoded.getvalue()
 
     def event(self, slug: str, *, access_type: str) -> Event:
-        return Event.objects.create(
-            name=f"Watermark flow {slug}",
-            slug=slug,
-            start_date=date(2026, 8, 20),
-            end_date=date(2026, 8, 20),
-            city="Moscow",
-            timezone_name="Europe/Moscow",
-            access_type=access_type,
-            publication_status=Event.PublicationStatus.PUBLISHED,
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
-        )
+        values: dict[str, object] = {
+            "name": f"Watermark flow {slug}",
+            "slug": slug,
+            "start_date": date(2026, 8, 20),
+            "end_date": date(2026, 8, 20),
+            "city": "Moscow",
+            "timezone_name": "Europe/Moscow",
+            "access_type": access_type,
+            "publication_status": Event.PublicationStatus.PUBLISHED,
+            "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
+        }
+        if access_type == Event.AccessType.PAID:
+            values["price_per_photo_kopecks"] = 30000
+        return Event.objects.create(**values)
 
     def enable_paid_gate_for_staff(self) -> None:
         FeatureFlag.objects.update_or_create(

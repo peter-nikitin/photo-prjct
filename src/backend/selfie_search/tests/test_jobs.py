@@ -581,7 +581,7 @@ class SearchJobTests(TestCase):
             raise AssertionError("the database query must fail")
 
         with patch(
-            "selfie_search.services.cluster_expansion.gallery_photo_queryset",
+            "selfie_search.services.cluster_expansion._accepted_face_photo_queryset",
             side_effect=broken_gallery_queryset,
         ):
             complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)

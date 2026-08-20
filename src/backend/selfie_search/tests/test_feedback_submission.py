@@ -239,7 +239,8 @@ class FeedbackSubmissionTests(TestCase):
 
     def test_paid_watermarked_presentation_and_label_submission_use_explicit_gate(self) -> None:
         self.event.access_type = Event.AccessType.PAID
-        self.event.save(update_fields=["access_type"])
+        self.event.price_per_photo_kopecks = 30000
+        self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         result = self.make_watermarked_result(search=search)
         flag = FeatureFlag.objects.create(

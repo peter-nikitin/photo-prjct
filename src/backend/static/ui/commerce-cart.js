@@ -120,6 +120,7 @@
     if (!root?.addEventListener || typeof fetchFunction !== 'function' || !FormDataConstructor) return;
 
     root.addEventListener('submit', (event) => {
+      if (event.defaultPrevented) return;
       const form = event.target?.closest?.('[data-cart-form]') || event.target;
       if (!form?.dataset || !Object.hasOwn(form.dataset, 'cartForm')) return;
       if (!sameOriginAction(form, locationObject)) return;

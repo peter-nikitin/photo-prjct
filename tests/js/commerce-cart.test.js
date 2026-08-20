@@ -44,7 +44,13 @@ function makeRoot({ forms, counters = [], total = null, items = [], prices = [] 
     prices,
     error,
     addEventListener(type, listener) { listeners.set(type, listener); },
-    submit(form) { listeners.get('submit')?.({ target: form, preventDefault() { this.prevented = true; } }); },
+    submit(form, { defaultPrevented = false } = {}) {
+      listeners.get('submit')?.({
+        target: form,
+        defaultPrevented,
+        preventDefault() { this.prevented = true; },
+      });
+    },
     querySelectorAll(selector) {
       if (selector === '[data-cart-form]') return forms;
       if (selector === '[data-cart-count]') return counters;
@@ -122,6 +128,23 @@ test('keeps the current state after a failed enhanced mutation and announces the
   assert.equal(form.button.disabled, false);
   assert.equal(root.error.hidden, false);
   assert.equal(root.error.textContent, 'Не удалось обновить корзину. Попробуйте ещё раз.');
+});
+
+test('does not enhance a cart form submission cancelled by its native confirmation', () => {
+  const form = makeControl({ photoId: 'photo-1', selected: true });
+  const root = makeRoot({ forms: [form] });
+  let fetchCalls = 0;
+  const { initializeCommerceCart } = loadModule();
+  initializeCommerceCart(root, {
+    fetch: async () => { fetchCalls += 1; return { ok: true, json: async () => ({}) }; },
+    FormData: class { constructor(formElement) { this.form = formElement; } },
+  });
+
+  root.submit(form, { defaultPrevented: true });
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(form.button.disabled, false);
+  assert.equal(form.selectedInput.value, '0');
 });
 
 test('removes the confirmed cart row and renders the server-confirmed empty state after the final removal', async () => {

@@ -1187,6 +1187,14 @@ def test_deployment_forwards_preview_processing_configuration() -> None:
     )
 
 
+def test_paid_cart_rollout_never_enables_its_runtime_gate() -> None:
+    deployment = _workflow_step(_load_workflow("deploy.yml"), "deploy", "Run deployment")
+    apply_script = (ROOT / "deploy/apply-deployment.sh").read_text(encoding="utf-8")
+
+    assert "paid-photo-cart" not in deployment["env"]
+    assert "paid-photo-cart" not in apply_script
+
+
 def test_monitoring_agent_configuration_is_manual_only_and_outside_deploy_rollback() -> None:
     deployment = _load_workflow("deploy.yml")
     dispatch = deployment[True]["workflow_dispatch"]

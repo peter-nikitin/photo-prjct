@@ -27,6 +27,16 @@ PREVIOUS_ENV = (
 )
 
 
+def _cart_cleanup_block(deploy_root: Path) -> str:
+    return (
+        "# BEGIN photo-prjct-cart-cleanup\n"
+        f"23 3 * * * DEPLOY_ROOT={deploy_root} /bin/sh "
+        f"{deploy_root}/deploy/run-cart-cleanup.sh >> "
+        f"{deploy_root}/cart-cleanup.log 2>&1\n"
+        "# END photo-prjct-cart-cleanup\n"
+    )
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
     path.chmod(0o755)
@@ -39,7 +49,7 @@ def _write_python_executable(path: Path, body: str) -> None:
 
 def _run(script: str, *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["sh", ROOT / script],
+        ["/bin/sh", ROOT / script],
         env={**os.environ, **env},
         text=True,
         capture_output=True,
@@ -209,6 +219,80 @@ def test_public_smoke_rejects_wrong_redirect_or_unhealthy_https(
     assert commands.count("sleep 5") == expected_sleeps
 
 
+def test_cart_cleanup_cron_is_idempotent_bounded_and_removable(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """The host schedule is one managed daily command, never a feature activation."""
+    crontab_state = tmp_path / "crontab"
+    command_log = tmp_path / "cart-cleanup.log"
+    _write_executable(
+        fake_bin / "crontab",
+        """
+if [ "${1-}" = -l ]; then
+  [ -f "$CRONTAB_STATE" ] || exit 1
+  cat "$CRONTAB_STATE"
+  exit 0
+fi
+cat "$1" > "$CRONTAB_STATE"
+""",
+    )
+    _write_executable(
+        fake_bin / "flock",
+        """
+printf 'flock %s\\n' "$*" >> "$COMMAND_LOG"
+shift 4
+exec "$@"
+""",
+    )
+    _write_executable(
+        fake_bin / "docker",
+        """
+printf 'docker %s\\n' "$*" >> "$COMMAND_LOG"
+""",
+    )
+    env = {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "CRONTAB_STATE": str(crontab_state),
+        "COMMAND_LOG": str(command_log),
+        "DEPLOY_ROOT": str(ROOT),
+    }
+
+    installed = _run("deploy/install-cart-cleanup-cron.sh", env=env)
+    repeated = _run("deploy/install-cart-cleanup-cron.sh", env=env)
+    cleanup = _run("deploy/run-cart-cleanup.sh", env=env)
+    assert installed.returncode == repeated.returncode == cleanup.returncode == 0
+    assert "Installed daily cart cleanup" in installed.stdout
+    schedule = crontab_state.read_text(encoding="utf-8")
+    assert schedule.count("# BEGIN photo-prjct-cart-cleanup") == 1
+    assert schedule.count("# END photo-prjct-cart-cleanup") == 1
+    assert (
+        f"23 3 * * * DEPLOY_ROOT={ROOT} /bin/sh "
+        f"{ROOT}/deploy/run-cart-cleanup.sh >> "
+        f"{ROOT}/cart-cleanup.log 2>&1"
+    ) in schedule
+    commands = command_log.read_text(encoding="utf-8")
+    assert f"flock -n -E 75 {ROOT}/cart-cleanup.lock" in commands
+    assert "compose --project-name photo-prjct" in commands
+    assert "exec -T web python manage.py cleanup_expired_carts --limit 1000" in commands
+
+    explicit_remove = subprocess.run(
+        ["sh", ROOT / "deploy/install-cart-cleanup-cron.sh", "remove"],
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert explicit_remove.returncode == 0
+    assert "# BEGIN photo-prjct-cart-cleanup" not in crontab_state.read_text(encoding="utf-8")
+
+    unsafe = _run(
+        "deploy/install-cart-cleanup-cron.sh",
+        env={**env, "DEPLOY_ROOT": "/srv/photo; rm"},
+    )
+    assert unsafe.returncode == 2
+    assert "unsupported characters" in unsafe.stderr
+
+
 def _apply_env(
     tmp_path: Path,
     fake_bin: Path,
@@ -235,6 +319,11 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
         ROOT / "deploy/install-upload-cleanup-cron.sh",
         deploy_dir / "install-upload-cleanup-cron.sh",
     )
+    shutil.copy2(
+        ROOT / "deploy/install-cart-cleanup-cron.sh",
+        deploy_dir / "install-cart-cleanup-cron.sh",
+    )
+    shutil.copy2(ROOT / "deploy/run-cart-cleanup.sh", deploy_dir / "run-cart-cleanup.sh")
     _write_executable(
         deploy_dir / "verify-selfie-observability.sh",
         """
@@ -646,11 +735,15 @@ fi
         fake_bin / "crontab",
         """
 if [ "${1-}" = -l ]; then
-  exit 1
+  [ -f "$CRONTAB_STATE" ] || exit 1
+  cat "$CRONTAB_STATE"
+  exit 0
 fi
 printf 'crontab %s\n' "$*" >> "$COMMAND_LOG"
+cat "$1" > "$CRONTAB_STATE"
 """,
     )
+    _write_executable(fake_bin / "flock", ":")
     _write_executable(
         fake_bin / "mv",
         """
@@ -692,6 +785,7 @@ esac
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "apply.log"),
+        "CRONTAB_STATE": str(tmp_path / "crontab"),
         "PREVIOUS_ENV_EXPECTED": str(tmp_path / "previous-env.expected"),
         "GALLERY_PREFLIGHT_HARNESS": str(gallery_preflight_harness),
         "APPLY_SCENARIO": scenario,
@@ -1550,6 +1644,72 @@ def test_failed_worker_rollout_removes_the_candidate_worker_when_previous_deploy
     commands = _apply_log(tmp_path)
     assert any("--profile worker rm -sf worker" in command for command in commands)
     assert "recovery-removes-worker-from-restored-disabled-environment" in commands
+
+
+def test_successful_deployment_installs_cart_cleanup_only_after_the_candidate_commits(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Installed daily cart cleanup" in result.stdout
+    assert result.stdout.index("DEPLOY_PHASE=commit") < result.stdout.index(
+        "Installed daily cart cleanup"
+    )
+    commands = _apply_log(tmp_path)
+    assert any(command.startswith("crontab ") for command in commands)
+    assert "paid-photo-cart" not in "\n".join(commands)
+
+
+def test_failed_candidate_without_prior_cart_cleanup_removes_schedule_after_recovery(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="health-failure"),
+    )
+
+    assert result.returncode != 0
+    assert "Removed cart cleanup schedule." in result.stdout
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
+
+
+def test_failed_candidate_keeps_a_preexisting_cart_cleanup_schedule(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="health-failure")
+    crontab_state = Path(env["CRONTAB_STATE"])
+    crontab_state.write_text(_cart_cleanup_block(tmp_path), encoding="utf-8")
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Installed daily cart cleanup" in result.stdout
+    restored_schedule = crontab_state.read_text(encoding="utf-8")
+    assert restored_schedule.count("# BEGIN photo-prjct-cart-cleanup") == 1
+    assert _cart_cleanup_block(tmp_path) in restored_schedule
+    assert "# BEGIN photo-prjct-upload-cleanup" in restored_schedule
+
+
+@pytest.mark.parametrize("missing_command", ["crontab", "flock"])
+def test_uploads_off_requires_cart_cleanup_host_tools_before_mutation(
+    tmp_path: Path, fake_bin: Path, missing_command: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    (fake_bin / missing_command).unlink()
+    _write_executable(fake_bin / "date", "printf '0\\n'")
+    _write_executable(fake_bin / ({"crontab", "flock"} - {missing_command}).pop(), ":")
+    env["PATH"] = str(fake_bin)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 1
+    assert f"{missing_command} is required for cart cleanup" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
 
 
 def test_candidate_private_media_preflight_skips_when_no_eligible_photo(

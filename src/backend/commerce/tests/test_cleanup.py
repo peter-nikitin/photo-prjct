@@ -4,9 +4,9 @@ from io import StringIO
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
-from picflow.models import Event
+from picflow.models import Event, Photo
 
-from commerce.models import Cart
+from commerce.models import Cart, CartItem
 
 
 class CleanupExpiredCartsCommandTests(TestCase):
@@ -31,6 +31,9 @@ class CleanupExpiredCartsCommandTests(TestCase):
             )
             for index in range(3)
         ]
+        photo = Photo.objects.create(id="cleanup-photo", event=event, src="photos/cleanup.jpg")
+        for cart in expired:
+            CartItem.objects.create(cart=cart, photo=photo)
         active = Cart.objects.create(
             browser_token_sha256="f" * 64,
             event=event,
@@ -46,3 +49,4 @@ class CleanupExpiredCartsCommandTests(TestCase):
         self.assertTrue(Cart.objects.filter(pk=active.pk).exists())
         self.assertEqual(Cart.objects.filter(expires_at__lte=timezone.now()).count(), 0)
         self.assertIn("Deleted 2 expired carts", output.getvalue())
+        self.assertNotIn("Deleted 4 expired carts", output.getvalue())

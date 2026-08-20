@@ -21,5 +21,5 @@ class Command(BaseCommand):
                 .order_by("expires_at", "created_at", "pk")
                 .values_list("pk", flat=True)[:limit]
             )
-            deleted, _ = Cart.objects.filter(pk__in=cart_ids).delete()
-        self.stdout.write(f"Deleted {deleted} expired carts")
+            _, deleted_by_model = Cart.objects.filter(pk__in=cart_ids).delete()
+        self.stdout.write(f"Deleted {deleted_by_model.get('commerce.Cart', 0)} expired carts")

@@ -1,5 +1,6 @@
 import hashlib
 from datetime import date
+from typing import cast
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -49,7 +50,7 @@ class SavedReadyResultPageTests(TestCase):
         *,
         photo_id: str,
         rank: int,
-        gallery_media_policy: str = Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
+        gallery_media_policy: str = cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED),
     ) -> Photo:
         generation = (
             Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
@@ -208,7 +209,7 @@ class SavedReadyResultPageTests(TestCase):
         watermarked = self.add_result(
             photo_id="paid-watermarked-saved",
             rank=2,
-            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+            gallery_media_policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
         )
         self.publish_watermark(watermarked)
 

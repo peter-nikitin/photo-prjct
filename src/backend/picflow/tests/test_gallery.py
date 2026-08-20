@@ -1,5 +1,6 @@
 from dataclasses import FrozenInstanceError
 from datetime import UTC, date, datetime
+from typing import cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -229,10 +230,14 @@ class GalleryPresentationContractTests(SimpleTestCase):
         )
         download_calls: list[str] = []
 
+        def unexpected_download_url(candidate: Photo) -> str:
+            download_calls.append(candidate.pk)
+            return "/wrong/"
+
         gallery_photo = GalleryPhotoFactory.from_photo(
             photo=photo,
             event_slug=event.slug,
-            download_url_builder=lambda candidate: download_calls.append(candidate.pk) or "/wrong/",
+            download_url_builder=unexpected_download_url,
         )
 
         self.assertEqual(gallery_photo.photo_id, photo.pk)
@@ -953,15 +958,20 @@ class PaidWatermarkedGalleryTests(TestCase):
         )
 
     def photo(self, photo_id: str, *, policy: str) -> Photo:
-        generation = {
-            Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED: (
-                Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
-            ),
-            Photo.GalleryMediaPolicy.PREVIEW_REQUIRED: Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
-            Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED: (
-                Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
-            ),
-        }[policy]
+        generation = cast(
+            dict[str, str],
+            {
+                Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED: (
+                    Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+                ),
+                Photo.GalleryMediaPolicy.PREVIEW_REQUIRED: (
+                    Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+                ),
+                Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED: (
+                    Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+                ),
+            },
+        )[policy]
         return Photo.objects.create(
             id=photo_id,
             event=self.event,
@@ -1039,8 +1049,14 @@ class PaidWatermarkedGalleryTests(TestCase):
         )
 
     def test_paid_event_surface_requires_gate_and_only_lists_consistent_watermarks(self) -> None:
-        legacy = self.photo("paid-legacy", policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
-        clean = self.photo("paid-clean", policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED)
+        legacy = self.photo(
+            "paid-legacy",
+            policy=cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED),
+        )
+        clean = self.photo(
+            "paid-clean",
+            policy=cast(str, Photo.GalleryMediaPolicy.PREVIEW_REQUIRED),
+        )
         self.publish(
             clean,
             processor_type=GENERATE_PREVIEW_PROCESSOR,
@@ -1048,7 +1064,7 @@ class PaidWatermarkedGalleryTests(TestCase):
         )
         ready = self.photo(
             "paid-watermark-ready",
-            policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
         )
         self.publish(
             ready,
@@ -1057,7 +1073,7 @@ class PaidWatermarkedGalleryTests(TestCase):
         )
         pending = self.photo(
             "paid-watermark-pending",
-            policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
         )
         pending_state, _ = PhotoProcessingState.objects.get_or_create(
             photo=pending,
@@ -1067,7 +1083,7 @@ class PaidWatermarkedGalleryTests(TestCase):
         pending_state.save(update_fields=["status"])
         inconsistent = self.photo(
             "paid-watermark-inconsistent",
-            policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
         )
         derivative = self.publish(
             inconsistent,
@@ -1106,7 +1122,8 @@ class PaidWatermarkedGalleryTests(TestCase):
         self,
     ) -> None:
         photo = self.photo(
-            "paid-resolver", policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+            "paid-resolver",
+            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
         )
         derivative = self.publish(
             photo,

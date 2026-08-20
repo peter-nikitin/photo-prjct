@@ -425,7 +425,14 @@ broker, vector engine, and ML implementations shown for later processing require
    then makes the photo tile-eligible and queues preview-backed face work. Its Docker profile is
    locally opt-in and the API-only/no-credential container contract is locally verified. Tracked
    defaults remain disabled; lifecycle, ML-comparison, and capacity gates prevent staging or live
-   activation. Watermarked assets and a broker remain later-stage design.
+   activation. The worker-image and deployment validator package the optional exact
+   `2/generate_watermarked_preview/1` identity, but all worker and deployment defaults and the
+   required preview-processing identity set omit it. The `paid-watermarked-previews` feature-flag
+   row is absent or off by default, and no migration creates or enables it. A code deploy can
+   therefore package placeholder assets but cannot enqueue the new policy or expose its public
+   gallery to anonymous users. Activation must first use approved non-placeholder assets with their
+   declared checksums, explicitly enable the worker identity, pass one real staff-only smoke, and
+   only then enable the public gate. A broker remains later-stage design.
 6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
    embeddings. The implemented preview-first contract records preview coordinate space and source
    dimensions for face results. The repository includes the approval-gated version-4 candidate for

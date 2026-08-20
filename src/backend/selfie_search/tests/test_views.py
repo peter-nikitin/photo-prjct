@@ -1447,6 +1447,21 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(presentation.item_count, 1)
         self.assertEqual(presentation.unit_price_display, "450,75 ₽")
         self.assertEqual(presentation.total_display, "450,75 ₽")
+        self.assertContains(response, "450,75 ₽", count=2)
+        self.assertContains(response, "data-cart-count>1</strong>")
+        self.assertContains(
+            response, 'data-cart-form data-photo-id="cart-result-watermarked"', count=2
+        )
+        self.assertContains(
+            response, 'data-cart-price data-photo-id="cart-result-watermarked"', count=2
+        )
+        self.assertContains(response, 'aria-label="Удалить из корзины"', count=2)
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=2)
+        self.assertContains(
+            response,
+            'name="return_to" value="/events/%3Cevent%3E/selfie-search/%3Cbearer%3E/"',
+            count=2,
+        )
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
         self.assertIn("Cookie", response["Vary"])

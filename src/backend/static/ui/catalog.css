@@ -284,6 +284,126 @@
   white-space: nowrap;
 }
 
+.event-cart-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.event-cart-link .icon {
+  width: 19px;
+  height: 19px;
+}
+
+.event-cart-link strong {
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--teal);
+  color: var(--surface);
+  font-size: 0.74rem;
+}
+
+.event-cart-link:hover {
+  border-color: var(--teal);
+  color: var(--ink);
+}
+
+.event-cart-link:focus-visible,
+.gallery-cart-button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.cart-error {
+  margin: 12px 0;
+  color: #a32020;
+  font-weight: 750;
+}
+
+.event-cart {
+  max-width: 920px;
+}
+
+.event-cart h1 {
+  margin-bottom: 24px;
+}
+
+.event-cart-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.event-cart-item {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.event-cart-item > img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: var(--charcoal);
+}
+
+.event-cart-item figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+
+.event-cart-price,
+.event-cart-summary p {
+  margin: 0;
+  font-weight: 800;
+}
+
+.event-cart-price {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.event-cart-remove,
+.event-cart-clear {
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.event-cart-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px 24px;
+  margin: 24px 0 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.event-cart-return {
+  margin-top: 24px;
+}
+
 .event-detail-meta {
   display: inline-flex;
   flex-wrap: wrap;
@@ -544,6 +664,59 @@
   min-height: 44px;
 }
 
+.gallery-card-cart {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cart-action-form {
+  margin: 0;
+}
+
+.gallery-card-price {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.gallery-cart-button {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.gallery-cart-button .icon {
+  width: 21px;
+  height: 21px;
+}
+
+.gallery-cart-button:hover {
+  background: var(--surface-soft);
+  color: var(--ink);
+}
+
+.gallery-cart-button.is-selected,
+.gallery-cart-button[aria-pressed="true"] {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: var(--surface);
+}
+
+.gallery-cart-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .gallery-card-feedback-controls {
   display: flex;
   gap: 6px;
@@ -795,6 +968,29 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
   color: var(--muted);
 }
 
+.glightbox-container .gslide-desc .gallery-lightbox-cart-form {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.glightbox-container .gslide-desc .gallery-lightbox-price {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.glightbox-container .gslide-desc .gallery-cart-button {
+  color: var(--muted);
+}
+
+.glightbox-container .gslide-desc .gallery-cart-button.is-selected,
+.glightbox-container .gslide-desc .gallery-cart-button[aria-pressed="true"] {
+  color: var(--surface);
+}
+
 .glightbox-container .gslide-desc .gallery-lightbox-download .icon {
   width: 20px;
   height: 20px;
@@ -880,6 +1076,20 @@ body.glightbox-mobile .glightbox-container .gslide-desc .gallery-lightbox-downlo
   .event-detail-header {
     grid-template-columns: auto minmax(0, 1fr);
     gap: 8px 12px;
+  }
+
+  .event-cart-link {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .event-cart-link span {
+    display: none;
+  }
+
+  .event-cart-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .event-detail-header .back-link span {

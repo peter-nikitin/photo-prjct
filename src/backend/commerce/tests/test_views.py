@@ -565,6 +565,15 @@ class CartViewTests(TestCase):
         self.assertContains(response, "Очистить корзину")
         self.assertContains(response, "Удалить все фотографии из корзины?")
         self.assertContains(response, 'name="selected" value="0"', count=2)
+        self.assertContains(response, 'data-cart-form data-photo-id="photo-two"')
+        self.assertContains(response, 'data-cart-form data-photo-id="photo-one"')
+        self.assertContains(
+            response, 'data-cart-count data-cart-count-label="Фотографий: ">Фотографий: 2'
+        )
+        self.assertContains(
+            response, 'data-cart-total data-cart-total-label="Итого: ">Итого: 600 ₽'
+        )
+        self.assertContains(response, "data-cart-error", count=1)
         self.assertNotContains(response, "mc.yandex.ru")
         self.assertIsNone(response.context["yandex_metrika_counter_id"])
         body = response.content.decode(response.charset)

@@ -38,10 +38,28 @@
           <div class="event-gallery-grid">
             {% for result, photo in gallery_result_items %}
               <figure class="gallery-card" data-photo-id="{{ photo.photo_id }}">
-                <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="selfie-search-results" data-type="image"{% if photo.download_url %} data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал"><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg></a>'{% endif %} aria-label="Открыть: {{ photo.alt }}">
+                <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="selfie-search-results" data-type="image"{% if cart_presentation %}{% for cart_photo in cart_presentation.photos %}{% if cart_photo.photo.photo_id == photo.photo_id %} data-description='<form class="gallery-lightbox-cart-form cart-action-form" data-cart-form data-photo-id="{{ photo.photo_id }}" method="post" action="{% url "commerce:set_photo_state" event_slug=event.slug %}"><span class="gallery-lightbox-price" data-cart-price data-photo-id="{{ photo.photo_id }}">{{ cart_photo.unit_price_display }}</span>{% csrf_token %}<input type="hidden" name="photo_id" value="{{ photo.photo_id }}"><input type="hidden" name="selected" value="{% if cart_photo.selected %}0{% else %}1{% endif %}"><input type="hidden" name="return_to" value="{{ request.get_full_path }}"><button class="gallery-cart-button{% if cart_photo.selected %} is-selected{% endif %}" type="submit" data-cart-button aria-pressed="{{ cart_photo.selected|yesno:"true,false" }}" aria-label="{% if cart_photo.selected %}Удалить из корзины{% else %}Добавить в корзину{% endif %}" title="{% if cart_photo.selected %}Удалить из корзины{% else %}Добавить в корзину{% endif %}"><svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#{% if cart_photo.selected %}cart-check{% else %}cart-plus{% endif %}"></use></svg></button></form>'{% endif %}{% endfor %}{% elif photo.download_url %} data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал"><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg></a>'{% endif %} aria-label="Открыть: {{ photo.alt }}">
                   <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
                 </a>
                 <div class="gallery-card-actions">
+                  {% if cart_presentation %}
+                    {% for cart_photo in cart_presentation.photos %}
+                      {% if cart_photo.photo.photo_id == photo.photo_id %}
+                        <div class="gallery-card-cart">
+                          <span class="gallery-card-price" data-cart-price data-photo-id="{{ photo.photo_id }}">{{ cart_photo.unit_price_display }}</span>
+                          <form class="cart-action-form" data-cart-form data-photo-id="{{ photo.photo_id }}" method="post" action="{% url 'commerce:set_photo_state' event_slug=event.slug %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="photo_id" value="{{ photo.photo_id }}">
+                            <input type="hidden" name="selected" value="{% if cart_photo.selected %}0{% else %}1{% endif %}">
+                            <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
+                            <button class="gallery-cart-button{% if cart_photo.selected %} is-selected{% endif %}" type="submit" data-cart-button aria-pressed="{{ cart_photo.selected|yesno:'true,false' }}" aria-label="{% if cart_photo.selected %}Удалить из корзины{% else %}Добавить в корзину{% endif %}" title="{% if cart_photo.selected %}Удалить из корзины{% else %}Добавить в корзину{% endif %}">
+                              <svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#{% if cart_photo.selected %}cart-check{% else %}cart-plus{% endif %}"></use></svg>
+                            </button>
+                          </form>
+                        </div>
+                      {% endif %}
+                    {% endfor %}
+                  {% endif %}
                   {% if feedback and feedback.variant == "result_labels" %}
                     <div class="gallery-card-feedback-controls" data-feedback-card-controls>
                       <button class="gallery-feedback-choice" type="button" data-feedback-result-id="{{ result.pk }}" data-feedback-label="present" aria-pressed="false" aria-label="На фотографии {{ forloop.counter }}: я есть">Я есть</button>
@@ -134,6 +152,7 @@
 {% block extra_js %}
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
+  {% if cart_presentation %}<script src="{% static 'ui/commerce-cart.js' %}"></script>{% endif %}
   <script src="{% static 'ui/selfie-search.js' %}"></script>
   <script src="{% static 'ui/selfie-search-history.js' %}"></script>
 {% endblock %}

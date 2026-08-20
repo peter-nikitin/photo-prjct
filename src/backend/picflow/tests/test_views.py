@@ -889,6 +889,18 @@ class GalleryPageTests(TestCase):
         self.assertEqual(presentation.item_count, 1)
         self.assertEqual(presentation.unit_price_display, "450,75 ₽")
         self.assertEqual(presentation.total_display, "450,75 ₽")
+        self.assertContains(response, "450,75 ₽", count=4)
+        self.assertContains(response, "data-cart-count>1</strong>")
+        self.assertContains(response, 'data-cart-form data-photo-id="paid-cart-selected"')
+        self.assertContains(response, 'data-cart-form data-photo-id="paid-cart-visible"')
+        self.assertContains(response, 'data-cart-price data-photo-id="paid-cart-selected"', count=2)
+        self.assertContains(response, 'data-cart-price data-photo-id="paid-cart-visible"', count=2)
+        self.assertContains(response, 'aria-label="Удалить из корзины"')
+        self.assertContains(response, 'aria-label="Добавить в корзину"')
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=4)
+        self.assertContains(
+            response, 'name="return_to" value="/events/paid-cart-gallery/"', count=4
+        )
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(response["Vary"], "Cookie")
 

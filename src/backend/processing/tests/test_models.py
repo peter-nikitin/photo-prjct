@@ -483,48 +483,117 @@ class ProcessingModelTests(TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             PhotoDerivative.objects.filter(pk=derivative.pk).delete()
 
-    def test_derivative_model_validation_requires_an_accepted_preview_attempt(self) -> None:
+    def test_derivative_model_validation_rejects_mismatched_or_unaccepted_producers(self) -> None:
         other_photo = self.make_private_photo("other", self.event)
-        invalid_attempts = {
-            "wrong_photo": self.make_preview_attempt(photo=other_photo),
-            "unaccepted": self.make_preview_attempt(accepted=False),
-            "failed": self.make_preview_attempt(status=ProcessingAttempt.Status.FAILED),
-            "stale": self.make_preview_attempt(status=ProcessingAttempt.Status.STALE),
-            "wrong_processor": self.make_preview_attempt(processor_type="capture_metadata"),
-        }
+        for variant, processor_type, cross_processor in (
+            ("preview-small-v1", "generate_preview", "generate_watermarked_preview"),
+            ("preview-watermarked-v1", "generate_watermarked_preview", "generate_preview"),
+        ):
+            invalid_attempts = {
+                "wrong_photo": self.make_preview_attempt(
+                    photo=other_photo,
+                    processor_type=processor_type,
+                ),
+                "unaccepted": self.make_preview_attempt(
+                    processor_type=processor_type,
+                    accepted=False,
+                ),
+                "failed": self.make_preview_attempt(
+                    processor_type=processor_type,
+                    status=ProcessingAttempt.Status.FAILED,
+                ),
+                "stale": self.make_preview_attempt(
+                    processor_type=processor_type,
+                    status=ProcessingAttempt.Status.STALE,
+                ),
+                "wrong_processor": self.make_preview_attempt(
+                    processor_type=cross_processor,
+                ),
+            }
 
-        for reason, attempt in invalid_attempts.items():
-            with self.subTest(reason=reason):
-                derivative = PhotoDerivative(
-                    **self.preview_derivative_values(
-                        variant=f"preview-small-v1-{reason}",
-                        final_key=f"derivatives/{reason}.jpg",
-                        accepted_attempt=attempt,
-                    )
-                )
-                with self.assertRaises(ValidationError):
-                    derivative.full_clean()
-
-    def test_derivative_database_requires_an_accepted_preview_attempt(self) -> None:
-        other_photo = self.make_private_photo("other", self.event)
-        invalid_attempts = {
-            "wrong_photo": self.make_preview_attempt(photo=other_photo),
-            "unaccepted": self.make_preview_attempt(accepted=False),
-            "failed": self.make_preview_attempt(status=ProcessingAttempt.Status.FAILED),
-            "stale": self.make_preview_attempt(status=ProcessingAttempt.Status.STALE),
-            "wrong_processor": self.make_preview_attempt(processor_type="capture_metadata"),
-        }
-
-        for reason, attempt in invalid_attempts.items():
-            with self.subTest(reason=reason), transaction.atomic():
-                with self.assertRaises(IntegrityError):
-                    PhotoDerivative.objects.create(
+            for reason, attempt in invalid_attempts.items():
+                with self.subTest(variant=variant, reason=reason):
+                    derivative = PhotoDerivative(
                         **self.preview_derivative_values(
-                            variant=f"preview-small-v1-{reason}",
-                            final_key=f"derivatives/{reason}.jpg",
+                            variant=variant,
+                            final_key=f"derivatives/model-{variant}-{reason}.jpg",
                             accepted_attempt=attempt,
                         )
                     )
+                    with self.assertRaises(ValidationError):
+                        derivative.full_clean()
+
+    def test_derivative_model_validation_accepts_each_matching_supported_producer(self) -> None:
+        for variant, processor_type in (
+            ("preview-small-v1", "generate_preview"),
+            ("preview-watermarked-v1", "generate_watermarked_preview"),
+        ):
+            with self.subTest(variant=variant):
+                derivative = PhotoDerivative(
+                    **self.preview_derivative_values(
+                        variant=variant,
+                        final_key=f"derivatives/{variant}.jpg",
+                        accepted_attempt=self.make_preview_attempt(
+                            processor_type=processor_type,
+                        ),
+                    )
+                )
+
+                derivative.full_clean()
+
+    def test_derivative_database_rejects_mismatched_or_unaccepted_producers(self) -> None:
+        other_photo = self.make_private_photo("other", self.event)
+        for variant, processor_type, cross_processor in (
+            ("preview-small-v1", "generate_preview", "generate_watermarked_preview"),
+            ("preview-watermarked-v1", "generate_watermarked_preview", "generate_preview"),
+        ):
+            invalid_attempts = {
+                "wrong_photo": self.make_preview_attempt(
+                    photo=other_photo,
+                    processor_type=processor_type,
+                ),
+                "unaccepted": self.make_preview_attempt(
+                    processor_type=processor_type,
+                    accepted=False,
+                ),
+                "failed": self.make_preview_attempt(
+                    processor_type=processor_type,
+                    status=ProcessingAttempt.Status.FAILED,
+                ),
+                "stale": self.make_preview_attempt(
+                    processor_type=processor_type,
+                    status=ProcessingAttempt.Status.STALE,
+                ),
+                "wrong_processor": self.make_preview_attempt(
+                    processor_type=cross_processor,
+                ),
+            }
+
+            for reason, attempt in invalid_attempts.items():
+                with self.subTest(variant=variant, reason=reason), transaction.atomic():
+                    with self.assertRaises(IntegrityError):
+                        PhotoDerivative.objects.create(
+                            **self.preview_derivative_values(
+                                variant=variant,
+                                final_key=f"derivatives/database-{variant}-{reason}.jpg",
+                                accepted_attempt=attempt,
+                            )
+                        )
+
+    def test_derivative_database_accepts_each_matching_supported_producer(self) -> None:
+        watermark_attempt = self.make_preview_attempt(
+            processor_type="generate_watermarked_preview",
+        )
+
+        derivative = PhotoDerivative.objects.create(
+            **self.preview_derivative_values(
+                variant="preview-watermarked-v1",
+                final_key="derivatives/preview-watermarked-v1.jpg",
+                accepted_attempt=watermark_attempt,
+            )
+        )
+
+        self.assertEqual(derivative.accepted_attempt_id, watermark_attempt.id)
 
     def test_derivative_insert_trigger_blocks_bulk_and_direct_sql_inserts(self) -> None:
         attempt = self.make_preview_attempt(accepted=False)
@@ -1223,6 +1292,128 @@ class ProcessingPreviewDerivativeMigrationTests(_ProcessingMigrationTestCase):
         reverse_executor.migrate(self.migrate_from)
         reverted_apps = reverse_executor.loader.project_state(self.migrate_from).apps
         self.assertNotIn("photoderivative", reverted_apps.all_models.get("processing", {}))
+
+
+class ProcessingWatermarkedDerivativeProducerMigrationTests(_ProcessingMigrationTestCase):
+    migrate_from = [
+        ("picflow", "0012_paid_watermarked_photo_policy"),
+        ("processing", "0007_face_quality_generation"),
+    ]
+    migrate_to = [("processing", "0008_watermarked_preview_derivative_producer")]
+
+    def _watermark_attempt(self, historical_apps, *, suffix: str):
+        Event = historical_apps.get_model("picflow", "Event")
+        Photo = historical_apps.get_model("picflow", "Photo")
+        Run = historical_apps.get_model("processing", "EventProcessingRun")
+        Job = historical_apps.get_model("processing", "ProcessingJob")
+        Attempt = historical_apps.get_model("processing", "ProcessingAttempt")
+        event = Event.objects.create(
+            name=f"Watermark migration {suffix}",
+            slug=f"watermark-migration-{suffix}",
+            start_date="2026-08-20",
+            end_date="2026-08-20",
+            city="Moscow",
+        )
+        photo = Photo.objects.create(
+            id=f"watermark-migration-{suffix}",
+            event=event,
+            src=f"photos/watermark-migration-{suffix}.jpg",
+        )
+        run = Run.objects.create(
+            event=event,
+            contract_version=2,
+            processor_type="generate_watermarked_preview",
+            processor_version=1,
+            configuration={},
+            configuration_hash="a" * 64,
+        )
+        job = Job.objects.create(
+            event=event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_watermarked_preview",
+            processor_version=1,
+            configuration={},
+            configuration_hash="a" * 64,
+            input_fingerprint={},
+            status="succeeded",
+        )
+        attempt = Attempt.objects.create(
+            event=event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type="generate_watermarked_preview",
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status="succeeded",
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        return photo, attempt
+
+    def _create_derivative(self, historical_apps, *, photo, attempt, suffix: str):
+        Derivative = historical_apps.get_model("processing", "PhotoDerivative")
+        return Derivative.objects.create(
+            photo=photo,
+            variant="preview-watermarked-v1",
+            final_key=f"derivatives/migration-watermark-{suffix}.jpg",
+            byte_size=1024,
+            content_type="image/jpeg",
+            width=1600,
+            height=1000,
+            oriented_source_width=3200,
+            oriented_source_height=2000,
+            sha256="b" * 64,
+            accepted_attempt=attempt,
+        )
+
+    def test_forward_adds_watermark_pair_and_reverse_restores_clean_producer_only(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+        old_apps = executor.loader.project_state(self.migrate_from).apps
+        old_photo, old_attempt = self._watermark_attempt(old_apps, suffix="before")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._create_derivative(
+                old_apps,
+                photo=old_photo,
+                attempt=old_attempt,
+                suffix="before",
+            )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        migrated_apps = executor.loader.project_state(self.migrate_to).apps
+        migrated_photo, migrated_attempt = self._watermark_attempt(
+            migrated_apps,
+            suffix="forward",
+        )
+        self._create_derivative(
+            migrated_apps,
+            photo=migrated_photo,
+            attempt=migrated_attempt,
+            suffix="forward",
+        )
+        reverse_photo, reverse_attempt = self._watermark_attempt(
+            migrated_apps,
+            suffix="reverse",
+        )
+
+        reverse_executor = MigrationExecutor(connection)
+        reverse_executor.migrate(self.migrate_from)
+        reverted_apps = reverse_executor.loader.project_state(self.migrate_from).apps
+        RevertedPhoto = reverted_apps.get_model("picflow", "Photo")
+        RevertedAttempt = reverted_apps.get_model("processing", "ProcessingAttempt")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._create_derivative(
+                reverted_apps,
+                photo=RevertedPhoto.objects.get(pk=reverse_photo.pk),
+                attempt=RevertedAttempt.objects.get(pk=reverse_attempt.pk),
+                suffix="reverse",
+            )
 
 
 class ProcessingFaceIndexNameMigrationTests(_ProcessingMigrationTestCase):

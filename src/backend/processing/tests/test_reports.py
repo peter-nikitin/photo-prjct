@@ -491,6 +491,100 @@ class ProcessingRunReportTests(TestCase):
         ):
             self.assertNotIn(forbidden, serialized)
 
+    def test_watermark_run_reuses_the_bounded_preview_report_projection(self) -> None:
+        photo = self.private_photo("watermark-report")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        request_generate_preview(photo, pixel_width=3200, pixel_height=2000)
+        clean_claim = self.claim_preview()
+        clean_bytes = b"clean-report-output"
+        clean_object = PreviewObject(
+            etag_wire='"clean-report"',
+            etag_value="clean-report",
+            byte_size=len(clean_bytes),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(clean_bytes).hexdigest(),
+            width=1600,
+            height=1000,
+        )
+
+        class PublicationStorage:
+            def __init__(self, object: PreviewObject) -> None:
+                self.object = object
+                self.final: PreviewObject | None = None
+
+            def verify(self, *, key: str, max_bytes: int) -> PreviewObject:
+                if key.startswith("derivatives/"):
+                    if self.final is None:
+                        raise ObjectMissing()
+                    return self.final
+                return self.object
+
+            def promote(self, **_: object) -> PreviewObject:
+                self.final = self.object
+                return self.object
+
+        complete_preview_attempt(
+            clean_claim.attempt.id,
+            result={
+                "variant": "preview-small-v1",
+                "content_type": "image/jpeg",
+                "byte_size": clean_object.byte_size,
+                "width": clean_object.width,
+                "height": clean_object.height,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+                "sha256": clean_object.sha256,
+                "upload_ms": 13,
+                "warnings": [],
+            },
+            storage=cast(ExactPreviewStorage, PublicationStorage(clean_object)),
+        )
+        watermark_claim = claim_job(
+            contract_version=2,
+            processor_type="generate_watermarked_preview",
+            processor_version=1,
+            worker_build="watermark-report-worker",
+        )
+        assert isinstance(watermark_claim, ClaimedJob)
+        watermark_bytes = b"watermarked-report-output"
+        watermark_object = PreviewObject(
+            etag_wire='"watermark-report"',
+            etag_value="watermark-report",
+            byte_size=len(watermark_bytes),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(watermark_bytes).hexdigest(),
+            width=1600,
+            height=1000,
+        )
+        complete_preview_attempt(
+            watermark_claim.attempt.id,
+            result={
+                "variant": "preview-watermarked-v1",
+                "content_type": "image/jpeg",
+                "byte_size": watermark_object.byte_size,
+                "width": watermark_object.width,
+                "height": watermark_object.height,
+                "sha256": watermark_object.sha256,
+                "upload_ms": 19,
+                "warnings": [],
+            },
+            storage=cast(ExactPreviewStorage, PublicationStorage(watermark_object)),
+            download_duration_ms=5,
+            compute_duration_ms=7,
+        )
+
+        run = EventProcessingRun.objects.get(pk=watermark_claim.job.run_id)
+        self.assertEqual(
+            run.report["preview"]["accepted_outputs"],
+            1,
+        )
+        self.assertEqual(run.report["photos"][0]["preview"]["upload_ms"], 19)
+        serialized = json.dumps(run.report, sort_keys=True)
+        self.assertNotIn("derivatives/", serialized)
+        self.assertNotIn(watermark_object.sha256, serialized)
+
     def test_capped_cohort_report_preserves_every_row_within_recorded_byte_limit(self) -> None:
         configuration = capture_metadata_configuration(self.event.timezone_name)
         configured_limit = configuration["max_cohort_size"]

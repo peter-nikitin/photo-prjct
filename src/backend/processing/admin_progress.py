@@ -12,6 +12,7 @@ from processing.models import ProcessingJob
 
 PROCESSORS = (
     ("generate_preview", "Preview"),
+    ("generate_watermarked_preview", "Watermark"),
     ("face_embedding", "Embedding"),
     ("capture_metadata", "Metadata"),
 )
@@ -68,7 +69,9 @@ def _worker_summary(
     runnable = any(job.status in RUNNABLE_STATUSES for job in jobs)
     is_completed = completed == total and remaining == 0
 
-    if is_completed:
+    if total == 0:
+        status, eta = "Not applicable", "—"
+    elif is_completed:
         status, eta = "Completed", "Completed"
     elif len(current_jobs) == 1:
         status, eta = "Processing", _worker_eta(current_jobs, remaining, now)
@@ -110,11 +113,16 @@ def admin_processing_progress(request):
         preview_remaining = sum(
             job.status in REMAINING_STATUSES for job in jobs_by_processor["generate_preview"]
         )
+        watermark_total = len(
+            {job.photo_id for job in jobs_by_processor["generate_watermarked_preview"]}
+        )
         workers = [
             _worker_summary(
                 name=name,
                 jobs=jobs_by_processor[processor_type],
-                total=total,
+                total=(
+                    watermark_total if processor_type == "generate_watermarked_preview" else total
+                ),
                 preview_remaining=preview_remaining,
                 is_embedding=processor_type == "face_embedding",
                 now=now,
@@ -122,7 +130,8 @@ def admin_processing_progress(request):
             for processor_type, name in PROCESSORS
         ]
         event_completed = all(
-            worker["completed"] == total and worker["remaining"] == 0 for worker in workers
+            worker["completed"] == worker["total"] and worker["remaining"] == 0
+            for worker in workers
         )
         rows.append(
             {

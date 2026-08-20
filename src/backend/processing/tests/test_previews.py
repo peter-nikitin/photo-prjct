@@ -14,7 +14,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from picflow.models import Event, Photo
 
-from processing.contracts import AttemptCompletion, CompletionConflict
+from processing.contracts import AttemptCompletion, ClaimedJob, CompletionConflict
 from processing.models import (
     EventProcessingRun,
     PhotoDerivative,
@@ -94,12 +94,13 @@ class _PreviewPublicationFixture:
         )
 
     def _claim(self, identifier: str = "preview-publication"):
+        original_key = hashlib.sha256(identifier.encode()).hexdigest()[:32]
         photo = Photo.objects.create(
             id=identifier,
             event=self.event,
             src="",
             uploaded_by=self.user,
-            original_key="originals/0123456789abcdef0123456789abcdef",
+            original_key=f"originals/{original_key}",
             original_filename="preview.jpg",
             original_size=20,
             original_content_type="image/jpeg",
@@ -154,6 +155,41 @@ class _PreviewPublicationFixture:
             height=1000,
         )
 
+    def _claim_watermark(self, identifier: str):
+        photo, clean_claim = self._claim(identifier)
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        clean_object = self._stored_object()
+        complete_preview_attempt(
+            clean_claim.attempt.id,
+            result=self._result(clean_object),
+            storage=FakePreviewStorage(clean_object),
+        )
+        clean_derivative = PhotoDerivative.objects.get(
+            photo=photo,
+            variant="preview-small-v1",
+        )
+        claimed = claim_job(
+            contract_version=2,
+            processor_type="generate_watermarked_preview",
+            processor_version=1,
+            worker_build="watermark-worker",
+        )
+        return photo, clean_derivative, claimed
+
+    def _watermark_result(self, object: PreviewObject, **overrides: object) -> dict[str, object]:
+        return {
+            "variant": "preview-watermarked-v1",
+            "content_type": "image/jpeg",
+            "byte_size": object.byte_size,
+            "width": object.width,
+            "height": object.height,
+            "sha256": object.sha256,
+            "upload_ms": 5,
+            "warnings": [],
+        } | overrides
+
 
 class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
@@ -199,6 +235,230 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         )
         self.assertEqual(state.status, PhotoProcessingState.Status.SUCCEEDED)
         self.assertEqual(state.accepted_attempt_id, claimed.attempt.id)
+
+    def test_watermark_attempt_uses_the_same_verified_immutable_publication_state_machine(
+        self,
+    ) -> None:
+        photo, clean_derivative, claimed = self._claim_watermark("watermark-publication")
+        content = b"verified-watermark-bytes"
+        object = PreviewObject(
+            etag_wire='"watermark-etag"',
+            etag_value="watermark-etag",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=clean_derivative.width,
+            height=clean_derivative.height,
+        )
+        storage = FakePreviewStorage(object)
+
+        completion = complete_preview_attempt(
+            claimed.attempt.id,
+            result=self._watermark_result(object, warnings=["color_profile_missing"]),
+            storage=storage,
+        )
+
+        derivative = PhotoDerivative.objects.get(
+            photo=photo,
+            variant="preview-watermarked-v1",
+        )
+        self.assertFalse(completion.idempotent)
+        self.assertEqual(derivative.accepted_attempt_id, claimed.attempt.id)
+        self.assertEqual(
+            derivative.final_key,
+            (
+                f"derivatives/previews/{photo.id}/preview-watermarked-v1/"
+                f"{claimed.attempt.id}-{object.sha256}.jpg"
+            ),
+        )
+        self.assertEqual(
+            (derivative.oriented_source_width, derivative.oriented_source_height),
+            (
+                clean_derivative.oriented_source_width,
+                clean_derivative.oriented_source_height,
+            ),
+        )
+        state = PhotoProcessingState.objects.get(
+            photo=photo,
+            processor_type="generate_watermarked_preview",
+        )
+        self.assertEqual(state.accepted_attempt_id, claimed.attempt.id)
+        self.assertEqual(storage.promote_final_keys, [derivative.final_key])
+
+    def test_watermark_duplicate_completion_is_idempotent_and_conflict_is_rejected(self) -> None:
+        photo, _, claimed = self._claim_watermark("watermark-duplicate")
+        content = b"duplicate-watermark"
+        object = PreviewObject(
+            etag_wire='"watermark-duplicate"',
+            etag_value="watermark-duplicate",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=1600,
+            height=1000,
+        )
+        storage = FakePreviewStorage(object)
+        result = self._watermark_result(object)
+
+        complete_preview_attempt(claimed.attempt.id, result=result, storage=storage)
+        repeated = complete_preview_attempt(claimed.attempt.id, result=result, storage=storage)
+
+        self.assertTrue(repeated.idempotent)
+        with self.assertRaises(CompletionConflict):
+            complete_preview_attempt(
+                claimed.attempt.id,
+                result=result | {"sha256": "0" * 64},
+                storage=storage,
+            )
+        self.assertEqual(
+            PhotoDerivative.objects.filter(
+                photo=photo,
+                variant="preview-watermarked-v1",
+            ).count(),
+            1,
+        )
+
+    def test_watermark_verification_rejects_reported_hash_or_dimension_disagreement(self) -> None:
+        for suffix, override in (
+            ("hash", {"sha256": "0" * 64}),
+            ("dimensions", {"width": 1599}),
+        ):
+            with self.subTest(suffix=suffix):
+                photo, _, claimed = self._claim_watermark(f"watermark-mismatch-{suffix}")
+                content = f"mismatched-watermark-{suffix}".encode()
+                object = PreviewObject(
+                    etag_wire=f'"watermark-{suffix}"',
+                    etag_value=f"watermark-{suffix}",
+                    byte_size=len(content),
+                    content_type="image/jpeg",
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    width=1600,
+                    height=1000,
+                )
+
+                completion = complete_preview_attempt(
+                    claimed.attempt.id,
+                    result=self._watermark_result(object, **override),
+                    storage=FakePreviewStorage(object),
+                )
+
+                self.assertEqual(completion.attempt.status, ProcessingAttempt.Status.FAILED)
+                self.assertEqual(completion.attempt.error_code, "output_contract_violation")
+                self.assertFalse(
+                    PhotoDerivative.objects.filter(
+                        photo=photo,
+                        variant="preview-watermarked-v1",
+                    ).exists()
+                )
+
+    def test_expired_watermark_attempt_cannot_promote_or_publish(self) -> None:
+        photo, clean_preview, claimed = self._claim_watermark("watermark-expired")
+        content = b"expired-watermark"
+        object = PreviewObject(
+            etag_wire='"expired-watermark"',
+            etag_value="expired-watermark",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=clean_preview.width,
+            height=clean_preview.height,
+        )
+        storage = FakePreviewStorage(object)
+        ProcessingAttempt.objects.filter(pk=claimed.attempt.id).update(
+            lease_expires_at=timezone.now()
+        )
+
+        completion = complete_preview_attempt(
+            claimed.attempt.id,
+            result=self._watermark_result(object),
+            storage=storage,
+        )
+
+        self.assertTrue(completion.stale)
+        self.assertEqual(storage.copy_calls, 0)
+        self.assertFalse(
+            PhotoDerivative.objects.filter(
+                photo=photo,
+                variant="preview-watermarked-v1",
+            ).exists()
+        )
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_watermark_failure_and_retry_do_not_change_or_reenqueue_the_face_sibling(self) -> None:
+        photo, _, claimed = self._claim_watermark("watermark-face-independent")
+        face = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
+        face_job_id = face.current_job_id
+
+        jobs.fail_attempt(
+            claimed.attempt.id,
+            error_code="storage_unavailable",
+            retryable=True,
+            jitter=lambda _low, _high: 0,
+        )
+        watermark = PhotoProcessingState.objects.get(
+            photo=photo,
+            processor_type="generate_watermarked_preview",
+        )
+        retry = claim_job(
+            contract_version=2,
+            processor_type="generate_watermarked_preview",
+            processor_version=1,
+            worker_build="watermark-retry-worker",
+            now=watermark.next_attempt_at,
+        )
+        assert isinstance(retry, ClaimedJob)
+
+        face.refresh_from_db()
+        self.assertEqual(face.status, PhotoProcessingState.Status.QUEUED)
+        self.assertEqual(face.current_job_id, face_job_id)
+        self.assertEqual(
+            ProcessingJob.objects.filter(photo=photo, processor_type="face_embedding").count(),
+            1,
+        )
+        self.assertEqual(retry.job.id, claimed.job.id)
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_face_failure_does_not_invalidate_an_accepted_watermark_derivative(self) -> None:
+        photo, _, watermark_claim = self._claim_watermark("watermark-survives-face")
+        content = b"watermark-survives-face"
+        object = PreviewObject(
+            etag_wire='"watermark-survives-face"',
+            etag_value="watermark-survives-face",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=1600,
+            height=1000,
+        )
+        complete_preview_attempt(
+            watermark_claim.attempt.id,
+            result=self._watermark_result(object),
+            storage=FakePreviewStorage(object),
+        )
+        face_claim = claim_job(
+            contract_version=2,
+            processor_type="face_embedding",
+            processor_version=3,
+            worker_build="face-failure-worker",
+        )
+        assert isinstance(face_claim, ClaimedJob)
+
+        jobs.fail_attempt(
+            face_claim.attempt.id,
+            error_code="model_inference_error",
+            retryable=False,
+        )
+
+        watermark = PhotoProcessingState.objects.get(
+            photo=photo,
+            processor_type="generate_watermarked_preview",
+        )
+        derivative = PhotoDerivative.objects.get(
+            photo=photo,
+            variant="preview-watermarked-v1",
+        )
+        self.assertEqual(watermark.status, PhotoProcessingState.Status.SUCCEEDED)
+        self.assertEqual(watermark.accepted_attempt_id, derivative.accepted_attempt_id)
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_accepted_preview_publication_queues_the_preview_backed_face_job_once(self) -> None:
@@ -275,6 +535,49 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         self.assertEqual(
             ProcessingJob.objects.filter(photo=photo, processor_type="face_embedding").count(), 1
         )
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_watermarked_clean_acceptance_queues_independent_face_and_watermark_siblings(
+        self,
+    ) -> None:
+        photo, claimed = self._claim("preview-enroll-watermark")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        object = self._stored_object()
+
+        complete_preview_attempt(
+            claimed.attempt.id,
+            result=self._result(object),
+            storage=FakePreviewStorage(object),
+        )
+
+        siblings = {
+            state.processor_type: state
+            for state in PhotoProcessingState.objects.filter(
+                photo=photo,
+                processor_type__in=("face_embedding", "generate_watermarked_preview"),
+            ).select_related("current_job")
+        }
+        self.assertEqual(set(siblings), {"face_embedding", "generate_watermarked_preview"})
+        expected_fingerprint = {
+            "object_key": preview_final_key(
+                photo_id=photo.id,
+                attempt_id=claimed.attempt.id,
+                sha256=object.sha256,
+            ),
+            "object_size": object.byte_size,
+            "object_content_type": "image/jpeg",
+            "object_etag": None,
+            "media_kind": "preview-small-v1",
+            "pixel_width": object.width,
+            "pixel_height": object.height,
+        }
+        for processor_type, state in siblings.items():
+            with self.subTest(processor_type=processor_type):
+                self.assertEqual(state.status, PhotoProcessingState.Status.QUEUED)
+                assert state.current_job is not None
+                self.assertEqual(state.current_job.input_fingerprint, expected_fingerprint)
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_enqueue_failure_rolls_back_preview_acceptance_and_allows_retry(self) -> None:

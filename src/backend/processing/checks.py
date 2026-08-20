@@ -6,6 +6,7 @@ from django.core.checks import Error, register
 from processing.services.enrollment import (
     FACE_EMBEDDING_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
+    GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
     capture_metadata_configuration,
 )
 
@@ -19,6 +20,7 @@ def capture_metadata_terminal_request_limit_check(**_: object) -> list[Error]:
             capture_metadata_configuration("Etc/UTC"),
             FACE_EMBEDDING_CONFIGURATION,
             GENERATE_PREVIEW_CONFIGURATION,
+            GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
         )
     )
     configured_maximum = settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES

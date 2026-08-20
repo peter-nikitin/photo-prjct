@@ -35,6 +35,13 @@ to existing card action markup. This plan does not add cart state or UI. It keep
 `PublicMediaResolver` as the only selector of public bytes, so a later cart action cannot become a
 second media-selection path.
 
+Merge this watermark change before the parallel anonymous-cart change. This branch owns picflow
+migration `0012`; after rebasing, the cart branch must use the next migration number for its Event
+price and data migration. Both changes may touch `picflow/models.py`, `picflow/admin.py`,
+`picflow/gallery.py`, catalog/selfie views, and the two gallery templates, so the cart change must
+consume the nullable-download and stable-photo-identity interfaces below instead of resolving the
+overlap by restoring the old unconditional-download behavior.
+
 Execution must use `$execute-implementation-plan`. Each task below is one reviewed implementation
 change; real-environment activation remains a separate maintainer-approved operation after final
 artwork exists.
@@ -51,6 +58,8 @@ In addition:
   the later cart task can add an action without changing media authorization;
 - no task adds price fields, cart models, browser cookies, entitlement checks, or an original
   purchase route;
+- the watermark branch lands first as picflow migration `0012`; the rebased cart branch uses the
+  next migration number and preserves the new generation/policy constraint;
 - implementation may contain conspicuous placeholder PNGs for local verification, but the runtime
   gate remains off and the deployed worker identity remains inactive until the maintainer supplies
   and approves both final PNGs;

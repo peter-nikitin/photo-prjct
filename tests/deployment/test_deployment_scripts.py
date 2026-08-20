@@ -1230,6 +1230,71 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
     )
 
 
+def test_deployment_default_worker_identities_do_not_activate_watermarked_previews(
+    tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty configured value must not inherit an ambient worker identity."""
+    monkeypatch.setenv(
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES",
+        "2/generate_watermarked_preview/1",
+    )
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
+            "PHOTO_PROCESSING_FACE_ENABLED": "True",
+        }
+    )
+    env["PHOTO_WORKER_PROCESSOR_IDENTITIES"] = ""
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    persisted_default = next(
+        line for line in deployed_env if line.startswith("PHOTO_WORKER_PROCESSOR_IDENTITIES=")
+    )
+    default_identity_line = (
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,"
+        "2/face_embedding/3,3/face_embedding/5,1/selfie_query/2"
+    )
+    assert persisted_default == default_identity_line
+    assert "2/generate_watermarked_preview/1" not in persisted_default
+
+
+def test_deployment_accepts_the_optional_watermarked_preview_worker_identity(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """The packaged worker may accept the future identity without activating its policy."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        {
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+            "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
+            "PHOTO_PROCESSING_FACE_ENABLED": "True",
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
+                "1/selfie_query/2,1/capture_metadata/2,2/generate_preview/1,"
+                "2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5"
+            ),
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert (
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/2,1/capture_metadata/2,"
+        "2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,"
+        "3/face_embedding/5" in deployed_env
+    )
+
+
 @pytest.mark.parametrize(
     "identities",
     [

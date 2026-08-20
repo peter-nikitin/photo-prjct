@@ -56,6 +56,7 @@ FORBIDDEN_SETTINGS = {
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
     "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
 }
+WATERMARKED_PREVIEW_PROCESSOR_IDENTITY = "2/generate_watermarked_preview/1"
 
 
 def test_worker_container_is_minimal_and_starts_the_standalone_package() -> None:
@@ -325,6 +326,10 @@ def test_default_compose_config_interpolates_example_without_enabling_the_worker
         assert worker_profile.returncode == 0, worker_profile.stderr
         worker = yaml.safe_load(worker_profile.stdout)["services"]["worker"]
         assert worker["environment"]["PHOTO_WORKER_TOKEN"] == ""
+        assert (
+            WATERMARKED_PREVIEW_PROCESSOR_IDENTITY
+            not in worker["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
+        )
         assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
 
 

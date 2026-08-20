@@ -1,7 +1,7 @@
 # Paid Watermarked Previews Implementation Plan
 
 - Date: 2026-08-20
-- Status: Draft
+- Status: Approved on 2026-08-20
 - Owner: project maintainer
 - Related specification:
   [`docs/superpowers/specs/2026-08-20-paid-watermarked-previews-design.md`](../superpowers/specs/2026-08-20-paid-watermarked-previews-design.md)

@@ -2,8 +2,7 @@
 
 ## Status
 
-Approved in conversation by the project maintainer on 2026-08-20. Written specification pending
-repository review.
+Approved in conversation and repository review by the project maintainer on 2026-08-20.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), current gallery-media and
   preview-first processing boundaries; purchase and download; security, privacy, and legal
@@ -28,8 +27,9 @@ repository review.
   [ADR 0019](../../adr/0019-use-public-event-selfie-search.md),
   [ADR 0020](../../adr/0020-use-signed-direct-object-storage-media-delivery.md),
   [ADR 0021](../../adr/0021-allow-original-download-for-authorized-photos.md), and
-  [ADR 0022](../../adr/0022-use-numbered-gallery-pages.md)
-- ADR impact: **Requires new ADR.** The new ADR must authorize the normal published paid-event
+  [ADR 0022](../../adr/0022-use-numbered-gallery-pages.md), and proposed
+  [ADR 0029](../../adr/0029-use-watermarked-previews-for-paid-photos.md)
+- ADR impact: **Requires acceptance of ADR 0029.** The ADR must authorize the normal published paid-event
   gallery for photos with an accepted watermarked preview; replace ADR 0019's paid-result original
   delivery with watermarked-preview delivery for the new explicit photo generation; replace ADR
   0020's paid-gallery denial and original media selection for those photos; and supersede ADR

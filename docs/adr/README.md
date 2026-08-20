@@ -47,6 +47,7 @@ place, and add the new record to this index.
 | 0025 | [Expand selfie search with conservative face clusters](0025-expand-selfie-search-with-face-clusters.md) | Accepted |
 | 0026 | [Use Lockbox for environment secrets](0026-use-lockbox-for-environment-secrets.md) | Accepted |
 | 0027 | [Project current capture time onto Photo](0027-project-capture-time-onto-photo.md) | Accepted |
+| 0029 | [Use watermarked previews for paid photo presentation](0029-use-watermarked-previews-for-paid-photos.md) | Proposed |
 
 ## Public selfie-search outcome
 

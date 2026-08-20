@@ -119,6 +119,9 @@ def _cutover_env(tmp_path: Path, *, state: str = "ready") -> dict[str, str]:
             ;;
           *" compose "*" printenv POSTGRES_USER "*) printf 'photo\\n' ;;
           *" compose "*" printenv POSTGRES_DB "*) printf 'photo\\n' ;;
+          *" compose "*"--project-name photo-prjct "*" up -d "*)
+            case " $* " in *" up -d --wait db "*) ;; *) exit 80 ;; esac
+            ;;
           *" compose "*" pg_dump "*)
             case " $* " in
               *" --file=- "*) exit 71 ;;
@@ -271,6 +274,7 @@ def test_confirmed_cutover_backups_before_creating_canonical_volumes_and_uses_ge
     assert "apply:photo-prjct" in commands
     assert "--username photo --dbname photo" in commands
     assert "pg_restore -l /backup/postgresql.dump" in commands
+    assert commands.index(" up -d --wait db") < commands.index("pg_restore --clean")
     assert "stop nginx certbot" in commands
     assert "volume rm" not in commands
     assert "volume create photo-prjct-staging" not in commands

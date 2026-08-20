@@ -110,6 +110,32 @@ test('keeps only the active built-in description download in GLightbox keyboard 
   assert.equal(secondAction.attributes.get('data-taborder'), '4');
 });
 
+test('GLightbox slide lifecycle tolerates a card without a description download', () => {
+  const calls = [];
+  const selectors = [];
+  const slideWithoutDownload = {
+    querySelector(selector) {
+      selectors.push(selector);
+      return null;
+    },
+  };
+
+  loadGalleryModule({
+    root: { addEventListener() {} },
+    glightbox: (options) => calls.push(options),
+  });
+
+  assert.doesNotThrow(() => calls[0].afterSlideLoad({ slide: slideWithoutDownload }));
+  assert.doesNotThrow(() =>
+    calls[0].afterSlideChange({ slide: null }, { slide: slideWithoutDownload }),
+  );
+  assert.deepEqual(selectors, [
+    '.gallery-lightbox-download',
+    '.gallery-lightbox-download',
+  ]);
+  assert.equal(Object.hasOwn(slideWithoutDownload, 'download'), false);
+});
+
 test('does not restore focus to the pointer-opened card after close', () => {
   const clickListeners = [];
   let options;

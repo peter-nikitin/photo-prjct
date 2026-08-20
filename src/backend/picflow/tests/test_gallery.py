@@ -12,6 +12,7 @@ from ingestion.storage import ObjectMissing, OpenedObject
 from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
     PhotoDerivative,
     PhotoProcessingState,
@@ -215,6 +216,30 @@ class GalleryPresentationContractTests(SimpleTestCase):
             [("photo-42", "preview-small"), ("photo-42", "preview-large")],
         )
         self.assertEqual(download_calls, ["photo-42"])
+        boto3_client.assert_not_called()
+
+    @patch("boto3.client")
+    def test_factory_omits_download_capability_for_watermarked_policy(self, boto3_client) -> None:
+        event = Event(name="Paid Run", slug="paid-run", access_type=Event.AccessType.PAID)
+        photo = Photo(
+            id="paid-photo-42",
+            event=event,
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        download_calls: list[str] = []
+
+        gallery_photo = GalleryPhotoFactory.from_photo(
+            photo=photo,
+            event_slug=event.slug,
+            download_url_builder=lambda candidate: download_calls.append(candidate.pk) or "/wrong/",
+        )
+
+        self.assertEqual(gallery_photo.photo_id, photo.pk)
+        self.assertEqual(gallery_photo.preview_media_small.variant, "preview-small")
+        self.assertEqual(gallery_photo.preview_media_large.variant, "preview-large")
+        self.assertIsNone(gallery_photo.download_url)
+        self.assertEqual(download_calls, [])
         boto3_client.assert_not_called()
 
     @patch("boto3.client")
@@ -911,6 +936,195 @@ class PublicGalleryMediaTests(SimpleTestCase):
             PublicMediaResolver(storage).resolve_download(photo=photo)
 
         self.assertEqual(storage.signed_requests, [])
+
+
+class PaidWatermarkedGalleryTests(TestCase):
+    """The breaks caught here expose paid originals or accept inconsistent watermark evidence."""
+
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="paid-watermark-gallery")
+        self.event = Event.objects.create(
+            name="Paid gallery",
+            slug="paid-gallery",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.PAID,
+        )
+
+    def photo(self, photo_id: str, *, policy: str) -> Photo:
+        generation = {
+            Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED: (
+                Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+            ),
+            Photo.GalleryMediaPolicy.PREVIEW_REQUIRED: Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED: (
+                Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+            ),
+        }[policy]
+        return Photo.objects.create(
+            id=photo_id,
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/{photo_id}",
+            original_filename=f"{photo_id}.jpg",
+            original_size=10,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+            processing_generation=generation,
+            gallery_media_policy=policy,
+        )
+
+    def publish(self, photo: Photo, *, processor_type: str, variant: str) -> PhotoDerivative:
+        configuration = {processor_type: {"variant": variant}}
+        run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=2,
+            processor_type=processor_type,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=uuid4().hex + uuid4().hex,
+        )
+        job = ProcessingJob.objects.create(
+            event=self.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=processor_type,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=processor_type,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo,
+            processor_type=processor_type,
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save()
+        return PhotoDerivative.objects.create(
+            photo=photo,
+            variant=variant,
+            final_key=f"derivatives/previews/{photo.pk}/{variant}/{uuid4().hex}.jpg",
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="a" * 64,
+            accepted_attempt=attempt,
+        )
+
+    def test_paid_event_surface_requires_gate_and_only_lists_consistent_watermarks(self) -> None:
+        legacy = self.photo("paid-legacy", policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
+        clean = self.photo("paid-clean", policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED)
+        self.publish(
+            clean,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            variant="preview-small-v1",
+        )
+        ready = self.photo(
+            "paid-watermark-ready",
+            policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        self.publish(
+            ready,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        pending = self.photo(
+            "paid-watermark-pending",
+            policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        pending_state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=pending,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        )
+        pending_state.status = PhotoProcessingState.Status.PROCESSING
+        pending_state.save(update_fields=["status"])
+        inconsistent = self.photo(
+            "paid-watermark-inconsistent",
+            policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        derivative = self.publish(
+            inconsistent,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        inconsistent_state = PhotoProcessingState.objects.get(
+            photo=inconsistent,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        )
+        inconsistent_state.accepted_attempt = None
+        inconsistent_state.save(update_fields=["accepted_attempt"])
+
+        self.assertEqual(
+            list(
+                gallery_photo_queryset(
+                    event=self.event,
+                    paid_watermarked_previews_enabled=False,
+                )
+            ),
+            [],
+        )
+        self.assertEqual(
+            list(
+                gallery_photo_queryset(
+                    event=self.event,
+                    paid_watermarked_previews_enabled=True,
+                )
+            ),
+            [ready],
+        )
+        self.assertTrue(derivative.final_key)
+        self.assertTrue(legacy.original_key)
+
+    def test_resolver_maps_both_semantic_roles_to_watermark_and_denies_download_before_signing(
+        self,
+    ) -> None:
+        photo = self.photo(
+            "paid-resolver", policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        )
+        derivative = self.publish(
+            photo,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        storage = _SignedFinalObjectStorage()
+        resolver = PublicMediaResolver(storage)  # type: ignore[arg-type]
+
+        for variant in ("preview-small", "preview-large"):
+            self.assertEqual(
+                resolver.resolve_signed(photo=photo, variant=variant),
+                f"https://storage.example.test/{derivative.final_key}?signature=secret",
+            )
+        with self.assertRaisesMessage(ValueError, "ineligible original download"):
+            resolver.resolve_download(photo=photo)
+
+        self.assertEqual(storage.signed_keys, [derivative.final_key, derivative.final_key])
 
 
 class PreviewRequiredPublicGalleryMediaTests(TestCase):

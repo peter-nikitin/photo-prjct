@@ -8,9 +8,12 @@ from django.test import TestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
 from processing.models import (
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
     FaceProcessingAttemptArtifact,
+    PhotoDerivative,
     PhotoFaceDetection,
+    PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
 )
@@ -41,7 +44,18 @@ class SavedReadyResultPageTests(TestCase):
             configuration={"public-contract": 1},
         )
 
-    def add_result(self, *, photo_id: str, rank: int) -> Photo:
+    def add_result(
+        self,
+        *,
+        photo_id: str,
+        rank: int,
+        gallery_media_policy: str = Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
+    ) -> Photo:
+        generation = (
+            Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+            if gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+            else Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+        )
         photo = Photo.objects.create(
             id=photo_id,
             event=self.event,
@@ -51,6 +65,8 @@ class SavedReadyResultPageTests(TestCase):
             original_size=5,
             original_content_type="image/jpeg",
             uploaded_at=timezone.now(),
+            processing_generation=generation,
+            gallery_media_policy=gallery_media_policy,
         )
         configuration_hash = "a" * 64
         run = EventProcessingRun.objects.create(
@@ -103,6 +119,68 @@ class SavedReadyResultPageTests(TestCase):
         )
         return photo
 
+    def publish_watermark(self, photo: Photo) -> None:
+        configuration = {"generate_watermarked_preview": {"variant": "preview-watermarked-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="b" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=self.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save()
+        PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-watermarked-v1",
+            final_key=f"derivatives/previews/{photo.pk}/preview-watermarked-v1/{uuid4().hex}.jpg",
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="b" * 64,
+            accepted_attempt=attempt,
+        )
+
     def test_page_preserves_saved_rank_after_current_eligibility_filtering(self) -> None:
         first = self.add_result(photo_id="rank-one", rank=1)
         removed = self.add_result(photo_id="rank-two", rank=2)
@@ -122,6 +200,34 @@ class SavedReadyResultPageTests(TestCase):
 
         self.assertEqual(tuple(page.object_list), ())
         self.assertFalse(page.has_next())
+
+    def test_paid_saved_results_keep_legacy_members_but_gate_new_watermarked_members(self) -> None:
+        self.event.access_type = Event.AccessType.PAID
+        self.event.save(update_fields=["access_type"])
+        legacy = self.add_result(photo_id="paid-legacy-saved", rank=1)
+        watermarked = self.add_result(
+            photo_id="paid-watermarked-saved",
+            rank=2,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        self.publish_watermark(watermarked)
+
+        gate_off = saved_ready_result_page(
+            search=self.search,
+            page_number=None,
+            paid_watermarked_previews_enabled=False,
+        )
+        gate_on = saved_ready_result_page(
+            search=self.search,
+            page_number=None,
+            paid_watermarked_previews_enabled=True,
+        )
+
+        self.assertEqual(tuple(row.photo_id for row in gate_off.object_list), (legacy.pk,))
+        self.assertEqual(
+            tuple(row.photo_id for row in gate_on.object_list),
+            (legacy.pk, watermarked.pk),
+        )
 
     def test_bearer_resolution_uses_the_shared_site_visibility_decision(self) -> None:
         draft = Event.objects.create(

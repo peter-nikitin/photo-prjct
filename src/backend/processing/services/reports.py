@@ -13,6 +13,7 @@ from django.utils import timezone
 from processing.models import (
     FACE_EMBEDDING_BENCHMARK_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     JSON_MAX_BYTES,
     REPORT_JSON_MAX_BYTES,
     EventProcessingRun,
@@ -38,7 +39,12 @@ _PREVIEW_FAILURE_CODES = frozenset(
         "output_contract_violation",
         "storage_unavailable",
         "unsupported_input",
+        "watermark_asset_invalid",
+        "watermark_asset_mismatch",
     }
+)
+_PREVIEW_PROCESSORS = frozenset(
+    {GENERATE_PREVIEW_PROCESSOR, GENERATE_WATERMARKED_PREVIEW_PROCESSOR}
 )
 
 
@@ -133,7 +139,7 @@ def _report_payload(
         "durations_ms": _duration_summary(durations),
         "photos": rows,
     }
-    if run.processor_type == GENERATE_PREVIEW_PROCESSOR:
+    if run.processor_type in _PREVIEW_PROCESSORS:
         attempts["stale"] = ProcessingAttempt.objects.filter(
             run=run, status=ProcessingAttempt.Status.STALE
         ).count()
@@ -174,7 +180,7 @@ def _photo_row(job: ProcessingJob) -> dict[str, Any]:
     }
     if job.processor_type != FACE_EMBEDDING_BENCHMARK_PROCESSOR:
         row["photo_id"] = job.photo_id
-    if job.processor_type == GENERATE_PREVIEW_PROCESSOR:
+    if job.processor_type in _PREVIEW_PROCESSORS:
         row["preview"] = _preview_row(result, accepted=accepted)
     return row
 
@@ -350,7 +356,14 @@ def report_upper_bound_bytes(configuration: dict[str, Any]) -> int:
     worker_build_json = 2 + 128 * escaped + 1
     warning_json = 2 + row_limits["max_warning_chars"] * escaped + 1
     row_json = 512 + 32 * escaped + 36 + 64 * escaped + row_limits["max_warnings"] * warning_json
-    preview_summary_json = 4_096 if isinstance(configuration.get("generate_preview"), dict) else 0
+    preview_summary_json = (
+        4_096
+        if any(
+            isinstance(configuration.get(key), dict)
+            for key in ("generate_preview", "generate_watermarked_preview")
+        )
+        else 0
+    )
     return 2 * (
         JSON_MAX_BYTES
         + cohort * attempts * worker_build_json

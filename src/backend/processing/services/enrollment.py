@@ -19,6 +19,7 @@ from processing.models import (
     FACE_EMBEDDING_BENCHMARK_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     REPORT_JSON_MAX_BYTES,
     EventProcessingRun,
     PhotoDerivative,
@@ -32,6 +33,7 @@ CAPTURE_METADATA_PROCESSOR_VERSION = 2
 FACE_EMBEDDING_PROCESSOR_VERSION = 1
 PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
+GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION = 1
 PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 3
 QUALITY_FACE_CONTRACT_VERSION = 3
 HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION = 3
@@ -245,6 +247,44 @@ GENERATE_PREVIEW_CONFIGURATION: dict[str, object] = {
         "lease_duration_seconds": 120,
         "max_input_bytes": 50 * 1024 * 1024,
         "max_pixels": 24_000_000,
+        "poll_min_delay_seconds": 5,
+        "terminal_result_max_bytes": 8_192,
+    },
+}
+
+GENERATE_WATERMARKED_PREVIEW_CONFIGURATION: dict[str, object] = {
+    "retry_policy": {
+        "max_attempts": 3,
+        "base_backoff_seconds": 30,
+        "max_backoff_seconds": 300,
+        "jitter_seconds": 5,
+        "lease_max_seconds": 300,
+    },
+    "max_cohort_size": 16,
+    "report_max_bytes": REPORT_JSON_MAX_BYTES,
+    "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
+    "generate_watermarked_preview": {
+        "variant": "preview-watermarked-v1",
+        "input_variant": "preview-small-v1",
+        "output_format": "jpeg",
+        "jpeg_quality": 85,
+        "color_space": "srgb",
+        "strip_metadata": True,
+        "checksum_algorithm": "sha256",
+        "landscape_asset_sha256": (
+            "1fa87ded954d665cbed9151cfbeffae3d2060be9e5cd2f6ed90337660e24d6c3"
+        ),
+        "portrait_asset_sha256": (
+            "bf16296a2f3c1143941b1cf7566a9824e791f669b7c45871cef05b3f2cc7b743"
+        ),
+    },
+    "worker": {
+        "api_response_max_bytes": 16_384,
+        "concurrency": 1,
+        "heartbeat_interval_seconds": 30,
+        "lease_duration_seconds": 120,
+        "max_input_bytes": 10_485_760,
+        "max_pixels": 2_560_000,
         "poll_min_delay_seconds": 5,
         "terminal_result_max_bytes": 8_192,
     },
@@ -781,7 +821,10 @@ def request_face_embedding_enqueue(
 ) -> PhotoProcessingState:
     """Queue a face-embedding job if the feature flag is enabled."""
     preview = _accepted_preview(photo)
-    if photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1:
+    if photo.processing_generation in {
+        Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+        Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+    }:
         if photo.event.face_search_generation == Event.FaceSearchGeneration.ADAFACE_V5:
             return request_processor(
                 photo=photo,
@@ -860,9 +903,44 @@ def request_generate_preview(
             "pixel_height": pixel_height,
         },
         enabled=(
-            photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1
-            and photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+            (
+                photo.processing_generation,
+                photo.gallery_media_policy,
+            )
+            in {
+                (
+                    Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+                    Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+                ),
+                (
+                    Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+                    Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+                ),
+            }
         ),
+    )
+
+
+def request_generate_watermarked_preview(
+    photo: Photo,
+    clean_preview: PhotoDerivative,
+) -> PhotoProcessingState:
+    """Queue watermark rendering only from this photo's accepted clean preview."""
+    accepted_preview = _accepted_preview(photo)
+    enabled = bool(
+        photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        and photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        and accepted_preview is not None
+        and accepted_preview.pk == clean_preview.pk
+    )
+    return request_processor(
+        photo=photo,
+        processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        contract_version=PREVIEW_CONTRACT_VERSION,
+        processor_version=GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION,
+        configuration=GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
+        input_fingerprint=(_derivative_fingerprint(clean_preview) if enabled else None),
+        enabled=enabled,
     )
 
 

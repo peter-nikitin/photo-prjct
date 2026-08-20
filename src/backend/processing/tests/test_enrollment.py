@@ -33,6 +33,8 @@ from processing.services.enrollment import (
     request_capture_metadata,
     request_face_embedding_candidate_enqueue,
     request_face_embedding_enqueue,
+    request_generate_preview,
+    request_generate_watermarked_preview,
     request_processor,
 )
 from processing.services.face_quality import local_adaface_face_embedding_generations
@@ -424,6 +426,43 @@ class CaptureMetadataEnrollmentTests(TestCase):
         )
         worker_configuration = cast(dict[str, object], GENERATE_PREVIEW_CONFIGURATION["worker"])
         self.assertEqual(worker_configuration["max_pixels"], 24_000_000)
+
+    def test_watermarked_policy_confirmation_requests_only_the_clean_preview(self) -> None:
+        photo = self.private_photo("watermarked-confirmation")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+
+        preview = request_generate_preview(photo, pixel_width=3200, pixel_height=2000)
+
+        self.assertEqual(preview.status, PhotoProcessingState.Status.QUEUED)
+        assert preview.current_job is not None
+        self.assertEqual(preview.current_job.processor_type, "generate_preview")
+        self.assertFalse(
+            ProcessingJob.objects.filter(
+                photo=photo,
+                processor_type__in=("face_embedding", "generate_watermarked_preview"),
+            ).exists()
+        )
+
+    def test_paid_event_type_does_not_enroll_an_older_clean_preview_policy_for_watermark(
+        self,
+    ) -> None:
+        self.event.access_type = Event.AccessType.PAID
+        self.event.save(update_fields=["access_type"])
+        photo = self.private_photo("older-paid-preview")
+        clean_preview = self.publish_preview(photo)
+
+        state = request_generate_watermarked_preview(photo, clean_preview)
+
+        self.assertEqual(state.status, PhotoProcessingState.Status.NOT_REQUESTED)
+        self.assertIsNone(state.current_job)
+        self.assertFalse(
+            ProcessingJob.objects.filter(
+                photo=photo,
+                processor_type="generate_watermarked_preview",
+            ).exists()
+        )
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_preview_first_face_enrollment_uses_only_the_published_derivative(self) -> None:

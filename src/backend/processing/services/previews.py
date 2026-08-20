@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from django.conf import settings
@@ -17,6 +17,7 @@ from picflow.models import Event, Photo
 from processing.contracts import AttemptCompletion, CompletionConflict
 from processing.models import (
     GENERATE_PREVIEW_PROCESSOR,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
     PhotoDerivative,
     PhotoProcessingState,
@@ -39,6 +40,48 @@ class _PreviewPublication:
     max_width: int
     max_height: int
     result: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _PreviewProfile:
+    processor_type: str
+    configuration_key: str
+    variant: str
+    warning_codes: frozenset[str]
+    max_bytes: int
+    max_width: int
+    max_height: int
+    limit_configuration_keys: tuple[str, str, str] | None
+    worker_reports_source_dimensions: bool
+    enroll_from_clean_publication: bool
+
+
+_PREVIEW_PROFILES = {
+    GENERATE_PREVIEW_PROCESSOR: _PreviewProfile(
+        processor_type=GENERATE_PREVIEW_PROCESSOR,
+        configuration_key="generate_preview",
+        variant="preview-small-v1",
+        warning_codes=frozenset(_PREVIEW_WARNING_CODES),
+        max_bytes=10_485_760,
+        max_width=1600,
+        max_height=1600,
+        limit_configuration_keys=("max_output_bytes", "max_output_width", "max_output_height"),
+        worker_reports_source_dimensions=True,
+        enroll_from_clean_publication=True,
+    ),
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR: _PreviewProfile(
+        processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        configuration_key="generate_watermarked_preview",
+        variant="preview-watermarked-v1",
+        warning_codes=frozenset(_PREVIEW_WARNING_CODES),
+        max_bytes=10_485_760,
+        max_width=1600,
+        max_height=1600,
+        limit_configuration_keys=None,
+        worker_reports_source_dimensions=False,
+        enroll_from_clean_publication=False,
+    ),
+}
 
 
 class _PreviewResultViolation(ValueError):
@@ -204,7 +247,10 @@ def _publish_after_verification(
 ) -> AttemptCompletion:
     """Re-lock the run-to-attempt chain and make the derivative/state transition indivisible."""
     with transaction.atomic():
-        _prelock_preview_face_enrollment(attempt_id)
+        identity = ProcessingAttempt.objects.only("processor_type").get(pk=attempt_id)
+        profile = _profile_for(identity.processor_type)
+        if profile.enroll_from_clean_publication:
+            _prelock_preview_face_enrollment(attempt_id)
         _, run, job, photo, state, attempt = jobs._locked_context(attempt_id)
         now = clock()
         _require_preview_attempt(job, attempt)
@@ -260,9 +306,23 @@ def _publish_after_verification(
         # The only automatic edge into preview-backed ML is this accepted, published transition.
         # Its rows were locked before the preview Attempt, so an enqueue failure rolls this whole
         # acceptance transaction back without a leftward lock acquisition.
-        from processing.services.enrollment import request_face_embedding_enqueue
+        if profile.enroll_from_clean_publication:
+            from processing.services.enrollment import (
+                request_face_embedding_enqueue,
+                request_generate_watermarked_preview,
+            )
 
-        request_face_embedding_enqueue(photo)
+            request_face_embedding_enqueue(photo)
+            if (
+                photo.processing_generation
+                == Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+            ):
+                clean_preview = PhotoDerivative.objects.get(
+                    photo=photo,
+                    variant="preview-small-v1",
+                    accepted_attempt=attempt,
+                )
+                request_generate_watermarked_preview(photo, clean_preview)
         jobs._close_locked_run_if_terminal(run, now)
         return AttemptCompletion(attempt=attempt)
 
@@ -274,9 +334,10 @@ def _prelock_preview_face_enrollment(attempt_id: UUID) -> None:
     generation = Photo.objects.values_list("processing_generation", flat=True).get(
         pk=identity.photo_id
     )
-    if generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1 and bool(
-        getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)
-    ):
+    if generation in {
+        Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+        Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+    } and bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)):
         from processing.services.enrollment import (
             LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
             LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
@@ -310,12 +371,41 @@ def _prelock_preview_face_enrollment(attempt_id: UUID) -> None:
                 .filter(run=run, photo_id=identity.photo_id)
                 .order_by("id")
             )
+    if generation == Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1:
+        from processing.services.enrollment import (
+            GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
+            GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION,
+            PREVIEW_CONTRACT_VERSION,
+            _configuration_hash,
+        )
+
+        configuration_hash = _configuration_hash(GENERATE_WATERMARKED_PREVIEW_CONFIGURATION)
+        runs = EventProcessingRun.objects.select_for_update().filter(
+            event=event,
+            contract_version=PREVIEW_CONTRACT_VERSION,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION,
+            configuration_hash=configuration_hash,
+            status=EventProcessingRun.Status.COLLECTING,
+        )
+        for run in runs:
+            list(
+                ProcessingJob.objects.select_for_update()
+                .filter(run=run, photo_id=identity.photo_id)
+                .order_by("id")
+            )
     photo = Photo.objects.select_for_update().get(pk=identity.photo_id)
     PhotoProcessingState.objects.select_for_update().get_or_create(
         photo=photo,
         processor_type="face_embedding",
         defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
     )
+    if generation == Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1:
+        PhotoProcessingState.objects.select_for_update().get_or_create(
+            photo=photo,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+        )
 
 
 def _record_not_current(
@@ -339,24 +429,14 @@ def _record_not_current(
 def _publication_for(
     job: ProcessingJob, attempt: ProcessingAttempt, *, result: dict[str, Any]
 ) -> _PreviewPublication:
-    config = job.configuration.get("generate_preview")
+    profile = _profile_for(job.processor_type)
+    config = job.configuration.get(profile.configuration_key)
     if not isinstance(config, dict):
         raise _PreviewResultViolation()
     variant = config.get("variant")
-    max_bytes = config.get("max_output_bytes")
-    max_width = config.get("max_output_width")
-    max_height = config.get("max_output_height")
+    max_bytes, max_width, max_height = _declared_limits(profile, config)
     if not (
-        variant == "preview-small-v1"
-        and isinstance(max_bytes, int)
-        and not isinstance(max_bytes, bool)
-        and max_bytes > 0
-        and isinstance(max_width, int)
-        and not isinstance(max_width, bool)
-        and max_width > 0
-        and isinstance(max_height, int)
-        and not isinstance(max_height, bool)
-        and max_height > 0
+        variant == profile.variant
         and config.get("output_format") == "jpeg"
         and config.get("checksum_algorithm") == "sha256"
     ):
@@ -367,6 +447,8 @@ def _publication_for(
         max_bytes=max_bytes,
         max_width=max_width,
         max_height=max_height,
+        warning_codes=profile.warning_codes,
+        worker_reports_source_dimensions=profile.worker_reports_source_dimensions,
     )
     fingerprint = job.input_fingerprint
     source_width = fingerprint.get("pixel_width")
@@ -378,16 +460,34 @@ def _publication_for(
         and isinstance(source_height, int)
         and not isinstance(source_height, bool)
         and source_height > 0
-        and validated_result["oriented_source_width"] == source_width
-        and validated_result["oriented_source_height"] == source_height
     ):
         raise _PreviewResultViolation()
+    if profile.worker_reports_source_dimensions:
+        if (
+            validated_result["oriented_source_width"] != source_width
+            or validated_result["oriented_source_height"] != source_height
+        ):
+            raise _PreviewResultViolation()
+    else:
+        clean_preview = _matching_clean_preview(job)
+        if (
+            validated_result["width"] != source_width
+            or validated_result["height"] != source_height
+            or clean_preview.width != source_width
+            or clean_preview.height != source_height
+        ):
+            raise _PreviewResultViolation()
+        validated_result = validated_result | {
+            "oriented_source_width": clean_preview.oriented_source_width,
+            "oriented_source_height": clean_preview.oriented_source_height,
+        }
     return _PreviewPublication(
-        staging_key=(f"processing-staging/previews/{attempt.id}/preview-small-v1.jpg"),
+        staging_key=(f"processing-staging/previews/{attempt.id}/{profile.variant}.jpg"),
         final_key=preview_final_key(
             photo_id=attempt.photo_id,
             attempt_id=attempt.id,
             sha256=validated_result["sha256"],
+            variant=profile.variant,
         ),
         max_bytes=max_bytes,
         max_width=max_width,
@@ -403,6 +503,8 @@ def _validated_result(
     max_bytes: int,
     max_width: int,
     max_height: int,
+    warning_codes: frozenset[str] = frozenset(_PREVIEW_WARNING_CODES),
+    worker_reports_source_dimensions: bool = True,
 ) -> dict[str, Any]:
     required = {
         "variant",
@@ -416,6 +518,8 @@ def _validated_result(
         "upload_ms",
         "warnings",
     }
+    if not worker_reports_source_dimensions:
+        required -= {"oriented_source_width", "oriented_source_height"}
     if not isinstance(result, dict) or set(result) != required:
         raise _PreviewResultViolation()
     if result.get("variant") != variant or result.get("content_type") != "image/jpeg":
@@ -424,13 +528,14 @@ def _validated_result(
         isinstance(result.get(name), int)
         and not isinstance(result.get(name), bool)
         and result[name] > 0
-        for name in (
+        for name in required
+        & {
             "byte_size",
             "width",
             "height",
             "oriented_source_width",
             "oriented_source_height",
-        )
+        }
     ):
         raise _PreviewResultViolation()
     if (
@@ -446,17 +551,41 @@ def _validated_result(
         or result["upload_ms"] > 86_400_000
         or not isinstance(result.get("warnings"), list)
         or len(result["warnings"]) > 8
-        or any(code not in _PREVIEW_WARNING_CODES for code in result["warnings"])
+        or any(code not in warning_codes for code in result["warnings"])
     ):
         raise _PreviewResultViolation()
     return result
 
 
-def preview_final_key(*, photo_id: str, attempt_id: UUID, sha256: str) -> str:
+def _declared_limits(
+    profile: _PreviewProfile,
+    configuration: dict[str, Any],
+) -> tuple[int, int, int]:
+    if profile.limit_configuration_keys is None:
+        return profile.max_bytes, profile.max_width, profile.max_height
+    values = tuple(configuration.get(key) for key in profile.limit_configuration_keys)
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in values
+    ):
+        raise _PreviewResultViolation()
+    return cast(tuple[int, int, int], values)
+
+
+def preview_final_key(
+    *,
+    photo_id: str,
+    attempt_id: UUID,
+    sha256: str,
+    variant: str = "preview-small-v1",
+) -> str:
     """Return the immutable content-addressed preview identity selected by Django."""
-    if _PREVIEW_PHOTO_ID.fullmatch(photo_id) is None or _SHA256.fullmatch(sha256) is None:
+    if (
+        _PREVIEW_PHOTO_ID.fullmatch(photo_id) is None
+        or _SHA256.fullmatch(sha256) is None
+        or variant not in {"preview-small-v1", "preview-watermarked-v1"}
+    ):
         raise ValueError("invalid preview final identity")
-    return f"derivatives/previews/{photo_id}/preview-small-v1/{attempt_id}-{sha256}.jpg"
+    return f"derivatives/previews/{photo_id}/{variant}/{attempt_id}-{sha256}.jpg"
 
 
 def _verify_and_promote(
@@ -498,8 +627,44 @@ def _assert_matches_result(
 
 
 def _require_preview_attempt(job: ProcessingJob, attempt: ProcessingAttempt) -> None:
-    if (
-        job.processor_type != GENERATE_PREVIEW_PROCESSOR
-        or attempt.processor_type != GENERATE_PREVIEW_PROCESSOR
+    if job.processor_type != attempt.processor_type or job.processor_type not in _PREVIEW_PROFILES:
+        raise ValueError("Preview publication requires a supported preview attempt.")
+
+
+def _profile_for(processor_type: str) -> _PreviewProfile:
+    try:
+        return _PREVIEW_PROFILES[processor_type]
+    except KeyError:
+        raise _PreviewResultViolation() from None
+
+
+def _matching_clean_preview(job: ProcessingJob) -> PhotoDerivative:
+    fingerprint = job.input_fingerprint
+    clean_preview = (
+        PhotoDerivative.objects.select_related("accepted_attempt")
+        .filter(
+            photo_id=job.photo_id,
+            variant="preview-small-v1",
+            final_key=fingerprint.get("object_key"),
+            byte_size=fingerprint.get("object_size"),
+            content_type=fingerprint.get("object_content_type"),
+            width=fingerprint.get("pixel_width"),
+            height=fingerprint.get("pixel_height"),
+        )
+        .first()
+    )
+    if clean_preview is None or clean_preview.final_key != preview_final_key(
+        photo_id=clean_preview.photo_id,
+        attempt_id=clean_preview.accepted_attempt_id,
+        sha256=clean_preview.sha256,
     ):
-        raise ValueError("Preview publication requires a generate_preview attempt.")
+        raise _PreviewResultViolation()
+    state = PhotoProcessingState.objects.filter(
+        photo_id=job.photo_id,
+        processor_type=GENERATE_PREVIEW_PROCESSOR,
+        status=PhotoProcessingState.Status.SUCCEEDED,
+        accepted_attempt_id=clean_preview.accepted_attempt_id,
+    ).first()
+    if state is None:
+        raise _PreviewResultViolation()
+    return clean_preview

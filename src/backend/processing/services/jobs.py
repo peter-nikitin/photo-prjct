@@ -20,6 +20,7 @@ from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
@@ -192,7 +193,10 @@ def complete_attempt(
         .values_list("processor_type", flat=True)
         .first()
     )
-    if processor_type == GENERATE_PREVIEW_PROCESSOR:
+    if processor_type in {
+        GENERATE_PREVIEW_PROCESSOR,
+        GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+    }:
         raise PreviewPublicationRequired(
             "Preview attempts require verified preview publication before completion."
         )

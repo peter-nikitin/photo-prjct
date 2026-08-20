@@ -86,10 +86,12 @@ class AdminProcessingProgressTests(TestCase):
 
     def test_displays_one_event_row_with_common_distinct_photo_total(self) -> None:
         preview = self.create_run("generate_preview")
+        watermark = self.create_run("generate_watermarked_preview")
         embedding = self.create_run("face_embedding")
         metadata = self.create_run("capture_metadata")
         first, second = self.create_photo("first"), self.create_photo("second")
         self.create_job(preview, first, status="succeeded")
+        self.create_job(watermark, first, status="succeeded")
         self.create_job(embedding, first, status="succeeded")
         self.create_job(metadata, first, status="succeeded")
         self.create_job(preview, second, status="queued")
@@ -100,13 +102,19 @@ class AdminProcessingProgressTests(TestCase):
         self.assertContains(response, "Processing event", count=1)
         self.assertContains(response, "Total photos: 2")
         self.assertContains(response, "Preview")
+        self.assertContains(response, "Watermark")
         self.assertContains(response, "Embedding")
         self.assertContains(response, "Metadata")
         self.assertContains(response, "In progress")
 
     def test_marks_event_completed_only_when_every_worker_completed_common_total(self) -> None:
         photos = [self.create_photo(suffix) for suffix in ("one", "two")]
-        for processor_type in ("generate_preview", "face_embedding", "capture_metadata"):
+        for processor_type in (
+            "generate_preview",
+            "generate_watermarked_preview",
+            "face_embedding",
+            "capture_metadata",
+        ):
             run = self.create_run(processor_type)
             for photo in photos:
                 self.create_job(run, photo, status="succeeded")
@@ -116,7 +124,48 @@ class AdminProcessingProgressTests(TestCase):
 
         row = response.context["rows"][0]
         self.assertEqual(row["status"], "Completed")
-        self.assertEqual([worker["status"] for worker in row["workers"]], ["Completed"] * 3)
+        self.assertEqual([worker["status"] for worker in row["workers"]], ["Completed"] * 4)
+
+    def test_free_event_without_watermark_jobs_can_complete(self) -> None:
+        photos = [self.create_photo(suffix) for suffix in ("free-one", "free-two")]
+        for processor_type in ("generate_preview", "face_embedding", "capture_metadata"):
+            run = self.create_run(processor_type)
+            for photo in photos:
+                self.create_job(run, photo, status="succeeded")
+        self.client.force_login(self.staff)
+
+        response = self.client.get(reverse("admin_processing_progress"))
+
+        row = response.context["rows"][0]
+        watermark = next(worker for worker in row["workers"] if worker["name"] == "Watermark")
+        self.assertEqual(row["status"], "Completed")
+        self.assertEqual(watermark["total"], 0)
+        self.assertEqual(watermark["status"], "Not applicable")
+
+    def test_mixed_paid_event_counts_only_explicitly_enrolled_watermark_photos(self) -> None:
+        self.event.access_type = Event.AccessType.PAID
+        self.event.save(update_fields=["access_type"])
+        old_photo = self.create_photo("paid-old")
+        new_photo = self.create_photo("paid-new")
+        new_photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        new_photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        new_photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        for processor_type in ("generate_preview", "face_embedding", "capture_metadata"):
+            run = self.create_run(processor_type)
+            for photo in (old_photo, new_photo):
+                self.create_job(run, photo, status="succeeded")
+        watermark_run = self.create_run("generate_watermarked_preview")
+        self.create_job(watermark_run, new_photo, status="succeeded")
+        self.client.force_login(self.staff)
+
+        response = self.client.get(reverse("admin_processing_progress"))
+
+        row = response.context["rows"][0]
+        watermark = next(worker for worker in row["workers"] if worker["name"] == "Watermark")
+        self.assertEqual(row["status"], "Completed")
+        self.assertEqual(watermark["total"], 1)
+        self.assertEqual(watermark["completed"], 1)
+        self.assertEqual(watermark["status"], "Completed")
 
     def test_displays_worker_own_eta_for_one_claimed_job(self) -> None:
         now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)

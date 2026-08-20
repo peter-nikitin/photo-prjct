@@ -166,6 +166,25 @@ class ExactPreviewStorageTests(SimpleTestCase):
             ],
         )
 
+    def test_accepts_only_the_exact_watermarked_staging_and_final_namespaces(self) -> None:
+        client = FakeS3Client()
+        storage = ExactPreviewStorage(client=client)
+        staging_key = self.staging_key.replace("preview-small-v1.jpg", "preview-watermarked-v1.jpg")
+        final_key = self.final_key.replace("/preview-small-v1/", "/preview-watermarked-v1/")
+
+        storage.create_upload_grant(staging_key=staging_key, max_ttl_seconds=7)
+        storage.create_download_grant(final_key=final_key, max_ttl_seconds=7)
+
+        self.assertEqual(
+            [call[1]["Params"]["Key"] for call in client.calls],
+            [staging_key, final_key],
+        )
+        with self.assertRaises(ValueError):
+            storage.create_upload_grant(
+                staging_key=staging_key.replace("preview-watermarked-v1", "preview-other-v1"),
+                max_ttl_seconds=7,
+            )
+
     def test_rejects_any_key_outside_the_two_preview_namespaces(self) -> None:
         storage = ExactPreviewStorage(client=FakeS3Client())
 

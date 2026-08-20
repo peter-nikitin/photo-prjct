@@ -11,7 +11,7 @@ Operate only the Yandex Cloud resources in scope for this repository. Prefer rea
 make the target explicit, protect secrets, and require fresh human approval for cost, destruction,
 access, or availability risk.
 
-Read [references/inventory.md](references/inventory.md) before addressing live resources. Treat
+Read [references/inventory.md](references/inventory.md) before addressing deployed resources. Treat
 installed `yc ... --help` and the official Yandex Cloud documentation as authoritative when syntax
 or behavior differs from this skill.
 
@@ -110,19 +110,18 @@ yc operation get <operation-id> --format json
 Use labels on new resources only after pricing approval:
 
 ```text
-project=findme-photo,env=staging|production,managed-by=yc-cli
+project=findme-photo,deployment=canonical,managed-by=yc-cli
 ```
 
-Production resources use deletion protection where supported. Custom security groups default to
+Customer-serving resources use deletion protection where supported. Custom security groups default to
 deny and must contain only explicitly required ingress/egress. Do not broaden SSH or application
 ports to `0.0.0.0/0` without a separately explained and confirmed security exception.
 
 ## Project boundaries
 
-- The current preemptible VM is staging.
-- Production is a later separate non-preemptible VM; do not create it until ADR 0005's evidence and
-  pricing gates are satisfied.
-- GitHub Actions deploys containers. Do not use `yc` to bypass the staging/promotion workflow for an
-  application release unless executing a documented recovery.
+- The current preemptible VM is the canonical deployment.
+- Do not create another environment to hide unfinished work; use the accepted runtime release gates.
+- GitHub Actions workflow **Deploy** deploys containers. Do not use `yc` to bypass the canonical
+  deployment workflow for an application release unless executing a documented recovery.
 - Do not introduce managed databases, Kubernetes, load balancers, object storage, or other proposed
   services without an accepted ADR when required by `AGENTS.md`.

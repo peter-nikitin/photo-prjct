@@ -1,8 +1,8 @@
 # Sizing the preview-first photo-processing worker VM
 
 This document defines the evidence required before a supervised preview-first worker check. It does
-not authorize a Yandex Cloud resize, VM creation, production capacity decision, or real-environment
-worker activation beyond the staged configuration below.
+not authorize a Yandex Cloud resize, VM creation, capacity decision, or canonical-deployment
+worker activation beyond the measurement configuration below.
 
 ## What is known, and what is not
 
@@ -13,25 +13,24 @@ verifies/publishes it. Preview-backed `face_embedding` separately decodes that p
 Django and PostgreSQL hold only short queue transactions.
 
 The deployed Compose stack contains Nginx, Django/Gunicorn, and PostgreSQL. The worker is opt-in
-and resource-bounded in staging configuration; the production workflow does not forward worker
-activation inputs. Read-only Yandex Cloud discovery recorded the current staging VM as **8 vCPU and
-32 GiB RAM**. That inventory fact does not establish disk headroom, sustainable throughput, or a
-production capacity decision.
+and resource-bounded in canonical-deployment configuration. Read-only Yandex Cloud discovery
+recorded the deployed VM as **8 vCPU and 32 GiB RAM**. That inventory fact does not establish disk
+headroom, sustainable throughput, or a capacity decision.
 
-## Staged staging configuration
+## Measurement configuration
 
 | Use | VM | Disk | Worker container limits | Scope |
 | --- | --- | --- | --- | --- |
-| Initial face-worker baseline | Verified staging host: 8 vCPU, 32 GiB RAM | Verify free space before activation; no disk-capacity claim is made here. | `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64` | `PHOTO_WORKER_REPLICAS=1`, one representative event and the frozen benchmark cohort. |
-| Staged second replica | Same verified staging host | Re-check free space and Docker image growth during the two-worker run. | Two independent workers, each `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64`. | Set `PHOTO_WORKER_REPLICAS=2` only after the gate below passes. |
+| Initial face-worker baseline | Verified deployed VM: 8 vCPU, 32 GiB RAM | Verify free space before activation; no disk-capacity claim is made here. | `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64` | `PHOTO_WORKER_REPLICAS=1`, one representative event and the frozen benchmark cohort. |
+| Measured second replica | Same verified deployed VM | Re-check free space and Docker image growth during the two-worker run. | Two independent workers, each `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64`. | Set `PHOTO_WORKER_REPLICAS=2` only after the gate below passes. |
 
 These are staged measurement configurations, not a capacity decision or a promise of performance.
-The deployment default is one worker; setting a staging variable to two is a deliberate follow-up
+The deployment default is one worker; setting the repository variable to two is a deliberate follow-up
 operation, not an automatic consequence of a 32-GiB host.
 
 The limit values leave memory and CPU for the existing stack while containing a face-model OOM to
 one worker. The 50 MiB temporary input limit does not by itself set disk size: the disk must also
-accommodate Docker images, PostgreSQL's volume, logs, and deployment headroom. The staging profile
+accommodate Docker images, PostgreSQL's volume, logs, and deployment headroom. The measurement profile
 declares these limits, but an operator must not enable it before the measurements and gates below
 are satisfied.
 
@@ -123,12 +122,12 @@ measurement hypothesis; they are not evidence until actual values and artifacts 
 
 ### Replica 1 to 2 acceptance gate
 
-Keep `PHOTO_WORKER_REPLICAS=1` for the initial staging measurement. Move to
+Keep `PHOTO_WORKER_REPLICAS=1` for the initial canonical-deployment measurement. Move to
 `PHOTO_WORKER_REPLICAS=2` only after the immutable worker image completes the frozen benchmark
 cohort and its replay at one replica, then completes the same pair at two replicas with all of the
 following evidence: every expected worker remains running without restart or OOM kill, web health
 probes stay healthy, host memory/disk gates above hold, and the two-worker result records an
-improvement in cohort wall-clock time. If any condition fails, return the staging variable to `1`;
+improvement in cohort wall-clock time. If any condition fails, return the repository variable to `1`;
 the deployment transaction reconciles the previous replica count on a failed rollout.
 
 Also record worker CPU/RSS, temporary-disk high-water mark, Django/Gunicorn CPU/RSS, PostgreSQL

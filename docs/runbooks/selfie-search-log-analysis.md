@@ -38,10 +38,8 @@ UUID; она не активирует event pointer или environment gate:
 set -eu
 cd /opt/photo-prjct
 compose() {
-  local DEPLOYMENT_TARGET=staging
-  export DEPLOYMENT_TARGET
-  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
-    -f /opt/photo-prjct/docker-compose.prod.yml \
+  docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.deployment.yml \
     -f /opt/photo-prjct/docker-compose.https.yml "$@"
 }
 : "${EVENT_REF:?set an approved event primary key or slug}"
@@ -106,10 +104,8 @@ individual result/member fields:
 set -eu
 cd /opt/photo-prjct
 compose() {
-  local DEPLOYMENT_TARGET=staging
-  export DEPLOYMENT_TARGET
-  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
-    -f /opt/photo-prjct/docker-compose.prod.yml \
+  docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.deployment.yml \
     -f /opt/photo-prjct/docker-compose.https.yml "$@"
 }
 : "${REPORT_START:?set the closed-open Moscow start date YYYY-MM-DD}"
@@ -137,10 +133,8 @@ activation pointer:
 set -eu
 cd /opt/photo-prjct
 compose() {
-  local DEPLOYMENT_TARGET=staging
-  export DEPLOYMENT_TARGET
-  docker compose --project-name photo-prjct-staging --env-file /opt/photo-prjct/.env \
-    -f /opt/photo-prjct/docker-compose.prod.yml \
+  docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+    -f /opt/photo-prjct/docker-compose.deployment.yml \
     -f /opt/photo-prjct/docker-compose.https.yml "$@"
 }
 : "${EVENT_REF:?set the approved event primary key or slug}"
@@ -164,7 +158,7 @@ compose exec -T web python manage.py activate_face_cluster_corpus "$EVENT_REF" \
 ```
 
 This command changes only the event's guarded corpus pointer. It does not set
-`SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED`; this branch performs no activation, staging deployment,
+`SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED`; this branch performs no activation, canonical deployment,
 cloud mutation, or customer rollout. A normal reviewed deployment must separately approve any
 future environment flag change.
 
@@ -190,8 +184,8 @@ raw journal attachments.
 ## 1. Подключение и транспорт
 
 ```bash
-# Replace the placeholder with the approved staging SSH alias; do not record host/IP in the ticket.
-ssh <configured-staging-ssh-alias>
+# Replace the placeholder with the approved canonical-deployment SSH alias; do not record host/IP in the ticket.
+ssh <configured-deployment-ssh-alias>
 cd /opt/photo-prjct
 umask 077
 ANALYSIS_DIR="$(mktemp -d /tmp/findme-selfie-analysis.XXXXXX)"
@@ -217,13 +211,11 @@ deployment/host finding.
 
 ```bash
 DEPLOY_ROOT=/opt/photo-prjct \
-COMPOSE_PROJECT_NAME=photo-prjct-staging \
-DEPLOYMENT_TARGET=staging \
+COMPOSE_PROJECT_NAME=photo-prjct \
   sh /opt/photo-prjct/deploy/verify-selfie-observability.sh
 ```
 
-Для production используйте `photo-prjct-production` и `DEPLOYMENT_TARGET=production`. Не заменяйте
-эту проверку `docker logs` или ручным просмотром контейнера.
+Не заменяйте эту проверку `docker logs` или ручным просмотром контейнера.
 
 ## 2. Daily summary за закрытый Moscow-день
 
@@ -318,10 +310,9 @@ PY
 WINDOW_START="${WINDOWS% *}"
 WINDOW_END="${WINDOWS#* }"
 SEARCH_ID='00000000-0000-0000-0000-000000000001'
-DEPLOYMENT_TARGET=staging
 sudo journalctl --since "$WINDOW_START" --until "$WINDOW_END" --output=cat \
-  "CONTAINER_TAG=findme.service=web findme.environment=$DEPLOYMENT_TARGET" + \
-  "CONTAINER_TAG=findme.service=worker findme.environment=$DEPLOYMENT_TARGET" |
+  "CONTAINER_TAG=findme.service=web" + \
+  "CONTAINER_TAG=findme.service=worker" |
   python3 -c '
 import json
 import sys
@@ -482,7 +473,7 @@ hypothesis-only section и сначала разбирайте integrity/retenti
 ```markdown
 ## Selfie-search incident — <short title>
 
-- Environment: <staging|production>
+- Deployment: canonical
 - Moscow window: <YYYY-MM-DD 00:00> — <next date 00:00>
 - Observed at (UTC): <time>
 - Summary: report_date=<>, recomputed=<>, parser_complete=<>, coverage_complete=<>
@@ -526,6 +517,6 @@ rm -rf "$ANALYSIS_DIR"
 - [`run-daily-summary.sh`](../../deploy/selfie-observability/run-daily-summary.sh)
 - [`summarize.py`](../../deploy/selfie-observability/summarize.py)
 - [`root-helper.sh`](../../deploy/selfie-observability/root-helper.sh)
-- [`docker-compose.prod.yml`](../../docker-compose.prod.yml) и [`docker-compose.https.yml`](../../docker-compose.https.yml)
+- [`docker-compose.deployment.yml`](../../docker-compose.deployment.yml) и [`docker-compose.https.yml`](../../docker-compose.https.yml)
 - [`https.conf.template`](../../deploy/nginx/https.conf.template)
 - [Краткий раздел эксплуатации в README](../../README.md#operate-selfie-search-observability)

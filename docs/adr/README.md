@@ -24,7 +24,7 @@ place, and add the new record to this index.
 | 0002 | [Use PostgreSQL as the system of record](0002-postgresql-system-of-record.md) | Accepted |
 | 0003 | [Deploy with Docker Compose to Yandex Cloud](0003-docker-compose-yandex-cloud.md) | Accepted |
 | 0004 | [Keep engineering knowledge in the repository](0004-repository-engineering-knowledge.md) | Accepted |
-| 0005 | [Promote immutable images through staging](0005-promote-images-through-staging.md) | Accepted |
+| 0005 | [Promote immutable images through staging](0005-promote-images-through-staging.md) | Superseded |
 | 0006 | [Use Yandex Object Storage for media](0006-yandex-object-storage-media.md) | Accepted |
 | 0007 | [Use Nginx and Certbot for the HTTPS edge](0007-nginx-certbot-https-edge.md) | Accepted |
 | 0008 | [Temporarily allow HTTP-only staging when public DNS is unroutable](0008-temporary-staging-http-fallback.md) | Superseded |
@@ -45,8 +45,9 @@ place, and add the new record to this index.
 | 0023 | [Store consented selfie-search quality feedback](0023-store-consented-selfie-search-feedback.md) | Accepted |
 | 0024 | [Use a selected gallery face as a search query](0024-use-gallery-face-as-search-query.md) | Accepted |
 | 0025 | [Expand selfie search with conservative face clusters](0025-expand-selfie-search-with-face-clusters.md) | Accepted |
-| 0026 | [Use Lockbox for environment secrets](0026-use-lockbox-for-environment-secrets.md) | Accepted |
+| 0026 | [Use Lockbox for environment secrets](0026-use-lockbox-for-environment-secrets.md) | Superseded |
 | 0027 | [Project current capture time onto Photo](0027-project-capture-time-onto-photo.md) | Accepted |
+| 0028 | [Operate one canonical deployment](0028-operate-one-canonical-deployment.md) | Accepted |
 
 ## Public selfie-search outcome
 

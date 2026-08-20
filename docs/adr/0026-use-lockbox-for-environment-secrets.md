@@ -1,10 +1,10 @@
 # 0026: Use Lockbox for environment secrets
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-08-07
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0028](0028-operate-one-canonical-deployment.md)
 
 ## Context
 

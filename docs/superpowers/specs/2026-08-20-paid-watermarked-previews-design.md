@@ -29,7 +29,7 @@ Approved in conversation and repository review by the project maintainer on 2026
   [ADR 0021](../../adr/0021-allow-original-download-for-authorized-photos.md), and
   [ADR 0022](../../adr/0022-use-numbered-gallery-pages.md), and proposed
   [ADR 0029](../../adr/0029-use-watermarked-previews-for-paid-photos.md)
-- ADR impact: **Requires acceptance of ADR 0029.** The ADR must authorize the normal published paid-event
+- ADR impact: **Conforms to ADR 0029.** The ADR authorizes the normal published paid-event
   gallery for photos with an accepted watermarked preview; replace ADR 0019's paid-result original
   delivery with watermarked-preview delivery for the new explicit photo generation; replace ADR
   0020's paid-gallery denial and original media selection for those photos; and supersede ADR

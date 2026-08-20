@@ -319,6 +319,12 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
   transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
   future work.
+- For a new explicit paid-watermarked photo generation, accept one private clean preview for ML and
+  one public-presentation watermarked preview. Once implemented, a normal published paid gallery
+  and ready selfie-search results may present only the accepted watermarked derivative, while
+  original presentation and download remain denied. Existing photo rows receive no backfill, as
+  defined by [ADR 0029](adr/0029-use-watermarked-previews-for-paid-photos.md). This is accepted
+  architecture, not current implementation evidence.
 - Implement optional event-scoped selfie expansion from an immutable conservative face-cluster
   corpus. The repository builds and publishes versioned anonymous corpora from compatible accepted
   gallery embeddings, evaluates them through the private closed-benchmark CLI, records immutable
@@ -361,7 +367,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | --- | --- | --- |
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
-| Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals and preview-first slice; remaining scope proposed |
+| Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals and preview-first slice; paid watermark presentation accepted by ADR 0029 but not implemented; remaining scope proposed |
 | Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; environment activation and customer outcomes are not evidenced |
 | Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no environment activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
@@ -498,8 +504,10 @@ cluster-expansion flag remains disabled by default.
 1. The cart contains event photos, prices, and any validated promotion.
 2. A payment transition creates or updates an order idempotently.
 3. For paid events, successful payment grants entitlement to generated exports; the normal paid
-   gallery never makes originals public. ADR 0019 temporarily permits only a ready face-search-result
-   bearer link to deliver originals saved in that result until protected derivatives exist.
+   gallery never makes originals public. The current implementation follows ADR 0019's temporary
+   ready-result original exception. ADR 0029 accepts a new generation whose normal gallery and
+   ready results present only a watermarked derivative and deny original download; that generation
+   is not implemented yet.
 4. Downloads use short-lived signed access or an authenticated application response and are audited.
 
 ## Security, privacy, and legal boundaries
@@ -510,9 +518,11 @@ cluster-expansion flag remains disabled by default.
   controlled inline original delivery under the policy now governed by ADR 0019. Until activation,
   explicit legacy photos use the original for both variants. The normal paid gallery remains
   unavailable; ADR 0019 permits only a valid ready face-search-result bearer link to deliver a saved
-  free- or paid-event member. Watermarks, purchases, and exports remain unresolved. Neither route
-  exposes a permanent storage key, but original delivery still gives an eligible recipient complete
-  unsanitized bytes that can be saved or redistributed.
+  free- or paid-event member. ADR 0029 accepts but does not yet implement a new paid generation for
+  which normal gallery and ready-result media use only an accepted watermarked derivative and
+  original download is denied. Purchases and entitled exports remain unresolved. Neither current
+  route exposes a permanent storage key, but original delivery still gives an eligible recipient
+  complete unsanitized bytes that can be saved or redistributed.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
 - Event-folder identifiers are catalog selectors, not media authority. Upload registration and
@@ -588,8 +598,8 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Broader biometric governance beyond ADR 0019's event-scoped public bearer-link MVP.
 - Bib-region detection/OCR implementation and model licensing.
 - Payment provider, callback contract, refunds, and download entitlement policy.
-- Paid-event previews, entitlements, and broader attachment/download policy beyond ADR 0019's
-  narrow saved face-search-result original-delivery exception.
+- Purchase entitlement and protected original delivery beyond ADR 0029's watermarked
+  presentation-only boundary.
 - Monitoring retention; backup targets; retention; RPO/RTO; encryption-at-rest policy; media
   recovery; and disaster-recovery procedures.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.

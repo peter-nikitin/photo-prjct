@@ -47,7 +47,9 @@ place, and add the new record to this index.
 | 0025 | [Expand selfie search with conservative face clusters](0025-expand-selfie-search-with-face-clusters.md) | Accepted |
 | 0026 | [Use Lockbox for environment secrets](0026-use-lockbox-for-environment-secrets.md) | Accepted |
 | 0027 | [Project current capture time onto Photo](0027-project-capture-time-onto-photo.md) | Accepted |
+| 0028 | [Operate one canonical deployment](0028-operate-one-canonical-deployment.md) | Accepted |
 | 0029 | [Use watermarked previews for paid photo presentation](0029-use-watermarked-previews-for-paid-photos.md) | Accepted |
+| 0030 | [Use anonymous server-side event carts](0030-use-anonymous-server-side-event-carts.md) | Accepted |
 
 ## Public selfie-search outcome
 

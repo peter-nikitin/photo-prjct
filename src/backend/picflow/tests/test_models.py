@@ -38,6 +38,45 @@ class EventModelTests(TestCase):
     def test_string_representation_uses_name(self) -> None:
         self.assertEqual(str(self.make_event()), "Test Run")
 
+    def test_free_event_has_no_photo_price(self) -> None:
+        event = Event(access_type=Event.AccessType.FREE)
+
+        self.assertIsNone(event.price_per_photo_kopecks)
+
+    def test_photo_price_validation_enforces_the_access_type_pair(self) -> None:
+        base_values = {
+            "name": "Price validation",
+            "slug": "price-validation",
+            "start_date": date.today(),
+            "end_date": date.today(),
+            "city": "Moscow",
+        }
+
+        for access_type, price in (
+            (Event.AccessType.FREE, 1),
+            (Event.AccessType.PAID, None),
+            (Event.AccessType.PAID, 0),
+            (Event.AccessType.PAID, -1),
+        ):
+            with self.subTest(access_type=access_type, price=price):
+                with self.assertRaises(ValidationError):
+                    Event(
+                        **base_values,
+                        access_type=access_type,
+                        price_per_photo_kopecks=price,
+                    ).full_clean()
+
+        for access_type, price in (
+            (Event.AccessType.FREE, None),
+            (Event.AccessType.PAID, 1),
+        ):
+            with self.subTest(access_type=access_type, price=price):
+                Event(
+                    **base_values,
+                    access_type=access_type,
+                    price_per_photo_kopecks=price,
+                ).full_clean()
+
     def test_slug_is_stable_when_name_changes(self) -> None:
         event = self.make_event()
         event.name = "Renamed Run"
@@ -318,7 +357,7 @@ class PhotoModelTests(TestCase):
 
         self.assertEqual(
             loader.graph.leaf_nodes("picflow"),
-            [("picflow", "0012_paid_watermarked_photo_policy")],
+            [("picflow", "0013_event_photo_price")],
         )
         migration = loader.get_migration("picflow", "0012_paid_watermarked_photo_policy")
         self.assertEqual(
@@ -346,7 +385,8 @@ class PhotoModelTests(TestCase):
         from picflow.photo_policy import policy_for_new_photo
 
         self.event.access_type = Event.AccessType.PAID
-        self.event.save(update_fields=["access_type"])
+        self.event.price_per_photo_kopecks = 30000
+        self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
 
         self.assertEqual(
             policy_for_new_photo(self.event, self.photographer),
@@ -368,7 +408,8 @@ class PhotoModelTests(TestCase):
 
         staff = get_user_model().objects.create_user(username="staff", is_staff=True)
         self.event.access_type = Event.AccessType.PAID
-        self.event.save(update_fields=["access_type"])
+        self.event.price_per_photo_kopecks = 30000
+        self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
         FeatureFlag.objects.create(
             key="paid-watermarked-previews",
             description="Paid watermarked previews",

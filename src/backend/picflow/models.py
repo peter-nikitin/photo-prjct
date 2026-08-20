@@ -59,6 +59,7 @@ class Event(models.Model):
         default=AccessType.FREE,
         db_default=AccessType.FREE,
     )
+    price_per_photo_kopecks = models.PositiveIntegerField(null=True, blank=True)
     publication_status = models.CharField(
         max_length=12,
         choices=PublicationStatus,
@@ -81,7 +82,18 @@ class Event(models.Model):
             models.CheckConstraint(
                 condition=models.Q(end_date__gte=models.F("start_date")),
                 name="event_end_date_gte_start_date",
-            )
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(access_type="free", price_per_photo_kopecks__isnull=True)
+                    | models.Q(
+                        access_type="paid",
+                        price_per_photo_kopecks__isnull=False,
+                        price_per_photo_kopecks__gt=0,
+                    )
+                ),
+                name="picflow_event_access_price_chk",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -102,6 +114,12 @@ class Event(models.Model):
             self.PublicationStatus.PUBLISHED,
         }:
             errors["timezone_name"] = f"Timezone is required for {self.publication_status} events."
+        if self.access_type == self.AccessType.FREE and self.price_per_photo_kopecks is not None:
+            errors["access_type"] = "Free events cannot have a photo price."
+        elif self.access_type == self.AccessType.PAID and (
+            self.price_per_photo_kopecks is None or self.price_per_photo_kopecks <= 0
+        ):
+            errors["access_type"] = "Paid events require a positive photo price."
         if errors:
             raise ValidationError(errors)
 

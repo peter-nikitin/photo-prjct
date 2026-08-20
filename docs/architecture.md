@@ -371,7 +371,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; environment activation and customer outcomes are not evidenced |
 | Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no environment activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
-| Commerce | Cart, promotions, orders, payment state, download entitlement | Proposed |
+| Commerce | Anonymous event carts, promotions, orders, payment state, download entitlement | Anonymous server-side event-cart architecture accepted in ADR 0030 but not implemented; remaining scope proposed |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
@@ -508,6 +508,12 @@ cluster-expansion flag remains disabled by default.
 
 ### Purchase and download
 
+ADR 0030 accepts an anonymous, event-specific cart stored in PostgreSQL and addressed by one opaque
+browser cookie. Cart totals use the event's current per-photo price, and carts expire 30 days after
+their last actual mutation. This selection state grants no download entitlement. The cart remains
+unimplemented; packages, orders, payment, entitlement, and purchased-original delivery require
+later decisions and delivery.
+
 1. The cart contains event photos, prices, and any validated promotion.
 2. A payment transition creates or updates an order idempotently.
 3. For paid events, successful payment grants entitlement to generated exports; the normal paid
@@ -583,8 +589,9 @@ cluster-expansion flag remains disabled by default.
    photos before delivering corrections and event-scoped search.
 6. **Face governance, validation, and search:** approve biometric policy and independently benchmark
    face models before delivering embeddings, event filtering, removal, and candidate UX.
-7. **Commerce:** pricing, promotions, payment integration, orders, entitlements, and protected export
-   for paid events.
+7. **Commerce:** implement the accepted anonymous event-cart boundary, then add separately approved
+   packages, promotions, payment integration, orders, entitlements, and protected export for paid
+   events.
 8. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
 
 ## Deferred beyond MVP

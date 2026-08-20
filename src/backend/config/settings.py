@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "commerce.apps.CommerceConfig",
     "feature_flags.apps.FeatureFlagsConfig",
     "ingestion.apps.IngestionConfig",
     "picflow.apps.PicflowConfig",

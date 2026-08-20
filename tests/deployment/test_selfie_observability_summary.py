@@ -6,8 +6,9 @@ import logging
 import subprocess
 import sys
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "deploy" / "selfie-observability" / "summarize.py"
@@ -199,7 +200,10 @@ def test_worker_event_is_accepted_by_the_canonical_summary_envelope() -> None:
 
     payload = json.loads(logger.lines[0])
     assert "environment" not in payload
-    summary = _load_module().summarize_jsonl(logger.lines, report_date=date.today())
+    report_date = (
+        datetime.fromisoformat(payload["occurred_at"]).astimezone(ZoneInfo("Europe/Moscow")).date()
+    )
+    summary = _load_module().summarize_jsonl(logger.lines, report_date=report_date)
     assert summary.worker_attempts["total"] == 1
     assert summary.integrity["malformed_events"] == 0
 

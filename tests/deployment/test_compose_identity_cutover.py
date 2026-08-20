@@ -120,7 +120,11 @@ def _cutover_env(tmp_path: Path, *, state: str = "ready") -> dict[str, str]:
           *" compose "*" printenv POSTGRES_USER "*) printf 'photo\\n' ;;
           *" compose "*" printenv POSTGRES_DB "*) printf 'photo\\n' ;;
           *" compose "*" pg_dump "*)
-            case " $* " in *" --username photo --dbname photo "*) printf 'fake-postgresql-dump\\n' ;; *) exit 71 ;; esac
+            case " $* " in
+              *" --file=- "*) exit 71 ;;
+              *" --username photo --dbname photo "*) printf 'fake-postgresql-dump\\n' ;;
+              *) exit 72 ;;
+            esac
             ;;
           *" compose "*" pg_restore "*)
             if [ "$CUTOVER_STATE" = signal-term ]; then
@@ -255,13 +259,18 @@ def test_confirmed_cutover_backups_before_creating_canonical_volumes_and_uses_ge
     )
     assert (Path(env["BACKUP_DIR"]) / "certificates.tar.gz").is_file()
     commands = Path(env["COMMAND_LOG"]).read_text(encoding="utf-8")
-    assert commands.index("pg_dump") < commands.index("volume create")
+    assert (
+        commands.index(" pg_dump ")
+        < commands.index("pg_restore -l /backup/postgresql.dump")
+        < commands.index("volume create")
+    )
     assert "volume inspect photo-prjct-staging_pgdata" in commands
     assert "photo-prjct_pgdata" in commands
     assert "migrate --check" in commands
     assert "certificates" in commands
     assert "apply:photo-prjct" in commands
     assert "--username photo --dbname photo" in commands
+    assert "pg_restore -l /backup/postgresql.dump" in commands
     assert "stop nginx certbot" in commands
     assert "volume rm" not in commands
     assert "volume create photo-prjct-staging" not in commands

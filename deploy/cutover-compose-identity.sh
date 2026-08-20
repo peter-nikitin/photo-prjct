@@ -216,7 +216,7 @@ database_name="$(compose "$source_project" exec -T db printenv POSTGRES_DB)" || 
 case "$database_user" in ''|*[!A-Za-z0-9_]*) fail "source database user is invalid" ;; esac
 case "$database_name" in ''|*[!A-Za-z0-9_]*) fail "source database name is invalid" ;; esac
 
-compose "$source_project" exec -T db pg_dump --format=custom --file=- --username "$database_user" --dbname "$database_name" \
+compose "$source_project" exec -T db pg_dump --format=custom --username "$database_user" --dbname "$database_name" \
     > "$backup_dir/postgresql.dump" || fail "PostgreSQL dump failed"
 [ -s "$backup_dir/postgresql.dump" ] || fail "PostgreSQL dump is empty"
 docker run --rm -v "$backup_dir:/backup:ro" postgres:16 \

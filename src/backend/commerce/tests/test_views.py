@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from typing import cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -23,6 +24,9 @@ from commerce.identity import browser_token_sha256
 from commerce.models import Cart, CartItem
 
 PAID_PHOTO_CART_FLAG = "paid-photo-cart"
+FLAG_OFF: str = cast(str, FeatureFlag.State.OFF)
+FLAG_STAFF: str = cast(str, FeatureFlag.State.STAFF)
+FLAG_ON: str = cast(str, FeatureFlag.State.ON)
 
 
 @override_settings(
@@ -129,7 +133,7 @@ class CartViewTests(TestCase):
         )
         return photo
 
-    def enable(self, *, cart: str = FeatureFlag.State.ON, watermark: str = FeatureFlag.State.ON):
+    def enable(self, *, cart: str = FLAG_ON, watermark: str = FLAG_ON) -> None:
         FeatureFlag.objects.update_or_create(
             key=PAID_PHOTO_CART_FLAG,
             defaults={"description": "Paid photo cart", "state": cart},
@@ -178,13 +182,13 @@ class CartViewTests(TestCase):
             self.client.post(urls[1], self.selection_data("1")),
             self.client.post(urls[2]),
         )
-        self.enable(cart=FeatureFlag.State.OFF)
+        self.enable(cart=FLAG_OFF)
         off = (
             self.client.get(urls[0]),
             self.client.post(urls[1], self.selection_data("1")),
             self.client.post(urls[2]),
         )
-        self.enable(cart=FeatureFlag.State.ON, watermark=FeatureFlag.State.OFF)
+        self.enable(cart=FLAG_ON, watermark=FLAG_OFF)
         sibling_off = self.client.get(urls[0])
 
         for response in (*missing, *off, sibling_off):
@@ -196,7 +200,7 @@ class CartViewTests(TestCase):
         self.assertEqual(CartItem.objects.count(), 0)
 
     def test_staff_mode_permits_only_active_staff_and_on_permits_anonymous(self) -> None:
-        self.enable(cart=FeatureFlag.State.STAFF, watermark=FeatureFlag.State.STAFF)
+        self.enable(cart=FLAG_STAFF, watermark=FLAG_STAFF)
         anonymous = self.client.get(self.detail_url())
         staff = get_user_model().objects.create_user(username="cart-staff", is_staff=True)
         self.client.force_login(staff)
@@ -215,7 +219,7 @@ class CartViewTests(TestCase):
         self.assertEqual(self.client.cookies.get("findme_cart"), None)
 
     def test_disabled_gate_preserves_an_existing_cart_and_browser_cookie(self) -> None:
-        self.enable(cart=FeatureFlag.State.OFF)
+        self.enable(cart=FLAG_OFF)
         cart = Cart.objects.create(
             browser_token_sha256=browser_token_sha256(self.token),
             event=self.event,

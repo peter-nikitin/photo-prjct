@@ -1,4 +1,5 @@
 import base64
+from typing import Any, cast
 
 from django.test import SimpleTestCase
 
@@ -35,7 +36,7 @@ class BrowserTokenIdentityTests(SimpleTestCase):
         for malformed in malformed_tokens:
             with self.subTest(token=malformed):
                 with self.assertRaises(ValueError):
-                    parse_browser_token(malformed)
+                    parse_browser_token(cast(Any, malformed))
 
     def test_digest_is_stable_lowercase_sha256_without_disclosing_the_token(self) -> None:
         token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"

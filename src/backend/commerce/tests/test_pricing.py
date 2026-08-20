@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 from django.test import SimpleTestCase
 from picflow.models import Event
 
@@ -33,4 +35,4 @@ class CartPricingTests(SimpleTestCase):
                 self.assertEqual(format_rub(kopecks), expected)
 
         with self.assertRaises(TypeError):
-            format_rub(300.0)
+            format_rub(cast(Any, 300.0))

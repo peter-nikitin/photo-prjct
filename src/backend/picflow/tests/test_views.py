@@ -7,11 +7,14 @@ from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from commerce.services import set_photo_selected
 from config import views
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser, Permission
 from django.core.paginator import Paginator
+from django.template.base import Variable
 from django.test import (
+    Client,
     RequestFactory,
     SimpleTestCase,
     TestCase,
@@ -21,6 +24,7 @@ from django.test import (
 )
 from django.urls import reverse
 from django.utils import timezone
+from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from processing.models import (
@@ -49,6 +53,8 @@ from selfie_search.models import SelfieSearch
 
 from picflow.models import Event, EventFolder, Photo
 from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
+
+PAID_PHOTO_CART_FLAG = "paid-photo-cart"
 
 
 class NavigationMarkupParser(HTMLParser):
@@ -171,6 +177,8 @@ class PageTests(TestCase):
             "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
         }
         values.update(overrides)
+        if values.get("access_type", Event.AccessType.FREE) == Event.AccessType.PAID:
+            values.setdefault("price_per_photo_kopecks", 30000)
         return Event.objects.create(**values)
 
     def test_health_check(self) -> None:
@@ -425,6 +433,8 @@ class GalleryPageTests(TestCase):
             "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
         }
         values.update(overrides)
+        if values.get("access_type", Event.AccessType.FREE) == Event.AccessType.PAID:
+            values.setdefault("price_per_photo_kopecks", 30000)
         return Event.objects.create(**values)
 
     def make_private_photo(self, event: Event, **overrides) -> Photo:
@@ -750,6 +760,7 @@ class GalleryPageTests(TestCase):
             name="Paid gallery",
             slug="paid-watermarked-gallery",
             access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
         )
         ready = self.make_private_photo(
             event,
@@ -792,6 +803,179 @@ class GalleryPageTests(TestCase):
         markup = response.content.decode(response.charset)
         for secret in (ready.original_key, legacy.original_key, derivative.final_key):
             self.assertNotIn(secret, markup)
+
+        self.assertIsNone(response.context["cart_presentation"])
+
+    def test_enabled_paid_gallery_gets_event_scoped_cart_presentation_and_private_cache(
+        self,
+    ) -> None:
+        for key, description in (
+            (PAID_WATERMARKED_PREVIEWS_FLAG, "Paid watermarked previews"),
+            (PAID_PHOTO_CART_FLAG, "Paid photo cart"),
+        ):
+            FeatureFlag.objects.create(
+                key=key,
+                description=description,
+                state=FeatureFlag.State.ON,
+            )
+        event = self.make_event(
+            name="Paid cart gallery",
+            slug="paid-cart-gallery",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=45075,
+        )
+        selected = self.make_private_photo(
+            event,
+            id="paid-cart-selected",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        visible = self.make_private_photo(
+            event,
+            id="paid-cart-visible",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        for photo in (selected, visible):
+            self.publish_preview(
+                photo,
+                final_key=f"derivatives/previews/{photo.pk}/watermarked.jpg",
+                processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+                variant="preview-watermarked-v1",
+            )
+        token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        set_photo_selected(
+            event=event,
+            photo_id=selected.pk,
+            selected=True,
+            browser_token=token,
+            watermarked_previews_enabled=True,
+        )
+        other_event = self.make_event(
+            name="Other paid cart gallery",
+            slug="other-paid-cart-gallery",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+        other_photo = self.make_private_photo(
+            other_event,
+            id="other-paid-cart-photo",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        self.publish_preview(
+            other_photo,
+            final_key="derivatives/previews/other-paid-cart-photo/watermarked.jpg",
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        set_photo_selected(
+            event=other_event,
+            photo_id=other_photo.pk,
+            selected=True,
+            browser_token=token,
+            watermarked_previews_enabled=True,
+        )
+        self.client.cookies["findme_cart"] = token
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        presentation = response.context["cart_presentation"]
+        self.assertEqual(
+            tuple(item.photo.photo_id for item in presentation.photos),
+            (selected.pk, visible.pk),
+        )
+        self.assertEqual(tuple(item.selected for item in presentation.photos), (True, False))
+        self.assertEqual(presentation.item_count, 1)
+        self.assertEqual(presentation.unit_price_display, "450,75 ₽")
+        self.assertEqual(presentation.total_display, "450,75 ₽")
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertEqual(response["Vary"], "Cookie")
+
+    @override_settings(DEBUG=False)
+    def test_paid_gallery_template_exception_report_redacts_cart_context_only(self) -> None:
+        for key, description in (
+            (PAID_WATERMARKED_PREVIEWS_FLAG, "Paid watermarked previews"),
+            (PAID_PHOTO_CART_FLAG, "Paid photo cart"),
+        ):
+            FeatureFlag.objects.create(
+                key=key,
+                description=description,
+                state=FeatureFlag.State.ON,
+            )
+        event = self.make_event(
+            name="Paid report gallery",
+            slug="paid-report-gallery",
+            access_type=Event.AccessType.PAID,
+        )
+        selected = self.make_private_photo(
+            event,
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        self.publish_preview(
+            selected,
+            final_key=f"derivatives/previews/{selected.pk}/watermarked.jpg",
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        set_photo_selected(
+            event=event,
+            photo_id=selected.pk,
+            selected=True,
+            browser_token=token,
+            watermarked_previews_enabled=True,
+        )
+        exception_client = Client(raise_request_exception=False)
+        exception_client.cookies["findme_cart"] = token
+        exception_client.cookies["ordinary_cookie"] = "visible-gallery-cookie"
+        original_resolve_lookup = Variable._resolve_lookup
+
+        def force_template_exception(variable, context):
+            if variable.var == "gallery_photos":
+                raise RuntimeError("forced paid gallery template")
+            return original_resolve_lookup(variable, context)
+
+        with patch.object(Variable, "_resolve_lookup", new=force_template_exception):
+            response = exception_client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 500)
+        self.assertIsNotNone(response.exc_info)
+        technical_response = technical_500_response(
+            response.wsgi_request,
+            *response.exc_info,
+        )
+        report = technical_response.content.decode(technical_response.charset)
+        self.assertNotIn(token, report)
+        self.assertNotIn(selected.pk, report)
+        self.assertIn("ordinary_cookie", report)
+        self.assertIn("visible-gallery-cookie", report)
+        self.assertIn("callback_kwargs", report)
+        self.assertIn("slug", report)
+        self.assertIn("paid-report-gallery", report)
+        self.assertIn("forced paid gallery template", report)
+
+    def test_free_gallery_remains_free_of_cart_context_and_route_markup_when_flags_are_on(
+        self,
+    ) -> None:
+        for key, description in (
+            (PAID_WATERMARKED_PREVIEWS_FLAG, "Paid watermarked previews"),
+            (PAID_PHOTO_CART_FLAG, "Paid photo cart"),
+        ):
+            FeatureFlag.objects.create(
+                key=key,
+                description=description,
+                state=FeatureFlag.State.ON,
+            )
+        event = self.make_event(name="Free gallery", slug="free-cart-regression")
+        self.make_private_photo(event, id="free-cart-regression-photo")
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertIsNone(response.context["cart_presentation"])
+        self.assertNotContains(response, f"/events/{event.slug}/cart/")
+        self.assertNotEqual(response.headers.get("Cache-Control"), "private, no-store")
 
     @patch("config.views.PrivateUploadStorage")
     def test_event_detail_keeps_legacy_and_requires_accepted_preview_for_new_photos(
@@ -1590,6 +1774,8 @@ class GalleryMediaViewTests(TransactionTestCase):
             "publication_status": Event.PublicationStatus.PUBLISHED,
         }
         values.update(overrides)
+        if values.get("access_type", Event.AccessType.FREE) == Event.AccessType.PAID:
+            values.setdefault("price_per_photo_kopecks", 30000)
         return Event.objects.create(**values)
 
     def make_private_photo(self, event: Event, **overrides) -> Photo:

@@ -20,14 +20,19 @@ from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.models import FeatureFlag
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.gallery import GalleryPhotoFactory
 from picflow.models import Event, Photo
+from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from PIL import Image
 from processing.models import (
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
     FaceProcessingAttemptArtifact,
+    PhotoDerivative,
     PhotoFaceDetection,
+    PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
 )
@@ -399,6 +404,33 @@ class GalleryPhotoSearchViewTests(TestCase):
             photo=self.photo,
             detection_id=self.detection_id,
             user=ANY,
+            paid_watermarked_previews_enabled=False,
+        )
+
+    @patch("selfie_search.views.submit_gallery_photo_search")
+    @patch("selfie_search.views._paid_watermarked_previews_enabled", return_value=True)
+    def test_enabled_paid_gallery_face_passes_the_evaluated_gate_to_submission(
+        self,
+        paid_watermarked_previews_enabled,
+        submit_gallery_photo_search,
+    ) -> None:
+        submit_gallery_photo_search.return_value = SimpleNamespace(public_token="paid-token")
+        with patch("selfie_search.views.gallery_photo_queryset") as gallery_photo_queryset:
+            gallery_photo_queryset.return_value = Photo.objects.filter(pk=self.photo.pk)
+            response = self.client.post(self.url())
+
+        self.assertEqual(response.status_code, 302)
+        paid_watermarked_previews_enabled.assert_called_once()
+        gallery_photo_queryset.assert_called_once_with(
+            event=self.event,
+            paid_watermarked_previews_enabled=True,
+        )
+        submit_gallery_photo_search.assert_called_once_with(
+            event=self.event,
+            photo=self.photo,
+            detection_id=self.detection_id,
+            user=ANY,
+            paid_watermarked_previews_enabled=True,
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
@@ -421,6 +453,7 @@ class GalleryPhotoSearchViewTests(TestCase):
             photo=draft_photo,
             detection_id=self.detection_id,
             user=staff_user,
+            paid_watermarked_previews_enabled=False,
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
@@ -459,6 +492,7 @@ class GalleryPhotoSearchViewTests(TestCase):
             photo=self.photo,
             detection_id=forged_detection_id,
             user=ANY,
+            paid_watermarked_previews_enabled=False,
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
@@ -484,6 +518,7 @@ class GalleryPhotoSearchViewTests(TestCase):
             photo=self.photo,
             detection_id=self.detection_id,
             user=ANY,
+            paid_watermarked_previews_enabled=False,
         )
 
     @patch("selfie_search.views.submit_gallery_photo_search")
@@ -529,7 +564,10 @@ class GalleryPhotoSearchViewTests(TestCase):
             ),
             fetch_redirect_response=False,
         )
-        process_gallery_photo_search.assert_called_once_with(search=search)
+        process_gallery_photo_search.assert_called_once_with(
+            search=search,
+            paid_watermarked_previews_enabled=False,
+        )
 
     @patch("selfie_search.views.process_gallery_photo_search")
     def test_non_gallery_or_nonqueued_bearer_cannot_invoke_processing(
@@ -947,8 +985,11 @@ class PublicSelfieResultViewTests(TestCase):
         *,
         photo_id: str | None = None,
         preview_required: bool = False,
+        watermarked_preview_required: bool = False,
     ) -> Photo:
         identifier = photo_id or uuid4().hex
+        if preview_required and watermarked_preview_required:
+            raise AssertionError("a fixture photo must have one explicit media policy")
         return Photo.objects.create(
             id=identifier,
             event=event,
@@ -959,15 +1000,85 @@ class PublicSelfieResultViewTests(TestCase):
             original_content_type="image/jpeg",
             uploaded_at=timezone.now(),
             processing_generation=(
-                Photo.ProcessingGeneration.PREVIEW_FIRST_V1
-                if preview_required
-                else Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+                Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+                if watermarked_preview_required
+                else (
+                    Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+                    if preview_required
+                    else Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+                )
             ),
             gallery_media_policy=(
-                Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
-                if preview_required
-                else Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
+                Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+                if watermarked_preview_required
+                else (
+                    Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+                    if preview_required
+                    else Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
+                )
             ),
+        )
+
+    def publish_watermark(self, photo: Photo) -> PhotoDerivative:
+        configuration = {"generate_watermarked_preview": {"variant": "preview-watermarked-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="c" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.succeeded_at = timezone.now()
+        state.save()
+        return PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-watermarked-v1",
+            final_key=(f"derivatives/previews/{photo.pk}/preview-watermarked-v1/{uuid4().hex}.jpg"),
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="c" * 64,
+            accepted_attempt=attempt,
         )
 
     def make_search(
@@ -1216,7 +1327,106 @@ class PublicSelfieResultViewTests(TestCase):
                 first_open,
                 f"data-description='{lightbox_download}'",
             )
-        self.assertNotContains(first_open, "gallery-photo-id")
+        for photo in (first, second):
+            self.assertContains(first_open, f'data-photo-id="{photo.pk}"')
+
+    def test_paid_ready_page_gates_watermarked_member_but_preserves_legacy_saved_member(
+        self,
+    ) -> None:
+        paid_event = self.make_event(
+            name="Paid result",
+            slug="paid-watermarked-result",
+            access_type=Event.AccessType.PAID,
+        )
+        search, token = self.make_search(
+            event=paid_event,
+            status=SelfieSearch.Status.READY,
+            matched_photo_count=2,
+        )
+        legacy = self.make_private_photo(paid_event, photo_id="paid-saved-legacy")
+        watermarked = self.make_private_photo(
+            paid_event,
+            photo_id="paid-saved-watermarked",
+            watermarked_preview_required=True,
+        )
+        self.add_result(search=search, photo=legacy, rank=1)
+        self.add_result(search=search, photo=watermarked, rank=2)
+        derivative = self.publish_watermark(watermarked)
+        flag = FeatureFlag.objects.create(
+            key=PAID_WATERMARKED_PREVIEWS_FLAG,
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.OFF,
+        )
+
+        gate_off = self.client.get(self.result_url(event=paid_event, token=token))
+        flag.state = FeatureFlag.State.ON
+        flag.save(update_fields=["state"])
+        gate_on = self.client.get(self.result_url(event=paid_event, token=token))
+
+        self.assertEqual(
+            [item.photo_id for item in gate_off.context["gallery_photos"]],
+            [legacy.pk],
+        )
+        self.assertEqual(
+            [item.photo_id for item in gate_on.context["gallery_photos"]],
+            [legacy.pk, watermarked.pk],
+        )
+        watermarked_presentation = gate_on.context["gallery_photos"][1]
+        self.assertEqual(watermarked_presentation.photo_id, watermarked.pk)
+        self.assertEqual(watermarked_presentation.preview_media_small.variant, "preview-small")
+        self.assertEqual(watermarked_presentation.preview_media_large.variant, "preview-large")
+        self.assertIsNone(watermarked_presentation.download_url)
+        self.assertContains(
+            gate_on,
+            f'<figure class="gallery-card" data-photo-id="{watermarked.pk}">',
+        )
+        self.assertContains(gate_on, '<div class="gallery-card-download">', count=2)
+        self.assertContains(gate_on, 'class="gallery-download"', count=1)
+        self.assertContains(gate_on, 'class="gallery-lightbox-download"', count=1)
+        self.assertNotIn(derivative.final_key, gate_on.content.decode(gate_on.charset))
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
+    def test_paid_feedback_presentation_uses_the_same_request_gate_as_visible_results(
+        self,
+    ) -> None:
+        paid_event = self.make_event(
+            name="Paid feedback result",
+            slug="paid-feedback-result",
+            access_type=Event.AccessType.PAID,
+        )
+        search, token = self.make_search(
+            event=paid_event,
+            status=SelfieSearch.Status.READY,
+            matched_photo_count=1,
+        )
+        photo = self.make_private_photo(
+            paid_event,
+            photo_id="paid-feedback-watermarked",
+            watermarked_preview_required=True,
+        )
+        result = self.add_result(search=search, photo=photo, rank=1)
+        self.publish_watermark(photo)
+        flag = FeatureFlag.objects.create(
+            key=PAID_WATERMARKED_PREVIEWS_FLAG,
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.OFF,
+        )
+
+        gate_off = self.client.get(self.result_url(event=paid_event, token=token))
+        flag.state = FeatureFlag.State.ON
+        flag.save(update_fields=["state"])
+        gate_on = self.client.get(self.result_url(event=paid_event, token=token))
+
+        self.assertEqual(gate_off.context["gallery_photos"], ())
+        self.assertContains(gate_off, 'data-feedback-variant="problem"')
+        self.assertContains(gate_off, 'data-feedback-total="0"')
+        self.assertEqual(
+            [item.photo_id for item in gate_on.context["gallery_photos"]],
+            [photo.pk],
+        )
+        self.assertContains(gate_on, 'data-feedback-variant="result_labels"')
+        self.assertContains(gate_on, f'data-feedback-result-id="{result.pk}"')
+        self.assertContains(gate_on, 'data-feedback-total="1"')
 
     def test_ready_page_renders_available_capture_time_on_result_card(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -1589,7 +1799,10 @@ class PublicSelfieResultViewTests(TestCase):
             self.result_url(event=draft_event, token=token),
             fetch_redirect_response=False,
         )
-        process_gallery_photo_search.assert_called_once_with(search=search)
+        process_gallery_photo_search.assert_called_once_with(
+            search=search,
+            paid_watermarked_previews_enabled=False,
+        )
 
         process_gallery_photo_search.reset_mock()
         draft_event.publication_status = Event.PublicationStatus.UNAVAILABLE
@@ -1754,6 +1967,53 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertFalse(response.streaming)
         self.assert_bearer_headers(response)
         resolver.resolve_download.assert_called_once_with(photo=photo)
+
+    def test_watermarked_saved_result_media_uses_semantic_routes_and_download_denies_before_signing(
+        self,
+    ) -> None:
+        FeatureFlag.objects.create(
+            key=PAID_WATERMARKED_PREVIEWS_FLAG,
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.ON,
+        )
+        paid_event = self.make_event(
+            name="Paid media result",
+            slug="paid-watermarked-result-media",
+            access_type=Event.AccessType.PAID,
+        )
+        search, token = self.make_search(event=paid_event, status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(
+            paid_event,
+            photo_id="paid-watermarked-result-media",
+            watermarked_preview_required=True,
+        )
+        self.add_result(search=search, photo=photo, rank=1)
+        self.publish_watermark(photo)
+        resolver = Mock()
+        resolver.resolve_signed.return_value = "https://storage.example.test/watermark?signed"
+
+        with patch("selfie_search.views._public_media_resolver", return_value=resolver) as factory:
+            media_responses = tuple(
+                self.client.get(
+                    self.result_media_url(
+                        event=paid_event,
+                        token=token,
+                        photo=photo,
+                        variant=variant,
+                    )
+                )
+                for variant in ("preview-small", "preview-large")
+            )
+            factory.reset_mock()
+            resolver.reset_mock()
+            download_response = self.client.get(
+                self.result_download_url(event=paid_event, token=token, photo=photo)
+            )
+
+        self.assertEqual([response.status_code for response in media_responses], [302, 302])
+        self.assertEqual(download_response.status_code, 404)
+        factory.assert_not_called()
+        resolver.resolve_download.assert_not_called()
 
     def test_saved_result_download_maps_storage_failures_to_existing_responses(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)

@@ -6,7 +6,7 @@ import hashlib
 from typing import Final
 
 from django.core.paginator import Page, Paginator
-from picflow.gallery import gallery_photo_queryset
+from picflow.gallery import saved_result_photo_queryset
 from picflow.models import Event, Photo
 
 from selfie_search.models import SelfieSearch, SelfieSearchResult
@@ -34,29 +34,64 @@ def resolve_public_result(*, event_slug: str, public_token: str, user) -> Selfie
         raise PublicSearchNotFound from None
 
 
-def saved_ready_result_photos(search: SelfieSearch) -> tuple[Photo, ...]:
+def saved_ready_result_photos(
+    search: SelfieSearch,
+    *,
+    paid_watermarked_previews_enabled: bool = False,
+) -> tuple[Photo, ...]:
     """Return current eligible saved members in their immutable persisted rank order."""
     if search.status != SelfieSearch.Status.READY:
         return ()
-    rows = _eligible_saved_result_rows(search)
+    rows = _eligible_saved_result_rows(
+        search,
+        paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+    )
     return tuple(row.photo for row in rows)
 
 
-def saved_ready_result_page(*, search: SelfieSearch, page_number: str | None) -> Page:
+def saved_ready_result_page(
+    *,
+    search: SelfieSearch,
+    page_number: str | None,
+    paid_watermarked_previews_enabled: bool = False,
+) -> Page:
     """Return one bounded current presentation page of the immutable saved result."""
-    rows = _eligible_saved_result_rows(search) if search.status == SelfieSearch.Status.READY else ()
+    rows = (
+        _eligible_saved_result_rows(
+            search,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
+        if search.status == SelfieSearch.Status.READY
+        else ()
+    )
     return Paginator(rows, SELFIE_SEARCH_RESULT_PAGE_SIZE).page(page_number or 1)
 
 
-def saved_ready_result_photo(*, search: SelfieSearch, photo_id: str) -> Photo | None:
+def saved_ready_result_photo(
+    *,
+    search: SelfieSearch,
+    photo_id: str,
+    paid_watermarked_previews_enabled: bool = False,
+) -> Photo | None:
     """Return one currently eligible saved bearer member, never a general event photo."""
     if search.status != SelfieSearch.Status.READY:
         return None
-    row = _eligible_saved_result_rows(search).filter(photo_id=photo_id).first()
+    row = (
+        _eligible_saved_result_rows(
+            search,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
+        .filter(photo_id=photo_id)
+        .first()
+    )
     return row.photo if row is not None else None
 
 
-def _eligible_saved_result_rows(search: SelfieSearch):
+def _eligible_saved_result_rows(
+    search: SelfieSearch,
+    *,
+    paid_watermarked_previews_enabled: bool,
+):
     return (
         SelfieSearchResult.objects.filter(
             search=search,
@@ -65,7 +100,10 @@ def _eligible_saved_result_rows(search: SelfieSearch):
             photo__original_key__isnull=False,
             photo__original_key__gt="",
             photo__original_size__isnull=False,
-            photo__in=gallery_photo_queryset(event=search.event),
+            photo__in=saved_result_photo_queryset(
+                event=search.event,
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+            ),
         )
         .select_related("photo__event")
         .order_by("rank", "photo_id")

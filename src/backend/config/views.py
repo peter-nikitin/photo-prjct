@@ -8,6 +8,7 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET
+from feature_flags import services as feature_flag_services
 from ingestion.storage import (
     ObjectMissing,
     PrivateUploadStorage,
@@ -26,6 +27,7 @@ from picflow.gallery import (
     gallery_photo_queryset,
 )
 from picflow.models import Event, EventFolder, Photo
+from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from prometheus_client import CONTENT_TYPE_LATEST
 from selfie_search.forms import SelfieSearchUploadForm
 from selfie_search.services.submission import gallery_search_faces_by_photo
@@ -67,8 +69,12 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     gallery_pagination_query = ""
     gallery_pagination_query_pairs: tuple[tuple[str, str], ...] = ()
     gallery_filters_active = False
-    if event.access_type == Event.AccessType.FREE:
-        base_gallery_queryset = gallery_photo_queryset(event=event)
+    paid_watermarked_previews_enabled = _paid_watermarked_previews_enabled(request)
+    if event.access_type == Event.AccessType.FREE or paid_watermarked_previews_enabled:
+        base_gallery_queryset = gallery_photo_queryset(
+            event=event,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
         gallery_folder_choices_data, has_unfiled = gallery_folder_choices(
             event=event, base_queryset=base_gallery_queryset
         )
@@ -108,6 +114,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                     capture_time_end=bounds[1] if bounds else None,
                     folder_ids=gallery_folder_filter_form.selected_folder_ids,
                     include_unfiled=gallery_folder_filter_form.include_unfiled,
+                    paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
                 )
             except InvalidPage:
                 return HttpResponse(status=404)
@@ -166,6 +173,10 @@ def _public_media_resolver() -> PublicMediaResolver:
     return PublicMediaResolver(storage=storage)
 
 
+def _paid_watermarked_previews_enabled(request) -> bool:
+    return feature_flag_services.is_enabled(PAID_WATERMARKED_PREVIEWS_FLAG, request.user)
+
+
 @require_GET
 def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse:
     if variant not in GALLERY_VARIANTS:
@@ -173,9 +184,14 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
     event = get_object_or_404(
         Event.objects.site_visible_to(request.user),
         slug=slug,
-        access_type=Event.AccessType.FREE,
     )
-    photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
+    photo = get_object_or_404(
+        gallery_photo_queryset(
+            event=event,
+            paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
+        ),
+        pk=photo_id,
+    )
     try:
         signed_url = _public_media_resolver().resolve_signed(photo=photo, variant=variant)
     except ObjectMissing:
@@ -190,9 +206,16 @@ def photo_download(request, slug: str, photo_id: str) -> HttpResponse:
     event = get_object_or_404(
         Event.objects.site_visible_to(request.user),
         slug=slug,
-        access_type=Event.AccessType.FREE,
     )
-    photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
+    photo = get_object_or_404(
+        gallery_photo_queryset(
+            event=event,
+            paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
+        ),
+        pk=photo_id,
+    )
+    if photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED:
+        return HttpResponse(status=404)
     try:
         signed_url = _public_media_resolver().resolve_download(photo=photo)
     except ObjectMissing:

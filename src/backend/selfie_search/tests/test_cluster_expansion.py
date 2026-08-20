@@ -197,6 +197,54 @@ class ClusterExpansionTests(TestCase):
         self.assertEqual(len(expansion.results[0].cluster_evidence), 1)
         self.assertEqual(len(expansion.results[1].cluster_evidence), 1)
 
+    def test_paid_expansion_keeps_legacy_and_new_policy_face_members_before_presentation(
+        self,
+    ) -> None:
+        self.event.access_type = Event.AccessType.PAID
+        self.event.save(update_fields=["access_type"])
+        anchor = self.detection("paid-legacy-anchor")
+        appended = self.detection("paid-watermarked-member")
+        Photo.objects.filter(pk=appended.attempt.photo_id).update(
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=self.corpus,
+            cluster_key="paid-retrieval-cluster",
+            representative_detection=anchor,
+            member_count=2,
+        )
+        for index, detection in enumerate((anchor, appended)):
+            FaceClusterMember.objects.create(
+                event=self.event,
+                corpus=self.corpus,
+                cluster=cluster,
+                detection=detection,
+                member_index=index,
+                distance_to_representative=index / 10,
+            )
+        self.publish()
+
+        expansion = expand_ranked_photos(
+            self.search,
+            (
+                RankedPhoto(
+                    photo_id="paid-legacy-anchor",
+                    detection_id=anchor.id,
+                    cosine_distance=0.1,
+                ),
+            ),
+            (1.0,) + (0.0,) * 127,
+            self.activation,
+        )
+
+        self.assertEqual(
+            [row.photo_id for row in expansion.results],
+            ["paid-legacy-anchor", "paid-watermarked-member"],
+        )
+        self.assertEqual(expansion.outcome, "expanded")
+
     def test_missing_activation_keeps_complete_direct_only_snapshot(self) -> None:
         direct = RankedPhoto(photo_id="direct", detection_id=uuid4(), cosine_distance=0.1)
 
@@ -243,7 +291,7 @@ class ClusterExpansionTests(TestCase):
         self.assertEqual([row.photo_id for row in incompatible.results], ["fallback-anchor"])
 
         with patch(
-            "selfie_search.services.cluster_expansion.gallery_photo_queryset",
+            "selfie_search.services.cluster_expansion.FaceClusterMember.objects.filter",
             side_effect=DatabaseError,
         ):
             unreadable = expand_ranked_photos(

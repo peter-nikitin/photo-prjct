@@ -287,7 +287,7 @@ def preview_claim() -> Claim:
                         "upload_expires_at": "2026-07-30T10:01:00Z",
                         "content_type": "image/jpeg",
                         "staging_key": (
-                            "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+                            "processing-pending/previews/00000000-0000-0000-0000-000000000012/"
                             "preview-small-v1.jpg"
                         ),
                         "max_bytes": 10_485_760,
@@ -443,7 +443,7 @@ def test_preview_lease_loss_after_upload_stops_completion_and_redacts_all_secret
         "worker-token",
         "download-secret",
         "upload-secret",
-        "processing-staging/previews",
+        "processing-pending/previews",
         "hostile response",
         "DateTimeOriginal",
     ):

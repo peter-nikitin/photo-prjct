@@ -1447,7 +1447,7 @@ def _valid_preview_result(value: object) -> bool:
 
 
 def _preview_staging_key(attempt_id: str) -> str:
-    return f"processing-staging/previews/{attempt_id}/preview-small-v1.jpg"
+    return f"processing-pending/previews/{attempt_id}/preview-small-v1.jpg"
 
 
 def _preview_output_slot(attempt_id: str, grant: PreviewUploadGrant) -> dict[str, object]:

@@ -134,7 +134,7 @@ class _PreviewStorage:
         with Image.open(io.BytesIO(content)) as image:
             width, height = image.size
         byte_size = len(content)
-        if self._reject_staging_metadata and key.startswith("processing-staging/"):
+        if self._reject_staging_metadata and key.startswith("processing-pending/"):
             byte_size += 1
         return PreviewObject(
             etag_wire='"preview-etag"',

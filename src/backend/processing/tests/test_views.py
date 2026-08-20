@@ -860,7 +860,7 @@ class WorkerApiTests(TestCase):
                 "upload_expires_at": upload_grant.return_value.expires_at.isoformat(),
                 "content_type": "image/jpeg",
                 "staging_key": (
-                    f"processing-staging/previews/{response.json()['job']['attempt_id']}/"
+                    f"processing-pending/previews/{response.json()['job']['attempt_id']}/"
                     "preview-small-v1.jpg"
                 ),
                 "max_bytes": 10_485_760,

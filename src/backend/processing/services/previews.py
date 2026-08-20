@@ -482,7 +482,7 @@ def _publication_for(
             "oriented_source_height": clean_preview.oriented_source_height,
         }
     return _PreviewPublication(
-        staging_key=(f"processing-staging/previews/{attempt.id}/{profile.variant}.jpg"),
+        staging_key=(f"processing-pending/previews/{attempt.id}/{profile.variant}.jpg"),
         final_key=preview_final_key(
             photo_id=attempt.photo_id,
             attempt_id=attempt.id,

@@ -100,7 +100,7 @@ class ExactPreviewStorageTests(SimpleTestCase):
     """The production breaks caught here grant a worker a broader preview write or trust it."""
 
     staging_key = (
-        "processing-staging/previews/01234567-89ab-cdef-0123-456789abcdef/preview-small-v1.jpg"
+        "processing-pending/previews/01234567-89ab-cdef-0123-456789abcdef/preview-small-v1.jpg"
     )
     final_key = (
         "derivatives/previews/photo_1/preview-small-v1/"
@@ -190,7 +190,7 @@ class ExactPreviewStorageTests(SimpleTestCase):
 
         with self.assertRaises(ValueError):
             storage.create_upload_grant(
-                staging_key="processing-staging/previews/other.jpg", max_ttl_seconds=1
+                staging_key="processing-pending/previews/other.jpg", max_ttl_seconds=1
             )
         with self.assertRaises(ValueError):
             storage.verify(key="originals/0123456789abcdef0123456789abcdef", max_bytes=10)

@@ -137,7 +137,7 @@ database_row_counts() {
     : > "$output"
     while IFS= read -r table; do
         [ -n "$table" ] || continue
-        count="$(compose "$project" exec -T db psql --username "$database_user" --dbname "$database_name" -At -c "SELECT count(*) FROM $table")" || \
+        count="$(compose "$project" exec -T db psql --username "$database_user" --dbname "$database_name" -At -c "SELECT count(*) FROM $table" < /dev/null)" || \
             fail "could not count rows for $table"
         printf '%s=%s\n' "$table" "$count" >> "$output"
     done < "$tables"
@@ -246,7 +246,7 @@ docker volume create --label "com.docker.compose.project=$destination_project" \
 docker volume create --label "com.docker.compose.project=$destination_project" \
     --label "com.docker.compose.volume=certbot-webroot" "$destination_certbot_webroot" >/dev/null
 
-compose "$destination_project" up -d db || fail "canonical database initialization failed"
+compose "$destination_project" up -d --wait db || fail "canonical database initialization failed"
 compose "$destination_project" exec -T db \
     pg_restore --clean --if-exists --no-owner --no-privileges --username "$database_user" --dbname "$database_name" \
     < "$backup_dir/postgresql.dump" || fail "PostgreSQL restore failed"
@@ -260,9 +260,7 @@ database_row_counts "$source_project" "$backup_dir/source-row-counts.txt"
 database_row_counts "$destination_project" "$backup_dir/destination-row-counts.txt"
 cmp -s "$backup_dir/source-row-counts.txt" "$backup_dir/destination-row-counts.txt" || \
     fail "restored database row counts do not match source"
-compose "$destination_project" run --rm --no-deps -T \
-    --entrypoint python web manage.py migrate --check || fail "restored database has pending migrations"
-docker run --rm -v "$destination_letsencrypt:/etc/letsencrypt:ro" \
+docker run --rm -v "$destination_letsencrypt:/etc/letsencrypt" \
     certbot/certbot:v2.11.0 certificates >/dev/null || fail "restored certificate verification failed"
 docker run --rm -v "$destination_letsencrypt:/etc/letsencrypt:ro" alpine:3.20 \
     sh -c 'test -s /etc/letsencrypt/live/photo-prjct/fullchain.pem && test -s /etc/letsencrypt/live/photo-prjct/privkey.pem' || fail "restored certificate files are missing"

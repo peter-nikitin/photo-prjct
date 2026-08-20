@@ -1547,7 +1547,7 @@ def _preview_variant(processor_type: str) -> str:
 
 
 def _preview_staging_key(attempt_id: str, *, variant: str = "preview-small-v1") -> str:
-    return f"processing-staging/previews/{attempt_id}/{variant}.jpg"
+    return f"processing-pending/previews/{attempt_id}/{variant}.jpg"
 
 
 def _preview_output_slot(

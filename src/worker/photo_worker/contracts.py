@@ -803,7 +803,7 @@ class OutputSlot:
         variant = value["variant"]
         if variant not in {"preview-small-v1", "preview-watermarked-v1"}:
             raise ContractError("invalid preview output slot")
-        expected_key = f"processing-staging/previews/{attempt_id}/{variant}.jpg"
+        expected_key = f"processing-pending/previews/{attempt_id}/{variant}.jpg"
         if not (
             _download_url(value["upload_url"])
             and _utc_timestamp(value["upload_expires_at"])

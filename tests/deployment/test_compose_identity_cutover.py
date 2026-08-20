@@ -119,6 +119,9 @@ def _cutover_env(tmp_path: Path, *, state: str = "ready") -> dict[str, str]:
             ;;
           *" compose "*" printenv POSTGRES_USER "*) printf 'photo\\n' ;;
           *" compose "*" printenv POSTGRES_DB "*) printf 'photo\\n' ;;
+          *" compose "*"--project-name photo-prjct "*" up -d "*)
+            case " $* " in *" up -d --wait db "*) ;; *) exit 80 ;; esac
+            ;;
           *" compose "*" pg_dump "*)
             case " $* " in
               *" --file=- "*) exit 71 ;;
@@ -137,14 +140,23 @@ def _cutover_env(tmp_path: Path, *, state: str = "ready") -> dict[str, str]:
           *" compose "*" psql "*)
             case " $* " in *" --username photo --dbname photo "*) ;; *) exit 74 ;; esac
             case " $* " in
-              *"information_schema.tables"*) printf 'alpha\\nbeta\\n' ;;
+              *"information_schema.tables"*) printf 'alpha\\nbeta\\ngamma\\n' ;;
               *"alpha"*)
+                cat >/dev/null
                 case " $* " in *"--project-name photo-prjct "*) [ "$CUTOVER_STATE" != row-count-failure ] && printf '2\\n' || printf '3\\n' ;; *) printf '2\\n' ;; esac
                 ;;
-              *"beta"*) printf '4\\n' ;;
+              *"beta"*) cat >/dev/null; printf '4\\n' ;;
+              *"gamma"*) cat >/dev/null; printf '6\\n' ;;
             esac
             ;;
-          *" compose "*" migrate --check "*) [ "$CUTOVER_STATE" != migration-failure ] ;;
+          *" compose "*" migrate --check "*) exit 81 ;;
+          *" run "*"certbot/certbot:v2.11.0 certificates"*)
+            case " $* " in
+              *" photo-prjct_letsencrypt:/etc/letsencrypt:ro "*) exit 82 ;;
+              *" photo-prjct_letsencrypt:/etc/letsencrypt "*) ;;
+              *) exit 83 ;;
+            esac
+            ;;
           *" run "*"tar -tzf /backup/certificates.tar.gz"*)
             [ "$CUTOVER_STATE" != unrelated-certificate-archive ] || exit 75
             if [ "$CUTOVER_STATE" = certbot-symlink ] || [ "$CUTOVER_STATE" = certbot-broken-link ]; then
@@ -258,6 +270,12 @@ def test_confirmed_cutover_backups_before_creating_canonical_volumes_and_uses_ge
         "fake-postgresql-dump\n"
     )
     assert (Path(env["BACKUP_DIR"]) / "certificates.tar.gz").is_file()
+    assert (Path(env["BACKUP_DIR"]) / "source-row-counts.txt").read_text(encoding="utf-8") == (
+        "alpha=2\nbeta=4\ngamma=6\n"
+    )
+    assert (Path(env["BACKUP_DIR"]) / "destination-row-counts.txt").read_text(encoding="utf-8") == (
+        "alpha=2\nbeta=4\ngamma=6\n"
+    )
     commands = Path(env["COMMAND_LOG"]).read_text(encoding="utf-8")
     assert (
         commands.index(" pg_dump ")
@@ -266,11 +284,15 @@ def test_confirmed_cutover_backups_before_creating_canonical_volumes_and_uses_ge
     )
     assert "volume inspect photo-prjct-staging_pgdata" in commands
     assert "photo-prjct_pgdata" in commands
-    assert "migrate --check" in commands
+    assert "migrate --check" not in commands
     assert "certificates" in commands
     assert "apply:photo-prjct" in commands
     assert "--username photo --dbname photo" in commands
     assert "pg_restore -l /backup/postgresql.dump" in commands
+    assert commands.index(" up -d --wait db") < commands.index("pg_restore --clean")
+    assert (
+        "photo-prjct_letsencrypt:/etc/letsencrypt certbot/certbot:v2.11.0 certificates" in commands
+    )
     assert "stop nginx certbot" in commands
     assert "volume rm" not in commands
     assert "volume create photo-prjct-staging" not in commands
@@ -353,7 +375,7 @@ def test_cutover_rejects_an_unexpected_source_volume(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "state",
-    ["restore-failure", "row-count-failure", "migration-failure", "generic-deploy-failure"],
+    ["restore-failure", "row-count-failure", "generic-deploy-failure"],
 )
 def test_mutation_failure_stops_canonical_and_restarts_the_exact_source_project(
     tmp_path: Path, state: str

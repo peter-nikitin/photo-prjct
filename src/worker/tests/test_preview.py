@@ -16,7 +16,7 @@ def slot(**overrides: object) -> OutputSlot:
         "upload_url": "https://storage.example.test/put?signature=secret",
         "upload_expires_at": "2026-07-30T10:00:00Z",
         "content_type": "image/jpeg",
-        "staging_key": "processing-staging/previews/attempt/preview-small-v1.jpg",
+        "staging_key": "processing-pending/previews/attempt/preview-small-v1.jpg",
         "max_bytes": 10_485_760,
         "max_width": 1600,
         "max_height": 1600,

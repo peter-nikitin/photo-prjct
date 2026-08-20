@@ -164,7 +164,7 @@ def preview_claim_payload(**overrides: object) -> dict[str, object]:
                     "upload_expires_at": "2026-07-30T10:00:00Z",
                     "content_type": "image/jpeg",
                     "staging_key": (
-                        "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+                        "processing-pending/previews/00000000-0000-0000-0000-000000000012/"
                         "preview-small-v1.jpg"
                     ),
                     "max_bytes": 10_485_760,
@@ -201,7 +201,7 @@ def test_clean_preview_claim_rejects_a_watermarked_output_slot() -> None:
         **slot,
         "variant": "preview-watermarked-v1",
         "staging_key": (
-            "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+            "processing-pending/previews/00000000-0000-0000-0000-000000000012/"
             "preview-watermarked-v1.jpg"
         ),
     }
@@ -239,7 +239,7 @@ def test_claim_accepts_only_the_watermarked_identity_clean_preview_fingerprint_a
                     "upload_expires_at": "2026-07-30T10:00:00Z",
                     "content_type": "image/jpeg",
                     "staging_key": (
-                        "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+                        "processing-pending/previews/00000000-0000-0000-0000-000000000012/"
                         "preview-watermarked-v1.jpg"
                     ),
                     "max_bytes": 10_485_760,

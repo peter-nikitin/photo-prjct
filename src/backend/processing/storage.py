@@ -22,7 +22,7 @@ from ingestion.storage import (
 
 _FINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
 _PREVIEW_STAGING_KEY = re.compile(
-    r"processing-staging/previews/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"processing-pending/previews/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}/"
     r"(?:preview-small-v1|preview-watermarked-v1)\.jpg"
 )

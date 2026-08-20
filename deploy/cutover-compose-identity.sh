@@ -246,7 +246,7 @@ docker volume create --label "com.docker.compose.project=$destination_project" \
 docker volume create --label "com.docker.compose.project=$destination_project" \
     --label "com.docker.compose.volume=certbot-webroot" "$destination_certbot_webroot" >/dev/null
 
-compose "$destination_project" up -d db || fail "canonical database initialization failed"
+compose "$destination_project" up -d --wait db || fail "canonical database initialization failed"
 compose "$destination_project" exec -T db \
     pg_restore --clean --if-exists --no-owner --no-privileges --username "$database_user" --dbname "$database_name" \
     < "$backup_dir/postgresql.dump" || fail "PostgreSQL restore failed"

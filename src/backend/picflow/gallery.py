@@ -2,7 +2,7 @@ import logging
 import math
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol, Self
+from typing import Final, Literal, Protocol, Self, cast
 from zoneinfo import ZoneInfo
 
 from django.core.paginator import Page, Paginator
@@ -184,7 +184,7 @@ def gallery_photo_queryset(
         eligibility = _legacy_or_clean_preview_ready()
     elif paid_watermarked_previews_enabled:
         eligibility = _accepted_derivative_ready(
-            policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
             processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
             variant="preview-watermarked-v1",
         )
@@ -220,7 +220,7 @@ def saved_result_photo_queryset(
     eligibility = _legacy_or_clean_preview_ready()
     if paid_watermarked_previews_enabled:
         eligibility |= _accepted_derivative_ready(
-            policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
             processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
             variant="preview-watermarked-v1",
         )
@@ -234,7 +234,7 @@ def _public_photo_queryset(*, event: Event) -> QuerySet[Photo]:
 def _legacy_or_clean_preview_ready() -> Q:
     return Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED) | (
         _accepted_derivative_ready(
-            policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+            policy=cast(str, Photo.GalleryMediaPolicy.PREVIEW_REQUIRED),
             processor_type=GENERATE_PREVIEW_PROCESSOR,
             variant="preview-small-v1",
         )

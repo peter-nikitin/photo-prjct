@@ -18,7 +18,7 @@ DB_HOST=127.0.0.1 DB_PORT=5432 ../../.venv/bin/pytest -q tests/processing/test_p
 
 До включения `PHOTO_PROCESSING_PREVIEW_ENABLED` на staging оператор обязан настроить правило
 удаления только для временных preview-объектов. Целевое правило имеет ID
-`expire-preview-staging-after-7-days`, prefix `processing-staging/previews/` и expiration
+`expire-preview-staging-after-7-days`, prefix `processing-pending/previews/` и expiration
 `days: "7"`. Оно не должно затрагивать опубликованные derivatives
 (`derivatives/previews/`) или оригиналы. Пока это правило не применено и не проверено, activation
 preview worker **заблокирована**.
@@ -88,7 +88,7 @@ rules из `/private/tmp/hires-staging-lifecycle-before-20260730.json` с ров
 {
   "id": "expire-preview-staging-after-7-days",
   "enabled": true,
-  "filter": {"prefix": "processing-staging/previews/"},
+  "filter": {"prefix": "processing-pending/previews/"},
   "expiration": {"days": "7"}
 }
 ```
@@ -113,7 +113,7 @@ jq -S '{lifecycleRules: (.lifecycleRules // [])}' \
 jq -e '
   [.lifecycleRules[]? | select(.id == "expire-preview-staging-after-7-days")]
   == [{"id":"expire-preview-staging-after-7-days","enabled":true,
-       "filter":{"prefix":"processing-staging/previews/"},"expiration":{"days":"7"}}]
+       "filter":{"prefix":"processing-pending/previews/"},"expiration":{"days":"7"}}]
 ' /private/tmp/hires-staging-lifecycle-reviewed-canonical-20260730.json
 jq -S '{lifecycleRules: ((.lifecycleRules // [])
   | map(select(.id != "expire-preview-staging-after-7-days")))}' \
@@ -151,7 +151,7 @@ jq -S '{lifecycleRules: (.lifecycleRules // [])}' /private/tmp/hires-staging-aft
 jq -e '
   [.lifecycleRules[]? | select(.id == "expire-preview-staging-after-7-days")] as $rules
   | $rules == [{"id":"expire-preview-staging-after-7-days","enabled":true,
-                "filter":{"prefix":"processing-staging/previews/"},"expiration":{"days":"7"}}]
+                "filter":{"prefix":"processing-pending/previews/"},"expiration":{"days":"7"}}]
 ' /private/tmp/hires-staging-lifecycle-after-canonical-20260730.json
 jq -S '{lifecycleRules: ((.lifecycleRules // [])
   | map(select(.id != "expire-preview-staging-after-7-days")))}' \

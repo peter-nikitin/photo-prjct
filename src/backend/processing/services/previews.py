@@ -383,7 +383,7 @@ def _publication_for(
     ):
         raise _PreviewResultViolation()
     return _PreviewPublication(
-        staging_key=(f"processing-staging/previews/{attempt.id}/preview-small-v1.jpg"),
+        staging_key=(f"processing-pending/previews/{attempt.id}/preview-small-v1.jpg"),
         final_key=preview_final_key(
             photo_id=attempt.photo_id,
             attempt_id=attempt.id,

@@ -715,7 +715,7 @@ class OutputSlot:
         }
         if not isinstance(value, dict) or set(value) != fields:
             raise ContractError("invalid preview output slot")
-        expected_key = f"processing-staging/previews/{attempt_id}/preview-small-v1.jpg"
+        expected_key = f"processing-pending/previews/{attempt_id}/preview-small-v1.jpg"
         if not (
             value["variant"] == "preview-small-v1"
             and _download_url(value["upload_url"])

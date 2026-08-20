@@ -162,7 +162,7 @@ def preview_claim_payload(**overrides: object) -> dict[str, object]:
                     "upload_expires_at": "2026-07-30T10:00:00Z",
                     "content_type": "image/jpeg",
                     "staging_key": (
-                        "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+                        "processing-pending/previews/00000000-0000-0000-0000-000000000012/"
                         "preview-small-v1.jpg"
                     ),
                     "max_bytes": 10_485_760,

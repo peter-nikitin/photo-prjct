@@ -3,14 +3,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from io import BytesIO
 from threading import Event as ThreadEvent
+from threading import current_thread
+from typing import cast
 from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, close_old_connections, connection
-from django.test import TransactionTestCase, override_settings
+from django.test import Client, TransactionTestCase, modify_settings, override_settings
+from django.urls import reverse
 from django.utils import timezone
+from feature_flags.models import FeatureFlag
 from ingestion.models import UploadBatch, UploadItem
 from ingestion.services.batches import (
     AuthorizationReason,
@@ -155,6 +160,48 @@ class ConfirmationTests(TransactionTestCase):
         assert photo is not None
         return photo
 
+    def set_preview_payload(self) -> None:
+        encoded = BytesIO()
+        image = Image.new("RGB", (40, 20), "white")
+        try:
+            image.save(encoded, "JPEG")
+        finally:
+            image.close()
+        payload = encoded.getvalue()
+        UploadItem.objects.filter(pk=self.item_id).update(expected_size=len(payload))
+        self.storage.add(self.item.incoming_key, payload)
+
+    def admin_event_change_data(self, *, access_type: str) -> dict[str, object]:
+        return {
+            "name": self.event.name,
+            "slug": self.event.slug,
+            "start_date": self.event.start_date,
+            "end_date": self.event.end_date,
+            "city": self.event.city,
+            "description": self.event.description,
+            "access_type": access_type,
+            "publication_status": self.event.publication_status,
+            "timezone_name": self.event.timezone_name or "",
+            "folders-TOTAL_FORMS": "0",
+            "folders-INITIAL_FORMS": "0",
+            "folders-MIN_NUM_FORMS": "0",
+            "folders-MAX_NUM_FORMS": "1000",
+            "_save": "Save",
+        }
+
+    def change_event_access_in_admin(self, *, access_type: str):
+        close_old_connections()
+        try:
+            admin_user = get_user_model().objects.get(username="race-admin")
+            client = Client()
+            client.force_login(admin_user)
+            return client.post(
+                reverse("admin:picflow_event_change", args=[self.event.pk]),
+                self.admin_event_change_data(access_type=access_type),
+            )
+        finally:
+            close_old_connections()
+
     def assert_completed_once(self, photo: Photo) -> None:
         item = UploadItem.objects.get(id=self.item_id)
         batch = UploadBatch.objects.get(id=self.batch_id)
@@ -270,6 +317,181 @@ class ConfirmationTests(TransactionTestCase):
         self.assertEqual(face.status, PhotoProcessingState.Status.NOT_REQUESTED)
         self.assertIsNone(face.current_job)
         self.assertEqual(self.storage.geometry_read_atomic_states, [False])
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_enabled_paid_confirmation_persists_the_watermarked_pair(self) -> None:
+        self.set_preview_payload()
+        Event.objects.filter(pk=self.event.pk).update(access_type=Event.AccessType.PAID)
+        FeatureFlag.objects.create(
+            key="paid-watermarked-previews",
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.ON,
+        )
+
+        photo = self.confirm_success()
+
+        self.assertEqual(
+            (photo.processing_generation, photo.gallery_media_policy),
+            ("preview_first_watermarked_v1", "watermarked_preview_required"),
+        )
+
+    @override_settings(
+        PHOTO_PROCESSING_PREVIEW_ENABLED=True,
+        STORAGES={
+            "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+            "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+        },
+    )
+    @modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
+    def test_admin_edit_commits_before_first_photo_policy_is_selected(self) -> None:
+        self.set_preview_payload()
+        FeatureFlag.objects.create(
+            key="paid-watermarked-previews",
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.ON,
+        )
+        get_user_model().objects.create_superuser(
+            "race-admin", "race-admin@example.com", "password"
+        )
+        admin_holds_event_lock = ThreadEvent()
+        allow_admin_commit = ThreadEvent()
+        confirmation_attempted_event_lock = ThreadEvent()
+        photo_created = ThreadEvent()
+        from picflow.admin import EventAdmin
+
+        original_save_model = EventAdmin.save_model
+        original_select_for_update = Event.objects.select_for_update
+        original_photo_create = Photo.objects.create
+
+        def pause_admin_save(admin, request, obj, form, change):
+            admin_holds_event_lock.set()
+            if not allow_admin_commit.wait(timeout=5):
+                raise AssertionError("test did not allow the admin edit to commit")
+            return original_save_model(admin, request, obj, form, change)
+
+        def observe_event_lock(*args, **kwargs):
+            if current_thread().name.startswith("confirmation"):
+                confirmation_attempted_event_lock.set()
+            return original_select_for_update(*args, **kwargs)
+
+        def observe_photo_create(*args, **kwargs):
+            photo = original_photo_create(*args, **kwargs)
+            if current_thread().name.startswith("confirmation"):
+                photo_created.set()
+            return photo
+
+        def confirm_in_thread() -> Photo | None:
+            close_old_connections()
+            try:
+                return self.confirm()
+            finally:
+                close_old_connections()
+
+        with (
+            patch.object(EventAdmin, "save_model", pause_admin_save),
+            patch.object(Event.objects, "select_for_update", side_effect=observe_event_lock),
+            patch.object(Photo.objects, "create", side_effect=observe_photo_create),
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="admin-edit") as admin_executor,
+            ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="confirmation"
+            ) as confirm_executor,
+        ):
+            admin_future = admin_executor.submit(
+                self.change_event_access_in_admin,
+                access_type=cast(str, Event.AccessType.PAID),
+            )
+            self.assertTrue(admin_holds_event_lock.wait(timeout=5))
+            confirm_future = confirm_executor.submit(confirm_in_thread)
+            self.assertTrue(confirmation_attempted_event_lock.wait(timeout=5))
+            try:
+                self.assertFalse(photo_created.is_set())
+            finally:
+                allow_admin_commit.set()
+            admin_response = admin_future.result(timeout=5)
+            photo = confirm_future.result(timeout=5)
+
+        self.assertEqual(admin_response.status_code, 302)
+        assert photo is not None
+        self.assertEqual(
+            (photo.processing_generation, photo.gallery_media_policy),
+            ("preview_first_watermarked_v1", "watermarked_preview_required"),
+        )
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.access_type, Event.AccessType.PAID)
+
+    @override_settings(
+        PHOTO_PROCESSING_PREVIEW_ENABLED=True,
+        STORAGES={
+            "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+            "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+        },
+    )
+    @modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
+    def test_first_photo_commit_makes_concurrent_admin_edit_fail_validation(self) -> None:
+        self.set_preview_payload()
+        get_user_model().objects.create_superuser(
+            "race-admin", "race-admin@example.com", "password"
+        )
+        photo_created = ThreadEvent()
+        allow_photo_commit = ThreadEvent()
+        admin_attempted_event_lock = ThreadEvent()
+        original_photo_create = Photo.objects.create
+        original_select_for_update = Event.objects.select_for_update
+
+        def pause_photo_create(*args, **kwargs):
+            photo = original_photo_create(*args, **kwargs)
+            if current_thread().name.startswith("confirmation"):
+                photo_created.set()
+                if not allow_photo_commit.wait(timeout=5):
+                    raise AssertionError("test did not allow confirmation to commit")
+            return photo
+
+        def observe_event_lock(*args, **kwargs):
+            if current_thread().name.startswith("admin-edit"):
+                admin_attempted_event_lock.set()
+            return original_select_for_update(*args, **kwargs)
+
+        def confirm_in_thread() -> Photo | None:
+            close_old_connections()
+            try:
+                return self.confirm()
+            finally:
+                close_old_connections()
+
+        with (
+            patch.object(Photo.objects, "create", side_effect=pause_photo_create),
+            patch.object(Event.objects, "select_for_update", side_effect=observe_event_lock),
+            ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="confirmation"
+            ) as confirm_executor,
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="admin-edit") as admin_executor,
+        ):
+            confirm_future = confirm_executor.submit(confirm_in_thread)
+            self.assertTrue(photo_created.wait(timeout=5))
+            admin_future = admin_executor.submit(
+                self.change_event_access_in_admin,
+                access_type=cast(str, Event.AccessType.PAID),
+            )
+            self.assertTrue(admin_attempted_event_lock.wait(timeout=5))
+            try:
+                self.assertFalse(admin_future.done())
+            finally:
+                allow_photo_commit.set()
+            photo = confirm_future.result(timeout=5)
+            admin_response = admin_future.result(timeout=5)
+
+        assert photo is not None
+        self.assertEqual(
+            (photo.processing_generation, photo.gallery_media_policy),
+            ("preview_first_v1", "preview_required"),
+        )
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertIn(
+            "Access type cannot be changed after the event has photos.",
+            admin_response.context["adminform"].form.errors["access_type"],
+        )
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.access_type, Event.AccessType.FREE)
 
     @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_checkpoint_change_after_geometry_inspection_prevents_preview_first_persistence(

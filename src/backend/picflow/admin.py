@@ -29,6 +29,41 @@ class EventFolderInline(admin.TabularInline):
 
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
+    class Form(ModelForm):
+        class Meta:
+            model = Event
+            fields = (
+                "name",
+                "slug",
+                "description",
+                "cover",
+                "start_date",
+                "end_date",
+                "city",
+                "timezone_name",
+                "access_type",
+                "publication_status",
+            )
+
+        def clean(self):
+            cleaned_data = super().clean()
+            access_type = cleaned_data.get("access_type")
+            if (
+                not self.instance.pk
+                or access_type is None
+                or "access_type" not in self.changed_data
+            ):
+                return cleaned_data
+
+            persisted = Event.objects.select_for_update().get(pk=self.instance.pk)
+            if access_type != persisted.access_type and persisted.photos.exists():
+                self.add_error(
+                    "access_type",
+                    "Access type cannot be changed after the event has photos.",
+                )
+            return cleaned_data
+
+    form = Form
     inlines = (EventFolderInline,)
     list_display = (
         "name",

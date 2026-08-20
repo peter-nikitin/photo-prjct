@@ -8,6 +8,8 @@ from pathlib import Path
 from site import getsitepackages
 from typing import Protocol
 
+from photo_worker.watermark import verify_packaged_watermark_assets
+
 MAX_RUNTIME_BYTES = 2048 * 1024 * 1024
 MODEL_DIRECTORIES = (Path("/worker/models"),)
 
@@ -33,6 +35,7 @@ def verify_runtime_contract(
 ) -> None:
     """Reject CUDA payloads and an oversized installed worker runtime."""
     torch_module = torch_module or import_module("torch")
+    verify_packaged_watermark_assets()
     if torch_module.version.cuda is not None:
         raise RuntimeError("Torch CUDA runtime must not be installed")
 

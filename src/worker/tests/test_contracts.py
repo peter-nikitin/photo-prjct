@@ -8,9 +8,11 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
     PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
+    PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     SCRFD_FACE_EMBEDDING_CONFIGURATION,
     V2_GENERATE_PREVIEW_CONFIGURATION,
+    V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
     Claim,
     ContractError,
     redact,
@@ -184,6 +186,85 @@ def test_claim_accepts_v2_preview_with_exact_generic_input_and_upload_slot() -> 
     assert claim.job.processor_type == "generate_preview"
     assert claim.job.input_fingerprint.media_kind == "original"
     assert claim.job.output_slots[0].variant == "preview-small-v1"
+
+
+def test_clean_preview_claim_rejects_a_watermarked_output_slot() -> None:
+    """A clean renderer must not receive the public watermarked derivative upload grant."""
+    payload = preview_claim_payload()
+    job = payload["job"]
+    assert isinstance(job, dict)
+    slots = job["output_slots"]
+    assert isinstance(slots, list)
+    slot = slots[0]
+    assert isinstance(slot, dict)
+    slots[0] = {
+        **slot,
+        "variant": "preview-watermarked-v1",
+        "staging_key": (
+            "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+            "preview-watermarked-v1.jpg"
+        ),
+    }
+
+    with pytest.raises(ContractError, match="unsupported claimed job"):
+        Claim.from_response(payload)
+
+
+def test_claim_accepts_only_the_watermarked_identity_clean_preview_fingerprint_and_slot() -> None:
+    """Changing the source variant or upload target would let this worker access other media."""
+    payload = preview_claim_payload()
+    job = payload["job"]
+    assert isinstance(job, dict)
+    job.update(
+        {
+            "processor_type": PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+            "processor_version": 1,
+            "configuration": V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
+            "input_fingerprint": {
+                "object_key": "derivatives/previews/photo-1/preview-small-v1/"
+                "00000000-0000-0000-0000-000000000012-"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+                "object_size": 1024,
+                "object_content_type": "image/jpeg",
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+            },
+            "input_limits": {"max_bytes": 1024, "content_type": "image/jpeg"},
+            "output_slots": [
+                {
+                    "variant": "preview-watermarked-v1",
+                    "upload_url": "https://storage.example.test/upload?signature=secret",
+                    "upload_expires_at": "2026-07-30T10:00:00Z",
+                    "content_type": "image/jpeg",
+                    "staging_key": (
+                        "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+                        "preview-watermarked-v1.jpg"
+                    ),
+                    "max_bytes": 10_485_760,
+                    "max_width": 1600,
+                    "max_height": 1600,
+                    "checksum_algorithm": "sha256",
+                }
+            ],
+        }
+    )
+
+    claim = Claim.from_response(payload)
+
+    assert claim.job is not None
+    assert (claim.job.contract_version, claim.job.processor_type, claim.job.processor_version) == (
+        2,
+        PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+        1,
+    )
+    assert claim.job.input_fingerprint.media_kind == "preview-small-v1"
+    assert claim.job.output_slots[0].variant == "preview-watermarked-v1"
+
+    job["input_fingerprint"] = {**job["input_fingerprint"], "media_kind": "original"}
+    with pytest.raises(ContractError, match="unsupported claimed job"):
+        Claim.from_response(payload)
 
 
 def test_claim_accepts_v3_scrfd_face_embedding_only_with_generic_preview_input() -> None:

@@ -12,9 +12,11 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE_FACE_EMBEDDING,
     PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
+    PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     V2_FACE_EMBEDDING_CONFIGURATION,
     V2_GENERATE_PREVIEW_CONFIGURATION,
+    V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
     CaptureMetadataResult,
     Claim,
     FaceEmbeddingFace,
@@ -301,6 +303,56 @@ def preview_claim() -> Claim:
     )
 
 
+def watermarked_preview_claim() -> Claim:
+    return Claim.from_response(
+        {
+            "empty": False,
+            "job": {
+                "id": "00000000-0000-0000-0000-000000000011",
+                "attempt_id": "00000000-0000-0000-0000-000000000012",
+                "contract_version": 2,
+                "processor_type": PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+                "processor_version": 1,
+                "configuration": V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
+                "photo_id": "photo-1",
+                "event_id": "00000000-0000-0000-0000-000000000013",
+                "run_id": "00000000-0000-0000-0000-000000000014",
+                "input_fingerprint": {
+                    "object_key": "derivatives/previews/photo-1/preview-small-v1/"
+                    "00000000-0000-0000-0000-000000000012-"
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+                    "object_size": 1024,
+                    "object_content_type": "image/jpeg",
+                    "object_etag": None,
+                    "media_kind": "preview-small-v1",
+                    "pixel_width": 2,
+                    "pixel_height": 2,
+                },
+                "input_limits": {"max_bytes": 1024, "content_type": "image/jpeg"},
+                "lease_expires_at": "2026-07-30T10:03:00Z",
+                "download_url": "https://storage.example.test/download?signature=download-secret",
+                "download_expires_at": "2026-07-30T10:01:00Z",
+                "output_slots": [
+                    {
+                        "variant": "preview-watermarked-v1",
+                        "upload_url": "https://storage.example.test/upload?signature=upload-secret",
+                        "upload_expires_at": "2026-07-30T10:01:00Z",
+                        "content_type": "image/jpeg",
+                        "staging_key": (
+                            "processing-staging/previews/00000000-0000-0000-0000-000000000012/"
+                            "preview-watermarked-v1.jpg"
+                        ),
+                        "max_bytes": 10_485_760,
+                        "max_width": 1600,
+                        "max_height": 1600,
+                        "checksum_algorithm": "sha256",
+                    }
+                ],
+            },
+        }
+    )
+
+
 def preview_face_claim() -> Claim:
     return Claim.from_response(
         {
@@ -372,6 +424,87 @@ class PreviewClient(Client):
     def complete(self, attempt_id: str, payload: dict[str, object], **_: object) -> None:
         self.calls.append("complete")
         super().complete(attempt_id, payload)
+
+
+def test_worker_dispatches_watermark_with_one_clean_download_one_slot_upload_and_safe_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A wrong dispatch could fetch another derivative, upload twice, or expose signed grants."""
+    caplog.set_level("INFO")
+    client = PreviewClient()
+    client.claim = watermarked_preview_claim()
+
+    def download(_url: str, destination: Path, **_kwargs: object) -> int:
+        image = Image.new("RGB", (2, 2), "white")
+        image.save(destination, "JPEG")
+        image.close()
+        client.calls.append("download")
+        return 1024
+
+    client.download = download
+    client.complete = lambda attempt_id, payload, **_kwargs: CallbackResult(
+        attempt_id, "succeeded", idempotent=True, stale=True
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_type=PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+            log_secrets=("download-secret", "upload-secret"),
+        ),
+    ).run_once()
+
+    assert client.claim_identities == [(2, PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW, 1)]
+    assert client.calls == ["download", "upload"]
+    assert len(client.completed) == 0
+    assert list(tmp_path.iterdir()) == []
+    assert "download-secret" not in caplog.text
+    assert "upload-secret" not in caplog.text
+
+
+def test_watermark_asset_failure_is_reported_without_an_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Collapsing an asset mismatch into decode failure would hide a broken worker package."""
+    from photo_worker.watermark import WatermarkedPreviewError
+
+    client = PreviewClient()
+    client.claim = watermarked_preview_claim()
+
+    def download(_url: str, destination: Path, **_kwargs: object) -> int:
+        image = Image.new("RGB", (2, 2), "white")
+        image.save(destination, "JPEG")
+        image.close()
+        client.calls.append("download")
+        return 1024
+
+    client.download = download
+    monkeypatch.setattr(
+        "photo_worker.runner.generate_watermarked_preview",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            WatermarkedPreviewError("watermark_asset_mismatch")
+        ),
+    )
+
+    Worker(
+        client,
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            temp_dir=tmp_path,
+            processor_type=PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+        ),
+    ).run_once()
+
+    assert client.calls == ["download"]
+    assert (client.failed[0]["error_code"], client.failed[0]["retryable"]) == (
+        "watermark_asset_mismatch",
+        False,
+    )
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_preview_is_uploaded_before_its_typed_completion_and_all_temp_files_are_removed(

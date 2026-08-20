@@ -1,6 +1,6 @@
 # 0029: Use watermarked previews for paid photo presentation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-20
 - Deciders: project maintainers
 - Supersedes: [ADR 0019](0019-use-public-event-selfie-search.md) for paid-result original
@@ -112,7 +112,6 @@ signing, expiry, and free-event behavior remain accepted.
 
 ### Follow-up
 
-- Obtain explicit maintainer acceptance of this ADR before implementation planning.
 - Supply and visually approve the final landscape and portrait PNG assets before real activation.
 - Validate one real new paid photo through clean preview, face processing, watermark publication,
   normal gallery, and ready selfie-result delivery before public activation.

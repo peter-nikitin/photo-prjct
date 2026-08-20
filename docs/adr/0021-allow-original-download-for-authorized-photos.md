@@ -4,7 +4,8 @@
 - Date: 2026-08-01
 - Deciders: project maintainers
 - Supersedes: ADR 0019 and ADR 0020 only for their exclusion of attachment downloads
-- Superseded by: none
+- Superseded by: [ADR 0029](0029-use-watermarked-previews-for-paid-photos.md) for original-download
+  authorization by the new paid-photo generation only
 
 ## Context
 

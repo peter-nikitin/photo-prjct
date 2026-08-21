@@ -33,23 +33,26 @@ manual corrections take precedence and the product must not claim certain identi
 
 The repository currently contains an early Django application:
 
-- Django 6 serves the canonical production UI from server-rendered templates and local static CSS
+Historical rollout evidence in this section retains its then-current `staging` and `production`
+wording. It records dates, commits, and prior gates; it is not an operator instruction or a current
+deployment topology. ADR 0028 and the accepted constraints below define the canonical deployment.
+
+- Django 6 serves the canonical customer UI from server-rendered templates and local static CSS
   and SVG assets under `src/backend`.
 - The `picflow` application owns the first target `Event` catalog model and a preliminary `Photo`
   model. Published events are managed through Django Admin and rendered by server-side templates.
-- Published free-event detail pages select completed uploaded `Photo` rows in stable ID order
-  through explicit persisted gallery-media policy. Legacy photos remain eligible under the existing
-  rules; a `preview_required` photo becomes eligible only after an accepted `generate_preview`
-  state and its published `preview-small-v1` derivative. The database-only factory converts rows to
-  immutable `GalleryPhoto` presentation values, so templates consume separate small- and large-
-  preview application URLs without inspecting storage fields or selecting media variants.
-- The small-media resolver serves the original for an explicit legacy policy and the published
-  derivative for `preview_required`; it never falls back to the original for a missing preview. The
-  large-media resolver continues to serve the private original only under the existing free-event
-  eligibility rules in ADR 0015. Both routes recheck publication and photo eligibility on every
-  request, stream inline with `private, no-store` caching and sanitized 404/503 outcomes, and expose
-  no permanent key, credential, S3 redirect, ETag, Range, or attachment behavior. The owning
-  iterator closes its storage body before iteration, at EOF, or after a read failure.
+- Published event detail pages apply an explicit persisted gallery-media policy. Free events retain
+  the existing legacy and accepted-clean-preview rules. With the off-by-default paid-watermark gate
+  enabled, a published paid event lists only `watermarked_preview_required` photos backed by an
+  accepted watermark state, attempt, and `preview-watermarked-v1` derivative; older paid photos
+  remain absent. The database-only factory converts rows to immutable `GalleryPhoto` presentation
+  values, including stable `photo_id`, semantic small- and large-preview application URLs, and a
+  nullable `download_url`, so templates neither inspect storage fields nor select media variants.
+- `PublicMediaResolver` is the sole server-side selector of public bytes. It retains legacy and
+  clean-preview behavior, selects `preview-watermarked-v1` for both presentation roles of the new
+  paid policy, and rejects that policy's original download before storage signing. It never falls
+  back to an original for missing required derivative evidence. Public routes recheck publication
+  and eligibility on every request and expose no permanent key or credential.
 - Event galleries use locally packaged GLightbox 3.3.1 assets with normal anchor fallback.
   Task 6's browser run and inspected snapshots verified responsive populated and empty layouts,
   keyboard and pointer operation, mobile swipe, Escape/control close, focus restoration, and
@@ -58,7 +61,7 @@ The repository currently contains an early Django application:
   HTTP-200 resources but timed out waiting for `networkidle`. PR #45 CI run
   [29693681091](https://github.com/peter-nikitin/photo-prjct/actions/runs/29693681091) then passed all
   44 visual tests for the CI-tested implementation commit `7d6a718` in 47.7 seconds; later docs-only
-  evidence commits were not included. Neither automated result represents a live staging activation.
+  evidence commits were not included. Neither automated result represents a canonical-deployment activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
@@ -74,10 +77,9 @@ The repository currently contains an early Django application:
   credentials, and receives only short-lived grants for exact input/output objects. Local targeted
   tests exercise real-JPEG preview generation, publication, gallery selection, preview-backed face
   enrollment, reporting, and the no-credential container contract. The feature is shipped and
-  locally verified, but tracked defaults leave preview activation false; it is neither
-  staging-configured nor live-activated. A seven-day staging-prefix lifecycle rule, representative
-  original-versus-preview ML comparison, and concurrency-one capacity measurement remain activation
-  blockers. No staging or production preview worker is enabled.
+  locally verified, but tracked defaults leave preview activation false. A seven-day temporary-preview
+  lifecycle rule, representative original-versus-preview ML comparison, and concurrency-one capacity
+  measurement remain canonical-deployment activation blockers. No preview worker is enabled.
 - The repository now also implements the dark-deployable preview-quality candidate
   `3/face_embedding/4`. It accepts only the already verified `preview-small-v1` input, and its
   fixed event-scoped replay command is dry-run by default and requires an explicit apply option.
@@ -93,7 +95,7 @@ The repository currently contains an early Django application:
   candidate state. It appends an event selection only after those checks; existing baseline,
   version-3, version-4, failed-attempt, projection, activation, and bearer-result evidence is not
   rewritten. The worker/deployment contract accepts the identity only when explicitly configured
-  and transports the staging-verified identity unchanged to production; deployment itself neither
+  and forwards it unchanged through the canonical deployment; deployment itself neither
   enrolls nor activates the candidate. Version 4 leaves the `0.363` selfie-search ranking threshold
   and direct/cluster result evidence unchanged. The accepted local full-corpus quality selection
   covers 17,043 photos/jobs/attempts/projections, zero technical failures, 37,573 kept faces, and
@@ -104,9 +106,8 @@ The repository currently contains an early Django application:
   identities and does not claim byte equivalence. The full hashes, exact configuration,
   comparison-manifest, and historical YuNet/SFace SHA-256 values are recorded in the
   [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence).
-  Current-merge-candidate full `make check`/reconciliation, PR and CI, staging
-  deployment/replay/activation, production promotion/replay/activation, and live verification
-  remain unevidenced.
+  Current-merge-candidate full `make check`/reconciliation, PR and CI, canonical deployment,
+  event replay/activation, and customer-facing verification remain unevidenced.
 - Events now carry an optional, explicitly entered IANA `timezone_name`; Django validates it with
   `ZoneInfo`, and publication rejects a missing or invalid value while draft events may remain
   unset. The capture-time migration assigns `Europe/Moscow` only to the existing event with ID 9;
@@ -123,8 +124,8 @@ The repository currently contains an early Django application:
   the approved event identity/cohort/configuration, and enrolls immutable version-2 work without
   rewriting prior attempts. The report emits bounded completion, timezone-state, warning, UTC, and
   event-local-hour aggregates.
-- Release A was the deployed projection writer and direct current-v2 evidence reader. Its accepted
-  staging operational gate at commit `41e3068` had final global reconciliation clean at 17,043
+- Release A was the deployed projection writer and direct current-v2 evidence reader. Its
+  then-designated staging operational gate at commit `41e3068` had final global reconciliation clean at 17,043
   exact event-9 source/value pairs, and a transaction-rollback lifecycle smoke cleared then
   republished the derived projection without rewriting immutable evidence. The source of truth is
   still the current accepted version-2 attempt; `Photo.capture_time` and
@@ -137,7 +138,7 @@ The repository currently contains an early Django application:
   That local Release B candidate evidence preceded the deployed Release B commit `d5b21e4`.
   Future deployment candidates must pass the live all-events reconciliation and event-9 benchmark
   before service switch; the exact Release A image precondition is retired.
-- Developers can stream a validated staging PostgreSQL logical dump through SSH and restore it only
+- Developers can stream a validated deployed-VM PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the
   normal local web service before replacement, keeps a local safety dump, and validates migration
@@ -149,31 +150,29 @@ The repository currently contains an early Django application:
   preservation, one immutable feedback record per terminal search, optional saved-result labels,
   explicit consent and contact validation, restricted audited staff inspection, and dedicated
   private feedback storage with guarded 30-day lifecycle and deployment preflight commands. The
-  implementation is disabled by default (`SELFIE_FEEDBACK_ENABLED=False`); no environment
-  activation, published-policy gate, live bucket/KMS preflight, or customer-outcome evidence is
+  implementation is disabled by default (`SELFIE_FEEDBACK_ENABLED=False`); no canonical-deployment
+  activation, published-policy gate, bucket/KMS preflight, or customer-outcome evidence is
   claimed yet.
-- A production Docker image runs migrations, collects static files, and starts Gunicorn.
-- Staging's normal deployment uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and
+- The canonical-deployment Docker image runs migrations, collects static files, and starts Gunicorn.
+- The canonical deployment uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and
   proxy the internal Django service. The canonical apex and `www` names route to that edge, with
   HTTP and alias traffic redirected to canonical HTTPS.
-- `docker-compose.staging.yml` and `deploy/nginx/staging.conf` remain available only as a temporary
-  manual HTTP recovery fallback while browser, internal-state, and renewal validation remain. The
-  normal staging deploy workflow does not select them, and cleanup after validation remains required
-  by [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
-- Every public environment will use one shared HTTPS overlay where Nginx terminates TLS, serves ACME
-  HTTP-01 challenges, and Certbot manages Let's Encrypt certificates in environment-specific
-  persistent volumes. This accepted transition is governed by
+- Retained old Compose resources, when present, are rollback artifacts only and are not routine
+  operator targets. The **Deploy** workflow selects `docker-compose.deployment.yml` and
+  `docker-compose.https.yml` with Compose project `photo-prjct`.
+- The shared HTTPS overlay terminates TLS, serves ACME HTTP-01 challenges, and Certbot manages
+  Let's Encrypt certificates in persistent volumes. This accepted boundary is governed by
   [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
 - HTTPS deployment ensures a certificate exists, validates canonical redirects and trusted health
   with `curl`, restores the prior application image in process on failure, and records the successful
   image only after all checks pass. DNS is an activation preflight, and hostname changes require an
   operator-controlled certificate reissue.
 - A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
-  staging Yandex Cloud VM. A separate manual workflow promotes that verified image to production
-  after GitHub Environment approval; production infrastructure is not provisioned yet.
+  canonical Yandex Cloud VM through **Deploy**. There is no promotion workflow or GitHub Environment
+  deployment boundary.
 - Pull-request CI treats every numbered migration already present on the base revision as an
   immutable identity: modifications, deletions, and renames fail the identity check, while new
-  leaves and explicit merge migrations remain allowed. The staging push workflow classifies changes
+  leaves and explicit merge migrations remain allowed. The deployment workflow classifies changes
   to the privileged selfie-observability package before building; such a push ends in a named,
   successful controlled pause with image build and application deployment skipped until the
   existing operator bootstrap and a manual deployment dispatch. Ordinary pushes retain the
@@ -186,10 +185,10 @@ The repository currently contains an early Django application:
   authority. These checks leave the existing SHA-tagged image, GHCR, Docker Compose, single-VM
   topology, root-owned observability package, and rollback path unchanged, conforming to
   [ADR 0003](adr/0003-docker-compose-yandex-cloud.md) and
-  [ADR 0005](adr/0005-promote-images-through-staging.md). Repository tests cover this transition;
-  this delivery records no new staging rollout, CI, or notification-drill evidence.
-- Both deployment workflows propagate the existing private-media bucket and credential settings.
-  Before environment promotion or any service switch, `apply-deployment.sh` pulls only the candidate
+  ADR 0028. Repository tests cover this transition; this delivery records no new canonical deployment,
+  CI, or notification-drill evidence.
+- The deployment workflow propagates the existing private-media bucket and credential settings.
+  Before a service switch, `apply-deployment.sh` pulls only the candidate
   web image. If no successful `deployed-image` marker exists, it emits the sanitized
   `gallery-private-media-preflight-skipped:no-existing-deployment` marker and continues the normal
   first-deployment path without constructing an ORM preflight container; this is not `GetObject`
@@ -197,8 +196,8 @@ The repository currently contains an early Django application:
   mode-0600 temporary environment file and the existing Compose network/database. An eligible row
   must yield one nonempty byte and a sanitized success marker; no eligible row yields a distinct
   skip marker that is also not storage-permission evidence; an unavailable established database
-  fails closed before promotion. Automated tests validate these paths and failure cleanup, but no
-  staging deployment, IAM state, cloud policy, or private object was changed or validated by this
+  fails closed before deployment. Automated tests validate these paths and failure cleanup, but no
+  canonical deployment, IAM state, cloud policy, or private object was changed or validated by this
   delivery.
 - Unfinished screen concepts live only in the test-only Django visual-reference gallery under
   `tests/visual`. Playwright renders it through isolated settings and `/__visual__/` routes; neither
@@ -223,16 +222,16 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Start as a Django modular monolith; extract services only after measured operational need.
 - Use PostgreSQL as the transactional system of record.
 - Deploy the initial product as containers through Docker Compose on a Yandex Cloud VM.
-- Use the current preemptible VM for staging and a separate non-preemptible VM for production.
-- Promote the same staging-verified image to production only after manual approval.
+- Operate one unqualified canonical deployment on the current VM; use runtime release gates for
+  incomplete customer-facing functionality, as defined by [ADR 0028](adr/0028-operate-one-canonical-deployment.md).
 - Load environment-specific configuration from environment variables and never commit secrets.
-- Use one complete, versioned Yandex Lockbox secret as the persistent secret authority for each
-  logical environment. Authorized developers read it through interactive `yc`; GitHub staging jobs
-  use workload identity federation and resource-level payload access. Runtime services do not read
-  Lockbox, as defined by [ADR 0026](adr/0026-use-lockbox-for-environment-secrets.md).
+- Use one complete, versioned Yandex Lockbox secret as the persistent secret authority for the
+  canonical deployment. Authorized developers read it through interactive `yc`; approved main-branch
+  GitHub workflows use workload identity federation and resource-level payload access. Runtime
+  services do not read Lockbox, as defined by ADR 0026 as superseded by ADR 0028.
 - Keep architecture, decisions, and delivery plans in this repository.
 - Prefer simple, repeatable operations over premature distributed infrastructure.
-- Use the shared Nginx and Certbot HTTPS edge in every public environment as defined by
+- Use the shared Nginx and Certbot HTTPS edge on the canonical deployment as defined by
   [ADR 0007](adr/0007-nginx-certbot-https-edge.md) and
   [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
 - Use Django sessions and the additive `ingestion.upload_photos` permission for photographer
@@ -272,11 +271,11 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   compatible with their already-persisted candidate rows. The direct path selects only the six
   identity/vector fields needed for ranking and does not hydrate the full embedding, detection,
   attempt, and photo model graph.
-  Staging activated the existing selfie-upload path on 2026-07-31 after applying the one-day
+  On 2026-07-31, the then-designated staging deployment activated the existing selfie-upload path after applying the one-day
   `selfie-search/` lifecycle rule, passing real-bucket preflight, and verifying a live published
   Unicode event search, original-size result media, and paid-result-only media access. The
-  repository default remains disabled and production is not activated. The gallery-photo query
-  path has local focused test evidence only; no staging or production deployment evidence is
+  repository default remains disabled. The gallery-photo query path has local focused test evidence
+  only; no canonical-deployment evidence is
   claimed for it.
 - Allow public event-scoped selfie searches to use the existing worker for temporary query
   embedding and Django for exact search, then publish immutable non-expiring bearer-link results
@@ -303,8 +302,8 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   in a dedicated private KMS-encrypted bucket whose 30-day lifecycle is authoritative. Public media
   routes and the ML worker cannot access feedback media, and staff access is explicit and audited,
   as defined by [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md). The feature remains
-  disabled by default and has no staging or production activation evidence until its policy, bucket,
-  KMS, and live-preflight gates are satisfied.
+  disabled by default and has no canonical-deployment activation evidence until its policy, bucket,
+  KMS, and preflight gates are satisfied.
 - The browser source boundary accepts JPEG, PNG, HEIC, and HEIF; Django bounds and decodes the
   source, preserving JPEG/PNG or normalizing HEIC/HEIF to canonical JPEG bytes before temporary
   storage and worker input. Stored objects and worker configuration remain canonical JPEG/PNG only,
@@ -319,22 +318,25 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
   transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
   future work.
-- For a new explicit paid-watermarked photo generation, the repository implements one private
-  clean preview for ML and one public-presentation watermarked preview. A normal published paid
-  gallery and ready selfie-search results may present only the accepted watermarked derivative,
-  while original presentation and download remain denied. Existing photo rows receive no backfill,
-  as defined by [ADR 0029](adr/0029-use-watermarked-previews-for-paid-photos.md). The paid
-  watermark and cart gates are disabled by default: this is local repository implementation only,
-  with no PR, CI, deployment, or live verification. Customer activation remains blocked on legal
-  cookie review, approved non-placeholder watermark assets, worker/staff smoke evidence, and
-  explicit gate activation.
+- For a new explicit paid-watermarked photo generation, accept one private clean preview for ML and
+  one public-presentation watermarked preview. The repository implements the new explicit pair,
+  independent clean-preview downstream enrollment, immutable watermark publication, and gated
+  paid-gallery and ready-result presentation. Both paid presentation roles select only the accepted
+  watermark and original presentation/download are denied; existing rows receive no backfill, as
+  defined by [ADR 0029](adr/0029-use-watermarked-previews-for-paid-photos.md). The focused local
+  Django checks passed on 2026-08-20; the runtime gate remains off and real activation awaits
+  approved non-placeholder artwork and the later operational rollout. The anonymous cart consumes
+  only this presentation boundary and cannot authorize media bytes. Both paid-watermark and cart
+  gates remain disabled by default; customer activation additionally requires necessary-cookie
+  legal review, worker/staff smoke evidence, and explicit gate activation. Purchase, entitlement,
+  and purchased-original delivery remain unimplemented.
 - Implement optional event-scoped selfie expansion from an immutable conservative face-cluster
   corpus. The repository builds and publishes versioned anonymous corpora from compatible accepted
   gallery embeddings, evaluates them through the private closed-benchmark CLI, records immutable
   direct/cluster provenance in PostgreSQL, and exposes bounded source-separated feedback and
   observability aggregates. Direct results remain first; unavailable or incompatible optional data
   falls back to the unchanged direct snapshot. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` is
-  the repository and worktree default, and no environment or customer activation is evidenced in
+  the repository and worktree default, and no canonical-deployment or customer activation is evidenced in
   this branch. The accepted design adds no named identity, cross-event matching, contextual
   evidence, automatic feedback tuning, persistent query vector, worker credential/configuration
   expansion, or online vector service, as defined by
@@ -347,20 +349,17 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   application/worker events, privacy-redacted Nginx routing, persistent host journald policy capped
   at 14 days and 1 GiB, stable Compose journal tags, and a daily Moscow-time summary timer. The
   deployment entrypoint reconciles and verifies these managed files with exact rollback. This is
-  repository verification only; staging activation evidence is not yet recorded. Journald is
+  repository verification only; canonical-deployment activation evidence is not yet recorded. Journald is
   operational evidence, not a product-data backup. Dashboards, alert delivery, central/cloud
   logging, and biometric-quality benchmarking remain proposed or excluded.
 
 ## Deployment domain assignment — accepted
 
-- The current single active environment is assigned the canonical public URL
-  `https://findme-photo.ru/`.
-- When staging and production become separate live environments, `https://findme-photo.ru/` remains
-  the production URL and staging moves to `https://staging.findme-photo.ru/`.
-- Public DNS routes the canonical and `www` names to the current VM, where trusted HTTPS is active.
-  The apex serves canonical HTTPS, and HTTP and `www` requests redirect to it. HTTPS activation does
-  not change the current VM's preemptible staging classification or relax the production readiness
-  gate.
+- The canonical deployment serves `https://findme-photo.ru/`.
+- Public DNS routes the canonical and `www` names to the deployed VM, where trusted HTTPS is active.
+  The apex serves canonical HTTPS, and HTTP and `www` requests redirect to it.
+- A future isolated test environment, if an availability-isolation need is accepted, uses a distinct
+  name and decision; it does not change this deployment's identity.
 
 ## Target MVP architecture — proposed
 
@@ -370,9 +369,9 @@ The MVP remains one product with modules that have explicit responsibilities:
 | --- | --- | --- |
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
-| Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals, preview-first, and disabled-default paid watermark presentation; no PR, CI, deployment, or live verification, and approved assets, worker/staff smoke, and explicit gates remain blockers; remaining scope proposed |
-| Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; environment activation and customer outcomes are not evidenced |
-| Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no environment activation or customer-outcome validation is claimed, and remaining modes are proposed |
+| Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals, preview-first, and the gated paid-watermark repository slice; real watermark activation and purchased exports remain unimplemented |
+| Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; canonical-deployment activation and customer outcomes are not evidenced |
+| Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no canonical-deployment activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
 | Commerce | Anonymous event carts, promotions, orders, payment state, download entitlement | Disabled-default anonymous server-side event cart implemented locally; no PR, CI, deployment, or live verification, and legal cookie review, approved assets, worker/staff smoke, and explicit gates remain blockers; promotions, packages, orders, payment state, and download entitlement remain proposed |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
@@ -424,10 +423,10 @@ broker, vector engine, and ML implementations shown for later processing require
    API with one-at-a-time local worker concurrency, explicit per-photo states, immutable attempts,
    and immutable event-run reports. The preview-first implementation adds the versioned
    `generate_preview` processor: after explicit activation it normalizes one JPEG through an
-   attempt-scoped staging upload, Django verifies and publishes an immutable derivative, and only
+   attempt-scoped temporary upload (the processing term, not a deployment name), Django verifies and publishes an immutable derivative, and only
    then makes the photo tile-eligible and queues preview-backed face work. Its Docker profile is
    locally opt-in and the API-only/no-credential container contract is locally verified. Tracked
-   defaults remain disabled; lifecycle, ML-comparison, and capacity gates prevent staging or live
+   defaults remain disabled; lifecycle, ML-comparison, and capacity gates prevent canonical-deployment
    activation. The worker-image and deployment validator package the optional exact
    `2/generate_watermarked_preview/1` identity, but all worker and deployment defaults and the
    required preview-processing identity set omit it. The `paid-watermarked-previews` feature-flag
@@ -439,7 +438,7 @@ broker, vector engine, and ML implementations shown for later processing require
 6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
    embeddings. The implemented preview-first contract records preview coordinate space and source
    dimensions for face results. The repository includes the approval-gated version-4 candidate for
-   one exact event and preserves its immutable evidence, but no environment processing or activation
+   one exact event and preserves its immutable evidence, but no canonical-deployment processing or activation
    is claimed. Each result records model version, confidence, geometry, and processing status.
 7. Search indexes are updated only within the photo's event scope.
 8. Operators can correct or suppress candidates. Manual decisions outrank automated results.
@@ -485,7 +484,7 @@ immutable direct and optional cluster-expansion evidence that ADRs 0019, 0024, a
 The worker-backed selfie source is implemented in the repository and locally verified with real
 SCRFD/SFace inference for the submitted selfie query. The existing selfie E2E's gallery side uses
 deterministic accepted embedding fixtures for historical stored `1/face_embedding/1` and current
-preview-backed `2/face_embedding/3`; its preview-first member is production-reachable through an
+preview-backed `2/face_embedding/3`; its preview-first member is canonical-deployment-reachable through an
 accepted, verified `2/generate_preview/1` derivative and the resulting enrollment into
 `2/face_embedding/3`.
 That evidence covers a published paid event, frozen event-only candidates, stable ranked results,
@@ -494,9 +493,9 @@ normal paid gallery. The existing immutable worker image packages pinned officia
 Zoo SFace models and runs a non-root build-time smoke through both `face_embedding` and
 `selfie_query`; the exact rollout image must run that same smoke before activation.
 Public selfie search is always available when its existing processing prerequisites are healthy;
-the retired availability switch is no longer an active setting. No staging lifecycle mutation,
-real-bucket preflight, exact rollout-image smoke, VM capacity smoke, cluster
-corpus activation, or environment/customer outcome is claimed. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False`
+the retired availability switch is no longer an active setting. No temporary-lifecycle mutation,
+bucket preflight, exact rollout-image smoke, VM capacity smoke, cluster
+corpus activation, canonical-deployment activation, or customer outcome is claimed. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False`
 remains the independent repository default. Corpus build, private benchmark, aggregate report, and
 guarded activation commands are repository interfaces only until the release gate and an explicit
 later rollout approve them.
@@ -505,8 +504,8 @@ The gallery-photo source is locally verified by 145 focused Python tests, 70 Jav
 the production markup and chooser behavior, and 83 visual tests covering the zero-, one-, two-,
 and four-face event-gallery fixture at desktop and 390px mobile widths. The root `make check`
 also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and clean system/migration
-checks. The gallery-photo source has no staging or production deployment evidence; production is
-not activated. Public selfie search is not controlled by an availability flag; the independent
+checks. The gallery-photo source has no canonical-deployment evidence. Public selfie search is not
+controlled by an availability flag; the independent
 cluster-expansion flag remains disabled by default.
 
 ### Purchase and download
@@ -604,6 +603,12 @@ unimplemented and require separately approved work.
    disabled-default runtime gate; separately approved packages, promotions, payment integration,
    orders, entitlements, and protected export for paid events remain later work.
 8. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
+
+### Later cart seam
+
+Later cart work may consume `GalleryPhoto.photo_id`, its nullable `download_url`, and the existing
+gallery-card action container. `PublicMediaResolver` remains the sole owner of public-media
+selection; this seam defines no cart model, cookie, price, purchase, or entitlement behavior.
 
 ## Deferred beyond MVP
 

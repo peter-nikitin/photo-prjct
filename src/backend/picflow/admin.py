@@ -141,6 +141,30 @@ class PhotoAdmin(admin.ModelAdmin):
 
         def clean(self):
             cleaned_data = super().clean()
+            if self.instance.pk:
+                persisted = (
+                    Photo.objects.select_for_update()
+                    .select_related("event")
+                    .get(pk=self.instance.pk)
+                )
+                immutable_values = {
+                    "event": persisted.event,
+                    "processing_generation": persisted.processing_generation,
+                    "gallery_media_policy": persisted.gallery_media_policy,
+                }
+                immutable_errors = {
+                    "event": "Event cannot be changed after the photo has been created.",
+                    "processing_generation": (
+                        "Processing generation cannot be changed after the photo has been created."
+                    ),
+                    "gallery_media_policy": (
+                        "Gallery media policy cannot be changed after the photo has been created."
+                    ),
+                }
+                for field, persisted_value in immutable_values.items():
+                    if field in cleaned_data and cleaned_data[field] != persisted_value:
+                        self.add_error(field, immutable_errors[field])
+
             event = cleaned_data.get("event")
             if event and self.instance.folder_id and self.instance.folder.event_id != event.pk:
                 self.add_error(

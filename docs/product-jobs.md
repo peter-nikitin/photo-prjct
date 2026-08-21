@@ -34,13 +34,13 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-002 | Visitor | Discover published events | Validated | 2026-07-17 |
 | PJ-003 | Visitor | Review event details | Validated | 2026-07-17 |
 | PJ-004 | Photographer | Upload an event batch | Validated | 2026-08-01 |
-| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-07-19 |
+| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-08-20 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
-| PJ-008 | Customer | Find photos by face | In progress | 2026-08-05 |
+| PJ-008 | Customer | Find photos by face | In progress | 2026-08-20 |
 | PJ-009 | Visitor | Receive a free-event original | Candidate | 2026-07-17 |
-| PJ-010 | Customer | Purchase selected photos | Candidate | 2026-07-17 |
-| PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
+| PJ-010 | Customer | Purchase selected photos | Candidate | 2026-08-20 |
+| PJ-011 | Customer | Download purchased photos | Candidate | 2026-08-20 |
 | PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
@@ -48,6 +48,10 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-016 | Customer | Select paid event photos | In progress | 2026-08-20 |
 
 ## Job details
+
+References below to `staging` or `production` are dated delivery evidence from the former
+two-environment model. They do not describe a current deployment target; ADR 0028 governs the
+canonical deployment and runtime feature gates.
 
 ### PJ-001 — Operator — Publish an event
 
@@ -95,7 +99,7 @@ can submit it for processing.
   folders plus `Без папки`; each assignment survives registration, retry, confirmation, and resume.
   Existing upload ownership and incoming-object authorization remain unchanged. Moving already
   uploaded photos, including a photographer-facing mass editor, is deliberately deferred.
-  This is local automated evidence only; CI, deployment, staging, and customer validation are not
+  This is local automated evidence only; CI, canonical deployment, and customer validation are not
   recorded.
 - Last updated: 2026-08-15
 
@@ -110,8 +114,13 @@ event.
   `Без папки` come only from the base eligible gallery, selections combine with capture time,
   survive numbered pagination, and invalid or foreign values cannot widen the event gallery.
   Existing gallery-media authorization is unchanged. This new evidence is local only; it does not
-  claim CI, deployment, staging, or customer validation.
-- Last updated: 2026-08-15
+  claim CI, canonical deployment, or customer validation.
+  On 2026-08-20, 215 focused Django tests passed for the paid-watermark repository slice: newly
+  confirmed paid photos use the explicit policy, appear only after accepted watermark evidence,
+  present the watermark in both gallery roles, and omit the download action. This is local
+  repository evidence only; the feature gate remains off, final artwork and operational activation
+  are pending, and no price, cart, purchase, entitlement, or purchased-original delivery exists.
+- Last updated: 2026-08-20
 
 ### PJ-006 — Operator — Review processing results
 
@@ -142,27 +151,27 @@ search within that event, so I can review probable matches.
   [`tests/processing/test_selfie_search_e2e.py`](../tests/processing/test_selfie_search_e2e.py)
   provide repository evidence plus local real YuNet/SFace inference for the selfie query; accepted
   deterministic gallery fixtures cover both face generations, including a verified preview
-  publication and production enrollment into `2/face_embedding/2`. The existing selfie-upload path
+  publication and current enrollment into `2/face_embedding/2`. The existing selfie-upload path
   covers event isolation, probable matches, selfie cleanup, stable results, and the narrow
   paid-result media exception. Public selfie search is now always available when its existing
   processing prerequisites are healthy; the retired availability switch is no longer active.
-  Staging deployed branch `c62508a` with that path enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
+  On 2026-07-31, the then-designated staging deployment deployed branch `c62508a` with that path enabled: the `selfie-search/` one-day lifecycle rule and scratch-object
   put/head/grant/delete preflight passed; six legacy face jobs produced four accepted event
   embeddings; and a live Unicode event upload reached a stable ready bearer URL with the expected
   original. The temporary selfie was deleted before publication, including from the bucket prefix.
   A temporary paid-event check kept normal media denied while bearer-result media succeeded. On
-  2026-08-02, staging deployed immediate queued-result navigation and then direct event-cohort
+  2026-08-02, the then-designated staging deployment deployed immediate queued-result navigation and then direct event-cohort
   ranking in PRs [#80](https://github.com/peter-nikitin/photo-prjct/pull/80) and
   [#82](https://github.com/peter-nikitin/photo-prjct/pull/82). New searches persist only eligible
   counts and matched results instead of one candidate row per eligible face; legacy frozen-candidate
   searches remain readable. Task 8 adds the accepted ADR 0025 path: immutable event-scoped face
   cluster corpora, strict-anchor direct-first expansion, immutable source provenance, and
   source-separated aggregate reporting. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains
-  the repository default; no corpus, environment, or customer activation and no measured recall or
+  the repository default; no corpus, canonical-deployment, or customer activation and no measured recall or
   precision outcome is claimed. The complete release gate is still pending independent whole-branch
   review.
-  This is staging evidence for the existing selfie-upload path only;
-  production is not activated.
+  This is dated former-topology evidence for the existing selfie-upload path only; the current
+  activation boundary is the canonical deployment and its feature gate.
 
   The gallery-photo query path is defined by [ADR 0024](adr/0024-use-gallery-face-as-search-query.md)
   and the approved [gallery-photo search design](superpowers/specs/2026-08-05-gallery-face-selector-design.md).
@@ -170,9 +179,14 @@ search within that event, so I can review probable matches.
   70 JavaScript tests for the production markup and chooser behavior, and 83 visual tests covering
   the zero-, one-, two-, and four-face event-gallery fixture at desktop and 390px mobile widths.
   The root `make check` also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and
-  clean system/migration checks. These are local repository checks only; no staging or production
-  deployment or customer validation is claimed for the gallery-photo path.
-- Last updated: 2026-08-05
+  clean system/migration checks. These are local repository checks only; no canonical deployment or
+  customer validation is claimed for the gallery-photo path.
+  On 2026-08-20, the same focused Django run covered ready paid-result presentation: saved
+  membership remains unchanged, a new paid-policy member is shown only after accepted watermark
+  evidence, both semantic media routes select that watermark, and original/download requests deny
+  before signing. This is local repository evidence only; the gate remains off and no real
+  activation or customer outcome is claimed.
+- Last updated: 2026-08-20
 
 ### PJ-009 — Visitor — Receive a free-event original
 
@@ -189,8 +203,10 @@ When I select paid photos, I want to complete an order and payment, so I can obt
 entitlement.
 
 - Status: Candidate
-- Evidence: [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download)
-- Last updated: 2026-07-17
+- Evidence: [Purchase and download](architecture.md#purchase-and-download). The paid-watermark
+  repository slice deliberately adds no price, cart, checkout, payment, order, or entitlement
+  state.
+- Last updated: 2026-08-20
 
 ### PJ-011 — Customer — Download purchased photos
 
@@ -198,8 +214,10 @@ When my order is paid, I want to download only its entitled photos, so I can rec
 purchased securely.
 
 - Status: Candidate
-- Evidence: [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download)
-- Last updated: 2026-07-17
+- Evidence: [Purchase and download](architecture.md#purchase-and-download). Watermarked paid
+  previews deny original download; purchased-original delivery and its entitlement policy are not
+  implemented.
+- Last updated: 2026-08-20
 
 ### PJ-016 — Customer — Select paid event photos
 
@@ -239,7 +257,7 @@ future feedback prompts in my browser.
   [selfie-search quality feedback specification](superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md),
   [implementation plan](plans/2026-08-04-selfie-search-quality-feedback.md), and
   [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md) define the accepted boundary.
-  `SELFIE_FEEDBACK_ENABLED=False` remains the default; no staging or production activation or
+  `SELFIE_FEEDBACK_ENABLED=False` remains the default; no canonical-deployment activation or
   real customer-outcome evidence is claimed. The face-cluster increment also provides the
   aggregate-only `report_face_cluster_expansion` command, which derives direct-primary,
   cluster-primary, dual-evidence, and labelled-sample feedback metrics from immutable server-side
@@ -277,14 +295,14 @@ storing a manual query.
 - Evidence: The approved [event gallery time-filter design](superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
   and [capture-time projection design](superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
   define the event-local form, exact inclusive bounds, privacy boundary, and two-release gate.
-  Accepted Release A staging evidence establishes the synchronous writer, direct reader, clean
+  Accepted Release A dated evidence establishes the synchronous writer, direct reader, clean
   global reconciliation at 17,043 event-9 pairs, and rollback-only lifecycle smoke. The current
   Release B candidate uses the projection-only filtered reader and has a clean immutable-local-clone
   reconciliation plus a [sanitized 2x benchmark](performance/2026-08-08-event-gallery-time-filter-local-clone.json)
   for its first, midpoint, and last pages. The integrated gallery/processing/projection/deployment
   suite, visual suite (92 tests), and separate `make check` exit clean locally. Customer acceptance
-  remains blocked on Release B review, PR/green CI, normal staging deployment, exact-image/health
-  checks, live reconciliation and benchmark, and gallery/privacy/authorization smoke coverage.
+  remains blocked on Release B review, PR/green CI, canonical deployment, exact-image/health
+  checks, reconciliation and benchmark, and gallery/privacy/authorization smoke coverage.
 - Last updated: 2026-08-08
 
 Visual design-reference screens are not delivery evidence.

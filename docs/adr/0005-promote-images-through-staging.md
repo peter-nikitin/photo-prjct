@@ -1,10 +1,10 @@
 # 0005: Promote immutable images through staging
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-07-11
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0028](0028-operate-one-canonical-deployment.md)
 
 ## Context
 

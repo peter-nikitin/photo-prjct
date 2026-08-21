@@ -575,14 +575,14 @@ class SearchJobTests(TestCase):
         )
         claimed = self.claim(search)
 
-        def broken_gallery_queryset(*_args, **_kwargs):
+        def broken_retrieval_queryset(*_args, **_kwargs):
             with connection.cursor() as cursor:
                 cursor.execute("SELECT * FROM missing_cluster_member_relation")
             raise AssertionError("the database query must fail")
 
         with patch(
             "selfie_search.services.cluster_expansion._accepted_face_photo_queryset",
-            side_effect=broken_gallery_queryset,
+            side_effect=broken_retrieval_queryset,
         ):
             complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
 

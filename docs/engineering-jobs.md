@@ -33,11 +33,11 @@ history row with PR or commit evidence where available, and never edit earlier h
 | --- | --- | --- | --- | --- |
 | EJ-001 | Developer | Reproduce local PostgreSQL development | Validated | 2026-07-17 |
 | EJ-002 | Contributor | Receive complete CI feedback | Validated | 2026-07-17 |
-| EJ-003 | Maintainer | Deploy an immutable image to staging | Delivered | 2026-08-07 |
-| EJ-004 | Operator | Run the current staging HTTPS edge | Validated | 2026-07-17 |
+| EJ-003 | Maintainer | Deploy an immutable image to the canonical deployment | Delivered | 2026-08-20 |
+| EJ-004 | Operator | Run the canonical HTTPS edge | Validated | 2026-08-20 |
 | EJ-005 | Contributor | Reproduce visual regression | Validated | 2026-07-17 |
-| EJ-006 | Maintainer | Promote the staging-verified image | Validated | 2026-07-17 |
-| EJ-007 | Operator | Provision a production environment | Candidate | 2026-07-17 |
+| EJ-006 | Maintainer | Retire the image-promotion path | Superseded | 2026-08-20 |
+| EJ-007 | Operator | Retire the separate-environment proposal | Superseded | 2026-08-20 |
 | EJ-008 | Operator | Activate trusted HTTPS | Delivered | 2026-07-17 |
 | EJ-009 | Operator | Detect service degradation | Planned | 2026-07-30 |
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-25 |
@@ -47,16 +47,21 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-014 | Maintainer | Gate consented feedback storage activation | Validated | 2026-08-04 |
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
-| EJ-017 | Developer | Read environment-scoped secrets consistently | Planned | 2026-08-07 |
+| EJ-017 | Developer | Read canonical secret projections consistently | Delivered | 2026-08-20 |
 | EJ-018 | Maintainer | Minimize and recover runtime credentials | Candidate | 2026-08-07 |
 | EJ-019 | Maintainer | Reconcile the capture-time projection before gallery cutover | Validated | 2026-08-08 |
 | EJ-020 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
 | EJ-021 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
 | EJ-022 | Maintainer | Gate preview-backed version-4 face generation activation | Delivered | 2026-08-10 |
 | EJ-023 | Maintainer | Keep event-photo folders durable and safely filterable | Validated | 2026-08-15 |
-| EJ-024 | Operator | Retain anonymous cart data within its bounded lifecycle | In progress | 2026-08-20 |
+| EJ-024 | Maintainer | Prepare paid watermarked-preview activation | In progress | 2026-08-20 |
+| EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | In progress | 2026-08-20 |
 
 ## Job details
+
+Unless a job was updated on or after 2026-08-20, references below to `staging`, `production`, or
+promotion record dated evidence from the former two-environment model. They are historical evidence,
+not current deployment instructions; ADR 0028 and EJ-003/EJ-004 control the canonical deployment.
 
 ### EJ-001 — Developer — Reproduce local PostgreSQL development
 
@@ -82,10 +87,10 @@ request run.
 - Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`scripts/check_migration_immutability.py`](../scripts/check_migration_immutability.py), [`tests/test_migration_immutability.py`](../tests/test_migration_immutability.py), [migration conflict runbook](runbooks/django-migration-conflicts.md), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json)
 - Last updated: 2026-07-17
 
-### EJ-003 — Maintainer — Deploy an immutable image to staging
+### EJ-003 — Maintainer — Deploy an immutable image to the canonical deployment
 
-When main advances, I want one SHA-tagged image built and applied to staging, so I can test the exact
-artifact that may later be promoted. Before any application mutation, the candidate migration ledger
+When main advances, I want one SHA-tagged image built and applied to the canonical deployment, so I can
+serve the exact reviewed artifact. Before any application mutation, the candidate migration ledger
 and plan are checked read-only. Pull requests protect numbered migration identities, privileged
 observability-package changes pause the automatic path until an operator bootstrap and manual
 dispatch, and named deployment phases feed one bounded non-blocking failure issue. The existing
@@ -101,22 +106,20 @@ GHCR image, Docker Compose, root-owned package, and rollback path remain authori
   [`src/backend/picflow/tests/test_verify_migration_history_command.py`](../src/backend/picflow/tests/test_verify_migration_history_command.py),
   [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh),
   [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py),
-  [`scripts/reconcile_staging_deploy_issue.py`](../scripts/reconcile_staging_deploy_issue.py),
-  [`tests/test_reconcile_staging_deploy_issue.py`](../tests/test_reconcile_staging_deploy_issue.py),
-  and [staging deployment runbook](runbooks/staging-deployment.md).
-- Live evidence: no PR, CI, staging-rollout, deployed-image, public-health, or notification-drill
+  [`tests/test_repository_foundation.py`](../tests/test_repository_foundation.py),
+  and [canonical deployment runbook](runbooks/deployment.md).
+- Deployment evidence: no PR, CI, canonical-deployment rollout, deployed-image, public-health, or notification-drill
   result is recorded in this checkout; keep `Delivered` until those acceptance checks establish
   `Validated`.
 - Last updated: 2026-08-07
 
-### EJ-004 — Operator — Run the current staging HTTPS edge
+### EJ-004 — Operator — Run the canonical HTTPS edge
 
-When staging is deployed after HTTPS activation, I want the shared HTTPS edge to terminate trusted
-traffic and proxy the application, so I can operate the current environment without presenting it as
-production.
+When the canonical deployment is applied, I want the shared HTTPS edge to terminate trusted traffic
+and proxy the application, so I can operate the customer-serving VM.
 
 - Status: Validated
-- Evidence: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
+- Evidence: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), and historical GitHub Actions deploy run 29556330740.
 - Last updated: 2026-07-17
 
 ### EJ-005 — Contributor — Reproduce visual regression
@@ -136,23 +139,23 @@ Dockerfile or dependency lock files change; pull requests never receive package 
 - Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml), [`tests/visual/run-in-container.sh`](../tests/visual/run-in-container.sh), [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
 - Last updated: 2026-07-19
 
-### EJ-006 — Maintainer — Promote the staging-verified image
+### EJ-006 — Maintainer — Retire the image-promotion path
 
-When a staging image is selected for promotion, I want the production-environment workflow to verify
-and reuse that exact image, so I can avoid rebuilding a different artifact.
+ADR 0028 supersedes this former two-environment job. **Deploy** is the only application delivery
+workflow; no promotion workflow or GitHub Environment approval is part of the current architecture.
 
-- Status: Validated
-- Evidence: [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py)
-- Last updated: 2026-07-17
+- Status: Superseded
+- Evidence: [ADR 0028](adr/0028-operate-one-canonical-deployment.md)
+- Last updated: 2026-08-20
 
-### EJ-007 — Operator — Provision a production environment
+### EJ-007 — Operator — Retire the separate-environment proposal
 
-When readiness evidence and pricing are approved, I want a separate non-preemptible production
-environment, so I can serve customers without staging lifecycle constraints.
+ADR 0028 supersedes the proposal. A future isolated test environment requires an accepted
+availability-isolation need and a separate decision; it is not a default promotion target.
 
-- Status: Candidate
-- Evidence: [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production)
-- Last updated: 2026-07-17
+- Status: Superseded
+- Evidence: [ADR 0028](adr/0028-operate-one-canonical-deployment.md)
+- Last updated: 2026-08-20
 
 ### EJ-008 — Operator — Activate trusted HTTPS
 
@@ -160,7 +163,7 @@ When the canonical domain prerequisites are confirmed, I want the prepared share
 activated and observed, so I can serve trusted canonical traffic and renew certificates safely.
 
 - Status: Delivered
-- Evidence: [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
+- Evidence: [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful then-designated staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
 - Last updated: 2026-07-17
 
 ### EJ-009 — Operator — Detect service degradation
@@ -187,7 +190,7 @@ When transactional data or media metadata is lost or corrupted, I want a tested 
 procedure with agreed recovery targets, so I can recover service safely.
 
 - Status: Candidate
-- Evidence: [`scripts/clone-staging-db.sh`](../scripts/clone-staging-db.sh) and [`tests/deployment/test_clone_staging_database.py`](../tests/deployment/test_clone_staging_database.py) provide partial local restore evidence: a developer can create a validated staging logical dump, replace only the current checkout's local Compose database through a serialized local-Docker-only workflow, quiesce the normal web service, retain diagnostic and safety dumps, and validate migration readiness without running the mutating web entrypoint. Separate isolated PostgreSQL 16 integrations verify marker/owner/ACL normalization and the actual project image's `django_migrations`, `showmigrations`, and `makemigrations` readiness against a restored migrated schema without staging network contact. This remains insufficient for service-data recovery: scheduled backups, retention, RPO/RTO, media recovery, and a staging disaster-recovery drill are not established. See also [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions).
+- Evidence: [`scripts/clone-deployed-db.sh`](../scripts/clone-deployed-db.sh) and [`tests/deployment/test_clone_deployed_database.py`](../tests/deployment/test_clone_deployed_database.py) provide partial local restore evidence: a developer can create a validated deployed-VM logical dump, replace only the current checkout's local Compose database through a serialized local-Docker-only workflow, quiesce the normal web service, retain diagnostic and safety dumps, and validate migration readiness without running the mutating web entrypoint. Separate isolated PostgreSQL 16 integrations verify marker/owner/ACL normalization and the actual project image's `django_migrations`, `showmigrations`, and `makemigrations` readiness against a restored migrated schema without deployed-VM network contact. This remains insufficient for service-data recovery: scheduled backups, retention, RPO/RTO, media recovery, and a disaster-recovery drill are not established. See also [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions).
 - Last updated: 2026-07-25
 
 ### EJ-014 — Operator — Inspect bounded selfie-search operational evidence
@@ -198,14 +201,14 @@ can diagnose its funnel without turning logs into product state or a backup.
 - Status: Delivered
 - Evidence: repository tests cover strict event contracts, redacted edge logs, deterministic daily
   aggregation, idempotent managed-file installation, exact rollback, effective journal caps, timer
-  state, Compose tags, and bounded probe readability. No staging deployment or replacement-
+  state, Compose tags, and bounded probe readability. No canonical deployment or replacement-
   persistence evidence is claimed yet.
 - Last updated: 2026-08-04
 
 ### EJ-011 — Maintainer — Gate private gallery media activation
 
 When I deploy a gallery-capable image, I want its candidate code and requested private-media
-settings checked before environment promotion or a service switch, so I can avoid activating media
+settings checked before a canonical deployment service switch, so I can avoid activating media
 delivery that cannot read an eligible original.
 
 The deployment entrypoint always pulls the candidate web image. With no successful
@@ -215,12 +218,11 @@ first-deployment flow; that skip is not `GetObject` validation. Once the marker 
 entrypoint uses a mode-0600 temporary environment file for the fail-closed candidate-image one-off.
 Tests cover candidate pull failure; the no-eligible-row skip without storage construction; the
 successful storage construction, final-object open, one-byte read, and body close; sanitized
-database-query, storage-construction, and object-open failures; ordering before environment
-promotion and service switching; preservation of canonical environment, deployment markers, and
-services on those pre-promotion failures; and removal of the secret-bearing temporary file when
-environment promotion itself fails. They do not exercise empty-read, read-exception, or
+database-query, storage-construction, and object-open failures; ordering before the service switch;
+preservation of canonical configuration, deployment markers, and services on those failures; and
+removal of the secret-bearing temporary file when the service switch fails. They do not exercise empty-read, read-exception, or
 close-exception failure paths.
-This is repository automation evidence only: no live staging or production activation, IAM
+This is repository automation evidence only: no canonical-deployment activation, IAM
 permission, bucket policy, or private object was validated or changed.
 
 - Status: Validated
@@ -229,7 +231,7 @@ permission, bucket policy, or private object was validated or changed.
 
 ### EJ-012 — Maintainer — Gate temporary selfie storage activation
 
-When I prepare an environment for public selfie search, I want lifecycle mutation and scratch-object
+When I prepare the canonical deployment for public selfie search, I want lifecycle mutation and scratch-object
 access to require explicit, fail-closed checks, so I can avoid enabling uploads without bounded
 cleanup and exact-object access.
 
@@ -238,9 +240,9 @@ unversioned bucket, collision-free preservation of existing lifecycle rules, exa
 automatic restoration after a mismatch. A separate explicit real-storage preflight checks the
 bounded `selfie-search/` lifecycle and performs one generated put/head/grant/delete cycle with
 sanitized markers and cleanup on failure. Automated tests validate these contracts. On 2026-07-31,
-staging applied the one-day `selfie-search/` lifecycle rule while preserving the existing preview
+the then-designated staging deployment applied the one-day `selfie-search/` lifecycle rule while preserving the existing preview
 rule; the real-bucket preflight passed its put/head/grant/delete markers, and the feature was then
-enabled. This is staging-only evidence; production remains unactivated.
+enabled. This dated evidence does not define a current deployment target.
 
 - Status: Validated
 - Evidence: [`src/backend/selfie_search/management/commands/configure_selfie_search_lifecycle.py`](../src/backend/selfie_search/management/commands/configure_selfie_search_lifecycle.py), [`src/backend/selfie_search/management/commands/verify_selfie_search_storage.py`](../src/backend/selfie_search/management/commands/verify_selfie_search_storage.py), [`src/backend/selfie_search/tests/test_configure_lifecycle_command.py`](../src/backend/selfie_search/tests/test_configure_lifecycle_command.py), and [`src/backend/selfie_search/tests/test_storage_contract_command.py`](../src/backend/selfie_search/tests/test_storage_contract_command.py)
@@ -270,7 +272,7 @@ worktree smoke and an actual hook-driven commit additionally validated the integ
 
 ### EJ-014 — Maintainer — Gate consented feedback storage activation
 
-When I prepare an environment for consented selfie-search feedback, I want the dedicated bucket,
+When I prepare the canonical deployment for consented selfie-search feedback, I want the dedicated bucket,
 KMS, lifecycle, anonymous-denial, and web-only credential contract checked fail-closed, so I can
 keep feedback disabled until its private storage boundary is ready.
 
@@ -279,7 +281,7 @@ unversioned and unlocked checks, readback, and recovery. Its explicit real-stora
 default KMS encryption, private ACLs, anonymous object and list denial, lifecycle, and one opaque
 put/head/range/grant/delete scratch cycle. Deployment tests verify disabled-by-default wiring,
 preflight confirmation before enablement, and that feedback credentials reach only the web service;
-no live Yandex bucket or staging activation is claimed.
+no Yandex bucket or canonical-deployment activation is claimed.
 
 - Status: Validated
 - Evidence: [`src/backend/selfie_search/feedback_lifecycle.py`](../src/backend/selfie_search/feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py`](../src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py`](../src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py), [`src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py`](../src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py), [`src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py`](../src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py), [`src/backend/selfie_search/tests/test_feedback_storage_contract_command.py`](../src/backend/selfie_search/tests/test_feedback_storage_contract_command.py), and [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py)
@@ -292,9 +294,9 @@ path, I want to build immutable event-scoped cluster evidence, evaluate it priva
 an explicit guarded activation, so I can keep direct-only search available until quality and resource
 gates are approved.
 
-- Status: Delivered for the repository capability; release-gate completion, environment activation,
+- Status: Delivered for the repository capability; release-gate completion, canonical-deployment activation,
   and customer-outcome validation remain pending.
-- Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py), and [`experiments/face_recognition_spike/face_spike/cli.py`](../experiments/face_recognition_spike/face_spike/cli.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance, source-separated reports, privacy-bounded v2 events, and the closed held-out evaluator. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or environment activation change is included.
+- Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py), and [`experiments/face_recognition_spike/face_spike/cli.py`](../experiments/face_recognition_spike/face_spike/cli.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance, source-separated reports, privacy-bounded v2 events, and the closed held-out evaluator. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or canonical-deployment activation change is included.
 - Last updated: 2026-08-05
 
 ### EJ-020 — Operator — Cache a frozen private event-original corpus
@@ -307,7 +309,7 @@ The repository provides an explicit event or deterministic latest-published sele
 private manifest, conditional streamed reads, atomic local publication, and strict reuse checks.
 It performs database reads plus Object Storage `HeadObject` and conditional `GetObject` only;
 neither credentials nor object keys are emitted in normal command output. Automated tests cover
-the local cache contract. An authorized staging-clone and private-media run is still required
+the local cache contract. An authorized deployed-data clone and private-media run is still required
 before this becomes operationally validated.
 
 - Status: Candidate pending an authorized local run.
@@ -336,7 +338,7 @@ decision without changing runtime behavior.
   `316fb731aec48b2ded99d7672a9ff388d6e3b49a541766457f7a609ab36160bb` and records six strata,
   100 controls, and 1,506 uncertain gallery entries. This fixture proves only the finalization
   round trip, not a quality decision. The tooling and evidence are local and filesystem-only; no
-  production generation is activated, and the separate search-relevance review remains pending.
+  canonical-deployment generation is activated, and the separate search-relevance review remains pending.
   See the [approved sampled-review plan](plans/2026-08-08-ten-percent-face-quality-review.md) and
   [`face_spike` experiment](../experiments/face_recognition_spike/README.md).
 - Last updated: 2026-08-08
@@ -350,9 +352,8 @@ other events, ranking, or historical biometric evidence.
 
 - Status: Delivered for the repository capability, focused local-contract evidence, and the
   maintainer-accepted local full-corpus quality selection. Current-merge-candidate full `make
-  check`/reconciliation, PR creation, GitHub CI, staging deployment, staging replay and activation,
-  production promotion, production replay and activation, and live verification are separate
-  pending evidence states; none is claimed here.
+  check`/reconciliation, PR creation, GitHub CI, canonical deployment, event replay/activation,
+  and customer-facing verification are separate pending evidence states; none is claimed here.
 - Evidence: Commit `e29e65a` implements the exact `3/face_embedding/4` approval, accepted
   `preview-small-v1` cohort validation, dry-run-by-default
   [`reprocess_event_face_embeddings`](../src/backend/processing/management/commands/reprocess_event_face_embeddings.py)
@@ -361,8 +362,7 @@ other events, ranking, or historical biometric evidence.
   [`face_quality.py`](../src/backend/processing/services/face_quality.py). Its focused activation,
   replay, enrollment, and adjacent corpus tests passed (60 tests). Commit `333f5b8` accepts the
   exact identity only when configured in [`apply-deployment.sh`](../deploy/apply-deployment.sh),
-  verifies and forwards the staging identity through
-  [`promote-production.yml`](../.github/workflows/promote-production.yml), and proves with focused
+  forwards it through [**Deploy**](../.github/workflows/deploy.yml), and proves with focused
   deployment/workflow and worker-contract tests that deployment performs neither replay nor
   activation. The candidate keeps the `0.363` ranking threshold and preserves baseline,
   version-3/version-4, failed-attempt, projection, activation, and bearer-result evidence. The
@@ -399,10 +399,26 @@ authority.
   covers stable event-local GET filtering, capture-time composition, and pagination. Folder values
   do not alter existing upload ownership, gallery eligibility, or media authorization. The mass
   editor for already uploaded photos, its photographer/time filters, and its permission model are
-  explicitly deferred. No CI, deployment, staging, or customer evidence is claimed.
+  explicitly deferred. No CI, canonical deployment, or customer evidence is claimed.
 - Last updated: 2026-08-15
 
-### EJ-024 — Operator — Retain anonymous cart data within its bounded lifecycle
+### EJ-024 — Maintainer — Prepare paid watermarked-preview activation
+
+When I prepare newly confirmed paid photos for public presentation, I want the protected preview
+path to remain disabled until its worker, artwork, and media authorization are ready, so I can
+avoid exposing a clean preview or original.
+
+- Status: In progress
+- Evidence: The repository implements ADR 0029's explicit paid-photo policy, immutable
+  watermarked derivative publication, gated normal-gallery and ready-result selection, and
+  pre-signing original/download denial. On 2026-08-20, 215 focused Django tests and 85 direct
+  worker renderer/runner tests passed. Final artwork is still placeholder-only; the runtime gate is
+  off, the complete suite, visual regression, worker image, deployment, and real activation are
+  not evidenced. This job adds no price, cart, purchase, entitlement, or purchased-original
+  delivery.
+- Last updated: 2026-08-20
+
+### EJ-025 — Operator — Retain anonymous cart data within its bounded lifecycle
 
 When anonymous paid-photo carts expire, I want the application to reject them immediately and the
 deployment package to remove them in bounded daily batches, so browser-linked selection does not
@@ -416,28 +432,25 @@ remain usable or accumulate indefinitely.
   gate has been enabled.
 - Last updated: 2026-08-20
 
-### EJ-017 — Developer — Read environment-scoped secrets consistently
+### EJ-017 — Developer — Read canonical secret projections consistently
 
-When I run the application in local development, CI, or a deployed environment, I want authorized
-workflows to read the secrets for their selected environment from one managed source, so I can
-reproduce environment behavior without copying credentials into GitHub Secrets or local files.
+When I run the application locally or use an approved workflow, I want one managed secret authority
+with only the projection I need, so I can work without copying credentials into GitHub or local files.
 
-The candidate direction is an environment-scoped Yandex Lockbox secret set. Local development
-would authenticate through `yc`, while GitHub Actions would use workload identity federation rather
-than a permanent Yandex Cloud credential. Any local launcher must materialize a payload only in a
-mode-0600 temporary file, overlay explicit safe local settings, avoid repository and worktree
-`.env` files, remove the temporary file after use, and fail without printing secret values. IAM
-must grant each actor access only to the selected environment. The eventual design must define
-secret inventory and ownership, environment isolation, rotation and revocation, audit boundaries,
-failure behavior, migration from existing GitHub Secrets, and rollback before implementation.
+The implemented canonical boundary is `deploy/environment-secrets.json`: one Lockbox secret,
+main-branch and exact-workflow-restricted OIDC for GitHub, interactive `yc` for authorized humans,
+and only `local-web`, `deploy`, `remote-check`, or `public-monitor` projections. The supported local
+launcher materializes a mode-0600 temporary file, applies safe local overrides, removes it after use,
+and emits no secret values. Exact-secret reader roles, rotation, revocation, rollback, and
+non-disclosure are documented and covered by repository-foundation contracts.
 
-- Status: Planned
-- Evidence: Accepted [ADR 0026](adr/0026-use-lockbox-for-environment-secrets.md), approved
-  [environment-scoped Lockbox secrets design](superpowers/specs/2026-08-07-environment-scoped-lockbox-secrets-design.md),
-  and approved [implementation plan](plans/2026-08-07-environment-scoped-lockbox-secrets.md).
-  No repository implementation, Lockbox resource, IAM binding, migration, deployment, or live
-  validation is claimed yet.
-- Last updated: 2026-08-07
+- Status: Delivered
+- Evidence: [`deploy/environment-secrets.json`](../deploy/environment-secrets.json),
+  [`scripts/run-with-environment-secrets.py`](../scripts/run-with-environment-secrets.py),
+  [environment secrets runbook](runbooks/environment-secrets.md),
+  [inventory](runbooks/environment-secrets-inventory.md), [ADR 0028](adr/0028-operate-one-canonical-deployment.md),
+  and [`tests/deployment/test_environment_secrets.py`](../tests/deployment/test_environment_secrets.py).
+- Last updated: 2026-08-20
 
 ### EJ-018 — Maintainer — Minimize and recover runtime credentials
 
@@ -495,7 +508,7 @@ This log is append-only.
 | --- | --- | --- | --- | --- |
 | 2026-07-17 | EJ-001 | Not recorded | Validated | [`docker-compose.yml`](../docker-compose.yml), [`.env.example`](../.env.example), and [`src/backend/config/settings.py`](../src/backend/config/settings.py) |
 | 2026-07-17 | EJ-002 | Not recorded | Validated | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json) |
-| 2026-07-17 | EJ-003 | Not recorded | Validated | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`Dockerfile`](../Dockerfile), [`docker-compose.prod.yml`](../docker-compose.prod.yml), and [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh) |
+| 2026-07-17 | EJ-003 | Not recorded | Validated | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`Dockerfile`](../Dockerfile), [`docker-compose.deployment.yml`](../docker-compose.deployment.yml), and [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh) |
 | 2026-07-17 | EJ-004 | Not recorded | Validated | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
 | 2026-07-17 | EJ-005 | Not recorded | Validated | [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-006 | Not recorded | Validated | [`.github/workflows/promote-production.yml`](../.github/workflows/promote-production.yml) and [`tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py) |
@@ -529,4 +542,5 @@ This log is append-only.
 | 2026-08-10 | EJ-022 | Not recorded | Delivered | Commits `e29e65a` and `333f5b8` provide the exact preview-backed version-4 approval/replay/activation and dark-deployment capability with focused local-contract tests. The maintainer-accepted 17,043-photo full-corpus quality selection, its counts, and its exact hashes are recorded in the [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence). Current-merge-candidate `make check`/reconciliation, PR/CI, all staging and production rollout stages, and live verification remain unrecorded. |
 | 2026-08-10 | EJ-022 | Delivered | Delivered | Commit `4f10a1a` enforces the clarified accepted cohort contract: the local projection and accepted runtime cohort have distinct canonical hashes and 17,043/17,043 SHA mismatches bound by one immutable reviewed crosswalk. Runtime enrollment and activation recompute the accepted cohort identity over photo ID, accepted SHA-256, byte size, and geometry; no byte-equivalence or environment-rollout evidence is claimed. |
 | 2026-08-15 | EJ-023 | Not recorded | Validated | Local automated coverage validates inline folder administration, durable mixed-folder ingestion, and stable public GET filtering restricted to the existing eligible event gallery. Folder identifiers remain non-authoritative for media; the mass editor is deferred. No CI, deployment, staging, or customer evidence is claimed. |
-| 2026-08-20 | EJ-024 | Not recorded | In progress | Local command and deployment-contract coverage packages bounded daily cart cleanup; installation and operational verification remain pending. |
+| 2026-08-20 | EJ-024 | Not recorded | In progress | ADR 0029's repository path is implemented with an off-by-default gate and focused Django/worker test evidence. Final artwork, complete-suite, visual, worker-image, deployment, and real-activation evidence remain pending. |
+| 2026-08-20 | EJ-025 | Not recorded | In progress | Local command and deployment-contract coverage packages bounded daily cart cleanup; installation and operational verification remain pending. |

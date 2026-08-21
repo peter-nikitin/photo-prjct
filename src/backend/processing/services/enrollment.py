@@ -272,10 +272,10 @@ GENERATE_WATERMARKED_PREVIEW_CONFIGURATION: dict[str, object] = {
         "strip_metadata": True,
         "checksum_algorithm": "sha256",
         "landscape_asset_sha256": (
-            "1fa87ded954d665cbed9151cfbeffae3d2060be9e5cd2f6ed90337660e24d6c3"
+            "adab8dcc93c744a79f8a33dc236f3da2e586b21a92070d902f4599dd27c161fa"
         ),
         "portrait_asset_sha256": (
-            "bf16296a2f3c1143941b1cf7566a9824e791f669b7c45871cef05b3f2cc7b743"
+            "d28f386783bed634eb55e7691217e434c697035108c24b7b8b066cb9af27b70a"
         ),
     },
     "worker": {

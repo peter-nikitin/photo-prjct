@@ -20,8 +20,8 @@ MAX_WATERMARK_PIXELS_CAP = 24_000_000
 LANDSCAPE_ASSET_NAME = "watermark-landscape-v1.png"
 PORTRAIT_ASSET_NAME = "watermark-portrait-v1.png"
 WATERMARK_ASSET_SHA256S = {
-    "landscape": "1fa87ded954d665cbed9151cfbeffae3d2060be9e5cd2f6ed90337660e24d6c3",
-    "portrait": "bf16296a2f3c1143941b1cf7566a9824e791f669b7c45871cef05b3f2cc7b743",
+    "landscape": "adab8dcc93c744a79f8a33dc236f3da2e586b21a92070d902f4599dd27c161fa",
+    "portrait": "d28f386783bed634eb55e7691217e434c697035108c24b7b8b066cb9af27b70a",
 }
 
 

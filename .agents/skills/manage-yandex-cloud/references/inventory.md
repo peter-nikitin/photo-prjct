@@ -7,18 +7,17 @@
 - Cloud ID: `b1gmcsmr51o5kvp86l55`
 - Folder ID: `b1g2qttgfhb4gdunvlge`
 
-## Environment mapping
+## Deployment mapping
 
-| Environment | Resource mapping | Lifecycle |
+| Deployment | Resource mapping | Lifecycle |
 | --- | --- | --- |
-| Staging | Existing preemptible VM; private-media Object Storage bucket is `hires-staging` (non-secret name only); stable VM, disk, subnet, security-group, and address IDs still require successful read-only discovery | Disposable application/data; automatic deploy from `main` |
-| Production | Not provisioned | Separate non-preemptible VM after sizing evidence and pricing approval |
+| Canonical | Existing preemptible customer-serving VM; private-media Object Storage bucket is `hires-staging` (a retained exact resource name); stable VM, disk, subnet, security-group, and address IDs still require successful read-only discovery | **Deploy** from `main`; Compose project `photo-prjct` |
 
-### Staging private-media bucket mapping
+### Private-media bucket mapping
 
 - Observed on 2026-07-30 from the GitHub repository variable
   `PRIVATE_MEDIA_S3_BUCKET`: `hires-staging`.
-- This is a stable, non-secret bucket-name mapping for staging. It is not proof of the bucket's
+- This is a stable, non-secret legacy bucket-name mapping for the canonical deployment. It is not proof of the bucket's
   current existence, ownership, ACL/CORS, lifecycle configuration, or billing state.
 - Verification was blocked on 2026-07-30: local interactive `yc` authentication had expired, so
   `yc storage bucket list --folder-id b1g2qttgfhb4gdunvlge --format json` returned
@@ -37,7 +36,7 @@ Observed through public DNS on 2026-07-13:
   `ns8-cloud.nic.ru`, and `ns8-l2.nic.ru`.
 
 These are public DNS observations, not proof that the address is statically allocated or attached to
-a particular Yandex Cloud resource ID. The current VM remains preemptible staging and its deployed
+a particular Yandex Cloud resource ID. The current VM remains the preemptible canonical deployment and its deployed
 edge was still HTTP-only when these facts were recorded. The HTTPS preparation work did not activate
 TLS or change live server/cloud state.
 
@@ -56,9 +55,9 @@ Required inventory:
 - attached service accounts and relevant access bindings;
 - current quotas and operations relevant to planned changes.
 
-## Production sizing record
+## Capacity sizing record
 
-Before proposing production, create a dated report linked from the implementation plan. It must
+Before proposing a capacity change, create a dated report linked from the implementation plan. It must
 contain traffic/latency, Gunicorn CPU and RSS, PostgreSQL growth/connections/IOPS, disk throughput and
 latency, deployment timings, network volume, RTO/RPO and restore evidence, photo-processing workload,
 two viable configurations, official cost estimates, and the selected headroom. The exact proposed

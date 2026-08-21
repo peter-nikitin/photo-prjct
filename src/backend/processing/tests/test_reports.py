@@ -425,7 +425,7 @@ class ProcessingRunReportTests(TestCase):
         fail_attempt(
             second.attempt.id,
             error_code="output_contract_violation",
-            error_detail="processing-staging/previews/private-secret.jpg",
+            error_detail="processing-pending/previews/private-secret.jpg",
             retryable=False,
         )
         cancelled = cancelled_photo.processing_jobs.get(processor_type="generate_preview")

@@ -1,6 +1,6 @@
 # Локальная ручная проверка preview-first photo-processing worker
 
-Эта инструкция проверяет сквозной путь с настоящими private Object Storage: браузер загружает JPEG через штатную страницу фотографа, Django подтверждает его и ставит `generate_preview`, отдельный worker получает временную GET-ссылку, создаёт нормализованный preview JPEG и загружает его только в попытку-scoped staging key. Django сам проверяет и публикует derivative, после чего ставит preview-backed `face_embedding` 2/3 с SCRFD. Она не включает worker на staging или production. Перед решением о реальной VM используйте отдельную [оценку конфигурации VM](photo-processing-vm-sizing.md): эта ручная проверка собирает для неё нужные измерения, но сама не разрешает resize или включение worker.
+Эта инструкция проверяет сквозной путь с настоящими private Object Storage: браузер загружает JPEG через штатную страницу фотографа, Django подтверждает его и ставит `generate_preview`, отдельный worker получает временную GET-ссылку, создаёт нормализованный preview JPEG и загружает его только в attempt-scoped temporary object. Django сам проверяет и публикует derivative, после чего ставит preview-backed `face_embedding` 2/3 с SCRFD. Она не включает worker на canonical deployment. Перед решением о реальной VM используйте отдельную [оценку конфигурации VM](photo-processing-vm-sizing.md): эта ручная проверка собирает для неё нужные измерения, но сама не разрешает resize или включение worker.
 
 После создания `.env` по инструкции ниже запустите быстрый автоматизированный preflight перед
 ручной проверкой:
@@ -14,16 +14,20 @@ DB_HOST=127.0.0.1 DB_PORT=5432 ../../.venv/bin/pytest -q tests/processing/test_p
 
 Этот тест использует настоящий Django API и worker, но подменяет скачивание exact-object JPEG. Это детерминированная проверка контракта, **не** ручная проверка настоящего S3/Object Storage.
 
-## Блокер активации: lifecycle для preview staging
+## Блокер активации: lifecycle для temporary preview objects
 
-До включения `PHOTO_PROCESSING_PREVIEW_ENABLED` на staging оператор обязан настроить правило
+До включения `PHOTO_PROCESSING_PREVIEW_ENABLED` на canonical deployment оператор обязан настроить правило
 удаления только для временных preview-объектов. Целевое правило имеет ID
 `expire-preview-staging-after-7-days`, prefix `processing-pending/previews/` и expiration
 `days: "7"`. Оно не должно затрагивать опубликованные derivatives
 (`derivatives/previews/`) или оригиналы. Пока это правило не применено и не проверено, activation
 preview worker **заблокирована**.
 
-На 2026-07-30 известен только non-secret mapping staging bucket: `hires-staging` — значение
+`staging` в literal rule ID и временных путях — техническое имя объекта, не имя deployment
+environment. `hires-staging` ниже — retained legacy bucket name; routine deployment commands всё
+равно адресуют только canonical deployment.
+
+На 2026-07-30 известен только non-secret mapping legacy bucket: `hires-staging` — значение
 GitHub repository variable `PRIVATE_MEDIA_S3_BUCKET`. Текущая lifecycle-конфигурация не
 подтверждена: локальная interactive-auth `yc` истекла, и read-only listing вернул
 `Unauthenticated`. Нельзя заменять lifecycle rules на основе этого имени или пустого файла.
@@ -32,7 +36,7 @@ GitHub repository variable `PRIVATE_MEDIA_S3_BUCKET`. Текущая lifecycle-�
 
 Сначала восстановите обычную интерактивную авторизацию профиля `default` в браузере, когда `yc`
 попросит об этом. Не выводите и не сохраняйте token, не запускайте `yc config list`. Затем
-выполните только следующие read-only команды и убедитесь, что context всё ещё staging:
+выполните только следующие read-only команды и убедитесь, что context соответствует canonical deployment:
 
 ```bash
 yc config profile list
@@ -351,14 +355,14 @@ PHOTO_WORKER_PROCESSOR_IDENTITIES=3/face_embedding_benchmark/1 \
   docker compose --profile worker up --build -d --scale worker=2 worker
 ```
 
-### Staging: ручной запуск через GitHub Actions
+### Canonical deployment: ручной запуск через GitHub Actions
 
-Перед запуском сохраните текущие значения staging variables `PHOTO_WORKER_PROCESSOR_IDENTITIES`,
+Перед запуском сохраните текущие repository variables `PHOTO_WORKER_PROCESSOR_IDENTITIES`,
 `PHOTO_WORKER_REPLICAS` и `PHOTO_PROCESSING_PREVIEW_ENABLED`. Для baseline установите
-`3/face_embedding_benchmark/1`, `1` и `False` соответственно, выполните normal staging deploy,
-затем вручную запустите workflow **Staging face-embedding benchmark** с `operation=baseline` и
+`3/face_embedding_benchmark/1`, `1` и `False` соответственно, выполните normal **Deploy**,
+затем вручную запустите workflow **Face-embedding benchmark** с `operation=baseline` и
 slug event. Он создаёт ровно 114 benchmark jobs и печатает `BENCHMARK_RUN_ID`; дождитесь закрытия
-этого run. Для replay установите replicas `2`, снова выполните normal staging deploy, затем
+этого run. Для replay установите replicas `2`, снова выполните normal **Deploy**, затем
 запустите тот же workflow с `operation=replay` и baseline UUID. `operation=report` печатает только
 агрегированные closed-run метрики для указанного UUID; UUID, event/configuration, source links,
 job/attempt/photo IDs и storage details в вывод не попадают.
@@ -366,8 +370,8 @@ job/attempt/photo IDs и storage details в вывод не попадают.
 Workflow принимает только slug/UUID, проверяет single benchmark identity, ожидаемую replica count
 и `PHOTO_PROCESSING_PREVIEW_ENABLED=False` на VM, а в контейнере запускает только Django management
 commands. После измерений восстановите сохранённые `PHOTO_WORKER_PROCESSOR_IDENTITIES`,
-`PHOTO_WORKER_REPLICAS` и `PHOTO_PROCESSING_PREVIEW_ENABLED`, затем вручную запустите normal staging
-deploy до возвращения обычной обработки фото.
+`PHOTO_WORKER_REPLICAS` и `PHOTO_PROCESSING_PREVIEW_ENABLED`, затем вручную запустите normal
+**Deploy** до возвращения обычной обработки фото.
 
 После закрытия выбранного run получите только aggregate-метрики через Django. Команда ниже
 является read-only (`SELECT`), не выводит ID, object keys, tokens, URLs, embeddings или vectors;

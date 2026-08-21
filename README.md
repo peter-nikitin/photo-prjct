@@ -10,7 +10,7 @@ unresolved decisions are documented rather than assumed to be implemented.
   open decisions.
 - [Architecture decisions](docs/adr/README.md) — durable decisions and the ADR template.
 - [Implementation plans](docs/plans/README.md) — delivery-plan conventions and template.
-- [Staging deployment runbook](docs/runbooks/staging-deployment.md) — automatic deployments,
+- [Canonical deployment runbook](docs/runbooks/deployment.md) — automatic deployments,
   controlled privileged-package pauses, retries, rollback, and acceptance checks.
 - [Local photo-processing worker check](docs/local-photo-processing-check.md) — manual real-Object-
   Storage verification before any deployment decision.
@@ -106,10 +106,10 @@ docker run --rm --network none --entrypoint python "$WORKER_IMAGE" -m photo_work
 ```
 
 Then apply and verify the exact `selfie-search/` lifecycle, run the explicit scratch-object
-preflight, and execute the staging smoke and capacity measurements in the
+preflight, and execute the canonical-deployment smoke and capacity measurements in the
 [public selfie-search rollout](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout).
 
-### Verify selfie-search feedback storage on staging
+### Verify selfie-search feedback storage on the canonical deployment
 
 Selfie-search feedback is implemented but remains disabled by default. After the dedicated private
 bucket, KMS key, and web-only credentials have been provisioned, run the explicit preflight while
@@ -119,9 +119,9 @@ secret-key, and KMS-key variables for the command as the deployment workflow doe
 ```bash
 cd /opt/photo-prjct
 test "$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)" = False
-docker compose --project-name photo-prjct-staging \
+docker compose --project-name photo-prjct \
   --env-file .env \
-  -f docker-compose.prod.yml \
+  -f docker-compose.deployment.yml \
   -f docker-compose.https.yml \
   exec -T \
   -e SELFIE_FEEDBACK_ENABLED=True \
@@ -134,7 +134,7 @@ docker compose --project-name photo-prjct-staging \
 
 The command checks the dedicated bucket contract and removes its generated scratch object. It is
 covered by the repository's automated storage/deployment tests; passing it does not enable feedback
-or replace the separate policy, lifecycle-mutation, staging smoke, and activation gates.
+or replace the separate policy, lifecycle-mutation, canonical-deployment smoke, and activation gates.
 
 ### Operate selfie-search observability
 
@@ -157,7 +157,7 @@ Inspect bounded events and the latest summary without printing unrelated logs:
 
 ```bash
 journalctl -u docker.service \
-  CONTAINER_TAG='findme.service=web findme.environment=staging' \
+  CONTAINER_TAG='findme.service=web' \
   --since '24 hours ago' --grep '"event":"selfie_' -o cat
 journalctl -u selfie-search-summary.service --since '14 days ago' -o cat \
   | grep '"event":"selfie_search_daily_summary"'
@@ -298,15 +298,15 @@ docker compose down
 
 This keeps the PostgreSQL volume. Do not add `-v` unless deleting the local database is intentional.
 
-### Clone staging data locally for migration development
+### Clone deployed data locally for migration development
 
 This developer workflow replaces only the current checkout's local Compose database with a fresh
-logical dump from staging. It is destructive to that local database; it is not a staging restore,
+logical dump from the canonical deployment. It is destructive to that local database; it is not a deployed-data restore,
 service-backup, or disaster-recovery procedure.
 
 Before running it, create the checkout-local `.env`, ensure Docker and Docker Compose are available,
-and confirm that `VM_SSH_TARGET` can connect to the staging host. Keep enough local disk space
-for both the incoming staging dump and a safety dump of the current local database. Logical dumps can
+and confirm that `VM_SSH_TARGET` can connect to the deployed VM. Keep enough local disk space
+for both the incoming deployed dump and a safety dump of the current local database. Logical dumps can
 contain personal data: keep them on an encrypted developer disk, do not upload them to shared
 services, and delete them manually when the migration branch no longer needs them.
 
@@ -319,25 +319,25 @@ Run the one-command clone interactively so it displays the exact local Compose p
 before asking for `yes`:
 
 ```bash
-VM_SSH_TARGET=<user>@<staging-host> make db-clone-deployed
+VM_SSH_TARGET=<user>@<deployed-host> make db-clone-deployed
 ```
 
 For non-interactive automation, set the explicit confirmation only after independently confirming
 that the current checkout is the intended local target:
 
 ```bash
-VM_SSH_TARGET=<user>@<staging-host> CONFIRM_REPLACE_LOCAL_DB=yes make db-clone-deployed
+VM_SSH_TARGET=<user>@<deployed-host> CONFIRM_REPLACE_LOCAL_DB=yes make db-clone-deployed
 ```
 
 The command streams and validates a PostgreSQL custom-format dump before changing local data, writes
-the staging dump, checksum, and metadata under `var/backups/deployed/`, and first makes a local safety
-dump in the same directory. The artifacts are mode `0600` and ignored by Git. A failed staging restore
+the deployed dump, checksum, and metadata under `var/backups/deployed/`, and first makes a local safety
+dump in the same directory. A failed deployed-data restore
 attempts to recover the original local database from its safety dump; all dumps remain available for
 diagnosis.
 
 Only one clone for the resolved Compose project/database may run at a time. The helper holds an
 atomic SHA-256-keyed lock under the selected backup directory's `.locks/` directory before contacting
-staging or replacing from a retained dump. A second process exits before SSH or SQL. If an interrupted
+the deployed VM or replacing from a retained dump. A second process exits before SSH or SQL. If an interrupted
 process leaves a stale lock, first verify that no clone is running, then use only the exact `rmdir`
 command printed by the helper; it never deletes another process's lock automatically.
 
@@ -358,7 +358,7 @@ migrations, the database names migrations absent from the checkout (update the b
 checkout has unapplied migration/model drift. It never starts the normal web entrypoint and never runs
 `migrate`.
 
-To retry from an existing retained dump without contacting staging, keep its matching `.sha256` sidecar
+To retry from an existing retained dump without contacting the deployed VM, keep its matching `.sha256` sidecar
 next to it and run:
 
 ```bash
@@ -369,8 +369,8 @@ This mode verifies the checksum and PostgreSQL custom archive before any local S
 same confirmation, safety dump, replacement, recovery, and Django validation path. It never modifies
 the supplied dump or checksum, and it does not require or contact `VM_SSH_TARGET`.
 
-The [direct staging database plan](docs/plans/2026-07-22-local-read-only-staging-database.md) is a
-draft plan, not an implemented workflow. Never point normal Django or Compose startup at staging: the
+The dated [direct staging database plan](docs/plans/2026-07-22-local-read-only-staging-database.md) is a
+historical plan, not an implemented workflow. Never point normal Django or Compose startup at the deployed VM: the
 image entrypoint runs migrations and other mutations.
 
 ## Quality checks
@@ -401,30 +401,15 @@ detection, and repository skill-structure tests.
 
 ## Deployment
 
-The existing preemptible Yandex Cloud VM is the staging environment. A push to `main` runs `Deploy
-staging`, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, deploys it behind the shared HTTPS
-edge, verifies that the running web container uses that exact image and that Nginx serves `/health/`,
-then records the successful image reference.
+The customer-serving Yandex Cloud VM is the one unqualified canonical deployment. A push to `main`
+runs **Deploy**, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, and applies it with Compose
+project `photo-prjct` using `docker-compose.deployment.yml` plus `docker-compose.https.yml`. The
+workflow verifies the immutable image and `https://findme-photo.ru/health/`.
 
-The current single active environment is assigned the canonical public URL
-`https://findme-photo.ru/`. After staging and production are provisioned as separate live
-environments, `https://findme-photo.ru/` remains the production URL and staging uses
-`https://staging.findme-photo.ru/`. This records the intended domain routing; it does not mean DNS
-or TLS rollout is already complete. The current VM remains operationally staging during the
-transition even though it is assigned the root domain.
-
-Normal deployments reuse the `photo-prjct-staging` Compose project and preserve its
-`photo-prjct-staging_pgdata` database volume. Database reset is not part of the deployment workflow.
-
-Create GitHub Environments named `staging` and `production`. Each environment owns separate values
-for `VM_HOST`, `VM_USER`, `VM_SSH_KEY`, `SECRET_KEY`, `ALLOWED_HOSTS`, `DB_NAME`, `DB_USER`,
-`DB_PASSWORD`, `GHCR_USERNAME`, and `GHCR_READ_TOKEN`. Configure required reviewers on `production`.
-
-For every public environment, configure `PUBLIC_DOMAIN` as an Environment variable and optionally
-configure `PUBLIC_DOMAIN_ALIAS`. For the current assignment, the intended values are
-`findme-photo.ru` and `www.findme-photo.ru`. An environment that uses the HTTPS overlay must also
-have `LETSENCRYPT_EMAIL` as an Environment secret. HTTP-only environments do not receive or read
-that secret.
+One Lockbox manifest, [`deploy/environment-secrets.json`](deploy/environment-secrets.json), supplies
+secret projections to `deploy`, `remote-check`, `public-monitor`, and `local-web`. Non-secret
+configuration is held in repository variables. There is no GitHub Environment and no
+`DEPLOYMENT_TARGET`; do not create aliases or separate deployment copies to hide unfinished work.
 
 The shared HTTPS overlay issues a certificate only when none exists, redirects HTTP to HTTPS, and
 proxies to private Django. Certificate/account state is kept in persistent Docker volumes; Certbot
@@ -437,17 +422,17 @@ curl --fail https://<public-domain>/health/
 
 The first command must return a canonical 308 redirect and the second must return
 `{"status": "ok"}` with normal TLS trust validation. Validate renewal on the activated VM with the
-same Compose project and both `docker-compose.prod.yml` and `docker-compose.https.yml` by running
+same Compose project and both `docker-compose.deployment.yml` and `docker-compose.https.yml` by running
 `certbot renew --dry-run` in the Certbot service.
 
 Changing `PUBLIC_DOMAIN` or `PUBLIC_DOMAIN_ALIAS` does not automatically replace an existing
 certificate. Treat such a change as maintenance: back up the environment certificate volume,
 remove the named certificate explicitly, and rerun deployment once to issue the new name set.
 
-### Enable photographer uploads on staging
+### Enable photographer uploads on the canonical deployment
 
 Keep `PHOTO_UPLOAD_ENABLED=False` for the first deployment of an ingestion-capable image. Configure
-these GitHub Environment or repository values before that deployment:
+these reviewed repository variables before that deployment:
 
 - variable `PRIVATE_MEDIA_S3_BUCKET` with the separate private bucket name;
 - variable `PRIVATE_MEDIA_ALLOWED_ORIGINS` with the exact public origin, currently
@@ -455,15 +440,15 @@ these GitHub Environment or repository values before that deployment:
 - secrets `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` and `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY` for the
   least-privilege service account.
 
-After the disabled deployment is healthy, run the opt-in storage contract inside the staging web
+After the disabled deployment is healthy, run the opt-in storage contract inside the deployed web
 container. The one-process override keeps the public upload routes disabled while the probe creates
 and removes its temporary objects:
 
 ```bash
 cd /opt/photo-prjct
-docker compose --project-name photo-prjct-staging \
+docker compose --project-name photo-prjct \
   --env-file .env \
-  -f docker-compose.prod.yml \
+  -f docker-compose.deployment.yml \
   -f docker-compose.https.yml \
   exec -T -e PHOTO_UPLOAD_ENABLED=True web \
   sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin "$PRIVATE_MEDIA_ALLOWED_ORIGINS"'
@@ -473,11 +458,6 @@ Only after this command succeeds, set `PHOTO_UPLOAD_ENABLED=True` and redeploy t
 revision. Enabled deployment validates private configuration and host `crontab`/`flock`, then
 installs one daily 03:17 host-time cleanup entry. Disable and redeploy to hide all upload routes and
 remove only that managed cron block; confirmed database rows and private originals remain intact.
-
-`Promote production` is manually dispatched with the successfully staged commit SHA. It verifies
-that SHA against the marker on staging, pauses for the production Environment approval, checks out
-the selected revision, and deploys the same GHCR image without rebuilding it. Production remains
-unavailable until a separate non-preemptible VM is approved and provisioned.
 
 The web container runs migrations and `collectstatic` before starting Gunicorn. Host `.env` files,
 GitHub secrets, and cloud credentials must never be committed. Use the project

@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.db.models import Sum
@@ -507,3 +508,66 @@ class OrderModelTests(TestCase):
                     "UPDATE commerce_paymentevidence SET normalized_status = %s WHERE id = %s",
                     [PaymentAttempt.Status.FAILED, evidence.pk],
                 )
+
+    def test_paid_order_item_identity_guard_rejects_bulk_and_raw_sql_but_not_unpaid_items(
+        self,
+    ) -> None:
+        """Only paid purchases freeze the key and type used by original delivery signing."""
+        photographer = get_user_model().objects.create_user(username="identity-photographer")
+        paid_photo = Photo.objects.create(
+            id="paid-identity-photo",
+            event=self.event,
+            src="",
+            uploaded_by=photographer,
+            original_key="originals/paid-original-identity",
+            original_filename="paid.jpg",
+            original_size=123,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+        paid_order = self.make_order(public_number="FM-DNTY2345")
+        self.make_item(order=paid_order, photo=paid_photo)
+        paid_order.status = Order.Status.PAID
+        paid_order.paid_at = timezone.now()
+        paid_order.save(update_fields=["status", "paid_at"])
+
+        with self.assertRaisesRegex(DatabaseError, "paid order item"), transaction.atomic():
+            Photo.objects.filter(pk=paid_photo.pk).update(
+                original_key="originals/redirected-paid-original",
+                original_content_type="image/png",
+            )
+        with self.assertRaisesRegex(DatabaseError, "paid order item"), transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE picflow_photo SET original_key = %s, original_content_type = %s "
+                    "WHERE id = %s",
+                    ["originals/raw-sql-redirected-paid-original", "image/png", paid_photo.pk],
+                )
+
+        unpaid_photo = Photo.objects.create(
+            id="unpaid-identity-photo",
+            event=self.event,
+            src="",
+            uploaded_by=photographer,
+            original_key="originals/unpaid-original-identity",
+            original_filename="unpaid.jpg",
+            original_size=123,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+        unpaid_order = self.make_order(public_number="FM-UNPD2345")
+        self.make_item(order=unpaid_order, photo=unpaid_photo)
+
+        Photo.objects.filter(pk=unpaid_photo.pk).update(
+            original_key="originals/rewritten-unpaid-original",
+            original_content_type="image/png",
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE picflow_photo SET original_key = %s, original_content_type = %s "
+                "WHERE id = %s",
+                ["originals/raw-sql-rewritten-unpaid-original", "image/jpeg", unpaid_photo.pk],
+            )
+        unpaid_photo.refresh_from_db()
+        self.assertEqual(unpaid_photo.original_key, "originals/raw-sql-rewritten-unpaid-original")
+        self.assertEqual(unpaid_photo.original_content_type, "image/jpeg")

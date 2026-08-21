@@ -161,6 +161,25 @@ class PhotoAdmin(admin.ModelAdmin):
                         "Gallery media policy cannot be changed after the photo has been created."
                     ),
                 }
+                if persisted.order_items.filter(order__status="paid").exists():
+                    immutable_values.update(
+                        {
+                            "original_key": persisted.original_key,
+                            "original_content_type": persisted.original_content_type,
+                        }
+                    )
+                    immutable_errors.update(
+                        {
+                            "original_key": (
+                                "Original key cannot be changed after the photo has a paid "
+                                "order item."
+                            ),
+                            "original_content_type": (
+                                "Original content type cannot be changed after the photo has "
+                                "a paid order item."
+                            ),
+                        }
+                    )
                 for field, persisted_value in immutable_values.items():
                     if field in cleaned_data and cleaned_data[field] != persisted_value:
                         self.add_error(field, immutable_errors[field])

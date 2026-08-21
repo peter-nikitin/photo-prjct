@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from uuid import uuid4
 
+from commerce.models import Order, OrderItem
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
@@ -366,6 +367,51 @@ class PhotoModelTests(TestCase):
         first.save()
         with self.assertRaises(ValidationError):
             self.private_photo(original_key=key).full_clean()
+
+    def test_paid_order_item_freezes_only_original_identity_on_model_validation_and_save(
+        self,
+    ) -> None:
+        """A paid entitlement must keep its storage key and attachment type exact."""
+        photo = self.private_photo()
+        photo.save()
+        order = Order.objects.create(
+            public_number="FM-PHTR2345",
+            event=self.event,
+            checkout_email="buyer@example.test",
+            total_kopecks=30000,
+            status=Order.Status.PAID,
+            paid_at=timezone.now(),
+        )
+        OrderItem.objects.create(
+            order=order,
+            photo=photo,
+            photo_public_id=photo.pk,
+            unit_price_kopecks=30000,
+            line_total_kopecks=30000,
+        )
+
+        original_key = photo.original_key
+        photo.original_key = f"originals/{uuid4().hex}"
+        with self.assertRaisesRegex(ValidationError, "paid order item"):
+            photo.full_clean()
+        with self.assertRaisesRegex(ValidationError, "paid order item"):
+            photo.save(update_fields=["original_key"])
+        photo.refresh_from_db()
+        self.assertEqual(photo.original_key, original_key)
+
+        original_content_type = photo.original_content_type
+        photo.original_content_type = "image/png"
+        with self.assertRaisesRegex(ValidationError, "paid order item"):
+            photo.save(update_fields=["original_content_type"])
+        photo.refresh_from_db()
+        self.assertEqual(photo.original_content_type, original_content_type)
+
+        photo.original_filename = "renamed-presentation.jpg"
+        photo.original_size = 456
+        photo.save(update_fields=["original_filename", "original_size"])
+        photo.refresh_from_db()
+        self.assertEqual(photo.original_filename, "renamed-presentation.jpg")
+        self.assertEqual(photo.original_size, 456)
 
     def test_processing_policy_defaults_to_the_legacy_pair(self) -> None:
         photo = self.private_photo()

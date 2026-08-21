@@ -1,9 +1,11 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
+from commerce.models import Order, OrderItem
 from django.contrib.auth import get_user_model
 from django.test import TestCase, modify_settings, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from picflow.models import Event, EventFolder, Photo
 
@@ -189,6 +191,70 @@ class EventAdminTests(TestCase):
             photo.gallery_media_policy,
             Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
         )
+
+    def test_photo_admin_rejects_paid_original_identity_changes(self) -> None:
+        event = Event.objects.create(
+            name="Paid immutable original run",
+            slug="paid-immutable-original-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+        photo = Photo.objects.create(
+            id="paid-immutable-original-photo",
+            event=event,
+            src="",
+            uploaded_by=self.user,
+            original_key="originals/paid-immutable-original",
+            original_filename="paid.jpg",
+            original_size=123,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+        order = Order.objects.create(
+            public_number="FM-ADMN2345",
+            event=event,
+            checkout_email="buyer@example.test",
+            total_kopecks=30000,
+            status=Order.Status.PAID,
+            paid_at=timezone.now(),
+        )
+        OrderItem.objects.create(
+            order=order,
+            photo=photo,
+            photo_public_id=photo.pk,
+            unit_price_kopecks=30000,
+            line_total_kopecks=30000,
+        )
+
+        response = self.client.post(
+            reverse("admin:picflow_photo_change", args=[photo.pk]),
+            self.photo_change_data(
+                photo,
+                uploaded_by=str(self.user.pk),
+                original_key="originals/redirected-paid-original",
+                original_filename=photo.original_filename,
+                original_size=str(photo.original_size),
+                original_content_type="image/png",
+                uploaded_at_0=photo.uploaded_at.date().isoformat(),
+                uploaded_at_1=photo.uploaded_at.time().isoformat(),
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Original key cannot be changed after the photo has a paid order item.",
+            response.context["adminform"].form.errors["original_key"],
+        )
+        self.assertIn(
+            "Original content type cannot be changed after the photo has a paid order item.",
+            response.context["adminform"].form.errors["original_content_type"],
+        )
+        photo.refresh_from_db()
+        self.assertEqual(photo.original_key, "originals/paid-immutable-original")
+        self.assertEqual(photo.original_content_type, "image/jpeg")
 
     def test_photo_admin_rejects_folderless_watermarked_photo_reclassification_to_preview_pair(
         self,

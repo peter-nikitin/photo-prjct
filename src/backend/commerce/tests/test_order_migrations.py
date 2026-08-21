@@ -153,6 +153,23 @@ class OrderMigrationDefinitionTests(TestCase):
             },
         )
 
+    def test_paid_original_identity_migration_is_linear_and_has_a_clean_reverse(self) -> None:
+        loader = MigrationLoader(connection)
+        migration = loader.get_migration("commerce", "0006_paid_original_identity")
+
+        self.assertEqual(
+            migration.dependencies,
+            [("commerce", "0005_observed_payment_evidence_currency")],
+        )
+        self.assertEqual(len(migration.operations), 1)
+        operation = migration.operations[0]
+        self.assertIn("commerce_guard_paid_order_item_photo_original_identity", operation.sql)
+        self.assertIn("original_key", operation.sql)
+        self.assertIn("original_content_type", operation.sql)
+        self.assertIn("commerce_order.status = 'paid'", operation.sql)
+        self.assertIn("DROP TRIGGER", operation.reverse_sql)
+        self.assertIn("DROP FUNCTION", operation.reverse_sql)
+
 
 class OrderMigrationDatabaseTests(TransactionTestCase):
     """The breaks caught here would let direct database writes bypass commercial invariants."""

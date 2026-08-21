@@ -15,7 +15,8 @@ _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _INCOMING_KEY = re.compile(rf"incoming/{_UUID}/{_UUID}")
 _FINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
 _PREVIEW_FINAL_KEY = re.compile(
-    r"derivatives/previews/[A-Za-z0-9_-]{1,32}/preview-small-v1/"
+    r"derivatives/previews/[A-Za-z0-9_-]{1,32}/"
+    r"(?:preview-small-v1|preview-watermarked-v1)/"
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
     r"[0-9a-f]{64}\.jpg"
 )

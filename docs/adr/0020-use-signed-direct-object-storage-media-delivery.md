@@ -4,7 +4,11 @@
 - Date: 2026-07-31
 - Deciders: project maintainers
 - Supersedes: ADR 0019 only for the inline-Django transport of authorized gallery and selfie-result media
-- Superseded by: [ADR 0021](0021-allow-original-download-for-authorized-photos.md) for the attachment-download exclusion and [ADR 0022](0022-use-numbered-gallery-pages.md) for the cursor-pagination follow-up only
+- Superseded by: [ADR 0021](0021-allow-original-download-for-authorized-photos.md) for the
+  attachment-download exclusion; [ADR 0022](0022-use-numbered-gallery-pages.md) for the
+  cursor-pagination follow-up only; and
+  [ADR 0029](0029-use-watermarked-previews-for-paid-photos.md) for normal paid-gallery denial and
+  original selection by the new paid-photo generation only
 
 ## Context
 

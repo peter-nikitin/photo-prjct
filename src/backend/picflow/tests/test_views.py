@@ -21,11 +21,13 @@ from django.test import (
 )
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.models import FeatureFlag
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
@@ -46,6 +48,7 @@ from processing.services.face_quality import publish_face_embedding_projection
 from selfie_search.models import SelfieSearch
 
 from picflow.models import Event, EventFolder, Photo
+from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 
 
 class NavigationMarkupParser(HTMLParser):
@@ -478,12 +481,19 @@ class GalleryPageTests(TestCase):
             result={"capture_time": capture_time},
         )
 
-    def publish_preview(self, photo: Photo, *, final_key: str) -> PhotoDerivative:
-        configuration = {"generate_preview": {"variant": "preview-small-v1"}}
+    def publish_preview(
+        self,
+        photo: Photo,
+        *,
+        final_key: str,
+        processor_type: str = GENERATE_PREVIEW_PROCESSOR,
+        variant: str = "preview-small-v1",
+    ) -> PhotoDerivative:
+        configuration = {processor_type: {"variant": variant}}
         run = EventProcessingRun.objects.create(
             event=photo.event,
             contract_version=2,
-            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_type=processor_type,
             processor_version=1,
             configuration=configuration,
             configuration_hash="a" * 64,
@@ -493,7 +503,7 @@ class GalleryPageTests(TestCase):
             run=run,
             photo=photo,
             contract_version=2,
-            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_type=processor_type,
             processor_version=1,
             configuration=configuration,
             configuration_hash="a" * 64,
@@ -507,7 +517,7 @@ class GalleryPageTests(TestCase):
             job=job,
             photo=photo,
             contract_version=2,
-            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_type=processor_type,
             processor_version=1,
             configuration=configuration,
             input_fingerprint={},
@@ -515,8 +525,8 @@ class GalleryPageTests(TestCase):
             terminal_at=timezone.now(),
             accepted=True,
         )
-        state = PhotoProcessingState.objects.get(
-            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo, processor_type=processor_type
         )
         state.status = PhotoProcessingState.Status.SUCCEEDED
         state.current_run = run
@@ -527,7 +537,7 @@ class GalleryPageTests(TestCase):
         state.save()
         return PhotoDerivative.objects.create(
             photo=photo,
-            variant="preview-small-v1",
+            variant=variant,
             final_key=final_key,
             byte_size=10,
             content_type="image/jpeg",
@@ -728,6 +738,61 @@ class GalleryPageTests(TestCase):
         )
         self.assertEqual(paid_response.context["gallery_photos"], ())
 
+    def test_enabled_paid_gallery_renders_only_watermarked_semantic_media_without_downloads(
+        self,
+    ) -> None:
+        FeatureFlag.objects.create(
+            key=PAID_WATERMARKED_PREVIEWS_FLAG,
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.ON,
+        )
+        event = self.make_event(
+            name="Paid gallery",
+            slug="paid-watermarked-gallery",
+            access_type=Event.AccessType.PAID,
+        )
+        ready = self.make_private_photo(
+            event,
+            id="paid-watermarked-ready",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        derivative = self.publish_preview(
+            ready,
+            final_key=(
+                "derivatives/previews/paid-watermarked-ready/preview-watermarked-v1/accepted.jpg"
+            ),
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        self.make_private_photo(
+            event,
+            id="paid-watermarked-pending",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        legacy = self.make_private_photo(event, id="paid-legacy-hidden")
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            tuple(item.photo_id for item in response.context["gallery_photos"]),
+            (ready.pk,),
+        )
+        presentation = response.context["gallery_photos"][0]
+        self.assertEqual(presentation.photo_id, ready.pk)
+        self.assertEqual(presentation.preview_media_small.variant, "preview-small")
+        self.assertEqual(presentation.preview_media_large.variant, "preview-large")
+        self.assertIsNone(presentation.download_url)
+        self.assertContains(response, f'<figure class="gallery-card" data-photo-id="{ready.pk}">')
+        self.assertContains(response, '<div class="gallery-card-download">')
+        self.assertNotContains(response, 'class="gallery-download"')
+        self.assertNotContains(response, 'class="gallery-lightbox-download"')
+        markup = response.content.decode(response.charset)
+        for secret in (ready.original_key, legacy.original_key, derivative.final_key):
+            self.assertNotIn(secret, markup)
+
     @patch("config.views.PrivateUploadStorage")
     def test_event_detail_keeps_legacy_and_requires_accepted_preview_for_new_photos(
         self, storage_class
@@ -843,7 +908,8 @@ class GalleryPageTests(TestCase):
                 )
             else:
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
-        self.assertNotContains(response, "gallery-photo-id")
+        for photo in photos:
+            self.assertContains(response, f'data-photo-id="{photo.pk}"')
 
     def test_event_detail_uses_the_compact_metadata_header_without_hero_content(self) -> None:
         event = self.make_event(description="Подробное описание события")
@@ -1541,12 +1607,19 @@ class GalleryMediaViewTests(TransactionTestCase):
         values.update(overrides)
         return Photo.objects.create(**values)
 
-    def publish_preview(self, photo: Photo, *, final_key: str) -> PhotoDerivative:
-        configuration = {"generate_preview": {"variant": "preview-small-v1"}}
+    def publish_preview(
+        self,
+        photo: Photo,
+        *,
+        final_key: str,
+        processor_type: str = GENERATE_PREVIEW_PROCESSOR,
+        variant: str = "preview-small-v1",
+    ) -> PhotoDerivative:
+        configuration = {processor_type: {"variant": variant}}
         run = EventProcessingRun.objects.create(
             event=photo.event,
             contract_version=2,
-            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_type=processor_type,
             processor_version=1,
             configuration=configuration,
             configuration_hash="a" * 64,
@@ -1556,7 +1629,7 @@ class GalleryMediaViewTests(TransactionTestCase):
             run=run,
             photo=photo,
             contract_version=2,
-            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_type=processor_type,
             processor_version=1,
             configuration=configuration,
             configuration_hash="a" * 64,
@@ -1570,7 +1643,7 @@ class GalleryMediaViewTests(TransactionTestCase):
             job=job,
             photo=photo,
             contract_version=2,
-            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            processor_type=processor_type,
             processor_version=1,
             configuration=configuration,
             input_fingerprint={},
@@ -1578,8 +1651,8 @@ class GalleryMediaViewTests(TransactionTestCase):
             terminal_at=timezone.now(),
             accepted=True,
         )
-        state = PhotoProcessingState.objects.get(
-            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo, processor_type=processor_type
         )
         state.status = PhotoProcessingState.Status.SUCCEEDED
         state.current_run = run
@@ -1590,7 +1663,7 @@ class GalleryMediaViewTests(TransactionTestCase):
         state.save()
         return PhotoDerivative.objects.create(
             photo=photo,
-            variant="preview-small-v1",
+            variant=variant,
             final_key=final_key,
             byte_size=10,
             content_type="image/jpeg",
@@ -1656,6 +1729,50 @@ class GalleryMediaViewTests(TransactionTestCase):
 
         self.assertEqual(response.status_code, 404)
         resolver_factory.assert_not_called()
+
+    def test_enabled_paid_media_signs_both_semantic_roles_but_download_denies_before_resolver(
+        self,
+    ) -> None:
+        FeatureFlag.objects.create(
+            key=PAID_WATERMARKED_PREVIEWS_FLAG,
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.ON,
+        )
+        event = self.make_event(
+            name="Paid watermark",
+            slug="paid-watermark-media",
+            access_type=Event.AccessType.PAID,
+        )
+        photo = self.make_private_photo(
+            event,
+            id="paid-watermark-media",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        self.publish_preview(
+            photo,
+            final_key=(
+                "derivatives/previews/paid-watermark-media/preview-watermarked-v1/accepted.jpg"
+            ),
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        resolver = Mock()
+        resolver.resolve_signed.return_value = "https://storage.example.test/watermark?signed"
+
+        with patch("config.views._public_media_resolver", return_value=resolver) as factory:
+            media_responses = tuple(
+                self.client.get(self.media_url(event=event, photo=photo, variant=variant))
+                for variant in ("preview-small", "preview-large")
+            )
+            factory.reset_mock()
+            resolver.reset_mock()
+            download_response = self.client.get(self.download_url(event=event, photo=photo))
+
+        self.assertEqual([response.status_code for response in media_responses], [302, 302])
+        self.assertEqual(download_response.status_code, 404)
+        factory.assert_not_called()
+        resolver.resolve_download.assert_not_called()
 
     def test_photo_media_redirects_to_signed_preview_without_streaming_a_body(self) -> None:
         event = self.make_event()

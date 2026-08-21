@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from photo_worker import model_smoke
+from photo_worker import model_smoke, runtime_contract
 from photo_worker.contracts import FaceEmbeddingResult
 from photo_worker.face_embedding import FaceEmbeddingError
 
@@ -41,3 +41,18 @@ def test_model_smoke_passes_the_scrfd_threshold_to_both_consumers(
     model_smoke._assert_selfie_query_no_face(source)
 
     assert calls == {"photo": 0.5, "selfie": 0.5}
+
+
+def test_runtime_contract_accepts_the_exact_packaged_watermark_assets() -> None:
+    """Replacing either committed placeholder without its declared checksum must stop the build."""
+
+    class Torch:
+        class version:
+            cuda = None
+
+    runtime_contract.verify_runtime_contract(
+        torch_module=Torch(),
+        site_package_directories=(),
+        model_directories=(),
+        distributions=(),
+    )

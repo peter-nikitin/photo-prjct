@@ -37,9 +37,13 @@ from processing.services.enrollment import (
     FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
     FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
+    GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION,
+    PREVIEW_CONTRACT_VERSION,
     create_face_embedding_benchmark_run,
     request_capture_metadata,
     request_face_embedding_enqueue,
+    request_generate_watermarked_preview,
     request_processor,
 )
 
@@ -107,6 +111,14 @@ class WorkerApiTests(TestCase):
         return self.claim_body(
             contract_version=2,
             processor_type="generate_preview",
+            processor_version=1,
+            **overrides,
+        )
+
+    def watermarked_preview_claim_body(self, **overrides: object) -> dict[str, object]:
+        return self.claim_body(
+            contract_version=2,
+            processor_type="generate_watermarked_preview",
             processor_version=1,
             **overrides,
         )
@@ -289,7 +301,12 @@ class WorkerApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()["job"]
 
-    def publish_preview(self, photo: Photo) -> PhotoDerivative:
+    def publish_preview(
+        self,
+        photo: Photo,
+        *,
+        canonical_key_mismatch: str | None = None,
+    ) -> PhotoDerivative:
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
         photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
         photo.save(update_fields=["processing_generation", "gallery_media_policy"])
@@ -324,11 +341,18 @@ class WorkerApiTests(TestCase):
             terminal_at=timezone.now(),
             accepted=True,
         )
+        key_photo_id = "different-photo" if canonical_key_mismatch == "photo" else photo.id
+        key_attempt_id = (
+            "00000000-0000-0000-0000-000000000000"
+            if canonical_key_mismatch == "attempt"
+            else str(attempt.id)
+        )
+        key_sha256 = "b" * 64 if canonical_key_mismatch == "hash" else "a" * 64
         derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-small-v1",
-            final_key=f"derivatives/previews/{photo.id}/preview-small-v1/"
-            f"{attempt.id}-{'a' * 64}.jpg",
+            final_key=f"derivatives/previews/{key_photo_id}/preview-small-v1/"
+            f"{key_attempt_id}-{key_sha256}.jpg",
             byte_size=1024,
             content_type="image/jpeg",
             width=1600,
@@ -873,6 +897,250 @@ class WorkerApiTests(TestCase):
         self.assertGreaterEqual(upload_grant.call_args.kwargs["max_ttl_seconds"], 1)
         self.assertLessEqual(upload_grant.call_args.kwargs["max_ttl_seconds"], 119)
         self.assertEqual(ProcessingAttempt.objects.get().result, {})
+
+    @patch("processing.views.ExactPreviewStorage")
+    def test_watermark_claim_grants_only_its_accepted_clean_input_and_exact_output_slot(
+        self, preview_storage
+    ) -> None:
+        preview_storage.return_value.create_download_grant.return_value.url = (
+            "https://storage.example.test/clean-preview?secret"
+        )
+        preview_storage.return_value.create_download_grant.return_value.expires_at = (
+            timezone.now() + timedelta(seconds=30)
+        )
+        preview_storage.return_value.create_upload_grant.return_value.url = (
+            "https://storage.example.test/watermark-put?secret"
+        )
+        preview_storage.return_value.create_upload_grant.return_value.expires_at = (
+            timezone.now() + timedelta(seconds=20)
+        )
+        photo = self.photo("watermark-api-photo")
+        clean_preview = self.publish_preview(photo)
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        request_generate_watermarked_preview(photo, clean_preview)
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.watermarked_preview_claim_body(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        job = response.json()["job"]
+        self.assertEqual(job["input_fingerprint"]["object_key"], clean_preview.final_key)
+        self.assertEqual(job["download_url"], "https://storage.example.test/clean-preview?secret")
+        self.assertEqual(
+            preview_storage.return_value.create_download_grant.call_args.kwargs["final_key"],
+            clean_preview.final_key,
+        )
+        self.assertEqual(
+            job["output_slots"],
+            [
+                {
+                    "variant": "preview-watermarked-v1",
+                    "upload_url": "https://storage.example.test/watermark-put?secret",
+                    "upload_expires_at": (
+                        preview_storage.return_value.create_upload_grant.return_value.expires_at.isoformat()
+                    ),
+                    "content_type": "image/jpeg",
+                    "staging_key": (
+                        f"processing-pending/previews/{job['attempt_id']}/"
+                        "preview-watermarked-v1.jpg"
+                    ),
+                    "max_bytes": 10_485_760,
+                    "max_width": 1600,
+                    "max_height": 1600,
+                    "checksum_algorithm": "sha256",
+                }
+            ],
+        )
+        Claim.from_response(response.json())
+
+    @patch("processing.views.ExactPreviewStorage")
+    def test_watermark_claim_rejects_a_valid_shaped_unaccepted_preview_before_signing(
+        self, preview_storage
+    ) -> None:
+        photo = self.photo("watermark-unaccepted-input")
+        request_processor(
+            photo,
+            processor_type="generate_watermarked_preview",
+            contract_version=PREVIEW_CONTRACT_VERSION,
+            processor_version=GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION,
+            configuration=GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
+            input_fingerprint={
+                "object_key": (
+                    f"derivatives/previews/{photo.id}/preview-small-v1/"
+                    f"00000000-0000-0000-0000-000000000000-{'0' * 64}.jpg"
+                ),
+                "object_size": 1024,
+                "object_content_type": "image/jpeg",
+                "object_etag": None,
+                "media_kind": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+            },
+            enabled=True,
+        )
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.watermarked_preview_claim_body(),
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["error"]["code"], "input_invariant")
+        preview_storage.return_value.create_download_grant.assert_not_called()
+        preview_storage.return_value.create_upload_grant.assert_not_called()
+
+    def assert_watermark_claim_rejects_noncanonical_accepted_preview_key(
+        self,
+        preview_storage,
+        *,
+        mismatch: str,
+    ) -> None:
+        preview_storage.return_value.create_download_grant.return_value.url = (
+            "https://storage.example.test/clean-preview?secret"
+        )
+        preview_storage.return_value.create_download_grant.return_value.expires_at = (
+            timezone.now() + timedelta(seconds=30)
+        )
+        preview_storage.return_value.create_upload_grant.return_value.url = (
+            "https://storage.example.test/watermark-put?secret"
+        )
+        preview_storage.return_value.create_upload_grant.return_value.expires_at = (
+            timezone.now() + timedelta(seconds=20)
+        )
+        identifier = f"watermark-noncanonical-{mismatch}"
+        original_key = hashlib.sha256(identifier.encode()).hexdigest()[:32]
+        photo = self.photo(identifier, original_key=f"originals/{original_key}")
+        clean_preview = self.publish_preview(
+            photo,
+            canonical_key_mismatch=mismatch,
+        )
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        request_generate_watermarked_preview(photo, clean_preview)
+        expected_photo_id = "different-photo" if mismatch == "photo" else photo.id
+        expected_attempt_id = (
+            "00000000-0000-0000-0000-000000000000"
+            if mismatch == "attempt"
+            else str(clean_preview.accepted_attempt_id)
+        )
+        expected_sha256 = "b" * 64 if mismatch == "hash" else "a" * 64
+        expected_key = (
+            f"derivatives/previews/{expected_photo_id}/preview-small-v1/"
+            f"{expected_attempt_id}-{expected_sha256}.jpg"
+        )
+        queued_key = ProcessingJob.objects.get(
+            photo=photo,
+            processor_type="generate_watermarked_preview",
+        ).input_fingerprint["object_key"]
+        self.assertEqual(clean_preview.final_key, expected_key)
+        self.assertEqual(queued_key, expected_key)
+
+        response = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.watermarked_preview_claim_body(),
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["error"]["code"], "input_invariant")
+        preview_storage.return_value.create_download_grant.assert_not_called()
+        preview_storage.return_value.create_upload_grant.assert_not_called()
+
+    @patch("processing.views.ExactPreviewStorage")
+    def test_watermark_claim_rejects_wrong_photo_in_accepted_preview_key_before_signing(
+        self, preview_storage
+    ) -> None:
+        self.assert_watermark_claim_rejects_noncanonical_accepted_preview_key(
+            preview_storage,
+            mismatch="photo",
+        )
+
+    @patch("processing.views.ExactPreviewStorage")
+    def test_watermark_claim_rejects_wrong_attempt_in_accepted_preview_key_before_signing(
+        self, preview_storage
+    ) -> None:
+        self.assert_watermark_claim_rejects_noncanonical_accepted_preview_key(
+            preview_storage,
+            mismatch="attempt",
+        )
+
+    @patch("processing.views.ExactPreviewStorage")
+    def test_watermark_claim_rejects_wrong_sha_in_accepted_preview_key_before_signing(
+        self, preview_storage
+    ) -> None:
+        self.assert_watermark_claim_rejects_noncanonical_accepted_preview_key(
+            preview_storage,
+            mismatch="hash",
+        )
+
+    @patch("processing.views.complete_preview_attempt")
+    @patch("processing.views.ExactPreviewStorage")
+    def test_watermark_completion_routes_only_the_exact_result_to_verified_publication(
+        self, preview_storage, complete_preview
+    ) -> None:
+        preview_storage.return_value.create_download_grant.return_value.url = (
+            "https://storage.example.test/clean-preview?secret"
+        )
+        preview_storage.return_value.create_download_grant.return_value.expires_at = (
+            timezone.now() + timedelta(seconds=30)
+        )
+        preview_storage.return_value.create_upload_grant.return_value.url = (
+            "https://storage.example.test/watermark-put?secret"
+        )
+        preview_storage.return_value.create_upload_grant.return_value.expires_at = (
+            timezone.now() + timedelta(seconds=20)
+        )
+        photo = self.photo("watermark-completion-photo")
+        clean_preview = self.publish_preview(photo)
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        request_generate_watermarked_preview(photo, clean_preview)
+        job = self.post(
+            "/internal/photo-processing/v1/claim",
+            self.watermarked_preview_claim_body(),
+        ).json()["job"]
+        attempt = ProcessingAttempt.objects.get(pk=job["attempt_id"])
+        complete_preview.return_value = AttemptCompletion(attempt=attempt)
+        result = {
+            "variant": "preview-watermarked-v1",
+            "content_type": "image/jpeg",
+            "byte_size": 1024,
+            "width": 1600,
+            "height": 1000,
+            "sha256": "b" * 64,
+            "upload_ms": 3,
+            "warnings": ["color_profile_missing"],
+        }
+
+        rejected = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+            self.terminal_body(
+                job,
+                contract_version=2,
+                processor_type="generate_watermarked_preview",
+                processor_version=1,
+                result=result | {"variant": "preview-small-v1"},
+            ),
+        )
+        accepted = self.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+            self.terminal_body(
+                job,
+                contract_version=2,
+                processor_type="generate_watermarked_preview",
+                processor_version=1,
+                result=result,
+            ),
+        )
+
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(complete_preview.call_args.kwargs["result"], result)
 
     @patch("processing.views.complete_preview_attempt")
     @patch("processing.views.ExactPreviewStorage.create_upload_grant")

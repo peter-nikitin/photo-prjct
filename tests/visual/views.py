@@ -120,7 +120,7 @@ class FixtureGalleryPhoto:
     photo_id: str
     preview_media_small: FixtureGalleryMedia
     preview_media_large: FixtureGalleryMedia
-    download_url: str
+    download_url: str | None
     alt: str
     faces: tuple[FixtureGalleryFace, ...] = ()
     capture_time_display: str | None = None
@@ -245,12 +245,13 @@ def _gallery_photo(
     faces: tuple[FixtureGalleryFace, ...] = (),
     *,
     capture_time_display: str | None = None,
+    downloadable: bool = True,
 ) -> FixtureGalleryPhoto:
     return FixtureGalleryPhoto(
         photo_id=photo_id,
         preview_media_small=FixtureGalleryMedia(image, "preview-small"),
         preview_media_large=FixtureGalleryMedia(image, "preview-large"),
-        download_url=f"/__visual__/downloads/{photo_id}/",
+        download_url=f"/__visual__/downloads/{photo_id}/" if downloadable else None,
         alt=f"Фото {photo_id} с события London 10K",
         faces=faces,
         capture_time_display=capture_time_display,
@@ -268,6 +269,11 @@ SELFIE_RESULT_PHOTOS = (
     _gallery_photo("1048", "/static/images/run-city-1842.png", capture_time_display="09:18"),
     _gallery_photo("1190", "/static/images/run-track-1190.png", capture_time_display="10:07"),
     _gallery_photo("1316", "/static/images/run-finish-1842.png"),
+)
+
+PAID_GALLERY_PHOTOS = tuple(replace(photo, download_url=None) for photo in GALLERY_PHOTOS)
+PAID_SELFIE_RESULT_PHOTOS = tuple(
+    replace(photo, download_url=None) for photo in SELFIE_RESULT_PHOTOS
 )
 
 
@@ -629,6 +635,14 @@ def event_gallery_populated(request: HttpRequest) -> HttpResponse:
     return _render(request, "catalog/event_detail.html", _gallery_context())
 
 
+def event_gallery_paid(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "catalog/event_detail.html",
+        _gallery_context(photos=PAID_GALLERY_PHOTOS),
+    )
+
+
 def event_gallery_staff_preview(request: HttpRequest) -> HttpResponse:
     _as_staff(request)
     context = _gallery_context()
@@ -737,8 +751,12 @@ def selfie_search_error(request: HttpRequest) -> HttpResponse:
     )
 
 
-def _selfie_search_ready(request: HttpRequest, *, event: FixtureEvent) -> HttpResponse:
-    photos = SELFIE_RESULT_PHOTOS
+def _selfie_search_ready(
+    request: HttpRequest,
+    *,
+    event: FixtureEvent,
+    photos: tuple[FixtureGalleryPhoto, ...] = SELFIE_RESULT_PHOTOS,
+) -> HttpResponse:
     results = tuple(
         FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
         for index in range(1, 4)
@@ -760,6 +778,10 @@ def _selfie_search_ready(request: HttpRequest, *, event: FixtureEvent) -> HttpRe
 
 def selfie_search_ready(request: HttpRequest) -> HttpResponse:
     return _selfie_search_ready(request, event=EVENTS[0])
+
+
+def selfie_search_ready_paid(request: HttpRequest) -> HttpResponse:
+    return _selfie_search_ready(request, event=EVENTS[0], photos=PAID_SELFIE_RESULT_PHOTOS)
 
 
 def selfie_search_ready_staff_preview(request: HttpRequest) -> HttpResponse:

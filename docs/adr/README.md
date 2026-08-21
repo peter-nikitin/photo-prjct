@@ -48,6 +48,7 @@ place, and add the new record to this index.
 | 0026 | [Use Lockbox for environment secrets](0026-use-lockbox-for-environment-secrets.md) | Superseded |
 | 0027 | [Project current capture time onto Photo](0027-project-capture-time-onto-photo.md) | Accepted |
 | 0028 | [Operate one canonical deployment](0028-operate-one-canonical-deployment.md) | Accepted |
+| 0029 | [Use watermarked previews for paid photo presentation](0029-use-watermarked-previews-for-paid-photos.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -66,6 +67,12 @@ future private-model delivery mechanism.
 ADR 0020's attachment-download exclusions. It accepts attachment delivery wherever those existing
 gallery or ready-result contexts already authorize an original, without adding a free-versus-paid
 decision or opening a normal paid gallery.
+
+[ADR 0029](0029-use-watermarked-previews-for-paid-photos.md) supersedes ADRs 0019, 0020, and 0021
+only for photos in the new explicit paid-watermarked generation. It accepts a normal paid gallery
+backed only by an accepted watermarked derivative, uses that same derivative in ready selfie-search
+results, and denies original presentation and download for those photos. Existing rows retain their
+explicit current policy; paid commerce and entitled original delivery remain unresolved.
 
 [ADR 0022](0022-use-numbered-gallery-pages.md) supersedes only ADR 0020's cursor-pagination
 follow-up. Normal galleries and ready selfie-search results use bounded numbered pages; all media

@@ -10,6 +10,7 @@ from django.db.migrations.loader import MigrationLoader
 from django.db.models.deletion import ProtectedError
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from feature_flags.models import FeatureFlag
 
 from picflow.models import Event, EventFolder, Photo
 
@@ -279,6 +280,105 @@ class PhotoModelTests(TestCase):
 
         self.assertEqual(photo.processing_generation, "legacy_original_v1")
         self.assertEqual(photo.gallery_media_policy, "legacy_original_allowed")
+
+    def test_processing_policy_fields_accept_exactly_three_documented_pairs(self) -> None:
+        generation_field = Photo._meta.get_field("processing_generation")
+        policy_field = Photo._meta.get_field("gallery_media_policy")
+        pairs = (
+            ("legacy_original_v1", "legacy_original_allowed"),
+            ("preview_first_v1", "preview_required"),
+            ("preview_first_watermarked_v1", "watermarked_preview_required"),
+        )
+
+        self.assertEqual(generation_field.max_length, 32)
+        self.assertEqual(policy_field.max_length, 32)
+        self.assertEqual(
+            [value for value, _label in generation_field.choices],
+            ["legacy_original_v1", "preview_first_v1", "preview_first_watermarked_v1"],
+        )
+        self.assertEqual(
+            [value for value, _label in policy_field.choices],
+            ["legacy_original_allowed", "preview_required", "watermarked_preview_required"],
+        )
+
+        for processing_generation, gallery_media_policy in pairs:
+            with self.subTest(
+                processing_generation=processing_generation,
+                gallery_media_policy=gallery_media_policy,
+            ):
+                photo = self.private_photo(
+                    processing_generation=processing_generation,
+                    gallery_media_policy=gallery_media_policy,
+                )
+                photo.full_clean()
+                photo.save()
+
+    def test_paid_watermarked_policy_migration_is_schema_only(self) -> None:
+        loader = MigrationLoader(connection)
+
+        self.assertEqual(
+            loader.graph.leaf_nodes("picflow"),
+            [("picflow", "0012_paid_watermarked_photo_policy")],
+        )
+        migration = loader.get_migration("picflow", "0012_paid_watermarked_photo_policy")
+        self.assertEqual(
+            [operation.__class__.__name__ for operation in migration.operations],
+            ["AlterField", "AlterField", "RemoveConstraint", "AddConstraint"],
+        )
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_free_photo_policy_stays_preview_first_when_paid_gate_is_enabled(self) -> None:
+        from picflow.photo_policy import policy_for_new_photo
+
+        FeatureFlag.objects.create(
+            key="paid-watermarked-previews",
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.ON,
+        )
+
+        self.assertEqual(
+            policy_for_new_photo(self.event, self.photographer),
+            ("preview_first_v1", "preview_required"),
+        )
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_paid_photo_policy_stays_preview_first_when_gate_is_missing_or_off(self) -> None:
+        from picflow.photo_policy import policy_for_new_photo
+
+        self.event.access_type = Event.AccessType.PAID
+        self.event.save(update_fields=["access_type"])
+
+        self.assertEqual(
+            policy_for_new_photo(self.event, self.photographer),
+            ("preview_first_v1", "preview_required"),
+        )
+        FeatureFlag.objects.create(
+            key="paid-watermarked-previews",
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.OFF,
+        )
+        self.assertEqual(
+            policy_for_new_photo(self.event, self.photographer),
+            ("preview_first_v1", "preview_required"),
+        )
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_enabled_paid_caller_receives_the_watermarked_policy(self) -> None:
+        from picflow.photo_policy import policy_for_new_photo
+
+        staff = get_user_model().objects.create_user(username="staff", is_staff=True)
+        self.event.access_type = Event.AccessType.PAID
+        self.event.save(update_fields=["access_type"])
+        FeatureFlag.objects.create(
+            key="paid-watermarked-previews",
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.STAFF,
+        )
+
+        self.assertEqual(
+            policy_for_new_photo(self.event, staff),
+            ("preview_first_watermarked_v1", "watermarked_preview_required"),
+        )
 
     def test_processing_policy_rejects_an_invalid_generation_policy_pair(self) -> None:
         photo = self.private_photo()

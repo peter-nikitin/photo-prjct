@@ -85,7 +85,7 @@ while :; do
             ;;
     esac
     case "$processor_identity" in
-        1/selfie_query/2|1/capture_metadata/2|2/generate_preview/1|2/face_embedding/3|3/face_embedding/5)
+        1/selfie_query/2|1/capture_metadata/2|2/generate_preview/1|2/generate_watermarked_preview/1|2/face_embedding/3|3/face_embedding/5)
             ;;
         *)
             echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2

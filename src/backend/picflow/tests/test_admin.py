@@ -71,7 +71,204 @@ class EventAdminTests(TestCase):
         self.assertNotContains(response, "field-folder")
         self.assertNotContains(response, 'name="folder"')
 
-    def test_photo_admin_rejects_event_change_that_separates_folder_from_its_event(self) -> None:
+    def photo_change_data(self, photo: Photo, **overrides) -> dict[str, object]:
+        values: dict[str, object] = {
+            "id": photo.pk,
+            "event": str(photo.event_id),
+            "processing_generation": photo.processing_generation,
+            "gallery_media_policy": photo.gallery_media_policy,
+            "_save": "Save",
+        }
+        values.update(overrides)
+        return values
+
+    def test_photo_admin_preserves_legitimate_create_behavior(self) -> None:
+        event = Event.objects.create(
+            name="Admin photo run",
+            slug="admin-photo-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.PAID,
+        )
+
+        response = self.client.post(
+            reverse("admin:picflow_photo_add"),
+            {
+                "id": "admin-created-photo",
+                "event": str(event.pk),
+                "uploaded_by": str(self.user.pk),
+                "original_key": "originals/admin-created-photo.jpg",
+                "original_filename": "admin-created-photo.jpg",
+                "original_size": "1234",
+                "original_content_type": "image/jpeg",
+                "uploaded_at_0": date.today().isoformat(),
+                "uploaded_at_1": "12:00:00",
+                "processing_generation": (Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1),
+                "gallery_media_policy": (Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
+                "_save": "Save",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        photo = Photo.objects.get(pk="admin-created-photo")
+        self.assertEqual(photo.event_id, event.pk)
+        self.assertEqual(
+            photo.processing_generation,
+            Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+        )
+        self.assertEqual(
+            photo.gallery_media_policy,
+            Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+
+    def test_photo_admin_rejects_folderless_watermarked_photo_reclassification_to_preview_pair(
+        self,
+    ) -> None:
+        event = Event.objects.create(
+            name="Paid run",
+            slug="paid-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.PAID,
+        )
+        photo = Photo.objects.create(
+            id="watermarked-photo",
+            event=event,
+            src="photos/watermarked.jpg",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+
+        response = self.client.post(
+            reverse("admin:picflow_photo_change", args=[photo.pk]),
+            self.photo_change_data(
+                photo,
+                processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+                gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Processing generation cannot be changed after the photo has been created.",
+            response.context["adminform"].form.errors["processing_generation"],
+        )
+        self.assertIn(
+            "Gallery media policy cannot be changed after the photo has been created.",
+            response.context["adminform"].form.errors["gallery_media_policy"],
+        )
+        photo.refresh_from_db()
+        self.assertEqual(
+            photo.processing_generation,
+            Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+        )
+        self.assertEqual(
+            photo.gallery_media_policy,
+            Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+
+    def test_photo_admin_rejects_folderless_watermarked_photo_reclassification_to_legacy_pair(
+        self,
+    ) -> None:
+        event = Event.objects.create(
+            name="Paid run",
+            slug="paid-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.PAID,
+        )
+        photo = Photo.objects.create(
+            id="watermarked-photo",
+            event=event,
+            src="photos/watermarked.jpg",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+
+        response = self.client.post(
+            reverse("admin:picflow_photo_change", args=[photo.pk]),
+            self.photo_change_data(
+                photo,
+                processing_generation=Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1,
+                gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Processing generation cannot be changed after the photo has been created.",
+            response.context["adminform"].form.errors["processing_generation"],
+        )
+        self.assertIn(
+            "Gallery media policy cannot be changed after the photo has been created.",
+            response.context["adminform"].form.errors["gallery_media_policy"],
+        )
+        photo.refresh_from_db()
+        self.assertEqual(
+            photo.processing_generation,
+            Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+        )
+        self.assertEqual(
+            photo.gallery_media_policy,
+            Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+
+    def test_photo_admin_rejects_folderless_photo_move_and_keeps_original_event_frozen(
+        self,
+    ) -> None:
+        event = Event.objects.create(
+            name="Frozen paid run",
+            slug="frozen-paid-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.PAID,
+        )
+        other_event = Event.objects.create(
+            name="Other run",
+            slug="other-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        photo = Photo.objects.create(
+            id="watermarked-photo",
+            event=event,
+            src="photos/watermarked.jpg",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+
+        photo_response = self.client.post(
+            reverse("admin:picflow_photo_change", args=[photo.pk]),
+            self.photo_change_data(photo, event=str(other_event.pk)),
+        )
+
+        self.assertEqual(photo_response.status_code, 200)
+        self.assertIn(
+            "Event cannot be changed after the photo has been created.",
+            photo_response.context["adminform"].form.errors["event"],
+        )
+        photo.refresh_from_db()
+        self.assertEqual(photo.event_id, event.pk)
+
+        event_response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, access_type=Event.AccessType.FREE),
+        )
+
+        self.assertEqual(event_response.status_code, 200)
+        self.assertIn(
+            "Access type cannot be changed after the event has photos.",
+            event_response.context["adminform"].form.errors["access_type"],
+        )
+        event.refresh_from_db()
+        self.assertEqual(event.access_type, Event.AccessType.PAID)
+
+    def test_photo_admin_rejects_event_change_for_a_foldered_photo(self) -> None:
         event = Event.objects.create(
             name="Folder Run",
             slug="folder-run",
@@ -87,27 +284,18 @@ class EventAdminTests(TestCase):
             city="Moscow",
         )
         folder = EventFolder.objects.create(event=event, name="Start")
-        foreign_folder = EventFolder.objects.create(event=other_event, name="Finish")
         photo = Photo.objects.create(
             id="folder-photo", event=event, folder=folder, src="photos/folder.jpg"
         )
 
         response = self.client.post(
             reverse("admin:picflow_photo_change", args=[photo.pk]),
-            {
-                "id": photo.pk,
-                "event": str(other_event.pk),
-                "folder": str(foreign_folder.pk),
-                "processing_generation": photo.processing_generation,
-                "gallery_media_policy": photo.gallery_media_policy,
-                "_save": "Save",
-            },
+            self.photo_change_data(photo, event=str(other_event.pk)),
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "A photo with a folder can only belong to that folder")
         self.assertIn(
-            "A photo with a folder can only belong to that folder's event.",
+            "Event cannot be changed after the photo has been created.",
             response.context["adminform"].form.errors["event"],
         )
         photo.refresh_from_db()
@@ -182,10 +370,74 @@ class EventAdminTests(TestCase):
             "access_type": event.access_type,
             "publication_status": event.publication_status,
             "timezone_name": event.timezone_name or "",
+            "folders-TOTAL_FORMS": "0",
+            "folders-INITIAL_FORMS": "0",
+            "folders-MIN_NUM_FORMS": "0",
+            "folders-MAX_NUM_FORMS": "1000",
             "_save": "Save",
         }
         values.update(overrides)
         return values
+
+    def test_admin_changes_access_type_before_the_first_photo(self) -> None:
+        event = Event.objects.create(
+            name="Editable access",
+            slug="editable-access",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+
+        response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, access_type=Event.AccessType.PAID),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        event.refresh_from_db()
+        self.assertEqual(event.access_type, Event.AccessType.PAID)
+
+    def test_admin_rejects_access_type_change_after_the_first_photo(self) -> None:
+        event = Event.objects.create(
+            name="Frozen access",
+            slug="frozen-access",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        Photo.objects.create(id="first-photo", event=event, src="photos/first.jpg")
+
+        response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, access_type=Event.AccessType.PAID),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Access type cannot be changed after the event has photos.",
+            response.context["adminform"].form.errors["access_type"],
+        )
+        event.refresh_from_db()
+        self.assertEqual(event.access_type, Event.AccessType.FREE)
+
+    def test_admin_keeps_unrelated_event_fields_editable_after_the_first_photo(self) -> None:
+        event = Event.objects.create(
+            name="Editable metadata",
+            slug="editable-metadata",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        Photo.objects.create(id="metadata-photo", event=event, src="photos/metadata.jpg")
+
+        response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, description="Updated description"),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        event.refresh_from_db()
+        self.assertEqual(event.description, "Updated description")
 
     def test_admin_adds_a_folder_on_the_event_change_page(self) -> None:
         event = Event.objects.create(

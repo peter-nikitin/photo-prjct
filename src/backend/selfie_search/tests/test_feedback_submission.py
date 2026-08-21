@@ -10,13 +10,18 @@ from django.db import IntegrityError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.models import FeatureFlag
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
+from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from PIL import Image
 from processing.models import (
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
     FaceProcessingAttemptArtifact,
+    PhotoDerivative,
     PhotoFaceDetection,
+    PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
 )
@@ -136,6 +141,72 @@ class FeedbackSubmissionTests(TestCase):
         )
         return result
 
+    def make_watermarked_result(self, *, search: SelfieSearch) -> SelfieSearchResult:
+        result = self.make_result(search=search, photo_id="feedback-watermarked")
+        photo = result.photo
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        configuration = {"generate_watermarked_preview": {"variant": "preview-watermarked-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="w" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        PhotoProcessingState.objects.create(
+            photo=photo,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            current_run=run,
+            current_job=job,
+            current_attempt=attempt,
+            accepted_attempt=attempt,
+            succeeded_at=timezone.now(),
+        )
+        PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-watermarked-v1",
+            final_key=f"derivatives/previews/{photo.pk}/preview-watermarked-v1/accepted.jpg",
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            accepted_attempt=attempt,
+        )
+        return result
+
     def feedback_url(self, *, token: str) -> str:
         return reverse(
             "selfie_search:feedback",
@@ -165,6 +236,60 @@ class FeedbackSubmissionTests(TestCase):
         presentation = feedback_presentation(ready)
         self.assertEqual(presentation.variant, "result_labels")
         self.assertEqual(presentation.visible_result_ids, frozenset({result.id}))
+
+    def test_paid_watermarked_presentation_and_label_submission_use_explicit_gate(self) -> None:
+        self.event.access_type = Event.AccessType.PAID
+        self.event.save(update_fields=["access_type"])
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        result = self.make_watermarked_result(search=search)
+        flag = FeatureFlag.objects.create(
+            key=PAID_WATERMARKED_PREVIEWS_FLAG,
+            description="Paid watermarked previews",
+            state=FeatureFlag.State.OFF,
+        )
+
+        gate_off = feedback_presentation(search, paid_watermarked_previews_enabled=False)
+        gate_on = feedback_presentation(search, paid_watermarked_previews_enabled=True)
+        storage = Mock()
+        storage.put.return_value = Mock(
+            key="0123456789abcdef0123456789abcdef", size=100, content_type="image/jpeg"
+        )
+        result_url = reverse(
+            "selfie_search:result",
+            kwargs={"event_slug": self.event.slug, "public_token": token},
+        )
+        self.client.get(result_url)
+        csrf_token = self.client.cookies["csrftoken"].value
+        with patch("selfie_search.views.FeedbackSelfieStorage", return_value=storage):
+            denied = self.client.post(
+                self.feedback_url(token=token),
+                self.submission_data(labels=f'{{"{result.id}":"present"}}'),
+                HTTP_X_CSRFTOKEN=csrf_token,
+            )
+            flag.state = FeatureFlag.State.ON
+            flag.save(update_fields=["state"])
+            accepted = self.client.post(
+                self.feedback_url(token=token),
+                self.submission_data(labels=f'{{"{result.id}":"present"}}'),
+                HTTP_X_CSRFTOKEN=csrf_token,
+            )
+
+        self.assertEqual(gate_off.variant, SelfieSearchFeedback.Variant.PROBLEM)
+        self.assertEqual(gate_off.visible_result_ids, frozenset())
+        self.assertEqual(gate_on.variant, SelfieSearchFeedback.Variant.RESULT_LABELS)
+        self.assertEqual(gate_on.visible_result_ids, frozenset({result.id}))
+        self.assertEqual(denied.status_code, 409)
+        self.assertEqual(denied.json(), {"status": "result_changed"})
+        self.assertEqual(accepted.status_code, 201)
+        self.assertEqual(accepted.json(), {"status": "submitted"})
+        self.assertEqual(
+            list(
+                SelfieSearchFeedback.objects.get(search=search).labels.values_list(
+                    "result_id", "value"
+                )
+            ),
+            [(result.id, "present")],
+        )
 
     def test_post_creates_feedback_and_only_explicit_labels(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)

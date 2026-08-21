@@ -1186,6 +1186,10 @@ def test_deployment_forwards_preview_processing_configuration() -> None:
     for name, value in expected.items():
         assert deployment["env"][name] == value
         assert name in _envs(deployment)
+    assert (
+        "2/generate_watermarked_preview/1"
+        not in deployment["env"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
+    )
 
 
 def test_monitoring_agent_configuration_is_manual_only_and_outside_deploy_rollback() -> None:

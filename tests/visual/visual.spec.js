@@ -29,6 +29,7 @@ const desktopPages = [
   ['event-covered', '/__visual__/event/covered/'],
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
+  ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
   ['event-gallery-staff-preview', '/__visual__/event/gallery-staff-preview/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-gallery-filtered-empty', '/__visual__/event/gallery-filtered-empty/'],
@@ -39,6 +40,7 @@ const desktopPages = [
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-ready-paid', '/__visual__/event/selfie-search/ready/paid/'],
   ['selfie-search-ready-staff-preview', '/__visual__/event/selfie-search/ready/staff-preview/'],
   ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
   ['legal', '/__visual__/legal/'],
@@ -62,6 +64,7 @@ const mobilePages = [
   ['event-covered', '/__visual__/event/covered/'],
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
+  ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
   ['event-gallery-staff-preview', '/__visual__/event/gallery-staff-preview/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-gallery-filtered-empty', '/__visual__/event/gallery-filtered-empty/'],
@@ -72,6 +75,7 @@ const mobilePages = [
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-ready-paid', '/__visual__/event/selfie-search/ready/paid/'],
   ['selfie-search-ready-staff-preview', '/__visual__/event/selfie-search/ready/staff-preview/'],
   ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
   ['selfie-search-feedback-marking', '/__visual__/event/selfie-search/feedback-marking/'],
@@ -1208,6 +1212,26 @@ test('ready selfie result reuses keyboard-accessible gallery lightbox', async ({
   await expect(page.locator('.glightbox-container')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(firstCard).toBeFocused();
+});
+
+test('paid gallery and ready result keep cards and lightboxes without download actions', async ({
+  page,
+}) => {
+  for (const path of [
+    '/__visual__/event/gallery-paid/',
+    '/__visual__/event/selfie-search/ready/paid/',
+  ]) {
+    await page.goto(path);
+    const cards = page.locator('.gallery-card');
+    await expect(cards.first()).toHaveAttribute('data-photo-id', /\S+/);
+    await expect(cards.first().locator('.gallery-card-download')).toHaveCount(1);
+    await expect(cards.locator('.gallery-download')).toHaveCount(0);
+
+    await cards.first().locator('.gallery-card-link').click();
+    await expect(page.locator('.glightbox-container')).toBeVisible();
+    await expect(page.locator('.glightbox-container .gallery-lightbox-download')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+  }
 });
 
 test('gallery and ready result lightboxes keep original download as a compact icon action', async ({

@@ -2,17 +2,19 @@
 
 ## Observed gap
 
-The configured `Expiration: Days=1` lifecycle rule is a retention backstop. Object Storage may
-apply lifecycle expiration asynchronously, so it is not evidence of a hard 24-hour deletion SLA.
+The repository contract configures an `Expiration: Days=1` lifecycle rule as a retention backstop.
+There is no canonical-deployment lifecycle observation that establishes its timing, and Object
+Storage may apply expiration asynchronously; it is therefore not evidence of a hard 24-hour deletion
+SLA.
 
 ## Why this is non-blocking now
 
-Django still deletes the exact temporary selfie before terminal publication; lifecycle exists only
-for abandoned objects. The approved MVP requires bounded retention, not a measured hard-delete
-deadline, and live bucket behavior has not been activated or measured.
+Django deletes the exact temporary selfie before terminal publication; lifecycle exists only for
+abandoned objects. The approved MVP requires bounded retention, not a measured hard-delete deadline.
 
 ## Revisit trigger
 
-Revisit before any accepted requirement, privacy commitment, regulator, or customer notice requires
-a measured hard maximum deletion time rather than the current application cleanup plus lifecycle
-backstop.
+Revisit before an accepted requirement, privacy commitment, regulator, or customer notice requires
+a measured hard maximum deletion time, or before making such a deletion-time claim. Establish the
+canonical-deployment lifecycle evidence required for that commitment rather than treating the
+configured rule as proof.

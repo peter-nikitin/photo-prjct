@@ -1,7 +1,7 @@
 # Staging Seed Photo Media Design
 
 - Date: 2026-07-18
-- Status: Approved
+- Status: Retired — ADR 0016 was later Rejected in favor of ADR 0028
 - Owner: project maintainer
 - Related gallery design: [Event photo gallery](2026-07-18-event-photo-gallery-design.md)
 - Related architecture: [Current architecture — implemented](../../architecture.md#current-architecture--implemented),
@@ -16,11 +16,11 @@
   [0005](../../adr/0005-promote-images-through-staging.md),
   [0006](../../adr/0006-yandex-object-storage-media.md),
   [0013](../../adr/0013-use-direct-private-object-storage-ingestion.md), and
-  [0016 (Proposed)](../../adr/0016-allow-deterministic-staging-reference-media.md)
-- ADR impact: Requires new ADR — deterministic thirteen-photo staging reference-media exception
-  to the normal ADR 0013 ingestion path
-- ADR lifecycle: Specification approval does not accept ADR 0016; it remains Proposed pending
-  separate maintainer acceptance.
+  [0016 (Rejected in favor of 0028)](../../adr/0016-allow-deterministic-staging-reference-media.md)
+- ADR impact: Historical proposed deterministic thirteen-photo staging reference-media exception
+  to the normal ADR 0013 ingestion path; ADR 0016 was later Rejected in favor of ADR 0028.
+- ADR lifecycle: This specification's 2026-07-18 approval did not accept ADR 0016. The proposal is
+  retired and must not be resumed.
 
 ## Outcome
 

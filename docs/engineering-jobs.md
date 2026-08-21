@@ -49,7 +49,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
 | EJ-017 | Developer | Read canonical secret projections consistently | Delivered | 2026-08-20 |
-| EJ-018 | Maintainer | Minimize and recover runtime credentials | Candidate | 2026-08-07 |
+| EJ-018 | Maintainer | Minimize and recover runtime credentials | Candidate | 2026-08-21 |
 | EJ-019 | Maintainer | Reconcile the capture-time projection before gallery cutover | Delivered | 2026-08-21 |
 | EJ-020 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
 | EJ-021 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
@@ -456,20 +456,19 @@ When I operate or recover an application environment, I want each runtime compon
 the credentials it needs through an explicit, recoverable lifecycle, so I can limit credential
 exposure without making restart, rollback, backup, or disaster recovery unreliable.
 
-The candidate capability covers the complete host and container boundary rather than one `.env`
-file: persistent deployment environments, Docker container metadata, Docker group access, registry
-authentication, shell history, TLS private keys, VM metadata and attached service accounts, disk
-snapshots/backups, per-service credential projection, rotation, revocation, recovery, and audit.
-It must begin with a separate specification and architecture reconciliation; this registry entry
-does not select Docker secrets, file-based settings, runtime Lockbox retrieval, an agent, or another
-delivery mechanism.
+EJ-017 and ADR 0028 established the one-secret authority and one canonical deployment, which fired
+the need to design the runtime credential lifecycle. EJ-018 remains a candidate: no accepted design
+defines the minimum projections for `docker-compose.deployment.yml`, restart and rollback behavior,
+rotation, recovery, or the effective host trust boundary. It does not select Docker secrets,
+file-based settings, runtime Lockbox retrieval, an agent, or another delivery mechanism.
 
 - Status: Candidate
-- Evidence:
-  [Sanitized staging runtime credential inventory](future-work/2026-08-07-runtime-credential-hygiene.md)
-  records the observed exposure surfaces and the trigger for a separate design. No VM cleanup,
-  credential rotation, runtime redesign, ADR, or implementation plan is claimed.
-- Last updated: 2026-08-07
+- Evidence: [ADR 0028](adr/0028-operate-one-canonical-deployment.md), EJ-017's delivered canonical
+  secret-projection boundary, and [runtime credential hygiene](future-work/2026-08-07-runtime-credential-hygiene.md).
+  The next implementation trigger is an accepted EJ-018 design after a read-only canonical-host
+  inventory. No inventory, VM cleanup, credential rotation, runtime redesign, or implementation
+  plan is claimed here.
+- Last updated: 2026-08-21
 
 ### EJ-019 — Maintainer — Reconcile the capture-time projection before gallery cutover
 

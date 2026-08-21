@@ -145,7 +145,7 @@ operational risk exceed a documentation reconciliation.
 - `docs/future-work/2026-08-07-runtime-credential-hygiene.md`
 - `docs/future-work/selfie-search-lifecycle-expiration-sla.md`
 - `docs/future-work/selfie-search-missing-temporary-object-reconciliation.md`
-- `docs/adr/0016-seed-staging-data-with-management-command.md`
+- `docs/adr/0016-allow-deterministic-staging-reference-media.md`
 - `docs/adr/README.md`
 - `docs/engineering-jobs.md`
 

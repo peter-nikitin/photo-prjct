@@ -4,12 +4,94 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _parse_job_registry(
+    path: Path, prefix: str
+) -> tuple[
+    dict[str, tuple[str, str]],
+    list[tuple[str, str, str]],
+    list[tuple[str, str, str]],
+    set[str],
+]:
+    """Return deduplicated/current records, details, and declared statuses."""
+    content = path.read_text(encoding="utf-8")
+    statuses_section = content.partition("## Statuses")[2].partition("## Current state")[0]
+    current_state_section = content.partition("## Current state")[2].partition("## Job details")[0]
+    details_section = re.split(
+        r"^## Status (?:history|log)$",
+        content.partition("## Job details")[2],
+        maxsplit=1,
+        flags=re.MULTILINE,
+    )[0]
+
+    allowed_statuses = {
+        row.split("|")[1].strip()
+        for row in statuses_section.splitlines()
+        if row.startswith("| ") and not row.startswith("| Status |") and "---" not in row
+    }
+    current_records: list[tuple[str, str, str]] = []
+    for row in current_state_section.splitlines():
+        cells = [cell.strip() for cell in row.split("|")[1:-1]]
+        if len(cells) == 5 and re.fullmatch(rf"{prefix}-\d{{3}}", cells[0]):
+            current_records.append((cells[0], cells[3], cells[4]))
+    current_rows = {job: (status, updated) for job, status, updated in current_records}
+
+    heading_pattern = re.compile(rf"^### (?P<job>{prefix}-\d{{3}}) — .+$", re.MULTILINE)
+    headings = list(heading_pattern.finditer(details_section))
+    details: list[tuple[str, str, str]] = []
+    for index, heading in enumerate(headings):
+        detail = details_section[
+            heading.end() : headings[index + 1].start() if index + 1 < len(headings) else None
+        ]
+        status = re.findall(r"^- Status: (.+)$", detail, re.MULTILINE)
+        updated = re.findall(r"^- Last updated: (\d{4}-\d{2}-\d{2})$", detail, re.MULTILINE)
+        assert len(status) == 1, f"{heading['job']} must have one status line"
+        assert len(updated) == 1, f"{heading['job']} must have one last-updated line"
+        details.append((heading["job"], status[0], updated[0]))
+    return current_rows, current_records, details, allowed_statuses
+
+
+def test_job_registries_have_one_consistent_current_detail_per_job() -> None:
+    expected_counts = {"product-jobs.md": ("PJ", 16), "engineering-jobs.md": ("EJ", 25)}
+
+    for filename, (prefix, expected_count) in expected_counts.items():
+        current_rows, current_records, details, allowed_statuses = _parse_job_registry(
+            ROOT / "docs" / filename, prefix
+        )
+        current_counts = Counter(job for job, _, _ in current_records)
+        detail_counts = Counter(job for job, _, _ in details)
+        detail_records = {job: (status, updated) for job, status, updated in details}
+
+        assert len(current_rows) == expected_count
+        assert len(current_records) == expected_count
+        assert len(details) == expected_count
+        assert all(count == 1 for count in current_counts.values())
+        assert all(count == 1 for count in detail_counts.values())
+        assert set(current_rows) == set(detail_records)
+        for job, (status, updated) in current_rows.items():
+            assert status in allowed_statuses
+            assert detail_records[job] == (status, updated)
+
+
+def test_job_registry_parser_ignores_append_only_status_log(tmp_path: Path) -> None:
+    registry = tmp_path / "product-jobs.md"
+    registry.write_text(
+        (ROOT / "docs" / "product-jobs.md").read_text(encoding="utf-8")
+        + "\n### PJ-999 — Archived job\n\n- Status: Candidate\n- Last updated: 2026-08-21\n",
+        encoding="utf-8",
+    )
+
+    _, _, details, _ = _parse_job_registry(registry, "PJ")
+
+    assert "PJ-999" not in {job for job, _, _ in details}
 
 
 def _load_workflow(workflow_name: str) -> dict[str, Any]:

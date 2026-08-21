@@ -26,6 +26,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | Delivered | The capability is implemented and available in the relevant workflow or environment. |
 | Validated | Automated evidence or observed operation demonstrates the expected outcome. |
 | Deferred | Work on the job is intentionally postponed, with the reason recorded. |
+| Superseded | An accepted decision or replacement capability has retired this job. |
 
 ## Current state
 
@@ -35,7 +36,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-002 | Contributor | Receive complete CI feedback | Validated | 2026-07-17 |
 | EJ-003 | Maintainer | Deploy an immutable image to the canonical deployment | Delivered | 2026-08-20 |
 | EJ-004 | Operator | Run the canonical HTTPS edge | Validated | 2026-08-20 |
-| EJ-005 | Contributor | Reproduce visual regression | Validated | 2026-07-17 |
+| EJ-005 | Contributor | Reproduce visual regression | Validated | 2026-07-19 |
 | EJ-006 | Maintainer | Retire the image-promotion path | Superseded | 2026-08-20 |
 | EJ-007 | Operator | Retire the separate-environment proposal | Superseded | 2026-08-20 |
 | EJ-008 | Operator | Activate trusted HTTPS | Delivered | 2026-07-17 |
@@ -43,13 +44,13 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-25 |
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 | EJ-012 | Maintainer | Gate temporary selfie storage activation | Validated | 2026-07-31 |
-| EJ-013 | Contributor | Start isolated repository work reliably | Validated | 2026-08-04 |
+| EJ-013 | Contributor | Start isolated repository work reliably | Validated | 2026-08-21 |
 | EJ-014 | Maintainer | Gate consented feedback storage activation | Validated | 2026-08-04 |
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
 | EJ-017 | Developer | Read canonical secret projections consistently | Delivered | 2026-08-20 |
 | EJ-018 | Maintainer | Minimize and recover runtime credentials | Candidate | 2026-08-07 |
-| EJ-019 | Maintainer | Reconcile the capture-time projection before gallery cutover | Validated | 2026-08-08 |
+| EJ-019 | Maintainer | Reconcile the capture-time projection before gallery cutover | Delivered | 2026-08-21 |
 | EJ-020 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
 | EJ-021 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
 | EJ-022 | Maintainer | Gate preview-backed version-4 face generation activation | Delivered | 2026-08-10 |
@@ -111,7 +112,7 @@ GHCR image, Docker Compose, root-owned package, and rollback path remain authori
 - Deployment evidence: no PR, CI, canonical-deployment rollout, deployed-image, public-health, or notification-drill
   result is recorded in this checkout; keep `Delivered` until those acceptance checks establish
   `Validated`.
-- Last updated: 2026-08-07
+- Last updated: 2026-08-20
 
 ### EJ-004 — Operator — Run the canonical HTTPS edge
 
@@ -120,7 +121,7 @@ and proxy the application, so I can operate the customer-serving VM.
 
 - Status: Validated
 - Evidence: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), and historical GitHub Actions deploy run 29556330740.
-- Last updated: 2026-07-17
+- Last updated: 2026-08-20
 
 ### EJ-005 — Contributor — Reproduce visual regression
 
@@ -193,7 +194,7 @@ procedure with agreed recovery targets, so I can recover service safely.
 - Evidence: [`scripts/clone-deployed-db.sh`](../scripts/clone-deployed-db.sh) and [`tests/deployment/test_clone_deployed_database.py`](../tests/deployment/test_clone_deployed_database.py) provide partial local restore evidence: a developer can create a validated deployed-VM logical dump, replace only the current checkout's local Compose database through a serialized local-Docker-only workflow, quiesce the normal web service, retain diagnostic and safety dumps, and validate migration readiness without running the mutating web entrypoint. Separate isolated PostgreSQL 16 integrations verify marker/owner/ACL normalization and the actual project image's `django_migrations`, `showmigrations`, and `makemigrations` readiness against a restored migrated schema without deployed-VM network contact. This remains insufficient for service-data recovery: scheduled backups, retention, RPO/RTO, media recovery, and a disaster-recovery drill are not established. See also [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions).
 - Last updated: 2026-07-25
 
-### EJ-014 — Operator — Inspect bounded selfie-search operational evidence
+### EJ-015 — Operator — Inspect bounded selfie-search operational evidence
 
 When I operate selfie search, I want privacy-bounded events and a reproducible daily summary, so I
 can diagnose its funnel without turning logs into product state or a backup.
@@ -267,8 +268,10 @@ worktree smoke and an actual hook-driven commit additionally validated the integ
   [`scripts/run-in-test-env.sh`](../scripts/run-in-test-env.sh), [`Makefile`](../Makefile),
   [`tests/test_create_worktree.py`](../tests/test_create_worktree.py),
   [`tests/test_worktree_commands.py`](../tests/test_worktree_commands.py), and
-  [PR #94 successful Quality checks](https://github.com/peter-nikitin/photo-prjct/actions/runs/30857287973/job/91831124522)
-- Last updated: 2026-08-04
+  [PR #94 successful Quality checks](https://github.com/peter-nikitin/photo-prjct/actions/runs/30857287973/job/91831124522).
+  Task 1 commit `9adc269` and the root-controlled fresh disposable `make worktree` smoke provide
+  current acceptance evidence for the repaired bootstrap and literal worker selector.
+- Last updated: 2026-08-21
 
 ### EJ-014 — Maintainer — Gate consented feedback storage activation
 
@@ -294,8 +297,9 @@ path, I want to build immutable event-scoped cluster evidence, evaluate it priva
 an explicit guarded activation, so I can keep direct-only search available until quality and resource
 gates are approved.
 
-- Status: Delivered for the repository capability; release-gate completion, canonical-deployment activation,
-  and customer-outcome validation remain pending.
+- Status: Delivered
+- Boundary: Release-gate completion, canonical-deployment activation, and customer-outcome validation
+  remain pending.
 - Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py), and [`experiments/face_recognition_spike/face_spike/cli.py`](../experiments/face_recognition_spike/face_spike/cli.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance, source-separated reports, privacy-bounded v2 events, and the closed held-out evaluator. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or canonical-deployment activation change is included.
 - Last updated: 2026-08-05
 
@@ -312,7 +316,7 @@ neither credentials nor object keys are emitted in normal command output. Automa
 the local cache contract. An authorized deployed-data clone and private-media run is still required
 before this becomes operationally validated.
 
-- Status: Candidate pending an authorized local run.
+- Status: Candidate
 - Evidence: [`src/backend/processing/services/event_original_cache.py`](../src/backend/processing/services/event_original_cache.py), [`src/backend/processing/management/commands/cache_event_originals.py`](../src/backend/processing/management/commands/cache_event_originals.py), and [`src/backend/processing/tests/test_event_original_cache.py`](../src/backend/processing/tests/test_event_original_cache.py)
 - Last updated: 2026-08-07
 
@@ -322,7 +326,8 @@ When I assess a local experimental face-quality configuration, I want a reproduc
 sampled-review bundle with bounded integrity evidence, so I can later make an explicit operator
 decision without changing runtime behavior.
 
-- Status: Validated for the private local sampled-review workflow and its immutable sample bundle;
+- Status: Validated
+- Boundary: This validates the private local sampled-review workflow and immutable sample bundle;
   human labels and an explicit operator decision remain pending.
 - Evidence: The frozen comparison source bundle SHA-256 is
   `f1028cf1e581645dd0cf108e356394dc5ada838b92c9f662c1356cd52e657b48`. A private local bundle
@@ -350,8 +355,9 @@ dark-deployable worker identity, exact approval evidence, bounded replay/status 
 explicit event activation gate, so I can promote only a complete compatible cohort without changing
 other events, ranking, or historical biometric evidence.
 
-- Status: Delivered for the repository capability, focused local-contract evidence, and the
-  maintainer-accepted local full-corpus quality selection. Current-merge-candidate full `make
+- Status: Delivered
+- Boundary: The repository capability, focused local-contract evidence, and maintainer-accepted
+  local full-corpus quality selection are delivered. Current-merge-candidate full `make
   check`/reconciliation, PR creation, GitHub CI, canonical deployment, event replay/activation,
   and customer-facing verification are separate pending evidence states; none is claimed here.
 - Evidence: Commit `e29e65a` implements the exact `3/face_embedding/4` approval, accepted
@@ -388,7 +394,7 @@ When I add event-specific photo folders, I want administration, upload state, an
 to enforce the same event boundary, so folders organize photos without changing storage or media
 authority.
 
-- Status: Validated by local automated evidence only.
+- Status: Validated
 - Evidence: [`src/backend/picflow/tests/test_admin.py`](../src/backend/picflow/tests/test_admin.py)
   covers inline event-folder management and protected deletion;
   [`src/backend/ingestion/tests/test_batch_services.py`](../src/backend/ingestion/tests/test_batch_services.py),
@@ -479,8 +485,7 @@ When I maintain a capture-time projection for gallery filtering, I want its writ
 aggregate reconciliation to agree with immutable current version-2 evidence, so I can keep direct
 gallery reads safe until a separately accepted projection-reader release.
 
-- Status: Delivered for the accepted Release A operation and deployed Release B; future deployment
-  candidates use live projection evidence rather than an exact Release A image precondition.
+- Status: Delivered
 - Evidence: [`src/backend/picflow/capture_time_projection.py`](../src/backend/picflow/capture_time_projection.py),
   [`src/backend/picflow/management/commands/rebuild_photo_capture_time_projection.py`](../src/backend/picflow/management/commands/rebuild_photo_capture_time_projection.py),
   [`src/backend/picflow/management/commands/report_photo_capture_time_projection.py`](../src/backend/picflow/management/commands/report_photo_capture_time_projection.py),
@@ -494,11 +499,13 @@ gallery reads safe until a separately accepted projection-reader release.
   gallery/processing/projection/deployment suite, visual suite (92 tests),
   and separate `make check` exit clean locally; Ruff, MyPy, Django, and migration-drift checks are
   included in the quality gate.
-- Boundary: Release B removes the direct JSON/cast filtered-reader path and is deployed. Every
+- Boundary: The accepted Release A operation and deployed Release B are delivery evidence; this
+  audit did not establish customer-outcome validation. Release B removes the direct JSON/cast
+  filtered-reader path and is deployed. Every
   future candidate still requires live all-events projection reconciliation and the event-9
   benchmark before service switch; immutable attempt/state/run/job/result evidence remains
   authoritative and is never rewritten by rebuild or reconciliation.
-- Last updated: 2026-08-10
+- Last updated: 2026-08-21
 
 ## Status log
 
@@ -544,3 +551,4 @@ This log is append-only.
 | 2026-08-15 | EJ-023 | Not recorded | Validated | Local automated coverage validates inline folder administration, durable mixed-folder ingestion, and stable public GET filtering restricted to the existing eligible event gallery. Folder identifiers remain non-authoritative for media; the mass editor is deferred. No CI, deployment, staging, or customer evidence is claimed. |
 | 2026-08-20 | EJ-024 | Not recorded | In progress | ADR 0029's repository path is implemented with an off-by-default gate and focused Django/worker test evidence. Final artwork, complete-suite, visual, worker-image, deployment, and real-activation evidence remain pending. |
 | 2026-08-20 | EJ-025 | Not recorded | In progress | Local command and deployment-contract coverage packages bounded daily cart cleanup; installation and operational verification remain pending. |
+| 2026-08-21 | EJ-019 | Validated | Delivered | Correction: Release B commit `d5b21e4` already delivered the capture-time projection reader; this row corrects the stale current-state value to that already-delivered state. Customer outcome is not validated. |

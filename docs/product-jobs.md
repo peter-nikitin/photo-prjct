@@ -33,18 +33,18 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-001 | Operator | Publish an event | Validated | 2026-07-17 |
 | PJ-002 | Visitor | Discover published events | Validated | 2026-07-17 |
 | PJ-003 | Visitor | Review event details | Validated | 2026-07-17 |
-| PJ-004 | Photographer | Upload an event batch | Validated | 2026-08-01 |
+| PJ-004 | Photographer | Upload an event batch | Validated | 2026-08-15 |
 | PJ-005 | Visitor | Browse an event gallery | Validated | 2026-08-20 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
 | PJ-008 | Customer | Find photos by face | In progress | 2026-08-20 |
-| PJ-009 | Visitor | Receive a free-event original | Candidate | 2026-07-17 |
+| PJ-009 | Visitor | Receive a free-event original | Delivered | 2026-08-21 |
 | PJ-010 | Customer | Purchase selected photos | Candidate | 2026-08-20 |
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-08-20 |
-| PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
+| PJ-012 | Visitor | Jump to a known gallery page | Delivered | 2026-08-21 |
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
-| PJ-015 | Customer | Filter an event gallery by capture time | In progress | 2026-08-08 |
+| PJ-015 | Customer | Filter an event gallery by capture time | Delivered | 2026-08-21 |
 | PJ-016 | Customer | Select paid event photos | In progress | 2026-08-20 |
 
 ## Job details
@@ -127,7 +127,7 @@ event.
 When automated processing fails or produces uncertain metadata, I want to inspect and correct the
 result, so I can keep published search data reliable.
 
-- Status: Planned
+- Status: Candidate
 - Evidence: [Target MVP architecture — Moderation](architecture.md#target-mvp-architecture--proposed)
 - Last updated: 2026-07-17
 
@@ -193,9 +193,13 @@ search within that event, so I can review probable matches.
 When an event offers free photos, I want a controlled anonymous download, so I can receive the
 original without exposing its permanent storage key.
 
-- Status: Candidate
-- Evidence: [Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries)
-- Last updated: 2026-07-17
+- Status: Delivered
+- Evidence: The merged anonymous download route, signed original resolver, and its regression in
+  [`src/backend/picflow/tests/test_views.py`](../src/backend/picflow/tests/test_views.py) deliver
+  controlled free-event original access without exposing a permanent storage key. Current-main CI
+  run `32457775703` and automatic Deploy run `32457775668` succeeded for the deployed commit.
+  This delivery evidence does not establish customer-outcome validation.
+- Last updated: 2026-08-21
 
 ### PJ-010 — Customer — Purchase selected photos
 
@@ -237,9 +241,11 @@ anonymous event-specific cart, so I can preserve a selection before checkout is 
 When a paginated photo gallery has many pages and I know the page number I need, I want to go
 directly to it, so I can reach that part of the photo list quickly.
 
-- Status: In progress
-- Evidence: [PR #93](https://github.com/peter-nikitin/photo-prjct/pull/93), the shared [`src/backend/templates/ui/gallery_pagination.html`](../src/backend/templates/ui/gallery_pagination.html), focused event pagination coverage in [`src/backend/picflow/tests/test_views.py::GalleryPageTests::test_event_detail_uses_numbered_pages_in_filename_order`](../src/backend/picflow/tests/test_views.py), focused selfie pagination coverage in [`src/backend/selfie_search/tests/test_views.py::PublicSelfieResultViewTests::test_ready_page_uses_numbered_pages_without_reranking_or_expanding_membership`](../src/backend/selfie_search/tests/test_views.py), and four production-screen visual baselines covered by [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js): [`desktop-event-gallery-populated.png`](../tests/visual/visual.spec.js-snapshots/desktop-event-gallery-populated.png), [`mobile-event-gallery-populated.png`](../tests/visual/visual.spec.js-snapshots/mobile-event-gallery-populated.png), [`desktop-selfie-search-ready.png`](../tests/visual/visual.spec.js-snapshots/desktop-selfie-search-ready.png), and [`mobile-selfie-search-ready.png`](../tests/visual/visual.spec.js-snapshots/mobile-selfie-search-ready.png). PR #93 is open; CI, merge, and deployment are not recorded as delivery evidence.
-- Last updated: 2026-08-04
+- Status: Delivered
+- Evidence: Merge commit `02a8036` delivered the shared
+  [`src/backend/templates/ui/gallery_pagination.html`](../src/backend/templates/ui/gallery_pagination.html),
+  focused event pagination coverage in [`src/backend/picflow/tests/test_views.py::GalleryPageTests::test_event_detail_uses_numbered_pages_in_filename_order`](../src/backend/picflow/tests/test_views.py), focused selfie pagination coverage in [`src/backend/selfie_search/tests/test_views.py::PublicSelfieResultViewTests::test_ready_page_uses_numbered_pages_without_reranking_or_expanding_membership`](../src/backend/selfie_search/tests/test_views.py), and four production-screen visual baselines covered by [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js): [`desktop-event-gallery-populated.png`](../tests/visual/visual.spec.js-snapshots/desktop-event-gallery-populated.png), [`mobile-event-gallery-populated.png`](../tests/visual/visual.spec.js-snapshots/mobile-event-gallery-populated.png), [`desktop-selfie-search-ready.png`](../tests/visual/visual.spec.js-snapshots/desktop-selfie-search-ready.png), and [`mobile-selfie-search-ready.png`](../tests/visual/visual.spec.js-snapshots/mobile-selfie-search-ready.png). Current-main CI run `32457775703` and automatic Deploy run `32457775668` succeeded. This delivery evidence does not establish customer-outcome validation.
+- Last updated: 2026-08-21
 
 ### PJ-013 — Customer — Report selfie-search quality
 
@@ -291,19 +297,16 @@ When I know approximately when my photos were taken at an event, I want to narro
 gallery by event-local capture time, so I can reach likely photos without uploading a selfie or
 storing a manual query.
 
-- Status: In progress
+- Status: Delivered
 - Evidence: The approved [event gallery time-filter design](superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
   and [capture-time projection design](superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
   define the event-local form, exact inclusive bounds, privacy boundary, and two-release gate.
-  Accepted Release A dated evidence establishes the synchronous writer, direct reader, clean
-  global reconciliation at 17,043 event-9 pairs, and rollback-only lifecycle smoke. The current
-  Release B candidate uses the projection-only filtered reader and has a clean immutable-local-clone
-  reconciliation plus a [sanitized 2x benchmark](performance/2026-08-08-event-gallery-time-filter-local-clone.json)
+  Release B commit `d5b21e4` delivered the projection-only filtered reader after clean immutable-
+  local-clone reconciliation and a [sanitized 2x benchmark](performance/2026-08-08-event-gallery-time-filter-local-clone.json)
   for its first, midpoint, and last pages. The integrated gallery/processing/projection/deployment
-  suite, visual suite (92 tests), and separate `make check` exit clean locally. Customer acceptance
-  remains blocked on Release B review, PR/green CI, canonical deployment, exact-image/health
-  checks, reconciliation and benchmark, and gallery/privacy/authorization smoke coverage.
-- Last updated: 2026-08-08
+  suite, visual suite (92 tests), and separate `make check` exit clean locally. This delivery
+  evidence does not establish customer-outcome validation.
+- Last updated: 2026-08-21
 
 Visual design-reference screens are not delivery evidence.
 
@@ -341,3 +344,6 @@ This log is append-only.
 | 2026-08-15 | PJ-004 | Validated | Validated | Local automated folder coverage verifies event-admin management plus durable mixed-folder assignment through registration, retry, confirmation, and resume in one owned upload batch. No CI, deployment, staging, or customer evidence is claimed; mass reassignment remains deferred. |
 | 2026-08-15 | PJ-005 | Validated | Validated | Local automated gallery coverage verifies stable repeated-folder GET filtering over the existing eligible event gallery, including `Без папки`, capture-time composition, pagination, and invalid/foreign-value rejection. Existing media authorization is unchanged; no CI, deployment, staging, or customer evidence is claimed. |
 | 2026-08-20 | PJ-016 | Not recorded | In progress | Local gated cart-selection implementation is covered by repository tests; activation and purchase remain pending. |
+| 2026-08-21 | PJ-009 | Candidate | Delivered | Merge commit `9cca069` delivers the anonymous download route, signed original resolver, and regression; current-main CI/deployment evidence supports delivery, while customer outcome is not validated. |
+| 2026-08-21 | PJ-012 | In progress | Delivered | Merge commit `02a8036` plus current-main CI/deployment evidence deliver numbered gallery and selfie-result pagination; customer outcome is not validated. |
+| 2026-08-21 | PJ-015 | In progress | Delivered | Release B commit `d5b21e4` is delivery evidence for projection-backed capture-time filtering; customer outcome is not validated. |

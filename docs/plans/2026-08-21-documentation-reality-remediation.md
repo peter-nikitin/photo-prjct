@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-21
 
-**Status:** Draft
+**Status:** Complete
 
 **Owner:** Maintainer
 
@@ -232,6 +232,8 @@ These items are deliberately not implementation tasks in this plan:
 
 ## Rollback
 
-The repository changes are local documentation, tests, and developer-command configuration. Revert
-the single implementation commit if a structural contract is wrong. The plan authorizes no runtime
-or cloud mutation, so it has no service rollback procedure.
+The repository changes are local documentation, tests, and developer-command configuration. If a
+structural contract is wrong, revert the complete remediation commit range
+`869aadc^..7983004` (the six task commits), or revert the delivered
+remediation PR/merge as one change set; do not revert only one task commit. The plan authorizes no
+runtime or cloud mutation, so it has no service rollback procedure.

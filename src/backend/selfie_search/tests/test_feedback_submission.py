@@ -10,7 +10,8 @@ from django.db import IntegrityError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.models import FeatureFlag
+from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
+from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
@@ -239,14 +240,14 @@ class FeedbackSubmissionTests(TestCase):
 
     def test_paid_watermarked_presentation_and_label_submission_use_explicit_gate(self) -> None:
         self.event.access_type = Event.AccessType.PAID
-        self.event.save(update_fields=["access_type"])
+        self.event.price_per_photo_kopecks = 30000
+        self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         result = self.make_watermarked_result(search=search)
-        flag = FeatureFlag.objects.create(
-            key=PAID_WATERMARKED_PREVIEWS_FLAG,
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.OFF,
-        )
+        states = {
+            "paid-events": FEATURE_FLAG_ON,
+            PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_OFF,
+        }
 
         gate_off = feedback_presentation(search, paid_watermarked_previews_enabled=False)
         gate_on = feedback_presentation(search, paid_watermarked_previews_enabled=True)
@@ -258,21 +259,21 @@ class FeedbackSubmissionTests(TestCase):
             "selfie_search:result",
             kwargs={"event_slug": self.event.slug, "public_token": token},
         )
-        self.client.get(result_url)
-        csrf_token = self.client.cookies["csrftoken"].value
-        with patch("selfie_search.views.FeedbackSelfieStorage", return_value=storage):
-            denied = self.client.post(
-                self.feedback_url(token=token),
-                self.submission_data(labels=f'{{"{result.id}":"present"}}'),
-                HTTP_X_CSRFTOKEN=csrf_token,
-            )
-            flag.state = FeatureFlag.State.ON
-            flag.save(update_fields=["state"])
-            accepted = self.client.post(
-                self.feedback_url(token=token),
-                self.submission_data(labels=f'{{"{result.id}":"present"}}'),
-                HTTP_X_CSRFTOKEN=csrf_token,
-            )
+        with override_feature_flags(states):
+            self.client.get(result_url)
+            csrf_token = self.client.cookies["csrftoken"].value
+            with patch("selfie_search.views.FeedbackSelfieStorage", return_value=storage):
+                denied = self.client.post(
+                    self.feedback_url(token=token),
+                    self.submission_data(labels=f'{{"{result.id}":"present"}}'),
+                    HTTP_X_CSRFTOKEN=csrf_token,
+                )
+                states[PAID_WATERMARKED_PREVIEWS_FLAG] = FEATURE_FLAG_ON
+                accepted = self.client.post(
+                    self.feedback_url(token=token),
+                    self.submission_data(labels=f'{{"{result.id}":"present"}}'),
+                    HTTP_X_CSRFTOKEN=csrf_token,
+                )
 
         self.assertEqual(gate_off.variant, SelfieSearchFeedback.Variant.PROBLEM)
         self.assertEqual(gate_off.visible_result_ids, frozenset())

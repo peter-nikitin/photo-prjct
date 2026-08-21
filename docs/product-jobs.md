@@ -45,6 +45,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
 | PJ-015 | Customer | Filter an event gallery by capture time | In progress | 2026-08-08 |
+| PJ-016 | Customer | Select paid event photos | In progress | 2026-08-20 |
 
 ## Job details
 
@@ -218,6 +219,19 @@ purchased securely.
   implemented.
 - Last updated: 2026-08-20
 
+### PJ-016 — Customer — Select paid event photos
+
+When I browse a paid event with watermarked previews, I want to add or remove eligible photos in an
+anonymous event-specific cart, so I can preserve a selection before checkout is available.
+
+- Status: In progress
+- Evidence: Local repository tests cover staff-gated selection from the paid gallery and saved
+  selfie result, browser/event isolation, reload persistence, current-price totals, pruning,
+  request-time expiry, and original/download denial. The `paid-photo-cart` gate is absent/off by
+  default. This is not PR, CI, deployment, public activation, legal-cookie review, customer-outcome,
+  checkout, payment, order, entitlement, or original-delivery evidence.
+- Last updated: 2026-08-20
+
 ### PJ-012 — Visitor — Jump to a known gallery page
 
 When a paginated photo gallery has many pages and I know the page number I need, I want to go
@@ -326,3 +340,4 @@ This log is append-only.
 | 2026-08-08 | PJ-015 | In progress | In progress | Release A staging operation is accepted; the Release B projection reader has clean local reconciliation and aggregate first/midpoint/last 2x evidence. Review, PR/CI, deployment, live acceptance, and customer outcome remain pending. |
 | 2026-08-15 | PJ-004 | Validated | Validated | Local automated folder coverage verifies event-admin management plus durable mixed-folder assignment through registration, retry, confirmation, and resume in one owned upload batch. No CI, deployment, staging, or customer evidence is claimed; mass reassignment remains deferred. |
 | 2026-08-15 | PJ-005 | Validated | Validated | Local automated gallery coverage verifies stable repeated-folder GET filtering over the existing eligible event gallery, including `Без папки`, capture-time composition, pagination, and invalid/foreign-value rejection. Existing media authorization is unchanged; no CI, deployment, staging, or customer evidence is claimed. |
+| 2026-08-20 | PJ-016 | Not recorded | In progress | Local gated cart-selection implementation is covered by repository tests; activation and purchase remain pending. |

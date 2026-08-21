@@ -26,6 +26,18 @@
     <path d="M12 3v12M7 10l5 5 5-5"/>
     <path d="M5 21h14"/>
   </symbol>
+  <symbol id="cart-plus" viewBox="0 0 24 24">
+    <path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L20 11H7"/>
+    <circle cx="10" cy="20" r="1"/>
+    <circle cx="17" cy="20" r="1"/>
+    <path d="M16 4v6M13 7h6"/>
+  </symbol>
+  <symbol id="cart-check" viewBox="0 0 24 24">
+    <path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L20 11H7"/>
+    <circle cx="10" cy="20" r="1"/>
+    <circle cx="17" cy="20" r="1"/>
+    <path d="m14 7 2 2 4-4"/>
+  </symbol>
   <symbol id="trash" viewBox="0 0 24 24">
     <path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3"/>
   </symbol>

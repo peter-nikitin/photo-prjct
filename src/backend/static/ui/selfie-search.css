@@ -34,6 +34,15 @@
   color: var(--muted);
 }
 
+.selfie-search-results .gallery-card-cart {
+  min-width: 0;
+}
+
+.selfie-search-results .gallery-card-price {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .selfie-search-disclosures {
   margin: 16px 0 22px;
   padding-left: 1.2rem;

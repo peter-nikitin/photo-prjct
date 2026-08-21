@@ -63,8 +63,8 @@
       download.classList.add('gbtn');
       download.setAttribute('data-taborder', '4');
     };
-    return GLightbox({
-      selector: '.event-gallery .glightbox',
+    const lightbox = GLightbox({
+      selector: '[data-event-gallery] .glightbox',
       touchNavigation: true,
       loop: false,
       descPosition: 'bottom',
@@ -80,6 +80,16 @@
         addDescriptionDownloadToKeyboardOrder(current?.slide);
       },
     });
+    const ownerDocument = root.ownerDocument;
+    ownerDocument?.addEventListener?.('cart:snapshot-applied', () => {
+      if (!lightbox?.reload) return;
+      if (lightbox.lightboxOpen) {
+        lightbox.once?.('close', () => lightbox.reload());
+      } else {
+        lightbox.reload();
+      }
+    });
+    return lightbox;
   }
 
   return { initializeDiscovery, initializeEventGallery, initializeFaceChoosers };

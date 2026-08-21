@@ -1,4 +1,12 @@
 <header class="event-detail-header">
   <h1{% if heading_id %} id="{{ heading_id }}"{% endif %}>{{ event.name }}</h1>
   <p class="event-detail-meta"><span>{{ event.city }}</span><span>{{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}</span></p>
+  {% if cart_presentation %}
+    <a class="event-cart-link" href="{% url 'commerce:detail' event_slug=event.slug %}" aria-label="Корзина: {{ cart_presentation.item_count }}">
+      <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#cart-check"></use></svg>
+      <span>Корзина</span>
+      <strong data-cart-count>{{ cart_presentation.item_count }}</strong>
+    </a>
+  {% endif %}
 </header>
+{% if cart_presentation %}<p class="cart-error" data-cart-error role="alert" hidden>Не удалось обновить корзину. Попробуйте ещё раз.</p>{% endif %}

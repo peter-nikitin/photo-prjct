@@ -35,6 +35,7 @@ DATABASES = {
     }
 }
 DEBUG = env.bool("DEBUG", default=False)
+DEFAULT_EXCEPTION_REPORTER_FILTER = "commerce.views.CartExceptionReporterFilter"
 YANDEX_METRIKA_COUNTER_ID = 111239706
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
@@ -47,6 +48,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "commerce.apps.CommerceConfig",
     "feature_flags.apps.FeatureFlagsConfig",
     "ingestion.apps.IngestionConfig",
     "picflow.apps.PicflowConfig",

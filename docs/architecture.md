@@ -325,8 +325,11 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   watermark and original presentation/download are denied; existing rows receive no backfill, as
   defined by [ADR 0029](adr/0029-use-watermarked-previews-for-paid-photos.md). The focused local
   Django checks passed on 2026-08-20; the runtime gate remains off and real activation awaits
-  approved non-placeholder artwork and the later operational rollout. Price, cart, purchase,
-  entitlement, and purchased-original delivery remain unimplemented.
+  approved non-placeholder artwork and the later operational rollout. The anonymous cart consumes
+  only this presentation boundary and cannot authorize media bytes. Both paid-watermark and cart
+  gates remain disabled by default; customer activation additionally requires necessary-cookie
+  legal review, worker/staff smoke evidence, and explicit gate activation. Purchase, entitlement,
+  and purchased-original delivery remain unimplemented.
 - Implement optional event-scoped selfie expansion from an immutable conservative face-cluster
   corpus. The repository builds and publishes versioned anonymous corpora from compatible accepted
   gallery embeddings, evaluates them through the private closed-benchmark CLI, records immutable
@@ -370,7 +373,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; canonical-deployment activation and customer outcomes are not evidenced |
 | Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no canonical-deployment activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
-| Commerce | Cart, promotions, orders, payment state, download entitlement | Proposed |
+| Commerce | Anonymous event carts, promotions, orders, payment state, download entitlement | Disabled-default anonymous server-side event cart implemented locally; no PR, CI, deployment, or live verification, and legal cookie review, approved assets, worker/staff smoke, and explicit gates remain blockers; promotions, packages, orders, payment state, and download entitlement remain proposed |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
@@ -507,14 +510,21 @@ cluster-expansion flag remains disabled by default.
 
 ### Purchase and download
 
-1. The cart contains event photos, prices, and any validated promotion.
-2. A payment transition creates or updates an order idempotently.
-3. For paid events, successful payment grants entitlement to generated exports; the normal paid
-   gallery never makes originals public. The current repository also implements ADR 0029's gated
-   new-photo generation: its normal gallery and ready results present only a watermarked derivative
-   and deny original download. Price, cart, payment, purchase entitlement, and purchased-original
-   delivery are not implemented.
-4. Downloads use short-lived signed access or an authenticated application response and are audited.
+ADR 0030 accepts an anonymous, event-specific cart stored in PostgreSQL and addressed by one opaque
+browser cookie. Cart totals use the event's current per-photo price, and carts expire 30 days after
+their last actual mutation. The repository implements this selection boundary: one `HttpOnly`,
+`Secure`, `SameSite=Lax` browser cookie addresses server-side, event-separated carts; current
+eligible watermarked items and current event price determine every response; and a bounded daily
+host-cleanup command is packaged for successful compatible deployment, though this repository work
+performs no host installation. Requests fail closed on expiry while physical deletion is left to
+cleanup. The `paid-photo-cart` runtime gate remains
+absent/off by default, and deployment code neither creates nor enables it.
+
+This is local implementation evidence only. Public activation remains blocked on approved real
+watermark assets and worker, staff smoke, necessary-cookie legal review, an explicit gate mutation,
+deployment, and live verification. The selection state grants no download entitlement. Packages,
+checkout, payment, orders, promotions, entitlement, and purchased-original delivery remain
+unimplemented and require separately approved work.
 
 ## Security, privacy, and legal boundaries
 
@@ -524,11 +534,14 @@ cluster-expansion flag remains disabled by default.
   controlled inline original delivery under the policy now governed by ADR 0019. Until activation,
   explicit legacy photos use the original for both variants. The normal paid gallery remains
   unavailable; ADR 0019 permits only a valid ready face-search-result bearer link to deliver a saved
-  free- or paid-event member. The gated ADR 0029 repository slice instead uses only an accepted
-  watermarked derivative for the new paid generation's gallery and ready-result media, and denies
-  original download before signing. Purchases and entitled exports remain unresolved. Neither
-  route exposes a permanent storage key, but original delivery still gives an eligible recipient
-  complete unsanitized bytes that can be saved or redistributed.
+  free- or paid-event member. The repository also implements ADR 0029's new paid generation: only
+  accepted watermarked derivatives reach its normal gallery and ready results, and original/download
+  routes deny those photos before storage signing. The cart consumes that presentation boundary and
+  cannot authorize bytes. Both paid-watermarked-preview and paid-cart runtime gates remain absent or
+  off by default; no deployment, activation, or real-media smoke is claimed. Purchases and entitled
+  exports remain unresolved. Neither current route exposes a permanent storage key, but original
+  delivery still gives an eligible recipient complete unsanitized bytes that can be saved or
+  redistributed.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
 - Event-folder identifiers are catalog selectors, not media authority. Upload registration and
@@ -537,6 +550,10 @@ cluster-expansion flag remains disabled by default.
 - Photographer routes require the additive upload permission, and non-superuser batch access is
   restricted to the owning uploader.
 - Secrets and credentials are environment-provided; `.env` files remain untracked.
+- The cart token is a narrow anonymous bearer for selection only, never a customer identity,
+  selfie-result bearer, or media authority. PostgreSQL stores its SHA-256 digest, not the raw token;
+  token-bearing cart responses are private and no-store. Public activation requires the pending
+  necessary-cookie disclosure review before the explicit runtime gate is enabled.
 - Face images and embeddings may be biometric personal data. ADR 0019 accepts a narrow MVP in
   which the selfie is deleted before terminal publication, the query embedding is not persisted,
   and the immutable result is accessible through a non-expiring bearer link. Broader consent,
@@ -582,8 +599,9 @@ cluster-expansion flag remains disabled by default.
    photos before delivering corrections and event-scoped search.
 6. **Face governance, validation, and search:** approve biometric policy and independently benchmark
    face models before delivering embeddings, event filtering, removal, and candidate UX.
-7. **Commerce:** pricing, promotions, payment integration, orders, entitlements, and protected export
-   for paid events.
+7. **Commerce:** the accepted anonymous event-cart selection boundary is implemented under its
+   disabled-default runtime gate; separately approved packages, promotions, payment integration,
+   orders, entitlements, and protected export for paid events remain later work.
 8. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
 
 ### Later cart seam

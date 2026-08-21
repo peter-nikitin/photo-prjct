@@ -17,6 +17,8 @@ from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.states import FEATURE_FLAG_ON
+from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from PIL import Image
@@ -139,18 +141,21 @@ class SubmissionTests(TestCase):
         self.draft = self.make_event("draft", "free", published=False)
 
     def make_event(self, suffix: str, access_type: str, *, published: bool = True) -> Event:
-        return Event.objects.create(
-            name=f"Event {suffix}",
-            slug=f"event-{suffix}",
-            start_date=date(2026, 7, 30),
-            end_date=date(2026, 7, 30),
-            city="Moscow",
-            access_type=access_type,
-            publication_status=(
+        values: dict[str, object] = {
+            "name": f"Event {suffix}",
+            "slug": f"event-{suffix}",
+            "start_date": date(2026, 7, 30),
+            "end_date": date(2026, 7, 30),
+            "city": "Moscow",
+            "access_type": access_type,
+            "publication_status": (
                 Event.PublicationStatus.PUBLISHED if published else Event.PublicationStatus.DRAFT
             ),
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
-        )
+            "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
+        }
+        if access_type == Event.AccessType.PAID:
+            values["price_per_photo_kopecks"] = 30000
+        return Event.objects.create(**values)
 
     def make_eligible_embedding(
         self,
@@ -303,12 +308,13 @@ class SubmissionTests(TestCase):
         self.make_eligible_embedding(event=self.paid_event, photo_id="e")
         storage = RecordingStorage()
 
-        created = submit_selfie_search(
-            event=self.event, selfie=valid_selfie(), storage=storage, user=self.user
-        )
-        paid = submit_selfie_search(
-            event=self.paid_event, selfie=valid_selfie(), storage=storage, user=self.user
-        )
+        with override_feature_flags({"paid-events": FEATURE_FLAG_ON}):
+            created = submit_selfie_search(
+                event=self.event, selfie=valid_selfie(), storage=storage, user=self.user
+            )
+            paid = submit_selfie_search(
+                event=self.paid_event, selfie=valid_selfie(), storage=storage, user=self.user
+            )
 
         self.assertEqual(SelfieSearchJob.objects.filter(search=created.search).count(), 1)
         self.assertEqual(created.search.eligible_photo_count, 0)
@@ -1178,13 +1184,14 @@ class GalleryPhotoSubmissionTests(TestCase):
                 user=self.user,
                 paid_watermarked_previews_enabled=False,
             )
-        created = submit_gallery_photo_search(
-            event=paid_event,
-            photo=photo,
-            detection_id=source_embedding.detection_id,
-            user=self.user,
-            paid_watermarked_previews_enabled=True,
-        )
+        with override_feature_flags({"paid-events": FEATURE_FLAG_ON}):
+            created = submit_gallery_photo_search(
+                event=paid_event,
+                photo=photo,
+                detection_id=source_embedding.detection_id,
+                user=self.user,
+                paid_watermarked_previews_enabled=True,
+            )
         processed = process_gallery_photo_search(
             search=created.search,
             paid_watermarked_previews_enabled=True,

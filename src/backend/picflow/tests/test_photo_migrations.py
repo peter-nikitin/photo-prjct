@@ -294,3 +294,53 @@ class PhotoMigrationTests(TransactionTestCase):
             self.assertIsNone(MigratedPhoto.objects.get(pk="PRE-FOLDER").folder_id)
         finally:
             self._restore_current_migration_leaf()
+
+    def test_event_price_migration_backfills_paid_rows_and_enforces_pairs(self) -> None:
+        executor = MigrationExecutor(connection)
+        try:
+            executor.migrate([("picflow", "0012_paid_watermarked_photo_policy")])
+            old_apps = executor.loader.project_state(
+                [("picflow", "0012_paid_watermarked_photo_policy")]
+            ).apps
+            Event = old_apps.get_model("picflow", "Event")
+            free_event = Event.objects.create(
+                id=1100,
+                name="Free migration event",
+                slug="free-migration-event",
+                start_date=date.today(),
+                end_date=date.today(),
+                city="Moscow",
+                access_type="free",
+            )
+            paid_event = Event.objects.create(
+                id=1101,
+                name="Paid migration event",
+                slug="paid-migration-event",
+                start_date=date.today(),
+                end_date=date.today(),
+                city="Moscow",
+                access_type="paid",
+            )
+
+            executor = MigrationExecutor(connection)
+            executor.migrate([("picflow", "0013_event_photo_price")])
+            apps = executor.loader.project_state([("picflow", "0013_event_photo_price")]).apps
+            MigratedEvent = apps.get_model("picflow", "Event")
+
+            self.assertIsNone(MigratedEvent.objects.get(pk=free_event.pk).price_per_photo_kopecks)
+            self.assertEqual(
+                MigratedEvent.objects.get(pk=paid_event.pk).price_per_photo_kopecks,
+                30000,
+            )
+
+            invalid_updates = (
+                {"access_type": "free", "price_per_photo_kopecks": 1},
+                {"access_type": "paid", "price_per_photo_kopecks": None},
+                {"access_type": "paid", "price_per_photo_kopecks": 0},
+            )
+            for values in invalid_updates:
+                with self.subTest(values=values):
+                    with self.assertRaises(IntegrityError), transaction.atomic():
+                        MigratedEvent.objects.filter(pk=paid_event.pk).update(**values)
+        finally:
+            self._restore_current_migration_leaf()

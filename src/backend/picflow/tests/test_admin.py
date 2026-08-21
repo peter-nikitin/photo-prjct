@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, modify_settings, override_settings
@@ -50,6 +51,72 @@ class EventAdminTests(TestCase):
 
         self.assertContains(response, 'name="timezone_name"')
 
+    def test_admin_exposes_the_rub_photo_price_field(self) -> None:
+        response = self.client.get(reverse("admin:picflow_event_add"))
+
+        self.assertContains(response, 'name="price_per_photo_rub"')
+        self.assertContains(response, "Цена фотографии, ₽")
+
+    def test_admin_converts_the_exact_rub_decimal_to_kopecks(self) -> None:
+        response = self.client.post(
+            reverse("admin:picflow_event_add"),
+            {
+                "name": "Paid Admin Run",
+                "slug": "paid-admin-run",
+                "start_date": date.today(),
+                "end_date": date.today(),
+                "city": "Moscow",
+                "access_type": Event.AccessType.PAID,
+                "price_per_photo_rub": "123.45",
+                "publication_status": Event.PublicationStatus.UNAVAILABLE,
+                "folders-TOTAL_FORMS": "0",
+                "folders-INITIAL_FORMS": "0",
+                "folders-MIN_NUM_FORMS": "0",
+                "folders-MAX_NUM_FORMS": "1000",
+                "_save": "Save",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            Event.objects.get(slug="paid-admin-run").price_per_photo_kopecks,
+            12345,
+        )
+
+    def test_admin_attaches_invalid_access_price_pair_errors_to_the_rub_field(self) -> None:
+        cases = (
+            (Event.AccessType.FREE, "1.00"),
+            (Event.AccessType.PAID, ""),
+            (Event.AccessType.PAID, "0.00"),
+        )
+        for index, (access_type, price_rub) in enumerate(cases):
+            with self.subTest(access_type=access_type, price_rub=price_rub):
+                response = self.client.post(
+                    reverse("admin:picflow_event_add"),
+                    {
+                        "name": f"Invalid price {index}",
+                        "slug": f"invalid-price-{index}",
+                        "start_date": date.today(),
+                        "end_date": date.today(),
+                        "city": "Moscow",
+                        "access_type": access_type,
+                        "price_per_photo_rub": price_rub,
+                        "publication_status": Event.PublicationStatus.UNAVAILABLE,
+                        "folders-TOTAL_FORMS": "0",
+                        "folders-INITIAL_FORMS": "0",
+                        "folders-MIN_NUM_FORMS": "0",
+                        "folders-MAX_NUM_FORMS": "1000",
+                        "_save": "Save",
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(
+                    "price_per_photo_rub",
+                    response.context["adminform"].form.errors,
+                )
+                self.assertFalse(Event.objects.filter(slug=f"invalid-price-{index}").exists())
+
     def test_admin_exposes_russian_publication_labels_with_unavailable_selected(self) -> None:
         response = self.client.get(reverse("admin:picflow_event_add"))
 
@@ -90,6 +157,7 @@ class EventAdminTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
         )
 
         response = self.client.post(
@@ -132,6 +200,7 @@ class EventAdminTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
         )
         photo = Photo.objects.create(
             id="watermarked-photo",
@@ -179,6 +248,7 @@ class EventAdminTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
         )
         photo = Photo.objects.create(
             id="watermarked-photo",
@@ -226,6 +296,7 @@ class EventAdminTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
         )
         other_event = Event.objects.create(
             name="Other run",
@@ -360,6 +431,7 @@ class EventAdminTests(TestCase):
         self.assertEqual(response.status_code, 403)
 
     def event_change_data(self, event: Event, **overrides) -> dict[str, object]:
+        price_kopecks = event.price_per_photo_kopecks
         values: dict[str, object] = {
             "name": event.name,
             "slug": event.slug,
@@ -368,6 +440,9 @@ class EventAdminTests(TestCase):
             "city": event.city,
             "description": event.description,
             "access_type": event.access_type,
+            "price_per_photo_rub": (
+                "" if price_kopecks is None else f"{price_kopecks // 100}.{price_kopecks % 100:02d}"
+            ),
             "publication_status": event.publication_status,
             "timezone_name": event.timezone_name or "",
             "folders-TOTAL_FORMS": "0",
@@ -378,6 +453,34 @@ class EventAdminTests(TestCase):
         }
         values.update(overrides)
         return values
+
+    def test_admin_changes_a_published_paid_event_price(self) -> None:
+        event = Event.objects.create(
+            name="Published paid event",
+            slug="published-paid-event",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="Europe/Moscow",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+
+        change_response = self.client.get(reverse("admin:picflow_event_change", args=[event.pk]))
+        self.assertEqual(
+            change_response.context["adminform"].form.initial["price_per_photo_rub"],
+            Decimal("300"),
+        )
+
+        response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, price_per_photo_rub="450.75"),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        event.refresh_from_db()
+        self.assertEqual(event.price_per_photo_kopecks, 45075)
 
     def test_admin_changes_access_type_before_the_first_photo(self) -> None:
         event = Event.objects.create(
@@ -390,12 +493,17 @@ class EventAdminTests(TestCase):
 
         response = self.client.post(
             reverse("admin:picflow_event_change", args=[event.pk]),
-            self.event_change_data(event, access_type=Event.AccessType.PAID),
+            self.event_change_data(
+                event,
+                access_type=Event.AccessType.PAID,
+                price_per_photo_rub="300.00",
+            ),
         )
 
         self.assertEqual(response.status_code, 302)
         event.refresh_from_db()
         self.assertEqual(event.access_type, Event.AccessType.PAID)
+        self.assertEqual(event.price_per_photo_kopecks, 30000)
 
     def test_admin_rejects_access_type_change_after_the_first_photo(self) -> None:
         event = Event.objects.create(
@@ -409,7 +517,11 @@ class EventAdminTests(TestCase):
 
         response = self.client.post(
             reverse("admin:picflow_event_change", args=[event.pk]),
-            self.event_change_data(event, access_type=Event.AccessType.PAID),
+            self.event_change_data(
+                event,
+                access_type=Event.AccessType.PAID,
+                price_per_photo_rub="300.00",
+            ),
         )
 
         self.assertEqual(response.status_code, 200)

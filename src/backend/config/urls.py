@@ -6,6 +6,7 @@ from config import views
 
 urlpatterns = [
     path("internal/photo-processing/v1/", include("processing.urls")),
+    path("", include("commerce.urls")),
     path("", include("selfie_search.urls")),
     path("health/", views.health, name="health"),
     path("metrics/", views.metrics, name="metrics"),

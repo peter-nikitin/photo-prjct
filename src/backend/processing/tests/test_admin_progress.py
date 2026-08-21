@@ -144,7 +144,8 @@ class AdminProcessingProgressTests(TestCase):
 
     def test_mixed_paid_event_counts_only_explicitly_enrolled_watermark_photos(self) -> None:
         self.event.access_type = Event.AccessType.PAID
-        self.event.save(update_fields=["access_type"])
+        self.event.price_per_photo_kopecks = 30000
+        self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
         old_photo = self.create_photo("paid-old")
         new_photo = self.create_photo("paid-new")
         new_photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1

@@ -1,5 +1,7 @@
+from decimal import Decimal
+
 from django.contrib import admin
-from django.forms import BaseInlineFormSet, ModelForm
+from django.forms import BaseInlineFormSet, DecimalField, ModelForm
 
 from picflow.models import Event, EventFolder, Photo
 
@@ -30,6 +32,14 @@ class EventFolderInline(admin.TabularInline):
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
     class Form(ModelForm):
+        price_per_photo_rub = DecimalField(
+            label="Цена фотографии, ₽",
+            required=False,
+            max_digits=12,
+            decimal_places=2,
+            min_value=Decimal("0.01"),
+        )
+
         class Meta:
             model = Event
             fields = (
@@ -42,12 +52,35 @@ class EventAdmin(admin.ModelAdmin):
                 "city",
                 "timezone_name",
                 "access_type",
+                "price_per_photo_rub",
                 "publication_status",
             )
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            if self.instance.price_per_photo_kopecks is not None:
+                self.initial.setdefault(
+                    "price_per_photo_rub",
+                    Decimal(self.instance.price_per_photo_kopecks) / Decimal(100),
+                )
 
         def clean(self):
             cleaned_data = super().clean()
             access_type = cleaned_data.get("access_type")
+            price_rub = cleaned_data.get("price_per_photo_rub")
+            if price_rub is None:
+                self.instance.price_per_photo_kopecks = None
+            else:
+                self.instance.price_per_photo_kopecks = int(price_rub * Decimal(100))
+
+            if access_type == Event.AccessType.FREE and price_rub is not None:
+                self.add_error("price_per_photo_rub", "Free events cannot have a photo price.")
+            elif access_type == Event.AccessType.PAID and price_rub is None:
+                self.add_error(
+                    "price_per_photo_rub",
+                    "Paid events require a positive photo price.",
+                )
+
             if (
                 not self.instance.pk
                 or access_type is None
@@ -80,6 +113,7 @@ class EventAdmin(admin.ModelAdmin):
         ("Content", {"fields": ("name", "slug", "description", "cover")}),
         ("Schedule", {"fields": ("start_date", "end_date", "city", "timezone_name")}),
         ("Access and publication", {"fields": ("access_type", "publication_status")}),
+        ("Commerce", {"fields": ("price_per_photo_rub",)}),
     )
 
     def has_delete_permission(self, request, obj=None) -> bool:  # noqa: ARG002

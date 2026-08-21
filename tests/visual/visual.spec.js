@@ -30,6 +30,8 @@ const desktopPages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
+  ['event-cart', '/__visual__/event/cart/'],
+  ['event-cart-empty', '/__visual__/event/cart/empty/'],
   ['event-gallery-staff-preview', '/__visual__/event/gallery-staff-preview/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-gallery-filtered-empty', '/__visual__/event/gallery-filtered-empty/'],
@@ -65,6 +67,8 @@ const mobilePages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
+  ['event-cart', '/__visual__/event/cart/'],
+  ['event-cart-empty', '/__visual__/event/cart/empty/'],
   ['event-gallery-staff-preview', '/__visual__/event/gallery-staff-preview/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
   ['event-gallery-filtered-empty', '/__visual__/event/gallery-filtered-empty/'],
@@ -1232,6 +1236,190 @@ test('paid gallery and ready result keep cards and lightboxes without download a
     await expect(page.locator('.glightbox-container .gallery-lightbox-download')).toHaveCount(0);
     await page.keyboard.press('Escape');
   }
+});
+
+test('paid lightbox injects the matching cart action without rewriting watermarked media', async ({
+  page,
+}) => {
+  for (const path of [
+    '/__visual__/event/gallery-paid/',
+    '/__visual__/event/selfie-search/ready/paid/',
+  ]) {
+    await page.goto(path);
+    const card = page.locator('.gallery-card').first();
+    const link = card.locator('.gallery-card-link');
+    const expectedPhotoId = await card.getAttribute('data-photo-id');
+    const expectedMediaUrl = await link.getAttribute('href');
+
+    await link.click();
+    const slide = page.locator('.glightbox-container .gslide.current');
+    const form = slide.locator('[data-cart-form]');
+    await expect(form).toHaveAttribute('data-photo-id', expectedPhotoId);
+    await expect(form.getByRole('button', { name: 'Добавить в корзину' })).toBeVisible();
+    await expect(form.locator('[name="selected"]')).toHaveValue('1');
+    await expect(slide.locator('.gallery-lightbox-download')).toHaveCount(0);
+    await expect(slide.locator('.gslide-image img')).toHaveAttribute(
+      'src',
+      new URL(expectedMediaUrl, page.url()).href,
+    );
+    await page.keyboard.press('Escape');
+  }
+});
+
+test('cart rows open the same lightbox with the selected cart action', async ({ page }) => {
+  await page.goto('/__visual__/event/cart/');
+  const row = page.locator('.event-cart-item').first();
+  const link = row.locator('.event-cart-photo');
+  const expectedMediaUrl = await link.getAttribute('href');
+
+  await link.click();
+
+  const slide = page.locator('.glightbox-container .gslide.current');
+  await expect(slide).toBeVisible();
+  await expect(slide.locator('.gslide-image img')).toHaveAttribute(
+    'src',
+    new URL(expectedMediaUrl, page.url()).href,
+  );
+  await expect(slide.getByRole('button', { name: 'Удалить из корзины' })).toBeVisible();
+});
+
+test('desktop cart uses compact rows beside a distinct summary column', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await page.goto('/__visual__/event/cart/');
+
+  const geometry = await page.locator('.event-cart-layout').evaluate((layout) => {
+    const list = layout.querySelector('.event-cart-list').getBoundingClientRect();
+    const summary = layout.querySelector('.event-cart-summary-panel').getBoundingClientRect();
+    const rows = [...layout.querySelectorAll('.event-cart-item')].map((row) => {
+      const rowRect = row.getBoundingClientRect();
+      const removeRect = row.querySelector('.event-cart-remove').getBoundingClientRect();
+      return {
+        height: rowRect.height,
+        removeAtRight: Math.abs(rowRect.right - removeRect.right) <= 12,
+      };
+    });
+    return {
+      listBeforeSummary: list.right < summary.left,
+      listWiderThanSummary: list.width > summary.width,
+      rows,
+    };
+  });
+
+  expect(geometry.listBeforeSummary).toBe(true);
+  expect(geometry.listWiderThanSummary).toBe(true);
+  expect(geometry.rows).toEqual([
+    { height: expect.any(Number), removeAtRight: true },
+    { height: expect.any(Number), removeAtRight: true },
+  ]);
+  expect(geometry.rows.every(({ height }) => height <= 96)).toBe(true);
+  await expect(page.locator('.event-cart-remove').first()).toHaveText('');
+  await expect(page.locator('.event-cart-remove').first().locator('svg use')).toHaveAttribute(
+    'href',
+    /#trash$/,
+  );
+});
+
+test('mobile cart keeps a compact summary fixed to the viewport bottom', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await page.goto('/__visual__/event/cart/');
+  const summary = page.locator('.event-cart-summary-panel');
+  const before = await summary.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      position: getComputedStyle(element).position,
+      bottomGap: window.innerHeight - rect.bottom,
+      height: rect.height,
+      top: rect.top,
+    };
+  });
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const afterTop = await summary.evaluate((element) => element.getBoundingClientRect().top);
+
+  expect(before.position).toBe('fixed');
+  expect(Math.abs(before.bottomGap)).toBeLessThanOrEqual(1);
+  expect(before.height).toBeLessThanOrEqual(112);
+  expect(Math.abs(afterTop - before.top)).toBeLessThanOrEqual(1);
+  await expect(summary).toBeVisible();
+});
+
+test('paid gallery cart action occupies the former right-edge download slot', async ({ page }) => {
+  await page.goto('/__visual__/event/gallery-paid/');
+  const positions = await page.locator('.gallery-card').evaluateAll((cards) => cards.map((card) => {
+    const cardRect = card.getBoundingClientRect();
+    const buttonRect = card.querySelector('.gallery-cart-button').getBoundingClientRect();
+    return {
+      rightGap: Math.abs(cardRect.right - buttonRect.right),
+    };
+  }));
+
+  expect(positions.every(({ rightGap }) => rightGap <= 1)).toBe(true);
+});
+
+test('paid card mutation refreshes the next GLightbox cart action from the authoritative snapshot', async ({
+  page,
+}) => {
+  await page.route('**/events/london-10k/cart/state/', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        photo_id: '1048',
+        selected: true,
+        item_count: 1,
+        unit_price_display: '450,75 ₽',
+        total_display: '450,75 ₽',
+      }),
+    });
+  });
+  await page.goto('/__visual__/event/gallery-paid/');
+  const card = page.locator('.gallery-card[data-photo-id="1048"]');
+  const mediaUrl = await card.locator('.gallery-card-link').getAttribute('href');
+
+  await card.getByRole('button', { name: 'Добавить в корзину' }).click();
+  await expect(card.locator('.gallery-card-price')).toHaveText('450,75 ₽');
+  await expect(page.locator('.event-cart-link')).toHaveAttribute('aria-label', 'Корзина: 1');
+
+  await card.locator('.gallery-card-link').click();
+  const slide = page.locator('.glightbox-container .gslide.current');
+  await expect(slide.locator('[data-cart-price]')).toHaveText('450,75 ₽');
+  await expect(slide.locator('[name="selected"]')).toHaveValue('0');
+  await expect(slide.getByRole('button', { name: 'Удалить из корзины' })).toBeVisible();
+  await expect(slide.locator('[data-cart-icon] use')).toHaveAttribute('href', /#cart-check$/);
+  await expect(slide.locator('.gslide-image img')).toHaveAttribute('src', new URL(mediaUrl, page.url()).href);
+  await page.keyboard.press('Escape');
+
+  const unaffectedCard = page.locator('.gallery-card[data-photo-id="1316"]');
+  await unaffectedCard.locator('.gallery-card-link').click();
+  const unaffectedSlide = page.locator('.glightbox-container .gslide.current');
+  await expect(unaffectedSlide.locator('[data-cart-price]')).toHaveText('450,75 ₽');
+  await expect(unaffectedSlide.locator('[name="selected"]')).toHaveValue('1');
+  await expect(unaffectedSlide.getByRole('button', { name: 'Добавить в корзину' })).toBeVisible();
+});
+
+test('mobile cart keeps each price on one line inside its card', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await page.goto('/__visual__/event/cart/');
+  const layout = await page.locator('.event-cart-price').evaluateAll((prices) => prices.map((price) => {
+    const textRange = document.createRange();
+    textRange.selectNodeContents(price);
+    const priceText = price.firstChild;
+    const digitsRange = document.createRange();
+    digitsRange.setStart(priceText, 0);
+    digitsRange.setEnd(priceText, 3);
+    const rubleRange = document.createRange();
+    rubleRange.setStart(priceText, price.textContent.indexOf('₽'));
+    rubleRange.setEnd(priceText, price.textContent.length);
+    const item = price.closest('.event-cart-item');
+    return {
+      textLines: textRange.getClientRects().length,
+      sameVisualLine: Math.abs(digitsRange.getBoundingClientRect().top - rubleRange.getBoundingClientRect().top) < 1,
+      itemFits: item.scrollWidth <= item.clientWidth,
+    };
+  }));
+
+  expect(layout).toEqual([
+    { textLines: 1, sameVisualLine: true, itemFits: true },
+    { textLines: 1, sameVisualLine: true, itemFits: true },
+  ]);
 });
 
 test('gallery and ready result lightboxes keep original download as a compact icon action', async ({

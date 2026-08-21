@@ -2,11 +2,17 @@ from dataclasses import replace
 from datetime import date
 from urllib.parse import urlencode
 
+from commerce.views import (
+    apply_read_cookie_decision,
+    cart_state_for_photos,
+    private_cart_response,
+)
 from django.conf import settings
 from django.core.paginator import InvalidPage
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET
 from feature_flags import services as feature_flag_services
 from ingestion.storage import (
@@ -54,6 +60,7 @@ def event_catalog(request):
     return render(request, "catalog/event_catalog.html", {"events": events})
 
 
+@sensitive_variables()
 def event_detail(request, slug: str, *, selfie_search_form=None):
     event = get_object_or_404(Event.objects.site_visible_to(request.user), slug=slug)
     mark_event_staff_preview(request, (event,))
@@ -145,10 +152,17 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                 )
                 for photo in gallery_page_photos
             )
-    return render(
+    cart_state = cart_state_for_photos(
+        request=request,
+        event=event,
+        photos=gallery_photos,
+        watermarked_previews_enabled=paid_watermarked_previews_enabled,
+    )
+    response = render(
         request,
         "catalog/event_detail.html",
         {
+            "cart_presentation": cart_state.presentation if cart_state is not None else None,
             "event": event,
             "gallery_photos": gallery_photos,
             "gallery_page": gallery_page_data,
@@ -163,6 +177,13 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             "selfie_feedback_enabled": selfie_feedback_enabled,
         },
     )
+    if cart_state is not None:
+        private_cart_response(response)
+        apply_read_cookie_decision(
+            response,
+            delete_browser_token=cart_state.delete_browser_token,
+        )
+    return response
 
 
 def _public_media_resolver() -> PublicMediaResolver:

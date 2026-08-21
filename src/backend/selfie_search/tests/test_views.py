@@ -13,6 +13,7 @@ from urllib.parse import quote
 from uuid import uuid4
 from zlib import crc32
 
+from commerce.services import set_photo_selected
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
@@ -20,7 +21,9 @@ from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.models import FeatureFlag
+from django.views.debug import technical_500_response
+from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
+from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.gallery import GalleryPhotoFactory
 from picflow.models import Event, Photo
@@ -36,6 +39,7 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
+from selfie_search.middleware import PublicSelfieBearerProtectionMiddleware
 from selfie_search.models import (
     SelfieSearch,
     SelfieSearchDirectEvidence,
@@ -47,6 +51,8 @@ from selfie_search.observability import OBSERVABILITY_FAILURE_MARKER
 from selfie_search.services.submission import GallerySearchFailed, GallerySearchUnavailable
 
 type ChoiceValue = str | tuple[str, str]
+
+PAID_PHOTO_CART_FLAG = "paid-photo-cart"
 
 
 @override_settings(
@@ -78,6 +84,7 @@ class PublicSelfieSearchMarkupTests(TestCase):
             end_date=date(2026, 7, 30),
             city="Moscow",
             access_type=access_type,
+            price_per_photo_kopecks=(30000 if access_type == Event.AccessType.PAID else None),
             publication_status=publication_status,
         )
 
@@ -977,6 +984,8 @@ class PublicSelfieResultViewTests(TestCase):
             "publication_status": Event.PublicationStatus.PUBLISHED,
         }
         values.update(overrides)
+        if values.get("access_type", Event.AccessType.FREE) == Event.AccessType.PAID:
+            values.setdefault("price_per_photo_kopecks", 30000)
         return Event.objects.create(**values)
 
     def make_private_photo(
@@ -1337,6 +1346,7 @@ class PublicSelfieResultViewTests(TestCase):
             name="Paid result",
             slug="paid-watermarked-result",
             access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
         )
         search, token = self.make_search(
             event=paid_event,
@@ -1352,16 +1362,15 @@ class PublicSelfieResultViewTests(TestCase):
         self.add_result(search=search, photo=legacy, rank=1)
         self.add_result(search=search, photo=watermarked, rank=2)
         derivative = self.publish_watermark(watermarked)
-        flag = FeatureFlag.objects.create(
-            key=PAID_WATERMARKED_PREVIEWS_FLAG,
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.OFF,
-        )
+        states = {
+            "paid-events": FEATURE_FLAG_ON,
+            PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_OFF,
+        }
 
-        gate_off = self.client.get(self.result_url(event=paid_event, token=token))
-        flag.state = FeatureFlag.State.ON
-        flag.save(update_fields=["state"])
-        gate_on = self.client.get(self.result_url(event=paid_event, token=token))
+        with override_feature_flags(states):
+            gate_off = self.client.get(self.result_url(event=paid_event, token=token))
+            states[PAID_WATERMARKED_PREVIEWS_FLAG] = FEATURE_FLAG_ON
+            gate_on = self.client.get(self.result_url(event=paid_event, token=token))
 
         self.assertEqual(
             [item.photo_id for item in gate_off.context["gallery_photos"]],
@@ -1385,6 +1394,187 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertContains(gate_on, 'class="gallery-lightbox-download"', count=1)
         self.assertNotIn(derivative.final_key, gate_on.content.decode(gate_on.charset))
 
+    def test_paid_ready_result_gets_only_watermarked_cart_presentation_with_bearer_protection(
+        self,
+    ) -> None:
+        paid_event = self.make_event(
+            name="Paid cart result",
+            slug="paid-cart-result",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=45075,
+        )
+        search, result_token = self.make_search(
+            event=paid_event,
+            status=SelfieSearch.Status.READY,
+            matched_photo_count=2,
+        )
+        legacy = self.make_private_photo(paid_event, photo_id="cart-result-legacy")
+        watermarked = self.make_private_photo(
+            paid_event,
+            photo_id="cart-result-watermarked",
+            watermarked_preview_required=True,
+        )
+        self.add_result(search=search, photo=legacy, rank=1)
+        self.add_result(search=search, photo=watermarked, rank=2)
+        self.publish_watermark(watermarked)
+        cart_token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        set_photo_selected(
+            event=paid_event,
+            photo_id=watermarked.pk,
+            selected=True,
+            browser_token=cart_token,
+            watermarked_previews_enabled=True,
+        )
+        self.client.cookies["findme_cart"] = cart_token
+
+        with override_feature_flags(
+            {
+                "paid-events": FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
+            }
+        ):
+            response = self.client.get(self.result_url(event=paid_event, token=result_token))
+
+        presentation = response.context["cart_presentation"]
+        self.assertEqual(
+            tuple(item.photo.photo_id for item in presentation.photos),
+            (watermarked.pk,),
+        )
+        self.assertTrue(presentation.photos[0].selected)
+        self.assertEqual(presentation.item_count, 1)
+        self.assertEqual(presentation.unit_price_display, "450,75 ₽")
+        self.assertEqual(presentation.total_display, "450,75 ₽")
+        self.assertContains(response, "450,75 ₽", count=2)
+        self.assertContains(response, "data-cart-count>1</strong>")
+        self.assertContains(
+            response, 'data-cart-form data-photo-id="cart-result-watermarked"', count=2
+        )
+        self.assertContains(
+            response, 'data-cart-price data-photo-id="cart-result-watermarked"', count=2
+        )
+        self.assertContains(response, 'aria-label="Удалить из корзины"', count=2)
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=2)
+        self.assertContains(
+            response,
+            'name="return_to" value="/events/%3Cevent%3E/selfie-search/%3Cbearer%3E/"',
+            count=2,
+        )
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        self.assertIn("Cookie", response["Vary"])
+        self.assertNotContains(response, "mc.yandex.ru")
+        self.assertNotIn(cart_token, response.content.decode(response.charset))
+
+    @override_settings(DEBUG=False)
+    def test_paid_result_exception_report_redacts_selfie_cart_bearers_and_selection_only(
+        self,
+    ) -> None:
+        paid_event = self.make_event(
+            name="Private report event",
+            slug="private-report-event",
+            access_type=Event.AccessType.PAID,
+        )
+        search, result_token = self.make_search(
+            event=paid_event,
+            status=SelfieSearch.Status.READY,
+            matched_photo_count=1,
+        )
+        selected = self.make_private_photo(
+            paid_event,
+            watermarked_preview_required=True,
+        )
+        self.add_result(search=search, photo=selected, rank=1)
+        self.publish_watermark(selected)
+        cart_token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        set_photo_selected(
+            event=paid_event,
+            photo_id=selected.pk,
+            selected=True,
+            browser_token=cart_token,
+            watermarked_previews_enabled=True,
+        )
+        exception_client = Client(raise_request_exception=False)
+        exception_client.cookies["findme_cart"] = cart_token
+        exception_client.cookies["ordinary_cookie"] = "visible-result-cookie"
+        reports: list[str] = []
+        original_process_exception = PublicSelfieBearerProtectionMiddleware.process_exception
+
+        def capture_report(middleware, request, error):
+            technical_response = technical_500_response(
+                request,
+                type(error),
+                error,
+                error.__traceback__,
+            )
+            reports.append(technical_response.content.decode(technical_response.charset))
+            return original_process_exception(middleware, request, error)
+
+        with (
+            override_feature_flags(
+                {
+                    "paid-events": FEATURE_FLAG_ON,
+                    PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                    PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
+                }
+            ),
+            patch(
+                "selfie_search.views.render",
+                side_effect=RuntimeError("forced paid result"),
+            ),
+            patch.object(
+                PublicSelfieBearerProtectionMiddleware,
+                "process_exception",
+                autospec=True,
+                side_effect=capture_report,
+            ),
+        ):
+            response = exception_client.get(self.result_url(event=paid_event, token=result_token))
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(len(reports), 1)
+        report = reports[0]
+        self.assertNotIn(result_token, report)
+        self.assertNotIn(cart_token, report)
+        self.assertNotIn(selected.pk, report)
+        self.assertIn("ordinary_cookie", report)
+        self.assertIn("visible-result-cookie", report)
+        self.assertIn("private-report-event", report)
+        self.assertIn("forced paid result", report)
+
+    def test_legacy_only_paid_result_is_byte_identical_and_has_no_cart_context_when_gate_opens(
+        self,
+    ) -> None:
+        states = {
+            "paid-events": FEATURE_FLAG_ON,
+            PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+            PAID_PHOTO_CART_FLAG: FEATURE_FLAG_OFF,
+        }
+        paid_event = self.make_event(
+            name="Legacy paid result",
+            slug="legacy-paid-result",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+        search, token = self.make_search(
+            event=paid_event,
+            status=SelfieSearch.Status.READY,
+            matched_photo_count=1,
+        )
+        legacy = self.make_private_photo(paid_event, photo_id="legacy-only-result")
+        self.add_result(search=search, photo=legacy, rank=1)
+
+        with override_feature_flags(states):
+            gate_off = self.client.get(self.result_url(event=paid_event, token=token))
+            states[PAID_PHOTO_CART_FLAG] = FEATURE_FLAG_ON
+            gate_on = self.client.get(self.result_url(event=paid_event, token=token))
+
+        self.assertEqual(gate_off.content, gate_on.content)
+        self.assertIsNone(gate_off.context["cart_presentation"])
+        self.assertIsNone(gate_on.context["cart_presentation"])
+        self.assertNotContains(gate_on, f"/events/{paid_event.slug}/cart/")
+        self.assertContains(gate_on, 'class="gallery-download"')
+
     @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_paid_feedback_presentation_uses_the_same_request_gate_as_visible_results(
         self,
@@ -1406,16 +1596,15 @@ class PublicSelfieResultViewTests(TestCase):
         )
         result = self.add_result(search=search, photo=photo, rank=1)
         self.publish_watermark(photo)
-        flag = FeatureFlag.objects.create(
-            key=PAID_WATERMARKED_PREVIEWS_FLAG,
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.OFF,
-        )
+        states = {
+            "paid-events": FEATURE_FLAG_ON,
+            PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_OFF,
+        }
 
-        gate_off = self.client.get(self.result_url(event=paid_event, token=token))
-        flag.state = FeatureFlag.State.ON
-        flag.save(update_fields=["state"])
-        gate_on = self.client.get(self.result_url(event=paid_event, token=token))
+        with override_feature_flags(states):
+            gate_off = self.client.get(self.result_url(event=paid_event, token=token))
+            states[PAID_WATERMARKED_PREVIEWS_FLAG] = FEATURE_FLAG_ON
+            gate_on = self.client.get(self.result_url(event=paid_event, token=token))
 
         self.assertEqual(gate_off.context["gallery_photos"], ())
         self.assertContains(gate_off, 'data-feedback-variant="problem"')
@@ -1929,7 +2118,10 @@ class PublicSelfieResultViewTests(TestCase):
                     "https://storage.example.test/photo?signature=secret"
                 )
 
-                with patch("selfie_search.views._public_media_resolver", return_value=resolver):
+                with (
+                    override_feature_flags({"paid-events": FEATURE_FLAG_ON}),
+                    patch("selfie_search.views._public_media_resolver", return_value=resolver),
+                ):
                     response = self.client.get(
                         self.result_media_url(
                             event=event,
@@ -1971,11 +2163,6 @@ class PublicSelfieResultViewTests(TestCase):
     def test_watermarked_saved_result_media_uses_semantic_routes_and_download_denies_before_signing(
         self,
     ) -> None:
-        FeatureFlag.objects.create(
-            key=PAID_WATERMARKED_PREVIEWS_FLAG,
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.ON,
-        )
         paid_event = self.make_event(
             name="Paid media result",
             slug="paid-watermarked-result-media",
@@ -1992,7 +2179,15 @@ class PublicSelfieResultViewTests(TestCase):
         resolver = Mock()
         resolver.resolve_signed.return_value = "https://storage.example.test/watermark?signed"
 
-        with patch("selfie_search.views._public_media_resolver", return_value=resolver) as factory:
+        with (
+            override_feature_flags(
+                {
+                    "paid-events": FEATURE_FLAG_ON,
+                    PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                }
+            ),
+            patch("selfie_search.views._public_media_resolver", return_value=resolver) as factory,
+        ):
             media_responses = tuple(
                 self.client.get(
                     self.result_media_url(

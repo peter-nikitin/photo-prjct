@@ -22,6 +22,8 @@ visual_patterns = [
         views.event_gallery_paid,
         name="visual_event_gallery_paid",
     ),
+    path("event/cart/", views.cart_populated, name="visual_cart_populated"),
+    path("event/cart/empty/", views.cart_empty, name="visual_cart_empty"),
     path(
         "event/gallery-staff-preview/",
         views.event_gallery_staff_preview,

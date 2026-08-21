@@ -55,6 +55,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-022 | Maintainer | Gate preview-backed version-4 face generation activation | Delivered | 2026-08-10 |
 | EJ-023 | Maintainer | Keep event-photo folders durable and safely filterable | Validated | 2026-08-15 |
 | EJ-024 | Maintainer | Prepare paid watermarked-preview activation | In progress | 2026-08-20 |
+| EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | In progress | 2026-08-20 |
 
 ## Job details
 
@@ -417,6 +418,20 @@ avoid exposing a clean preview or original.
   delivery.
 - Last updated: 2026-08-20
 
+### EJ-025 — Operator — Retain anonymous cart data within its bounded lifecycle
+
+When anonymous paid-photo carts expire, I want the application to reject them immediately and the
+deployment package to remove them in bounded daily batches, so browser-linked selection does not
+remain usable or accumulate indefinitely.
+
+- Status: In progress
+- Evidence: Local command and deployment-contract tests cover fail-closed request-time expiry, a
+  bounded `cleanup_expired_carts --limit 1000` command that reports Cart rows rather than cascaded
+  objects, an idempotent `flock`-guarded host-cron package, successful-deployment installation, and
+  failed-candidate removal. No host cron has been installed, no deployment has run, and no runtime
+  gate has been enabled.
+- Last updated: 2026-08-20
+
 ### EJ-017 — Developer — Read canonical secret projections consistently
 
 When I run the application locally or use an approved workflow, I want one managed secret authority
@@ -528,3 +543,4 @@ This log is append-only.
 | 2026-08-10 | EJ-022 | Delivered | Delivered | Commit `4f10a1a` enforces the clarified accepted cohort contract: the local projection and accepted runtime cohort have distinct canonical hashes and 17,043/17,043 SHA mismatches bound by one immutable reviewed crosswalk. Runtime enrollment and activation recompute the accepted cohort identity over photo ID, accepted SHA-256, byte size, and geometry; no byte-equivalence or environment-rollout evidence is claimed. |
 | 2026-08-15 | EJ-023 | Not recorded | Validated | Local automated coverage validates inline folder administration, durable mixed-folder ingestion, and stable public GET filtering restricted to the existing eligible event gallery. Folder identifiers remain non-authoritative for media; the mass editor is deferred. No CI, deployment, staging, or customer evidence is claimed. |
 | 2026-08-20 | EJ-024 | Not recorded | In progress | ADR 0029's repository path is implemented with an off-by-default gate and focused Django/worker test evidence. Final artwork, complete-suite, visual, worker-image, deployment, and real-activation evidence remain pending. |
+| 2026-08-20 | EJ-025 | Not recorded | In progress | Local command and deployment-contract coverage packages bounded daily cart cleanup; installation and operational verification remain pending. |

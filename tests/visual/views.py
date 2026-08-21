@@ -127,6 +127,21 @@ class FixtureGalleryPhoto:
 
 
 @dataclass(frozen=True)
+class FixtureCartPhotoPresentation:
+    photo: FixtureGalleryPhoto
+    selected: bool
+    unit_price_display: str = "300 ₽"
+
+
+@dataclass(frozen=True)
+class FixtureCartPresentation:
+    photos: tuple[FixtureCartPhotoPresentation, ...]
+    item_count: int
+    total_display: str
+    pruned: bool = False
+
+
+@dataclass(frozen=True)
 class FixtureSelfieSearch:
     status: str
     eligible_photo_count: int = 0
@@ -275,6 +290,20 @@ PAID_GALLERY_PHOTOS = tuple(replace(photo, download_url=None) for photo in GALLE
 PAID_SELFIE_RESULT_PHOTOS = tuple(
     replace(photo, download_url=None) for photo in SELFIE_RESULT_PHOTOS
 )
+
+
+def _cart_presentation(
+    photos: tuple[FixtureGalleryPhoto, ...], *, selected_ids: tuple[str, ...] = ()
+) -> FixtureCartPresentation:
+    selected = frozenset(selected_ids)
+    return FixtureCartPresentation(
+        photos=tuple(
+            FixtureCartPhotoPresentation(photo=photo, selected=photo.photo_id in selected)
+            for photo in photos
+        ),
+        item_count=len(selected),
+        total_display=f"{len(selected) * 300} ₽",
+    )
 
 
 def _gallery_face(
@@ -636,10 +665,12 @@ def event_gallery_populated(request: HttpRequest) -> HttpResponse:
 
 
 def event_gallery_paid(request: HttpRequest) -> HttpResponse:
+    context = _gallery_context(photos=PAID_GALLERY_PHOTOS)
+    context["cart_presentation"] = _cart_presentation(PAID_GALLERY_PHOTOS, selected_ids=("1190",))
     return _render(
         request,
         "catalog/event_detail.html",
-        _gallery_context(photos=PAID_GALLERY_PHOTOS),
+        context,
     )
 
 
@@ -756,6 +787,7 @@ def _selfie_search_ready(
     *,
     event: FixtureEvent,
     photos: tuple[FixtureGalleryPhoto, ...] = SELFIE_RESULT_PHOTOS,
+    cart_presentation: FixtureCartPresentation | None = None,
 ) -> HttpResponse:
     results = tuple(
         FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
@@ -766,6 +798,7 @@ def _selfie_search_ready(
         "selfie_search/result.html",
         {
             "event": event,
+            "cart_presentation": cart_presentation,
             "gallery_photos": photos,
             "gallery_result_items": tuple(zip(results, photos, strict=True)),
             "selfie_search_page": Paginator(photos, 2).page(1),
@@ -781,7 +814,39 @@ def selfie_search_ready(request: HttpRequest) -> HttpResponse:
 
 
 def selfie_search_ready_paid(request: HttpRequest) -> HttpResponse:
-    return _selfie_search_ready(request, event=EVENTS[0], photos=PAID_SELFIE_RESULT_PHOTOS)
+    return _selfie_search_ready(
+        request,
+        event=EVENTS[0],
+        photos=PAID_SELFIE_RESULT_PHOTOS,
+        cart_presentation=_cart_presentation(PAID_SELFIE_RESULT_PHOTOS, selected_ids=("1190",)),
+    )
+
+
+def cart_populated(request: HttpRequest) -> HttpResponse:
+    photos = PAID_GALLERY_PHOTOS[:2]
+    return _render(
+        request,
+        "commerce/cart.html",
+        {
+            "event": EVENTS[0],
+            "cart_presentation": _cart_presentation(
+                photos, selected_ids=tuple(photo.photo_id for photo in photos)
+            ),
+            "yandex_metrika_counter_id": None,
+        },
+    )
+
+
+def cart_empty(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "commerce/cart.html",
+        {
+            "event": EVENTS[0],
+            "cart_presentation": _cart_presentation(()),
+            "yandex_metrika_counter_id": None,
+        },
+    )
 
 
 def selfie_search_ready_staff_preview(request: HttpRequest) -> HttpResponse:

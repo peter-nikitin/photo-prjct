@@ -60,6 +60,15 @@ case "$requested_worker_replicas" in
         ;;
 esac
 
+command -v crontab >/dev/null 2>&1 || {
+    echo "crontab is required for cart cleanup" >&2
+    exit 1
+}
+command -v flock >/dev/null 2>&1 || {
+    echo "flock is required for cart cleanup" >&2
+    exit 1
+}
+
 case "$GUNICORN_WORKERS:$GUNICORN_THREADS:$GUNICORN_TIMEOUT:$GUNICORN_MAX_REQUESTS:$GUNICORN_MAX_REQUESTS_JITTER" in
     5:2:180:1000:100)
         ;;
@@ -104,14 +113,6 @@ done
 
 case "${PHOTO_UPLOAD_ENABLED:-False}" in
     True)
-        command -v crontab >/dev/null 2>&1 || {
-            echo "crontab is required when photographer uploads are enabled" >&2
-            exit 1
-        }
-        command -v flock >/dev/null 2>&1 || {
-            echo "flock is required when photographer uploads are enabled" >&2
-            exit 1
-        }
         : "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
         : "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
         : "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
@@ -348,6 +349,7 @@ requested_env_tmp=""
 recovery_env_tmp=""
 previous_env_tmp=""
 previous_deployed_image_tmp=""
+previous_cart_cleanup_tmp=""
 marker_tmp=""
 mutation_started=0
 deployment_committed=0
@@ -360,7 +362,30 @@ cleanup() {
         ${recovery_env_tmp:+"$recovery_env_tmp"} \
         ${previous_env_tmp:+"$previous_env_tmp"} \
         ${previous_deployed_image_tmp:+"$previous_deployed_image_tmp"} \
+        ${previous_cart_cleanup_tmp:+"$previous_cart_cleanup_tmp"} \
         ${marker_tmp:+"$marker_tmp"}
+}
+
+previous_cart_cleanup_is_present() {
+    awk -v schedule="23 3 * * * DEPLOY_ROOT=$DEPLOY_ROOT /bin/sh $DEPLOY_ROOT/deploy/run-cart-cleanup.sh >> $DEPLOY_ROOT/cart-cleanup.log 2>&1" '
+        $0 == "# BEGIN photo-prjct-cart-cleanup" {
+            if (state != 0 || found) exit 1
+            state = 1
+            next
+        }
+        state == 1 && $0 == schedule {
+            state = 2
+            next
+        }
+        state == 2 && $0 == "# END photo-prjct-cart-cleanup" {
+            state = 3
+            found = 1
+            next
+        }
+        state == 0 || state == 3 { next }
+        { exit 1 }
+        END { exit found && state == 3 ? 0 : 1 }
+    ' "$previous_cart_cleanup_tmp"
 }
 
 restore_previous_deployment_markers() {
@@ -471,6 +496,11 @@ on_exit() {
                 else
                     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
                 fi
+                if [ "$previous_cart_cleanup_present" = True ]; then
+                    sh "$DEPLOY_ROOT/deploy/install-cart-cleanup-cron.sh" install || true
+                else
+                    sh "$DEPLOY_ROOT/deploy/install-cart-cleanup-cron.sh" remove || true
+                fi
             fi
         fi
         if [ "$observability_installed" -eq 1 ]; then
@@ -515,15 +545,21 @@ phase() {
     esac
 }
 
-install -d -m 0755 "$DEPLOY_ROOT"
 phase snapshot
 previous_upload_enabled="False"
 previous_processing_enabled="False"
 previous_worker_replicas=1
 previous_env_exists=0
 previous_deployed_image_exists=0
+previous_cart_cleanup_present=False
 has_successful_deployment=0
 has_established_deployment=0
+previous_cart_cleanup_tmp="$(mktemp)" || fail "Could not snapshot cart cleanup schedule"
+crontab -l > "$previous_cart_cleanup_tmp" 2>/dev/null || :
+if previous_cart_cleanup_is_present; then
+    previous_cart_cleanup_present=True
+fi
+install -d -m 0755 "$DEPLOY_ROOT"
 if [ -f "$DEPLOY_ROOT/.env" ]; then
     has_established_deployment=1
     previous_env_exists=1
@@ -868,6 +904,7 @@ if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
 else
     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove
 fi
+sh "$DEPLOY_ROOT/deploy/install-cart-cleanup-cron.sh" install
 
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.XXXXXX")"
 printf '%s\n' "$requested_image" > "$marker_tmp"

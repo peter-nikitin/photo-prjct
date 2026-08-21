@@ -1,8 +1,14 @@
 import logging
 import re
+from functools import wraps
 from time import monotonic
 from urllib.parse import urlencode
 
+from commerce.views import (
+    apply_read_cookie_decision,
+    cart_state_for_photos,
+    private_cart_response,
+)
 from config.views import _paid_watermarked_previews_enabled, _public_media_resolver
 from django import forms
 from django.conf import settings
@@ -14,6 +20,7 @@ from django.http import (
 )
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET, require_POST
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.access import mark_event_staff_preview
@@ -183,6 +190,22 @@ def _emit_submission_finished(
     )
 
 
+def _sanitize_result_exception_path(view):
+    @wraps(view)
+    def wrapper(request, *args, **kwargs):
+        try:
+            return view(request, *args, **kwargs)
+        except Exception:
+            sanitized_path = "/events/<event>/selfie-search/<bearer>/"
+            request.path_info = sanitized_path
+            request.META["PATH_INFO"] = sanitized_path
+            raise
+
+    return wrapper
+
+
+@sensitive_variables()
+@_sanitize_result_exception_path
 def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa: ARG001
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
@@ -222,6 +245,13 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         if selfie_search_page is not None
         else ()
     )
+    cart_state = cart_state_for_photos(
+        request=request,
+        event=search.event,
+        photos=gallery_photos,
+        watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        require_eligible_photo=True,
+    )
     feedback_context = None
     feedback_submitted = False
     feedback_correlation = (
@@ -256,6 +286,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         request,
         "selfie_search/result.html",
         {
+            "cart_presentation": cart_state.presentation if cart_state is not None else None,
             "event": search.event,
             "gallery_photos": gallery_photos,
             "gallery_result_items": gallery_result_items,
@@ -277,6 +308,12 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             ),
         },
     )
+    if cart_state is not None:
+        private_cart_response(response)
+        apply_read_cookie_decision(
+            response,
+            delete_browser_token=cart_state.delete_browser_token,
+        )
     return response
 
 

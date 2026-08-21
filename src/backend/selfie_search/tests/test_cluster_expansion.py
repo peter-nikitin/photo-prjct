@@ -201,7 +201,8 @@ class ClusterExpansionTests(TestCase):
         self,
     ) -> None:
         self.event.access_type = Event.AccessType.PAID
-        self.event.save(update_fields=["access_type"])
+        self.event.price_per_photo_kopecks = 30000
+        self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
         anchor = self.detection("paid-legacy-anchor")
         appended = self.detection("paid-watermarked-member")
         Photo.objects.filter(pk=appended.attempt.photo_id).update(

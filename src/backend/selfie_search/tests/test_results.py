@@ -25,6 +25,9 @@ from selfie_search.services.results import (
     saved_ready_result_page,
 )
 
+LEGACY_ORIGINAL_POLICY: str = cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
+WATERMARKED_PREVIEW_POLICY: str = cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED)
+
 
 class SavedReadyResultPageTests(TestCase):
     def setUp(self) -> None:
@@ -50,11 +53,11 @@ class SavedReadyResultPageTests(TestCase):
         *,
         photo_id: str,
         rank: int,
-        gallery_media_policy: str = cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED),
+        gallery_media_policy: str = LEGACY_ORIGINAL_POLICY,
     ) -> Photo:
         generation = (
             Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
-            if gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+            if gallery_media_policy == WATERMARKED_PREVIEW_POLICY
             else Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
         )
         photo = Photo.objects.create(
@@ -204,12 +207,13 @@ class SavedReadyResultPageTests(TestCase):
 
     def test_paid_saved_results_keep_legacy_members_but_gate_new_watermarked_members(self) -> None:
         self.event.access_type = Event.AccessType.PAID
-        self.event.save(update_fields=["access_type"])
+        self.event.price_per_photo_kopecks = 30000
+        self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
         legacy = self.add_result(photo_id="paid-legacy-saved", rank=1)
         watermarked = self.add_result(
             photo_id="paid-watermarked-saved",
             rank=2,
-            gallery_media_policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
+            gallery_media_policy=WATERMARKED_PREVIEW_POLICY,
         )
         self.publish_watermark(watermarked)
 

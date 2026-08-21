@@ -449,7 +449,8 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self,
     ) -> None:
         self.event.access_type = Event.AccessType.PAID
-        self.event.save(update_fields=["access_type"])
+        self.event.price_per_photo_kopecks = 30000
+        self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
         photo = self.private_photo("older-paid-preview")
         clean_preview = self.publish_preview(photo)
 

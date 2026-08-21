@@ -33,8 +33,18 @@ from picflow.gallery import (
     gallery_face_crop,
     gallery_folder_choices,
     gallery_photo_queryset,
+    purchasable_paid_photo_queryset,
 )
 from picflow.models import Event, EventFolder, Photo
+
+LEGACY_ORIGINAL_POLICY: str = cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
+PREVIEW_REQUIRED_POLICY: str = cast(str, Photo.GalleryMediaPolicy.PREVIEW_REQUIRED)
+WATERMARKED_PREVIEW_POLICY: str = cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED)
+LEGACY_ORIGINAL_GENERATION: str = cast(str, Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1)
+PREVIEW_FIRST_GENERATION: str = cast(str, Photo.ProcessingGeneration.PREVIEW_FIRST_V1)
+WATERMARKED_PREVIEW_GENERATION: str = cast(
+    str, Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+)
 
 
 class GalleryPresentationContractTests(SimpleTestCase):
@@ -230,14 +240,14 @@ class GalleryPresentationContractTests(SimpleTestCase):
         )
         download_calls: list[str] = []
 
-        def unexpected_download_url(candidate: Photo) -> str:
+        def unexpected_download(candidate: Photo) -> str:
             download_calls.append(candidate.pk)
             return "/wrong/"
 
         gallery_photo = GalleryPhotoFactory.from_photo(
             photo=photo,
             event_slug=event.slug,
-            download_url_builder=unexpected_download_url,
+            download_url_builder=unexpected_download,
         )
 
         self.assertEqual(gallery_photo.photo_id, photo.pk)
@@ -955,26 +965,21 @@ class PaidWatermarkedGalleryTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+            publication_status=Event.PublicationStatus.PUBLISHED,
         )
 
-    def photo(self, photo_id: str, *, policy: str) -> Photo:
-        generation = cast(
-            dict[str, str],
-            {
-                Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED: (
-                    Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
-                ),
-                Photo.GalleryMediaPolicy.PREVIEW_REQUIRED: (
-                    Photo.ProcessingGeneration.PREVIEW_FIRST_V1
-                ),
-                Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED: (
-                    Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
-                ),
-            },
-        )[policy]
+    def photo(self, photo_id: str, *, policy: str, event: Event | None = None) -> Photo:
+        generation_by_policy: dict[str, str] = {
+            LEGACY_ORIGINAL_POLICY: LEGACY_ORIGINAL_GENERATION,
+            PREVIEW_REQUIRED_POLICY: PREVIEW_FIRST_GENERATION,
+            WATERMARKED_PREVIEW_POLICY: WATERMARKED_PREVIEW_GENERATION,
+        }
+        generation = generation_by_policy[policy]
+        event = event or self.event
         return Photo.objects.create(
             id=photo_id,
-            event=self.event,
+            event=event,
             src="",
             uploaded_by=self.user,
             original_key=f"originals/{photo_id}",
@@ -986,10 +991,11 @@ class PaidWatermarkedGalleryTests(TestCase):
             gallery_media_policy=policy,
         )
 
-    def publish(self, photo: Photo, *, processor_type: str, variant: str) -> PhotoDerivative:
+    def accept(self, photo: Photo, *, processor_type: str, variant: str) -> ProcessingAttempt:
+        event = photo.event
         configuration = {processor_type: {"variant": variant}}
         run = EventProcessingRun.objects.create(
-            event=self.event,
+            event=event,
             contract_version=2,
             processor_type=processor_type,
             processor_version=1,
@@ -997,7 +1003,7 @@ class PaidWatermarkedGalleryTests(TestCase):
             configuration_hash=uuid4().hex + uuid4().hex,
         )
         job = ProcessingJob.objects.create(
-            event=self.event,
+            event=event,
             run=run,
             photo=photo,
             contract_version=2,
@@ -1010,7 +1016,7 @@ class PaidWatermarkedGalleryTests(TestCase):
             completed_at=timezone.now(),
         )
         attempt = ProcessingAttempt.objects.create(
-            event=self.event,
+            event=event,
             run=run,
             job=job,
             photo=photo,
@@ -1034,6 +1040,10 @@ class PaidWatermarkedGalleryTests(TestCase):
         state.accepted_attempt = attempt
         state.succeeded_at = timezone.now()
         state.save()
+        return attempt
+
+    def publish(self, photo: Photo, *, processor_type: str, variant: str) -> PhotoDerivative:
+        attempt = self.accept(photo, processor_type=processor_type, variant=variant)
         return PhotoDerivative.objects.create(
             photo=photo,
             variant=variant,
@@ -1048,15 +1058,222 @@ class PaidWatermarkedGalleryTests(TestCase):
             accepted_attempt=attempt,
         )
 
+    def test_purchasable_query_returns_only_consistent_watermarked_photo(self) -> None:
+        ready = self.photo(
+            "purchasable-ready",
+            policy=WATERMARKED_PREVIEW_POLICY,
+        )
+        self.publish(
+            ready,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        self.photo(
+            "purchasable-legacy",
+            policy=LEGACY_ORIGINAL_POLICY,
+        )
+        pending = self.photo(
+            "purchasable-pending",
+            policy=WATERMARKED_PREVIEW_POLICY,
+        )
+        PhotoProcessingState.objects.create(
+            photo=pending,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            status=PhotoProcessingState.Status.PROCESSING,
+        )
+        failed = self.photo(
+            "purchasable-failed",
+            policy=WATERMARKED_PREVIEW_POLICY,
+        )
+        self.publish(
+            failed,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        failed_state = PhotoProcessingState.objects.get(
+            photo=failed,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        )
+        failed_state.status = PhotoProcessingState.Status.FAILED
+        failed_state.save(update_fields=["status"])
+        missing_derivative = self.photo(
+            "purchasable-missing-derivative",
+            policy=WATERMARKED_PREVIEW_POLICY,
+        )
+        self.accept(
+            missing_derivative,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        inconsistent = self.photo(
+            "purchasable-inconsistent",
+            policy=WATERMARKED_PREVIEW_POLICY,
+        )
+        self.publish(
+            inconsistent,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        inconsistent_state = PhotoProcessingState.objects.get(
+            photo=inconsistent,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        )
+        inconsistent_state.accepted_attempt = None
+        inconsistent_state.save(update_fields=["accepted_attempt"])
+        foreign_event = Event.objects.create(
+            name="Other paid gallery",
+            slug="other-paid-gallery",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+        foreign = self.photo(
+            "purchasable-foreign",
+            policy=WATERMARKED_PREVIEW_POLICY,
+            event=foreign_event,
+        )
+        self.publish(
+            foreign,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+
+        self.assertEqual(
+            list(
+                purchasable_paid_photo_queryset(
+                    event=self.event,
+                    watermarked_previews_enabled=True,
+                )
+            ),
+            [ready],
+        )
+
+    def test_purchasable_query_rejects_gate_off(self) -> None:
+        ready = self.photo(
+            "purchasable-gates",
+            policy=WATERMARKED_PREVIEW_POLICY,
+        )
+        self.publish(
+            ready,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+
+        self.assertEqual(
+            list(
+                purchasable_paid_photo_queryset(
+                    event=self.event,
+                    watermarked_previews_enabled=False,
+                )
+            ),
+            [],
+        )
+
+    def test_purchasable_query_rejects_draft_event(self) -> None:
+        draft_event = Event.objects.create(
+            name="Draft paid gallery",
+            slug="draft-paid-gallery",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+            publication_status=Event.PublicationStatus.DRAFT,
+        )
+        draft = self.photo(
+            "purchasable-draft",
+            policy=WATERMARKED_PREVIEW_POLICY,
+            event=draft_event,
+        )
+        self.publish(
+            draft,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+
+        self.assertEqual(
+            list(
+                purchasable_paid_photo_queryset(
+                    event=draft_event,
+                    watermarked_previews_enabled=True,
+                )
+            ),
+            [],
+        )
+
+    def test_purchasable_query_rejects_free_event(self) -> None:
+        free_event = Event.objects.create(
+            name="Free gallery",
+            slug="free-gallery",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.FREE,
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+        self.photo(
+            "purchasable-free",
+            policy=LEGACY_ORIGINAL_POLICY,
+            event=free_event,
+        )
+
+        self.assertEqual(
+            list(
+                purchasable_paid_photo_queryset(
+                    event=free_event,
+                    watermarked_previews_enabled=True,
+                )
+            ),
+            [],
+        )
+
+    def test_purchasable_query_uses_current_access_type_for_watermark_eligibility(self) -> None:
+        stale_free_event = Event.objects.create(
+            name="Changed to paid gallery",
+            slug="changed-to-paid-gallery",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            access_type=Event.AccessType.FREE,
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+        self.photo(
+            "stale-access-legacy",
+            policy=LEGACY_ORIGINAL_POLICY,
+            event=stale_free_event,
+        )
+        watermarked = self.photo(
+            "stale-access-watermarked",
+            policy=WATERMARKED_PREVIEW_POLICY,
+            event=stale_free_event,
+        )
+        self.publish(
+            watermarked,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        Event.objects.filter(pk=stale_free_event.pk).update(
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+
+        self.assertEqual(stale_free_event.access_type, Event.AccessType.FREE)
+        self.assertEqual(
+            list(
+                purchasable_paid_photo_queryset(
+                    event=stale_free_event,
+                    watermarked_previews_enabled=True,
+                )
+            ),
+            [watermarked],
+        )
+
     def test_paid_event_surface_requires_gate_and_only_lists_consistent_watermarks(self) -> None:
-        legacy = self.photo(
-            "paid-legacy",
-            policy=cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED),
-        )
-        clean = self.photo(
-            "paid-clean",
-            policy=cast(str, Photo.GalleryMediaPolicy.PREVIEW_REQUIRED),
-        )
+        legacy = self.photo("paid-legacy", policy=LEGACY_ORIGINAL_POLICY)
+        clean = self.photo("paid-clean", policy=PREVIEW_REQUIRED_POLICY)
         self.publish(
             clean,
             processor_type=GENERATE_PREVIEW_PROCESSOR,
@@ -1064,7 +1281,7 @@ class PaidWatermarkedGalleryTests(TestCase):
         )
         ready = self.photo(
             "paid-watermark-ready",
-            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
+            policy=WATERMARKED_PREVIEW_POLICY,
         )
         self.publish(
             ready,
@@ -1073,7 +1290,7 @@ class PaidWatermarkedGalleryTests(TestCase):
         )
         pending = self.photo(
             "paid-watermark-pending",
-            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
+            policy=WATERMARKED_PREVIEW_POLICY,
         )
         pending_state, _ = PhotoProcessingState.objects.get_or_create(
             photo=pending,
@@ -1083,7 +1300,7 @@ class PaidWatermarkedGalleryTests(TestCase):
         pending_state.save(update_fields=["status"])
         inconsistent = self.photo(
             "paid-watermark-inconsistent",
-            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
+            policy=WATERMARKED_PREVIEW_POLICY,
         )
         derivative = self.publish(
             inconsistent,
@@ -1121,10 +1338,7 @@ class PaidWatermarkedGalleryTests(TestCase):
     def test_resolver_maps_both_semantic_roles_to_watermark_and_denies_download_before_signing(
         self,
     ) -> None:
-        photo = self.photo(
-            "paid-resolver",
-            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
-        )
+        photo = self.photo("paid-resolver", policy=WATERMARKED_PREVIEW_POLICY)
         derivative = self.publish(
             photo,
             processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,

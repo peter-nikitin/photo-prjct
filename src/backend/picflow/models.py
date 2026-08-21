@@ -6,6 +6,9 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models.functions import Lower, Trim
+from feature_flags import services as feature_flag_services
+
+PAID_EVENTS_FLAG = "paid-events"
 
 
 def event_cover_key(instance, filename: str) -> str:  # noqa: ARG001
@@ -23,13 +26,17 @@ class EventQuerySet(models.QuerySet):
             and getattr(user, "is_active", False)
             and getattr(user, "is_staff", False)
         ):
-            return self.filter(
+            visible = self.filter(
                 publication_status__in=(
                     Event.PublicationStatus.DRAFT,
                     Event.PublicationStatus.PUBLISHED,
                 )
             )
-        return self.published()
+        else:
+            visible = self.published()
+        if feature_flag_services.is_enabled(PAID_EVENTS_FLAG, user):
+            return visible
+        return visible.exclude(access_type=Event.AccessType.PAID)
 
 
 class Event(models.Model):
@@ -59,6 +66,7 @@ class Event(models.Model):
         default=AccessType.FREE,
         db_default=AccessType.FREE,
     )
+    price_per_photo_kopecks = models.PositiveIntegerField(null=True, blank=True)
     publication_status = models.CharField(
         max_length=12,
         choices=PublicationStatus,
@@ -81,7 +89,18 @@ class Event(models.Model):
             models.CheckConstraint(
                 condition=models.Q(end_date__gte=models.F("start_date")),
                 name="event_end_date_gte_start_date",
-            )
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(access_type="free", price_per_photo_kopecks__isnull=True)
+                    | models.Q(
+                        access_type="paid",
+                        price_per_photo_kopecks__isnull=False,
+                        price_per_photo_kopecks__gt=0,
+                    )
+                ),
+                name="picflow_event_access_price_chk",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -102,6 +121,12 @@ class Event(models.Model):
             self.PublicationStatus.PUBLISHED,
         }:
             errors["timezone_name"] = f"Timezone is required for {self.publication_status} events."
+        if self.access_type == self.AccessType.FREE and self.price_per_photo_kopecks is not None:
+            errors["access_type"] = "Free events cannot have a photo price."
+        elif self.access_type == self.AccessType.PAID and (
+            self.price_per_photo_kopecks is None or self.price_per_photo_kopecks <= 0
+        ):
+            errors["access_type"] = "Paid events require a positive photo price."
         if errors:
             raise ValidationError(errors)
 

@@ -48,7 +48,7 @@ test('initializes GLightbox once with local gallery options', () => {
   });
 
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].selector, '.event-gallery .glightbox');
+  assert.equal(calls[0].selector, '[data-event-gallery] .glightbox');
   assert.equal(calls[0].touchNavigation, true);
   assert.equal(calls[0].loop, false);
   assert.equal(calls[0].descPosition, 'bottom');
@@ -134,6 +134,21 @@ test('GLightbox slide lifecycle tolerates a card without a description download'
     '.gallery-lightbox-download',
   ]);
   assert.equal(Object.hasOwn(slideWithoutDownload, 'download'), false);
+});
+
+test('reloads a closed GLightbox after commerce publishes an authoritative cart snapshot', () => {
+  const listeners = new Map();
+  let reloads = 0;
+  const lightbox = { lightboxOpen: false, reload() { reloads += 1; } };
+  const root = {
+    ownerDocument: { addEventListener(type, listener) { listeners.set(type, listener); } },
+    addEventListener() {},
+  };
+
+  loadGalleryModule({ root, glightbox: () => lightbox });
+  listeners.get('cart:snapshot-applied')({ detail: { photo_id: 'photo-1' } });
+
+  assert.equal(reloads, 1);
 });
 
 test('does not restore focus to the pointer-opened card after close', () => {

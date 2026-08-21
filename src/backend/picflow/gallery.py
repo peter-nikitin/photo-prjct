@@ -211,6 +211,30 @@ def gallery_photo_queryset(
     return queryset
 
 
+def purchasable_paid_photo_queryset(
+    *,
+    event: Event,
+    watermarked_previews_enabled: bool,
+) -> QuerySet[Photo]:
+    """Return photos currently eligible for purchase in a paid event."""
+    authoritative_event = Event.objects.filter(
+        pk=event.pk,
+        publication_status=Event.PublicationStatus.PUBLISHED,
+        access_type=Event.AccessType.PAID,
+        price_per_photo_kopecks__gt=0,
+    ).first()
+    if authoritative_event is None:
+        return Photo.objects.none()
+    return gallery_photo_queryset(
+        event=authoritative_event,
+        paid_watermarked_previews_enabled=watermarked_previews_enabled,
+    ).filter(
+        event__publication_status=Event.PublicationStatus.PUBLISHED,
+        event__access_type=Event.AccessType.PAID,
+        event__price_per_photo_kopecks__gt=0,
+    )
+
+
 def saved_result_photo_queryset(
     *,
     event: Event,

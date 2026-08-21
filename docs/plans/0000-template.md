@@ -23,6 +23,37 @@ when the plan implements the specification without changing its scope.
 Reference the approved specification's acceptance criteria. Add only observable delivery checks
 that depend on the implementation sequence.
 
+## Worker/state/artifact release safeguards
+
+Complete this section when the plan changes a worker contract, durable processing state, or
+generated/derived artifact. Replace every checkbox with the named decision, evidence, or command
+for this release. An unknown outcome makes the plan blocked until its owner resolves it.
+
+- [ ] **Live-state inventory.** Record the current processor/contract identities, state and
+  job/attempt counts, retry eligibility, stale state, active or expired leases, accepted results,
+  published artifacts, and related Object Storage prefixes.
+- [ ] **Compatibility matrix.** State the supported outcome for each applicable old/new
+  Django/worker/row-version combination, including whether existing work is readable, drained,
+  retried, superseded, backfilled, or purged.
+- [ ] **Reviewed data-state migration or reset semantics.** Select the reviewed treatment for every
+  existing durable row and derived artifact, separate from schema migration: compatible drain,
+  version-aware reconciliation/requeue, bounded backfill, explicit derived-state purge, or a
+  documented intentional reset.
+- [ ] **End-to-end contract sizing.** Name one representative maximum result and verify its single
+  contract through worker serialization, HTTP client, proxy/Django request handling, callback and
+  model validation, and database persistence.
+- [ ] **Previous-snapshot upgrade rehearsal.** Rehearse a previous-version snapshot containing old
+  successful, failed and retryable attempts, stale state, active or expired leases, terminal state,
+  published derived artifacts, and never-enrolled photos; record the outcome for each case.
+- [ ] **Staged activation and rollback order.** Name the compatible deployment, state inspection,
+  bounded cohort, validation, public activation, stop conditions, and the rollback sequence that
+  preserves the declared rows and artifact identities/versions.
+- [ ] **Supported bounded operational commands.** Name reviewed commands and bounds for compatibility
+  inspection, requeue, backfill, or derived-state purge, including required confirmation and
+  preservation checks.
+
+Rationale: [2026-07-31 staging processing-state reset postmortem](../postmortems/2026-07-31-staging-processing-state-reset.md).
+
 ## Implementation
 
 ### Task 1: Focused deliverable

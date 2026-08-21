@@ -89,6 +89,27 @@ def test_creates_test_ready_worktree_without_copying_root_secrets(tmp_path: Path
     assert (repository / ".git" / "hooks" / "pre-commit").stat().st_mode & 0o111
 
 
+def test_bootstrap_django_check_enables_photo_processing(tmp_path: Path, monkeypatch) -> None:
+    repository = _repository(tmp_path)
+    check_environment = tmp_path / "django-check-environment"
+    _write_executable(
+        repository / ".venv" / "bin" / "python",
+        "#!/bin/sh\n"
+        'if [ "$1" = "src/backend/manage.py" ] && [ "$2" = "check" ]; then\n'
+        '    printf "%s|%s\\n" "$PHOTO_PROCESSING_ENABLED" "$PHOTO_PROCESSING_FACE_ENABLED" '
+        '> "$WORKTREE_CHECK_ENVIRONMENT"\n'
+        "fi\n"
+        "echo 'Python 3.12.test'\n",
+    )
+    monkeypatch.setenv("WORKTREE_CHECK_ENVIRONMENT", str(check_environment))
+    monkeypatch.delenv("PHOTO_PROCESSING_ENABLED", raising=False)
+    monkeypatch.delenv("PHOTO_PROCESSING_FACE_ENABLED", raising=False)
+
+    _run(sys.executable, str(SCRIPT), "example", "HEAD", cwd=repository)
+
+    assert check_environment.read_text(encoding="utf-8") == "True|True\n"
+
+
 def test_rejects_unsafe_name_before_creating_git_state(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
 

@@ -2,77 +2,34 @@
 
 ## Observed gap
 
-A sanitized read-only staging inspection on 2026-08-07 confirmed that the current deployment
-persists credentials across several host and container surfaces:
+EJ-017 and ADR 0028 established a single Lockbox authority and one canonical deployment. That
+design trigger has fired: the repository does not yet have an accepted EJ-018 decision for the
+runtime credential lifecycle across `docker-compose.deployment.yml`, the host, containers,
+registry authentication, TLS material, backups, and recovery.
 
-- `/opt/photo-prjct/.env` is a `deploy:deploy` mode-0600 file containing populated Django,
-  PostgreSQL, Object Storage, processing, and feedback credential fields;
-- Docker stores service environment values in container configuration metadata: the web container
-  receives the deployment environment, PostgreSQL receives its password, and workers receive their
-  API token;
-- membership of the root-equivalent `docker` group currently includes `petrnikitin`, `deploy`,
-  `ubuntu`, and `codex`, so mode `0600` on the deployment environment is not the effective access
-  boundary for those identities;
-- `/home/deploy/.docker/config.json` is a mode-0600 persistent GHCR authentication file without a
-  credential helper;
-- `/home/petrnikitin/.bash_history` contains two secret-assignment command shapes involving
-  `DB_PASSWORD` and `SECRET_KEY`; values were not displayed or copied during inspection;
-- the Certbot volume contains the required root-owned mode-0600 TLS private key; and
-- any system-disk snapshot or full backup would inherit these files and Docker metadata, but current
-  snapshot/image/schedule state could not be verified because the local `yc` authentication had
-  expired.
-
-No stale `.env.previous`, `.env.requested`, or `.env.recovery` file was present. SSH private keys
-were not found on the VM; inspected SSH files were public `authorized_keys`. The Unified Agent
-configuration exposed no API-key, OAuth-token, IAM-token, or service-account authentication field
-name. VM metadata exposed no application-secret field names. An attached service-account endpoint
-was visible but did not return a usable identity through the sanitized probe, so its current IAM
-boundary remains unverified.
-
-The source path is explicit in the repository: `deploy/apply-deployment.sh` writes a protected
-candidate file and promotes it to the canonical `.env`; `docker-compose.prod.yml` consumes that
-file for the web service and expands selected values into database and worker environments. Moving
-the upstream authority from GitHub Secrets to Yandex Lockbox does not by itself change this runtime
-storage model.
+The 2026-08-07 sanitized inspection is historical input, not a current canonical-host inventory.
+This documentation change performs no inventory and makes no claim about the current host,
+credential surfaces, cloud IAM, snapshots, backups, or operator access.
 
 ## Why it is non-blocking
 
-The current EJ-017 increment establishes one authoritative environment secret source, local access,
-GitHub OIDC authentication, retrieval validation, and migration away from GitHub Secrets. It can
-retain the existing VM/runtime delivery contract without making current exposure worse.
-
-The observed canonical environment is restricted to `deploy`, Docker data and TLS keys are
-root-owned, temporary deployment copies are cleaned during normal execution, and staging currently
-has no separate production environment or accepted runtime-secret hardening requirement. Selecting
-one runtime mechanism now would prematurely couple the Lockbox migration to restart, rollback,
-Compose, Certbot, backup, and disaster-recovery decisions that need their own design.
-
-This classification does not treat the shell-history observation as safe. Before any reuse of the
-affected values outside disposable staging, verify whether the assignments contain current real
-credentials and rotate them under a separately approved containment action. Deleting history alone
-is not containment because other copies may exist.
+EJ-017 delivers the upstream secret authority and supported projections, but it does not decide how
+runtime components receive, retain, rotate, revoke, recover, or prove non-disclosure of their
+credentials. Selecting a runtime mechanism now would couple restart, rollback, Compose, Certbot,
+backup, and disaster-recovery behavior without the evidence or approved design required for EJ-018.
 
 ## Revisit trigger
 
-Prepare and approve a dedicated EJ-018 specification at the earliest of:
-
-- completion of the EJ-017 Lockbox migration, before declaring the end-to-end secret lifecycle
-  validated;
-- preparation of the first production environment or promotion of the current VM to production;
-- introduction of VM disk snapshots, images, backup automation, or restore drills;
-- addition of another human or automation identity to `docker`, sudo, SSH, or cloud administration;
-- evidence that a real credential value was retained in shell history, logs, process arguments,
-  artifacts, or an unexpected persistent file; or
-- a credential exposure, lost-device, lost-account, host-compromise, or recovery incident.
-
-Production preparation is a hard trigger: the first production deployment must not silently inherit
-the current staging credential topology without an accepted EJ-018 design and validation evidence.
+Perform a read-only canonical-host inventory, then prepare and accept an EJ-018 design before any
+runtime credential cleanup, rotation, host access change, Compose change, backup/restore change, or
+credential-delivery implementation. An accepted EJ-018 design after that inventory is the next
+implementation trigger.
 
 ## Likely scope
 
-Start with a fresh read-only inventory across repository workflows, the live host, Docker metadata,
+Start with a fresh read-only canonical-host inventory across repository workflows, Docker metadata,
 VM metadata/service-account IAM, volumes, snapshots/images/backups, operator accounts, and recovery
-procedures. The specification must then select and reconcile:
+procedures. The resulting EJ-018 specification must then select and reconcile:
 
 - the minimum credential projection for web, database, each worker, Nginx, Certbot, monitoring, and
   deployment tooling;
@@ -90,6 +47,6 @@ procedures. The specification must then select and reconcile:
 - automated non-disclosure, permissions, restart, rollback, restore, and live-environment evidence.
 
 Treat this as an architecture and operations capability, not a cleanup script. Do not mutate or
-delete host state merely to satisfy an inventory check; any history cleanup, access removal,
-credential rotation, Docker reconfiguration, snapshot change, or runtime migration requires its own
-approved plan and live safety gates.
+delete host state merely to satisfy the inventory; any history cleanup, access removal, credential
+rotation, Docker reconfiguration, snapshot change, or runtime migration requires the accepted
+EJ-018 design, its approved implementation plan, and live safety gates.

@@ -9,10 +9,9 @@ same cycle instead of publishing a sanitized terminal failure.
 
 ## Why this does not block the current task
 
-Public selfie search remains disabled until the deployment stage. Its 24-hour temporary-prefix
-lifecycle rule is also introduced only during that activation work, so the accepted critical path
-does not currently delete a normally queued selfie before claim. Task 4 correctly handles the
-normal claim, worker failure, callback, cleanup, replay, and recovery paths.
+The accepted critical path handles the normal claim, worker failure, callback, cleanup, replay, and
+recovery paths. It does not establish a normal path that deletes a queued selfie before claim; the
+missing-object case remains a separate failure behavior to decide if its trigger occurs.
 
 ## Revisit trigger
 

@@ -22,10 +22,10 @@
 ---
 
 - Date: 2026-07-18
-- Status: Blocked — ADR 0016 is Proposed and not accepted
+- Status: Retired — ADR 0016 was later Rejected in favor of ADR 0028
 - Owner: project maintainer
-- Delivery disposition: Deferred to a separate future task where the design may change; no seed
-  implementation is authorized in the current gallery continuation.
+- Delivery disposition: Retired and not resumable. No seed implementation is authorized under this
+  plan or the current gallery continuation.
 - Related specification: [Staging seed photo media design](../superpowers/specs/2026-07-18-staging-seed-photo-media-design.md)
 - Related architecture: [Current architecture — implemented](../architecture.md#current-architecture--implemented),
   [Accepted constraints](../architecture.md#accepted-constraints),
@@ -39,9 +39,9 @@
   [0005](../adr/0005-promote-images-through-staging.md),
   [0006](../adr/0006-yandex-object-storage-media.md),
   [0013](../adr/0013-use-direct-private-object-storage-ingestion.md), and
-  [0016 (Proposed)](../adr/0016-allow-deterministic-staging-reference-media.md)
-- ADR impact: Requires accepted ADR 0016 — the deterministic staging reference-media exception is
-  not authoritative while ADR 0016 remains Proposed.
+  [0016 (Rejected in favor of 0028)](../adr/0016-allow-deterministic-staging-reference-media.md)
+- ADR impact: The historical deterministic staging reference-media exception was proposed in ADR
+  0016, then later Rejected in favor of ADR 0028. The open tasks below must not be resumed.
 
 ## Scope
 
@@ -347,6 +347,6 @@ Expected: pinned sources validate and thirteen HEADs report `skip` or `would-cre
 
 ## Open questions
 
-- Acceptance gate: ADR 0016 remains Proposed. Before this deferred plan can be resumed, the project
-  maintainer must explicitly accept ADR 0016's exact decision, and the separate future task must
-  confirm whether the approved seed design is still the desired implementation.
+- Lifecycle: ADR 0016 was later Rejected in favor of ADR 0028. This staging-only plan is retired
+  and must not be resumed; its open tasks remain historical proposal content rather than authorized
+  work.

@@ -4,12 +4,94 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _parse_job_registry(
+    path: Path, prefix: str
+) -> tuple[
+    dict[str, tuple[str, str]],
+    list[tuple[str, str, str]],
+    list[tuple[str, str, str]],
+    set[str],
+]:
+    """Return deduplicated/current records, details, and declared statuses."""
+    content = path.read_text(encoding="utf-8")
+    statuses_section = content.partition("## Statuses")[2].partition("## Current state")[0]
+    current_state_section = content.partition("## Current state")[2].partition("## Job details")[0]
+    details_section = re.split(
+        r"^## Status (?:history|log)$",
+        content.partition("## Job details")[2],
+        maxsplit=1,
+        flags=re.MULTILINE,
+    )[0]
+
+    allowed_statuses = {
+        row.split("|")[1].strip()
+        for row in statuses_section.splitlines()
+        if row.startswith("| ") and not row.startswith("| Status |") and "---" not in row
+    }
+    current_records: list[tuple[str, str, str]] = []
+    for row in current_state_section.splitlines():
+        cells = [cell.strip() for cell in row.split("|")[1:-1]]
+        if len(cells) == 5 and re.fullmatch(rf"{prefix}-\d{{3}}", cells[0]):
+            current_records.append((cells[0], cells[3], cells[4]))
+    current_rows = {job: (status, updated) for job, status, updated in current_records}
+
+    heading_pattern = re.compile(rf"^### (?P<job>{prefix}-\d{{3}}) — .+$", re.MULTILINE)
+    headings = list(heading_pattern.finditer(details_section))
+    details: list[tuple[str, str, str]] = []
+    for index, heading in enumerate(headings):
+        detail = details_section[
+            heading.end() : headings[index + 1].start() if index + 1 < len(headings) else None
+        ]
+        status = re.findall(r"^- Status: (.+)$", detail, re.MULTILINE)
+        updated = re.findall(r"^- Last updated: (\d{4}-\d{2}-\d{2})$", detail, re.MULTILINE)
+        assert len(status) == 1, f"{heading['job']} must have one status line"
+        assert len(updated) == 1, f"{heading['job']} must have one last-updated line"
+        details.append((heading["job"], status[0], updated[0]))
+    return current_rows, current_records, details, allowed_statuses
+
+
+def test_job_registries_have_one_consistent_current_detail_per_job() -> None:
+    expected_counts = {"product-jobs.md": ("PJ", 16), "engineering-jobs.md": ("EJ", 25)}
+
+    for filename, (prefix, expected_count) in expected_counts.items():
+        current_rows, current_records, details, allowed_statuses = _parse_job_registry(
+            ROOT / "docs" / filename, prefix
+        )
+        current_counts = Counter(job for job, _, _ in current_records)
+        detail_counts = Counter(job for job, _, _ in details)
+        detail_records = {job: (status, updated) for job, status, updated in details}
+
+        assert len(current_rows) == expected_count
+        assert len(current_records) == expected_count
+        assert len(details) == expected_count
+        assert all(count == 1 for count in current_counts.values())
+        assert all(count == 1 for count in detail_counts.values())
+        assert set(current_rows) == set(detail_records)
+        for job, (status, updated) in current_rows.items():
+            assert status in allowed_statuses
+            assert detail_records[job] == (status, updated)
+
+
+def test_job_registry_parser_ignores_append_only_status_log(tmp_path: Path) -> None:
+    registry = tmp_path / "product-jobs.md"
+    registry.write_text(
+        (ROOT / "docs" / "product-jobs.md").read_text(encoding="utf-8")
+        + "\n### PJ-999 — Archived job\n\n- Status: Candidate\n- Last updated: 2026-08-21\n",
+        encoding="utf-8",
+    )
+
+    _, _, details, _ = _parse_job_registry(registry, "PJ")
+
+    assert "PJ-999" not in {job for job, _, _ in details}
 
 
 def _load_workflow(workflow_name: str) -> dict[str, Any]:
@@ -141,6 +223,39 @@ def test_implementation_plan_harness_has_project_specific_role_contracts() -> No
     }.items():
         prompt = (skill_dir / prompt_name).read_text(encoding="utf-8")
         assert required_fields <= set(re.findall(r"^([A-Z][A-Za-z ]+):", prompt, re.MULTILINE))
+
+
+def test_worker_state_artifact_plan_safeguards_keep_template_and_skill_aligned() -> None:
+    template = (ROOT / "docs/plans/0000-template.md").read_text(encoding="utf-8")
+    skill = (ROOT / ".agents/skills/write-plan/SKILL.md").read_text(encoding="utf-8")
+    safeguards = (
+        "Live-state inventory",
+        "Compatibility matrix",
+        "Reviewed data-state migration or reset semantics",
+        "End-to-end contract sizing",
+        "Previous-snapshot upgrade rehearsal",
+        "Staged activation and rollback order",
+        "Supported bounded operational commands",
+    )
+
+    assert "## Worker/state/artifact release safeguards" in template
+    assert "worker contract, durable processing state, or generated/derived artifact" in re.sub(
+        r"\s+", " ", template
+    )
+    assert "unknown outcome makes the plan blocked" in template
+    normalized_skill = re.sub(r"\s+", " ", skill)
+    assert (
+        "When the observable plan scope changes a worker contract, durable processing state, or a "
+        "generated/derived artifact, retain and complete the template's exact "
+        "`Worker/state/artifact release safeguards` section."
+    ) in normalized_skill
+    assert "A plan is blocked when any slot outcome is unknown" in normalized_skill
+    for safeguard in safeguards:
+        assert f"- [ ] **{safeguard}.**" in template
+        assert safeguard in normalized_skill
+
+    assert "Worker/state/artifact release safeguards" in skill
+    assert "2026-07-31-staging-processing-state-reset.md" in skill
 
 
 def test_implementation_review_package_includes_tracked_and_untracked_files(
@@ -291,6 +406,28 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     assert ci["jobs"]["quality"]["env"]["TEST_DB_NAME"] == (
         "findme_test_${{ github.run_id }}_${{ github.run_attempt }}"
     )
+
+
+def test_literal_worker_selector_imports_local_worker_package() -> None:
+    environment = {**os.environ}
+    environment.pop("DJANGO_SETTINGS_MODULE", None)
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "src/worker/tests/test_runner.py",
+            "src/worker/tests/test_contracts.py",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_visual_image_publisher_is_main_only_and_dependency_keyed() -> None:

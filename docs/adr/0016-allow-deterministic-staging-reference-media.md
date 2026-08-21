@@ -1,10 +1,11 @@
 # 0016: Allow deterministic staging reference media
 
-- Status: Proposed
+- Status: Rejected
 - Date: 2026-07-19
 - Deciders: project maintainers
 - Supersedes: none
 - Superseded by: none
+- Rejected in favor of: [0028](0028-operate-one-canonical-deployment.md)
 
 ## Context
 

@@ -414,7 +414,9 @@ def test_literal_worker_selector_imports_local_worker_package() -> None:
     environment.pop("PYTHONPATH", None)
     result = subprocess.run(
         [
-            ".venv/bin/pytest",
+            sys.executable,
+            "-m",
+            "pytest",
             "-q",
             "src/worker/tests/test_runner.py",
             "src/worker/tests/test_contracts.py",

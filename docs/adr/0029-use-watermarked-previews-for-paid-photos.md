@@ -9,7 +9,9 @@
   and original selection by that generation; and
   [ADR 0021](0021-allow-original-download-for-authorized-photos.md) for original-download
   authorization by that generation
-- Superseded by: none
+- Superseded by:
+  [ADR 0031](0031-use-orders-and-adapters-for-paid-original-delivery.md) only for original
+  authorization after a qualifying Order becomes paid
 
 ## Context
 

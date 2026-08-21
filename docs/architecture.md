@@ -517,6 +517,15 @@ necessary-cookie legal review, an explicit gate mutation, and live verification.
 grants no download entitlement. Packages, checkout, payment, orders, promotions, entitlement, and
 purchased-original delivery remain unimplemented and require separately approved work.
 
+ADR 0031 accepts immutable single-event RUB Orders, normalized PaymentAttempts behind a narrow
+bank adapter, authoritative server evidence or trusted manual payment confirmation, and permanent
+original entitlement derived from each paid OrderItem. Anonymous access uses a separate temporary
+purchase-browser capability plus permanent revocable Order grants. Email is asynchronous
+notification, and a separate PostgreSQL-polling Commerce worker owns delivery and payment
+reconciliation with durable operator attention. This accepted purchase boundary remains
+unimplemented and off by default; concrete bank/email protocols, fiscal and legal contracts,
+public activation, refunds, and ZIP delivery remain later work.
+
 ## Security, privacy, and legal boundaries
 
 - Originals remain private storage objects. The implemented preview-first slice creates an

@@ -129,7 +129,7 @@ Update the engineering guidance for migration conflicts:
 **Completion evidence:** the guidance is referenced by the PR checklist or contributor workflow, and the next parallel migration change includes an upgrade-path test from the base frontier.
 
 **Repository status: incomplete.** The procedure is documented in the
-[migration-conflict runbook](../../runbooks/django-migration-conflicts.md) and linked from EJ-002,
+[migration-conflict runbook](../runbooks/django-migration-conflicts.md) and linked from EJ-002,
 but this checkout has no PR-checklist or contributor-workflow reference and no subsequent
 base-frontier upgrade-path change to evidence the second requirement.
 
@@ -177,7 +177,7 @@ Create a bounded notification or tracked issue for a failed `main` deployment, i
 
 **Repository status: partial.** The standard-library reconciler and its API fixtures cover create,
 deduplication, update, close, validation isolation, and sanitized failures in
-[`tests/test_reconcile_staging_deploy_issue.py`](../../tests/test_reconcile_staging_deploy_issue.py);
+[`tests/test_reconcile_deploy_issue.py`](../../tests/test_reconcile_deploy_issue.py);
 the workflow permissions, phase extraction, and non-authoritative behavior are covered by
 [`test_staging_deployment_issue_reconciliation_is_bounded_and_non_authoritative`](../../tests/test_repository_foundation.py).
 No controlled failed deployment, retry, or live notification-drill result is recorded.

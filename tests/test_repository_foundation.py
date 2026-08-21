@@ -225,6 +225,39 @@ def test_implementation_plan_harness_has_project_specific_role_contracts() -> No
         assert required_fields <= set(re.findall(r"^([A-Z][A-Za-z ]+):", prompt, re.MULTILINE))
 
 
+def test_worker_state_artifact_plan_safeguards_keep_template_and_skill_aligned() -> None:
+    template = (ROOT / "docs/plans/0000-template.md").read_text(encoding="utf-8")
+    skill = (ROOT / ".agents/skills/write-plan/SKILL.md").read_text(encoding="utf-8")
+    safeguards = (
+        "Live-state inventory",
+        "Compatibility matrix",
+        "Reviewed data-state migration or reset semantics",
+        "End-to-end contract sizing",
+        "Previous-snapshot upgrade rehearsal",
+        "Staged activation and rollback order",
+        "Supported bounded operational commands",
+    )
+
+    assert "## Worker/state/artifact release safeguards" in template
+    assert "worker contract, durable processing state, or generated/derived artifact" in re.sub(
+        r"\s+", " ", template
+    )
+    assert "unknown outcome makes the plan blocked" in template
+    normalized_skill = re.sub(r"\s+", " ", skill)
+    assert (
+        "When the observable plan scope changes a worker contract, durable processing state, or a "
+        "generated/derived artifact, retain and complete the template's exact "
+        "`Worker/state/artifact release safeguards` section."
+    ) in normalized_skill
+    assert "A plan is blocked when any slot outcome is unknown" in normalized_skill
+    for safeguard in safeguards:
+        assert f"- [ ] **{safeguard}.**" in template
+        assert safeguard in normalized_skill
+
+    assert "Worker/state/artifact release safeguards" in skill
+    assert "2026-07-31-staging-processing-state-reset.md" in skill
+
+
 def test_implementation_review_package_includes_tracked_and_untracked_files(
     tmp_path: Path,
 ) -> None:

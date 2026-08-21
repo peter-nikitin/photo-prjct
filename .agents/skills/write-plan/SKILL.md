@@ -45,6 +45,18 @@ This project contract overrides generic planning templates that require code sni
 step. A plan is implementation-ready because decisions live in its approved specification and its
 steps are executable, not because it duplicates the future patch.
 
+## Worker/state/artifact plan gate
+
+When the observable plan scope changes a worker contract, durable processing state, or a
+generated/derived artifact, retain and complete the template's exact
+`Worker/state/artifact release safeguards` section. Complete its seven checkable slots: Live-state
+inventory; Compatibility matrix; Reviewed data-state migration or reset semantics; End-to-end
+contract sizing; Previous-snapshot upgrade rehearsal; Staged activation and rollback order; and
+Supported bounded operational commands. A plan is blocked when any slot outcome is unknown; return
+the unknown to its decision owner before implementation. The template is the structural source of
+truth; use the [2026-07-31 staging processing-state reset postmortem](../../../docs/postmortems/2026-07-31-staging-processing-state-reset.md)
+for rationale rather than copying its prose.
+
 ## Operational fast lane
 
 Do not require a plan file for a small, reversible single VM or domain change that is already
@@ -75,7 +87,7 @@ data migration, a pricing-affecting cloud action, or a conflict with an accepted
    plan silently override an accepted ADR.
 5. Copy `docs/plans/0000-template.md` to `docs/plans/YYYY-MM-DD-topic.md`. Link the approved
    specification, exact architecture sections, and resolved ADR impact; write `none` only after
-   checking.
+   checking. Apply the Worker/state/artifact plan gate when its observable condition is true.
 6. Decompose work into independently verifiable tasks. Name exact paths, cross-task interfaces,
    migrations, and commands where they are known. Reference approved data flow and failure handling
    instead of copying them. For behavior changes, order steps as failing test, minimal

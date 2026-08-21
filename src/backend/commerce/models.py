@@ -21,6 +21,11 @@ def generate_unclaimed_purchase_browser_digest() -> str:
     return browser_token_sha256(generate_browser_token())
 
 
+def generate_unclaimed_originating_cart_digest() -> str:
+    """Create an uncorrelated origin digest for Orders built outside checkout."""
+    return browser_token_sha256(generate_browser_token())
+
+
 def _require_unchanged(instance: models.Model, fields: tuple[str, ...], message: str) -> None:
     if instance._state.adding:
         return
@@ -102,6 +107,11 @@ class Order(models.Model):
         default=generate_order_public_number,
     )
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="orders")
+    originating_cart_token_sha256 = models.CharField(
+        max_length=64,
+        default=generate_unclaimed_originating_cart_digest,
+        validators=[_SHA256_HEX_VALIDATOR],
+    )
     purchase_browser_token_sha256 = models.CharField(
         max_length=64,
         default=generate_unclaimed_purchase_browser_digest,
@@ -135,6 +145,15 @@ class Order(models.Model):
                 name="commerce_order_purchase_digest_chk",
             ),
             models.CheckConstraint(
+                condition=models.Q(originating_cart_token_sha256__regex=r"^[0-9a-f]{64}$"),
+                name="commerce_order_origin_cart_digest_chk",
+            ),
+            models.UniqueConstraint(
+                fields=("event", "originating_cart_token_sha256"),
+                condition=models.Q(status="pending"),
+                name="commerce_order_pending_origin_uniq",
+            ),
+            models.CheckConstraint(
                 condition=models.Q(
                     public_number__regex=r"^FM-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$"
                 ),
@@ -151,7 +170,13 @@ class Order(models.Model):
                 name="commerce_order_paid_time_chk",
             ),
         ]
-        indexes = [models.Index(fields=("event", "status"), name="commerce_order_event_status_idx")]
+        indexes = [
+            models.Index(fields=("event", "status"), name="commerce_order_event_status_idx"),
+            models.Index(
+                fields=("event", "originating_cart_token_sha256"),
+                name="commerce_order_origin_cart_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.public_number
@@ -164,12 +189,13 @@ class Order(models.Model):
             (
                 "public_number",
                 "event_id",
+                "originating_cart_token_sha256",
                 "purchase_browser_token_sha256",
                 "checkout_email",
                 "total_kopecks",
                 "currency",
             ),
-            "Order commercial snapshot is immutable.",
+            "Order commercial snapshot, including originating cart identity, is immutable.",
         )
         _require_write_once(
             self,

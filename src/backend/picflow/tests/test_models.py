@@ -11,6 +11,8 @@ from django.db.models.deletion import ProtectedError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from feature_flags.models import FeatureFlag
+from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
+from feature_flags.testing import override_feature_flags
 
 from picflow.models import Event, EventFolder, Photo
 
@@ -141,6 +143,57 @@ class EventModelTests(TestCase):
                     expected_ids,
                 )
                 self.assertNotIn(unavailable.pk, expected_ids)
+
+    def test_paid_events_follow_the_parent_release_gate(self) -> None:
+        free_published = self.make_event(
+            name="Free published",
+            slug="free-published",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+        )
+        paid_published = self.make_event(
+            name="Paid published",
+            slug="paid-published",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+        paid_draft = self.make_event(
+            name="Paid draft",
+            slug="paid-draft",
+            publication_status=Event.PublicationStatus.DRAFT,
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+        ordinary = get_user_model().objects.create_user(username="paid-ordinary")
+        staff = get_user_model().objects.create_user(username="paid-staff", is_staff=True)
+        states = {"paid-events": FEATURE_FLAG_STAFF}
+        fixtures = Event.objects.filter(
+            pk__in=(free_published.pk, paid_published.pk, paid_draft.pk)
+        )
+
+        with override_feature_flags(states):
+            self.assertEqual(
+                set(fixtures.site_visible_to(AnonymousUser()).values_list("pk", flat=True)),
+                {free_published.pk},
+            )
+            self.assertEqual(
+                set(fixtures.site_visible_to(staff).values_list("pk", flat=True)),
+                {free_published.pk, paid_published.pk, paid_draft.pk},
+            )
+
+            states["paid-events"] = FEATURE_FLAG_ON
+            self.assertEqual(
+                set(fixtures.site_visible_to(ordinary).values_list("pk", flat=True)),
+                {free_published.pk, paid_published.pk},
+            )
+
+            states["paid-events"] = FEATURE_FLAG_OFF
+            self.assertEqual(
+                set(fixtures.site_visible_to(staff).values_list("pk", flat=True)),
+                {free_published.pk},
+            )
+
+        self.assertFalse(FeatureFlag.objects.filter(key="paid-events").exists())
 
     def test_unavailable_event_accepts_no_timezone(self) -> None:
         self.make_event().full_clean()
@@ -369,16 +422,11 @@ class PhotoModelTests(TestCase):
     def test_free_photo_policy_stays_preview_first_when_paid_gate_is_enabled(self) -> None:
         from picflow.photo_policy import policy_for_new_photo
 
-        FeatureFlag.objects.create(
-            key="paid-watermarked-previews",
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.ON,
-        )
-
-        self.assertEqual(
-            policy_for_new_photo(self.event, self.photographer),
-            ("preview_first_v1", "preview_required"),
-        )
+        with override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_ON}):
+            self.assertEqual(
+                policy_for_new_photo(self.event, self.photographer),
+                ("preview_first_v1", "preview_required"),
+            )
 
     @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_paid_photo_policy_stays_preview_first_when_gate_is_missing_or_off(self) -> None:
@@ -388,19 +436,16 @@ class PhotoModelTests(TestCase):
         self.event.price_per_photo_kopecks = 30000
         self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
 
-        self.assertEqual(
-            policy_for_new_photo(self.event, self.photographer),
-            ("preview_first_v1", "preview_required"),
-        )
-        FeatureFlag.objects.create(
-            key="paid-watermarked-previews",
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.OFF,
-        )
-        self.assertEqual(
-            policy_for_new_photo(self.event, self.photographer),
-            ("preview_first_v1", "preview_required"),
-        )
+        with override_feature_flags({}):
+            self.assertEqual(
+                policy_for_new_photo(self.event, self.photographer),
+                ("preview_first_v1", "preview_required"),
+            )
+        with override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_OFF}):
+            self.assertEqual(
+                policy_for_new_photo(self.event, self.photographer),
+                ("preview_first_v1", "preview_required"),
+            )
 
     @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_enabled_paid_caller_receives_the_watermarked_policy(self) -> None:
@@ -410,16 +455,11 @@ class PhotoModelTests(TestCase):
         self.event.access_type = Event.AccessType.PAID
         self.event.price_per_photo_kopecks = 30000
         self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
-        FeatureFlag.objects.create(
-            key="paid-watermarked-previews",
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.STAFF,
-        )
-
-        self.assertEqual(
-            policy_for_new_photo(self.event, staff),
-            ("preview_first_watermarked_v1", "watermarked_preview_required"),
-        )
+        with override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_STAFF}):
+            self.assertEqual(
+                policy_for_new_photo(self.event, staff),
+                ("preview_first_watermarked_v1", "watermarked_preview_required"),
+            )
 
     def test_processing_policy_rejects_an_invalid_generation_policy_pair(self) -> None:
         photo = self.private_photo()

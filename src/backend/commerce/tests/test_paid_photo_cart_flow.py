@@ -6,7 +6,8 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.models import FeatureFlag
+from feature_flags.states import FEATURE_FLAG_STAFF, FeatureFlagState
+from feature_flags.testing import override_feature_flags
 from picflow.models import Event, Photo
 from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from processing.models import (
@@ -33,6 +34,8 @@ class PaidPhotoCartCriticalPathTests(TestCase):
     token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
     def setUp(self) -> None:
+        self.feature_flag_states: dict[str, FeatureFlagState] = {}
+        self.enterContext(override_feature_flags(self.feature_flag_states))
         self.staff = get_user_model().objects.create_user(username="cart-flow-staff", is_staff=True)
         self.photographer = get_user_model().objects.create_user(username="cart-flow-photographer")
         self.event = self.make_paid_event(name="Cart flow", slug="cart-flow")
@@ -129,14 +132,13 @@ class PaidPhotoCartCriticalPathTests(TestCase):
         return photo
 
     def enable_staff_gates(self) -> None:
-        for key, description in (
-            (PAID_PHOTO_CART_FLAG, "Paid photo cart"),
-            (PAID_WATERMARKED_PREVIEWS_FLAG, "Paid watermarked previews"),
-        ):
-            FeatureFlag.objects.update_or_create(
-                key=key,
-                defaults={"description": description, "state": FeatureFlag.State.STAFF},
-            )
+        self.feature_flag_states.update(
+            {
+                "paid-events": FEATURE_FLAG_STAFF,
+                PAID_PHOTO_CART_FLAG: FEATURE_FLAG_STAFF,
+                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_STAFF,
+            }
+        )
 
     def cart_url(self, event: Event | None = None) -> str:
         return reverse("commerce:detail", kwargs={"event_slug": (event or self.event).slug})

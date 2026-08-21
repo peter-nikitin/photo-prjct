@@ -26,6 +26,8 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
+from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
+from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
@@ -242,6 +244,39 @@ class PageTests(TestCase):
             self.client.get(reverse("event_detail", kwargs={"slug": unavailable.slug})).status_code,
             404,
         )
+
+    def test_catalog_and_direct_detail_hide_paid_events_behind_the_parent_gate(self) -> None:
+        paid = self.make_event(
+            name="Paid preview",
+            slug="paid-preview",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+        states = {"paid-events": FEATURE_FLAG_STAFF}
+        detail_url = reverse("event_detail", kwargs={"slug": paid.slug})
+
+        with override_feature_flags(states):
+            anonymous_catalog = self.client.get(reverse("event_catalog"))
+            self.assertNotContains(anonymous_catalog, paid.name)
+            self.assertEqual(self.client.get(detail_url).status_code, 404)
+
+            staff = get_user_model().objects.create_user(
+                username="paid-preview-staff", is_staff=True
+            )
+            self.client.force_login(staff)
+            self.assertContains(self.client.get(reverse("event_catalog")), paid.name)
+            self.assertEqual(self.client.get(detail_url).status_code, 200)
+
+            states["paid-events"] = FEATURE_FLAG_OFF
+            self.assertNotContains(self.client.get(reverse("event_catalog")), paid.name)
+            self.assertEqual(self.client.get(detail_url).status_code, 404)
+
+            self.client.logout()
+            states["paid-events"] = FEATURE_FLAG_ON
+            self.assertContains(self.client.get(reverse("event_catalog")), paid.name)
+            self.assertEqual(self.client.get(detail_url).status_code, 200)
+
+        self.assertFalse(FeatureFlag.objects.filter(key="paid-events").exists())
 
     def test_staff_draft_preview_warns_and_emits_no_public_analytics(self) -> None:
         published = self.make_event()
@@ -740,8 +775,11 @@ class GalleryPageTests(TestCase):
         paid_event = self.make_event(name="Paid", slug="paid", access_type=Event.AccessType.PAID)
         self.make_private_photo(paid_event, id="paid")
 
-        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
-        paid_response = self.client.get(reverse("event_detail", kwargs={"slug": paid_event.slug}))
+        with override_feature_flags({"paid-events": FEATURE_FLAG_ON}):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+            paid_response = self.client.get(
+                reverse("event_detail", kwargs={"slug": paid_event.slug})
+            )
 
         self.assertEqual(
             tuple(item.photo_id for item in response.context["gallery_photos"]), (included.id,)
@@ -751,11 +789,6 @@ class GalleryPageTests(TestCase):
     def test_enabled_paid_gallery_renders_only_watermarked_semantic_media_without_downloads(
         self,
     ) -> None:
-        FeatureFlag.objects.create(
-            key=PAID_WATERMARKED_PREVIEWS_FLAG,
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.ON,
-        )
         event = self.make_event(
             name="Paid gallery",
             slug="paid-watermarked-gallery",
@@ -784,7 +817,13 @@ class GalleryPageTests(TestCase):
         )
         legacy = self.make_private_photo(event, id="paid-legacy-hidden")
 
-        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+        with override_feature_flags(
+            {
+                "paid-events": FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+            }
+        ):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -809,15 +848,6 @@ class GalleryPageTests(TestCase):
     def test_enabled_paid_gallery_gets_event_scoped_cart_presentation_and_private_cache(
         self,
     ) -> None:
-        for key, description in (
-            (PAID_WATERMARKED_PREVIEWS_FLAG, "Paid watermarked previews"),
-            (PAID_PHOTO_CART_FLAG, "Paid photo cart"),
-        ):
-            FeatureFlag.objects.create(
-                key=key,
-                description=description,
-                state=FeatureFlag.State.ON,
-            )
         event = self.make_event(
             name="Paid cart gallery",
             slug="paid-cart-gallery",
@@ -878,7 +908,14 @@ class GalleryPageTests(TestCase):
         )
         self.client.cookies["findme_cart"] = token
 
-        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+        with override_feature_flags(
+            {
+                "paid-events": FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
+            }
+        ):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         presentation = response.context["cart_presentation"]
         self.assertEqual(
@@ -906,15 +943,6 @@ class GalleryPageTests(TestCase):
 
     @override_settings(DEBUG=False)
     def test_paid_gallery_template_exception_report_redacts_cart_context_only(self) -> None:
-        for key, description in (
-            (PAID_WATERMARKED_PREVIEWS_FLAG, "Paid watermarked previews"),
-            (PAID_PHOTO_CART_FLAG, "Paid photo cart"),
-        ):
-            FeatureFlag.objects.create(
-                key=key,
-                description=description,
-                state=FeatureFlag.State.ON,
-            )
         event = self.make_event(
             name="Paid report gallery",
             slug="paid-report-gallery",
@@ -949,7 +977,16 @@ class GalleryPageTests(TestCase):
                 raise RuntimeError("forced paid gallery template")
             return original_resolve_lookup(variable, context)
 
-        with patch.object(Variable, "_resolve_lookup", new=force_template_exception):
+        with (
+            override_feature_flags(
+                {
+                    "paid-events": FEATURE_FLAG_ON,
+                    PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                    PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
+                }
+            ),
+            patch.object(Variable, "_resolve_lookup", new=force_template_exception),
+        ):
             response = exception_client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertEqual(response.status_code, 500)
@@ -971,19 +1008,16 @@ class GalleryPageTests(TestCase):
     def test_free_gallery_remains_free_of_cart_context_and_route_markup_when_flags_are_on(
         self,
     ) -> None:
-        for key, description in (
-            (PAID_WATERMARKED_PREVIEWS_FLAG, "Paid watermarked previews"),
-            (PAID_PHOTO_CART_FLAG, "Paid photo cart"),
-        ):
-            FeatureFlag.objects.create(
-                key=key,
-                description=description,
-                state=FeatureFlag.State.ON,
-            )
         event = self.make_event(name="Free gallery", slug="free-cart-regression")
         self.make_private_photo(event, id="free-cart-regression-photo")
 
-        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+        with override_feature_flags(
+            {
+                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
+            }
+        ):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertIsNone(response.context["cart_presentation"])
         self.assertNotContains(response, f"/events/{event.slug}/cart/")
@@ -1931,11 +1965,6 @@ class GalleryMediaViewTests(TransactionTestCase):
     def test_enabled_paid_media_signs_both_semantic_roles_but_download_denies_before_resolver(
         self,
     ) -> None:
-        FeatureFlag.objects.create(
-            key=PAID_WATERMARKED_PREVIEWS_FLAG,
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.ON,
-        )
         event = self.make_event(
             name="Paid watermark",
             slug="paid-watermark-media",
@@ -1958,7 +1987,15 @@ class GalleryMediaViewTests(TransactionTestCase):
         resolver = Mock()
         resolver.resolve_signed.return_value = "https://storage.example.test/watermark?signed"
 
-        with patch("config.views._public_media_resolver", return_value=resolver) as factory:
+        with (
+            override_feature_flags(
+                {
+                    "paid-events": FEATURE_FLAG_ON,
+                    PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                }
+            ),
+            patch("config.views._public_media_resolver", return_value=resolver) as factory,
+        ):
             media_responses = tuple(
                 self.client.get(self.media_url(event=event, photo=photo, variant=variant))
                 for variant in ("preview-small", "preview-large")

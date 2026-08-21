@@ -87,3 +87,8 @@ unchanged.
 On 2026-08-20, deterministic paid event-gallery and ready selfie-result fixtures added desktop and
 390px mobile coverage for cards whose semantic small/large media remain available while original
 download capability is absent. The four new baselines use the `*-paid.png` suffix.
+
+On 2026-08-21, the populated production cart baseline was refreshed at desktop and 390px mobile
+widths for the compact photo-row layout, icon-only removal, desktop summary column, and fixed mobile
+summary bar. Interaction and geometry assertions separately cover cart-photo GLightbox behavior and
+the paid-gallery cart action occupying the right-edge download slot.

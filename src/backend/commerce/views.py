@@ -252,7 +252,8 @@ def _authorized_event(request: HttpRequest, *, event_slug: str) -> tuple[Event |
     if not paid_cart_enabled(request) or not watermarked_previews_enabled:
         return None, watermarked_previews_enabled
     event = (
-        Event.objects.filter(
+        Event.objects.site_visible_to(request.user)
+        .filter(
             slug=event_slug,
             publication_status=Event.PublicationStatus.PUBLISHED,
             access_type=Event.AccessType.PAID,

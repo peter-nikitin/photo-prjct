@@ -48,7 +48,7 @@ test('initializes GLightbox once with local gallery options', () => {
   });
 
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].selector, '.event-gallery .glightbox');
+  assert.equal(calls[0].selector, '[data-event-gallery] .glightbox');
   assert.equal(calls[0].touchNavigation, true);
   assert.equal(calls[0].loop, false);
   assert.equal(calls[0].descPosition, 'bottom');

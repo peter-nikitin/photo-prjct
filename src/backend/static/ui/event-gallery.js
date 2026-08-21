@@ -64,7 +64,7 @@
       download.setAttribute('data-taborder', '4');
     };
     const lightbox = GLightbox({
-      selector: '.event-gallery .glightbox',
+      selector: '[data-event-gallery] .glightbox',
       touchNavigation: true,
       loop: false,
       descPosition: 'bottom',

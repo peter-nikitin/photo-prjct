@@ -15,7 +15,8 @@ from django.db import IntegrityError, close_old_connections, connection
 from django.test import Client, TransactionTestCase, modify_settings, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.models import FeatureFlag
+from feature_flags.states import FEATURE_FLAG_ON
+from feature_flags.testing import override_feature_flags
 from ingestion.models import UploadBatch, UploadItem
 from ingestion.services.batches import (
     AuthorizationReason,
@@ -326,13 +327,8 @@ class ConfirmationTests(TransactionTestCase):
             access_type=Event.AccessType.PAID,
             price_per_photo_kopecks=30000,
         )
-        FeatureFlag.objects.create(
-            key="paid-watermarked-previews",
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.ON,
-        )
-
-        photo = self.confirm_success()
+        with override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_ON}):
+            photo = self.confirm_success()
 
         self.assertEqual(
             (photo.processing_generation, photo.gallery_media_policy),
@@ -349,11 +345,6 @@ class ConfirmationTests(TransactionTestCase):
     @modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
     def test_admin_edit_commits_before_first_photo_policy_is_selected(self) -> None:
         self.set_preview_payload()
-        FeatureFlag.objects.create(
-            key="paid-watermarked-previews",
-            description="Paid watermarked previews",
-            state=FeatureFlag.State.ON,
-        )
         get_user_model().objects.create_superuser(
             "race-admin", "race-admin@example.com", "password"
         )
@@ -392,6 +383,7 @@ class ConfirmationTests(TransactionTestCase):
                 close_old_connections()
 
         with (
+            override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_ON}),
             patch.object(EventAdmin, "save_model", pause_admin_save),
             patch.object(Event.objects, "select_for_update", side_effect=observe_event_lock),
             patch.object(Photo.objects, "create", side_effect=observe_photo_create),

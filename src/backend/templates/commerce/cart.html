@@ -2,49 +2,68 @@
 {% load static %}
 
 {% block title %}Корзина — {{ event.name }} — FindMe Photo{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/catalog.css' %}">{% endblock %}
+{% block body_class %}event-cart-page{% endblock %}
+{% block extra_css %}
+  <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
+  <link rel="stylesheet" href="{% static 'ui/glightbox.min.css' %}">
+{% endblock %}
 
 {% block content %}
-  <article class="event-cart" aria-labelledby="cart-title">
+  <article class="event-cart{% if cart_presentation.photos %} event-cart--populated{% endif %}" aria-labelledby="cart-title">
     <h1 id="cart-title">Корзина — {{ event.name }}</h1>
     {% if cart_presentation.pruned %}
       <p class="cart-pruned" role="status">Некоторые фотографии больше недоступны и удалены из корзины</p>
     {% endif %}
     {% if cart_presentation.photos %}
       <div data-cart-populated>
-        <div class="event-cart-grid">
-        {% for item in cart_presentation.photos %}
-          <figure class="event-cart-item" data-cart-item data-photo-id="{{ item.photo.photo_id }}">
-            <img src="{{ item.photo.preview_media_small.url }}" alt="{{ item.photo.alt }}">
-            <figcaption>
-              <p class="event-cart-price" data-cart-price data-photo-id="{{ item.photo.photo_id }}">{{ item.unit_price_display }}</p>
+        <div class="event-cart-layout">
+          <div class="event-cart-list" data-event-gallery>
+          {% for item in cart_presentation.photos %}
+            <figure class="event-cart-item" data-cart-item data-photo-id="{{ item.photo.photo_id }}">
+              <a class="event-cart-photo glightbox" href="{{ item.photo.preview_media_large.url }}" data-gallery="event-cart-photos" data-type="image" data-description='<form class="gallery-lightbox-cart-form cart-action-form" data-cart-form data-photo-id="{{ item.photo.photo_id }}" method="post" action="{% url "commerce:set_photo_state" event_slug=event.slug %}"><span class="gallery-lightbox-price" data-cart-price data-photo-id="{{ item.photo.photo_id }}">{{ item.unit_price_display }}</span>{% csrf_token %}<input type="hidden" name="photo_id" value="{{ item.photo.photo_id }}"><input type="hidden" name="selected" value="0"><input type="hidden" name="return_to" value="{% url "commerce:detail" event_slug=event.slug %}"><button class="gallery-cart-button is-selected" type="submit" data-cart-button aria-pressed="true" aria-label="Удалить из корзины" title="Удалить из корзины"><svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#cart-check"></use></svg></button></form>' aria-label="Открыть: {{ item.photo.alt }}">
+                <img src="{{ item.photo.preview_media_small.url }}" alt="{{ item.photo.alt }}">
+              </a>
+              <figcaption>
+                <p class="event-cart-price" data-cart-price data-photo-id="{{ item.photo.photo_id }}">{{ item.unit_price_display }}</p>
+              </figcaption>
               <form class="cart-action-form" data-cart-form data-photo-id="{{ item.photo.photo_id }}" method="post" action="{% url 'commerce:set_photo_state' event_slug=event.slug %}">
                 {% csrf_token %}
                 <input type="hidden" name="photo_id" value="{{ item.photo.photo_id }}">
                 <input type="hidden" name="selected" value="0">
                 <input type="hidden" name="return_to" value="{% url 'commerce:detail' event_slug=event.slug %}">
-                <button class="button event-cart-remove" type="submit" data-cart-button aria-pressed="true">Удалить из корзины</button>
+                <button class="event-cart-remove" type="submit" data-cart-button aria-pressed="true" aria-label="Удалить из корзины" title="Удалить из корзины">
+                  <svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#trash"></use></svg>
+                </button>
               </form>
-            </figcaption>
-          </figure>
-        {% endfor %}
+            </figure>
+          {% endfor %}
+          </div>
+          <aside class="event-cart-summary-panel" aria-label="Сводка корзины">
+            <div class="event-cart-summary">
+              <p data-cart-count data-cart-count-label="Фотографий: ">Фотографий: {{ cart_presentation.item_count }}</p>
+              <p data-cart-total data-cart-total-label="Итого: ">Итого: {{ cart_presentation.total_display }}</p>
+            </div>
+            <div class="event-cart-summary-actions">
+              <a class="button event-cart-return" href="{% url 'event_detail' slug=event.slug %}">Продолжить выбор</a>
+              <form class="cart-action-form" data-cart-form method="post" action="{% url 'commerce:clear' event_slug=event.slug %}" onsubmit="return confirm('Удалить все фотографии из корзины?')">
+                {% csrf_token %}
+                <input type="hidden" name="return_to" value="{% url 'commerce:detail' event_slug=event.slug %}">
+                <button class="event-cart-clear" type="submit" data-cart-button>Очистить корзину</button>
+              </form>
+            </div>
+          </aside>
         </div>
-        <div class="event-cart-summary">
-          <p data-cart-count data-cart-count-label="Фотографий: ">Фотографий: {{ cart_presentation.item_count }}</p>
-          <p data-cart-total data-cart-total-label="Итого: ">Итого: {{ cart_presentation.total_display }}</p>
-        </div>
-      <form class="cart-action-form" data-cart-form method="post" action="{% url 'commerce:clear' event_slug=event.slug %}" onsubmit="return confirm('Удалить все фотографии из корзины?')">
-        {% csrf_token %}
-        <input type="hidden" name="return_to" value="{% url 'commerce:detail' event_slug=event.slug %}">
-        <button class="event-cart-clear" type="submit" data-cart-button>Очистить корзину</button>
-      </form>
       </div>
     {% else %}
       <p data-cart-empty>В корзине пока нет фотографий</p>
+      <a class="button event-cart-return" href="{% url 'event_detail' slug=event.slug %}">Продолжить выбор</a>
     {% endif %}
     {% if cart_presentation.photos %}<p data-cart-empty hidden>В корзине пока нет фотографий</p>{% endif %}
     <p class="cart-error" data-cart-error role="alert" hidden>Не удалось обновить корзину. Попробуйте ещё раз.</p>
-    <a class="button event-cart-return" href="{% url 'event_detail' slug=event.slug %}">Продолжить выбор</a>
   </article>
 {% endblock %}
-{% block extra_js %}<script src="{% static 'ui/commerce-cart.js' %}"></script>{% endblock %}
+{% block extra_js %}
+  <script src="{% static 'ui/glightbox.min.js' %}"></script>
+  <script src="{% static 'ui/event-gallery.js' %}"></script>
+  <script src="{% static 'ui/commerce-cart.js' %}"></script>
+{% endblock %}

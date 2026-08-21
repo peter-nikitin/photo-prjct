@@ -28,6 +28,11 @@ PREVIEW_FINAL_KEY = (
     "123e4567-e89b-12d3-a456-426614174000-"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg"
 )
+WATERMARKED_PREVIEW_FINAL_KEY = (
+    "derivatives/previews/photo-42/preview-watermarked-v1/"
+    "123e4567-e89b-12d3-a456-426614174000-"
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.jpg"
+)
 
 
 @pytest.fixture
@@ -207,6 +212,19 @@ def test_sign_final_verifies_the_exact_public_object_before_creating_a_get_url(
         }
     ]
     assert calls(client, "get_object") == []
+
+
+def test_sign_final_allows_a_content_addressed_watermarked_preview(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    client.put_object(WATERMARKED_PREVIEW_FINAL_KEY, b"watermarked", '"watermark-etag"')
+
+    url = storage.sign_final(key=WATERMARKED_PREVIEW_FINAL_KEY)
+
+    assert url == client.presigned_get_url
+    assert calls(client, "head_object") == [
+        {"Bucket": BUCKET, "Key": WATERMARKED_PREVIEW_FINAL_KEY}
+    ]
 
 
 def test_sign_final_adds_a_safe_attachment_disposition(

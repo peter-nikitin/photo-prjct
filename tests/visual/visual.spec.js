@@ -1266,6 +1266,95 @@ test('paid lightbox injects the matching cart action without rewriting watermark
   }
 });
 
+test('cart rows open the same lightbox with the selected cart action', async ({ page }) => {
+  await page.goto('/__visual__/event/cart/');
+  const row = page.locator('.event-cart-item').first();
+  const link = row.locator('.event-cart-photo');
+  const expectedMediaUrl = await link.getAttribute('href');
+
+  await link.click();
+
+  const slide = page.locator('.glightbox-container .gslide.current');
+  await expect(slide).toBeVisible();
+  await expect(slide.locator('.gslide-image img')).toHaveAttribute(
+    'src',
+    new URL(expectedMediaUrl, page.url()).href,
+  );
+  await expect(slide.getByRole('button', { name: 'Удалить из корзины' })).toBeVisible();
+});
+
+test('desktop cart uses compact rows beside a distinct summary column', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await page.goto('/__visual__/event/cart/');
+
+  const geometry = await page.locator('.event-cart-layout').evaluate((layout) => {
+    const list = layout.querySelector('.event-cart-list').getBoundingClientRect();
+    const summary = layout.querySelector('.event-cart-summary-panel').getBoundingClientRect();
+    const rows = [...layout.querySelectorAll('.event-cart-item')].map((row) => {
+      const rowRect = row.getBoundingClientRect();
+      const removeRect = row.querySelector('.event-cart-remove').getBoundingClientRect();
+      return {
+        height: rowRect.height,
+        removeAtRight: Math.abs(rowRect.right - removeRect.right) <= 12,
+      };
+    });
+    return {
+      listBeforeSummary: list.right < summary.left,
+      listWiderThanSummary: list.width > summary.width,
+      rows,
+    };
+  });
+
+  expect(geometry.listBeforeSummary).toBe(true);
+  expect(geometry.listWiderThanSummary).toBe(true);
+  expect(geometry.rows).toEqual([
+    { height: expect.any(Number), removeAtRight: true },
+    { height: expect.any(Number), removeAtRight: true },
+  ]);
+  expect(geometry.rows.every(({ height }) => height <= 96)).toBe(true);
+  await expect(page.locator('.event-cart-remove').first()).toHaveText('');
+  await expect(page.locator('.event-cart-remove').first().locator('svg use')).toHaveAttribute(
+    'href',
+    /#trash$/,
+  );
+});
+
+test('mobile cart keeps a compact summary fixed to the viewport bottom', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await page.goto('/__visual__/event/cart/');
+  const summary = page.locator('.event-cart-summary-panel');
+  const before = await summary.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      position: getComputedStyle(element).position,
+      bottomGap: window.innerHeight - rect.bottom,
+      height: rect.height,
+      top: rect.top,
+    };
+  });
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const afterTop = await summary.evaluate((element) => element.getBoundingClientRect().top);
+
+  expect(before.position).toBe('fixed');
+  expect(Math.abs(before.bottomGap)).toBeLessThanOrEqual(1);
+  expect(before.height).toBeLessThanOrEqual(112);
+  expect(Math.abs(afterTop - before.top)).toBeLessThanOrEqual(1);
+  await expect(summary).toBeVisible();
+});
+
+test('paid gallery cart action occupies the former right-edge download slot', async ({ page }) => {
+  await page.goto('/__visual__/event/gallery-paid/');
+  const positions = await page.locator('.gallery-card').evaluateAll((cards) => cards.map((card) => {
+    const cardRect = card.getBoundingClientRect();
+    const buttonRect = card.querySelector('.gallery-cart-button').getBoundingClientRect();
+    return {
+      rightGap: Math.abs(cardRect.right - buttonRect.right),
+    };
+  }));
+
+  expect(positions.every(({ rightGap }) => rightGap <= 1)).toBe(true);
+});
+
 test('paid card mutation refreshes the next GLightbox cart action from the authoritative snapshot', async ({
   page,
 }) => {

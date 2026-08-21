@@ -1,5 +1,4 @@
 from datetime import date, timedelta
-from typing import cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -9,6 +8,13 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
+from feature_flags.states import (
+    FEATURE_FLAG_OFF,
+    FEATURE_FLAG_ON,
+    FEATURE_FLAG_STAFF,
+    FeatureFlagState,
+)
+from feature_flags.testing import override_feature_flags
 from picflow.models import Event, Photo
 from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from processing.models import (
@@ -24,9 +30,9 @@ from commerce.identity import browser_token_sha256
 from commerce.models import Cart, CartItem
 
 PAID_PHOTO_CART_FLAG = "paid-photo-cart"
-FLAG_OFF: str = cast(str, FeatureFlag.State.OFF)
-FLAG_STAFF: str = cast(str, FeatureFlag.State.STAFF)
-FLAG_ON: str = cast(str, FeatureFlag.State.ON)
+FLAG_OFF = FEATURE_FLAG_OFF
+FLAG_STAFF = FEATURE_FLAG_STAFF
+FLAG_ON = FEATURE_FLAG_ON
 
 
 @override_settings(
@@ -38,6 +44,8 @@ class CartViewTests(TestCase):
     token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
     def setUp(self) -> None:
+        self.feature_flag_states: dict[str, FeatureFlagState] = {}
+        self.enterContext(override_feature_flags(self.feature_flag_states))
         self.photographer = get_user_model().objects.create_user(username="cart-photographer")
         self.event = self.make_event(name="Paid race", slug="paid-race")
         self.photo = self.make_watermarked_photo(self.event, photo_id="photo-one")
@@ -133,14 +141,18 @@ class CartViewTests(TestCase):
         )
         return photo
 
-    def enable(self, *, cart: str = FLAG_ON, watermark: str = FLAG_ON) -> None:
-        FeatureFlag.objects.update_or_create(
-            key=PAID_PHOTO_CART_FLAG,
-            defaults={"description": "Paid photo cart", "state": cart},
-        )
-        FeatureFlag.objects.update_or_create(
-            key=PAID_WATERMARKED_PREVIEWS_FLAG,
-            defaults={"description": "Paid watermarked previews", "state": watermark},
+    def enable(
+        self,
+        *,
+        cart: FeatureFlagState = FLAG_ON,
+        watermark: FeatureFlagState = FLAG_ON,
+    ) -> None:
+        self.feature_flag_states.update(
+            {
+                "paid-events": FLAG_ON,
+                PAID_PHOTO_CART_FLAG: cart,
+                PAID_WATERMARKED_PREVIEWS_FLAG: watermark,
+            }
         )
 
     def detail_url(self, event: Event | None = None) -> str:
@@ -206,10 +218,8 @@ class CartViewTests(TestCase):
         self.client.force_login(staff)
         staff_response = self.client.get(self.detail_url())
         self.client.logout()
-        FeatureFlag.objects.filter(key=PAID_PHOTO_CART_FLAG).update(state=FeatureFlag.State.ON)
-        FeatureFlag.objects.filter(key=PAID_WATERMARKED_PREVIEWS_FLAG).update(
-            state=FeatureFlag.State.ON
-        )
+        self.feature_flag_states[PAID_PHOTO_CART_FLAG] = FLAG_ON
+        self.feature_flag_states[PAID_WATERMARKED_PREVIEWS_FLAG] = FLAG_ON
         public_response = self.client.get(self.detail_url())
 
         self.assertEqual(anonymous.status_code, 404)
@@ -217,6 +227,30 @@ class CartViewTests(TestCase):
         self.assertEqual(public_response.status_code, 200)
         self.assertEqual(Cart.objects.count(), 0)
         self.assertEqual(self.client.cookies.get("findme_cart"), None)
+
+    def test_parent_paid_events_gate_protects_cart_routes(self) -> None:
+        self.enable()
+        states = {
+            "paid-events": FLAG_STAFF,
+            PAID_PHOTO_CART_FLAG: FLAG_ON,
+            PAID_WATERMARKED_PREVIEWS_FLAG: FLAG_ON,
+        }
+
+        with override_feature_flags(states):
+            anonymous = self.client.get(self.detail_url())
+            staff = get_user_model().objects.create_user(
+                username="paid-events-staff", is_staff=True
+            )
+            self.client.force_login(staff)
+            staff_response = self.client.get(self.detail_url())
+            self.client.logout()
+            states["paid-events"] = FLAG_ON
+            public_response = self.client.get(self.detail_url())
+
+        self.assertEqual(anonymous.status_code, 404)
+        self.assertEqual(staff_response.status_code, 200)
+        self.assertEqual(public_response.status_code, 200)
+        self.assertFalse(FeatureFlag.objects.filter(key="paid-events").exists())
 
     def test_disabled_gate_preserves_an_existing_cart_and_browser_cookie(self) -> None:
         self.enable(cart=FLAG_OFF)
@@ -562,13 +596,20 @@ class CartViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "commerce/cart.html")
         self.assertContains(response, self.event.name)
-        self.assertContains(response, "300 ₽", count=2)
+        self.assertContains(response, "300 ₽", count=4)
         self.assertContains(response, "Фотографий: 2")
         self.assertContains(response, "Итого: 600 ₽")
         self.assertContains(response, "Продолжить выбор")
         self.assertContains(response, "Очистить корзину")
         self.assertContains(response, "Удалить все фотографии из корзины?")
-        self.assertContains(response, 'name="selected" value="0"', count=2)
+        self.assertContains(response, 'class="event-cart-photo glightbox"', count=2)
+        self.assertContains(response, 'data-gallery="event-cart-photos"', count=2)
+        self.assertContains(response, 'aria-label="Удалить из корзины"', count=4)
+        self.assertContains(response, "#trash", count=2)
+        self.assertContains(response, "ui/glightbox.min.css")
+        self.assertContains(response, "ui/glightbox.min.js")
+        self.assertContains(response, "ui/event-gallery.js")
+        self.assertContains(response, 'name="selected" value="0"', count=4)
         self.assertContains(response, 'data-cart-form data-photo-id="photo-two"')
         self.assertContains(response, 'data-cart-form data-photo-id="photo-one"')
         self.assertContains(

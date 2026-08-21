@@ -16,6 +16,7 @@ CAPTURE_METADATA_PROCESSOR = "capture_metadata"
 FACE_EMBEDDING_PROCESSOR = "face_embedding"
 FACE_EMBEDDING_BENCHMARK_PROCESSOR = "face_embedding_benchmark"
 GENERATE_PREVIEW_PROCESSOR = "generate_preview"
+GENERATE_WATERMARKED_PREVIEW_PROCESSOR = "generate_watermarked_preview"
 _TERMINAL_ATTEMPT_STATUSES = ("succeeded", "failed", "expired", "stale")
 
 
@@ -286,17 +287,21 @@ class PhotoDerivative(models.Model):  # noqa: DJ008
         if not self.accepted_attempt_id:
             return
         attempt = self.accepted_attempt
+        producer_by_variant = {
+            "preview-small-v1": GENERATE_PREVIEW_PROCESSOR,
+            "preview-watermarked-v1": GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+        }
         if (
             attempt.photo_id != self.photo_id
-            or attempt.processor_type != GENERATE_PREVIEW_PROCESSOR
+            or attempt.processor_type != producer_by_variant.get(self.variant)
             or attempt.status != ProcessingAttempt.Status.SUCCEEDED
             or not attempt.accepted
         ):
             raise ValidationError(
                 {
                     "accepted_attempt": (
-                        "The accepted attempt must be an accepted successful "
-                        "preview for this photo."
+                        "The accepted attempt must be the matching accepted successful "
+                        "derivative producer for this photo."
                     )
                 }
             )

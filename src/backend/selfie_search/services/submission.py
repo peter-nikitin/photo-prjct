@@ -124,7 +124,13 @@ def gallery_search_faces_by_photo(
 
 
 def submit_gallery_photo_search(
-    *, event: Event, photo: Photo, detection_id, user, now: datetime | None = None
+    *,
+    event: Event,
+    photo: Photo,
+    detection_id,
+    user,
+    now: datetime | None = None,
+    paid_watermarked_previews_enabled: bool = False,
 ) -> CreatedSearch:
     """Validate one selected gallery face and create its queued bearer result."""
     now = now or timezone.now()
@@ -134,14 +140,25 @@ def submit_gallery_photo_search(
                 event = Event.objects.site_visible_to(user).get(pk=event.pk)
             except Event.DoesNotExist:
                 raise GallerySearchUnavailable() from None
-            photo = gallery_photo_queryset(event=event).filter(pk=photo.pk).first()
+            photo = (
+                gallery_photo_queryset(
+                    event=event,
+                    paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+                )
+                .filter(pk=photo.pk)
+                .first()
+            )
             if photo is None:
                 raise GallerySearchUnavailable() from None
 
             configuration = _gallery_configuration(
                 event=event, photo=photo, detection_id=detection_id
             )
-            _gallery_source_candidate(event=event, configuration=configuration)
+            _gallery_source_candidate(
+                event=event,
+                configuration=configuration,
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+            )
 
             public_token = secrets.token_urlsafe(32)
             search = SelfieSearch.objects.create(
@@ -160,7 +177,10 @@ def submit_gallery_photo_search(
 
 
 def process_gallery_photo_search(
-    *, search: SelfieSearch, now: datetime | None = None
+    *,
+    search: SelfieSearch,
+    now: datetime | None = None,
+    paid_watermarked_previews_enabled: bool = False,
 ) -> SelfieSearch:
     """Publish a queued gallery-origin search once, under its row lock."""
     now = now or timezone.now()
@@ -177,6 +197,7 @@ def process_gallery_photo_search(
             source_candidate = _gallery_source_candidate(
                 event=locked_search.event,
                 configuration=locked_search.configuration,
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             )
             candidates = _compatible_candidates(
                 event=locked_search.event,
@@ -264,7 +285,10 @@ def _terminal_gallery_failure(*, search_id, status: str, now: datetime) -> Selfi
 
 
 def _gallery_source_candidate(
-    *, event: Event, configuration: dict[str, object]
+    *,
+    event: Event,
+    configuration: dict[str, object],
+    paid_watermarked_previews_enabled: bool = False,
 ) -> CandidateEmbedding:
     source = configuration.get("query_source")
     if (
@@ -274,7 +298,14 @@ def _gallery_source_candidate(
         or not isinstance(source.get("detection_id"), str)
     ):
         raise GallerySearchUnavailable()
-    photo = gallery_photo_queryset(event=event).filter(pk=source["photo_id"]).first()
+    photo = (
+        gallery_photo_queryset(
+            event=event,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
+        .filter(pk=source["photo_id"])
+        .first()
+    )
     if photo is None:
         raise GallerySearchUnavailable()
     row = (

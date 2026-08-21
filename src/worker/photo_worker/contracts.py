@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from photo_worker.adaface import ADAFACE_EMBEDDING_DIMENSIONS, ADAFACE_MODEL_NAME
 from photo_worker.face_quality import FaceQualityError, FaceQualityEvidence, FaceQualityThresholds
+from photo_worker.watermark import WATERMARK_ASSET_SHA256S
 
 CONTRACT_VERSION = 1
 PROCESSOR_TYPE = "capture_metadata"
@@ -29,6 +30,8 @@ PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY = 5
 PREVIEW_CONTRACT_VERSION = 2
 PROCESSOR_TYPE_GENERATE_PREVIEW = "generate_preview"
 PROCESSOR_VERSION_GENERATE_PREVIEW = 1
+PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW = "generate_watermarked_preview"
+PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW = 1
 PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW = 3
 PROCESSOR_TYPE_SELFIE_QUERY = "selfie_query"
 PROCESSOR_VERSION_SELFIE_QUERY = 2
@@ -96,6 +99,39 @@ V2_GENERATE_PREVIEW_CONFIGURATION: dict[str, object] = {
         "lease_duration_seconds": 120,
         "max_input_bytes": 50 * 1024 * 1024,
         "max_pixels": MAX_PREVIEW_PIXELS_CAP,
+        "poll_min_delay_seconds": 5,
+        "terminal_result_max_bytes": 8_192,
+    },
+}
+V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION: dict[str, object] = {
+    "retry_policy": {
+        "max_attempts": 3,
+        "base_backoff_seconds": 30,
+        "max_backoff_seconds": 300,
+        "jitter_seconds": 5,
+        "lease_max_seconds": 300,
+    },
+    "max_cohort_size": 16,
+    "report_max_bytes": 262_144,
+    "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
+    "generate_watermarked_preview": {
+        "variant": "preview-watermarked-v1",
+        "input_variant": "preview-small-v1",
+        "output_format": "jpeg",
+        "jpeg_quality": 85,
+        "color_space": "srgb",
+        "strip_metadata": True,
+        "checksum_algorithm": "sha256",
+        "landscape_asset_sha256": WATERMARK_ASSET_SHA256S["landscape"],
+        "portrait_asset_sha256": WATERMARK_ASSET_SHA256S["portrait"],
+    },
+    "worker": {
+        "api_response_max_bytes": 16_384,
+        "concurrency": 1,
+        "heartbeat_interval_seconds": 30,
+        "lease_duration_seconds": 120,
+        "max_input_bytes": 10_485_760,
+        "max_pixels": 2_560_000,
         "poll_min_delay_seconds": 5,
         "terminal_result_max_bytes": 8_192,
     },
@@ -336,6 +372,7 @@ class ProcessorConfiguration:
     minimum_face_px: int = 1
     event_timezone: str | None = None
     quality_thresholds: FaceQualityThresholds | None = None
+    watermark_asset_sha256s: dict[str, str] | None = None
 
     @classmethod
     def from_value(cls, value: object) -> ProcessorConfiguration:
@@ -371,6 +408,14 @@ class ProcessorConfiguration:
             "generate_preview",
             "worker",
         }
+        expected_watermarked_preview = {
+            "retry_policy",
+            "max_cohort_size",
+            "report_max_bytes",
+            "report_row_limits",
+            "generate_watermarked_preview",
+            "worker",
+        }
         expected_selfie = {
             "retry_policy",
             "max_cohort_size",
@@ -386,30 +431,42 @@ class ProcessorConfiguration:
             capture = value["capture_metadata"]
             face_config = None
             preview_config = None
+            watermark_config = None
             selfie_config = None
             configuration_kind = "capture_metadata"
         elif set(value) == expected_face or set(value) == expected_adaface_face:
             capture = None
             face_config = value["face_embedding"]
             preview_config = None
+            watermark_config = None
             selfie_config = None
             configuration_kind = "face_embedding"
         elif set(value) == expected_benchmark:
             capture = None
             face_config = value["face_embedding"]
             preview_config = None
+            watermark_config = None
             selfie_config = None
             configuration_kind = "face_embedding_benchmark"
         elif set(value) == expected_preview:
             capture = None
             face_config = None
             preview_config = value["generate_preview"]
+            watermark_config = None
             selfie_config = None
             configuration_kind = "generate_preview"
+        elif set(value) == expected_watermarked_preview:
+            capture = None
+            face_config = None
+            preview_config = None
+            watermark_config = value["generate_watermarked_preview"]
+            selfie_config = None
+            configuration_kind = "generate_watermarked_preview"
         elif set(value) in (expected_selfie, expected_adaface_selfie):
             capture = None
             face_config = None
             preview_config = None
+            watermark_config = None
             selfie_config = value["selfie_query"]
             configuration_kind = "selfie_query"
         else:
@@ -649,10 +706,24 @@ class ProcessorConfiguration:
                 if quality_thresholds is not None
                 else int(face_config.get("min_face_px", 1))
             )
-        else:
+        elif preview_config is not None:
             if not (
                 isinstance(preview_config, dict)
                 and preview_config == V2_GENERATE_PREVIEW_CONFIGURATION["generate_preview"]
+            ):
+                raise ContractError("invalid processor configuration")
+            max_faces = 1
+            face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
+            model = SFACE_MODEL_NAME
+            embedding_dimensions = SFACE_EMBEDDING_DIMENSIONS
+            minimum_face_px = 1
+        else:
+            if not (
+                isinstance(watermark_config, dict)
+                and watermark_config
+                == V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION["generate_watermarked_preview"]
+                and worker["max_input_bytes"] == 10_485_760
+                and worker["max_pixels"] == 2_560_000
             ):
                 raise ContractError("invalid processor configuration")
             max_faces = 1
@@ -679,12 +750,26 @@ class ProcessorConfiguration:
             face_detection_threshold=cast(float, face_threshold),
             model=cast(str, model),
             preview_variant=(
-                "preview-small-v1" if configuration_kind == "generate_preview" else None
+                "preview-small-v1"
+                if configuration_kind == "generate_preview"
+                else (
+                    "preview-watermarked-v1"
+                    if configuration_kind == "generate_watermarked_preview"
+                    else None
+                )
             ),
             embedding_dimensions=embedding_dimensions,
             minimum_face_px=minimum_face_px,
             event_timezone=event_timezone,
             quality_thresholds=quality_thresholds,
+            watermark_asset_sha256s=(
+                {
+                    "landscape": cast(dict[str, str], watermark_config)["landscape_asset_sha256"],
+                    "portrait": cast(dict[str, str], watermark_config)["portrait_asset_sha256"],
+                }
+                if configuration_kind == "generate_watermarked_preview"
+                else None
+            ),
         )
 
 
@@ -715,10 +800,12 @@ class OutputSlot:
         }
         if not isinstance(value, dict) or set(value) != fields:
             raise ContractError("invalid preview output slot")
-        expected_key = f"processing-pending/previews/{attempt_id}/preview-small-v1.jpg"
+        variant = value["variant"]
+        if variant not in {"preview-small-v1", "preview-watermarked-v1"}:
+            raise ContractError("invalid preview output slot")
+        expected_key = f"processing-pending/previews/{attempt_id}/{variant}.jpg"
         if not (
-            value["variant"] == "preview-small-v1"
-            and _download_url(value["upload_url"])
+            _download_url(value["upload_url"])
             and _utc_timestamp(value["upload_expires_at"])
             and value["content_type"] == "image/jpeg"
             and value["staging_key"] == expected_key
@@ -811,6 +898,11 @@ class ClaimedJob:
                 PROCESSOR_TYPE_GENERATE_PREVIEW,
                 PROCESSOR_VERSION_GENERATE_PREVIEW,
             )
+            watermarked_preview = identity == (
+                PREVIEW_CONTRACT_VERSION,
+                PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+                PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
+            )
             preview_face = identity == (
                 PREVIEW_CONTRACT_VERSION,
                 PROCESSOR_TYPE_FACE_EMBEDDING,
@@ -842,7 +934,7 @@ class ClaimedJob:
             quality_face_with_geometry = quality_face and "input_geometry" in value
             fields = (
                 photo_fields
-                | ({"output_slots"} if preview else set())
+                | ({"output_slots"} if preview or watermarked_preview else set())
                 | ({"input_geometry"} if preview_face or quality_face_with_geometry else set())
             )
             if set(value) != fields:
@@ -913,6 +1005,11 @@ class ClaimedJob:
                 ),
                 (
                     PREVIEW_CONTRACT_VERSION,
+                    PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+                    PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
+                ),
+                (
+                    PREVIEW_CONTRACT_VERSION,
                     PROCESSOR_TYPE_FACE_EMBEDDING,
                     PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
                 ),
@@ -963,6 +1060,18 @@ class ClaimedJob:
                     and value["configuration"] == V2_GENERATE_PREVIEW_CONFIGURATION
                     and photo_fingerprint.media_kind == "original"
                     and len(output_slots) == 1
+                    and output_slots[0].variant == "preview-small-v1"
+                )
+                or (
+                    watermarked_preview
+                    and configuration.configuration_kind
+                    == PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW
+                    and value["configuration"] == V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION
+                    and photo_fingerprint.media_kind == "preview-small-v1"
+                    and _preview_key_matches_photo(photo_fingerprint, value["photo_id"])
+                    and photo_fingerprint.object_etag is None
+                    and len(output_slots) == 1
+                    and output_slots[0].variant == "preview-watermarked-v1"
                 )
                 or (
                     preview_face
@@ -973,6 +1082,7 @@ class ClaimedJob:
                     and _valid_preview_input_geometry(input_geometry, photo_fingerprint)
                 )
             )
+            expects_output_slot = preview or watermarked_preview
             valid = (
                 supported_identity
                 and all(_uuid_string(value[name]) for name in ("id", "attempt_id", "run_id"))
@@ -984,7 +1094,7 @@ class ClaimedJob:
                 and _utc_timestamp(value["lease_expires_at"])
                 and _utc_timestamp(value["download_expires_at"])
                 and _download_url(value["download_url"])
-                and ((len(output_slots) == 1) if preview else not output_slots)
+                and ((len(output_slots) == 1) if expects_output_slot else not output_slots)
                 and identity_matches_contract
             )
             photo_id = cast(str, value["photo_id"])
@@ -1310,6 +1420,11 @@ def _processor_version(processor_type: str, contract_version: int = CONTRACT_VER
         and contract_version == PREVIEW_CONTRACT_VERSION
     ):
         return PROCESSOR_VERSION_GENERATE_PREVIEW
+    if (
+        processor_type == PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW
+        and contract_version == PREVIEW_CONTRACT_VERSION
+    ):
+        return PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW
     if processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
         return PROCESSOR_VERSION_SELFIE_QUERY
     raise ContractError("unsupported processor type")

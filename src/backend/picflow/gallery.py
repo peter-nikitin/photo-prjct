@@ -2,7 +2,7 @@ import logging
 import math
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol, Self
+from typing import Final, Literal, Protocol, Self, cast
 from zoneinfo import ZoneInfo
 
 from django.core.paginator import Page, Paginator
@@ -12,6 +12,7 @@ from django.urls import reverse
 from ingestion.storage import ObjectMismatch, ObjectMissing, OpenedObject, ReadableBody
 from processing.models import (
     GENERATE_PREVIEW_PROCESSOR,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     PhotoDerivative,
     PhotoProcessingState,
     ProcessingAttempt,
@@ -113,7 +114,7 @@ class GalleryPhoto:
     photo_id: str
     preview_media_small: GalleryMedia
     preview_media_large: GalleryMedia
-    download_url: str
+    download_url: str | None
     alt: str
     faces: tuple[GalleryFaceCrop, ...] = ()
     capture_time_display: str | None = None
@@ -147,11 +148,16 @@ class GalleryPhotoFactory:
             preview_media_small=media("preview-small"),
             preview_media_large=media("preview-large"),
             download_url=(
-                download_url_builder(photo)
-                if download_url_builder is not None
-                else reverse(
-                    "photo_download",
-                    kwargs={"slug": event_slug, "photo_id": photo.pk},
+                None
+                if photo.gallery_media_policy
+                == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+                else (
+                    download_url_builder(photo)
+                    if download_url_builder is not None
+                    else reverse(
+                        "photo_download",
+                        kwargs={"slug": event_slug, "photo_id": photo.pk},
+                    )
                 )
             ),
             alt=f"Фото {photo.pk} с события {photo.event.name}",
@@ -171,22 +177,22 @@ def gallery_photo_queryset(
     capture_time_end=None,
     folder_ids: Collection[int] | None = None,
     include_unfiled: bool = False,
+    paid_watermarked_previews_enabled: bool = False,
 ) -> QuerySet[Photo]:
-    """Return database-confirmed gallery media without probing object storage."""
-    preview_ready = Q(
-        gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
-        derivatives__variant="preview-small-v1",
-        processing_states__processor_type=GENERATE_PREVIEW_PROCESSOR,
-        processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
-        processing_states__accepted_attempt=F("derivatives__accepted_attempt"),
-        processing_states__accepted_attempt__accepted=True,
-        processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
-    )
-    queryset = (
-        Photo.objects.filter(event=event, src="", original_key__isnull=False)
-        .filter(
-            Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED) | preview_ready
+    """Return event-surface media without probing object storage."""
+    if event.access_type == Event.AccessType.FREE:
+        eligibility = _legacy_or_clean_preview_ready()
+    elif paid_watermarked_previews_enabled:
+        eligibility = _accepted_derivative_ready(
+            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
         )
+    else:
+        eligibility = Q(pk__in=())
+    queryset = (
+        _public_photo_queryset(event=event)
+        .filter(eligibility)
         .select_related("event")
         .order_by("original_filename", "id")
         .distinct()
@@ -203,6 +209,48 @@ def gallery_photo_queryset(
     if capture_time_end is not None:
         queryset = queryset.filter(capture_time__lte=capture_time_end)
     return queryset
+
+
+def saved_result_photo_queryset(
+    *,
+    event: Event,
+    paid_watermarked_previews_enabled: bool,
+) -> QuerySet[Photo]:
+    """Return saved-result presentation media under its compatibility contract."""
+    eligibility = _legacy_or_clean_preview_ready()
+    if paid_watermarked_previews_enabled:
+        eligibility |= _accepted_derivative_ready(
+            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+    return _public_photo_queryset(event=event).filter(eligibility).distinct()
+
+
+def _public_photo_queryset(*, event: Event) -> QuerySet[Photo]:
+    return Photo.objects.filter(event=event, src="", original_key__isnull=False)
+
+
+def _legacy_or_clean_preview_ready() -> Q:
+    return Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED) | (
+        _accepted_derivative_ready(
+            policy=cast(str, Photo.GalleryMediaPolicy.PREVIEW_REQUIRED),
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            variant="preview-small-v1",
+        )
+    )
+
+
+def _accepted_derivative_ready(*, policy: str, processor_type: str, variant: str) -> Q:
+    return Q(
+        gallery_media_policy=policy,
+        derivatives__variant=variant,
+        processing_states__processor_type=processor_type,
+        processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
+        processing_states__accepted_attempt=F("derivatives__accepted_attempt"),
+        processing_states__accepted_attempt__accepted=True,
+        processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
+    )
 
 
 def gallery_folder_choices(
@@ -226,6 +274,7 @@ def gallery_page(
     capture_time_end=None,
     folder_ids: Collection[int] | None = None,
     include_unfiled: bool = False,
+    paid_watermarked_previews_enabled: bool = False,
 ) -> Page[Photo]:
     return Paginator(
         gallery_photo_queryset(
@@ -234,6 +283,7 @@ def gallery_page(
             capture_time_end=capture_time_end,
             folder_ids=folder_ids,
             include_unfiled=include_unfiled,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
         ),
         GALLERY_PAGE_SIZE,
     ).page(page_number or 1)
@@ -273,10 +323,15 @@ class PublicMediaResolver:
             raise ObjectMismatch() from None
 
     def resolve_download(self, *, photo: Photo) -> str:
-        if not photo.original_key or photo.original_content_type not in {
-            "image/jpeg",
-            "image/png",
-        }:
+        if (
+            photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+            or not photo.original_key
+            or photo.original_content_type
+            not in {
+                "image/jpeg",
+                "image/png",
+            }
+        ):
             raise ValueError("ineligible original download")
         extension: Literal["jpg", "png"] = (
             "jpg" if photo.original_content_type == "image/jpeg" else "png"
@@ -293,13 +348,18 @@ class PublicMediaResolver:
     def _selected_key(*, photo: Photo, variant: GalleryVariant) -> str:
         if variant not in GALLERY_VARIANTS or not photo.original_key:
             raise ValueError("ineligible gallery media")
-        if (
+        derivative_variant = None
+        if photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED:
+            derivative_variant = "preview-watermarked-v1"
+        elif (
             photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
             and variant == "preview-small"
         ):
+            derivative_variant = "preview-small-v1"
+        if derivative_variant is not None:
             try:
                 return PhotoDerivative.objects.get(
-                    photo=photo, variant="preview-small-v1"
+                    photo=photo, variant=derivative_variant
                 ).final_key
             except PhotoDerivative.DoesNotExist:
                 raise ObjectMissing() from None

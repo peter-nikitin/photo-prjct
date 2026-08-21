@@ -42,6 +42,7 @@ from processing.contracts import (
     FACE_EMBEDDING_BENCHMARK_CONTRACT,
     FACE_EMBEDDING_CONTRACT,
     GENERATE_PREVIEW_CONTRACT,
+    GENERATE_WATERMARKED_PREVIEW_CONTRACT,
     PREVIEW_FACE_EMBEDDING_CONTRACT,
     SELFIE_QUERY_CONTRACT,
     AttemptReference,
@@ -51,7 +52,9 @@ from processing.contracts import (
     parse_attempt_reference,
 )
 from processing.models import (
+    GENERATE_PREVIEW_PROCESSOR,
     PhotoDerivative,
+    PhotoProcessingState,
     ProcessingAttempt,
     ProcessingConflictAudit,
     ProcessingJob,
@@ -76,7 +79,7 @@ from processing.services.jobs import (
 from processing.services.jobs import (
     refresh_download as refresh_download_attempt,
 )
-from processing.services.previews import complete_preview_attempt
+from processing.services.previews import complete_preview_attempt, preview_final_key
 from processing.storage import ExactObjectDownloadStorage, ExactPreviewStorage, PreviewUploadGrant
 
 _WORKER_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -140,6 +143,11 @@ _GENERATE_PREVIEW_FAILURES = {
     "unsupported_input": (False, "The input is unsupported."),
 }
 _GENERATE_PREVIEW_WARNING_CODES = {"color_profile_missing"}
+_GENERATE_WATERMARKED_PREVIEW_FAILURES = _GENERATE_PREVIEW_FAILURES | {
+    "watermark_asset_invalid": (False, "The packaged watermark asset is invalid."),
+    "watermark_asset_mismatch": (False, "The packaged watermark asset checksum did not match."),
+}
+_GENERATE_WATERMARKED_PREVIEW_WARNING_CODES = {"color_profile_missing"}
 _SELFIE_QUERY_FAILURES = {
     "decode_failed": (False, "The selfie could not be decoded."),
     "download_authorization_expired": (True, "Download authorization expired."),
@@ -159,6 +167,7 @@ _PROCESSOR_FAILURES = {
     "face_embedding": _FACE_EMBEDDING_FAILURES,
     "face_embedding_benchmark": _FACE_EMBEDDING_FAILURES,
     "generate_preview": _GENERATE_PREVIEW_FAILURES,
+    "generate_watermarked_preview": _GENERATE_WATERMARKED_PREVIEW_FAILURES,
     "selfie_query": _SELFIE_QUERY_FAILURES,
 }
 _PROCESSOR_RESULT_WARNINGS = {
@@ -166,6 +175,7 @@ _PROCESSOR_RESULT_WARNINGS = {
     "face_embedding": _FACE_RESULT_WARNING_CODES,
     "face_embedding_benchmark": _FACE_RESULT_WARNING_CODES,
     "generate_preview": _GENERATE_PREVIEW_WARNING_CODES,
+    "generate_watermarked_preview": _GENERATE_WATERMARKED_PREVIEW_WARNING_CODES,
     "selfie_query": set(),
 }
 
@@ -363,7 +373,10 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
             "worker_started_at": data["started_at"],
             "worker_finished_at": data["finished_at"],
         }
-        if attempt.processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+        if attempt.processor_type in {
+            GENERATE_PREVIEW_CONTRACT.processor_type,
+            GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
+        }:
             completion = complete_preview_attempt(reference.attempt_id, **completion_kwargs)
         else:
             completion = complete_attempt(reference.attempt_id, **completion_kwargs)
@@ -498,6 +511,7 @@ def _claim_with_grant(data: dict[str, Any]) -> dict[str, object]:
             processor_type=claimed.job.processor_type,
             processor_version=claimed.job.processor_version,
         )
+        _require_accepted_watermark_input(claimed.job, fingerprint)
         quality_input_geometry = _quality_claim_input_geometry(claimed.job)
         grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
@@ -505,9 +519,13 @@ def _claim_with_grant(data: dict[str, Any]) -> dict[str, object]:
         )
         _validate_grant_lease(claimed.attempt, grant.expires_at)
         preview_upload_grant = None
-        if claimed.job.processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+        if claimed.job.processor_type in {
+            GENERATE_PREVIEW_CONTRACT.processor_type,
+            GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
+        }:
+            variant = _preview_variant(claimed.job.processor_type)
             preview_upload_grant = ExactPreviewStorage().create_upload_grant(
-                staging_key=_preview_staging_key(str(claimed.attempt.id)),
+                staging_key=_preview_staging_key(str(claimed.attempt.id), variant=variant),
                 max_ttl_seconds=_remaining_lease(claimed.attempt),
             )
             _validate_grant_lease(claimed.attempt, preview_upload_grant.expires_at)
@@ -533,6 +551,7 @@ def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:
             processor_type=attempt.processor_type,
             processor_version=attempt.processor_version,
         )
+        _require_accepted_watermark_input(attempt, fingerprint)
         _quality_claim_input_geometry(attempt)
         grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
@@ -593,7 +612,7 @@ def _input_fingerprint(
         size = value["object_size"]
         content_type = value["object_content_type"]
         etag = value["object_etag"]
-        if not (
+        valid = (
             isinstance(key, str)
             and (
                 re.fullmatch(r"originals/[0-9a-f]{32}", key)
@@ -611,7 +630,17 @@ def _input_fingerprint(
             and value["media_kind"] in {"original", "preview-small-v1"}
             and _positive_int(value["pixel_width"])
             and _positive_int(value["pixel_height"])
-        ):
+        )
+        if processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+            valid = valid and value["media_kind"] == "original" and key.startswith("originals/")
+        elif processor_type == GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type:
+            valid = (
+                valid
+                and value["media_kind"] == "preview-small-v1"
+                and key.startswith("derivatives/previews/")
+                and etag is None
+            )
+        if not valid:
             raise FingerprintInvariant()
         return cast(dict[str, int | str | None], value)
     if contract_version not in {1, 3}:
@@ -741,6 +770,44 @@ def _download_storage(
     return ExactObjectDownloadStorage()
 
 
+def _require_accepted_watermark_input(
+    job: ProcessingJob | ProcessingAttempt,
+    fingerprint: dict[str, int | str | None],
+) -> None:
+    """Bind each watermark grant to the photo's currently accepted clean derivative."""
+    if job.processor_type != GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type:
+        return
+    derivative_evidence = (
+        PhotoDerivative.objects.filter(
+            photo_id=job.photo_id,
+            variant="preview-small-v1",
+            final_key=fingerprint["object_key"],
+            byte_size=fingerprint["object_size"],
+            content_type=fingerprint["object_content_type"],
+            width=fingerprint["pixel_width"],
+            height=fingerprint["pixel_height"],
+        )
+        .values("accepted_attempt_id", "sha256")
+        .first()
+    )
+    if (
+        derivative_evidence is None
+        or fingerprint["object_key"]
+        != preview_final_key(
+            photo_id=job.photo_id,
+            attempt_id=derivative_evidence["accepted_attempt_id"],
+            sha256=derivative_evidence["sha256"],
+        )
+        or not PhotoProcessingState.objects.filter(
+            photo_id=job.photo_id,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            accepted_attempt_id=derivative_evidence["accepted_attempt_id"],
+        ).exists()
+    ):
+        raise FingerprintInvariant()
+
+
 def _quality_claim_input_geometry(
     job: ProcessingJob | ProcessingAttempt,
 ) -> dict[str, int | str] | None:
@@ -827,11 +894,20 @@ def _claimed_payload(
             "download_expires_at": expires_at.isoformat(),
         },
     }
-    if job.processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+    if job.processor_type in {
+        GENERATE_PREVIEW_CONTRACT.processor_type,
+        GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
+    }:
         if preview_upload_grant is None:
             raise FingerprintInvariant()
         payload["job"] = cast(dict[str, object], payload["job"]) | {
-            "output_slots": [_preview_output_slot(str(attempt.id), preview_upload_grant)]
+            "output_slots": [
+                _preview_output_slot(
+                    str(attempt.id),
+                    preview_upload_grant,
+                    processor_type=job.processor_type,
+                )
+            ]
         }
     elif (
         job.contract_version == PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version
@@ -996,6 +1072,11 @@ def _processor_contract(processor_type: str, contract_version: int, processor_ve
             GENERATE_PREVIEW_CONTRACT.contract_version,
             GENERATE_PREVIEW_CONTRACT.processor_type,
             GENERATE_PREVIEW_CONTRACT.processor_version,
+        ),
+        (
+            GENERATE_WATERMARKED_PREVIEW_CONTRACT.contract_version,
+            GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
+            GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_version,
         ),
         (
             PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version,
@@ -1230,8 +1311,11 @@ def _valid_result(
         )
     if processor_type == FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_type:
         return _valid_face_embedding_benchmark_result(value)
-    if processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
-        return _valid_preview_result(value)
+    if processor_type in {
+        GENERATE_PREVIEW_CONTRACT.processor_type,
+        GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
+    }:
+        return _valid_preview_result(value, processor_type=processor_type)
     return False
 
 
@@ -1412,7 +1496,8 @@ def _matches_accepted_preview_geometry(attempt: ProcessingAttempt, result: objec
     }
 
 
-def _valid_preview_result(value: object) -> bool:
+def _valid_preview_result(value: object, *, processor_type: str = "generate_preview") -> bool:
+    watermarked = processor_type == GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type
     fields = {
         "variant",
         "content_type",
@@ -1425,39 +1510,60 @@ def _valid_preview_result(value: object) -> bool:
         "upload_ms",
         "warnings",
     }
+    if watermarked:
+        fields -= {"oriented_source_width", "oriented_source_height"}
     return (
         isinstance(value, dict)
         and set(value) == fields
-        and value["variant"] == "preview-small-v1"
+        and value["variant"] == _preview_variant(processor_type)
         and value["content_type"] == "image/jpeg"
         and _positive_int(value["byte_size"])
         and value["byte_size"] <= 10_485_760
         and _positive_int(value["width"])
         and _positive_int(value["height"])
         and max(value["width"], value["height"]) <= 1600
-        and _positive_int(value["oriented_source_width"])
-        and _positive_int(value["oriented_source_height"])
+        and (
+            watermarked
+            or (
+                _positive_int(value["oriented_source_width"])
+                and _positive_int(value["oriented_source_height"])
+            )
+        )
         and isinstance(value["sha256"], str)
         and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
         and _duration(value["upload_ms"])
         and isinstance(value["warnings"], list)
         and len(value["warnings"]) <= 8
-        and all(_valid_warning_code("generate_preview", item) for item in value["warnings"])
+        and all(_valid_warning_code(processor_type, item) for item in value["warnings"])
     )
 
 
-def _preview_staging_key(attempt_id: str) -> str:
-    return f"processing-pending/previews/{attempt_id}/preview-small-v1.jpg"
+def _preview_variant(processor_type: str) -> str:
+    if processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
+        return "preview-small-v1"
+    if processor_type == GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type:
+        return "preview-watermarked-v1"
+    raise FingerprintInvariant()
 
 
-def _preview_output_slot(attempt_id: str, grant: PreviewUploadGrant) -> dict[str, object]:
+def _preview_staging_key(attempt_id: str, *, variant: str = "preview-small-v1") -> str:
+    return f"processing-pending/previews/{attempt_id}/{variant}.jpg"
+
+
+def _preview_output_slot(
+    attempt_id: str,
+    grant: PreviewUploadGrant,
+    *,
+    processor_type: str = "generate_preview",
+) -> dict[str, object]:
     """One short-lived PUT grant for the current preview attempt's exact staging key."""
+    variant = _preview_variant(processor_type)
     return {
-        "variant": "preview-small-v1",
+        "variant": variant,
         "upload_url": grant.url,
         "upload_expires_at": grant.expires_at.isoformat(),
         "content_type": "image/jpeg",
-        "staging_key": _preview_staging_key(attempt_id),
+        "staging_key": _preview_staging_key(attempt_id, variant=variant),
         "max_bytes": 10_485_760,
         "max_width": 1600,
         "max_height": 1600,

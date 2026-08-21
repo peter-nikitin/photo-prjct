@@ -25,9 +25,11 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE_FACE_EMBEDDING,
     PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
+    PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
     PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
+    PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
     PROCESSOR_VERSION_SELFIE_QUERY,
     CaptureMetadataResult,
     Claim,
@@ -44,17 +46,29 @@ from photo_worker.face_embedding import (
 from photo_worker.metadata import InputTooLarge, MetadataError, extract_capture_metadata
 from photo_worker.observability import SelfieWorkerEventName, emit_selfie_worker_event
 from photo_worker.preview import PreviewError, PreviewResult, generate_preview
+from photo_worker.watermark import (
+    WatermarkedPreviewError,
+    WatermarkedPreviewResult,
+    generate_watermarked_preview,
+)
 
 LOGGER = logging.getLogger(__name__)
 _PREVIEW_FAILURE_RETRYABLE = {
     "invalid_dimensions": False,
     "normalization_failed": False,
     "output_contract_violation": False,
+    "watermark_asset_invalid": False,
+    "watermark_asset_mismatch": False,
 }
 _IDENTITY_PARTS = 3
 _SUPPORTED_IDENTITIES = {
     (1, PROCESSOR_TYPE, 2),
     (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
+    (
+        2,
+        PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+        PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
+    ),
     (2, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW),
     (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY),
     (1, PROCESSOR_TYPE_SELFIE_QUERY, PROCESSOR_VERSION_SELFIE_QUERY),
@@ -129,6 +143,7 @@ class WorkerConfig:
             PROCESSOR_TYPE,
             PROCESSOR_TYPE_FACE_EMBEDDING,
             PROCESSOR_TYPE_GENERATE_PREVIEW,
+            PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
             PROCESSOR_TYPE_SELFIE_QUERY,
         }
         if self.processor_type is not None and self.processor_type not in supported:
@@ -468,7 +483,7 @@ class Worker:
                 result = self._run_processor(job, input_path, preview_path)
             finally:
                 compute_ms = _milliseconds(compute_started)
-            if isinstance(result, PreviewResult):
+            if isinstance(result, (PreviewResult, WatermarkedPreviewResult)):
                 keeper.raise_if_lost()
                 upload_started = monotonic()
                 try:
@@ -540,6 +555,7 @@ class Worker:
             MetadataError,
             FaceEmbeddingError,
             PreviewError,
+            WatermarkedPreviewError,
             UploadError,
         ) as error:
             assert keeper is not None
@@ -553,7 +569,10 @@ class Worker:
             if not isinstance(code, str):
                 code = "decode_failed"
             retryable = FAILURE_RETRYABLE.get(code)
-            if retryable is None and job.processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW:
+            if retryable is None and job.processor_type in {
+                PROCESSOR_TYPE_GENERATE_PREVIEW,
+                PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+            }:
                 retryable = _PREVIEW_FAILURE_RETRYABLE.get(code)
             if retryable is None:
                 code = "decode_failed"
@@ -664,6 +683,17 @@ class Worker:
                 max_input_bytes=job.input_limits.max_bytes,
                 max_pixels=job.configuration.max_pixels,
                 slot=job.output_slots[0],
+            )
+        if job.processor_type == PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW:
+            asset_sha256s = job.configuration.watermark_asset_sha256s
+            assert asset_sha256s is not None
+            return generate_watermarked_preview(
+                input_path,
+                preview_path,
+                max_input_bytes=job.input_limits.max_bytes,
+                max_pixels=job.configuration.max_pixels,
+                slot=job.output_slots[0],
+                asset_sha256s=asset_sha256s,
             )
         if job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
             return extract_selfie_embedding(
@@ -818,6 +848,8 @@ def _default_processor_identity(processor_type: str) -> tuple[int, str, int]:
         )
     elif processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
         identity = (1, processor_type, PROCESSOR_VERSION_SELFIE_QUERY)
+    elif processor_type == PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW:
+        identity = (2, processor_type, PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW)
     else:
         identity = (
             PREVIEW_CONTRACT_VERSION if processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW else 1,

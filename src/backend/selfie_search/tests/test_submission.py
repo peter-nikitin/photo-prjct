@@ -21,6 +21,7 @@ from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from PIL import Image
 from processing.models import (
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventFaceEmbeddingActivation,
     EventProcessingRun,
     FaceEmbedding,
@@ -886,6 +887,66 @@ class GalleryPhotoSubmissionTests(TestCase):
             metadata={},
         )
 
+    def publish_watermark(self, photo: Photo) -> None:
+        configuration = {"generate_watermarked_preview": {"variant": "preview-watermarked-v1"}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="d" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        PhotoProcessingState.objects.create(
+            photo=photo,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            current_run=run,
+            current_job=job,
+            current_attempt=attempt,
+            accepted_attempt=attempt,
+            succeeded_at=timezone.now(),
+        )
+        PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-watermarked-v1",
+            final_key=f"derivatives/previews/{photo.pk}/preview-watermarked-v1/accepted.jpg",
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            accepted_attempt=attempt,
+        )
+
     def test_gallery_presentation_returns_all_current_compatible_faces_for_page_photos(
         self,
     ) -> None:
@@ -1092,6 +1153,45 @@ class GalleryPhotoSubmissionTests(TestCase):
                 "detection_id": str(source_embedding.detection_id),
             },
         )
+
+    def test_paid_watermarked_source_requires_explicit_gate_through_submit_and_process(
+        self,
+    ) -> None:
+        paid_event = self.make_event("paid-gallery-source", "paid")
+        photo = self.make_photo(event=paid_event, photo_id="paid-gallery-source")
+        photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        photo.save(update_fields=["processing_generation", "gallery_media_policy"])
+        source_embedding = self.make_eligible_embedding(
+            event=paid_event,
+            photo_id=photo.pk,
+            photo=photo,
+            vector=[1.0] + [0.0] * 127,
+        )
+        self.publish_watermark(photo)
+
+        with self.assertRaises(GallerySearchUnavailable):
+            submit_gallery_photo_search(
+                event=paid_event,
+                photo=photo,
+                detection_id=source_embedding.detection_id,
+                user=self.user,
+                paid_watermarked_previews_enabled=False,
+            )
+        created = submit_gallery_photo_search(
+            event=paid_event,
+            photo=photo,
+            detection_id=source_embedding.detection_id,
+            user=self.user,
+            paid_watermarked_previews_enabled=True,
+        )
+        processed = process_gallery_photo_search(
+            search=created.search,
+            paid_watermarked_previews_enabled=True,
+        )
+
+        self.assertEqual(processed.status, SelfieSearch.Status.READY)
+        self.assertEqual(list(processed.results.values_list("photo_id", flat=True)), [photo.pk])
 
     def test_staff_preview_gallery_search_can_finish_after_visibility_is_removed(self) -> None:
         draft = self.make_event("draft-gallery-worker", "free", published=False)

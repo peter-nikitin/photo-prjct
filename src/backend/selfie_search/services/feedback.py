@@ -64,7 +64,11 @@ def feedback_result_source(result: SelfieSearchResult) -> str:
     return "expanded"
 
 
-def feedback_presentation(search: SelfieSearch) -> FeedbackPresentation:
+def feedback_presentation(
+    search: SelfieSearch,
+    *,
+    paid_watermarked_previews_enabled: bool = False,
+) -> FeedbackPresentation:
     """Derive the feedback variant from the same current public-result membership as the page."""
     if search.status not in _TERMINAL_SEARCH_STATUSES:
         raise FeedbackNonTerminal
@@ -75,7 +79,13 @@ def feedback_presentation(search: SelfieSearch) -> FeedbackPresentation:
             visible_result_ids=frozenset(),
         )
 
-    visible_photo_ids = tuple(photo.pk for photo in saved_ready_result_photos(search))
+    visible_photo_ids = tuple(
+        photo.pk
+        for photo in saved_ready_result_photos(
+            search,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
+    )
     visible_result_ids = frozenset(
         SelfieSearchResult.objects.filter(
             search=search, photo_id__in=visible_photo_ids
@@ -103,6 +113,7 @@ def submit_search_feedback(
     contact: str,
     labels: dict[str, str],
     storage: FeedbackSelfieStorage,
+    paid_watermarked_previews_enabled: bool = False,
 ) -> FeedbackSubmission:
     """Store one immutable feedback record or return the already accepted submission."""
     with transaction.atomic():
@@ -112,7 +123,10 @@ def submit_search_feedback(
             return FeedbackSubmission(feedback=existing, created=False)
 
         upload = validate_selfie_upload(upload)
-        presentation = feedback_presentation(search)
+        presentation = feedback_presentation(
+            search,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
         label_values = _validate_labels(
             search=search,
             labels=labels,

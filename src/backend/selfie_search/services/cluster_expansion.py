@@ -8,9 +8,16 @@ from time import perf_counter
 from uuid import UUID
 
 from django.db import DatabaseError
+from django.db.models import F, Q
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
-from picflow.gallery import gallery_photo_queryset
-from processing.models import EventFaceClusterActivation, FaceClusterMember
+from picflow.models import Event, Photo
+from processing.models import (
+    GENERATE_PREVIEW_PROCESSOR,
+    EventFaceClusterActivation,
+    FaceClusterMember,
+    PhotoProcessingState,
+    ProcessingAttempt,
+)
 
 from selfie_search.models import SelfieSearch
 from selfie_search.services.ranking import RankedPhoto
@@ -123,7 +130,9 @@ def expand_ranked_photos(
             FaceClusterMember.objects.filter(
                 corpus=corpus,
                 cluster_id__in=[anchor[2].cluster_id for anchor in selected],
-                detection__attempt__photo__in=gallery_photo_queryset(event=search.event),
+                detection__attempt__photo__in=_accepted_face_photo_queryset(search.event),
+                detection__attempt__accepted=True,
+                detection__attempt__status=ProcessingAttempt.Status.SUCCEEDED,
             )
             .select_related("detection__attempt", "cluster")
             .order_by(
@@ -200,6 +209,28 @@ def expand_ranked_photos(
         )
     except (ClusterExpansionError, DatabaseError):
         return _direct_only(direct_results, started, "corpus_incompatible")
+
+
+def _accepted_face_photo_queryset(event: Event):
+    """Return retrieval members without applying request-time presentation gates."""
+    accepted_clean_preview = Q(
+        gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        derivatives__variant="preview-small-v1",
+        processing_states__processor_type=GENERATE_PREVIEW_PROCESSOR,
+        processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
+        processing_states__accepted_attempt=F("derivatives__accepted_attempt"),
+        processing_states__accepted_attempt__accepted=True,
+        processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
+    )
+    return (
+        Photo.objects.filter(event=event, src="", original_key__isnull=False)
+        .filter(
+            Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
+            | accepted_clean_preview
+            | Q(gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED)
+        )
+        .distinct()
+    )
 
 
 def direct_only_ranked_photos(

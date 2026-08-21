@@ -34,13 +34,13 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-002 | Visitor | Discover published events | Validated | 2026-07-17 |
 | PJ-003 | Visitor | Review event details | Validated | 2026-07-17 |
 | PJ-004 | Photographer | Upload an event batch | Validated | 2026-08-01 |
-| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-07-19 |
+| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-08-20 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
-| PJ-008 | Customer | Find photos by face | In progress | 2026-08-05 |
+| PJ-008 | Customer | Find photos by face | In progress | 2026-08-20 |
 | PJ-009 | Visitor | Receive a free-event original | Candidate | 2026-07-17 |
-| PJ-010 | Customer | Purchase selected photos | Candidate | 2026-07-17 |
-| PJ-011 | Customer | Download purchased photos | Candidate | 2026-07-17 |
+| PJ-010 | Customer | Purchase selected photos | Candidate | 2026-08-20 |
+| PJ-011 | Customer | Download purchased photos | Candidate | 2026-08-20 |
 | PJ-012 | Visitor | Jump to a known gallery page | In progress | 2026-08-04 |
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
@@ -110,7 +110,12 @@ event.
   survive numbered pagination, and invalid or foreign values cannot widen the event gallery.
   Existing gallery-media authorization is unchanged. This new evidence is local only; it does not
   claim CI, deployment, staging, or customer validation.
-- Last updated: 2026-08-15
+  On 2026-08-20, 215 focused Django tests passed for the paid-watermark repository slice: newly
+  confirmed paid photos use the explicit policy, appear only after accepted watermark evidence,
+  present the watermark in both gallery roles, and omit the download action. This is local
+  repository evidence only; the feature gate remains off, final artwork and operational activation
+  are pending, and no price, cart, purchase, entitlement, or purchased-original delivery exists.
+- Last updated: 2026-08-20
 
 ### PJ-006 — Operator — Review processing results
 
@@ -171,7 +176,12 @@ search within that event, so I can review probable matches.
   The root `make check` also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and
   clean system/migration checks. These are local repository checks only; no staging or production
   deployment or customer validation is claimed for the gallery-photo path.
-- Last updated: 2026-08-05
+  On 2026-08-20, the same focused Django run covered ready paid-result presentation: saved
+  membership remains unchanged, a new paid-policy member is shown only after accepted watermark
+  evidence, both semantic media routes select that watermark, and original/download requests deny
+  before signing. This is local repository evidence only; the gate remains off and no real
+  activation or customer outcome is claimed.
+- Last updated: 2026-08-20
 
 ### PJ-009 — Visitor — Receive a free-event original
 
@@ -188,8 +198,10 @@ When I select paid photos, I want to complete an order and payment, so I can obt
 entitlement.
 
 - Status: Candidate
-- Evidence: [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download)
-- Last updated: 2026-07-17
+- Evidence: [Purchase and download](architecture.md#purchase-and-download). The paid-watermark
+  repository slice deliberately adds no price, cart, checkout, payment, order, or entitlement
+  state.
+- Last updated: 2026-08-20
 
 ### PJ-011 — Customer — Download purchased photos
 
@@ -197,8 +209,10 @@ When my order is paid, I want to download only its entitled photos, so I can rec
 purchased securely.
 
 - Status: Candidate
-- Evidence: [Target MVP architecture — Purchase and download](architecture.md#purchase-and-download)
-- Last updated: 2026-07-17
+- Evidence: [Purchase and download](architecture.md#purchase-and-download). Watermarked paid
+  previews deny original download; purchased-original delivery and its entitlement policy are not
+  implemented.
+- Last updated: 2026-08-20
 
 ### PJ-012 — Visitor — Jump to a known gallery page
 

@@ -3,7 +3,7 @@ import re
 from time import monotonic
 from urllib.parse import urlencode
 
-from config.views import _public_media_resolver
+from config.views import _paid_watermarked_previews_enabled, _public_media_resolver
 from django import forms
 from django.conf import settings
 from django.core.paginator import InvalidPage
@@ -64,13 +64,21 @@ logger = logging.getLogger(__name__)
 @require_POST
 def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id):  # noqa: ARG001
     event = get_object_or_404(Event.objects.site_visible_to(request.user), slug=event_slug)
-    photo = get_object_or_404(gallery_photo_queryset(event=event), pk=photo_id)
+    paid_watermarked_previews_enabled = _paid_watermarked_previews_enabled(request)
+    photo = get_object_or_404(
+        gallery_photo_queryset(
+            event=event,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        ),
+        pk=photo_id,
+    )
     try:
         created = submit_gallery_photo_search(
             event=event,
             photo=photo,
             detection_id=detection_id,
             user=request.user,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
         )
     except GallerySearchUnavailable:
         return _not_found_response()
@@ -179,12 +187,15 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
+    paid_watermarked_previews_enabled = _paid_watermarked_previews_enabled(request)
     is_gallery_origin = search.configuration.get("processor") == "gallery_photo_query"
     selfie_search_page = None
     if search.status == SelfieSearch.Status.READY:
         try:
             selfie_search_page = saved_ready_result_page(
-                search=search, page_number=request.GET.get("page")
+                search=search,
+                page_number=request.GET.get("page"),
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             )
         except InvalidPage:
             return _not_found_response()
@@ -226,7 +237,10 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         feedback_submitted = SelfieSearchFeedback.objects.filter(search=search).exists()
         if not feedback_submitted:
             try:
-                presentation = feedback_presentation(search)
+                presentation = feedback_presentation(
+                    search,
+                    paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+                )
             except FeedbackNonTerminal:
                 presentation = None
             if presentation is not None:
@@ -276,7 +290,10 @@ def process_gallery_search(request, event_slug: str, public_token: str) -> HttpR
     ):
         return _not_found_response()
     try:
-        process_gallery_photo_search(search=search)
+        process_gallery_photo_search(
+            search=search,
+            paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
+        )
     except GallerySearchUnavailable:
         return _not_found_response()
     except GallerySearchFailed:
@@ -312,6 +329,7 @@ def feedback(request, event_slug: str, public_token: str) -> HttpResponseBase:  
             contact=form.cleaned_data["contact"],
             labels=form.cleaned_data["labels"],
             storage=FeedbackSelfieStorage(),
+            paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
         )
     except FeedbackInvalid:
         return JsonResponse({"status": "invalid"}, status=422)
@@ -334,7 +352,11 @@ def result_media(
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
-    photo = saved_ready_result_photo(search=search, photo_id=photo_id)
+    photo = saved_ready_result_photo(
+        search=search,
+        photo_id=photo_id,
+        paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
+    )
     if photo is None:
         return _not_found_response()
     try:
@@ -351,8 +373,14 @@ def result_download(request, event_slug: str, public_token: str, photo_id: str) 
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
-    photo = saved_ready_result_photo(search=search, photo_id=photo_id)
+    photo = saved_ready_result_photo(
+        search=search,
+        photo_id=photo_id,
+        paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
+    )
     if photo is None:
+        return _not_found_response()
+    if photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED:
         return _not_found_response()
     try:
         signed_url = _public_media_resolver().resolve_download(photo=photo)

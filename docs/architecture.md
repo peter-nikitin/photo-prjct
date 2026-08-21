@@ -37,19 +37,18 @@ The repository currently contains an early Django application:
   and SVG assets under `src/backend`.
 - The `picflow` application owns the first target `Event` catalog model and a preliminary `Photo`
   model. Published events are managed through Django Admin and rendered by server-side templates.
-- Published free-event detail pages select completed uploaded `Photo` rows in stable ID order
-  through explicit persisted gallery-media policy. Legacy photos remain eligible under the existing
-  rules; a `preview_required` photo becomes eligible only after an accepted `generate_preview`
-  state and its published `preview-small-v1` derivative. The database-only factory converts rows to
-  immutable `GalleryPhoto` presentation values, so templates consume separate small- and large-
-  preview application URLs without inspecting storage fields or selecting media variants.
-- The small-media resolver serves the original for an explicit legacy policy and the published
-  derivative for `preview_required`; it never falls back to the original for a missing preview. The
-  large-media resolver continues to serve the private original only under the existing free-event
-  eligibility rules in ADR 0015. Both routes recheck publication and photo eligibility on every
-  request, stream inline with `private, no-store` caching and sanitized 404/503 outcomes, and expose
-  no permanent key, credential, S3 redirect, ETag, Range, or attachment behavior. The owning
-  iterator closes its storage body before iteration, at EOF, or after a read failure.
+- Published event detail pages apply an explicit persisted gallery-media policy. Free events retain
+  the existing legacy and accepted-clean-preview rules. With the off-by-default paid-watermark gate
+  enabled, a published paid event lists only `watermarked_preview_required` photos backed by an
+  accepted watermark state, attempt, and `preview-watermarked-v1` derivative; older paid photos
+  remain absent. The database-only factory converts rows to immutable `GalleryPhoto` presentation
+  values, including stable `photo_id`, semantic small- and large-preview application URLs, and a
+  nullable `download_url`, so templates neither inspect storage fields nor select media variants.
+- `PublicMediaResolver` is the sole server-side selector of public bytes. It retains legacy and
+  clean-preview behavior, selects `preview-watermarked-v1` for both presentation roles of the new
+  paid policy, and rejects that policy's original download before storage signing. It never falls
+  back to an original for missing required derivative evidence. Public routes recheck publication
+  and eligibility on every request and expose no permanent key or credential.
 - Event galleries use locally packaged GLightbox 3.3.1 assets with normal anchor fallback.
   Task 6's browser run and inspected snapshots verified responsive populated and empty layouts,
   keyboard and pointer operation, mobile swipe, Escape/control close, focus restoration, and
@@ -319,6 +318,15 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
   transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
   future work.
+- For a new explicit paid-watermarked photo generation, accept one private clean preview for ML and
+  one public-presentation watermarked preview. The repository implements the new explicit pair,
+  independent clean-preview downstream enrollment, immutable watermark publication, and gated
+  paid-gallery and ready-result presentation. Both paid presentation roles select only the accepted
+  watermark and original presentation/download are denied; existing rows receive no backfill, as
+  defined by [ADR 0029](adr/0029-use-watermarked-previews-for-paid-photos.md). The focused local
+  Django checks passed on 2026-08-20; the runtime gate remains off and real activation awaits
+  approved non-placeholder artwork and the later operational rollout. Price, cart, purchase,
+  entitlement, and purchased-original delivery remain unimplemented.
 - Implement optional event-scoped selfie expansion from an immutable conservative face-cluster
   corpus. The repository builds and publishes versioned anonymous corpora from compatible accepted
   gallery embeddings, evaluates them through the private closed-benchmark CLI, records immutable
@@ -361,7 +369,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | --- | --- | --- |
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
-| Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals and preview-first slice; remaining scope proposed |
+| Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals, preview-first, and the gated paid-watermark repository slice; real watermark activation and purchased exports remain unimplemented |
 | Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; environment activation and customer outcomes are not evidenced |
 | Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no environment activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
@@ -419,7 +427,14 @@ broker, vector engine, and ML implementations shown for later processing require
    then makes the photo tile-eligible and queues preview-backed face work. Its Docker profile is
    locally opt-in and the API-only/no-credential container contract is locally verified. Tracked
    defaults remain disabled; lifecycle, ML-comparison, and capacity gates prevent staging or live
-   activation. Watermarked assets and a broker remain later-stage design.
+   activation. The worker-image and deployment validator package the optional exact
+   `2/generate_watermarked_preview/1` identity, but all worker and deployment defaults and the
+   required preview-processing identity set omit it. The `paid-watermarked-previews` feature-flag
+   row is absent or off by default, and no migration creates or enables it. A code deploy can
+   therefore package placeholder assets but cannot enqueue the new policy or expose its public
+   gallery to anonymous users. Activation must first use approved non-placeholder assets with their
+   declared checksums, explicitly enable the worker identity, pass one real staff-only smoke, and
+   only then enable the public gate. A broker remains later-stage design.
 6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
    embeddings. The implemented preview-first contract records preview coordinate space and source
    dimensions for face results. The repository includes the approval-gated version-4 candidate for
@@ -498,8 +513,10 @@ cluster-expansion flag remains disabled by default.
 1. The cart contains event photos, prices, and any validated promotion.
 2. A payment transition creates or updates an order idempotently.
 3. For paid events, successful payment grants entitlement to generated exports; the normal paid
-   gallery never makes originals public. ADR 0019 temporarily permits only a ready face-search-result
-   bearer link to deliver originals saved in that result until protected derivatives exist.
+   gallery never makes originals public. The current repository also implements ADR 0029's gated
+   new-photo generation: its normal gallery and ready results present only a watermarked derivative
+   and deny original download. Price, cart, payment, purchase entitlement, and purchased-original
+   delivery are not implemented.
 4. Downloads use short-lived signed access or an authenticated application response and are audited.
 
 ## Security, privacy, and legal boundaries
@@ -510,9 +527,11 @@ cluster-expansion flag remains disabled by default.
   controlled inline original delivery under the policy now governed by ADR 0019. Until activation,
   explicit legacy photos use the original for both variants. The normal paid gallery remains
   unavailable; ADR 0019 permits only a valid ready face-search-result bearer link to deliver a saved
-  free- or paid-event member. Watermarks, purchases, and exports remain unresolved. Neither route
-  exposes a permanent storage key, but original delivery still gives an eligible recipient complete
-  unsanitized bytes that can be saved or redistributed.
+  free- or paid-event member. The gated ADR 0029 repository slice instead uses only an accepted
+  watermarked derivative for the new paid generation's gallery and ready-result media, and denies
+  original download before signing. Purchases and entitled exports remain unresolved. Neither
+  route exposes a permanent storage key, but original delivery still gives an eligible recipient
+  complete unsanitized bytes that can be saved or redistributed.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
 - Event-folder identifiers are catalog selectors, not media authority. Upload registration and
@@ -570,6 +589,12 @@ cluster-expansion flag remains disabled by default.
    for paid events.
 8. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
 
+### Later cart seam
+
+Later cart work may consume `GalleryPhoto.photo_id`, its nullable `download_url`, and the existing
+gallery-card action container. `PublicMediaResolver` remains the sole owner of public-media
+selection; this seam defines no cart model, cookie, price, purchase, or entitlement behavior.
+
 ## Deferred beyond MVP
 
 - Full online photo editing and AI enhancement.
@@ -588,8 +613,8 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Broader biometric governance beyond ADR 0019's event-scoped public bearer-link MVP.
 - Bib-region detection/OCR implementation and model licensing.
 - Payment provider, callback contract, refunds, and download entitlement policy.
-- Paid-event previews, entitlements, and broader attachment/download policy beyond ADR 0019's
-  narrow saved face-search-result original-delivery exception.
+- Purchase entitlement and protected original delivery beyond ADR 0029's watermarked
+  presentation-only boundary.
 - Monitoring retention; backup targets; retention; RPO/RTO; encryption-at-rest policy; media
   recovery; and disaster-recovery procedures.
 - CDN/WAF and static/media delivery topology beyond the Nginx edge.

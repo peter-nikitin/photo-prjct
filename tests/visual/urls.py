@@ -18,6 +18,11 @@ visual_patterns = [
         name="visual_event_gallery_populated",
     ),
     path(
+        "event/gallery-paid/",
+        views.event_gallery_paid,
+        name="visual_event_gallery_paid",
+    ),
+    path(
         "event/gallery-staff-preview/",
         views.event_gallery_staff_preview,
         name="visual_event_gallery_staff_preview",
@@ -67,6 +72,11 @@ visual_patterns = [
         "event/selfie-search/ready/",
         views.selfie_search_ready,
         name="visual_selfie_search_ready",
+    ),
+    path(
+        "event/selfie-search/ready/paid/",
+        views.selfie_search_ready_paid,
+        name="visual_selfie_search_ready_paid",
     ),
     path(
         "event/selfie-search/ready/staff-preview/",

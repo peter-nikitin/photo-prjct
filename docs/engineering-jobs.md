@@ -34,8 +34,8 @@ history row with PR or commit evidence where available, and never edit earlier h
 | --- | --- | --- | --- | --- |
 | EJ-001 | Developer | Reproduce local PostgreSQL development | Validated | 2026-07-17 |
 | EJ-002 | Contributor | Receive complete CI feedback | Validated | 2026-07-17 |
-| EJ-003 | Maintainer | Deploy an immutable image to the canonical deployment | Delivered | 2026-08-20 |
-| EJ-004 | Operator | Run the canonical HTTPS edge | Validated | 2026-08-20 |
+| EJ-003 | Maintainer | Deploy an immutable image to the canonical deployment | Delivered | 2026-08-21 |
+| EJ-004 | Operator | Run the canonical HTTPS edge | Validated | 2026-08-21 |
 | EJ-005 | Contributor | Reproduce visual regression | Validated | 2026-07-19 |
 | EJ-006 | Maintainer | Retire the image-promotion path | Superseded | 2026-08-20 |
 | EJ-007 | Operator | Retire the separate-environment proposal | Superseded | 2026-08-20 |
@@ -55,8 +55,8 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-021 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
 | EJ-022 | Maintainer | Gate preview-backed version-4 face generation activation | Delivered | 2026-08-10 |
 | EJ-023 | Maintainer | Keep event-photo folders durable and safely filterable | Validated | 2026-08-15 |
-| EJ-024 | Maintainer | Prepare paid watermarked-preview activation | In progress | 2026-08-20 |
-| EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | In progress | 2026-08-20 |
+| EJ-024 | Maintainer | Prepare paid watermarked-preview activation | In progress | 2026-08-21 |
+| EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | Delivered | 2026-08-21 |
 
 ## Job details
 
@@ -109,10 +109,8 @@ GHCR image, Docker Compose, root-owned package, and rollback path remain authori
   [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py),
   [`tests/test_repository_foundation.py`](../tests/test_repository_foundation.py),
   and [canonical deployment runbook](runbooks/deployment.md).
-- Deployment evidence: no PR, CI, canonical-deployment rollout, deployed-image, public-health, or notification-drill
-  result is recorded in this checkout; keep `Delivered` until those acceptance checks establish
-  `Validated`.
-- Last updated: 2026-08-20
+- Deployment evidence: Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) ended with `DEPLOY_RESULT=success`. The later [public-monitor run 32461320506](https://github.com/peter-nikitin/photo-prjct/actions/runs/32461320506) also succeeded. These Actions records do not directly observe the VM, deployed image, runtime configuration, or customer outcome; keep `Delivered` until acceptance checks establish `Validated`.
+- Last updated: 2026-08-21
 
 ### EJ-004 — Operator — Run the canonical HTTPS edge
 
@@ -120,8 +118,8 @@ When the canonical deployment is applied, I want the shared HTTPS edge to termin
 and proxy the application, so I can operate the customer-serving VM.
 
 - Status: Validated
-- Evidence: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), and historical GitHub Actions deploy run 29556330740.
-- Last updated: 2026-08-20
+- Evidence: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), the successful automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) on 2026-08-21, and the successful [public-monitor run 32461320506](https://github.com/peter-nikitin/photo-prjct/actions/runs/32461320506). The accepted DNS/TLS topology and dated Actions evidence do not constitute a direct host, DNS, certificate, or customer-path check.
+- Last updated: 2026-08-21
 
 ### EJ-005 — Contributor — Reproduce visual regression
 
@@ -417,12 +415,8 @@ avoid exposing a clean preview or original.
 - Status: In progress
 - Evidence: The repository implements ADR 0029's explicit paid-photo policy, immutable
   watermarked derivative publication, gated normal-gallery and ready-result selection, and
-  pre-signing original/download denial. On 2026-08-20, 215 focused Django tests and 85 direct
-  worker renderer/runner tests passed. Final artwork is still placeholder-only; the runtime gate is
-  off, the complete suite, visual regression, worker image, deployment, and real activation are
-  not evidenced. This job adds no price, cart, purchase, entitlement, or purchased-original
-  delivery.
-- Last updated: 2026-08-20
+  pre-signing original/download denial. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. Final artwork remains placeholder-only, and neither the runtime gate nor real paid assets were directly observed as active. This job adds no purchase, entitlement, or purchased-original delivery.
+- Last updated: 2026-08-21
 
 ### EJ-025 — Operator — Retain anonymous cart data within its bounded lifecycle
 
@@ -430,13 +424,11 @@ When anonymous paid-photo carts expire, I want the application to reject them im
 deployment package to remove them in bounded daily batches, so browser-linked selection does not
 remain usable or accumulate indefinitely.
 
-- Status: In progress
+- Status: Delivered
 - Evidence: Local command and deployment-contract tests cover fail-closed request-time expiry, a
   bounded `cleanup_expired_carts --limit 1000` command that reports Cart rows rather than cascaded
-  objects, an idempotent `flock`-guarded host-cron package, successful-deployment installation, and
-  failed-candidate removal. No host cron has been installed, no deployment has run, and no runtime
-  gate has been enabled.
-- Last updated: 2026-08-20
+  objects, an idempotent `flock`-guarded host-cron package, and failed-candidate removal. The successful automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) executes the committed [`install-cart-cleanup-cron.sh` installation path](../deploy/apply-deployment.sh#L907), delivering the deployment automation. Live crontab presence and an actual cleanup execution remain unvalidated; no runtime gate is claimed active.
+- Last updated: 2026-08-21
 
 ### EJ-017 — Developer — Read canonical secret projections consistently
 
@@ -552,3 +544,4 @@ This log is append-only.
 | 2026-08-20 | EJ-024 | Not recorded | In progress | ADR 0029's repository path is implemented with an off-by-default gate and focused Django/worker test evidence. Final artwork, complete-suite, visual, worker-image, deployment, and real-activation evidence remain pending. |
 | 2026-08-20 | EJ-025 | Not recorded | In progress | Local command and deployment-contract coverage packages bounded daily cart cleanup; installation and operational verification remain pending. |
 | 2026-08-21 | EJ-019 | Validated | Delivered | Correction: Release B commit `d5b21e4` already delivered the capture-time projection reader; this row corrects the stale current-state value to that already-delivered state. Customer outcome is not validated. |
+| 2026-08-21 | EJ-025 | In progress | Delivered | The automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded and executes the committed [`install-cart-cleanup-cron.sh` installation path](../deploy/apply-deployment.sh#L907); live crontab presence and actual cleanup execution remain unvalidated. |

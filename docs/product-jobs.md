@@ -34,18 +34,18 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-002 | Visitor | Discover published events | Validated | 2026-07-17 |
 | PJ-003 | Visitor | Review event details | Validated | 2026-07-17 |
 | PJ-004 | Photographer | Upload an event batch | Validated | 2026-08-15 |
-| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-08-20 |
+| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-08-21 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
 | PJ-008 | Customer | Find photos by face | In progress | 2026-08-20 |
 | PJ-009 | Visitor | Receive a free-event original | Delivered | 2026-08-21 |
-| PJ-010 | Customer | Purchase selected photos | Candidate | 2026-08-20 |
+| PJ-010 | Customer | Purchase selected photos | Candidate | 2026-08-21 |
 | PJ-011 | Customer | Download purchased photos | Candidate | 2026-08-20 |
 | PJ-012 | Visitor | Jump to a known gallery page | Delivered | 2026-08-21 |
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
 | PJ-015 | Customer | Filter an event gallery by capture time | Delivered | 2026-08-21 |
-| PJ-016 | Customer | Select paid event photos | In progress | 2026-08-20 |
+| PJ-016 | Customer | Select paid event photos | In progress | 2026-08-21 |
 
 ## Job details
 
@@ -118,9 +118,8 @@ event.
   On 2026-08-20, 215 focused Django tests passed for the paid-watermark repository slice: newly
   confirmed paid photos use the explicit policy, appear only after accepted watermark evidence,
   present the watermark in both gallery roles, and omit the download action. This is local
-  repository evidence only; the feature gate remains off, final artwork and operational activation
-  are pending, and no price, cart, purchase, entitlement, or purchased-original delivery exists.
-- Last updated: 2026-08-20
+  repository evidence only. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. The paid-watermark gate and real artwork were not directly observed as active; purchase, entitlement, and purchased-original delivery remain unimplemented.
+- Last updated: 2026-08-21
 
 ### PJ-006 — Operator — Review processing results
 
@@ -207,10 +206,9 @@ When I select paid photos, I want to complete an order and payment, so I can obt
 entitlement.
 
 - Status: Candidate
-- Evidence: [Purchase and download](architecture.md#purchase-and-download). The paid-watermark
-  repository slice deliberately adds no price, cart, checkout, payment, order, or entitlement
-  state.
-- Last updated: 2026-08-20
+- Evidence: [Purchase and download](architecture.md#purchase-and-download). The merged
+  anonymous-cart slice is selection only; current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. Checkout, payment, orders, entitlement, and purchased-original delivery are not implemented.
+- Last updated: 2026-08-21
 
 ### PJ-011 — Customer — Download purchased photos
 
@@ -229,12 +227,10 @@ When I browse a paid event with watermarked previews, I want to add or remove el
 anonymous event-specific cart, so I can preserve a selection before checkout is available.
 
 - Status: In progress
-- Evidence: Local repository tests cover staff-gated selection from the paid gallery and saved
+- Evidence: Merged repository tests cover staff-gated selection from the paid gallery and saved
   selfie result, browser/event isolation, reload persistence, current-price totals, pruning,
-  request-time expiry, and original/download denial. The `paid-photo-cart` gate is absent/off by
-  default. This is not PR, CI, deployment, public activation, legal-cookie review, customer-outcome,
-  checkout, payment, order, entitlement, or original-delivery evidence.
-- Last updated: 2026-08-20
+  request-time expiry, and original/download denial. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. The `paid-photo-cart` gate is absent/off by default and was not directly observed as active; real paid assets, public activation, legal-cookie review, customer outcome, checkout, payment, order, entitlement, and original delivery remain unverified or unimplemented.
+- Last updated: 2026-08-21
 
 ### PJ-012 — Visitor — Jump to a known gallery page
 

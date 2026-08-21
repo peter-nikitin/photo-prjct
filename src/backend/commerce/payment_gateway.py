@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from re import fullmatch
 from typing import Protocol
 
 
@@ -106,8 +107,25 @@ def _validate_normalized_payment(
     if not isinstance(status, NormalizedPaymentStatus):
         raise TypeError("Payment status must be normalized by the adapter.")
     _positive_kopecks(amount_kopecks, field_name="Observed payment amount")
+    if not isinstance(currency, str) or fullmatch(r"[A-Z]{3}", currency) is None:
+        raise ValueError("Observed payment currency must be a normalized ISO-style code.")
+
+
+def _validate_created_payment(
+    *,
+    provider_payment_id: object,
+    status: object,
+    amount_kopecks: object,
+    currency: object,
+) -> None:
+    _validate_normalized_payment(
+        provider_payment_id=provider_payment_id,
+        status=status,
+        amount_kopecks=amount_kopecks,
+        currency=currency,
+    )
     if currency != "RUB":
-        raise ValueError("Observed payment currency must be RUB.")
+        raise ValueError("Created payment currency must be RUB.")
 
 
 @dataclass(frozen=True)
@@ -120,7 +138,7 @@ class CreatedPayment:
     expires_at: datetime | None
 
     def __post_init__(self) -> None:
-        _validate_normalized_payment(
+        _validate_created_payment(
             provider_payment_id=self.provider_payment_id,
             status=self.status,
             amount_kopecks=self.amount_kopecks,

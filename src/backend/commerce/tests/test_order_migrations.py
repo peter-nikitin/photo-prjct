@@ -133,6 +133,26 @@ class OrderMigrationDefinitionTests(TestCase):
         self.assertIn("commerce_order_item_photo_event_guard_trg", database_guard_sql)
         self.assertIn("commerce_order_insert_total_guard", database_guard_sql)
 
+    def test_payment_evidence_currency_migration_preserves_normalized_observed_codes(self) -> None:
+        """Received mismatch currency remains durable evidence; payable currency does not widen."""
+        loader = MigrationLoader(connection)
+        migration = loader.get_migration("commerce", "0005_observed_payment_evidence_currency")
+        state = loader.project_state([("commerce", "0005_observed_payment_evidence_currency")])
+        evidence = state.apps.get_model("commerce", "PaymentEvidence")
+
+        self.assertEqual(
+            migration.dependencies, [("commerce", "0004_order_originating_cart_digest")]
+        )
+        self.assertEqual(
+            {constraint.name for constraint in evidence._meta.constraints},
+            {
+                "commerce_payment_evidence_source_chk",
+                "commerce_payment_evidence_status_chk",
+                "commerce_payment_evidence_currency_code_chk",
+                "commerce_payment_evidence_amount_positive_chk",
+            },
+        )
+
 
 class OrderMigrationDatabaseTests(TransactionTestCase):
     """The breaks caught here would let direct database writes bypass commercial invariants."""

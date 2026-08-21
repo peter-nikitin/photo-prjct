@@ -15,6 +15,11 @@ _SHA256_HEX_VALIDATOR = RegexValidator(
     message="Browser token digest must be 64 lowercase hexadecimal characters.",
 )
 
+_OBSERVED_CURRENCY_CODE_VALIDATOR = RegexValidator(
+    regex=r"^[A-Z]{3}$",
+    message="Observed payment currency must be a three-letter uppercase ASCII code.",
+)
+
 
 def generate_unclaimed_purchase_browser_digest() -> str:
     """Create a fail-closed digest for Orders built outside the checkout service."""
@@ -383,7 +388,11 @@ class PaymentEvidence(models.Model):
     provider_event_id = models.CharField(max_length=255, blank=True)
     normalized_status = models.CharField(max_length=10, choices=PaymentAttempt.Status)
     amount_kopecks = models.PositiveIntegerField()
-    currency = models.CharField(max_length=3, default="RUB")
+    currency = models.CharField(
+        max_length=3,
+        default="RUB",
+        validators=[_OBSERVED_CURRENCY_CODE_VALIDATOR],
+    )
     observed_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -407,8 +416,8 @@ class PaymentEvidence(models.Model):
                 name="commerce_payment_evidence_status_chk",
             ),
             models.CheckConstraint(
-                condition=models.Q(currency="RUB"),
-                name="commerce_payment_evidence_currency_rub_chk",
+                condition=models.Q(currency__regex=r"^[A-Z]{3}$"),
+                name="commerce_payment_evidence_currency_code_chk",
             ),
             models.CheckConstraint(
                 condition=models.Q(amount_kopecks__gt=0),

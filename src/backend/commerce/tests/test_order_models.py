@@ -433,6 +433,36 @@ class OrderModelTests(TestCase):
             }.isdisjoint(stored_columns)
         )
 
+    def test_payment_evidence_preserves_an_authenticated_observed_currency_code(self) -> None:
+        """Forcing received USD evidence to RUB would erase why automatic fulfillment was denied."""
+        order = self.make_complete_order(public_number="FM-EVDUSDAA")
+        attempt = self.make_attempt(order=order, idempotency_key="observed-currency-attempt")
+
+        evidence = PaymentEvidence.objects.create(
+            payment_attempt=attempt,
+            source=PaymentEvidence.Source.NOTIFICATION,
+            provider_event_id="gateway-event-usd",
+            normalized_status=PaymentAttempt.Status.SUCCEEDED,
+            amount_kopecks=30000,
+            currency="USD",
+            observed_at=timezone.now(),
+        )
+
+        self.assertEqual(evidence.currency, "USD")
+        evidence.currency = "usd"
+        with self.assertRaises(ValidationError):
+            evidence.full_clean()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PaymentEvidence.objects.create(
+                payment_attempt=attempt,
+                source=PaymentEvidence.Source.STATUS_FETCH,
+                provider_event_id="gateway-event-invalid-currency",
+                normalized_status=PaymentAttempt.Status.SUCCEEDED,
+                amount_kopecks=30000,
+                currency="usd",
+                observed_at=timezone.now(),
+            )
+
     def test_database_guards_reject_queryset_and_direct_sql_mutation_or_deletion(self) -> None:
         """Bulk ORM and SQL paths must not bypass immutable commercial facts."""
         order = self.make_order(public_number="FM-DURABLE2")

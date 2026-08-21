@@ -22,6 +22,8 @@ TEST_ENVIRONMENT = {
     "DB_PASSWORD": "app",
     "DB_HOST": "localhost",
     "DB_PORT": "5432",
+    "PHOTO_PROCESSING_ENABLED": "True",
+    "PHOTO_PROCESSING_FACE_ENABLED": "True",
 }
 
 

@@ -293,6 +293,26 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     )
 
 
+def test_literal_worker_selector_imports_local_worker_package() -> None:
+    environment = {**os.environ}
+    environment.pop("DJANGO_SETTINGS_MODULE", None)
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [
+            ".venv/bin/pytest",
+            "-q",
+            "src/worker/tests/test_runner.py",
+            "src/worker/tests/test_contracts.py",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_visual_image_publisher_is_main_only_and_dependency_keyed() -> None:
     publisher = _load_workflow("visual-test-image.yml")
     build = publisher["jobs"]["build"]

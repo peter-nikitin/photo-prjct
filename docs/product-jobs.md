@@ -39,13 +39,13 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
 | PJ-008 | Customer | Find photos by face | In progress | 2026-08-20 |
 | PJ-009 | Visitor | Receive a free-event original | Delivered | 2026-08-21 |
-| PJ-010 | Customer | Purchase selected photos | Candidate | 2026-08-21 |
-| PJ-011 | Customer | Download purchased photos | Candidate | 2026-08-20 |
+| PJ-010 | Customer | Purchase selected photos | In progress | 2026-08-22 |
+| PJ-011 | Customer | Download purchased photos | In progress | 2026-08-22 |
 | PJ-012 | Visitor | Jump to a known gallery page | Delivered | 2026-08-21 |
 | PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
 | PJ-015 | Customer | Filter an event gallery by capture time | Delivered | 2026-08-21 |
-| PJ-016 | Customer | Select paid event photos | In progress | 2026-08-21 |
+| PJ-016 | Customer | Select paid event photos | In progress | 2026-08-22 |
 
 ## Job details
 

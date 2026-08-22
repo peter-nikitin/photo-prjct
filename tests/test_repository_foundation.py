@@ -60,7 +60,7 @@ def _parse_job_registry(
 
 
 def test_job_registries_have_one_consistent_current_detail_per_job() -> None:
-    expected_counts = {"product-jobs.md": ("PJ", 16), "engineering-jobs.md": ("EJ", 25)}
+    expected_counts = {"product-jobs.md": ("PJ", 16), "engineering-jobs.md": ("EJ", 26)}
 
     for filename, (prefix, expected_count) in expected_counts.items():
         current_rows, current_records, details, allowed_statuses = _parse_job_registry(

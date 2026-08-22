@@ -176,7 +176,7 @@ class Order(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=("event", "status"), name="commerce_order_event_status_idx"),
+            models.Index(fields=("event", "status"), name="cm_order_event_status_idx"),
             models.Index(
                 fields=("event", "originating_cart_token_sha256"),
                 name="commerce_order_origin_cart_idx",
@@ -370,7 +370,7 @@ class PaymentAttempt(models.Model):
         indexes = [
             models.Index(
                 fields=("order", "status"),
-                name="commerce_payment_attempt_order_status_idx",
+                name="cm_pay_attempt_ord_status_idx",
             ),
             models.Index(
                 fields=(
@@ -379,7 +379,7 @@ class PaymentAttempt(models.Model):
                     "reconciliation_state",
                     "reconciliation_next_attempt_at",
                 ),
-                name="commerce_payment_reconcile_due_idx",
+                name="cm_pay_reconcile_due_idx",
             ),
         ]
 
@@ -464,7 +464,7 @@ class PaymentEvidence(models.Model):
         indexes = [
             models.Index(
                 fields=("payment_attempt", "observed_at"),
-                name="commerce_payment_evidence_attempt_time_idx",
+                name="cm_pay_evidence_att_time_idx",
             )
         ]
 
@@ -515,7 +515,7 @@ class OrderAccessGrant(models.Model):
         indexes = [
             models.Index(
                 fields=("order", "revoked_at"),
-                name="commerce_access_grant_order_active_idx",
+                name="cm_access_grant_ord_active_idx",
             )
         ]
 
@@ -608,7 +608,7 @@ class EmailDelivery(models.Model):
         indexes = [
             models.Index(
                 fields=("state", "next_attempt_at"),
-                name="commerce_email_delivery_ready_idx",
+                name="cm_email_delivery_ready_idx",
             )
         ]
 
@@ -757,7 +757,7 @@ class CommerceAttention(models.Model):
         indexes = [
             models.Index(
                 fields=("resolved_at", "next_reminder_at"),
-                name="commerce_attention_open_reminder_idx",
+                name="cm_attention_open_reminder_idx",
             )
         ]
 
@@ -836,7 +836,7 @@ class DownloadGrantAudit(models.Model):
         indexes = [
             models.Index(
                 fields=("order_item", "created_at"),
-                name="commerce_download_audit_item_time_idx",
+                name="cm_download_audit_item_tm_idx",
             )
         ]
 

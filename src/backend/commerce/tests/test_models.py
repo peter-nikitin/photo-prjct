@@ -6,7 +6,17 @@ from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
 
-from commerce.models import Cart, CartItem
+from commerce.models import (
+    Cart,
+    CartItem,
+    CommerceAttention,
+    DownloadGrantAudit,
+    EmailDelivery,
+    Order,
+    OrderAccessGrant,
+    PaymentAttempt,
+    PaymentEvidence,
+)
 
 
 class CartModelContractTests(SimpleTestCase):
@@ -60,6 +70,25 @@ class CartModelContractTests(SimpleTestCase):
         self.assertEqual(str(item), "Cart 7 / photo PHOTO-1")
         self.assertNotIn(digest, str(item))
         self.assertNotIn(digest, repr(item))
+
+
+class CommerceIndexNameContractTests(SimpleTestCase):
+    def test_explicit_commerce_index_names_fit_all_supported_database_limits(self) -> None:
+        commerce_models = (
+            Order,
+            PaymentAttempt,
+            PaymentEvidence,
+            OrderAccessGrant,
+            EmailDelivery,
+            CommerceAttention,
+            DownloadGrantAudit,
+        )
+        index_names = tuple(
+            index.name for model in commerce_models for index in model._meta.indexes if index.name
+        )
+
+        self.assertTrue(index_names)
+        self.assertTrue(all(len(name) <= 30 for name in index_names), index_names)
 
 
 class CartModelTests(TestCase):

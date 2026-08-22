@@ -9,31 +9,48 @@
 
 {% block content %}
   <article class="checkout" aria-labelledby="checkout-title">
-    <h1 id="checkout-title">Оформление заказа</h1>
-    <h2>{{ event.name }}</h2>
-    <ul aria-label="Фотографии в заказе">
-      {% for item in cart_presentation.photos %}
-        <li>
-          <img src="{{ item.photo.preview_media_small.url }}" alt="{{ item.photo.alt }}">
-          <span>{{ item.unit_price_display }}</span>
-        </li>
-      {% endfor %}
-    </ul>
-    <p>Фотографий: {{ cart_presentation.item_count }}</p>
-    <p>Итого: {{ cart_presentation.total_display }}</p>
-    <form method="post">
-      {% csrf_token %}
-      {% if form.non_field_errors %}
-        {% for error in form.non_field_errors %}<p role="alert">{{ error }}</p>{% endfor %}
-      {% endif %}
-      <label for="checkout-email">Электронная почта</label>
-      <input id="checkout-email" name="email" type="email" autocomplete="email" value="{{ form.email.value|default_if_none:'' }}" required>
-      <p>На этот адрес мы отправим ссылку для скачивания оригиналов.</p>
-      <label for="checkout-email-confirmation">Повторите электронную почту</label>
-      <input id="checkout-email-confirmation" name="email_confirmation" type="email" autocomplete="email" value="{{ form.email_confirmation.value|default_if_none:'' }}" required>
-      {% for error in form.email_confirmation.errors %}<p role="alert">{{ error }}</p>{% endfor %}
-      <p>Нажимая «Оплатить», вы принимаете условия <a href="{% url 'legal' %}">оферты и лицензии</a> и подтверждаете, что ознакомились с <a href="{% url 'legal' %}">политикой обработки персональных данных</a>.</p>
-      <button type="submit">Оплатить {{ cart_presentation.total_display }}</button>
-    </form>
+    <div class="checkout-intro">
+      <p class="checkout-eyebrow">{{ event.name }}</p>
+      <h1 id="checkout-title">Оформление заказа</h1>
+      <p>После оплаты мы отправим доступ к оригиналам на указанную электронную почту.</p>
+    </div>
+    <div class="checkout-layout">
+      <form class="checkout-form" method="post">
+        {% csrf_token %}
+        {% if form.non_field_errors %}
+          <div class="checkout-error" role="alert" tabindex="-1">
+            {% for error in form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+          </div>
+        {% endif %}
+        <div class="checkout-field">
+          <label for="checkout-email">Электронная почта</label>
+          <input id="checkout-email" name="email" type="email" autocomplete="email" aria-describedby="checkout-email-help" value="{{ form.email.value|default_if_none:'' }}" required>
+          <p id="checkout-email-help">На этот адрес мы отправим ссылку для скачивания оригиналов.</p>
+          {% for error in form.email.errors %}<p class="checkout-field-error" role="alert">{{ error }}</p>{% endfor %}
+        </div>
+        <div class="checkout-field">
+          <label for="checkout-email-confirmation">Повторите электронную почту</label>
+          <input id="checkout-email-confirmation" name="email_confirmation" type="email" autocomplete="email" value="{{ form.email_confirmation.value|default_if_none:'' }}" required>
+          {% for error in form.email_confirmation.errors %}<p class="checkout-field-error" role="alert">{{ error }}</p>{% endfor %}
+        </div>
+        <p class="checkout-legal">Нажимая «Оплатить», вы принимаете условия <a href="{% url 'legal' %}">оферты и лицензии</a> и подтверждаете, что ознакомились с <a href="{% url 'legal' %}">политикой обработки персональных данных</a>.</p>
+        <button class="checkout-submit" type="submit">Оплатить {{ cart_presentation.total_display }}</button>
+      </form>
+      <aside class="checkout-summary" aria-label="Сводка заказа">
+        <h2>В заказе</h2>
+        <ul class="checkout-photo-list" aria-label="Фотографии в заказе">
+          {% for item in cart_presentation.photos %}
+            <li>
+              <img src="{{ item.photo.preview_media_small.url }}" alt="{{ item.photo.alt }}">
+              <span>{{ item.unit_price_display }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+        <dl>
+          <div><dt>Фотографий</dt><dd>{{ cart_presentation.item_count }}</dd></div>
+          <div><dt>Итого</dt><dd>{{ cart_presentation.total_display }}</dd></div>
+        </dl>
+      </aside>
+    </div>
   </article>
 {% endblock %}

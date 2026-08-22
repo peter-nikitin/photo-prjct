@@ -24,6 +24,16 @@ visual_patterns = [
     ),
     path("event/cart/", views.cart_populated, name="visual_cart_populated"),
     path("event/cart/empty/", views.cart_empty, name="visual_cart_empty"),
+    path("checkout/", views.checkout_populated, name="visual_checkout_populated"),
+    path("checkout/error/", views.checkout_error, name="visual_checkout_error"),
+    path("order/pending/", views.order_pending, name="visual_order_pending"),
+    path(
+        "order/pending/status/",
+        views.order_pending_status,
+        name="visual_order_pending_status",
+    ),
+    path("order/paid/", views.order_paid, name="visual_order_paid"),
+    path("order/email-failed/", views.order_email_failed, name="visual_order_email_failed"),
     path(
         "event/gallery-staff-preview/",
         views.event_gallery_staff_preview,

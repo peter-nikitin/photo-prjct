@@ -58,6 +58,7 @@ services:
       - -ec
       - |
         python manage.py migrate --noinput
+        python manage.py sync_feature_flags
         python manage.py bootstrap_photographer_group
         python manage.py bootstrap_local_purchase_review
         python manage.py collectstatic --noinput

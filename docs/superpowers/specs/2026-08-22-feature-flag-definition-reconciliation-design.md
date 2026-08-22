@@ -1,6 +1,6 @@
 # Feature-flag Definition Reconciliation Design
 
-- **Status:** Awaiting written review
+- **Status:** Approved on 2026-08-22
 - **Date:** 2026-08-22
 - **Owner:** FindMe Photo
 - **Related architecture:** [`docs/architecture.md`](../../architecture.md)

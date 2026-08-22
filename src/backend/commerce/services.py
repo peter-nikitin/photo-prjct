@@ -7,7 +7,7 @@ from picflow.gallery import purchasable_paid_photo_queryset
 from picflow.models import Event, Photo
 
 from commerce.identity import browser_token_sha256, generate_browser_token
-from commerce.models import Cart, CartItem
+from commerce.models import Cart, CartItem, Order, PaymentAttempt
 from commerce.pricing import calculate_cart_pricing
 
 CART_TTL = timedelta(days=30)
@@ -21,6 +21,8 @@ class CartSnapshot:
     total_kopecks: int
     pruned: bool = False
     delete_browser_token: bool = False
+    mutation_locked: bool = False
+    pending_order_public_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,13 @@ class CartMutationResult:
     issued_browser_token: str | None
     refresh_browser_token: bool
     delete_browser_token: bool
+
+
+@dataclass(frozen=True)
+class _OriginOrderState:
+    order: Order | None = None
+    mutation_locked: bool = False
+    supersede_on_mutation: bool = False
 
 
 def read_cart(
@@ -53,8 +62,18 @@ def read_cart(
             event=authoritative_event,
             digest=digest,
             now=current_time,
+            return_expired=True,
         )
         if cart is None:
+            return _snapshot(event=authoritative_event)
+        order_state = _locked_origin_order_state(event=authoritative_event, digest=digest)
+        if cart.expires_at <= current_time:
+            if order_state.mutation_locked:
+                return _raw_locked_snapshot(
+                    cart=cart,
+                    event=authoritative_event,
+                    order_state=order_state,
+                )
             return _snapshot(event=authoritative_event)
         return _pruned_snapshot(
             cart=cart,
@@ -62,6 +81,7 @@ def read_cart(
             digest=digest,
             watermarked_previews_enabled=watermarked_previews_enabled,
             now=current_time,
+            order_state=order_state,
         )
 
 
@@ -119,11 +139,35 @@ def set_photo_selected(
             event=authoritative_event,
             digest=digest,
             now=current_time,
-            discard_expired=True,
+            return_expired=True,
         )
+        order_state = _locked_origin_order_state(event=authoritative_event, digest=digest)
+        if cart is not None and cart.expires_at <= current_time:
+            if order_state.mutation_locked:
+                snapshot = _raw_locked_snapshot(
+                    cart=cart,
+                    event=authoritative_event,
+                    order_state=order_state,
+                )
+                return _mutation_result(
+                    snapshot=snapshot,
+                    selected=photo_id in snapshot.photo_ids,
+                )
+            _supersede_for_mutation(order_state)
+            cart.delete()
+            cart = None
         if cart is None and not selected:
             return _mutation_result(
                 snapshot=_snapshot(event=authoritative_event),
+                selected=False,
+            )
+        if cart is None and order_state.mutation_locked:
+            return _mutation_result(
+                snapshot=_snapshot(
+                    event=authoritative_event,
+                    mutation_locked=True,
+                    pending_order_public_number=_pending_order_public_number(order_state),
+                ),
                 selected=False,
             )
         if cart is None:
@@ -139,7 +183,13 @@ def set_photo_selected(
             digest=digest,
             watermarked_previews_enabled=watermarked_previews_enabled,
             now=current_time,
+            order_state=order_state,
         )
+        if snapshot.mutation_locked:
+            return _mutation_result(
+                snapshot=snapshot,
+                selected=photo_id in snapshot.photo_ids,
+            )
         if not Cart.objects.filter(pk=cart.pk).exists():
             if not selected:
                 return _mutation_result(snapshot=snapshot, selected=False)
@@ -153,10 +203,12 @@ def set_photo_selected(
         if selected:
             if item is not None:
                 return _mutation_result(snapshot=snapshot, selected=True)
+            _supersede_for_mutation(order_state)
             CartItem.objects.create(cart=cart, photo_id=photo_id)
         else:
             if item is None:
                 return _mutation_result(snapshot=snapshot, selected=False)
+            _supersede_for_mutation(order_state)
             item.delete()
 
         if not CartItem.objects.filter(cart=cart).exists():
@@ -174,6 +226,7 @@ def set_photo_selected(
                 digest=digest,
                 watermarked_previews_enabled=watermarked_previews_enabled,
                 now=current_time,
+                order_state=order_state,
             )
         return CartMutationResult(
             snapshot=updated_snapshot,
@@ -204,9 +257,21 @@ def clear_cart(
             event=authoritative_event,
             digest=digest,
             now=current_time,
+            return_expired=True,
         )
         if cart is None:
             return _mutation_result(snapshot=_snapshot(event=authoritative_event), selected=False)
+        order_state = _locked_origin_order_state(event=authoritative_event, digest=digest)
+        if order_state.mutation_locked:
+            return _mutation_result(
+                snapshot=_raw_locked_snapshot(
+                    cart=cart,
+                    event=authoritative_event,
+                    order_state=order_state,
+                ),
+                selected=False,
+            )
+        _supersede_for_mutation(order_state)
         cart.delete()
         snapshot = _snapshot(
             event=authoritative_event,
@@ -247,6 +312,7 @@ def _locked_current_cart(
     digest: str,
     now: datetime,
     discard_expired: bool = False,
+    return_expired: bool = False,
 ) -> Cart | None:
     cart = (
         Cart.objects.select_for_update()
@@ -259,6 +325,8 @@ def _locked_current_cart(
     if cart is None:
         return None
     if cart.expires_at <= now:
+        if return_expired:
+            return cart
         if discard_expired:
             cart.delete()
         return None
@@ -272,12 +340,18 @@ def _pruned_snapshot(
     digest: str,
     watermarked_previews_enabled: bool,
     now: datetime,
+    order_state: _OriginOrderState | None = None,
 ) -> CartSnapshot:
+    state = order_state or _locked_origin_order_state(event=event, digest=digest)
+    if state.mutation_locked:
+        return _raw_locked_snapshot(cart=cart, event=event, order_state=state)
     eligible = purchasable_paid_photo_queryset(
         event=event,
         watermarked_previews_enabled=watermarked_previews_enabled,
     )
     removed, _ = CartItem.objects.filter(cart=cart).exclude(photo_id__in=eligible).delete()
+    if removed:
+        _supersede_for_mutation(state)
     photo_ids = tuple(
         CartItem.objects.filter(cart=cart)
         .order_by("added_at", "photo_id")
@@ -299,6 +373,8 @@ def _snapshot(
     photo_ids: tuple[str, ...] = (),
     pruned: bool = False,
     delete_browser_token: bool = False,
+    mutation_locked: bool = False,
+    pending_order_public_number: str | None = None,
 ) -> CartSnapshot:
     pricing = calculate_cart_pricing(event=event, item_count=len(photo_ids))
     return CartSnapshot(
@@ -308,7 +384,78 @@ def _snapshot(
         total_kopecks=pricing.total_kopecks,
         pruned=pruned,
         delete_browser_token=delete_browser_token,
+        mutation_locked=mutation_locked,
+        pending_order_public_number=pending_order_public_number,
     )
+
+
+def _raw_locked_snapshot(
+    *,
+    cart: Cart,
+    event: Event,
+    order_state: _OriginOrderState,
+) -> CartSnapshot:
+    photo_ids = tuple(
+        CartItem.objects.filter(cart=cart)
+        .order_by("added_at", "photo_id")
+        .values_list("photo_id", flat=True)
+    )
+    return _snapshot(
+        event=event,
+        photo_ids=photo_ids,
+        mutation_locked=True,
+        pending_order_public_number=_pending_order_public_number(order_state),
+    )
+
+
+def _pending_order_public_number(order_state: _OriginOrderState) -> str | None:
+    return order_state.order.public_number if order_state.order is not None else None
+
+
+def _locked_origin_order_state(*, event: Event, digest: str) -> _OriginOrderState:
+    order = (
+        Order.objects.select_for_update()
+        .filter(
+            event=event,
+            originating_cart_token_sha256=digest,
+            status=Order.Status.PENDING,
+        )
+        .first()
+    )
+    if order is None:
+        return _OriginOrderState()
+    attempts = list(
+        PaymentAttempt.objects.select_for_update()
+        .filter(order=order)
+        .order_by("-created_at", "-pk")
+    )
+    if not attempts or any(
+        attempt.status in (PaymentAttempt.Status.PENDING, PaymentAttempt.Status.SUCCEEDED)
+        for attempt in attempts
+    ):
+        return _OriginOrderState(order=order, mutation_locked=True)
+    return _OriginOrderState(
+        order=order,
+        supersede_on_mutation=attempts[0].status
+        in (
+            PaymentAttempt.Status.CANCELED,
+            PaymentAttempt.Status.EXPIRED,
+            PaymentAttempt.Status.FAILED,
+            PaymentAttempt.Status.CONFLICT,
+        ),
+    )
+
+
+def _supersede_for_mutation(order_state: _OriginOrderState) -> None:
+    order = order_state.order
+    if (
+        not order_state.supersede_on_mutation
+        or order is None
+        or order.status != Order.Status.PENDING
+    ):
+        return
+    order.status = Order.Status.SUPERSEDED
+    order.save(update_fields=["status"])
 
 
 def _mutation_result(*, snapshot: CartSnapshot, selected: bool) -> CartMutationResult:

@@ -1459,13 +1459,15 @@ def _download_url(value: object) -> bool:
         return False
     if parsed.scheme == "https" and value.startswith("https://"):
         return True
+    local_minio_endpoint = (parsed.netloc, parsed.hostname, port) in {
+        ("minio:9000", "minio", 9000),
+        ("minio.localhost:19000", "minio.localhost", 19000),
+    }
     local_minio = (
         os.environ.get("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO") == "true"
         and parsed.scheme == "http"
         and value.startswith("http://")
-        and parsed.netloc == "minio:9000"
-        and parsed.hostname == "minio"
-        and port == 9000
+        and local_minio_endpoint
         and bool(parsed.path.strip("/"))
     )
     if not local_minio:

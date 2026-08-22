@@ -1,0 +1,15 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>Подтвердить оплату вручную</h1>
+  <p>Подтвердите, что оплата проверена вне FindMe Photo.</p>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="{{ action_name }}">
+    <input type="hidden" name="confirm_manual_paid" value="yes">
+    {% for order in queryset %}
+      <input type="hidden" name="_selected_action" value="{{ order.pk }}">
+    {% endfor %}
+    <input type="submit" value="Подтвердить оплату вручную">
+  </form>
+{% endblock %}

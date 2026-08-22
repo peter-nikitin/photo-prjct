@@ -286,7 +286,7 @@ The server-rendered event cart page contains:
 - the current unit price on every position;
 - one remove action per position;
 - total item count and current total;
-- `Продолжить выбор`, linking to the event page; and
+- a compact Event-style header with `Вернуться к мероприятию` on the right;
 - `Очистить корзину`.
 
 It contains no filename, quantity, package, discount, promotion, checkout, payment, disabled future

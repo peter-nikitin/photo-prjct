@@ -1,8 +1,9 @@
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
-from picflow.gallery import GalleryPhoto
+from picflow.gallery import GalleryPhoto, GalleryPhotoFactory, MediaUrlBuilder
 
+from commerce.models import Order
 from commerce.pricing import format_rub
 from commerce.services import CartSnapshot
 
@@ -24,6 +25,71 @@ class CartPresentation:
     total_kopecks: int
     total_display: str
     pruned: bool
+    mutation_locked: bool
+    pending_order_public_number: str | None
+
+
+@dataclass(frozen=True)
+class OrderPhotoPresentation:
+    photo: GalleryPhoto
+    unit_price_display: str
+
+
+@dataclass(frozen=True)
+class OrderPresentation:
+    public_number: str
+    created_at_display: str
+    event_name: str
+    status: str
+    status_display: str
+    total_display: str
+    masked_delivery_email: str
+    photos: tuple[OrderPhotoPresentation, ...]
+
+
+def order_presentation(
+    *, order: Order, media_url_builder: MediaUrlBuilder | None = None
+) -> OrderPresentation:
+    """Present the immutable customer-safe Order facts without payment/provider evidence."""
+    status_display = {
+        Order.Status.PENDING: "Проверяем оплату",
+        Order.Status.SUPERSEDED: "Проверяем оплату",
+        Order.Status.PAID: "Заказ оплачен",
+        Order.Status.CANCELED: "Оплата не завершена",
+    }[order.status]
+    return OrderPresentation(
+        public_number=order.public_number,
+        created_at_display=order.created_at.strftime("%d.%m.%Y"),
+        event_name=order.event.name,
+        status=order.status,
+        status_display=status_display,
+        total_display=format_rub(order.total_kopecks),
+        masked_delivery_email=_mask_email(order.delivery_email),
+        photos=tuple(
+            OrderPhotoPresentation(
+                photo=GalleryPhotoFactory.from_photo(
+                    photo=item.photo,
+                    event_slug=order.event.slug,
+                    media_url_builder=media_url_builder,
+                ),
+                unit_price_display=format_rub(item.unit_price_kopecks),
+            )
+            for item in order.items.select_related("photo").order_by("photo_id")
+        ),
+    )
+
+
+def _mask_email(value: str) -> str:
+    local_part, separator, domain = value.partition("@")
+    if not separator:
+        return "***"
+    if len(local_part) <= 1:
+        masked_local_part = "***"
+    elif len(local_part) == 2:
+        masked_local_part = f"{local_part[0]}***"
+    else:
+        masked_local_part = f"{local_part[0]}***{local_part[-1]}"
+    return f"{masked_local_part}@{domain}"
 
 
 def cart_presentation_for_photos(
@@ -53,4 +119,6 @@ def cart_presentation_for_photos(
         total_kopecks=snapshot.total_kopecks,
         total_display=format_rub(snapshot.total_kopecks),
         pruned=snapshot.pruned,
+        mutation_locked=snapshot.mutation_locked,
+        pending_order_public_number=snapshot.pending_order_public_number,
     )

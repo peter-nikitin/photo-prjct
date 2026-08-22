@@ -514,8 +514,19 @@ Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-niki
 
 Public activation remains blocked on approved real watermark assets and worker, staff smoke,
 necessary-cookie legal review, an explicit gate mutation, and live verification. The selection state
-grants no download entitlement. Packages, checkout, payment, orders, promotions, entitlement, and
-purchased-original delivery remain unimplemented and require separately approved work.
+grants no download entitlement. Checkout, immutable Orders, normalized payment attempts, trusted
+manual recovery, durable access-email work, and protected per-item original signing are implemented
+locally, disabled by default. Packages, promotions, refunds, and ZIP delivery remain later work.
+
+ADR 0031 accepts immutable single-event RUB Orders, normalized PaymentAttempts behind a narrow
+bank adapter, authoritative server evidence or trusted manual payment confirmation, and permanent
+original entitlement derived from each paid OrderItem. Anonymous access uses a separate temporary
+purchase-browser capability plus permanent revocable Order grants. Email is asynchronous
+notification, and a separate PostgreSQL-polling Commerce worker owns delivery and payment
+reconciliation with durable operator attention. This accepted purchase boundary is implemented
+locally, disabled by default; concrete bank/email protocols, fiscal and legal contracts, public
+activation, refunds, and ZIP delivery remain later work. The local deterministic adapters prove
+repository behavior only and perform no network payment or email delivery.
 
 ## Security, privacy, and legal boundaries
 
@@ -529,8 +540,10 @@ purchased-original delivery remain unimplemented and require separately approved
   accepted watermarked derivatives reach its normal gallery and ready results, and original/download
   routes deny those photos before storage signing. The cart consumes that presentation boundary and
   cannot authorize bytes. Both paid-watermarked-preview and paid-cart runtime gates are absent or
-  off by default; no direct runtime activation or real-media smoke is claimed. Purchases and entitled
-  exports remain unresolved. Neither current route exposes a permanent storage key, but original
+  off by default; no direct runtime activation or real-media smoke is claimed. The separate
+  paid-purchase route is implemented locally, disabled by default, and authorizes an exact paid
+  OrderItem only after server payment evidence or trusted manual confirmation. Neither route
+  exposes a permanent storage key, but original
   delivery still gives an eligible recipient complete unsanitized bytes that can be saved or
   redistributed.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
@@ -590,17 +603,19 @@ purchased-original delivery remain unimplemented and require separately approved
    photos before delivering corrections and event-scoped search.
 6. **Face governance, validation, and search:** approve biometric policy and independently benchmark
    face models before delivering embeddings, event filtering, removal, and candidate UX.
-7. **Commerce:** the accepted anonymous event-cart selection boundary is implemented under its
-   disabled-default runtime gate; separately approved packages, promotions, payment integration,
-   orders, entitlements, and protected export for paid events remain later work.
+7. **Commerce:** the accepted anonymous event-cart selection and purchase boundaries are
+   implemented locally, disabled by default. Concrete bank and email adapters, legal/fiscal
+   approval, worker activation, public rollout evidence, packages, promotions, refunds, and ZIP
+   delivery remain later work.
 8. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
 
-### Remaining checkout, payment, entitlement, and original-delivery seam
+### Checkout, payment, entitlement, and original-delivery seam
 
-Checkout, payment, entitlement, and original delivery may consume the cart's selected photo IDs,
-current event price, `GalleryPhoto.photo_id`, its nullable `download_url`, and the existing
-gallery-card action container. `PublicMediaResolver` remains the sole owner of public-media
-selection; this seam defines no checkout, payment, order, entitlement, or original-delivery behavior.
+Checkout snapshots the cart's selected photo IDs and current event price into immutable OrderItems.
+Payment, entitlement, access grants, email delivery, and original signing are separate Commerce
+services; a cart bearer remains selection-only. `PublicMediaResolver` remains the sole owner of
+public-media selection. The purchase implementation is local and disabled by default, so no real
+provider, activation, or live-customer evidence is claimed.
 
 ## Deferred beyond MVP
 

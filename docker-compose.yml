@@ -43,5 +43,33 @@ services:
       - web
     restart: unless-stopped
 
+  commerce-worker:
+    build: .
+    command: python manage.py run_commerce_worker
+    working_dir: /app/src/backend
+    volumes:
+      - .:/app
+    profiles:
+      - commerce
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      DEBUG: ${DEBUG:-False}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,web}
+      DB_NAME: ${DB_NAME:-app}
+      DB_USER: ${DB_USER:-app}
+      DB_PASSWORD: ${DB_PASSWORD:-app}
+      DB_HOST: db
+      DB_PORT: "5432"
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-example.com}
+      COMMERCE_PAYMENT_GATEWAY_FACTORY: ${COMMERCE_PAYMENT_GATEWAY_FACTORY:-}
+      COMMERCE_EMAIL_SENDER_FACTORY: ${COMMERCE_EMAIL_SENDER_FACTORY:-}
+      COMMERCE_WORKER_FACTORY: ${COMMERCE_WORKER_FACTORY:-}
+      COMMERCE_ORDER_ACCESS_SIGNING_SECRET: ${COMMERCE_ORDER_ACCESS_SIGNING_SECRET:-}
+      COMMERCE_SUPPORT_CONTACT: ${COMMERCE_SUPPORT_CONTACT:-}
+      COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS: ${COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS:-300}
+    depends_on:
+      - db
+    restart: unless-stopped
+
 volumes:
   pgdata:

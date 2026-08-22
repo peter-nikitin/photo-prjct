@@ -3,27 +3,32 @@ server_tokens off;
 map $uri $selfie_search_access_client_address {
     default $remote_addr;
     ~^/events/[^/]+/selfie-search(?:/|$) "-";
+    ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
 }
 
 map $uri $selfie_search_access_remote_user {
     default $remote_user;
     ~^/events/[^/]+/selfie-search(?:/|$) "-";
+    ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
 }
 
 map $uri $selfie_search_access_request {
     default $request;
     ~^/events/[^/]+/selfie-search/$ "$request_method <selfie-search>";
     ~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "$request_method <selfie-search>";
+    ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "$request_method <order-access>";
 }
 
 map $uri $selfie_search_access_referrer {
     default $http_referer;
     ~^/events/[^/]+/selfie-search(?:/|$) "-";
+    ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
 }
 
 map $uri $selfie_search_access_user_agent {
     default $http_user_agent;
     ~^/events/[^/]+/selfie-search(?:/|$) "-";
+    ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
 }
 
 log_format selfie_search_safe '$selfie_search_access_client_address - $selfie_search_access_remote_user [$time_local] '
@@ -52,6 +57,17 @@ server {
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
         try_files $uri =404;
+    }
+
+    # Order access grants are bearer URLs. Keep the HTTP redirect private too.
+    location ~ ^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) {
+        error_log /dev/null emerg;
+
+        add_header Cache-Control "private, no-store" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Vary "Cookie" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        return 308 https://${PUBLIC_DOMAIN}$request_uri;
     }
 
     location / {
@@ -123,6 +139,30 @@ server {
 
         # Bearer URLs must not be sent as a referrer to any subsequent request.
         add_header Referrer-Policy "no-referrer" always;
+        add_header Strict-Transport-Security "max-age=86400" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+
+        proxy_pass http://django_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-SSL on;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Order access grants are bearer URLs. Enforce privacy before Django, including errors.
+    location ~ ^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) {
+        error_log /dev/null emerg;
+
+        proxy_hide_header Cache-Control;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header Vary;
+        add_header Cache-Control "private, no-store" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Vary "Cookie" always;
         add_header Strict-Transport-Security "max-age=86400" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-Frame-Options "DENY" always;

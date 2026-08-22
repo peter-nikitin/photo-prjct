@@ -27,6 +27,17 @@ PREVIOUS_ENV = (
 )
 
 
+def _real_commerce_worker_settings() -> dict[str, str]:
+    return {
+        "COMMERCE_WORKER_ENABLED": "True",
+        "COMMERCE_PAYMENT_GATEWAY_FACTORY": "commerce.bank_gateway.PaymentGateway",
+        "COMMERCE_EMAIL_SENDER_FACTORY": "commerce.mailer.EmailSender",
+        "COMMERCE_WORKER_FACTORY": "commerce.worker.CommerceWorker",
+        "COMMERCE_ORDER_ACCESS_SIGNING_SECRET": "commerce-signing-secret",
+        "COMMERCE_SUPPORT_CONTACT": "support@example.com",
+    }
+
+
 def _cart_cleanup_block(deploy_root: Path) -> str:
     return (
         "# BEGIN photo-prjct-cart-cleanup\n"
@@ -55,6 +66,42 @@ def _run(script: str, *, env: dict[str, str]) -> subprocess.CompletedProcess[str
         capture_output=True,
         check=False,
     )
+
+
+def test_commerce_health_probe_uses_canonical_compose_identity_and_safe_command(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    commands = tmp_path / "commands.log"
+    _write_executable(
+        fake_bin / "docker",
+        """
+printf '%s\\n' "$*" >> "$COMMAND_LOG"
+case " $* " in
+  *" --project-name photo-prjct "*" commerce_worker_health "*) exit 0 ;;
+  *) exit 1 ;;
+esac
+""",
+    )
+    deployment_root = tmp_path / "deployment"
+    deployment_root.mkdir()
+    (deployment_root / ".env").write_text("COMMERCE_ORDER_ACCESS_SIGNING_SECRET=secret\\n")
+
+    result = _run(
+        "deploy/run-commerce-worker-health.sh",
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "COMMAND_LOG": str(commands),
+            "DEPLOY_ROOT": str(deployment_root),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = commands.read_text(encoding="utf-8")
+    assert "--project-name photo-prjct" in command
+    assert "commerce_worker_health --max-ready-age-seconds" in command
+    assert "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS" in command
+    assert "commerce-worker" not in command
+    assert "COMMERCE_ORDER_ACCESS_SIGNING_SECRET" not in result.stdout + result.stderr
 
 
 @pytest.fixture
@@ -324,6 +371,10 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
         deploy_dir / "install-cart-cleanup-cron.sh",
     )
     shutil.copy2(ROOT / "deploy/run-cart-cleanup.sh", deploy_dir / "run-cart-cleanup.sh")
+    shutil.copy2(
+        ROOT / "deploy/run-commerce-worker-health.sh",
+        deploy_dir / "run-commerce-worker-health.sh",
+    )
     _write_executable(
         deploy_dir / "verify-selfie-observability.sh",
         """
@@ -688,7 +739,12 @@ case " $* " in
         ;;
     esac
     ;;
+  *" compose "*" ps -q commerce-worker "*)
+    [ "$(sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] || exit 0
+    printf 'commerce-worker-id\n'
+    ;;
   *" inspect "*" web-id "*) sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" ;;
+  *" inspect "*" commerce-worker-id "*) printf 'true false false\n' ;;
   *" inspect "*" worker-first "*)
     if [ "$APPLY_SCENARIO" = worker-crash-loop ]; then
       case "$*" in
@@ -714,6 +770,23 @@ case " $* " in
         *) printf 'true false 0\n' ;;
       esac
     fi
+    ;;
+  *" compose "*" exec -T web sh -c "*" commerce_worker_health "*)
+    commerce_health_attempt=0
+    if [ -f "$COMMERCE_HEALTH_ATTEMPTS" ]; then
+      commerce_health_attempt="$(cat "$COMMERCE_HEALTH_ATTEMPTS")"
+    fi
+    commerce_health_attempt=$((commerce_health_attempt + 1))
+    printf '%s\n' "$commerce_health_attempt" > "$COMMERCE_HEALTH_ATTEMPTS"
+    printf 'commerce-worker-health-attempt=%s\n' "$commerce_health_attempt" >> "$COMMAND_LOG"
+    case "$APPLY_SCENARIO" in
+      commerce-worker-ready-after-retry)
+        [ "$commerce_health_attempt" -ge 3 ]
+        ;;
+      commerce-worker-health-failure)
+        exit 1
+        ;;
+    esac
     ;;
 esac
 """,
@@ -785,6 +858,7 @@ esac
     return {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "COMMAND_LOG": str(tmp_path / "apply.log"),
+        "COMMERCE_HEALTH_ATTEMPTS": str(tmp_path / "commerce-health-attempts"),
         "CRONTAB_STATE": str(tmp_path / "crontab"),
         "PREVIOUS_ENV_EXPECTED": str(tmp_path / "previous-env.expected"),
         "GALLERY_PREFLIGHT_HARNESS": str(gallery_preflight_harness),
@@ -1157,6 +1231,92 @@ def test_missing_processing_prerequisite_prevents_deployment(
     assert result.returncode == 2
     assert "Selfie search requires enabled photo processing and face embeddings" in result.stderr
     assert not (tmp_path / "apply.log").exists()
+
+
+def test_deployment_rejects_test_commerce_adapters_before_any_mutation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["COMMERCE_PAYMENT_GATEWAY_FACTORY"] = (
+        "commerce.test_payment_gateway.DeterministicPaymentGateway"
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert "must not select a local/test adapter" in result.stderr
+    assert not (tmp_path / "apply.log").exists()
+
+
+def test_disabled_commerce_worker_is_absent_from_the_deployment_profile(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="private-media-no-photo"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert "--profile commerce up -d" not in commands
+    assert "--profile commerce rm -sf commerce-worker" in commands
+    environment = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "COMMERCE_WORKER_ENABLED=False" in environment
+    assert "COMMERCE_PAYMENT_GATEWAY_FACTORY=\n" in environment
+
+
+def test_enabled_commerce_worker_requires_real_settings_before_any_mutation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["COMMERCE_WORKER_ENABLED"] = "True"
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert "Set COMMERCE_PAYMENT_GATEWAY_FACTORY" in result.stderr
+    assert not (tmp_path / "apply.log").exists()
+
+
+def test_enabled_commerce_worker_retries_readiness_until_its_lock_is_live(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="commerce-worker-ready-after-retry")
+    env.update(_real_commerce_worker_settings())
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "commerce-health-attempts").read_text(encoding="utf-8") == "3\n"
+    assert "Commerce worker readiness check attempt 1 failed; retrying" in result.stderr
+    assert "Commerce worker readiness check attempt 2 failed; retrying" in result.stderr
+    assert "DEPLOY_RESULT=success" in result.stdout
+    commands = "\n".join(_apply_log(tmp_path))
+    assert "--profile commerce up -d --remove-orphans" in commands
+    assert commands.count("commerce-worker-health-attempt=") == 3
+
+
+def test_enabled_commerce_worker_readiness_exhaustion_restores_previous_profile(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    previous_env = PREVIOUS_ENV + b"".join(
+        f"{key}={value}\n".encode() for key, value in _real_commerce_worker_settings().items()
+    )
+    env = _apply_env(tmp_path, fake_bin, scenario="commerce-worker-health-failure")
+    env.update(_real_commerce_worker_settings())
+    (tmp_path / ".env").write_bytes(previous_env)
+    (tmp_path / "previous-env.expected").write_bytes(previous_env)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Commerce worker readiness exhausted after 6 attempts" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == previous_env
+    assert (tmp_path / "commerce-health-attempts").read_text(encoding="utf-8") == "6\n"
+    commands = "\n".join(_apply_log(tmp_path))
+    assert "APP_IMAGE=unset docker compose --project-name photo-prjct --env-file" in commands
+    assert "--profile commerce up -d --remove-orphans" in commands
+    assert "DEPLOY_RESULT=failure phase=worker-health rollback=succeeded" in result.stdout
 
 
 def test_missing_face_embedding_prerequisite_preserves_existing_deployment(

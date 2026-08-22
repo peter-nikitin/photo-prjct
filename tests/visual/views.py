@@ -6,6 +6,7 @@ from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlencode
 
+from commerce.forms import CheckoutForm
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
@@ -139,6 +140,24 @@ class FixtureCartPresentation:
     item_count: int
     total_display: str
     pruned: bool = False
+
+
+@dataclass(frozen=True)
+class FixtureOrderPhotoPresentation:
+    photo: FixtureGalleryPhoto
+    unit_price_display: str = "300 ₽"
+
+
+@dataclass(frozen=True)
+class FixtureOrderPresentation:
+    public_number: str
+    created_at_display: str
+    event_name: str
+    status: str
+    status_display: str
+    total_display: str
+    masked_delivery_email: str
+    photos: tuple[FixtureOrderPhotoPresentation, ...]
 
 
 @dataclass(frozen=True)
@@ -303,6 +322,24 @@ def _cart_presentation(
         ),
         item_count=len(selected),
         total_display=f"{len(selected) * 300} ₽",
+    )
+
+
+def _order_presentation(*, status: str) -> FixtureOrderPresentation:
+    status_display = {
+        "pending": "Проверяем оплату",
+        "paid": "Заказ оплачен",
+    }[status]
+    photos = PAID_GALLERY_PHOTOS[:2]
+    return FixtureOrderPresentation(
+        public_number="FM-ABCDEFGH",
+        created_at_display="18.06.2026",
+        event_name=EVENTS[0].name,
+        status=status,
+        status_display=status_display,
+        total_display="600 ₽",
+        masked_delivery_email="a***a@example.com",
+        photos=tuple(FixtureOrderPhotoPresentation(photo=photo) for photo in photos),
     )
 
 
@@ -832,6 +869,8 @@ def cart_populated(request: HttpRequest) -> HttpResponse:
             "cart_presentation": _cart_presentation(
                 photos, selected_ids=tuple(photo.photo_id for photo in photos)
             ),
+            "purchase_enabled": True,
+            "checkout_form": CheckoutForm(),
             "yandex_metrika_counter_id": None,
         },
     )
@@ -844,6 +883,51 @@ def cart_empty(request: HttpRequest) -> HttpResponse:
         {
             "event": EVENTS[0],
             "cart_presentation": _cart_presentation(()),
+            "yandex_metrika_counter_id": None,
+        },
+    )
+
+
+def order_pending(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "commerce/order.html",
+        {
+            "event": EVENTS[0],
+            "order_presentation": _order_presentation(status="pending"),
+            "order_status_url": "/__visual__/order/pending/status/",
+            "support_contact": "support@example.com",
+            "yandex_metrika_counter_id": None,
+        },
+    )
+
+
+def order_pending_status(request: HttpRequest) -> JsonResponse:
+    return JsonResponse({"status": "pending"})
+
+
+def order_paid(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "commerce/order.html",
+        {
+            "event": EVENTS[0],
+            "order_presentation": _order_presentation(status="paid"),
+            "support_contact": "support@example.com",
+            "yandex_metrika_counter_id": None,
+        },
+    )
+
+
+def order_email_failed(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "commerce/order.html",
+        {
+            "event": EVENTS[0],
+            "order_presentation": _order_presentation(status="paid"),
+            "resend_feedback": "Не удалось отправить письмо. Попробуйте ещё раз.",
+            "support_contact": "support@example.com",
             "yandex_metrika_counter_id": None,
         },
     )

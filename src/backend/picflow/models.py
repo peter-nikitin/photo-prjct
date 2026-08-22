@@ -290,8 +290,36 @@ class Photo(models.Model):
     def __str__(self) -> str:
         return self.id
 
+    def save(self, *args, **kwargs) -> None:
+        self._require_paid_order_original_identity_unchanged()
+        super().save(*args, **kwargs)
+
+    def _require_paid_order_original_identity_unchanged(self) -> None:
+        if self._state.adding:
+            return
+        persisted = (
+            self.__class__.objects.filter(pk=self.pk)
+            .values("original_key", "original_content_type")
+            .first()
+        )
+        if persisted is None or not self.order_items.filter(order__status="paid").exists():
+            return
+
+        errors = {}
+        if persisted["original_key"] != self.original_key:
+            errors["original_key"] = (
+                "Original key cannot be changed after the photo has a paid order item."
+            )
+        if persisted["original_content_type"] != self.original_content_type:
+            errors["original_content_type"] = (
+                "Original content type cannot be changed after the photo has a paid order item."
+            )
+        if errors:
+            raise ValidationError(errors)
+
     def clean(self) -> None:
         super().clean()
+        self._require_paid_order_original_identity_unchanged()
         valid_pairs = {
             (
                 self.ProcessingGeneration.LEGACY_ORIGINAL_V1,

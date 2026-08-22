@@ -1081,6 +1081,22 @@ def test_claim_allows_exact_local_minio_http_download_when_explicitly_enabled(
     assert claim.job is not None
 
 
+def test_claim_allows_browser_and_worker_shared_local_minio_hostname_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO", "true")
+
+    claim = Claim.from_response(
+        claim_payload(
+            download_url=(
+                "http://minio.localhost:19000/local-private/photo.jpg?X-Amz-Signature=local"
+            )
+        )
+    )
+
+    assert claim.job is not None
+
+
 @pytest.mark.parametrize(
     "download_url",
     [

@@ -1,0 +1,77 @@
+{% extends "ui/base.html" %}
+{% load static %}
+
+{% block title %}Заказ {{ order_presentation.public_number }} — FindMe Photo{% endblock %}
+{% block body_class %}order-page{% endblock %}
+{% block extra_css %}
+  <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
+{% endblock %}
+
+{% block content %}
+  <article class="order" data-order-root data-order-status="{{ order_presentation.status }}" data-order-url="{% if order_url %}{{ order_url }}{% elif access_grant %}{% url 'commerce:grant_order' public_number=order_presentation.public_number grant_identifier=access_grant.pk signature=grant_signature %}{% else %}{% url 'commerce:order' public_number=order_presentation.public_number %}{% endif %}" data-order-status-url="{% if order_status_url %}{{ order_status_url }}{% elif access_grant %}{% url 'commerce:grant_order_status' public_number=order_presentation.public_number grant_identifier=access_grant.pk signature=grant_signature %}{% else %}{% url 'commerce:order_status' public_number=order_presentation.public_number %}{% endif %}" aria-labelledby="order-title">
+    <header class="event-detail-header order-header">
+      <h1 id="order-title">Заказ {{ order_presentation.public_number }}</h1>
+      <p class="event-detail-meta"><span>{{ order_presentation.event_name }}</span><span>{{ order_presentation.created_at_display }}</span></p>
+      <a class="back-link order-event-link" href="{% url 'event_detail' slug=event.slug %}">
+        <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#arrow-left"></use></svg>
+        <span>Вернуться к мероприятию</span>
+      </a>
+    </header>
+    <div class="order-layout">
+      <section class="order-photos" aria-labelledby="order-photos-title">
+        <h2 id="order-photos-title">Фотографии</h2>
+        <table aria-label="Фотографии в заказе">
+          <thead>
+            <tr>
+              <th scope="col">Фотография</th>
+              <th scope="col">Цена</th>
+              {% if order_presentation.status == 'paid' %}<th scope="col"><span class="visually-hidden">Действия</span></th>{% endif %}
+            </tr>
+          </thead>
+          <tbody>
+          {% for item in order_presentation.photos %}
+            <tr class="order-photo-row">
+              <td class="order-photo-cell"><img src="{{ item.photo.preview_media_small.url }}" alt="{{ item.photo.alt }}"></td>
+              <td class="order-photo-price">{{ item.unit_price_display }}</td>
+              {% if order_presentation.status == 'paid' %}
+                <td class="order-photo-action">
+                  {% if access_grant %}
+                    <a class="button order-download" href="{% url 'commerce:grant_order_download' public_number=order_presentation.public_number grant_identifier=access_grant.pk signature=grant_signature photo_id=item.photo.photo_id %}">Скачать оригинал</a>
+                  {% else %}
+                    <a class="button order-download" href="{% url 'commerce:order_download' public_number=order_presentation.public_number photo_id=item.photo.photo_id %}">Скачать оригинал</a>
+                  {% endif %}
+                </td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </section>
+      <aside class="order-summary-panel" aria-label="Сводка заказа">
+        <p class="order-status order-status--{{ order_presentation.status }}" data-order-status role="status" aria-live="polite" tabindex="-1">{{ order_presentation.status_display }}</p>
+        <p class="order-poll-message" data-order-poll-message role="status" aria-live="polite" hidden></p>
+        <dl class="order-summary">
+          <div><dt>Дата заказа</dt><dd>{{ order_presentation.created_at_display }}</dd></div>
+          <div><dt>Фотографий</dt><dd>{{ order_presentation.photos|length }}</dd></div>
+          <div class="order-summary-email"><dt>Электронная почта</dt><dd>{{ order_presentation.masked_delivery_email }}</dd></div>
+          <div class="order-summary-total"><dt>Итого</dt><dd>{{ order_presentation.total_display }}</dd></div>
+        </dl>
+        {% if order_presentation.status == 'paid' %}
+          {% if access_grant %}
+            <form class="order-resend" data-order-resend method="post" action="{% url 'commerce:grant_order_resend' public_number=order_presentation.public_number grant_identifier=access_grant.pk signature=grant_signature %}">
+          {% else %}
+            <form class="order-resend" data-order-resend method="post" action="{% url 'commerce:order_resend' public_number=order_presentation.public_number %}">
+          {% endif %}
+            {% csrf_token %}
+            <button type="submit" data-order-resend-button>Отправить письмо ещё раз</button>
+          </form>
+          <p class="order-resend-message" data-order-resend-message role="status" aria-live="polite"{% if not resend_feedback %} hidden{% endif %}>{{ resend_feedback }}</p>
+        {% endif %}
+        <p class="order-support">Поддержка: {{ support_contact }}</p>
+      </aside>
+    </div>
+  </article>
+{% endblock %}
+{% block extra_js %}
+  <script src="{% static 'ui/commerce-purchase.js' %}" defer></script>
+{% endblock %}

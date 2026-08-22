@@ -64,5 +64,38 @@ services:
       options:
         tag: "findme.service=worker"
 
+  commerce-worker:
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    command: python manage.py run_commerce_worker
+    profiles:
+      - commerce
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      DEBUG: ${DEBUG:?DEBUG must be set}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set}
+      DB_NAME: ${DB_NAME:?DB_NAME must be set}
+      DB_USER: ${DB_USER:?DB_USER must be set}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      DB_HOST: db
+      DB_PORT: "5432"
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?PUBLIC_DOMAIN must be set}
+      COMMERCE_PAYMENT_GATEWAY_FACTORY: ${COMMERCE_PAYMENT_GATEWAY_FACTORY:-}
+      COMMERCE_EMAIL_SENDER_FACTORY: ${COMMERCE_EMAIL_SENDER_FACTORY:-}
+      COMMERCE_WORKER_FACTORY: ${COMMERCE_WORKER_FACTORY:-}
+      COMMERCE_ORDER_ACCESS_SIGNING_SECRET: ${COMMERCE_ORDER_ACCESS_SIGNING_SECRET:-}
+      COMMERCE_SUPPORT_CONTACT: ${COMMERCE_SUPPORT_CONTACT:-}
+      COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS: ${COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS:-300}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: "0.25"
+    mem_limit: 256m
+    pids_limit: 64
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=commerce-worker"
+
 volumes:
   pgdata:

@@ -50,6 +50,7 @@ place, and add the new record to this index.
 | 0028 | [Operate one canonical deployment](0028-operate-one-canonical-deployment.md) | Accepted |
 | 0029 | [Use watermarked previews for paid photo presentation](0029-use-watermarked-previews-for-paid-photos.md) | Accepted |
 | 0030 | [Use anonymous server-side event carts](0030-use-anonymous-server-side-event-carts.md) | Accepted |
+| 0031 | [Use orders and adapters for paid original delivery](0031-use-orders-and-adapters-for-paid-original-delivery.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -73,7 +74,15 @@ decision or opening a normal paid gallery.
 only for photos in the new explicit paid-watermarked generation. It accepts a normal paid gallery
 backed only by an accepted watermarked derivative, uses that same derivative in ready selfie-search
 results, and denies original presentation and download for those photos. Existing rows retain their
-explicit current policy; paid commerce and entitled original delivery remain unresolved.
+explicit current policy. [ADR 0031](0031-use-orders-and-adapters-for-paid-original-delivery.md)
+supersedes that denial only after a qualifying Order becomes paid.
+
+[ADR 0031](0031-use-orders-and-adapters-for-paid-original-delivery.md) accepts immutable
+single-event RUB Orders, normalized PaymentAttempts behind a narrow gateway adapter, trusted manual
+payment confirmation, paid-OrderItem original entitlement, permanent revocable anonymous Order
+links, asynchronous email delivery, and durable Commerce attention. The concrete bank/email
+protocols, fiscal and legal contracts, public activation, refunds, and ZIP delivery remain later
+work.
 
 [ADR 0022](0022-use-numbered-gallery-pages.md) supersedes only ADR 0020's cursor-pagination
 follow-up. Normal galleries and ready selfie-search results use bounded numbered pages; all media

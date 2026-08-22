@@ -9,6 +9,7 @@ def analytics(request: HttpRequest) -> dict[str, int | None]:
         if (
             is_event_staff_preview(request)
             or getattr(request, "_is_public_selfie_bearer_request", False)
+            or getattr(request, "_is_commerce_order_bearer_request", False)
             or request.resolver_match
             and request.resolver_match.url_name == "event_detail"
         )

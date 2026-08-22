@@ -22,9 +22,13 @@ photographers and operators publish and manage event photos.
   creates a local test-safe `.env` without copying root secrets.
 - Run Python tests through `make test` or `make test TESTS="<selectors>"`. Run the complete Python
   quality suite through `make check`.
-- Do not run Ruff formatting manually before committing. The installed pre-commit hook applies
-  Ruff fixes and formatting to staged Python files. If it changes files, stage those changes and
-  repeat the commit. Use `make hooks` to install or repair the shared hook in an existing checkout.
+- Normalize and type-check exact changed Python files before handoff or review with
+  `.venv/bin/pre-commit run --files <task Python files>`. The hook applies Ruff fixes and formatting,
+  then runs full-project mypy without changing the Git index. The root controller repeats the hook
+  at commit time, stages any hook changes, and retries the commit. Use `make hooks` to install or
+  repair the shared hook in an existing checkout.
+- Run `make static` after integrating or rebasing Python changes so Ruff formatting, Ruff lint, and
+  full-project mypy all report in one pass. Run `make check` for the complete Python quality suite.
 - Do not rely on virtual-environment activation or global `python`, `pytest`, `ruff`, or `mypy`.
   When a direct command is necessary, use the explicit `.venv/bin/...` executable.
 - Do not copy or link the main checkout's `.env` into a worktree. Each worktree owns its ignored

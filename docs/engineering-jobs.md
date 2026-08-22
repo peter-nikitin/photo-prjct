@@ -255,11 +255,13 @@ the first test and create a consistently formatted commit without reconstructing
 
 `make worktree NAME=<name> [BASE=<ref>]` creates the isolated branch and checkout, links the shared
 ignored `.venv`, creates a worktree-local `.env` without copying root secrets, installs the shared
-Ruff pre-commit hook, and verifies Python, pytest, and Django settings. `make hooks` repairs the hook
-for an existing checkout, while `make test` and `make check` provide stable commands with CI-like
+Ruff and full-project mypy pre-commit hook, and verifies Python, pytest, and Django settings. `make
+hooks` repairs the hook for an existing checkout; `make static` reports every formatting, lint, and
+type result in one pass; and `make test` plus `make check` provide stable commands with CI-like
 Django variables. Behavioral tests cover validation before Git mutation, secret isolation, clean
-Git state, hook installation, environment defaults, and Make command forwarding. A real disposable
-worktree smoke and an actual hook-driven commit additionally validated the integrated workflow.
+Git state, hook installation, aggregate static execution, environment defaults, and Make command
+forwarding. A real disposable worktree smoke and an actual hook-driven commit additionally
+validated the integrated workflow.
 
 - Status: Validated
 - Evidence: [`scripts/create-worktree.py`](../scripts/create-worktree.py),

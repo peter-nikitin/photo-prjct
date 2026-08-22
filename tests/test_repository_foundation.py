@@ -394,7 +394,9 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
         "src/backend/selfie_search",
         "src/worker/photo_worker",
     ]
-    assert _workflow_step(ci, "quality", "Type check")["run"] == "mypy"
+    assert _workflow_step(ci, "quality", "Static analysis")["run"] == (
+        "make static RUFF=ruff MYPY=mypy"
+    )
     assert _workflow_step(ci, "quality", "Test with coverage")["run"] == (
         "pytest --cov --cov-report=term-missing"
     )
@@ -406,6 +408,23 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     assert ci["jobs"]["quality"]["env"]["TEST_DB_NAME"] == (
         "findme_test_${{ github.run_id }}_${{ github.run_attempt }}"
     )
+
+
+def test_pre_commit_runs_full_mypy_for_staged_python_changes() -> None:
+    config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    hooks = [hook for repository in config["repos"] for hook in repository["hooks"]]
+    matching_hooks = [hook for hook in hooks if hook["id"] == "mypy"]
+
+    assert matching_hooks == [
+        {
+            "id": "mypy",
+            "name": "mypy",
+            "entry": ".venv/bin/mypy",
+            "language": "system",
+            "pass_filenames": False,
+            "types": ["python"],
+        }
+    ]
 
 
 def test_literal_worker_selector_imports_local_worker_package() -> None:

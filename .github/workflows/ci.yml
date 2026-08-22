@@ -60,14 +60,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt -r src/worker/requirements.txt
 
-      - name: Check formatting
-        run: ruff format --check .
-
-      - name: Lint
-        run: ruff check .
-
-      - name: Type check
-        run: mypy
+      - name: Static analysis
+        run: make static RUFF=ruff MYPY=mypy
 
       - name: Test with coverage
         run: pytest --cov --cov-report=term-missing

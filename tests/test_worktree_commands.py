@@ -151,6 +151,59 @@ def test_make_hooks_uses_project_pre_commit() -> None:
     assert result.stdout == ".venv/bin/pre-commit install\n"
 
 
+def test_make_static_runs_every_checker_before_reporting_failure(tmp_path: Path) -> None:
+    command_log = tmp_path / "commands.log"
+    fake_ruff = tmp_path / "ruff"
+    fake_ruff.write_text(
+        '#!/bin/sh\nprintf "ruff %s\\n" "$*" >> "$STATIC_COMMAND_LOG"\ntest "$1" != "format"\n',
+        encoding="utf-8",
+    )
+    fake_ruff.chmod(0o755)
+    fake_mypy = tmp_path / "mypy"
+    fake_mypy.write_text(
+        '#!/bin/sh\nprintf "mypy\\n" >> "$STATIC_COMMAND_LOG"\nexit 1\n',
+        encoding="utf-8",
+    )
+    fake_mypy.chmod(0o755)
+
+    result = subprocess.run(
+        ["make", "static", f"RUFF={fake_ruff}", f"MYPY={fake_mypy}"],
+        cwd=ROOT,
+        env={**os.environ, "STATIC_COMMAND_LOG": str(command_log)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert command_log.read_text(encoding="utf-8").splitlines() == [
+        "ruff format --check .",
+        "ruff check .",
+        "mypy",
+    ]
+
+
+def test_make_static_succeeds_when_every_checker_passes(tmp_path: Path) -> None:
+    passing_checker = tmp_path / "passing-checker"
+    passing_checker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    passing_checker.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "make",
+            "static",
+            f"RUFF={passing_checker}",
+            f"MYPY={passing_checker}",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_make_worktree_requires_name_without_changing_git_state() -> None:
     branches_before = subprocess.run(
         ["git", "branch", "--format=%(refname:short)"],

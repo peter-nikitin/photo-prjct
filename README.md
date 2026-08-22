@@ -49,6 +49,7 @@ manually supplying Django settings:
 ```bash
 make test TESTS="tests/test_repository_foundation.py"
 make test
+make static
 make check
 ```
 
@@ -59,7 +60,8 @@ but skip its exhaustive matrix. Run the exhaustive clone-staging suite separatel
 make test-clone-deployed
 ```
 
-`make check` runs local Python formatting, lint, type, coverage, Django, and migration checks. Its
+`make static` reports Python formatting, lint, and type failures together. `make check` runs that
+static gate plus coverage, Django, and migration checks. Its
 pytest portion skips the exhaustive clone-staging matrix; GitHub CI's raw pytest coverage command
 runs the full test selection. PostgreSQL must be available on `localhost:5432`, matching CI.
 
@@ -394,10 +396,12 @@ existing checkout with:
 make hooks
 ```
 
-The hook formats and lints staged Python files. If it changes a file, stage the result and repeat the
-commit. Run `.venv/bin/pre-commit run --all-files` only when intentionally checking the whole
-repository. CI remains authoritative and also runs types, tests, Django checks, migration drift
-detection, and repository skill-structure tests.
+The hook formats and lints staged Python files, then runs full-project mypy. Before handoff or
+review, run `.venv/bin/pre-commit run --files <task Python files>` for the exact changed Python
+files. If the commit-time hook changes a file, stage the result and repeat the commit. Run
+`.venv/bin/pre-commit run --all-files` only when intentionally checking the whole repository. CI
+uses the same aggregated static gate and also runs tests, Django checks, migration drift detection,
+and repository skill-structure tests.
 
 ## Deployment
 

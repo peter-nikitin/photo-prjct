@@ -1,6 +1,8 @@
-.PHONY: check db-clone-deployed hooks local-web test test-clone-deployed worktree
+.PHONY: check db-clone-deployed hooks local-web static test test-clone-deployed worktree
 
 BASE ?= origin/main
+MYPY ?= .venv/bin/mypy
+RUFF ?= .venv/bin/ruff
 TESTS ?=
 
 worktree:
@@ -13,10 +15,14 @@ hooks:
 test:
 	sh scripts/run-in-test-env.sh .venv/bin/pytest -m "not clone_deployed_slow" $(TESTS)
 
-check:
-	.venv/bin/ruff format --check .
-	.venv/bin/ruff check .
-	.venv/bin/mypy
+static:
+	@status=0; \
+	$(RUFF) format --check . || status=1; \
+	$(RUFF) check . || status=1; \
+	$(MYPY) || status=1; \
+	exit $$status
+
+check: static
 	sh scripts/run-in-test-env.sh .venv/bin/pytest -m "not clone_deployed_slow" --cov --cov-report=term-missing
 	sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py check
 	sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py makemigrations --check --dry-run

@@ -54,6 +54,7 @@ def claim_due_email_deliveries(
             .filter(
                 state__in=(EmailDelivery.State.PENDING, EmailDelivery.State.RETRY_WAIT),
                 next_attempt_at__lte=current_time,
+                access_grant__revoked_at__isnull=True,
             )
             .order_by("next_attempt_at", "pk")[:limit]
         )
@@ -115,15 +116,21 @@ def correct_delivery_email(
             return order
         order.delivery_email = normalized_email
         order.save(update_fields=["delivery_email"])
-        unsent = EmailDelivery.objects.select_for_update().filter(
-            order=order,
-            state__in=(
-                EmailDelivery.State.PENDING,
-                EmailDelivery.State.RETRY_WAIT,
-                EmailDelivery.State.FAILED,
-            ),
+        order_deliveries = list(
+            EmailDelivery.objects.select_for_update().filter(
+                order=order,
+                state__in=(
+                    EmailDelivery.State.PENDING,
+                    EmailDelivery.State.PROCESSING,
+                    EmailDelivery.State.RETRY_WAIT,
+                    EmailDelivery.State.FAILED,
+                ),
+            )
         )
-        for delivery in unsent:
+        for delivery in order_deliveries:
+            if delivery.state == EmailDelivery.State.PROCESSING:
+                # The worker has the only safe pre-I/O cancellation point for a live claim.
+                continue
             delivery.state = EmailDelivery.State.CANCELED
             delivery.lease_id = None
             delivery.lease_expires_at = None
@@ -164,9 +171,47 @@ def resend_order_access(*, order_id: int, now: datetime | None = None) -> EmailD
         )
 
 
+def retry_failed_email_delivery(
+    *,
+    delivery_id: int,
+    now: datetime | None = None,
+) -> EmailDelivery | None:
+    """Requeue exactly one failed current delivery while preserving its durable lineage."""
+    identity = (
+        EmailDelivery.objects.only("order_id", "access_grant_id").filter(pk=delivery_id).first()
+    )
+    if identity is None:
+        return None
+    current_time = _current_time(now)
+    with transaction.atomic():
+        order = Order.objects.select_for_update().get(pk=identity.order_id)
+        grant = (
+            OrderAccessGrant.objects.select_for_update()
+            .filter(pk=identity.access_grant_id, order=order)
+            .first()
+        )
+        delivery = EmailDelivery.objects.select_for_update().filter(pk=delivery_id).first()
+        if (
+            grant is None
+            or delivery is None
+            or grant.revoked_at is not None
+            or delivery.order_id != order.pk
+            or delivery.access_grant_id != grant.pk
+            or delivery.state != EmailDelivery.State.FAILED
+            or delivery.recipient_email != order.delivery_email
+            or order.status != Order.Status.PAID
+        ):
+            return None
+        delivery.state = EmailDelivery.State.PENDING
+        delivery.next_attempt_at = current_time
+        delivery.save(update_fields=["state", "next_attempt_at", "updated_at"])
+    return delivery
+
+
 def _recover_expired_delivery_leases(*, now: datetime, limit: int) -> None:
     expired = list(
-        EmailDelivery.objects.select_for_update(skip_locked=True)
+        EmailDelivery.objects.select_for_update(skip_locked=True, of=("self",))
+        .select_related("access_grant")
         .filter(
             state=EmailDelivery.State.PROCESSING,
             lease_expires_at__lte=now,
@@ -174,11 +219,16 @@ def _recover_expired_delivery_leases(*, now: datetime, limit: int) -> None:
         .order_by("lease_expires_at", "pk")[:limit]
     )
     for delivery in expired:
-        delivery.state = EmailDelivery.State.RETRY_WAIT
+        delivery.state = (
+            EmailDelivery.State.CANCELED
+            if delivery.access_grant.revoked_at is not None
+            else EmailDelivery.State.RETRY_WAIT
+        )
         delivery.lease_id = None
         delivery.lease_expires_at = None
         delivery.next_attempt_at = now
-        delivery.last_failure_category = "lease_expired"
+        if delivery.state == EmailDelivery.State.RETRY_WAIT:
+            delivery.last_failure_category = "lease_expired"
         delivery.save(
             update_fields=[
                 "state",
@@ -201,11 +251,13 @@ def _delivery_for_active_claim(*, claim: EmailDeliveryClaim, now: datetime) -> E
             state=EmailDelivery.State.PROCESSING,
             lease_id=claim.lease_id,
             lease_expires_at__gt=now,
-            access_grant__revoked_at__isnull=True,
         )
         .first()
     )
     if delivery is None:
+        return None
+    if delivery.access_grant.revoked_at is not None:
+        _cancel_revoked_active_claim(claim=claim, now=now)
         return None
     if delivery.recipient_email != delivery.order.delivery_email:
         _cancel_obsolete_active_claim(claim=claim, now=now)
@@ -230,6 +282,28 @@ def _cancel_obsolete_active_claim(*, claim: EmailDeliveryClaim, now: datetime) -
             .first()
         )
         if delivery is None or delivery.recipient_email == delivery.order.delivery_email:
+            return
+        delivery.state = EmailDelivery.State.CANCELED
+        delivery.lease_id = None
+        delivery.lease_expires_at = None
+        delivery.save(update_fields=["state", "lease_id", "lease_expires_at", "updated_at"])
+
+
+def _cancel_revoked_active_claim(*, claim: EmailDeliveryClaim, now: datetime) -> None:
+    """Terminalize a revoked lease only before its worker has started provider I/O."""
+    with transaction.atomic():
+        delivery = (
+            EmailDelivery.objects.select_for_update(of=("self",))
+            .select_related("access_grant")
+            .filter(
+                pk=claim.delivery_id,
+                state=EmailDelivery.State.PROCESSING,
+                lease_id=claim.lease_id,
+                lease_expires_at__gt=now,
+            )
+            .first()
+        )
+        if delivery is None or delivery.access_grant.revoked_at is None:
             return
         delivery.state = EmailDelivery.State.CANCELED
         delivery.lease_id = None
@@ -283,7 +357,7 @@ def _record_delivery_result(
 ) -> EmailDelivery | None:
     with transaction.atomic():
         delivery = (
-            EmailDelivery.objects.select_for_update()
+            EmailDelivery.objects.select_for_update(of=("self",))
             .select_related("order", "access_grant")
             .filter(
                 pk=claim.delivery_id,
@@ -331,7 +405,9 @@ def _record_delivery_result(
             return delivery
 
         delivery.last_failure_category = result.safe_failure_category
-        if delivery.recipient_email != delivery.order.delivery_email:
+        if _delivery_grant_is_revoked(grant_id=delivery.access_grant_id) or not (
+            _delivery_recipient_is_current(delivery=delivery)
+        ):
             delivery.state = EmailDelivery.State.CANCELED
             delivery.save(
                 update_fields=[
@@ -380,6 +456,16 @@ def _record_delivery_result(
             now=now,
         )
         return delivery
+
+
+def _delivery_grant_is_revoked(*, grant_id: UUID) -> bool:
+    """Read the grant's current revocation state without widening the delivery row lock."""
+    return OrderAccessGrant.objects.filter(pk=grant_id, revoked_at__isnull=False).exists()
+
+
+def _delivery_recipient_is_current(*, delivery: EmailDelivery) -> bool:
+    """Compare immutable delivery evidence to the joined current Order recipient snapshot."""
+    return delivery.recipient_email == delivery.order.delivery_email
 
 
 def _resolve_repaired_email_failure_attentions(*, order: Order, now: datetime) -> None:

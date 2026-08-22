@@ -1,5 +1,6 @@
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from django.db import IntegrityError, transaction
@@ -10,6 +11,14 @@ from commerce.models import CommerceAttention, Order, PaymentAttempt
 logger = logging.getLogger(__name__)
 
 _SAFE_SUBJECT_RE = re.compile(r"^[a-z][a-z0-9_-]*:[a-z0-9_-]+$")
+
+
+@dataclass(frozen=True)
+class ManualAttentionResolution:
+    """The locked manual resolution result, including whether this call changed the record."""
+
+    attention: CommerceAttention
+    performed: bool
 
 
 def _safe_subject(subject: str) -> str:
@@ -102,16 +111,19 @@ def resolve_attention_manually(
     attention_id: int,
     comment: str,
     now: datetime | None = None,
-) -> CommerceAttention:
+) -> ManualAttentionResolution:
     """Preserve an operator's explicit reason when they close a remaining problem."""
     if not isinstance(comment, str) or not (comment := comment.strip()):
         raise ValueError("A manual attention resolution requires a comment.")
-    return _resolve_attention(
-        attention_id=attention_id,
-        source="admin",
-        comment=comment,
-        now=now,
-    )
+    with transaction.atomic():
+        attention = CommerceAttention.objects.select_for_update().get(pk=attention_id)
+        if attention.resolved_at is not None:
+            return ManualAttentionResolution(attention=attention, performed=False)
+        attention.resolved_at = _current_time(now)
+        attention.resolution_source = CommerceAttention.ResolutionSource.ADMIN
+        attention.resolution_comment = comment
+        attention.save(update_fields=["resolved_at", "resolution_source", "resolution_comment"])
+    return ManualAttentionResolution(attention=attention, performed=True)
 
 
 def resolve_open_attention_automatically(

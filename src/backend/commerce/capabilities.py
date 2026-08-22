@@ -10,7 +10,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from commerce.identity import browser_token_sha256, generate_browser_token, parse_browser_token
-from commerce.models import Order, OrderAccessGrant
+from commerce.models import EmailDelivery, Order, OrderAccessGrant
 
 _PURCHASE_BROWSER_LIFETIME = timedelta(days=30)
 _ORDER_ACCESS_SIGNATURE_CONTEXT = b"findme-photo-order-access-v1\0"
@@ -160,11 +160,52 @@ def revoke_order_access_grant(
     grant: OrderAccessGrant,
     *,
     revoked_at: datetime | None = None,
-) -> None:
-    if grant.revoked_at is not None:
-        return
-    grant.revoked_at = revoked_at or timezone.now()
-    grant.save(update_fields=["revoked_at"])
+) -> OrderAccessGrant | None:
+    """Revoke a grant and cancel its unsent delivery work under one stable lock order."""
+    if grant.pk is None:
+        return None
+    identity = OrderAccessGrant.objects.only("order_id").filter(pk=grant.pk).first()
+    if identity is None:
+        return None
+    current_time = revoked_at or timezone.now()
+    with transaction.atomic():
+        order = Order.objects.select_for_update().get(pk=identity.order_id)
+        locked_grant = (
+            OrderAccessGrant.objects.select_for_update().filter(pk=grant.pk, order=order).first()
+        )
+        if locked_grant is None or locked_grant.revoked_at is not None:
+            return None
+        locked_grant.revoked_at = current_time
+        locked_grant.save(update_fields=["revoked_at"])
+        grant_deliveries = list(
+            EmailDelivery.objects.select_for_update().filter(
+                access_grant=locked_grant,
+                state__in=(
+                    EmailDelivery.State.PENDING,
+                    EmailDelivery.State.PROCESSING,
+                    EmailDelivery.State.RETRY_WAIT,
+                    EmailDelivery.State.FAILED,
+                ),
+            )
+        )
+        for delivery in grant_deliveries:
+            if delivery.state == EmailDelivery.State.PROCESSING:
+                # The worker has the only safe pre-I/O cancellation point for a live claim.
+                continue
+            delivery.state = EmailDelivery.State.CANCELED
+            delivery.lease_id = None
+            delivery.lease_expires_at = None
+            delivery.next_attempt_at = current_time
+            delivery.save(
+                update_fields=[
+                    "state",
+                    "lease_id",
+                    "lease_expires_at",
+                    "next_attempt_at",
+                    "updated_at",
+                ]
+            )
+    return locked_grant
 
 
 def record_order_customer_access(*, order: Order, now: datetime | None = None) -> None:

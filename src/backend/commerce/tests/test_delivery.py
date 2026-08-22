@@ -2,17 +2,22 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from threading import Barrier
+from threading import Event as ThreadEvent
+from time import monotonic, sleep
+from unittest.mock import patch
 
 from django.db import close_old_connections, connection, transaction
 from django.test import TransactionTestCase
 from picflow.models import Event, Photo
 
 from commerce.attention import open_attention
+from commerce.capabilities import revoke_order_access_grant
 from commerce.delivery import (
     ResendOrderAccessRateLimited,
     claim_due_email_deliveries,
     correct_delivery_email,
     resend_order_access,
+    retry_failed_email_delivery,
     send_claimed_email_delivery,
 )
 from commerce.email_sender import EmailMessage, EmailSendOutcome, EmailSendResult
@@ -24,6 +29,7 @@ from commerce.models import (
     OrderAccessGrant,
     OrderItem,
 )
+from commerce.worker import commerce_worker_health
 
 
 class _RecordingSender:
@@ -82,6 +88,20 @@ class _CorrectingSender:
         )
 
 
+class _RevokingSender:
+    """Model a grant being revoked while the provider call is already in flight."""
+
+    def __init__(self, *, grant: OrderAccessGrant, now: datetime) -> None:
+        self._grant = grant
+        self._now = now
+        self.messages: list[EmailMessage] = []
+
+    def send(self, message: EmailMessage, *, timeout_seconds: int) -> EmailSendResult:  # noqa: ARG002
+        self.messages.append(message)
+        revoke_order_access_grant(self._grant, revoked_at=self._now)
+        return EmailSendResult(outcome=EmailSendOutcome.SUCCEEDED)
+
+
 class _LeaseExpiringSender:
     def __init__(self, *, delivery_id: int, expired_at: datetime) -> None:
         self._delivery_id = delivery_id
@@ -104,6 +124,43 @@ class _AccessUrlBuilder:
         url = f"https://findme.example.test/orders/access/{grant.pk}/{signature}"
         self.urls.append(url)
         return url
+
+
+def _row_share_locks_for_backend(*, backend_pid: int) -> set[str]:
+    """Return Commerce row-lock targets for a separate PostgreSQL backend."""
+    tables = (
+        EmailDelivery._meta.db_table,
+        Order._meta.db_table,
+        OrderAccessGrant._meta.db_table,
+    )
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT pg_class.relname
+            FROM pg_locks
+            INNER JOIN pg_class ON pg_class.oid = pg_locks.relation
+            WHERE pg_locks.pid = %s
+              AND pg_locks.mode = 'RowShareLock'
+              AND pg_class.relname IN (%s, %s, %s)
+            """,
+            [backend_pid, *tables],
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _backend_is_waiting_for_lock(*, backend_pid: int, timeout_seconds: float = 5) -> bool:
+    deadline = monotonic() + timeout_seconds
+    while monotonic() < deadline:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid = %s",
+                [backend_pid],
+            )
+            row = cursor.fetchone()
+        if row is not None and row[0] == "Lock":
+            return True
+        sleep(0.01)
+    return False
 
 
 class EmailDeliveryServiceTests(TransactionTestCase):
@@ -613,3 +670,622 @@ class EmailDeliveryServiceTests(TransactionTestCase):
             subject=f"email-delivery:{failed_delivery.pk}",
         )
         self.assertIsNotNone(repaired.resolved_at)
+
+    def test_manual_failed_delivery_retry_reuses_one_job_and_resolves_its_attention(self) -> None:
+        """A deliberate retry must not duplicate customer email or strand its original alert."""
+        failed_delivery = self.create_delivery()
+        self.send_one(
+            delivery=failed_delivery,
+            now=self.now,
+            sender=_RecordingSender((EmailSendOutcome.TERMINAL_FAILURE,)),
+            url_builder=_AccessUrlBuilder(),
+        )
+
+        first_retry = retry_failed_email_delivery(
+            delivery_id=failed_delivery.pk,
+            now=self.now + timedelta(seconds=1),
+        )
+        repeated_retry = retry_failed_email_delivery(
+            delivery_id=failed_delivery.pk,
+            now=self.now + timedelta(seconds=2),
+        )
+
+        if first_retry is None:
+            raise AssertionError("The first manual retry must requeue the failed delivery.")
+        self.assertEqual(first_retry.pk, failed_delivery.pk)
+        self.assertIsNone(repeated_retry)
+        failed_delivery.refresh_from_db()
+        self.assertEqual(failed_delivery.state, EmailDelivery.State.PENDING)
+        self.assertEqual(failed_delivery.attempt_count, 1)
+        self.assertEqual(EmailDelivery.objects.filter(order=self.order).count(), 1)
+        self.send_one(
+            delivery=failed_delivery,
+            now=self.now + timedelta(seconds=2),
+            sender=_RecordingSender((EmailSendOutcome.SUCCEEDED,)),
+            url_builder=_AccessUrlBuilder(),
+        )
+        repaired = CommerceAttention.objects.get(
+            kind=CommerceAttention.Kind.EMAIL_EXHAUSTED,
+            subject=f"email-delivery:{failed_delivery.pk}",
+        )
+        self.assertIsNotNone(repaired.resolved_at)
+
+    def test_concurrent_failed_delivery_retries_create_only_one_current_job(self) -> None:
+        """Two Admin submits for one failed delivery must serialize on its Order and grant."""
+        failed_delivery = self.create_delivery()
+        failed_delivery.state = EmailDelivery.State.FAILED
+        failed_delivery.attempt_count = 6
+        failed_delivery.save(update_fields=["state", "attempt_count"])
+        start = Barrier(2)
+
+        def retry_from_separate_connection() -> bool:
+            close_old_connections()
+            start.wait(timeout=2)
+            try:
+                return retry_failed_email_delivery(delivery_id=failed_delivery.pk) is not None
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = tuple(
+                future.result(timeout=5)
+                for future in (
+                    executor.submit(retry_from_separate_connection),
+                    executor.submit(retry_from_separate_connection),
+                )
+            )
+
+        self.assertEqual(sorted(results), [False, True])
+        failed_delivery.refresh_from_db()
+        self.assertEqual(failed_delivery.state, EmailDelivery.State.PENDING)
+        self.assertEqual(EmailDelivery.objects.filter(order=self.order).count(), 1)
+
+    def test_retry_rechecks_corrected_or_revoked_delivery_before_queueing_work(self) -> None:
+        """Correction and revocation must prevent a failed old link from becoming sendable again."""
+        corrected = self.create_delivery()
+        corrected.state = EmailDelivery.State.FAILED
+        corrected.save(update_fields=["state"])
+        correct_delivery_email(
+            order_id=self.order.pk,
+            delivery_email="corrected@example.test",
+            now=self.now,
+        )
+        self.assertIsNone(retry_failed_email_delivery(delivery_id=corrected.pk, now=self.now))
+        corrected.refresh_from_db()
+        self.assertEqual(corrected.state, EmailDelivery.State.CANCELED)
+        self.order.refresh_from_db()
+
+        revoked = EmailDelivery.objects.create(
+            order=self.order,
+            message_kind=EmailDelivery.MessageKind.ORDER_ACCESS,
+            recipient_email=self.order.delivery_email,
+            access_grant=self.grant,
+            state=EmailDelivery.State.FAILED,
+            next_attempt_at=self.now,
+        )
+        revoked_pending = EmailDelivery.objects.create(
+            order=self.order,
+            message_kind=EmailDelivery.MessageKind.ORDER_ACCESS,
+            recipient_email=self.order.delivery_email,
+            access_grant=self.grant,
+            state=EmailDelivery.State.PENDING,
+            next_attempt_at=self.now,
+        )
+        revoked_retry_wait = EmailDelivery.objects.create(
+            order=self.order,
+            message_kind=EmailDelivery.MessageKind.ORDER_ACCESS,
+            recipient_email=self.order.delivery_email,
+            access_grant=self.grant,
+            state=EmailDelivery.State.RETRY_WAIT,
+            next_attempt_at=self.now,
+        )
+        revoke_order_access_grant(self.grant)
+        self.assertIsNone(retry_failed_email_delivery(delivery_id=revoked.pk, now=self.now))
+        for delivery in (revoked, revoked_pending, revoked_retry_wait):
+            delivery.refresh_from_db()
+            self.assertEqual(delivery.state, EmailDelivery.State.CANCELED)
+            self.assertIsNone(delivery.lease_id)
+            self.assertIsNone(delivery.lease_expires_at)
+
+        race_grant = OrderAccessGrant.objects.create(
+            order=self.order,
+            source=OrderAccessGrant.Source.RESEND,
+        )
+        queued_before_revocation = EmailDelivery.objects.create(
+            order=self.order,
+            message_kind=EmailDelivery.MessageKind.ORDER_ACCESS,
+            recipient_email=self.order.delivery_email,
+            access_grant=race_grant,
+            state=EmailDelivery.State.FAILED,
+            next_attempt_at=self.now,
+        )
+        queued_retry = retry_failed_email_delivery(
+            delivery_id=queued_before_revocation.pk,
+            now=self.now,
+        )
+        if queued_retry is None:
+            raise AssertionError("The active failed delivery must enter the retry queue.")
+        revoke_order_access_grant(race_grant)
+        queued_before_revocation.refresh_from_db()
+        self.assertEqual(queued_before_revocation.state, EmailDelivery.State.CANCELED)
+        self.assertEqual(claim_due_email_deliveries(now=self.now), ())
+        health = commerce_worker_health(
+            now=self.now,
+            max_ready_age=timedelta(0),
+            worker_is_alive=lambda: True,
+        )
+        self.assertTrue(health.healthy)
+        self.assertIsNone(health.oldest_ready_work_type)
+
+    def test_revocation_after_claim_before_external_io_cancels_without_sending(self) -> None:
+        """A claim revoked before its provider call must terminalize without issuing a bearer."""
+        delivery = self.create_delivery()
+        claim = claim_due_email_deliveries(now=self.now, limit=1)[0]
+        revoke_order_access_grant(self.grant, revoked_at=self.now)
+        sender = _RecordingSender((EmailSendOutcome.SUCCEEDED,))
+
+        result = send_claimed_email_delivery(
+            claim=claim,
+            email_sender=sender,
+            order_access_signing_secret=self.signing_secret,
+            order_access_url_for_grant=_AccessUrlBuilder(),
+            support_contact=self.support_contact,
+            timeout_seconds=15,
+            now=self.now,
+        )
+
+        delivery.refresh_from_db()
+        self.assertIsNone(result)
+        self.assertEqual(sender.messages, [])
+        self.assertEqual(delivery.state, EmailDelivery.State.CANCELED)
+        self.assertEqual(delivery.attempt_count, 0)
+        self.assertIsNone(delivery.lease_id)
+        self.assertIsNone(delivery.lease_expires_at)
+
+    def test_revocation_during_provider_io_keeps_the_accepted_send_result(self) -> None:
+        """Revocation cannot rewrite an outcome accepted after the provider call crossed I/O."""
+        delivery = self.create_delivery()
+        claim = claim_due_email_deliveries(now=self.now, limit=1)[0]
+        sender = _RevokingSender(grant=self.grant, now=self.now)
+
+        result = send_claimed_email_delivery(
+            claim=claim,
+            email_sender=sender,
+            order_access_signing_secret=self.signing_secret,
+            order_access_url_for_grant=_AccessUrlBuilder(),
+            support_contact=self.support_contact,
+            timeout_seconds=15,
+            now=self.now,
+        )
+
+        delivery.refresh_from_db()
+        self.assertEqual(result, delivery)
+        self.assertEqual(len(sender.messages), 1)
+        self.assertEqual(delivery.state, EmailDelivery.State.SUCCEEDED)
+        self.assertEqual(delivery.attempt_count, 1)
+        self.assertEqual(EmailDeliveryAttempt.objects.filter(delivery=delivery).count(), 1)
+
+    def test_post_provider_result_recording_locks_only_delivery_before_revocation(self) -> None:
+        """Result persistence yields Order/grant locking to revocation without loss."""
+        delivery = self.create_delivery()
+        claim = claim_due_email_deliveries(now=self.now, limit=1)[0]
+        record_locked = ThreadEvent()
+        release_record = ThreadEvent()
+        result_backend_ready = ThreadEvent()
+        revoke_backend_ready = ThreadEvent()
+        result_backend_pids: list[int] = []
+        revoke_backend_pids: list[int] = []
+        original_create = EmailDeliveryAttempt.objects.create
+
+        def pause_after_result_lock(*args, **kwargs):
+            record_locked.set()
+            if not release_record.wait(timeout=5):
+                raise AssertionError("The test did not release result recording.")
+            return original_create(*args, **kwargs)
+
+        def record_result_on_separate_connection() -> EmailDelivery | None:
+            close_old_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    result_backend_pids.append(cursor.fetchone()[0])
+                result_backend_ready.set()
+                return send_claimed_email_delivery(
+                    claim=claim,
+                    email_sender=_RecordingSender((EmailSendOutcome.SUCCEEDED,)),
+                    order_access_signing_secret=self.signing_secret,
+                    order_access_url_for_grant=_AccessUrlBuilder(),
+                    support_contact=self.support_contact,
+                    timeout_seconds=15,
+                    now=self.now,
+                )
+            finally:
+                close_old_connections()
+
+        def revoke_on_separate_connection() -> OrderAccessGrant | None:
+            close_old_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    revoke_backend_pids.append(cursor.fetchone()[0])
+                revoke_backend_ready.set()
+                return revoke_order_access_grant(self.grant, revoked_at=self.now)
+            finally:
+                close_old_connections()
+
+        with (
+            patch(
+                "commerce.delivery.EmailDeliveryAttempt.objects.create",
+                side_effect=pause_after_result_lock,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            result_future = executor.submit(record_result_on_separate_connection)
+            self.assertTrue(result_backend_ready.wait(timeout=2))
+            self.assertTrue(record_locked.wait(timeout=2))
+            self.assertEqual(
+                _row_share_locks_for_backend(backend_pid=result_backend_pids[0]),
+                {EmailDelivery._meta.db_table},
+            )
+            revoke_future = executor.submit(revoke_on_separate_connection)
+            try:
+                self.assertTrue(revoke_backend_ready.wait(timeout=2))
+                self.assertTrue(_backend_is_waiting_for_lock(backend_pid=revoke_backend_pids[0]))
+            finally:
+                release_record.set()
+            recorded = result_future.result(timeout=5)
+            revoked = revoke_future.result(timeout=5)
+
+        delivery.refresh_from_db()
+        self.grant.refresh_from_db()
+        self.assertEqual(recorded, delivery)
+        self.assertIsNotNone(revoked)
+        self.assertEqual(delivery.state, EmailDelivery.State.SUCCEEDED)
+        self.assertEqual(delivery.attempt_count, 1)
+        self.assertEqual(EmailDeliveryAttempt.objects.filter(delivery=delivery).count(), 1)
+        self.assertIsNotNone(self.grant.revoked_at)
+
+    def test_post_provider_retry_failure_after_revocation_cancels_the_delivery(self) -> None:
+        """A fresh grant read prevents a stale joined snapshot from recreating revoked work."""
+        delivery = self.create_delivery()
+        claim = claim_due_email_deliveries(now=self.now, limit=1)[0]
+        record_locked = ThreadEvent()
+        release_record = ThreadEvent()
+        original_create = EmailDeliveryAttempt.objects.create
+
+        def pause_after_result_lock(*args, **kwargs):
+            record_locked.set()
+            if not release_record.wait(timeout=5):
+                raise AssertionError("The test did not release result recording.")
+            return original_create(*args, **kwargs)
+
+        def record_retryable_result() -> EmailDelivery | None:
+            close_old_connections()
+            try:
+                return send_claimed_email_delivery(
+                    claim=claim,
+                    email_sender=_RecordingSender((EmailSendOutcome.RETRYABLE_FAILURE,)),
+                    order_access_signing_secret=self.signing_secret,
+                    order_access_url_for_grant=_AccessUrlBuilder(),
+                    support_contact=self.support_contact,
+                    timeout_seconds=15,
+                    now=self.now,
+                )
+            finally:
+                close_old_connections()
+
+        def revoke_on_separate_connection() -> OrderAccessGrant | None:
+            close_old_connections()
+            try:
+                return revoke_order_access_grant(self.grant, revoked_at=self.now)
+            finally:
+                close_old_connections()
+
+        with (
+            patch(
+                "commerce.delivery.EmailDeliveryAttempt.objects.create",
+                side_effect=pause_after_result_lock,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            result_future = executor.submit(record_retryable_result)
+            self.assertTrue(record_locked.wait(timeout=2))
+            revoke_future = executor.submit(revoke_on_separate_connection)
+            release_record.set()
+            recorded = result_future.result(timeout=5)
+            self.assertIsNotNone(revoke_future.result(timeout=5))
+
+        delivery.refresh_from_db()
+        self.assertEqual(recorded, delivery)
+        self.assertEqual(delivery.state, EmailDelivery.State.CANCELED)
+        self.assertEqual(delivery.attempt_count, 1)
+        attempt = EmailDeliveryAttempt.objects.get(delivery=delivery)
+        self.assertEqual(attempt.outcome, EmailDeliveryAttempt.Outcome.RETRYABLE_FAILURE)
+
+    def test_revoke_waits_for_result_then_cancels_its_retryable_delivery(self) -> None:
+        """A result that read an active grant cannot leave hidden revoked retry work behind."""
+        delivery = self.create_delivery()
+        claim = claim_due_email_deliveries(now=self.now, limit=1)[0]
+        grant_read = ThreadEvent()
+        release_result = ThreadEvent()
+        revoke_backend_ready = ThreadEvent()
+        revoke_backend_pids: list[int] = []
+
+        from commerce import delivery as delivery_module
+
+        original_grant_is_revoked = delivery_module._delivery_grant_is_revoked
+
+        def pause_after_active_grant_read(*, grant_id):
+            is_revoked = original_grant_is_revoked(grant_id=grant_id)
+            grant_read.set()
+            if not release_result.wait(timeout=5):
+                raise AssertionError("The test did not release result recording.")
+            return is_revoked
+
+        def record_retryable_result() -> EmailDelivery | None:
+            close_old_connections()
+            try:
+                return send_claimed_email_delivery(
+                    claim=claim,
+                    email_sender=_RecordingSender((EmailSendOutcome.RETRYABLE_FAILURE,)),
+                    order_access_signing_secret=self.signing_secret,
+                    order_access_url_for_grant=_AccessUrlBuilder(),
+                    support_contact=self.support_contact,
+                    timeout_seconds=15,
+                    now=self.now,
+                )
+            finally:
+                close_old_connections()
+
+        def revoke_on_separate_connection() -> OrderAccessGrant | None:
+            close_old_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    revoke_backend_pids.append(cursor.fetchone()[0])
+                revoke_backend_ready.set()
+                return revoke_order_access_grant(self.grant, revoked_at=self.now)
+            finally:
+                close_old_connections()
+
+        with (
+            patch(
+                "commerce.delivery._delivery_grant_is_revoked",
+                side_effect=pause_after_active_grant_read,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            result_future = executor.submit(record_retryable_result)
+            self.assertTrue(grant_read.wait(timeout=2))
+            revoke_future = executor.submit(revoke_on_separate_connection)
+            try:
+                self.assertTrue(revoke_backend_ready.wait(timeout=2))
+                self.assertTrue(_backend_is_waiting_for_lock(backend_pid=revoke_backend_pids[0]))
+            finally:
+                release_result.set()
+            recorded = result_future.result(timeout=5)
+            revoked = revoke_future.result(timeout=5)
+
+        delivery.refresh_from_db()
+        self.grant.refresh_from_db()
+        self.assertIsNotNone(recorded)
+        self.assertIsNotNone(revoked)
+        self.assertEqual(delivery.state, EmailDelivery.State.CANCELED)
+        self.assertEqual(delivery.attempt_count, 1)
+        self.assertEqual(claim_due_email_deliveries(now=self.now), ())
+        health = commerce_worker_health(
+            now=self.now,
+            max_ready_age=timedelta(0),
+            worker_is_alive=lambda: True,
+        )
+        self.assertTrue(health.healthy)
+        self.assertIsNone(health.oldest_ready_work_type)
+        attempt = EmailDeliveryAttempt.objects.get(delivery=delivery)
+        self.assertEqual(attempt.outcome, EmailDeliveryAttempt.Outcome.RETRYABLE_FAILURE)
+        self.assertIsNotNone(self.grant.revoked_at)
+
+    def test_correction_waits_for_old_email_result_then_cancels_retryable_delivery(self) -> None:
+        """A stale joined recipient read cannot recreate old-recipient retries after correction."""
+        delivery = self.create_delivery()
+        claim = claim_due_email_deliveries(now=self.now, limit=1)[0]
+        old_email_read = ThreadEvent()
+        release_result = ThreadEvent()
+        correction_backend_ready = ThreadEvent()
+        correction_backend_pids: list[int] = []
+
+        from commerce import delivery as delivery_module
+
+        original_recipient_is_current = delivery_module._delivery_recipient_is_current
+
+        def pause_after_old_order_email(*, delivery):
+            is_current = original_recipient_is_current(delivery=delivery)
+            old_email_read.set()
+            if not release_result.wait(timeout=5):
+                raise AssertionError("The test did not release result recording.")
+            return is_current
+
+        def record_retryable_result() -> EmailDelivery | None:
+            close_old_connections()
+            try:
+                return send_claimed_email_delivery(
+                    claim=claim,
+                    email_sender=_RecordingSender((EmailSendOutcome.RETRYABLE_FAILURE,)),
+                    order_access_signing_secret=self.signing_secret,
+                    order_access_url_for_grant=_AccessUrlBuilder(),
+                    support_contact=self.support_contact,
+                    timeout_seconds=15,
+                    now=self.now,
+                )
+            finally:
+                close_old_connections()
+
+        def correct_on_separate_connection() -> Order:
+            close_old_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    correction_backend_pids.append(cursor.fetchone()[0])
+                correction_backend_ready.set()
+                return correct_delivery_email(
+                    order_id=self.order.pk,
+                    delivery_email="corrected@example.test",
+                    now=self.now,
+                )
+            finally:
+                close_old_connections()
+
+        with (
+            patch(
+                "commerce.delivery._delivery_recipient_is_current",
+                side_effect=pause_after_old_order_email,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            result_future = executor.submit(record_retryable_result)
+            self.assertTrue(old_email_read.wait(timeout=2))
+            correction_future = executor.submit(correct_on_separate_connection)
+            try:
+                self.assertTrue(correction_backend_ready.wait(timeout=2))
+                self.assertTrue(
+                    _backend_is_waiting_for_lock(backend_pid=correction_backend_pids[0])
+                )
+            finally:
+                release_result.set()
+            recorded = result_future.result(timeout=5)
+            corrected_order = correction_future.result(timeout=5)
+
+        delivery.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertIsNotNone(recorded)
+        self.assertEqual(corrected_order.pk, self.order.pk)
+        self.assertEqual(self.order.delivery_email, "corrected@example.test")
+        self.assertEqual(delivery.state, EmailDelivery.State.CANCELED)
+        self.assertEqual(delivery.attempt_count, 1)
+        self.assertEqual(claim_due_email_deliveries(now=self.now), ())
+        health = commerce_worker_health(
+            now=self.now,
+            max_ready_age=timedelta(0),
+            worker_is_alive=lambda: True,
+        )
+        self.assertTrue(health.healthy)
+        self.assertIsNone(health.oldest_ready_work_type)
+        attempt = EmailDeliveryAttempt.objects.get(delivery=delivery)
+        self.assertEqual(attempt.recipient_email, "buyer@example.test")
+        self.assertEqual(attempt.outcome, EmailDeliveryAttempt.Outcome.RETRYABLE_FAILURE)
+
+    def test_correction_waits_for_result_then_preserves_accepted_success(self) -> None:
+        """Correction cannot rewrite an in-flight accepted success or immutable attempt."""
+        delivery = self.create_delivery()
+        claim = claim_due_email_deliveries(now=self.now, limit=1)[0]
+        record_locked = ThreadEvent()
+        release_result = ThreadEvent()
+        correction_backend_ready = ThreadEvent()
+        correction_backend_pids: list[int] = []
+        original_create = EmailDeliveryAttempt.objects.create
+
+        def pause_after_result_lock(*args, **kwargs):
+            record_locked.set()
+            if not release_result.wait(timeout=5):
+                raise AssertionError("The test did not release result recording.")
+            return original_create(*args, **kwargs)
+
+        def record_success() -> EmailDelivery | None:
+            close_old_connections()
+            try:
+                return send_claimed_email_delivery(
+                    claim=claim,
+                    email_sender=_RecordingSender((EmailSendOutcome.SUCCEEDED,)),
+                    order_access_signing_secret=self.signing_secret,
+                    order_access_url_for_grant=_AccessUrlBuilder(),
+                    support_contact=self.support_contact,
+                    timeout_seconds=15,
+                    now=self.now,
+                )
+            finally:
+                close_old_connections()
+
+        def correct_on_separate_connection() -> Order:
+            close_old_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    correction_backend_pids.append(cursor.fetchone()[0])
+                correction_backend_ready.set()
+                return correct_delivery_email(
+                    order_id=self.order.pk,
+                    delivery_email="corrected@example.test",
+                    now=self.now,
+                )
+            finally:
+                close_old_connections()
+
+        with (
+            patch(
+                "commerce.delivery.EmailDeliveryAttempt.objects.create",
+                side_effect=pause_after_result_lock,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            result_future = executor.submit(record_success)
+            self.assertTrue(record_locked.wait(timeout=2))
+            correction_future = executor.submit(correct_on_separate_connection)
+            try:
+                self.assertTrue(correction_backend_ready.wait(timeout=2))
+                self.assertTrue(
+                    _backend_is_waiting_for_lock(backend_pid=correction_backend_pids[0])
+                )
+            finally:
+                release_result.set()
+            recorded = result_future.result(timeout=5)
+            corrected_order = correction_future.result(timeout=5)
+
+        delivery.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(recorded, delivery)
+        self.assertEqual(corrected_order.pk, self.order.pk)
+        self.assertEqual(self.order.delivery_email, "corrected@example.test")
+        self.assertEqual(delivery.state, EmailDelivery.State.SUCCEEDED)
+        self.assertEqual(delivery.attempt_count, 1)
+        attempt = EmailDeliveryAttempt.objects.get(delivery=delivery)
+        self.assertEqual(attempt.recipient_email, "buyer@example.test")
+        self.assertEqual(attempt.outcome, EmailDeliveryAttempt.Outcome.SUCCEEDED)
+
+    def test_concurrent_retry_and_delivery_correction_leave_no_old_recipient_work(self) -> None:
+        """The Order lock makes either correction/retry ordering safe for the old recipient."""
+        failed_delivery = self.create_delivery()
+        failed_delivery.state = EmailDelivery.State.FAILED
+        failed_delivery.save(update_fields=["state"])
+        start = Barrier(2)
+
+        def retry_from_separate_connection() -> None:
+            close_old_connections()
+            start.wait(timeout=2)
+            try:
+                retry_failed_email_delivery(delivery_id=failed_delivery.pk)
+            finally:
+                close_old_connections()
+
+        def correct_from_separate_connection() -> None:
+            close_old_connections()
+            start.wait(timeout=2)
+            try:
+                correct_delivery_email(
+                    order_id=self.order.pk,
+                    delivery_email="corrected@example.test",
+                )
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = (
+                executor.submit(retry_from_separate_connection),
+                executor.submit(correct_from_separate_connection),
+            )
+            for future in futures:
+                future.result(timeout=5)
+
+        failed_delivery.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.delivery_email, "corrected@example.test")
+        self.assertEqual(failed_delivery.state, EmailDelivery.State.CANCELED)
+        self.assertEqual(claim_due_email_deliveries(now=self.now), ())

@@ -461,6 +461,7 @@ def _oldest_ready_work(*, now: datetime) -> tuple[str | None, datetime | None]:
         EmailDelivery.objects.filter(
             state__in=(EmailDelivery.State.PENDING, EmailDelivery.State.RETRY_WAIT),
             next_attempt_at__lte=now,
+            access_grant__revoked_at__isnull=True,
         )
         .order_by("next_attempt_at")
         .values_list("next_attempt_at", flat=True)
@@ -472,6 +473,7 @@ def _oldest_ready_work(*, now: datetime) -> tuple[str | None, datetime | None]:
         EmailDelivery.objects.filter(
             state=EmailDelivery.State.PROCESSING,
             lease_expires_at__lte=now,
+            access_grant__revoked_at__isnull=True,
         )
         .order_by("lease_expires_at")
         .values_list("lease_expires_at", flat=True)

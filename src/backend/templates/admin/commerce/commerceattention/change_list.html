@@ -1,0 +1,6 @@
+{% extends "admin/change_list.html" %}
+
+{% block content_title %}
+  {{ block.super }}
+  <p>Открытых обращений: {{ open_attention_count }}</p>
+{% endblock %}

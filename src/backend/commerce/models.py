@@ -719,6 +719,7 @@ class CommerceAttention(models.Model):
     resolution_comment = models.TextField(blank=True)
 
     class Meta:
+        permissions = [("handle_attention", "Can handle Commerce attention")]
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(

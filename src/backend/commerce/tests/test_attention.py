@@ -209,5 +209,30 @@ class CommerceAttentionServiceTests(TransactionTestCase):
             now=self.now + timedelta(minutes=2),
         )
 
-        self.assertEqual(resolved.resolution_source, CommerceAttention.ResolutionSource.ADMIN)
-        self.assertEqual(resolved.resolution_comment, "Bank statement checked by operator.")
+        self.assertTrue(resolved.performed)
+        self.assertEqual(
+            resolved.attention.resolution_source,
+            CommerceAttention.ResolutionSource.ADMIN,
+        )
+        self.assertEqual(
+            resolved.attention.resolution_comment,
+            "Bank statement checked by operator.",
+        )
+        automatically_repaired = open_attention(
+            kind="manual_payment_conflict",
+            subject=f"payment-attempt:{self.attempt.pk}-repaired",
+            order=self.order,
+            payment_attempt=self.attempt,
+            now=self.now,
+        )
+        automatic = resolve_attention_automatically(
+            attention_id=automatically_repaired.pk,
+            now=self.now,
+        )
+        already_resolved = resolve_attention_manually(
+            attention_id=automatically_repaired.pk,
+            comment="Already repaired automatically.",
+            now=self.now + timedelta(minutes=3),
+        )
+        self.assertEqual(automatic.resolution_source, CommerceAttention.ResolutionSource.AUTOMATIC)
+        self.assertFalse(already_resolved.performed)

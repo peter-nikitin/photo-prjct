@@ -57,6 +57,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-023 | Maintainer | Keep event-photo folders durable and safely filterable | Validated | 2026-08-15 |
 | EJ-024 | Maintainer | Prepare paid watermarked-preview activation | In progress | 2026-08-21 |
 | EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | Delivered | 2026-08-21 |
+| EJ-026 | Maintainer | Keep paid purchase dark until external prerequisites are approved | In progress | 2026-08-22 |
 
 ## Job details
 
@@ -432,6 +433,20 @@ remain usable or accumulate indefinitely.
   objects, an idempotent `flock`-guarded host-cron package, and failed-candidate removal. The successful automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) executes the committed [`install-cart-cleanup-cron.sh` installation path](../deploy/apply-deployment.sh#L907), delivering the deployment automation. Live crontab presence and an actual cleanup execution remain unvalidated; no runtime gate is claimed active.
 - Last updated: 2026-08-21
 
+### EJ-026 — Maintainer — Keep paid purchase dark until external prerequisites are approved
+
+When I prepare paid checkout and original delivery, I want Orders, payment transitions, delivery
+work, and recovery controls to be locally executable behind fail-closed gates, so I can integrate
+real bank and email adapters only after their operational and legal contracts are approved.
+
+- Status: In progress
+- Evidence: The Order, PaymentAttempt, OrderItem, access-grant, delivery, attention, worker, and
+  Admin boundaries are implemented locally, disabled by default. Deterministic adapters and the
+  assembled repository flow cover no-network payment and email behavior only. No real provider,
+  fiscal/legal approval, worker activation, deployment, feature mutation, or live customer evidence
+  is claimed.
+- Last updated: 2026-08-22
+
 ### EJ-017 — Developer — Read canonical secret projections consistently
 
 When I run the application locally or use an approved workflow, I want one managed secret authority
@@ -546,3 +561,4 @@ This log is append-only.
 | 2026-08-20 | EJ-025 | Not recorded | In progress | Local command and deployment-contract coverage packages bounded daily cart cleanup; installation and operational verification remain pending. |
 | 2026-08-21 | EJ-019 | Validated | Delivered | Correction: Release B commit `d5b21e4` already delivered the capture-time projection reader; this row corrects the stale current-state value to that already-delivered state. Customer outcome is not validated. |
 | 2026-08-21 | EJ-025 | In progress | Delivered | The automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded and executes the committed [`install-cart-cleanup-cron.sh` installation path](../deploy/apply-deployment.sh#L907); live crontab presence and actual cleanup execution remain unvalidated. |
+| 2026-08-22 | EJ-026 | Not recorded | In progress | Local, disabled-default purchase capability now has order/payment/delivery/recovery evidence; real adapters, legal/fiscal approval, worker activation, deployment, and customer evidence remain external prerequisites. |

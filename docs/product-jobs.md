@@ -205,21 +205,25 @@ original without exposing its permanent storage key.
 When I select paid photos, I want to complete an order and payment, so I can obtain download
 entitlement.
 
-- Status: Candidate
-- Evidence: [Purchase and download](architecture.md#purchase-and-download). The merged
-  anonymous-cart slice is selection only; current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. Checkout, payment, orders, entitlement, and purchased-original delivery are not implemented.
-- Last updated: 2026-08-21
+- Status: In progress
+- Evidence: [Purchase and download](architecture.md#purchase-and-download). Checkout, immutable
+  Orders, deterministic local payment evidence, trusted manual payment, durable email work, and
+  protected original delivery are implemented locally, disabled by default. The repository does
+  not claim a real bank or email adapter, fiscal/legal approval, deployment, activation, or customer
+  evidence.
+- Last updated: 2026-08-22
 
 ### PJ-011 — Customer — Download purchased photos
 
 When my order is paid, I want to download only its entitled photos, so I can receive the files I
 purchased securely.
 
-- Status: Candidate
-- Evidence: [Purchase and download](architecture.md#purchase-and-download). Watermarked paid
-  previews deny original download; purchased-original delivery and its entitlement policy are not
-  implemented.
-- Last updated: 2026-08-20
+- Status: In progress
+- Evidence: [Purchase and download](architecture.md#purchase-and-download). A paid OrderItem can
+  authorize only its exact original through a purchase-browser bearer or individually revocable
+  signed Order grant. This is implemented locally, disabled by default; real storage, email,
+  payment, legal approval, activation, and customer evidence are not claimed.
+- Last updated: 2026-08-22
 
 ### PJ-016 — Customer — Select paid event photos
 
@@ -229,8 +233,11 @@ anonymous event-specific cart, so I can preserve a selection before checkout is 
 - Status: In progress
 - Evidence: Merged repository tests cover staff-gated selection from the paid gallery and saved
   selfie result, browser/event isolation, reload persistence, current-price totals, pruning,
-  request-time expiry, and original/download denial. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. The `paid-photo-cart` gate is absent/off by default and was not directly observed as active; real paid assets, public activation, legal-cookie review, customer outcome, checkout, payment, order, entitlement, and original delivery remain unverified or unimplemented.
-- Last updated: 2026-08-21
+  request-time expiry, and original/download denial. Checkout and purchase now consume this
+  selection boundary but remain implemented locally, disabled by default. Real paid assets, public
+  activation, legal-cookie review, customer outcome, real payment/email adapters, and worker
+  operation remain unverified.
+- Last updated: 2026-08-22
 
 ### PJ-012 — Visitor — Jump to a known gallery page
 
@@ -343,3 +350,6 @@ This log is append-only.
 | 2026-08-21 | PJ-009 | Candidate | Delivered | Merge commit `9cca069` delivers the anonymous download route, signed original resolver, and regression; current-main CI/deployment evidence supports delivery, while customer outcome is not validated. |
 | 2026-08-21 | PJ-012 | In progress | Delivered | Merge commit `02a8036` plus current-main CI/deployment evidence deliver numbered gallery and selfie-result pagination; customer outcome is not validated. |
 | 2026-08-21 | PJ-015 | In progress | Delivered | Release B commit `d5b21e4` is delivery evidence for projection-backed capture-time filtering; customer outcome is not validated. |
+| 2026-08-22 | PJ-010 | Candidate | In progress | Checkout, immutable orders, deterministic local payment transitions, and recovery are implemented locally, disabled by default; no real provider, activation, or customer evidence is claimed. |
+| 2026-08-22 | PJ-011 | Candidate | In progress | Paid OrderItem original signing through browser or revocable grant is implemented locally, disabled by default; no real provider, activation, or customer evidence is claimed. |
+| 2026-08-22 | PJ-016 | In progress | In progress | Cart selection remains separate from the newly local, disabled-default purchase boundary; real adapter, worker, activation, and customer evidence remain pending. |

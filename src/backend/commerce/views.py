@@ -13,6 +13,12 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from feature_flags import services as feature_flag_services
+from feature_flags.registry import (
+    PAID_PHOTO_CART,
+    PAID_PHOTO_PAYMENT_SIMULATOR,
+    PAID_PHOTO_PURCHASE,
+    PAID_WATERMARKED_PREVIEWS,
+)
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageUnavailable
 from picflow.gallery import (
     GALLERY_VARIANTS,
@@ -22,7 +28,6 @@ from picflow.gallery import (
     purchasable_paid_photo_queryset,
 )
 from picflow.models import Event, Photo
-from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 
 from commerce.capabilities import (
     purchase_browser_authorizes_order,
@@ -70,9 +75,6 @@ from commerce.services import (
     set_photo_selected,
 )
 
-PAID_PHOTO_CART_FLAG = "paid-photo-cart"
-PAID_PHOTO_PURCHASE_FLAG = "paid-photo-purchase"
-PAYMENT_SIMULATOR_FLAG = "paid-photo-payment-simulator"
 CART_COOKIE_NAME = "findme_cart"
 CART_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 PURCHASE_COOKIE_NAME = "findme_purchase"
@@ -175,11 +177,11 @@ class RequestCartState:
 
 
 def paid_cart_enabled(request: HttpRequest) -> bool:
-    return feature_flag_services.is_enabled(PAID_PHOTO_CART_FLAG, request.user)
+    return feature_flag_services.is_enabled(PAID_PHOTO_CART, request.user)
 
 
 def paid_purchase_enabled(request: HttpRequest) -> bool:
-    return feature_flag_services.is_enabled(PAID_PHOTO_PURCHASE_FLAG, request.user)
+    return feature_flag_services.is_enabled(PAID_PHOTO_PURCHASE, request.user)
 
 
 @sensitive_variables()
@@ -382,7 +384,7 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
 
 def _payment_gateway(request: HttpRequest) -> PaymentGateway:
     """Select the feature-gated simulator until a real adapter is configured."""
-    if not feature_flag_services.is_enabled(PAYMENT_SIMULATOR_FLAG, request.user):
+    if not feature_flag_services.is_enabled(PAID_PHOTO_PAYMENT_SIMULATOR, request.user):
         raise CheckoutPaymentUnavailable()
     return PaymentSimulatorGateway(
         confirmation_url_for_payment=lambda provider_payment_id: request.build_absolute_uri(
@@ -397,8 +399,8 @@ def _payment_gateway(request: HttpRequest) -> PaymentGateway:
 @require_http_methods(["GET", "POST"])
 def payment_simulator(request: HttpRequest, provider_payment_id: str) -> HttpResponse:
     if not feature_flag_services.is_enabled(
-        PAID_PHOTO_PURCHASE_FLAG, request.user
-    ) or not feature_flag_services.is_enabled(PAYMENT_SIMULATOR_FLAG, request.user):
+        PAID_PHOTO_PURCHASE, request.user
+    ) or not feature_flag_services.is_enabled(PAID_PHOTO_PAYMENT_SIMULATOR, request.user):
         return _purchase_not_found()
     attempt = (
         PaymentAttempt.objects.select_related("order")
@@ -496,7 +498,7 @@ def grant_order_status(
 @sensitive_variables()
 def payment_notification(request: HttpRequest) -> HttpResponse:
     """Apply only adapter-authenticated provider evidence; browser CSRF is irrelevant here."""
-    if not feature_flag_services.is_server_enabled(PAID_PHOTO_PURCHASE_FLAG):
+    if not feature_flag_services.is_server_enabled(PAID_PHOTO_PURCHASE):
         return _purchase_not_found()
     try:
         apply_authenticated_notification(
@@ -960,7 +962,7 @@ def clear(request: HttpRequest, event_slug: str) -> HttpResponse:
 
 def _authorized_event(request: HttpRequest, *, event_slug: str) -> tuple[Event | None, bool]:
     watermarked_previews_enabled = feature_flag_services.is_enabled(
-        PAID_WATERMARKED_PREVIEWS_FLAG,
+        PAID_WATERMARKED_PREVIEWS,
         request.user,
     )
     if not paid_cart_enabled(request) or not watermarked_previews_enabled:

@@ -7,8 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models.functions import Lower, Trim
 from feature_flags import services as feature_flag_services
-
-PAID_EVENTS_FLAG = "paid-events"
+from feature_flags.registry import PAID_EVENTS
 
 
 def event_cover_key(instance, filename: str) -> str:  # noqa: ARG001
@@ -34,7 +33,7 @@ class EventQuerySet(models.QuerySet):
             )
         else:
             visible = self.published()
-        if feature_flag_services.is_enabled(PAID_EVENTS_FLAG, user):
+        if feature_flag_services.is_enabled(PAID_EVENTS, user):
             return visible
         return visible.exclude(access_type=Event.AccessType.PAID)
 

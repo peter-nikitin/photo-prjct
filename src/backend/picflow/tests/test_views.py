@@ -26,6 +26,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
+from feature_flags.registry import PAID_EVENTS, PAID_PHOTO_CART, PAID_WATERMARKED_PREVIEWS
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
@@ -54,9 +55,6 @@ from processing.services.face_quality import publish_face_embedding_projection
 from selfie_search.models import SelfieSearch
 
 from picflow.models import Event, EventFolder, Photo
-from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
-
-PAID_PHOTO_CART_FLAG = "paid-photo-cart"
 
 
 class NavigationMarkupParser(HTMLParser):
@@ -252,7 +250,7 @@ class PageTests(TestCase):
             access_type=Event.AccessType.PAID,
             price_per_photo_kopecks=30000,
         )
-        states = {"paid-events": FEATURE_FLAG_STAFF}
+        states = {PAID_EVENTS: FEATURE_FLAG_STAFF}
         detail_url = reverse("event_detail", kwargs={"slug": paid.slug})
 
         with override_feature_flags(states):
@@ -267,12 +265,12 @@ class PageTests(TestCase):
             self.assertContains(self.client.get(reverse("event_catalog")), paid.name)
             self.assertEqual(self.client.get(detail_url).status_code, 200)
 
-            states["paid-events"] = FEATURE_FLAG_OFF
+            states[PAID_EVENTS] = FEATURE_FLAG_OFF
             self.assertNotContains(self.client.get(reverse("event_catalog")), paid.name)
             self.assertEqual(self.client.get(detail_url).status_code, 404)
 
             self.client.logout()
-            states["paid-events"] = FEATURE_FLAG_ON
+            states[PAID_EVENTS] = FEATURE_FLAG_ON
             self.assertContains(self.client.get(reverse("event_catalog")), paid.name)
             self.assertEqual(self.client.get(detail_url).status_code, 200)
 
@@ -775,7 +773,7 @@ class GalleryPageTests(TestCase):
         paid_event = self.make_event(name="Paid", slug="paid", access_type=Event.AccessType.PAID)
         self.make_private_photo(paid_event, id="paid")
 
-        with override_feature_flags({"paid-events": FEATURE_FLAG_ON}):
+        with override_feature_flags({PAID_EVENTS: FEATURE_FLAG_ON}):
             response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
             paid_response = self.client.get(
                 reverse("event_detail", kwargs={"slug": paid_event.slug})
@@ -819,8 +817,8 @@ class GalleryPageTests(TestCase):
 
         with override_feature_flags(
             {
-                "paid-events": FEATURE_FLAG_ON,
-                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                PAID_EVENTS: FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
             }
         ):
             response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
@@ -910,9 +908,9 @@ class GalleryPageTests(TestCase):
 
         with override_feature_flags(
             {
-                "paid-events": FEATURE_FLAG_ON,
-                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
-                PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
+                PAID_EVENTS: FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
+                PAID_PHOTO_CART: FEATURE_FLAG_ON,
             }
         ):
             response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
@@ -980,9 +978,9 @@ class GalleryPageTests(TestCase):
         with (
             override_feature_flags(
                 {
-                    "paid-events": FEATURE_FLAG_ON,
-                    PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
-                    PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
+                    PAID_EVENTS: FEATURE_FLAG_ON,
+                    PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
+                    PAID_PHOTO_CART: FEATURE_FLAG_ON,
                 }
             ),
             patch.object(Variable, "_resolve_lookup", new=force_template_exception),
@@ -1013,8 +1011,8 @@ class GalleryPageTests(TestCase):
 
         with override_feature_flags(
             {
-                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
-                PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
+                PAID_PHOTO_CART: FEATURE_FLAG_ON,
             }
         ):
             response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
@@ -1990,8 +1988,8 @@ class GalleryMediaViewTests(TransactionTestCase):
         with (
             override_feature_flags(
                 {
-                    "paid-events": FEATURE_FLAG_ON,
-                    PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
+                    PAID_EVENTS: FEATURE_FLAG_ON,
+                    PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
                 }
             ),
             patch("config.views._public_media_resolver", return_value=resolver) as factory,

@@ -15,6 +15,7 @@ from django.db import IntegrityError, close_old_connections, connection
 from django.test import Client, TransactionTestCase, modify_settings, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.registry import PAID_WATERMARKED_PREVIEWS
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.models import UploadBatch, UploadItem
@@ -327,7 +328,7 @@ class ConfirmationTests(TransactionTestCase):
             access_type=Event.AccessType.PAID,
             price_per_photo_kopecks=30000,
         )
-        with override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_ON}):
+        with override_feature_flags({PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON}):
             photo = self.confirm_success()
 
         self.assertEqual(
@@ -383,7 +384,7 @@ class ConfirmationTests(TransactionTestCase):
                 close_old_connections()
 
         with (
-            override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_ON}),
+            override_feature_flags({PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON}),
             patch.object(EventAdmin, "save_model", pause_admin_save),
             patch.object(Event.objects, "select_for_update", side_effect=observe_event_lock),
             patch.object(Photo.objects, "create", side_effect=observe_photo_create),

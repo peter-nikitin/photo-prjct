@@ -11,6 +11,13 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
+from feature_flags.registry import (
+    PAID_EVENTS,
+    PAID_PHOTO_CART,
+    PAID_PHOTO_PURCHASE,
+    PAID_WATERMARKED_PREVIEWS,
+    FeatureDefinition,
+)
 from feature_flags.states import (
     FEATURE_FLAG_OFF,
     FEATURE_FLAG_ON,
@@ -24,10 +31,6 @@ from commerce.identity import browser_token_sha256
 from commerce.models import Cart, CartItem, Order, PaymentAttempt
 from commerce.payment_gateway import PaymentGatewayError, PaymentGatewayErrorCategory
 from commerce.test_payment_gateway import DeterministicPaymentGateway, TestPaymentOutcome
-
-PAID_PHOTO_CART_FLAG = "paid-photo-cart"
-PAID_PHOTO_PURCHASE_FLAG = "paid-photo-purchase"
-PAID_WATERMARKED_PREVIEWS_FLAG = "paid-watermarked-previews"
 
 
 class TimeoutOnceGateway(DeterministicPaymentGateway):
@@ -66,7 +69,7 @@ class CheckoutViewTestCase(TestCase):
     cart_token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
     def setUp(self) -> None:
-        self.feature_flag_states: dict[str, FeatureFlagState] = {}
+        self.feature_flag_states: dict[FeatureDefinition, FeatureFlagState] = {}
         self.enterContext(override_feature_flags(self.feature_flag_states))
         self.event = Event.objects.create(
             name="Заезд",
@@ -106,10 +109,10 @@ class CheckoutViewTestCase(TestCase):
     def enable(self, *, purchase: FeatureFlagState) -> None:
         self.feature_flag_states.update(
             {
-                "paid-events": FEATURE_FLAG_ON,
-                PAID_PHOTO_CART_FLAG: FEATURE_FLAG_ON,
-                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_ON,
-                PAID_PHOTO_PURCHASE_FLAG: purchase,
+                PAID_EVENTS: FEATURE_FLAG_ON,
+                PAID_PHOTO_CART: FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
+                PAID_PHOTO_PURCHASE: purchase,
             }
         )
 
@@ -163,7 +166,7 @@ class CheckoutRouteGateTests(CheckoutViewTestCase):
             staff_response = self.client.get(self.checkout_url())
             self.client.logout()
             self.client.cookies["findme_cart"] = self.cart_token
-            self.feature_flag_states[PAID_PHOTO_PURCHASE_FLAG] = FEATURE_FLAG_ON
+            self.feature_flag_states[PAID_PHOTO_PURCHASE] = FEATURE_FLAG_ON
             public_response = self.client.get(self.checkout_url())
 
         self.assertEqual(anonymous.status_code, 404)
@@ -183,7 +186,7 @@ class CheckoutRouteGateTests(CheckoutViewTestCase):
 
         with self.purchasable():
             closed = self.client.get(cart_url)
-            self.feature_flag_states[PAID_PHOTO_PURCHASE_FLAG] = FEATURE_FLAG_ON
+            self.feature_flag_states[PAID_PHOTO_PURCHASE] = FEATURE_FLAG_ON
             opened = self.client.get(cart_url)
 
         self.assertEqual(closed.status_code, 200)
@@ -321,9 +324,9 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
                 self.checkout_url(),
                 {"email": "buyer@example.test"},
             )
-            self.feature_flag_states[PAID_PHOTO_PURCHASE_FLAG] = FEATURE_FLAG_OFF
+            self.feature_flag_states[PAID_PHOTO_PURCHASE] = FEATURE_FLAG_OFF
             closed = self.client.get(cart_url)
-            self.feature_flag_states[PAID_PHOTO_PURCHASE_FLAG] = FEATURE_FLAG_STAFF
+            self.feature_flag_states[PAID_PHOTO_PURCHASE] = FEATURE_FLAG_STAFF
             anonymous_staff = self.client.get(cart_url)
             staff = get_user_model().objects.create_user(
                 username="locked-cart-staff", is_staff=True

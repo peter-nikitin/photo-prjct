@@ -2,6 +2,7 @@ from urllib.parse import urlsplit
 
 from django.test import override_settings
 from django.urls import reverse
+from feature_flags.registry import PAID_PHOTO_PAYMENT_SIMULATOR
 from feature_flags.states import (
     FEATURE_FLAG_OFF,
     FEATURE_FLAG_ON,
@@ -12,8 +13,6 @@ from feature_flags.states import (
 from commerce.models import EmailDelivery, Order, PaymentAttempt
 from commerce.tests.test_checkout_views import CheckoutViewTestCase
 
-PAYMENT_SIMULATOR_FLAG = "paid-photo-payment-simulator"
-
 
 @override_settings(DEBUG=True, ALLOWED_HOSTS=["127.0.0.1"])
 class PaymentSimulatorFlowTests(CheckoutViewTestCase):
@@ -21,7 +20,7 @@ class PaymentSimulatorFlowTests(CheckoutViewTestCase):
 
     def enable_simulator(self, state: FeatureFlagState) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
-        self.feature_flag_states[PAYMENT_SIMULATOR_FLAG] = state
+        self.feature_flag_states[PAID_PHOTO_PAYMENT_SIMULATOR] = state
 
     def submit_checkout(self):
         with self.purchasable():
@@ -123,7 +122,7 @@ class PaymentSimulatorFlowTests(CheckoutViewTestCase):
         self.enable_simulator(FEATURE_FLAG_ON)
         checkout = self.submit_checkout()
         simulator_path = urlsplit(checkout["Location"]).path
-        self.feature_flag_states[PAYMENT_SIMULATOR_FLAG] = FEATURE_FLAG_OFF
+        self.feature_flag_states[PAID_PHOTO_PAYMENT_SIMULATOR] = FEATURE_FLAG_OFF
 
         response = self.client.post(
             simulator_path,

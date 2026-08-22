@@ -5,6 +5,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, HttpR
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from feature_flags import services as feature_flag_services
+from feature_flags.registry import PAID_PHOTO_PURCHASE
 
 from commerce.attention import resolve_attention_manually
 from commerce.capabilities import (
@@ -39,11 +40,9 @@ from commerce.payments import (
     reconcile_payment_attempt,
 )
 
-_PAID_PHOTO_PURCHASE_FLAG = "paid-photo-purchase"
-
 
 def _new_commerce_side_effects_enabled(request: HttpRequest) -> bool:
-    return feature_flag_services.is_enabled(_PAID_PHOTO_PURCHASE_FLAG, request.user)
+    return feature_flag_services.is_enabled(PAID_PHOTO_PURCHASE, request.user)
 
 
 def _payment_gateway_for_adapter(request: HttpRequest, adapter_key: str):

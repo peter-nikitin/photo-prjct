@@ -9,6 +9,13 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.registry import (
+    PAID_EVENTS,
+    PAID_PHOTO_CART,
+    PAID_PHOTO_PURCHASE,
+    PAID_WATERMARKED_PREVIEWS,
+    FeatureDefinition,
+)
 from feature_flags.states import FEATURE_FLAG_ON, FEATURE_FLAG_STAFF, FeatureFlagState
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing
@@ -81,14 +88,14 @@ class PaidPhotoPurchaseFlowTests(TestCase):
     notification_secret = b"paid-photo-flow-notification-secret"
 
     def setUp(self) -> None:
-        self.feature_flag_states: dict[str, FeatureFlagState] = {}
+        self.feature_flag_states: dict[FeatureDefinition, FeatureFlagState] = {}
         self.enterContext(override_feature_flags(self.feature_flag_states))
         self.feature_flag_states.update(
             {
-                "paid-events": FEATURE_FLAG_ON,
-                "paid-photo-cart": FEATURE_FLAG_ON,
-                "paid-watermarked-previews": FEATURE_FLAG_ON,
-                "paid-photo-purchase": FEATURE_FLAG_ON,
+                PAID_EVENTS: FEATURE_FLAG_ON,
+                PAID_PHOTO_CART: FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
+                PAID_PHOTO_PURCHASE: FEATURE_FLAG_ON,
             }
         )
         self.photographer = get_user_model().objects.create_user(username="flow-photographer")
@@ -752,7 +759,7 @@ class PaidPhotoPurchaseFlowTests(TestCase):
             matched_photo_count=1,
         )
         SelfieSearchResult.objects.create(search=legacy_search, photo=legacy_photo, rank=1)
-        self.feature_flag_states["paid-watermarked-previews"] = FEATURE_FLAG_STAFF
+        self.feature_flag_states[PAID_WATERMARKED_PREVIEWS] = FEATURE_FLAG_STAFF
         legacy_staff = get_user_model().objects.create_user(
             username="legacy-flow-staff", is_staff=True
         )

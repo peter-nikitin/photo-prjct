@@ -1,7 +1,7 @@
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from django import forms
 from django.db import transaction
@@ -487,11 +487,15 @@ def _reconcile_created_payment(
         attempt.provider_payment_id = created.provider_payment_id
         attempt.confirmation_url = created.confirmation_url
         attempt.expires_at = created.expires_at
+        attempt.reconciliation_next_attempt_at = (
+            created.expires_at or attempt.created_at + timedelta(hours=24)
+        )
         attempt.save(
             update_fields=[
                 "provider_payment_id",
                 "confirmation_url",
                 "expires_at",
+                "reconciliation_next_attempt_at",
                 "updated_at",
             ]
         )

@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -85,7 +86,7 @@ class OrderModelTests(TestCase):
         order: Order,
         idempotency_key: str = "checkout-attempt-1",
         provider_payment_id: str | None = None,
-        status: str = PaymentAttempt.Status.PENDING,
+        status: str = str(PaymentAttempt.Status.PENDING),
         adapter_key: str = "test-gateway",
     ) -> PaymentAttempt:
         values = {
@@ -326,6 +327,30 @@ class OrderModelTests(TestCase):
         with self.assertRaisesRegex(ValidationError, "immutable"):
             replacement.save()
 
+    def test_payment_reconciliation_processing_requires_its_exact_bounded_lease(self) -> None:
+        """A terminal or lease-less reconciliation row must never look claimable to a worker."""
+        attempt = self.make_attempt(order=self.make_complete_order())
+
+        self.assertEqual(
+            {choice for choice, _label in PaymentAttempt.ReconciliationState.choices},
+            {"pending", "processing"},
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PaymentAttempt.objects.filter(pk=attempt.pk).update(
+                reconciliation_state=PaymentAttempt.ReconciliationState.PROCESSING,
+            )
+
+        PaymentAttempt.objects.filter(pk=attempt.pk).update(
+            reconciliation_state=PaymentAttempt.ReconciliationState.PROCESSING,
+            reconciliation_lease_id=uuid4(),
+            reconciliation_lease_expires_at=timezone.now() + timedelta(minutes=5),
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PaymentAttempt.objects.filter(pk=attempt.pk).update(
+                status=PaymentAttempt.Status.EXPIRED,
+                terminal_at=timezone.now(),
+            )
+
     def test_payment_attempt_persistence_rejects_an_amount_or_currency_not_in_its_order(
         self,
     ) -> None:
@@ -357,21 +382,21 @@ class OrderModelTests(TestCase):
             order=first_order,
             idempotency_key="same-idempotency",
             provider_payment_id="provider-payment-1",
-            status=PaymentAttempt.Status.SUCCEEDED,
+            status=str(PaymentAttempt.Status.SUCCEEDED),
         )
 
         with self.assertRaises(IntegrityError), transaction.atomic():
             self.make_attempt(
                 order=second_order,
                 idempotency_key="same-idempotency",
-                status=PaymentAttempt.Status.SUCCEEDED,
+                status=str(PaymentAttempt.Status.SUCCEEDED),
             )
         with self.assertRaises(IntegrityError), transaction.atomic():
             self.make_attempt(
                 order=second_order,
                 idempotency_key="second-idempotency",
                 provider_payment_id="provider-payment-1",
-                status=PaymentAttempt.Status.SUCCEEDED,
+                status=str(PaymentAttempt.Status.SUCCEEDED),
                 adapter_key="other-gateway",
             )
 

@@ -28,7 +28,11 @@ from commerce.models import (
     OrderItem,
     PaymentAttempt,
 )
-from commerce.payment_gateway import PaymentGatewayError, PaymentGatewayErrorCategory
+from commerce.payment_gateway import (
+    PaymentGatewayError,
+    PaymentGatewayErrorCategory,
+    PaymentRequest,
+)
 from commerce.services import clear_cart, read_cart, set_photo_selected
 from commerce.test_payment_gateway import DeterministicPaymentGateway, TestPaymentOutcome
 
@@ -38,7 +42,7 @@ class RecordingGateway(DeterministicPaymentGateway):
         super().__init__(adapter_key=adapter_key, **kwargs)
         self.in_atomic_blocks: list[bool] = []
         self.persisted_attempt_ids: list[int] = []
-        self.requests = []
+        self.requests: list[PaymentRequest] = []
         self._recording_lock = Lock()
 
     def create_payment(self, request):
@@ -246,12 +250,12 @@ class CheckoutServiceTests(TransactionTestCase):
         paid = self.make_complete_order(
             public_number="FM-PAJD2345",
             digest=digest,
-            status=Order.Status.PAID,
+            status=str(Order.Status.PAID),
         )
         pending = self.make_complete_order(
             public_number="FM-PEND2345",
             digest=digest,
-            status=Order.Status.PENDING,
+            status=str(Order.Status.PENDING),
         )
 
         self.assertEqual(paid.originating_cart_token_sha256, digest)
@@ -332,6 +336,10 @@ class CheckoutServiceTests(TransactionTestCase):
         self.assertEqual(result.payment_attempt.amount_kopecks, 60000)
         self.assertEqual(result.payment_attempt.currency, "RUB")
         self.assertEqual(result.payment_attempt.status, PaymentAttempt.Status.PENDING)
+        self.assertEqual(
+            result.payment_attempt.reconciliation_next_attempt_at,
+            result.payment_attempt.expires_at,
+        )
         self.assertEqual(result.confirmation_url, result.payment_attempt.confirmation_url)
         self.assertEqual(OrderAccessGrant.objects.get(order=result.order).source, "checkout")
         self.assertEqual(EmailDelivery.objects.count(), 0)

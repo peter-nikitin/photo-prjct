@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from uuid import UUID
 
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth import get_user_model
@@ -57,37 +58,51 @@ def reconcile_payment_attempt(
     attempt_id: int,
     gateway: PaymentGateway,
     now: datetime | None = None,
+    expected_reconciliation_lease_id: UUID | None = None,
 ) -> Order:
     """Fetch one due payment outside the transaction before serializing its state transition."""
-    current_time = _current_time(now)
+    started_at = _current_time(now)
     attempt = PaymentAttempt.objects.get(pk=attempt_id)
     if not attempt.provider_payment_id or attempt.adapter_key != _gateway_adapter_key(gateway):
         raise PaymentTransitionRejected("Payment attempt cannot be reconciled by this gateway.")
+    if expected_reconciliation_lease_id is not None and not _reconciliation_lease_is_current(
+        attempt=attempt,
+        lease_id=expected_reconciliation_lease_id,
+        now=started_at,
+    ):
+        raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
     try:
         observation = gateway.fetch_payment(attempt.provider_payment_id)
     except PaymentGatewayError as error:
+        unavailable_at = _current_time(now)
         open_attention(
             kind="payment_reconciliation_overdue",
             subject=f"payment-attempt:{attempt.pk}",
             order=attempt.order,
             payment_attempt=attempt,
-            now=current_time,
+            now=unavailable_at,
         )
         raise PaymentReconciliationUnavailable(error.category.value) from None
 
+    completed_at = _current_time(now)
     order = apply_payment_observation(
         attempt_id=attempt.pk,
         adapter_key=gateway.adapter_key,
         source="status_fetch",
         observation=observation,
-        now=current_time,
+        now=completed_at,
+        expected_reconciliation_lease_id=expected_reconciliation_lease_id,
     )
     resolve_open_attention_automatically(
         kind="payment_reconciliation_overdue",
         subject=f"payment-attempt:{attempt.pk}",
-        now=current_time,
+        now=completed_at,
     )
-    _expire_after_current_fetch(attempt_id=attempt.pk, now=current_time)
+    _expire_after_current_fetch(
+        attempt_id=attempt.pk,
+        now=completed_at,
+        expected_reconciliation_lease_id=expected_reconciliation_lease_id,
+    )
     return order
 
 
@@ -98,6 +113,7 @@ def apply_payment_observation(
     source: str,
     observation: PaymentObservation,
     now: datetime | None = None,
+    expected_reconciliation_lease_id: UUID | None = None,
 ) -> Order:
     """Serialize every normalized callback and fetch through one authoritative transition."""
     if source not in PaymentEvidence.Source.values:
@@ -116,6 +132,12 @@ def apply_payment_observation(
         )
         if attempt is None:
             raise PaymentTransitionRejected("Payment attempt lock is unavailable.")
+        if expected_reconciliation_lease_id is not None and not _reconciliation_lease_is_current(
+            attempt=attempt,
+            lease_id=expected_reconciliation_lease_id,
+            now=current_time,
+        ):
+            raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
         _require_matching_provider_evidence(
             attempt=attempt,
             adapter_key=adapter_key,
@@ -451,7 +473,21 @@ def _set_attempt_terminal(
         return
     attempt.status = status
     attempt.terminal_at = terminal_at
-    attempt.save(update_fields=["status", "terminal_at", "updated_at"])
+    attempt.reconciliation_state = PaymentAttempt.ReconciliationState.PENDING
+    attempt.reconciliation_lease_id = None
+    attempt.reconciliation_lease_expires_at = None
+    attempt.reconciliation_next_attempt_at = None
+    attempt.save(
+        update_fields=[
+            "status",
+            "terminal_at",
+            "reconciliation_state",
+            "reconciliation_lease_id",
+            "reconciliation_lease_expires_at",
+            "reconciliation_next_attempt_at",
+            "updated_at",
+        ]
+    )
 
 
 def _fulfill_paid_order(*, order: Order, cart: Cart | None, paid_at: datetime) -> None:
@@ -498,7 +534,12 @@ def _remove_only_originating_purchased_positions(*, order: Order, cart: Cart | N
         cart.delete()
 
 
-def _expire_after_current_fetch(*, attempt_id: int, now: datetime) -> None:
+def _expire_after_current_fetch(
+    *,
+    attempt_id: int,
+    now: datetime,
+    expected_reconciliation_lease_id: UUID | None,
+) -> None:
     event_id, cart_digest, order_id = _payment_identity_for_attempt(attempt_id=attempt_id)
     with transaction.atomic():
         _cart, order, attempt = _lock_payment_transition(
@@ -511,6 +552,12 @@ def _expire_after_current_fetch(*, attempt_id: int, now: datetime) -> None:
             raise PaymentTransitionRejected("Payment attempt lock is unavailable.")
         if attempt.status != PaymentAttempt.Status.PENDING:
             return
+        if expected_reconciliation_lease_id is not None and not _reconciliation_lease_is_current(
+            attempt=attempt,
+            lease_id=expected_reconciliation_lease_id,
+            now=now,
+        ):
+            raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
         due_at = attempt.expires_at or attempt.created_at + timedelta(hours=24)
         if now < due_at:
             return
@@ -527,6 +574,21 @@ def _expire_after_current_fetch(*, attempt_id: int, now: datetime) -> None:
                 payment_attempt=attempt,
                 now=now,
             )
+
+
+def _reconciliation_lease_is_current(
+    *,
+    attempt: PaymentAttempt,
+    lease_id: UUID,
+    now: datetime,
+) -> bool:
+    return (
+        attempt.status == PaymentAttempt.Status.PENDING
+        and attempt.reconciliation_state == PaymentAttempt.ReconciliationState.PROCESSING
+        and attempt.reconciliation_lease_id == lease_id
+        and attempt.reconciliation_lease_expires_at is not None
+        and attempt.reconciliation_lease_expires_at > now
+    )
 
 
 def _current_time(now: datetime | None) -> datetime:

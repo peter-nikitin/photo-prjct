@@ -278,6 +278,10 @@ class PaymentAttempt(models.Model):
         FAILED = "failed", "Failed"
         CONFLICT = "conflict", "Conflict"
 
+    class ReconciliationState(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+
     order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name="payment_attempts")
     amount_kopecks = models.PositiveIntegerField()
     currency = models.CharField(max_length=3, default="RUB")
@@ -288,6 +292,14 @@ class PaymentAttempt(models.Model):
     expires_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=10, choices=Status, default=Status.PENDING)
     terminal_at = models.DateTimeField(null=True, blank=True)
+    reconciliation_state = models.CharField(
+        max_length=10,
+        choices=ReconciliationState,
+        default=ReconciliationState.PENDING,
+    )
+    reconciliation_lease_id = models.UUIDField(null=True, blank=True)
+    reconciliation_lease_expires_at = models.DateTimeField(null=True, blank=True)
+    reconciliation_next_attempt_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -324,6 +336,22 @@ class PaymentAttempt(models.Model):
                 ),
                 name="commerce_payment_attempt_terminal_time_chk",
             ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        status="pending",
+                        reconciliation_state="processing",
+                        reconciliation_lease_id__isnull=False,
+                        reconciliation_lease_expires_at__isnull=False,
+                    )
+                    | models.Q(
+                        reconciliation_state="pending",
+                        reconciliation_lease_id__isnull=True,
+                        reconciliation_lease_expires_at__isnull=True,
+                    )
+                ),
+                name="commerce_payment_reconcile_lease_chk",
+            ),
             models.UniqueConstraint(
                 fields=("idempotency_key",),
                 name="commerce_payment_attempt_idempotency_uniq",
@@ -343,7 +371,16 @@ class PaymentAttempt(models.Model):
             models.Index(
                 fields=("order", "status"),
                 name="commerce_payment_attempt_order_status_idx",
-            )
+            ),
+            models.Index(
+                fields=(
+                    "adapter_key",
+                    "status",
+                    "reconciliation_state",
+                    "reconciliation_next_attempt_at",
+                ),
+                name="commerce_payment_reconcile_due_idx",
+            ),
         ]
 
     def __str__(self) -> str:

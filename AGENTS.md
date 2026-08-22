@@ -86,13 +86,20 @@ photographers and operators publish and manage event photos.
 - Implementer and reviewer subagents must not run `git add`, `git commit`, `git commit --amend`,
   `git push`, or otherwise modify the Git index, history, branches, tags, or remotes.
 - An implementer leaves its task changes unstaged, writes its report, and returns control to the
-  root controller after tests and self-review pass.
+  root controller after tests and self-review pass. The report records each exact test command,
+  exit status, result summary, and confirms that its final GREEN run followed the last task-file
+  change.
 - The root controller prepares a reviewable working-tree diff, including new untracked task files,
   without requiring an implementer commit.
 - Review fixes remain unstaged and return to the same implementer. Re-review uses the updated
   working-tree diff and the same reviewer when available.
-- Only after the reviewer approves the complete task and the root controller reruns final
-  verification may the root controller stage the exact task files and create one task commit.
+- After the reviewer approves the exact working-tree package, the root controller reuses complete
+  implementer evidence from that unchanged package and runs only missing or invalidated checks
+  before staging the exact task files and creating one task commit. A task-file change invalidates
+  the checks whose behavior it can affect.
+- Run the complete local `make check` once on the final branch state after all task and review-fix
+  loops, not after every task. Run visual regression once on the final branch state only when the
+  branch changes visual behavior or baselines. After push, CI owns the complete repeated suite.
 - A task must not receive intermediate implementation or review-fix commits; all approved task
   changes are consolidated into that single final commit.
 

@@ -39,7 +39,8 @@ model.
 ## Task loop
 
 1. Fill [implementer-prompt.md](implementer-prompt.md) with task-local paths and decisions.
-2. The implementer performs red-green TDD, self-reviews, writes its report, and returns `DONE`,
+2. The implementer performs red-green TDD, self-reviews, and records exact commands, exit statuses,
+   summaries, and that final GREEN followed the last task-file change. It returns `DONE`,
    `DONE_WITH_CONCERNS`, `NEEDS_CONTEXT`, or `BLOCKED`.
 3. Verify the report and working tree. Run `scripts/review-package.py OUTPUT` to capture the full
    working-tree diff, including untracked task files.
@@ -47,8 +48,14 @@ model.
    `blocking` or `future` under `AGENTS.md`.
 5. Return blocking fixes to the same implementer and use
    [re-review-prompt.md](re-review-prompt.md) with the same reviewer when available.
-6. After approval, root runs fresh verification, stages the exact task files, and creates the one
-   task commit. Subagents never run `git add`, commit, amend, push, merge, or change branches.
+6. After approval, root reuses complete evidence for the unchanged review package and runs only
+   missing, invalidated, or risk-specific checks before staging the exact task files and creating
+   the one task commit. A task-file change invalidates checks whose behavior it can affect.
+7. After all task and review-fix loops, root runs `make check` once on the final branch state. Run
+   visual regression once only when the branch changes visual behavior or baselines. CI owns the
+   complete repeated suite after push.
+
+Subagents never run `git add`, commit, amend, push, merge, or change branches.
 
 Do not run overlapping full Django or visual suites in the shared repository environment.
 

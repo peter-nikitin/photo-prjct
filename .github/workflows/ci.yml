@@ -64,7 +64,7 @@ jobs:
         run: make static RUFF=ruff MYPY=mypy
 
       - name: Test with coverage
-        run: pytest --cov --cov-report=term-missing
+        run: pytest -n 4 --dist loadscope --cov --cov-report=term-missing
 
       - name: Run Django system checks
         run: python src/backend/manage.py check

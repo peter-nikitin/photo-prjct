@@ -118,6 +118,13 @@ contain secrets, customer data, bearer values, or unrelated database content.
   recreated in `off`, then an operator may deliberately restore `staff` or `on`.
 - Incorrect activation: change the row to `off` through Admin; no deploy is required.
 
+The first rollout is exceptional because its rollback target predates this reconciler. Rolling back
+that image preserves the database volume but does not recreate a row deleted by the candidate,
+restore its prior state, or remove rows created by the candidate. The reviewed pre-deploy inventory
+is therefore also the first-rollout recovery record; an incorrect mutation requires an approved
+corrective deployment or the then-authoritative operator path. Once both current and previous images
+contain reconciliation, the normal previous-image registry semantics above apply.
+
 ## Acceptance criteria
 
 1. Adding a registered definition and deploying creates exactly one row in `off` without manual

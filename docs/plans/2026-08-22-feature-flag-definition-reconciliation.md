@@ -61,6 +61,19 @@ The specification's acceptance criteria apply. Delivery is complete only after a
 - [ ] Insert reconciliation at the approved startup seam and update implemented architecture facts without changing the worker startup paths.
 - [ ] Run `make test TESTS="tests/deployment/test_deployment_scripts.py src/backend/ingestion/tests/test_bootstrap_group.py"` and expect zero failures.
 
+### Task 4: Reusable project skill for feature-gate lifecycle work
+
+**Files:** `.agents/skills/manage-feature-flags/SKILL.md`, `.agents/skills/manage-feature-flags/agents/openai.yaml`, and focused skill/repository contract tests when needed.
+
+- **Specification:** Complete registry/evaluation, reconciliation, Admin/lifecycle, rollout, failure, and rollback contracts.
+- **Depends on:** Tasks 1-3 implemented interfaces and operational boundaries.
+- **Produces:** A concise discoverable project skill that future agents must use when adding, changing, activating, removing, deploying, or troubleshooting feature flags.
+
+- [ ] Run a no-skill baseline scenario against a fresh agent and record the lifecycle or safety steps it omits.
+- [ ] Initialize the project skill with the repository's skill tooling and write the minimum instructions that correct the observed omissions: registered definition and typed call sites, new-row `off`, Admin-only state changes, call-site-plus-definition removal, startup ownership, first-rollout inventory, verification, and rollback semantics.
+- [ ] Validate skill metadata and run the same scenario with the skill; confirm the agent follows the complete lifecycle without inventing manual row creation or worker reconciliation.
+- [ ] Run the focused repository/skill checks and record their successful outcome after the last skill-file change.
+
 ### Final task: Architecture and ADR reconciliation
 
 - [ ] Compare delivered behavior with the approved specification, ADR 0028, ADR 0032, and `docs/architecture.md`.
@@ -71,6 +84,7 @@ The specification's acceptance criteria apply. Delivery is complete only after a
 
 - `make test TESTS="src/backend/feature_flags/tests"` — all focused feature-flag tests pass.
 - `make test TESTS="src/backend/picflow/tests src/backend/config/tests src/backend/commerce/tests src/backend/ingestion/tests/test_bootstrap_group.py tests/deployment/test_deployment_scripts.py"` — all affected integration and startup contracts pass.
+- Run the skill validator and its before/after application scenario — project skill metadata is valid and the skill corrects the observed baseline omissions.
 - `make check` — the complete repository quality suite passes after the final reviewed change.
 - `git diff --check` — no whitespace errors.
 - No visual regression run is required because the change has no customer-visible layout or snapshot effect.
@@ -81,7 +95,14 @@ Before merge, use a read-only command against the canonical web container to inv
 
 ## Rollback
 
-Use the existing deployment rollback to the prior image. Its code-owned registry becomes authoritative: definitions restored by that image are recreated in `off`, definitions unknown to it are removed, and operators deliberately restore any required prior exposure through Admin. Do not restore or replace the database volume.
+Use the existing deployment rollback and preserve the database volume. For this first rollout, the
+prior image predates reconciliation: it leaves the candidate-mutated rows in place and cannot
+recreate deleted rows or their states. The saved live inventory is the recovery record, and an
+incorrect mutation requires an approved corrective deployment or then-authoritative operator
+action. The reviewed stale set for this rollout is empty. On later rollbacks where the prior image
+also owns a registry and reconciler, its registry becomes authoritative: restored definitions are
+recreated in `off`, unknown definitions are removed, and operators deliberately restore any prior
+exposure through Admin.
 
 ## Open questions
 

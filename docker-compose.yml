@@ -45,7 +45,8 @@ services:
 
   commerce-worker:
     build: .
-    command: python manage.py run_commerce_worker
+    entrypoint: ["python", "manage.py", "run_commerce_worker"]
+    command: []
     working_dir: /app/src/backend
     volumes:
       - .:/app

@@ -53,17 +53,19 @@ make static
 make check
 ```
 
-Local `make test` and the pytest portion of `make check` include the critical clone-staging contract
-but skip its exhaustive matrix. Run the exhaustive clone-staging suite separately with:
+Local `make test` and the pytest portion of `make check` use four pytest workers by default. Set
+`PYTEST_XDIST_WORKERS=0` for serial debugging. Test methods from one class stay on the same worker
+to preserve Django class lifecycle boundaries. Both commands include the critical clone-deployed
+contract but skip its exhaustive matrix. Run the exhaustive clone-deployed suite separately with:
 
 ```bash
 make test-clone-deployed
 ```
 
 `make static` reports Python formatting, lint, and type failures together. `make check` runs that
-static gate plus coverage, Django, and migration checks. Its
-pytest portion skips the exhaustive clone-staging matrix; GitHub CI's raw pytest coverage command
-runs the full test selection. PostgreSQL must be available on `localhost:5432`, matching CI.
+static gate plus coverage, Django, and migration checks. Its pytest portion skips the exhaustive
+clone-deployed matrix; GitHub CI runs the full test selection with four workers. PostgreSQL must be
+available on `localhost:5432`, matching CI.
 
 ### Verify public selfie search locally
 

@@ -212,7 +212,13 @@ def test_implementation_plan_harness_has_project_specific_role_contracts() -> No
     assert "git add" in skill
 
     for prompt_name, required_fields in {
-        "implementer-prompt.md": {"Worktree", "Task brief", "Report", "Model reason"},
+        "implementer-prompt.md": {
+            "Worktree",
+            "Task brief",
+            "Report",
+            "Model reason",
+            "Test evidence",
+        },
         "reviewer-prompt.md": {
             "Task brief",
             "Implementer report",
@@ -382,10 +388,12 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]
     pytest_config = pyproject["pytest"]["ini_options"]
     ci = _load_workflow("ci.yml")
+    development_requirements = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
 
     assert pyproject["mypy"]["files"] == ["src/backend", "src/worker/photo_worker"]
     assert pytest_config["pythonpath"] == [".", "src/backend", "src/worker"]
     assert pytest_config["testpaths"] == ["src/backend", "src/worker/tests", "tests"]
+    assert "pytest-xdist>=3.8,<4" in development_requirements.splitlines()
     assert pyproject["coverage"]["run"]["source"] == [
         "src/backend/config",
         "src/backend/ingestion",
@@ -398,7 +406,7 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
         "make static RUFF=ruff MYPY=mypy"
     )
     assert _workflow_step(ci, "quality", "Test with coverage")["run"] == (
-        "pytest --cov --cov-report=term-missing"
+        "pytest -n 4 --dist loadscope --cov --cov-report=term-missing"
     )
     python_setup = _workflow_step(ci, "quality", "Set up Python")
     assert "src/worker/requirements.txt" in python_setup["with"]["cache-dependency-path"]
@@ -1088,9 +1096,9 @@ def test_selfie_observability_is_owned_by_the_supported_deployment_entrypoint() 
 
 
 def test_clone_deployed_suite_has_default_and_exhaustive_selection_contract() -> None:
-    def make_dry_run(target: str, tests: str = "") -> list[str]:
+    def make_dry_run(target: str, tests: str = "", workers: int = 4) -> list[str]:
         result = subprocess.run(
-            ["make", "-n", f"TESTS={tests}", target],
+            ["make", "-n", f"PYTEST_XDIST_WORKERS={workers}", f"TESTS={tests}", target],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1103,13 +1111,26 @@ def test_clone_deployed_suite_has_default_and_exhaustive_selection_contract() ->
     markers = pyproject["tool"]["pytest"]["ini_options"]["markers"]
     assert any(marker.startswith("clone_deployed_slow:") for marker in markers)
 
-    default_pytest = 'sh scripts/run-in-test-env.sh .venv/bin/pytest -m "not clone_deployed_slow"'
+    default_pytest = (
+        "sh scripts/run-in-test-env.sh .venv/bin/pytest "
+        '-n 4 --dist loadscope -m "not clone_deployed_slow"'
+    )
     assert make_dry_run("test") == [default_pytest]
     requested_selector = (
         "tests/test_repository_foundation.py::test_adr_index_lists_all_accepted_decisions"
     )
     assert make_dry_run("test", requested_selector) == [f"{default_pytest} {requested_selector}"]
     assert make_dry_run("check").count(f"{default_pytest} --cov --cov-report=term-missing") == 1
+
+    serial_pytest = (
+        "sh scripts/run-in-test-env.sh .venv/bin/pytest "
+        '-n 0 --dist loadscope -m "not clone_deployed_slow"'
+    )
+    assert make_dry_run("test", workers=0) == [serial_pytest]
+    assert (
+        make_dry_run("check", workers=0).count(f"{serial_pytest} --cov --cov-report=term-missing")
+        == 1
+    )
 
     clone_pytest = (
         "sh scripts/run-in-test-env.sh .venv/bin/pytest "

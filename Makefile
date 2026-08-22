@@ -4,6 +4,7 @@ BASE ?= origin/main
 MYPY ?= .venv/bin/mypy
 RUFF ?= .venv/bin/ruff
 TESTS ?=
+PYTEST_XDIST_WORKERS ?= 4
 
 worktree:
 	@test -n "$(NAME)" || { echo "NAME is required: make worktree NAME=<name> [BASE=<ref>]" >&2; exit 2; }
@@ -13,7 +14,7 @@ hooks:
 	.venv/bin/pre-commit install
 
 test:
-	sh scripts/run-in-test-env.sh .venv/bin/pytest -m "not clone_deployed_slow" $(TESTS)
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope -m "not clone_deployed_slow" $(TESTS)
 
 static:
 	@status=0; \
@@ -23,7 +24,7 @@ static:
 	exit $$status
 
 check: static
-	sh scripts/run-in-test-env.sh .venv/bin/pytest -m "not clone_deployed_slow" --cov --cov-report=term-missing
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope -m "not clone_deployed_slow" --cov --cov-report=term-missing
 	sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py check
 	sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py makemigrations --check --dry-run
 

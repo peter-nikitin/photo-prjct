@@ -339,7 +339,6 @@ create the SDD ledger under `.superpowers/sdd/2026-08-20-paid-photo-purchase/`.
 - Modify `src/backend/commerce/views.py` from the merged cart result.
 - Modify `src/backend/commerce/presentation.py` without duplicating its existing cart/media
   presentation work.
-- Create `src/backend/templates/commerce/checkout.html`.
 - Create `src/backend/templates/commerce/order.html`.
 - Modify `src/backend/templates/commerce/cart.html`.
 - Modify `src/backend/config/urls.py`.
@@ -352,10 +351,10 @@ create the SDD ledger under `.superpowers/sdd/2026-08-20-paid-photo-purchase/`.
   [Customer Access and Original Delivery](../superpowers/specs/2026-08-20-paid-photo-purchase-and-original-delivery-design.md#customer-access-and-original-delivery),
   and [Feature Gate and Activation Boundary](../superpowers/specs/2026-08-20-paid-photo-purchase-and-original-delivery-design.md#feature-gate-and-activation-boundary).
 - **Depends on:** Tasks 3–6 services and the merged cart detail route.
-- **Produces:** exact checkout form/copy, hosted redirect, inert return polling endpoint, private Order
+- **Produces:** exact inline cart checkout form/copy, hosted redirect, inert return polling endpoint, private Order
   page, rate-limited resend, purchased download redirect, and `findme_purchase` cookie responses.
 
-- [ ] Add failing route/gate tests for missing/off/staff/on, CSRF, two matching normalized emails,
+- [ ] Add failing route/gate tests for missing/off/staff/on, CSRF, one normalized email,
   safe redirects, provider notification authentication, browser return never mutating state,
   sanitized unknown/revoked grants, exact cache/referrer/analytics protections, and no side effects
   while closed.
@@ -431,7 +430,7 @@ create the SDD ledger under `.superpowers/sdd/2026-08-20-paid-photo-purchase/`.
 - [ ] Run `npm run test:js`; confirm failures are limited to the absent purchase behavior.
 - [ ] Implement progressive enhancement over working server forms/pages with accessible live status,
   focus, keyboard, and reduced-motion behavior; add no client-side payment or access authority.
-- [ ] Add deterministic pending, paid, email-failed, checkout-error, and populated Order fixtures at
+- [ ] Add deterministic pending, paid, email-failed, inline cart-checkout, and populated Order fixtures at
   desktop and 390px mobile, preserving cart/watermark/free-gallery baselines.
 - [ ] Run `npm run test:js` and `npm run test:visual`; expect all JavaScript tests and visually
   inspected snapshots to pass.

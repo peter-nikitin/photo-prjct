@@ -32,8 +32,6 @@ const desktopPages = [
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
   ['event-cart', '/__visual__/event/cart/'],
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
-  ['checkout', '/__visual__/checkout/'],
-  ['checkout-error', '/__visual__/checkout/error/'],
   ['order-pending', '/__visual__/order/pending/'],
   ['order-paid', '/__visual__/order/paid/'],
   ['order-email-failed', '/__visual__/order/email-failed/'],
@@ -74,8 +72,6 @@ const mobilePages = [
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
   ['event-cart', '/__visual__/event/cart/'],
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
-  ['checkout', '/__visual__/checkout/'],
-  ['checkout-error', '/__visual__/checkout/error/'],
   ['order-pending', '/__visual__/order/pending/'],
   ['order-paid', '/__visual__/order/paid/'],
   ['order-email-failed', '/__visual__/order/email-failed/'],
@@ -1329,7 +1325,7 @@ test('desktop cart uses compact rows beside a distinct summary column', async ({
   );
 });
 
-test('mobile cart keeps a compact summary fixed to the viewport bottom', async ({ page }) => {
+test('mobile cart keeps checkout in the normal flow below the photos', async ({ page }) => {
   await page.setViewportSize(MOBILE_VIEWPORT);
   await page.goto('/__visual__/event/cart/');
   const summary = page.locator('.event-cart-summary-panel');
@@ -1337,19 +1333,39 @@ test('mobile cart keeps a compact summary fixed to the viewport bottom', async (
     const rect = element.getBoundingClientRect();
     return {
       position: getComputedStyle(element).position,
-      bottomGap: window.innerHeight - rect.bottom,
       height: rect.height,
-      top: rect.top,
     };
   });
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  const afterTop = await summary.evaluate((element) => element.getBoundingClientRect().top);
 
-  expect(before.position).toBe('fixed');
-  expect(Math.abs(before.bottomGap)).toBeLessThanOrEqual(1);
-  expect(before.height).toBeLessThanOrEqual(112);
-  expect(Math.abs(afterTop - before.top)).toBeLessThanOrEqual(1);
+  expect(before.position).toBe('static');
+  expect(before.height).toBeGreaterThan(112);
   await expect(summary).toBeVisible();
+  await expect(summary.locator('[name="email"]')).toBeVisible();
+});
+
+test('desktop order uses compact photo rows beside a distinct summary column', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await page.goto('/__visual__/order/paid/');
+
+  const geometry = await page.locator('.order-layout').evaluate((layout) => {
+    const photos = layout.querySelector('.order-photos').getBoundingClientRect();
+    const summary = layout.querySelector('.order-summary-panel').getBoundingClientRect();
+    const rows = [...layout.querySelectorAll('.order-photo-row')].map((row) =>
+      row.getBoundingClientRect().height
+    );
+    return {
+      photosBeforeSummary: photos.right < summary.left,
+      photosWiderThanSummary: photos.width > summary.width,
+      rows,
+    };
+  });
+
+  expect(geometry.photosBeforeSummary).toBe(true);
+  expect(geometry.photosWiderThanSummary).toBe(true);
+  expect(geometry.rows).toHaveLength(2);
+  expect(geometry.rows.every((height) => height <= 96)).toBe(true);
+  await expect(page.locator('.order-header')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Вернуться к мероприятию' })).toBeVisible();
 });
 
 test('paid gallery cart action occupies the former right-edge download slot', async ({ page }) => {

@@ -329,7 +329,7 @@ class CommerceAdminTests(TransactionTestCase):
             response = self.client.post(refresh_url)
 
         self.assertEqual(response.status_code, 302)
-        factory.assert_called_once_with("admin-test-gateway")
+        factory.assert_called_once_with(response.wsgi_request, "admin-test-gateway")
         self.assertEqual(in_atomic_blocks, [False])
         self.assertEqual(PaymentEvidence.objects.filter(payment_attempt=self.attempt).count(), 2)
 

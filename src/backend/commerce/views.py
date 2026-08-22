@@ -38,7 +38,7 @@ from commerce.checkout import (
 from commerce.delivery import ResendOrderAccessRateLimited, resend_order_access
 from commerce.forms import CheckoutForm
 from commerce.identity import parse_browser_token
-from commerce.models import Order, OrderAccessGrant, OrderItem
+from commerce.models import Order, OrderAccessGrant, OrderItem, PaymentAttempt
 from commerce.original_delivery import (
     PurchasedOriginalDenied,
     PurchasedOriginalUnavailable,
@@ -50,7 +50,16 @@ from commerce.payment_gateway import (
     PaymentGatewayError,
     PaymentRequest,
 )
-from commerce.payments import PaymentTransitionRejected, apply_authenticated_notification
+from commerce.payment_simulator import (
+    PAYMENT_SIMULATOR_ADAPTER_KEY,
+    PaymentSimulatorGateway,
+    simulator_observation,
+)
+from commerce.payments import (
+    PaymentTransitionRejected,
+    apply_authenticated_notification,
+    apply_payment_observation,
+)
 from commerce.presentation import CartPresentation, cart_presentation_for_photos, order_presentation
 from commerce.pricing import format_rub
 from commerce.services import (
@@ -63,6 +72,7 @@ from commerce.services import (
 
 PAID_PHOTO_CART_FLAG = "paid-photo-cart"
 PAID_PHOTO_PURCHASE_FLAG = "paid-photo-purchase"
+PAYMENT_SIMULATOR_FLAG = "paid-photo-payment-simulator"
 CART_COOKIE_NAME = "findme_cart"
 CART_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 PURCHASE_COOKIE_NAME = "findme_purchase"
@@ -72,7 +82,7 @@ PURCHASE_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 class CartExceptionReporterFilter(SafeExceptionReporterFilter):
     """Keep Django's default redaction and additionally hide the cart bearer."""
 
-    sensitive_post_names = frozenset({"email", "email_confirmation", "photo_id", "return_to"})
+    sensitive_post_names = frozenset({"email", "photo_id", "return_to"})
     sensitive_variable_names = frozenset(
         {
             "browser_token",
@@ -81,11 +91,10 @@ class CartExceptionReporterFilter(SafeExceptionReporterFilter):
             "cart_browser_token",
             "cart_state",
             "checkout_email",
-            "checkout_email_confirmation",
             "checkout_failure",
+            "checkout_form",
             "checkout_result",
             "email",
-            "email_confirmation",
             "form",
             "gateway",
             "issued_browser_token",
@@ -93,7 +102,6 @@ class CartExceptionReporterFilter(SafeExceptionReporterFilter):
             "grant_identifier",
             "grant_signature",
             "notification",
-            "normalized_confirmation",
             "normalized_email",
             "photo_id",
             "public_token",
@@ -262,6 +270,7 @@ def detail(request: HttpRequest, event_slug: str) -> HttpResponse:
             "event": event,
             "cart_presentation": presentation,
             "purchase_enabled": paid_purchase_enabled(request),
+            "checkout_form": CheckoutForm(),
             "yandex_metrika_counter_id": None,
         },
     )
@@ -272,8 +281,8 @@ def detail(request: HttpRequest, event_slug: str) -> HttpResponse:
     )
 
 
-@sensitive_post_parameters("email", "email_confirmation")
-@sensitive_variables("checkout_failure", "checkout_result", "form", "gateway")
+@sensitive_post_parameters("email")
+@sensitive_variables("checkout_failure", "checkout_form", "checkout_result", "gateway")
 @require_http_methods(["GET", "POST"])
 def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
     if not paid_purchase_enabled(request):
@@ -281,6 +290,9 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
     event, watermarked_previews_enabled = _authorized_event(request, event_slug=event_slug)
     if event is None:
         return _purchase_not_found()
+    if request.method == "GET":
+        response = redirect("commerce:detail", event_slug=event.slug)
+        return private_purchase_response(response)
     snapshot = read_cart(
         event=event,
         browser_token=_browser_token(request),
@@ -305,17 +317,16 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
     )
     if not presentation.photos:
         return _purchase_not_found()
-    form = CheckoutForm(request.POST or None)
+    checkout_form = CheckoutForm(request.POST or None)
     checkout_failure: CheckoutPaymentUnavailable | None = None
-    if request.method == "POST" and form.is_valid():
+    if request.method == "POST" and checkout_form.is_valid():
         try:
-            gateway = _payment_gateway()
+            gateway = _payment_gateway(request)
             checkout_result = create_checkout(
                 event=event,
                 cart_browser_token=_browser_token(request),
                 purchase_browser_token=_purchase_browser_token(request),
-                checkout_email=form.cleaned_data["email"],
-                checkout_email_confirmation=form.cleaned_data["email_confirmation"],
+                checkout_email=checkout_form.cleaned_data["email"],
                 watermarked_previews_enabled=watermarked_previews_enabled,
                 purchase_enabled=True,
                 adapter_key=gateway.adapter_key,
@@ -326,9 +337,9 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
             )
         except CheckoutPaymentUnavailable as failure:
             checkout_failure = failure
-            form.add_error(None, "Не удалось перейти к оплате. Попробуйте ещё раз.")
+            checkout_form.add_error(None, "Не удалось перейти к оплате. Попробуйте ещё раз.")
         except (CheckoutEmptyCart, CheckoutUnavailable):
-            form.add_error(None, "Не удалось перейти к оплате. Попробуйте ещё раз.")
+            checkout_form.add_error(None, "Не удалось перейти к оплате. Попробуйте ещё раз.")
         else:
             response = redirect(checkout_result.confirmation_url)
             private_purchase_response(response)
@@ -343,11 +354,12 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
             )
     response = render(
         request,
-        "commerce/checkout.html",
+        "commerce/cart.html",
         {
             "event": event,
             "cart_presentation": presentation,
-            "form": form,
+            "purchase_enabled": True,
+            "checkout_form": checkout_form,
             "yandex_metrika_counter_id": None,
         },
     )
@@ -368,9 +380,69 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
     return response
 
 
-def _payment_gateway() -> PaymentGateway:
-    """Real payment adapter selection is an explicit later operational prerequisite."""
-    raise CheckoutPaymentUnavailable()
+def _payment_gateway(request: HttpRequest) -> PaymentGateway:
+    """Select the feature-gated simulator until a real adapter is configured."""
+    if not feature_flag_services.is_enabled(PAYMENT_SIMULATOR_FLAG, request.user):
+        raise CheckoutPaymentUnavailable()
+    return PaymentSimulatorGateway(
+        confirmation_url_for_payment=lambda provider_payment_id: request.build_absolute_uri(
+            reverse(
+                "commerce:payment_simulator",
+                kwargs={"provider_payment_id": provider_payment_id},
+            )
+        )
+    )
+
+
+@require_http_methods(["GET", "POST"])
+def payment_simulator(request: HttpRequest, provider_payment_id: str) -> HttpResponse:
+    if not feature_flag_services.is_enabled(
+        PAID_PHOTO_PURCHASE_FLAG, request.user
+    ) or not feature_flag_services.is_enabled(PAYMENT_SIMULATOR_FLAG, request.user):
+        return _purchase_not_found()
+    attempt = (
+        PaymentAttempt.objects.select_related("order")
+        .filter(
+            adapter_key=PAYMENT_SIMULATOR_ADAPTER_KEY,
+            provider_payment_id=provider_payment_id,
+        )
+        .first()
+    )
+    if attempt is None:
+        return _purchase_not_found()
+    if request.method == "POST":
+        outcome = request.POST.get("outcome", "")
+        try:
+            observation = simulator_observation(
+                attempt=attempt,
+                outcome=outcome,
+                provider_event_id=f"simulator-{attempt.pk}-{outcome}",
+            )
+            apply_payment_observation(
+                attempt_id=attempt.pk,
+                adapter_key=PAYMENT_SIMULATOR_ADAPTER_KEY,
+                source="notification",
+                observation=observation,
+            )
+        except (ValueError, PaymentTransitionRejected):
+            return private_purchase_response(HttpResponse(status=400))
+        return redirect(
+            "commerce:order_return",
+            public_number=attempt.order.public_number,
+        )
+    response = private_purchase_response(
+        render(
+            request,
+            "commerce/payment_simulator.html",
+            {
+                "order": attempt.order,
+                "attempt": attempt,
+                "yandex_metrika_counter_id": None,
+            },
+        )
+    )
+    response["Referrer-Policy"] = "same-origin"
+    return response
 
 
 @require_GET
@@ -428,7 +500,7 @@ def payment_notification(request: HttpRequest) -> HttpResponse:
         return _purchase_not_found()
     try:
         apply_authenticated_notification(
-            gateway=_payment_gateway(),
+            gateway=_payment_gateway(request),
             notification=IncomingPaymentNotification(
                 headers=request.headers,
                 body=request.body,
@@ -551,6 +623,7 @@ def _render_order(
         request,
         "commerce/order.html",
         {
+            "event": order_instance.event,
             "order_presentation": order_presentation(
                 order=order_instance,
                 media_url_builder=_order_media_url_builder(

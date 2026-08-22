@@ -46,11 +46,11 @@ def _new_commerce_side_effects_enabled(request: HttpRequest) -> bool:
     return feature_flag_services.is_enabled(_PAID_PHOTO_PURCHASE_FLAG, request.user)
 
 
-def _payment_gateway_for_adapter(adapter_key: str):
+def _payment_gateway_for_adapter(request: HttpRequest, adapter_key: str):
     """Resolve only the active adapter that owns the immutable attempt identity."""
     from commerce.views import _payment_gateway
 
-    gateway = _payment_gateway()
+    gateway = _payment_gateway(request)
     if getattr(gateway, "adapter_key", None) != adapter_key:
         raise PaymentTransitionRejected("Payment gateway does not own this attempt.")
     return gateway
@@ -433,7 +433,7 @@ class PaymentAttemptAdmin(admin.ModelAdmin):
         if attempt is None or not self._can_refresh(request):
             raise PermissionDenied
         try:
-            gateway = _payment_gateway_for_adapter(attempt.adapter_key)
+            gateway = _payment_gateway_for_adapter(request, attempt.adapter_key)
             reconcile_payment_attempt(attempt_id=attempt.pk, gateway=gateway)
         except (
             CheckoutPaymentUnavailable,

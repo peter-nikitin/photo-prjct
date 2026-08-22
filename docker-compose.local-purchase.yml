@@ -1,0 +1,147 @@
+name: ${COMPOSE_PROJECT_NAME:-paid-photo-purchase-review}
+
+services:
+  db:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username=$${POSTGRES_USER} --dbname=$${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: local-minio
+      MINIO_ROOT_PASSWORD: local-minio-password
+      MINIO_API_CORS_ALLOW_ORIGIN: http://127.0.0.1:8000,http://localhost:8000
+    ports:
+      - "127.0.0.1:19000:9000"
+      - "127.0.0.1:19001:9001"
+    volumes:
+      - local_purchase_minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-05-21T01-59-54Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: local-minio
+      MINIO_ROOT_PASSWORD: local-minio-password
+    entrypoint: >-
+      /bin/sh -ec 'mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}";
+      mc mb --ignore-existing local/local-private;
+      mc mb --ignore-existing local/local-public;
+      mc anonymous set download local/local-public'
+
+  mailpit:
+    image: axllent/mailpit:v1.30.0
+    ports:
+      - "127.0.0.1:8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  web:
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        python manage.py migrate --noinput
+        python manage.py bootstrap_photographer_group
+        python manage.py bootstrap_local_purchase_review
+        python manage.py collectstatic --noinput
+        exec python manage.py runserver 0.0.0.0:8000
+    command: []
+    environment: &local-web-environment
+      SECRET_KEY: local-review-secret-not-for-production
+      DEBUG: "True"
+      ALLOWED_HOSTS: localhost,127.0.0.1,web
+      DB_NAME: app
+      DB_USER: app
+      DB_PASSWORD: app
+      DB_HOST: db
+      DB_PORT: "5432"
+      PUBLIC_DOMAIN: localhost
+      MEDIA_STORAGE_BACKEND: s3
+      MEDIA_S3_ENDPOINT_URL: http://minio.localhost:19000
+      MEDIA_S3_REGION: us-east-1
+      MEDIA_S3_PUBLIC_BUCKET: local-public
+      MEDIA_S3_ACCESS_KEY_ID: local-minio
+      MEDIA_S3_SECRET_ACCESS_KEY: local-minio-password
+      PRIVATE_MEDIA_S3_BUCKET: local-private
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: local-minio
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: local-minio-password
+      PRIVATE_MEDIA_ALLOWED_ORIGINS: http://127.0.0.1:8000,http://localhost:8000
+      PHOTO_UPLOAD_ENABLED: "True"
+      PHOTO_PROCESSING_ENABLED: "True"
+      PHOTO_PROCESSING_PREVIEW_ENABLED: "True"
+      PHOTO_PROCESSING_FACE_ENABLED: "True"
+      PHOTO_PROCESSING_WORKER_TOKEN: local-photo-worker-token
+      COMMERCE_PUBLIC_ORIGIN: http://127.0.0.1:8000
+      COMMERCE_ORDER_ACCESS_SIGNING_SECRET: local-review-signing-secret
+      COMMERCE_SUPPORT_CONTACT: local-support@example.test
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health/', timeout=2)
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
+
+  worker:
+    environment:
+      PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
+      PHOTO_WORKER_TOKEN: local-photo-worker-token
+      PHOTO_WORKER_BUILD: local-full-scenario
+      PHOTO_WORKER_LEASE_SECONDS: "120"
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: 1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2
+      PHOTO_WORKER_PROCESSOR_TYPES: selfie_query,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview
+      PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO: "true"
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+    depends_on:
+      web:
+        condition: service_healthy
+
+  commerce-worker:
+    entrypoint: ["python", "manage.py", "run_commerce_worker"]
+    command: []
+    environment:
+      <<: *local-web-environment
+      COMMERCE_PAYMENT_GATEWAY_FACTORY: commerce.payment_simulator.payment_simulator_gateway_factory
+      COMMERCE_EMAIL_SENDER_FACTORY: commerce.smtp_email_sender.smtp_email_sender_factory
+      COMMERCE_WORKER_FACTORY: commerce.runtime.commerce_worker_factory
+      COMMERCE_SMTP_HOST: mailpit
+      COMMERCE_SMTP_PORT: "1025"
+    depends_on:
+      web:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+
+volumes:
+  local_purchase_minio:

@@ -153,7 +153,7 @@ class CheckoutRouteGateTests(CheckoutViewTestCase):
         read_cart.assert_not_called()
         self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
 
-    def test_staff_and_on_purchase_gates_render_the_exact_checkout_summary(self) -> None:
+    def test_staff_and_on_purchase_gates_redirect_checkout_get_to_the_cart(self) -> None:
         self.enable(purchase=FEATURE_FLAG_STAFF)
         staff = get_user_model().objects.create_user(username="checkout-staff", is_staff=True)
 
@@ -168,16 +168,11 @@ class CheckoutRouteGateTests(CheckoutViewTestCase):
 
         self.assertEqual(anonymous.status_code, 404)
         for response in (staff_response, public_response):
-            self.assertEqual(response.status_code, 200)
-            self.assertContains(response, "Оформление заказа")
-            self.assertContains(response, "Электронная почта")
-            self.assertContains(response, "Повторите электронную почту")
-            self.assertContains(
+            self.assertRedirects(
                 response,
-                "На этот адрес мы отправим ссылку для скачивания оригиналов.",
+                reverse("commerce:detail", kwargs={"event_slug": self.event.slug}),
+                fetch_redirect_response=False,
             )
-            self.assertContains(response, "Оплатить 300 ₽")
-            self.assertContains(response, "checkout-photo")
             self.assertEqual(response["Cache-Control"], "private, no-store")
 
     def test_cart_only_offers_checkout_when_the_purchase_gate_allows_the_current_visitor(
@@ -193,8 +188,13 @@ class CheckoutRouteGateTests(CheckoutViewTestCase):
 
         self.assertEqual(closed.status_code, 200)
         self.assertNotContains(closed, "Перейти к оплате")
-        self.assertContains(opened, "Перейти к оплате")
-        self.assertContains(opened, self.checkout_url())
+        self.assertContains(opened, "Электронная почта")
+        self.assertContains(opened, "Оплатить 300 ₽")
+        self.assertContains(opened, f'action="{self.checkout_url()}"')
+        self.assertNotContains(opened, "Перейти к оплате")
+        self.assertNotContains(opened, "<dialog")
+        self.assertContains(opened, "Вернуться к мероприятию")
+        self.assertNotContains(opened, "Продолжить выбор")
 
 
 class CheckoutSubmissionTests(CheckoutViewTestCase):
@@ -209,11 +209,11 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
         with self.purchasable(), patch("commerce.views._payment_gateway", return_value=gateway):
             rejected = csrf_client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
             response = self.client.post(
                 self.checkout_url(),
-                {"email": " Buyer@EXAMPLE.test ", "email_confirmation": "buyer@example.TEST"},
+                {"email": " Buyer@EXAMPLE.test "},
             )
 
         self.assertEqual(rejected.status_code, 403)
@@ -229,20 +229,6 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
         self.assertTrue(cookie["httponly"])
         self.assertEqual(cookie["samesite"], "Lax")
 
-    def test_checkout_rejects_mismatched_normalized_emails_without_creating_order(self) -> None:
-        self.enable(purchase=FEATURE_FLAG_ON)
-
-        with self.purchasable(), patch("commerce.views._payment_gateway", create=True) as gateway:
-            response = self.client.post(
-                self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "other@example.test"},
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Адреса электронной почты не совпадают.")
-        gateway.assert_not_called()
-        self.assertFalse(Order.objects.exists())
-
     def test_first_timeout_preserves_the_new_capability_for_one_idempotent_retry(self) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
         gateway = TimeoutOnceGateway()
@@ -250,11 +236,11 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
         with self.purchasable(), patch("commerce.views._payment_gateway", return_value=gateway):
             failed = self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
             retried = self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
 
         self.assertEqual(failed.status_code, 200)
@@ -280,13 +266,13 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
         ):
             failed = self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
             order = Order.objects.get()
             attempt = PaymentAttempt.objects.get(order=order)
             retried = self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
 
         self.assertEqual(failed.status_code, 200)
@@ -309,7 +295,7 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
         ):
             checkout = self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
             order = Order.objects.get()
             cart = self.client.get(cart_url)
@@ -333,7 +319,7 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
         ):
             self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
             self.feature_flag_states[PAID_PHOTO_PURCHASE_FLAG] = FEATURE_FLAG_OFF
             closed = self.client.get(cart_url)
@@ -394,7 +380,7 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
         with self.purchasable(), patch("commerce.views._payment_gateway", return_value=gateway):
             checkout = self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
             attempt = PaymentAttempt.objects.get()
             body = json.dumps(
@@ -425,7 +411,7 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
         with self.purchasable(), patch("commerce.views._payment_gateway", return_value=gateway):
             checkout = self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
             order = Order.objects.get()
             attempt = PaymentAttempt.objects.get(order=order)
@@ -493,7 +479,6 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
                 self.checkout_url(),
                 {
                     "email": "Buyer.Secret@example.test",
-                    "email_confirmation": "buyer.secret@example.test",
                 },
             )
 
@@ -501,7 +486,6 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
         self.assertEqual(len(reports), 1)
         report = reports[0]
         self.assertNotIn("Buyer.Secret@example.test", report)
-        self.assertNotIn("buyer.secret@example.test", report)
         self.assertNotIn(self.cart_token, report)
         self.assertNotIn(self.client.cookies["findme_purchase"].value, report)
         self.assertIn("ordinary_cookie", report)

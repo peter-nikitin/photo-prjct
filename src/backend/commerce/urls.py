@@ -5,6 +5,11 @@ from commerce import views
 app_name = "commerce"
 
 urlpatterns = [
+    path(
+        "payments/simulator/<str:provider_payment_id>/",
+        views.payment_simulator,
+        name="payment_simulator",
+    ),
     path("events/<str:event_slug>/cart/", views.detail, name="detail"),
     path("events/<str:event_slug>/cart/checkout/", views.checkout, name="checkout"),
     path("orders/<str:public_number>/return/", views.order_return, name="order_return"),

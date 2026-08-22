@@ -283,7 +283,9 @@ class OrderModelTests(TestCase):
         with self.assertRaises(ProtectedError):
             self.event.delete()
 
-    def test_order_creation_requires_matching_emails_and_an_exact_public_number(self) -> None:
+    def test_order_creation_requires_matching_checkout_and_delivery_emails_and_public_number(
+        self,
+    ) -> None:
         """A divergent initial delivery address or guessable reference breaks the order contract."""
         with self.assertRaises(DatabaseError), transaction.atomic():
             Order.objects.create(

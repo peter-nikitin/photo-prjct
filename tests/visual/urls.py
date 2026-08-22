@@ -24,8 +24,6 @@ visual_patterns = [
     ),
     path("event/cart/", views.cart_populated, name="visual_cart_populated"),
     path("event/cart/empty/", views.cart_empty, name="visual_cart_empty"),
-    path("checkout/", views.checkout_populated, name="visual_checkout_populated"),
-    path("checkout/error/", views.checkout_error, name="visual_checkout_error"),
     path("order/pending/", views.order_pending, name="visual_order_pending"),
     path(
         "order/pending/status/",

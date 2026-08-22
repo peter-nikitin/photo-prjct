@@ -869,6 +869,8 @@ def cart_populated(request: HttpRequest) -> HttpResponse:
             "cart_presentation": _cart_presentation(
                 photos, selected_ids=tuple(photo.photo_id for photo in photos)
             ),
+            "purchase_enabled": True,
+            "checkout_form": CheckoutForm(),
             "yandex_metrika_counter_id": None,
         },
     )
@@ -886,48 +888,12 @@ def cart_empty(request: HttpRequest) -> HttpResponse:
     )
 
 
-def checkout_populated(request: HttpRequest) -> HttpResponse:
-    photos = PAID_GALLERY_PHOTOS[:2]
-    return _render(
-        request,
-        "commerce/checkout.html",
-        {
-            "event": EVENTS[0],
-            "cart_presentation": _cart_presentation(
-                photos, selected_ids=tuple(photo.photo_id for photo in photos)
-            ),
-            "form": CheckoutForm(),
-            "yandex_metrika_counter_id": None,
-        },
-    )
-
-
-def checkout_error(request: HttpRequest) -> HttpResponse:
-    form = CheckoutForm(
-        data={"email": "customer@example.com", "email_confirmation": "customer@example.com"}
-    )
-    form.is_valid()
-    form.add_error(None, "Не удалось перейти к оплате. Попробуйте ещё раз.")
-    photos = PAID_GALLERY_PHOTOS[:2]
-    return _render(
-        request,
-        "commerce/checkout.html",
-        {
-            "event": EVENTS[0],
-            "cart_presentation": _cart_presentation(
-                photos, selected_ids=tuple(photo.photo_id for photo in photos)
-            ),
-            "form": form,
-            "yandex_metrika_counter_id": None,
-        },
-    )
-
-
 def order_pending(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "commerce/order.html",
         {
+            "event": EVENTS[0],
             "order_presentation": _order_presentation(status="pending"),
             "order_status_url": "/__visual__/order/pending/status/",
             "support_contact": "support@example.com",
@@ -945,6 +911,7 @@ def order_paid(request: HttpRequest) -> HttpResponse:
         request,
         "commerce/order.html",
         {
+            "event": EVENTS[0],
             "order_presentation": _order_presentation(status="paid"),
             "support_contact": "support@example.com",
             "yandex_metrika_counter_id": None,
@@ -957,6 +924,7 @@ def order_email_failed(request: HttpRequest) -> HttpResponse:
         request,
         "commerce/order.html",
         {
+            "event": EVENTS[0],
             "order_presentation": _order_presentation(status="paid"),
             "resend_feedback": "Не удалось отправить письмо. Попробуйте ещё раз.",
             "support_contact": "support@example.com",

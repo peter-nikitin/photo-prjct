@@ -1,4 +1,4 @@
-.PHONY: check db-clone-deployed hooks local-web static test test-clone-deployed worktree
+.PHONY: check db-clone-deployed hooks local-purchase-down local-purchase-up local-web static test test-clone-deployed worktree
 
 BASE ?= origin/main
 MYPY ?= .venv/bin/mypy
@@ -36,3 +36,9 @@ db-clone-deployed:
 
 local-web:
 	@sh scripts/local-web.sh
+
+local-purchase-up:
+	docker compose --project-name paid-photo-purchase-review -f docker-compose.yml -f docker-compose.local-purchase.yml --profile worker --profile commerce up --build -d --wait
+
+local-purchase-down:
+	docker compose --project-name paid-photo-purchase-review -f docker-compose.yml -f docker-compose.local-purchase.yml --profile worker --profile commerce down --remove-orphans

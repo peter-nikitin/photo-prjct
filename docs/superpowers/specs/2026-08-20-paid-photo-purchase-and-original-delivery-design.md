@@ -66,9 +66,8 @@ separate prerequisites for public use.
 ### Included
 
 - FindMe Photo as the single seller and payment recipient for one event-specific order.
-- A dedicated checkout page reached from the accepted anonymous paid-photo cart.
-- Required matching email and repeated-email inputs without registration or pre-payment email
-  verification.
+- An inline checkout form in the accepted anonymous paid-photo cart.
+- One required email input without registration or pre-payment email verification.
 - One immutable RUB Order and one immutable OrderItem price snapshot for every selected photo.
 - One Order containing photos from exactly one event, with no quantity and no duplicate position.
 - A narrow `PaymentGateway` protocol and a local/staff-only deterministic test adapter.
@@ -340,17 +339,15 @@ address, User-Agent, or request headers.
 
 ## Checkout and Order Creation
 
-The paid cart page gains `Перейти к оплате`. It links to a separate checkout page for that Event.
-The page shows the current watermarked photo selection, per-item prices, count, exact total, two
-email inputs, relevant legal links, and no payment-method selector.
+The paid cart permanently shows its checkout form beside the current photo selection on desktop and
+below it in normal document flow on mobile. The form shows one email input, relevant legal links,
+the exact total in its submit action, and no payment-method selector. Checkout GET redirects to the
+cart; checkout POST processes the form without a separate checkout page or client-side dependency.
 
 The customer-facing checkout copy is:
 
-- heading: `Оформление заказа`;
-- first label: `Электронная почта`;
-- second label: `Повторите электронную почту`;
+- label: `Электронная почта`;
 - help: `На этот адрес мы отправим ссылку для скачивания оригиналов.`;
-- email mismatch: `Адреса электронной почты не совпадают.`;
 - submit: `Оплатить <сумма>`;
 - legal lead-in: `Нажимая «Оплатить», вы принимаете условия оферты и лицензии и подтверждаете,
   что ознакомились с политикой обработки персональных данных.`
@@ -365,7 +362,7 @@ transaction:
 1. evaluates the purchase gate and loads the browser's unexpired Event cart;
 2. locks the cart and re-evaluates every photo through the catalog purchasability boundary;
 3. prunes ineligible items and rejects an empty selection;
-4. validates the two normalized emails are equal;
+4. validates and normalizes the email;
 5. snapshots one OrderItem per current unique position and the exact current Event price;
 6. creates or reuses the browser's opaque purchase capability;
 7. creates the first OrderAccessGrant for eventual fulfillment; and
@@ -785,7 +782,7 @@ design.
 1. Checkout is available only for one current, unexpired, nonempty, correctly priced Event cart
    whose photos satisfy the accepted watermarked purchasability boundary and all three runtime
    gates for the caller.
-2. Checkout requires two matching normalized email values, creates no account, sends no
+2. Checkout requires one normalized email value, creates no account, sends no
    pre-payment verification, and displays the approved summary and legal links before `Оплатить`.
 3. One Order snapshots exactly one Event, one immutable checkout email, one mutable delivery email,
    literal `RUB`, exact integer total, and one unique quantity-one OrderItem per selected Photo.

@@ -364,7 +364,7 @@ class PaidPhotoPurchaseFlowTests(TestCase):
         ):
             checkout = self.client.post(
                 self.checkout_url(),
-                {"email": "buyer@example.test", "email_confirmation": "buyer@example.test"},
+                {"email": "buyer@example.test"},
             )
 
         self.assertEqual(checkout.status_code, 302)

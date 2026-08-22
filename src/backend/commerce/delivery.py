@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from django.core.exceptions import ValidationError
@@ -325,8 +326,8 @@ def _customer_access_message(
         signing_secret=order_access_signing_secret,
     )
     access_url = order_access_url_for_grant(delivery.access_grant, signature)
-    if not isinstance(access_url, str) or not access_url.startswith("https://"):
-        raise ValueError("Order access URL must be an absolute HTTPS URL.")
+    if not _is_safe_order_access_url(access_url):
+        raise ValueError("Order access URL must be absolute HTTPS or loopback HTTP.")
     order = delivery.order
     return EmailMessage(
         recipient_email=delivery.recipient_email,
@@ -347,6 +348,20 @@ def _customer_access_message(
             )
         ),
     )
+
+
+def _is_safe_order_access_url(value: object) -> bool:
+    if not isinstance(value, str) or "\\" in value or any(ord(char) < 32 for char in value):
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    if not parsed.netloc or parsed.username:
+        return False
+    if parsed.scheme == "https":
+        return True
+    return parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
 
 
 def _record_delivery_result(

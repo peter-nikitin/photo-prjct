@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 from django import forms
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
@@ -33,10 +34,6 @@ class CheckoutError(Exception):
 
 
 class CheckoutEmptyCart(CheckoutError):
-    pass
-
-
-class CheckoutEmailMismatch(CheckoutError):
     pass
 
 
@@ -83,9 +80,7 @@ class _PreparedCheckout:
     "cart_browser_token",
     "purchase_browser_token",
     "checkout_email",
-    "checkout_email_confirmation",
     "normalized_email",
-    "normalized_confirmation",
     "capability",
     "prepared",
 )
@@ -95,7 +90,6 @@ def create_checkout(
     cart_browser_token: str | None,
     purchase_browser_token: str | None,
     checkout_email: str,
-    checkout_email_confirmation: str,
     watermarked_previews_enabled: bool,
     purchase_enabled: bool,
     adapter_key: str,
@@ -117,7 +111,6 @@ def create_checkout(
         cart_browser_token=cart_browser_token,
         purchase_browser_token=purchase_browser_token,
         checkout_email=checkout_email,
-        checkout_email_confirmation=checkout_email_confirmation,
         watermarked_previews_enabled=watermarked_previews_enabled,
         purchase_enabled=purchase_enabled,
         adapter_key=adapter_key,
@@ -165,7 +158,6 @@ def _prepare_checkout(
     cart_browser_token: str | None,
     purchase_browser_token: str | None,
     checkout_email: str,
-    checkout_email_confirmation: str,
     watermarked_previews_enabled: bool,
     purchase_enabled: bool,
     adapter_key: str,
@@ -189,7 +181,6 @@ def _prepare_checkout(
             cart_digest=cart_digest,
             purchase_browser_token=purchase_browser_token,
             checkout_email=checkout_email,
-            checkout_email_confirmation=checkout_email_confirmation,
             watermarked_previews_enabled=watermarked_previews_enabled,
             adapter_key=adapter_key,
             return_url_for_order=return_url_for_order,
@@ -206,7 +197,6 @@ def _prepare_locked_checkout(
     cart_digest: str,
     purchase_browser_token: str | None,
     checkout_email: str,
-    checkout_email_confirmation: str,
     watermarked_previews_enabled: bool,
     adapter_key: str,
     return_url_for_order: Callable[[str], str],
@@ -291,9 +281,6 @@ def _prepare_locked_checkout(
             return None
 
     normalized_email = _normalize_checkout_email(checkout_email)
-    normalized_confirmation = _normalize_checkout_email(checkout_email_confirmation)
-    if normalized_email != normalized_confirmation:
-        raise CheckoutEmailMismatch()
 
     capability = None
     set_cookie = False
@@ -538,7 +525,15 @@ def _is_safe_hosted_confirmation_url(value: object) -> bool:
         parsed = urlsplit(value)
     except ValueError:
         return False
-    return parsed.scheme == "https" and bool(parsed.netloc) and not parsed.username
+    if parsed.scheme == "https" and bool(parsed.netloc) and not parsed.username:
+        return True
+    return (
+        settings.DEBUG is True
+        and parsed.scheme == "http"
+        and parsed.hostname in {"localhost", "127.0.0.1"}
+        and bool(parsed.netloc)
+        and not parsed.username
+    )
 
 
 def _payment_unavailable(prepared: _PreparedCheckout) -> CheckoutPaymentUnavailable:

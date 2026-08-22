@@ -14,7 +14,6 @@ from picflow.models import Event, Photo
 
 from commerce.capabilities import purchase_browser_authorizes_order
 from commerce.checkout import (
-    CheckoutEmailMismatch,
     CheckoutEmptyCart,
     CheckoutPaymentUnavailable,
     create_checkout,
@@ -212,9 +211,6 @@ class CheckoutServiceTests(TransactionTestCase):
             cart_browser_token=self.cart_token,
             purchase_browser_token=purchase_token,
             checkout_email=kwargs.pop("checkout_email", " buyer@EXAMPLE.test "),
-            checkout_email_confirmation=kwargs.pop(
-                "checkout_email_confirmation", "buyer@example.TEST"
-            ),
             watermarked_previews_enabled=True,
             purchase_enabled=True,
             adapter_key=kwargs.pop("adapter_key", "deterministic-test"),
@@ -294,12 +290,7 @@ class CheckoutServiceTests(TransactionTestCase):
         self.assertEqual(Order.objects.count(), 0)
         self.assertEqual(PaymentAttempt.objects.count(), 0)
 
-    def test_checkout_requires_two_matching_normalized_emails(self) -> None:
-        """A mismatch could deliver the permanent purchase capability to the wrong address."""
-        with self.purchasable(self.first_photo), self.assertRaises(CheckoutEmailMismatch):
-            self.checkout(checkout_email_confirmation="different@example.test")
-        self.assertEqual(Order.objects.count(), 0)
-
+    def test_checkout_normalizes_the_single_delivery_email(self) -> None:
         with self.purchasable(self.first_photo):
             result = self.checkout()
         self.assertEqual(result.order.checkout_email, "buyer@example.test")
@@ -325,7 +316,6 @@ class CheckoutServiceTests(TransactionTestCase):
                     cart_browser_token=self.cart_token,
                     purchase_browser_token=self.existing_purchase_token,
                     checkout_email=DIAGNOSTIC_CHECKOUT_EMAIL,
-                    checkout_email_confirmation=DIAGNOSTIC_NORMALIZED_EMAIL,
                     watermarked_previews_enabled=True,
                     purchase_enabled=True,
                     adapter_key="deterministic-test",
@@ -898,7 +888,6 @@ class CheckoutServiceTests(TransactionTestCase):
                 cart_browser_token=self.cart_token,
                 purchase_browser_token=None,
                 checkout_email="buyer@example.test",
-                checkout_email_confirmation="buyer@example.test",
                 watermarked_previews_enabled=True,
                 purchase_enabled=True,
                 adapter_key="deterministic-test",

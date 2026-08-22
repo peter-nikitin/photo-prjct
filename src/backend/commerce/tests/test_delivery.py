@@ -126,6 +126,14 @@ class _AccessUrlBuilder:
         return url
 
 
+class _FixedAccessUrlBuilder:
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+    def __call__(self, grant: OrderAccessGrant, signature: str) -> str:  # noqa: ARG002
+        return self.url
+
+
 def _row_share_locks_for_backend(*, backend_pid: int) -> set[str]:
     """Return Commerce row-lock targets for a separate PostgreSQL backend."""
     tables = (
@@ -297,6 +305,53 @@ class EmailDeliveryServiceTests(TransactionTestCase):
                 {field.name for field in EmailDelivery._meta.local_fields}
             )
         )
+
+    def test_accepts_plain_http_order_access_only_on_loopback_hosts(self) -> None:
+        """Local full-flow review must send access mail without weakening public HTTP links."""
+        for index, host in enumerate(("127.0.0.1:8000", "localhost:8000"), start=1):
+            with self.subTest(host=host):
+                delivery = self.create_delivery(next_attempt_at=self.now + timedelta(seconds=index))
+                sender = _RecordingSender((EmailSendOutcome.SUCCEEDED,))
+                access_url = f"http://{host}/orders/access/local-signature/"
+                claim = claim_due_email_deliveries(
+                    now=self.now + timedelta(seconds=index),
+                    limit=1,
+                )[0]
+
+                send_claimed_email_delivery(
+                    claim=claim,
+                    email_sender=sender,
+                    order_access_signing_secret=self.signing_secret,
+                    order_access_url_for_grant=_FixedAccessUrlBuilder(access_url),
+                    support_contact=self.support_contact,
+                    timeout_seconds=15,
+                    now=self.now + timedelta(seconds=index),
+                )
+
+                delivery.refresh_from_db()
+                self.assertEqual(delivery.state, EmailDelivery.State.SUCCEEDED)
+                self.assertIn(access_url, sender.messages[0].text_body)
+
+    def test_rejects_plain_http_order_access_on_a_public_host(self) -> None:
+        """A production recipient must never receive a bearer capability over public HTTP."""
+        self.create_delivery()
+        sender = _RecordingSender((EmailSendOutcome.SUCCEEDED,))
+        claim = claim_due_email_deliveries(now=self.now, limit=1)[0]
+
+        with self.assertRaisesRegex(ValueError, "absolute HTTPS or loopback HTTP"):
+            send_claimed_email_delivery(
+                claim=claim,
+                email_sender=sender,
+                order_access_signing_secret=self.signing_secret,
+                order_access_url_for_grant=_FixedAccessUrlBuilder(
+                    "http://findme.example.test/orders/access/public-http/"
+                ),
+                support_contact=self.support_contact,
+                timeout_seconds=15,
+                now=self.now,
+            )
+
+        self.assertEqual(sender.messages, [])
 
     def test_retryable_failures_follow_the_bounded_delivery_schedule_and_exhaust_once(self) -> None:
         """An unbounded or wrongly delayed retry could silently lose a paid order's access email."""

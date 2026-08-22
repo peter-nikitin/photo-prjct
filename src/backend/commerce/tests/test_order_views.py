@@ -93,6 +93,11 @@ class OrderViewTests(OrderViewFixture):
         self.assertContains(response, "Отправить письмо ещё раз")
         self.assertContains(response, "Поддержка")
         self.assertContains(response, "support@example.test")
+        self.assertContains(response, "Вернуться к мероприятию")
+        self.assertContains(
+            response,
+            f'href="{reverse("event_detail", kwargs={"slug": self.event.slug})}"',
+        )
         self.assertNotContains(response, "buyer@example.test")
         self.assertNotContains(response, "provider_payment_id")
         self.assertNotContains(response, "private/")

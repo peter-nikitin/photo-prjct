@@ -115,6 +115,7 @@ PRIVATE_MEDIA_S3_REGION = env("MEDIA_S3_REGION", default="ru-central1")
 PRIVATE_MEDIA_ALLOWED_ORIGINS = [
     origin.strip() for origin in env.list("PRIVATE_MEDIA_ALLOWED_ORIGINS", default=[])
 ]
+COMMERCE_SUPPORT_CONTACT = env("COMMERCE_SUPPORT_CONTACT", default="")
 
 PHOTO_UPLOAD_ENABLED = env.bool("PHOTO_UPLOAD_ENABLED", default=False)
 PHOTO_UPLOAD_MAX_FILES = env.int("PHOTO_UPLOAD_MAX_FILES", default=10_000)

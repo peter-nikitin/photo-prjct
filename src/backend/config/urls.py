@@ -1,3 +1,4 @@
+from commerce import views as commerce_views
 from django.contrib import admin
 from django.urls import include, path
 from processing.admin_progress import admin_processing_progress
@@ -6,6 +7,11 @@ from config import views
 
 urlpatterns = [
     path("internal/photo-processing/v1/", include("processing.urls")),
+    path(
+        "payments/notification/",
+        commerce_views.payment_notification,
+        name="payment_notification",
+    ),
     path("", include("commerce.urls")),
     path("", include("selfie_search.urls")),
     path("health/", views.health, name="health"),

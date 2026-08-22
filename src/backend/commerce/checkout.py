@@ -2,10 +2,12 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from django import forms
 from django.db import transaction
 from django.utils import timezone
+from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import purchasable_paid_photo_queryset
 from picflow.models import Event
 
@@ -77,6 +79,16 @@ class _PreparedCheckout:
     set_purchase_browser_cookie: bool
 
 
+@sensitive_variables(
+    "cart_browser_token",
+    "purchase_browser_token",
+    "checkout_email",
+    "checkout_email_confirmation",
+    "normalized_email",
+    "normalized_confirmation",
+    "capability",
+    "prepared",
+)
 def create_checkout(
     *,
     event: Event,
@@ -125,6 +137,7 @@ def create_checkout(
     if (
         created.amount_kopecks != prepared.request.amount_kopecks
         or created.currency != prepared.request.currency
+        or not _is_safe_hosted_confirmation_url(created.confirmation_url)
     ):
         raise _payment_unavailable(prepared)
 
@@ -512,6 +525,20 @@ def _checkout_result(*, prepared: _PreparedCheckout, attempt: PaymentAttempt) ->
         purchase_browser_capability=prepared.purchase_browser_capability,
         set_purchase_browser_cookie=prepared.set_purchase_browser_cookie,
     )
+
+
+def _is_safe_hosted_confirmation_url(value: object) -> bool:
+    if (
+        not isinstance(value, str)
+        or "\\" in value
+        or any(ord(character) < 32 for character in value)
+    ):
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and bool(parsed.netloc) and not parsed.username
 
 
 def _payment_unavailable(prepared: _PreparedCheckout) -> CheckoutPaymentUnavailable:

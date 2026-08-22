@@ -35,3 +35,8 @@ def is_enabled(key: str, user: AbstractBaseUser | AnonymousUser) -> bool:
     return (
         state == FEATURE_FLAG_STAFF and user.is_authenticated and user.is_active and user.is_staff
     )
+
+
+def is_server_enabled(key: str) -> bool:
+    """Permit trusted server callbacks during staff rehearsal and public release."""
+    return _state_for(key) in {FEATURE_FLAG_STAFF, FEATURE_FLAG_ON}

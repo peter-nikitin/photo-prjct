@@ -7,8 +7,9 @@ from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
-from django.test import TransactionTestCase
+from django.test import RequestFactory, TransactionTestCase, override_settings
 from django.utils import timezone
+from django.views.debug import technical_500_response
 from picflow.models import Event, Photo
 
 from commerce.capabilities import purchase_browser_authorizes_order
@@ -35,6 +36,9 @@ from commerce.payment_gateway import (
 )
 from commerce.services import clear_cart, read_cart, set_photo_selected
 from commerce.test_payment_gateway import DeterministicPaymentGateway, TestPaymentOutcome
+
+DIAGNOSTIC_CHECKOUT_EMAIL = "Buyer.Secret@example.test"
+DIAGNOSTIC_NORMALIZED_EMAIL = "buyer.secret@example.test"
 
 
 class RecordingGateway(DeterministicPaymentGateway):
@@ -300,6 +304,53 @@ class CheckoutServiceTests(TransactionTestCase):
             result = self.checkout()
         self.assertEqual(result.order.checkout_email, "buyer@example.test")
         self.assertEqual(result.order.delivery_email, "buyer@example.test")
+
+    @override_settings(DEBUG=False)
+    def test_service_exception_report_redacts_normalized_emails_and_browser_bearers(self) -> None:
+        diagnostic_marker = "checkout-service-diagnostic-marker"
+        request = RequestFactory().post("/internal-test/")
+        request.COOKIES["findme_cart"] = self.cart_token
+        request.COOKIES["findme_purchase"] = self.existing_purchase_token
+
+        with (
+            self.purchasable(self.first_photo),
+            patch(
+                "commerce.checkout._create_order_and_attempt",
+                side_effect=RuntimeError(diagnostic_marker),
+            ),
+        ):
+            try:
+                create_checkout(
+                    event=self.event,
+                    cart_browser_token=self.cart_token,
+                    purchase_browser_token=self.existing_purchase_token,
+                    checkout_email=DIAGNOSTIC_CHECKOUT_EMAIL,
+                    checkout_email_confirmation=DIAGNOSTIC_NORMALIZED_EMAIL,
+                    watermarked_previews_enabled=True,
+                    purchase_enabled=True,
+                    adapter_key="deterministic-test",
+                    gateway=self.gateway(),
+                    return_url_for_order=lambda public_number: (
+                        f"https://findme.test/orders/{public_number}/return/"
+                    ),
+                    now=self.now,
+                )
+            except RuntimeError as error:
+                response = technical_500_response(
+                    request,
+                    type(error),
+                    error,
+                    error.__traceback__,
+                )
+            else:
+                self.fail("The injected checkout diagnostic exception was not raised.")
+
+        report = response.content.decode(response.charset)
+        self.assertNotIn(DIAGNOSTIC_CHECKOUT_EMAIL, report)
+        self.assertNotIn(DIAGNOSTIC_NORMALIZED_EMAIL, report)
+        self.assertNotIn(self.cart_token, report)
+        self.assertNotIn(self.existing_purchase_token, report)
+        self.assertIn(diagnostic_marker, report)
 
     def test_checkout_snapshots_one_event_exact_price_grant_request_and_no_entitlement_work(
         self,

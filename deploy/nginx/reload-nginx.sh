@@ -61,6 +61,15 @@ server {
         return 308 https://${PUBLIC_DOMAIN}\$request_uri;
     }
 
+    location ~ ^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) {
+        error_log /dev/null emerg;
+        add_header Cache-Control "private, no-store" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Vary "Cookie" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        return 308 https://${PUBLIC_DOMAIN}\$request_uri;
+    }
+
     location / {
         return 308 https://${PUBLIC_DOMAIN}\$request_uri;
     }

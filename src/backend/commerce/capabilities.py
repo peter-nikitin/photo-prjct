@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
@@ -164,3 +165,14 @@ def revoke_order_access_grant(
         return
     grant.revoked_at = revoked_at or timezone.now()
     grant.save(update_fields=["revoked_at"])
+
+
+def record_order_customer_access(*, order: Order, now: datetime | None = None) -> None:
+    """Record the first authorized customer Order-page access without extending authority."""
+    if order.pk is None:
+        raise ValueError("A persisted Order is required to record customer access.")
+    with transaction.atomic():
+        current_order = Order.objects.select_for_update().get(pk=order.pk)
+        if current_order.first_customer_access_at is None:
+            current_order.first_customer_access_at = now or timezone.now()
+            current_order.save(update_fields=["first_customer_access_at"])

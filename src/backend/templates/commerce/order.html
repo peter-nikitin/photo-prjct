@@ -1,0 +1,47 @@
+{% extends "ui/base.html" %}
+{% load static %}
+
+{% block title %}Заказ {{ order_presentation.public_number }} — FindMe Photo{% endblock %}
+{% block body_class %}order-page{% endblock %}
+{% block extra_css %}
+  <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
+{% endblock %}
+
+{% block content %}
+  <article class="order" aria-labelledby="order-title">
+    <h1 id="order-title">Заказ {{ order_presentation.public_number }}</h1>
+    <p role="status">{{ order_presentation.status_display }}</p>
+    <dl>
+      <dt>Дата заказа</dt><dd>{{ order_presentation.created_at_display }}</dd>
+      <dt>Событие</dt><dd>{{ order_presentation.event_name }}</dd>
+      <dt>Итого</dt><dd>{{ order_presentation.total_display }}</dd>
+      <dt>Электронная почта</dt><dd>{{ order_presentation.masked_delivery_email }}</dd>
+    </dl>
+    <ul aria-label="Фотографии в заказе">
+      {% for item in order_presentation.photos %}
+        <li>
+          <img src="{{ item.photo.preview_media_small.url }}" alt="{{ item.photo.alt }}">
+          <span>{{ item.unit_price_display }}</span>
+          {% if order_presentation.status == 'paid' %}
+            {% if access_grant %}
+              <a href="{% url 'commerce:grant_order_download' public_number=order_presentation.public_number grant_identifier=access_grant.pk signature=grant_signature photo_id=item.photo.photo_id %}">Скачать оригинал</a>
+            {% else %}
+              <a href="{% url 'commerce:order_download' public_number=order_presentation.public_number photo_id=item.photo.photo_id %}">Скачать оригинал</a>
+            {% endif %}
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+    {% if order_presentation.status == 'paid' %}
+      {% if access_grant %}
+        <form method="post" action="{% url 'commerce:grant_order_resend' public_number=order_presentation.public_number grant_identifier=access_grant.pk signature=grant_signature %}">
+      {% else %}
+        <form method="post" action="{% url 'commerce:order_resend' public_number=order_presentation.public_number %}">
+      {% endif %}
+        {% csrf_token %}
+        <button type="submit">Отправить письмо ещё раз</button>
+      </form>
+    {% endif %}
+    <p>Поддержка: {{ support_contact }}</p>
+  </article>
+{% endblock %}

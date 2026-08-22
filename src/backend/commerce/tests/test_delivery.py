@@ -1,12 +1,15 @@
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from threading import Barrier
 
-from django.db import connection, transaction
+from django.db import close_old_connections, connection, transaction
 from django.test import TransactionTestCase
 from picflow.models import Event, Photo
 
 from commerce.attention import open_attention
 from commerce.delivery import (
+    ResendOrderAccessRateLimited,
     claim_due_email_deliveries,
     correct_delivery_email,
     resend_order_access,
@@ -494,6 +497,33 @@ class EmailDeliveryServiceTests(TransactionTestCase):
         unrelated.refresh_from_db()
         self.assertIsNotNone(repaired.resolved_at)
         self.assertIsNone(unrelated.resolved_at)
+
+    def test_concurrent_resends_create_one_delivery_under_the_order_lock(self) -> None:
+        start = Barrier(2)
+
+        def resend_from_separate_connection() -> str:
+            close_old_connections()
+            start.wait(timeout=2)
+            try:
+                resend_order_access(order_id=self.order.pk)
+            except ResendOrderAccessRateLimited:
+                return "rate_limited"
+            finally:
+                close_old_connections()
+            return "created"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = tuple(executor.submit(resend_from_separate_connection) for _ in range(2))
+            outcomes = tuple(future.result(timeout=5) for future in futures)
+
+        self.assertEqual(sorted(outcomes), ["created", "rate_limited"])
+        self.assertEqual(
+            EmailDelivery.objects.filter(
+                order=self.order,
+                access_grant__source=OrderAccessGrant.Source.RESEND,
+            ).count(),
+            1,
+        )
 
     def test_correction_cancels_a_retryable_inflight_old_recipient_without_retrying_it(
         self,

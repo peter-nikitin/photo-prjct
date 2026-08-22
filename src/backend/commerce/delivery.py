@@ -23,6 +23,11 @@ _RETRY_DELAYS = (
     timedelta(hours=2),
     timedelta(hours=12),
 )
+RESEND_MINIMUM_INTERVAL = timedelta(minutes=1)
+
+
+class ResendOrderAccessRateLimited(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -142,6 +147,13 @@ def resend_order_access(*, order_id: int, now: datetime | None = None) -> EmailD
         order = Order.objects.select_for_update().get(pk=order_id)
         if order.status != Order.Status.PAID:
             raise ValueError("Only paid Orders may receive access email again.")
+        if EmailDelivery.objects.filter(
+            order=order,
+            message_kind=EmailDelivery.MessageKind.ORDER_ACCESS,
+            access_grant__source=OrderAccessGrant.Source.RESEND,
+            created_at__gte=current_time - RESEND_MINIMUM_INTERVAL,
+        ).exists():
+            raise ResendOrderAccessRateLimited()
         grant = create_order_access_grant(order=order, source=str(OrderAccessGrant.Source.RESEND))
         return EmailDelivery.objects.create(
             order=order,

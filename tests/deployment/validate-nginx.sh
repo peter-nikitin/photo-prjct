@@ -39,6 +39,24 @@ assert_no_referrer_header() {
     fi
 }
 
+assert_private_commerce_headers() {
+    header_file="$1"
+
+    if ! tr -d '\r' < "$header_file" | grep -Eiq '^Cache-Control:[[:space:]]*private, no-store$'; then
+        echo "response did not retain Cache-Control: private, no-store" >&2
+        exit 1
+    fi
+    if ! tr -d '\r' < "$header_file" | grep -Eiq '^Vary:.*Cookie'; then
+        echo "response did not retain Vary: Cookie" >&2
+        exit 1
+    fi
+    if ! tr -d '\r' < "$header_file" | grep -Eiq '^X-Content-Type-Options:[[:space:]]*nosniff$'; then
+        echo "response did not retain X-Content-Type-Options: nosniff" >&2
+        exit 1
+    fi
+    assert_no_referrer_header "$header_file"
+}
+
 assert_same_origin_referrer_header() {
     header_file="$1"
 
@@ -68,6 +86,22 @@ request_status() {
         "https://$request_host:$request_port$request_path" || true
 }
 
+request_http_status() {
+    header_file="$1"
+    request_host="$2"
+    request_port="$3"
+    request_path="$4"
+    shift 4
+
+    curl --silent --max-time 5 --noproxy '*' \
+        --resolve "$request_host:$request_port:127.0.0.1" \
+        --dump-header "$header_file" \
+        --output /dev/null \
+        --write-out '%{http_code}' \
+        "$@" \
+        "http://$request_host:$request_port$request_path" || true
+}
+
 exercise_bearer_error_logging() {
     name="$1"
     rendered="$2"
@@ -87,6 +121,7 @@ exercise_bearer_error_logging() {
     internal_headers="$runtime_log_dir/internal.headers"
     event_headers="$runtime_log_dir/event.headers"
     static_headers="$runtime_log_dir/static.headers"
+    commerce_http_headers="$runtime_log_dir/commerce-http.headers"
     request_body="$runtime_log_dir/request-body.bin"
     runtime_rendered="$runtime_log_dir/runtime.conf"
     bearer_token="bearer-log-token-$name-$$"
@@ -102,6 +137,9 @@ exercise_bearer_error_logging() {
     bearer_status_path="/events/runtime/selfie-search/$bearer_token/status/?$sentinel_tracking=1"
     bearer_media_path="/events/runtime/selfie-search/$bearer_token/media/photo.jpg?download=$sentinel_tracking"
     bearer_download_path="/events/runtime/selfie-search/$bearer_token/download/original?ref=$sentinel_tracking"
+    commerce_http_grant="commerce-http-grant-$name-$$"
+    commerce_http_signature="commerce-http-signature-$name-$$"
+    commerce_http_path="/orders/runtime/access/$commerce_http_grant/$commerce_http_signature/?commerce-http-marker=$sentinel_tracking"
     ordinary_path="/runtime-proxy-check-$name?ordinary=ordinary-query-$name"
     internal_path="/internal/photo-processing/"
 
@@ -124,6 +162,7 @@ exercise_bearer_error_logging() {
     docker run --detach \
         --name "$runtime_container" \
         --add-host web:127.0.0.1 \
+        --publish 127.0.0.1::80 \
         --publish 127.0.0.1::443 \
         --volume "$runtime_rendered:/etc/nginx/conf.d/default.conf:ro" \
         --volume "$tmp_dir/letsencrypt:/etc/letsencrypt:ro" \
@@ -131,6 +170,15 @@ exercise_bearer_error_logging() {
         --entrypoint nginx \
         nginx:1.27-alpine \
         -g 'daemon off;' >/dev/null
+
+    runtime_http_binding="$(docker port "$runtime_container" 80/tcp)"
+    runtime_http_port="${runtime_http_binding##*:}"
+    case "$runtime_http_port" in
+        ''|*[!0-9]*)
+            echo "$name did not publish an HTTP port" >&2
+            exit 1
+            ;;
+    esac
 
     runtime_binding="$(docker port "$runtime_container" 443/tcp)"
     runtime_port="${runtime_binding##*:}"
@@ -159,6 +207,19 @@ exercise_bearer_error_logging() {
         exit 1
     fi
     assert_no_referrer_header "$bearer_headers"
+
+    commerce_http_status="$(request_http_status "$commerce_http_headers" findme-photo.ru "$runtime_http_port" "$commerce_http_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent")"
+    if [ "$commerce_http_status" != 308 ]; then
+        echo "$name canonical HTTP commerce redirect returned $commerce_http_status instead of 308" >&2
+        exit 1
+    fi
+    if ! tr -d '\r' < "$commerce_http_headers" | grep -Fxiq "Location: https://findme-photo.ru$commerce_http_path"; then
+        echo "$name canonical HTTP commerce redirect changed its canonical target" >&2
+        exit 1
+    fi
+    assert_private_commerce_headers "$commerce_http_headers"
 
     submission_status="$(request_status "$submission_headers" findme-photo.ru "$runtime_port" "$submission_path" \
         --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
@@ -266,6 +327,20 @@ exercise_bearer_error_logging() {
             exit 1
         fi
         assert_no_referrer_header "$alias_submission_headers"
+
+        alias_commerce_http_headers="$runtime_log_dir/alias-commerce-http.headers"
+        alias_commerce_http_status="$(request_http_status "$alias_commerce_http_headers" "$alias" "$runtime_http_port" "$commerce_http_path" \
+            --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+            --user-agent "$sentinel_user_agent")"
+        if [ "$alias_commerce_http_status" != 308 ]; then
+            echo "$name alias HTTP commerce redirect returned $alias_commerce_http_status instead of 308" >&2
+            exit 1
+        fi
+        if ! tr -d '\r' < "$alias_commerce_http_headers" | grep -Fxiq "Location: https://findme-photo.ru$commerce_http_path"; then
+            echo "$name alias HTTP commerce redirect changed its canonical target" >&2
+            exit 1
+        fi
+        assert_private_commerce_headers "$alias_commerce_http_headers"
     fi
 
     docker logs "$runtime_container" > "$container_log" 2>&1 || true
@@ -322,6 +397,29 @@ exercise_bearer_error_logging() {
         cat "$selfie_access_log" >&2
         exit 1
     fi
+    commerce_http_access_log="$runtime_log_dir/commerce-http-access.log"
+    grep -F '<order-access>' "$access_log" > "$commerce_http_access_log" || true
+    if [ ! -s "$commerce_http_access_log" ]; then
+        echo "$name did not write redacted commerce HTTP access lines" >&2
+        exit 1
+    fi
+    if ! awk '!/^-[[:space:]]+-[[:space:]]+-[[:space:]]+\[/{ exit 1 }' "$commerce_http_access_log"; then
+        echo "$name commerce HTTP access line did not start with fixed client/user placeholders" >&2
+        cat "$commerce_http_access_log" >&2
+        exit 1
+    fi
+    for commerce_log in "$commerce_http_access_log" "$error_log" "$container_log"; do
+        if grep -Fq "$commerce_http_grant" "$commerce_log" || \
+           grep -Fq "$commerce_http_signature" "$commerce_log" || \
+           grep -Fq "$sentinel_tracking" "$commerce_log" || \
+           grep -Fq "$sentinel_referrer" "$commerce_log" || \
+           grep -Fq "$sentinel_user_agent" "$commerce_log" || \
+           grep -Fq "$sentinel_client_ip" "$commerce_log"; then
+            echo "$name persisted commerce HTTP bearer metadata in $(basename "$commerce_log")" >&2
+            cat "$commerce_log" >&2 || true
+            exit 1
+        fi
+    done
     for selfie_log in "$selfie_access_log" "$error_log" "$container_log"; do
         if grep -Fq "$submission_path" "$selfie_log" || \
            grep -Fq "$bearer_token" "$selfie_log" || \
@@ -440,6 +538,7 @@ validate_variant() {
     grep -Fq 'map $uri $selfie_search_access_referrer {' "$rendered"
     grep -Fq 'map $uri $selfie_search_access_user_agent {' "$rendered"
     grep -Fq '~^/events/[^/]+/selfie-search/$ "$request_method <selfie-search>";' "$rendered"
+    grep -Fq '~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "$request_method <order-access>";' "$rendered"
     grep -Fq '"$request_method <selfie-search>"' "$rendered"
     grep -Fq 'log_format selfie_search_safe' "$rendered"
     grep -Fq "log_format selfie_search_safe '\$selfie_search_access_client_address - \$selfie_search_access_remote_user" "$rendered"
@@ -450,13 +549,16 @@ validate_variant() {
     grep -Fq 'add_header Referrer-Policy "no-referrer" always;' "$rendered"
     grep -Fq 'location ~ ^/events/[^/]+/selfie-search/$ {' "$rendered"
     grep -Fq 'location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {' "$rendered"
+    grep -Fq 'location ~ ^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) {' "$rendered"
+    grep -Fq 'add_header Cache-Control "private, no-store" always;' "$rendered"
+    grep -Fq 'add_header Vary "Cookie" always;' "$rendered"
     grep -Fq 'error_log /dev/null emerg;' "$rendered"
     expected_access_logs=5
-    expected_bearer_error_logs=2
+    expected_bearer_error_logs=4
     if [ -n "$alias" ]; then
         grep -Fq "server_name $alias;" "$rendered"
         expected_access_logs=6
-        expected_bearer_error_logs=4
+        expected_bearer_error_logs=7
     elif grep -Fq 'server_name www.findme-photo.ru;' "$rendered"; then
         echo "$name retained the optional alias server" >&2
         exit 1

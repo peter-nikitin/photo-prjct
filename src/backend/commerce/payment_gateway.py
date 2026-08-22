@@ -66,8 +66,8 @@ class PaymentRequest:
     amount_kopecks: int
     currency: str
     receipt_lines: tuple[PaymentReceiptLine, ...]
-    checkout_email: str
-    idempotency_key: str
+    checkout_email: str = field(repr=False)
+    idempotency_key: str = field(repr=False)
     return_url: str
 
     def __post_init__(self) -> None:

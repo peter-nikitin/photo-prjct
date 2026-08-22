@@ -1234,6 +1234,9 @@ def test_public_edges_sanitize_bearer_access_logs_and_split_referrer_policies() 
             '~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "$request_method <selfie-search>";'
             in source
         )
+        assert (
+            '~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "$request_method <order-access>";' in source
+        )
         assert '~^/events/[^/]+/selfie-search/$ "$request_method <selfie-search>";' in source
         assert '"$selfie_search_access_referrer"' in source
         assert '"$selfie_search_access_user_agent"' in source
@@ -1266,13 +1269,20 @@ def test_public_edges_isolate_bearer_upstream_errors_without_changing_proxy_rout
     submission_location = (
         "location ~ ^/events/[^/]+/selfie-search/$ {\n        error_log /dev/null emerg;"
     )
+    commerce_bearer_location = (
+        "location ~ ^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) {\n        error_log /dev/null emerg;"
+    )
+    commerce_http_bearer_location = (
+        "location ~ ^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) {\n        error_log /dev/null emerg;"
+    )
 
     for relative_path in ("deploy/nginx/https.conf.template",):
         source = (ROOT / relative_path).read_text(encoding="utf-8")
 
         assert bearer_location in source
         assert submission_location in source
-        assert source.count("error_log /dev/null emerg;") == 2
+        assert commerce_bearer_location in source
+        assert source.count("error_log /dev/null emerg;") == 4
         bearer_start = source.index(bearer_location)
         submission_start = source.index(submission_location)
         internal_start = source.index("location ^~ /internal/photo-processing/ {")
@@ -1297,11 +1307,39 @@ def test_public_edges_isolate_bearer_upstream_errors_without_changing_proxy_rout
         ]
         assert bearer_proxy_lines == catchall_proxy_lines
         assert submission_proxy_lines == catchall_proxy_lines
+        canonical_https_start = source.index("server {\n    listen 443 ssl;")
+        commerce_start = source.index(commerce_bearer_location, canonical_https_start)
+        commerce_block = source[commerce_start : source.index("\n    }", commerce_start)]
+        assert "proxy_hide_header Cache-Control;" in commerce_block
+        assert "proxy_hide_header Vary;" in commerce_block
+        assert 'add_header Cache-Control "private, no-store" always;' in commerce_block
+        assert 'add_header Referrer-Policy "no-referrer" always;' in commerce_block
+        assert 'add_header Vary "Cookie" always;' in commerce_block
+
+        canonical_http_start = source.index("server {\n    listen 80;\n    listen [::]:80;")
+        canonical_http_end = source.index("\n}\n\nserver {", canonical_http_start)
+        canonical_http = source[canonical_http_start:canonical_http_end]
+        assert "server_name ${PUBLIC_DOMAIN}${PUBLIC_DOMAIN_ALIAS_SERVER_NAME};" in canonical_http
+        assert commerce_http_bearer_location in canonical_http
+        commerce_http_start = canonical_http.index(commerce_http_bearer_location)
+        commerce_http_block = canonical_http[
+            commerce_http_start : canonical_http.index("\n    }", commerce_http_start)
+        ]
+        catchall_start = canonical_http.index("location / {")
+        assert commerce_http_start < catchall_start
+        for header in (
+            'add_header Cache-Control "private, no-store" always;',
+            'add_header Vary "Cookie" always;',
+            'add_header Referrer-Policy "no-referrer" always;',
+            'add_header X-Content-Type-Options "nosniff" always;',
+        ):
+            assert header in commerce_http_block
 
     alias = (ROOT / "deploy/nginx/reload-nginx.sh").read_text(encoding="utf-8")
     assert bearer_location in alias
     assert submission_location in alias
-    assert alias.count("error_log /dev/null emerg;") == 2
+    assert commerce_bearer_location in alias
+    assert alias.count("error_log /dev/null emerg;") == 3
     alias_bearer_start = alias.index(bearer_location)
     alias_submission_start = alias.index(submission_location)
     alias_catchall_start = alias.index("location / {", alias_bearer_start)
@@ -1322,10 +1360,19 @@ def test_public_edges_isolate_bearer_upstream_errors_without_changing_proxy_rout
         if line.strip().startswith("return ")
     ] == ["return 308 https://${PUBLIC_DOMAIN}\\$request_uri;"]
     assert 'add_header Referrer-Policy "no-referrer" always;' in alias
+    commerce_alias_start = alias.index(commerce_bearer_location)
+    commerce_alias_block = alias[
+        commerce_alias_start : alias.index("\n    }", commerce_alias_start)
+    ]
+    assert 'add_header Cache-Control "private, no-store" always;' in commerce_alias_block
+    assert 'add_header Vary "Cookie" always;' in commerce_alias_block
 
     validator = (ROOT / "tests/deployment/validate-nginx.sh").read_text(encoding="utf-8")
     assert 'exercise_bearer_error_logging "$name" "$rendered" "$alias"' in validator
     assert 'bearer_token="bearer-log-token-$name-$$"' in validator
+    assert 'commerce_http_path="/orders/runtime/access/' in validator
+    assert 'assert_private_commerce_headers "$commerce_http_headers"' in validator
+    assert 'assert_private_commerce_headers "$alias_commerce_http_headers"' in validator
     assert "--add-host web:127.0.0.1" in validator
 
 

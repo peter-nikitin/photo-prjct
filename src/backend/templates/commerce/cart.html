@@ -20,21 +20,23 @@
           <div class="event-cart-list" data-event-gallery>
           {% for item in cart_presentation.photos %}
             <figure class="event-cart-item" data-cart-item data-photo-id="{{ item.photo.photo_id }}">
-              <a class="event-cart-photo glightbox" href="{{ item.photo.preview_media_large.url }}" data-gallery="event-cart-photos" data-type="image" data-description='<form class="gallery-lightbox-cart-form cart-action-form" data-cart-form data-photo-id="{{ item.photo.photo_id }}" method="post" action="{% url "commerce:set_photo_state" event_slug=event.slug %}"><span class="gallery-lightbox-price" data-cart-price data-photo-id="{{ item.photo.photo_id }}">{{ item.unit_price_display }}</span>{% csrf_token %}<input type="hidden" name="photo_id" value="{{ item.photo.photo_id }}"><input type="hidden" name="selected" value="0"><input type="hidden" name="return_to" value="{% url "commerce:detail" event_slug=event.slug %}"><button class="gallery-cart-button is-selected" type="submit" data-cart-button aria-pressed="true" aria-label="Удалить из корзины" title="Удалить из корзины"><svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#cart-check"></use></svg></button></form>' aria-label="Открыть: {{ item.photo.alt }}">
+              <a class="event-cart-photo glightbox" href="{{ item.photo.preview_media_large.url }}" data-gallery="event-cart-photos" data-type="image" data-description='{% if not cart_presentation.mutation_locked %}<form class="gallery-lightbox-cart-form cart-action-form" data-cart-form data-photo-id="{{ item.photo.photo_id }}" method="post" action="{% url "commerce:set_photo_state" event_slug=event.slug %}"><span class="gallery-lightbox-price" data-cart-price data-photo-id="{{ item.photo.photo_id }}">{{ item.unit_price_display }}</span>{% csrf_token %}<input type="hidden" name="photo_id" value="{{ item.photo.photo_id }}"><input type="hidden" name="selected" value="0"><input type="hidden" name="return_to" value="{% url "commerce:detail" event_slug=event.slug %}"><button class="gallery-cart-button is-selected" type="submit" data-cart-button aria-pressed="true" aria-label="Удалить из корзины" title="Удалить из корзины"><svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#cart-check"></use></svg></button></form>{% endif %}' aria-label="Открыть: {{ item.photo.alt }}">
                 <img src="{{ item.photo.preview_media_small.url }}" alt="{{ item.photo.alt }}">
               </a>
               <figcaption>
                 <p class="event-cart-price" data-cart-price data-photo-id="{{ item.photo.photo_id }}">{{ item.unit_price_display }}</p>
               </figcaption>
-              <form class="cart-action-form" data-cart-form data-photo-id="{{ item.photo.photo_id }}" method="post" action="{% url 'commerce:set_photo_state' event_slug=event.slug %}">
-                {% csrf_token %}
-                <input type="hidden" name="photo_id" value="{{ item.photo.photo_id }}">
-                <input type="hidden" name="selected" value="0">
-                <input type="hidden" name="return_to" value="{% url 'commerce:detail' event_slug=event.slug %}">
-                <button class="event-cart-remove" type="submit" data-cart-button aria-pressed="true" aria-label="Удалить из корзины" title="Удалить из корзины">
-                  <svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#trash"></use></svg>
-                </button>
-              </form>
+              {% if not cart_presentation.mutation_locked %}
+                <form class="cart-action-form" data-cart-form data-photo-id="{{ item.photo.photo_id }}" method="post" action="{% url 'commerce:set_photo_state' event_slug=event.slug %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="photo_id" value="{{ item.photo.photo_id }}">
+                  <input type="hidden" name="selected" value="0">
+                  <input type="hidden" name="return_to" value="{% url 'commerce:detail' event_slug=event.slug %}">
+                  <button class="event-cart-remove" type="submit" data-cart-button aria-pressed="true" aria-label="Удалить из корзины" title="Удалить из корзины">
+                    <svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#trash"></use></svg>
+                  </button>
+                </form>
+              {% endif %}
             </figure>
           {% endfor %}
           </div>
@@ -45,11 +47,18 @@
             </div>
             <div class="event-cart-summary-actions">
               <a class="button event-cart-return" href="{% url 'event_detail' slug=event.slug %}">Продолжить выбор</a>
-              <form class="cart-action-form" data-cart-form method="post" action="{% url 'commerce:clear' event_slug=event.slug %}" onsubmit="return confirm('Удалить все фотографии из корзины?')">
-                {% csrf_token %}
-                <input type="hidden" name="return_to" value="{% url 'commerce:detail' event_slug=event.slug %}">
-                <button class="event-cart-clear" type="submit" data-cart-button>Очистить корзину</button>
-              </form>
+              {% if purchase_enabled and cart_presentation.mutation_locked and cart_presentation.pending_order_public_number %}
+                <a class="button" href="{% url 'commerce:order' public_number=cart_presentation.pending_order_public_number %}">Продолжить оплату</a>
+              {% elif purchase_enabled %}
+                <a class="button" href="{% url 'commerce:checkout' event_slug=event.slug %}">Перейти к оплате</a>
+              {% endif %}
+              {% if not cart_presentation.mutation_locked %}
+                <form class="cart-action-form" data-cart-form method="post" action="{% url 'commerce:clear' event_slug=event.slug %}" onsubmit="return confirm('Удалить все фотографии из корзины?')">
+                  {% csrf_token %}
+                  <input type="hidden" name="return_to" value="{% url 'commerce:detail' event_slug=event.slug %}">
+                  <button class="event-cart-clear" type="submit" data-cart-button>Очистить корзину</button>
+                </form>
+              {% endif %}
             </div>
           </aside>
         </div>

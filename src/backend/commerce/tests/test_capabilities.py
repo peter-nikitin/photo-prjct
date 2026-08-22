@@ -180,7 +180,9 @@ class CapabilityTests(TestCase):
                     now=now,
                 )
             except TypeError as error:
-                self.fail(f"purchase-browser verification must accept the check time: {error}")
+                raise AssertionError(
+                    f"purchase-browser verification must accept the check time: {error}"
+                ) from error
 
         self.assertTrue(authorizes(order=first_order, now=first_expiry - timedelta(microseconds=1)))
         self.assertFalse(authorizes(order=first_order, now=first_expiry))

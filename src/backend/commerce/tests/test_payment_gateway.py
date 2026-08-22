@@ -207,7 +207,7 @@ class PaymentGatewayContractTests(SimpleTestCase):
         with self.assertRaises((TypeError, ValueError)):
             CreatedPayment(
                 provider_payment_id="provider-1",
-                status={"provider_sdk_status": "pending"},
+                status={"provider_sdk_status": "pending"},  # type: ignore[arg-type]
                 amount_kopecks=60000,
                 currency="RUB",
                 confirmation_url="https://payment.test.invalid/provider-1",

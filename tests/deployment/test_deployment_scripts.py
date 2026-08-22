@@ -1149,6 +1149,44 @@ def test_entrypoint_runs_gunicorn_with_the_bounded_profile(tmp_path: Path, fake_
     )
 
 
+def test_entrypoint_stops_before_remaining_bootstrap_when_feature_flag_sync_fails(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    _write_executable(
+        fake_bin / "python",
+        """
+printf 'python %s\\n' "$*" >> "$COMMAND_LOG"
+case " $* " in
+  *" sync_feature_flags "*) exit 23 ;;
+esac
+""",
+    )
+    _write_executable(fake_bin / "gunicorn", 'printf "gunicorn %s\\n" "$*" >> "$COMMAND_LOG"')
+
+    result = subprocess.run(
+        ["sh", ROOT / "src/backend/entrypoint.sh"],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "COMMAND_LOG": str(tmp_path / "commands.log"),
+            "GUNICORN_WORKERS": "5",
+            "GUNICORN_THREADS": "2",
+            "GUNICORN_TIMEOUT": "180",
+            "GUNICORN_MAX_REQUESTS": "1000",
+            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 23
+    assert (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines() == [
+        "python manage.py migrate --noinput",
+        "python manage.py sync_feature_flags",
+    ]
+
+
 def test_entrypoint_recreates_the_shared_multiprocess_directory_before_gunicorn(
     tmp_path: Path, fake_bin: Path
 ) -> None:

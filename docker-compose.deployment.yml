@@ -66,7 +66,8 @@ services:
 
   commerce-worker:
     image: ${APP_IMAGE:?APP_IMAGE must be set}
-    command: python manage.py run_commerce_worker
+    entrypoint: ["python", "manage.py", "run_commerce_worker"]
+    command: []
     profiles:
       - commerce
     environment:

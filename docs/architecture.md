@@ -153,7 +153,11 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   implementation is disabled by default (`SELFIE_FEEDBACK_ENABLED=False`); no canonical-deployment
   activation, published-policy gate, bucket/KMS preflight, or customer-outcome evidence is
   claimed yet.
-- The canonical-deployment Docker image runs migrations, collects static files, and starts Gunicorn.
+- The canonical-deployment web image runs migrations, then the transactional
+  `sync_feature_flags` reconciliation before remaining bootstrap, static collection, and Gunicorn.
+  Reconciliation creates missing code-owned definitions in `off`, preserves existing operator
+  states, and keeps the deployed database definitions aligned with the registry; worker entrypoints
+  do not reconcile feature definitions.
 - The accepted topology uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and proxy
   the internal Django service; the canonical apex and `www` names route to that edge, with HTTP and
   alias traffic redirected to canonical HTTPS. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded, and the later [public-monitor run 32461320506](https://github.com/peter-nikitin/photo-prjct/actions/runs/32461320506) succeeded. This is not a direct host, DNS, certificate, or customer-path observation.

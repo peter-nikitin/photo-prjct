@@ -423,7 +423,8 @@ def test_commerce_worker_uses_the_web_image_and_never_photo_worker_protocol() ->
     worker = compose["services"]["commerce-worker"]
 
     assert worker["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
-    assert worker["command"] == "python manage.py run_commerce_worker"
+    assert worker["entrypoint"] == ["python", "manage.py", "run_commerce_worker"]
+    assert worker["command"] == []
     assert worker["profiles"] == ["commerce"]
     assert worker["restart"] == "unless-stopped"
     assert worker["cpus"] == "0.25"

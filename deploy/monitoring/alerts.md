@@ -1,6 +1,6 @@
 # FindMe Photo deployment monitoring alert manifest
 
-Create these seven alerts in Yandex Monitoring after the dashboard and email notification channel
+Create the seven baseline alerts below after the dashboard and email notification channel
 exist. Every selector is restricted to `service=custom` and the canonical probe selector is
 `folderId="__YANDEX_CLOUD_FOLDER_ID__",check=canonical-health`;
 
@@ -88,3 +88,30 @@ No alert performs automated remediation. The alert resource names below are the 
 - Notification channel: deployment operator email.
 - Firing notification: `FindMe deployment HTTP 5xx responses exceed 20% with at least five requests in five minutes.`
 - Recovery notification: `FindMe deployment HTTP 5xx response rate has recovered.`
+
+## Commerce worker unavailable
+
+- **Not activated.** This is an activation placeholder only. An approved external scheduler or
+  collector must run the packaged `run-commerce-worker-health.sh` outside the Commerce worker and
+  publish the safe `commerce_worker_alive` numeric signal first.
+- Resource name: `findme-photo-commerce-worker-unavailable`.
+- Selector: `commerce_worker_alive{folderId="__YANDEX_CLOUD_FOLDER_ID__", service="custom"}`.
+- Aggregation: latest value; actionable when zero or absent for two five-minute points.
+- Evaluation window: 10 minutes.
+- No data: actionable as a missing independent worker observation, not as a payment failure.
+- Notification channel: deployment operator email.
+- Firing notification: `FindMe Commerce worker is unavailable; inspect the independent probe and Commerce Admin.`
+- Recovery notification: `FindMe Commerce worker liveness has recovered.`
+
+## Commerce ready work overdue
+
+- **Not activated.** This is an activation placeholder only. It becomes valid only after the same
+  approved external collector publishes the safe numeric `commerce_oldest_ready_age_seconds` signal.
+- Resource name: `findme-photo-commerce-ready-work-overdue`.
+- Selector: `commerce_oldest_ready_age_seconds{folderId="__YANDEX_CLOUD_FOLDER_ID__", service="custom"}`.
+- Aggregation: maximum ready-work age.
+- Evaluation window: 5 minutes; above 300 seconds.
+- No data: the worker-unavailable rule handles missing independent observation.
+- Notification channel: deployment operator email.
+- Firing notification: `FindMe Commerce ready work is overdue; inspect Commerce Admin and worker health.`
+- Recovery notification: `FindMe Commerce ready work is within the configured threshold.`

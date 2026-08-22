@@ -26,6 +26,10 @@ def _copy_script_for_host_test(
         (ROOT / "deploy/monitoring/unified-agent.yml.template").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    (deploy_dir / "run-commerce-worker-health.sh").write_text(
+        (ROOT / "deploy/run-commerce-worker-health.sh").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     source = (ROOT / "deploy/configure-monitoring-agent.sh").read_text(encoding="utf-8")
     source = (
         source.replace(
@@ -42,6 +46,10 @@ def _copy_script_for_host_test(
         .replace(
             "MANAGED_CONFIG_PATH=/etc/yc/unified_agent/config.yml",
             f"MANAGED_CONFIG_PATH={managed_config_dir / 'config.yml'}",
+        )
+        .replace(
+            "COMMERCE_PROBE_PATH=/usr/local/lib/findme-commerce-worker-health/run-commerce-worker-health.sh",
+            f"COMMERCE_PROBE_PATH={tmp_path / 'commerce-probe' / 'run-commerce-worker-health.sh'}",
         )
     )
     source = source.replace("/etc/os-release", str(os_release))
@@ -201,6 +209,18 @@ def test_unified_agent_template_collects_only_host_agent_and_private_app_metrics
     assert "docker" not in source.lower()
     assert "/var/run/docker.sock" not in source
     assert "container" not in source.lower()
+
+
+def test_commerce_worker_probe_is_packaged_but_not_activated_by_monitoring_setup() -> None:
+    script = ROOT / "deploy/configure-monitoring-agent.sh"
+    source = script.read_text(encoding="utf-8")
+    template = (ROOT / "deploy/monitoring/unified-agent.yml.template").read_text(encoding="utf-8")
+
+    assert "run-commerce-worker-health.sh" in source
+    assert "findme-commerce-worker-health" in source
+    assert "systemctl enable findme-commerce-worker-health" not in source
+    assert "systemctl start findme-commerce-worker-health" not in source
+    assert "run-commerce-worker-health.sh" in template
 
 
 def test_monitoring_agent_script_has_safe_install_and_rollback_contract() -> None:

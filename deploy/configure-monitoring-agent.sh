@@ -14,6 +14,8 @@ AGENT_BINARY=''
 VERSION_FLAG=''
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 TEMPLATE_PATH="$SCRIPT_DIR/monitoring/unified-agent.yml.template"
+COMMERCE_PROBE_SOURCE="$SCRIPT_DIR/run-commerce-worker-health.sh"
+COMMERCE_PROBE_PATH=/usr/local/lib/findme-commerce-worker-health/run-commerce-worker-health.sh
 FOLDER_ID=''
 temporary_dir=''
 candidate_config=''
@@ -24,6 +26,9 @@ agent_preexisting=0
 agent_installed_by_attempt=0
 service_was_enabled=0
 service_was_active=0
+commerce_probe_previous=''
+commerce_probe_had_previous=0
+commerce_probe_promoted=0
 
 usage() {
     echo "Usage: $0 --folder-id FOLDER_ID" >&2
@@ -38,6 +43,14 @@ fail() {
 cleanup() {
     exit_status=$?
     trap - 0 HUP INT TERM
+
+    if [ "$exit_status" -ne 0 ] && [ "$commerce_probe_promoted" -eq 1 ]; then
+        if [ "$commerce_probe_had_previous" -eq 1 ]; then
+            mv "$commerce_probe_previous" "$COMMERCE_PROBE_PATH" || true
+        else
+            rm -f "$COMMERCE_PROBE_PATH" || true
+        fi
+    fi
 
     if [ "$exit_status" -ne 0 ] && [ "$agent_installed_by_attempt" -eq 1 ]; then
         systemctl stop "$SERVICE_NAME" || true
@@ -158,6 +171,21 @@ snapshot_existing_agent() {
     fi
 }
 
+snapshot_commerce_probe() {
+    [ -f "$COMMERCE_PROBE_PATH" ] || return 0
+    commerce_probe_previous="$temporary_dir/commerce-worker-health.previous"
+    cp -p "$COMMERCE_PROBE_PATH" "$commerce_probe_previous"
+    commerce_probe_had_previous=1
+}
+
+package_commerce_probe() {
+    candidate_probe="$temporary_dir/run-commerce-worker-health.sh"
+    install -d -m 0755 "$(dirname "$COMMERCE_PROBE_PATH")"
+    install -m 0755 "$COMMERCE_PROBE_SOURCE" "$candidate_probe"
+    mv "$candidate_probe" "$COMMERCE_PROBE_PATH"
+    commerce_probe_promoted=1
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --folder-id)
@@ -176,6 +204,7 @@ esac
 
 require_supported_host
 [ -f "$TEMPLATE_PATH" ] || fail "Unified Agent template is missing"
+[ -f "$COMMERCE_PROBE_SOURCE" ] || fail "Commerce worker health probe is missing"
 
 temporary_dir=$(mktemp -d) || fail "Could not create a temporary directory"
 candidate_config="$temporary_dir/config.yml"
@@ -183,6 +212,7 @@ previous_config="$temporary_dir/config.yml.previous"
 trap cleanup 0 HUP INT TERM
 
 snapshot_existing_agent
+snapshot_commerce_probe
 install_agent_if_missing
 AGENT_BINARY=$(command -v unified_agent || true)
 [ -n "$AGENT_BINARY" ] || fail "Unified Agent installation did not provide unified_agent"
@@ -193,6 +223,7 @@ mkdir -p "$CONFIG_DIR"
 sed "s|__YANDEX_CLOUD_FOLDER_ID__|$FOLDER_ID|g" "$TEMPLATE_PATH" > "$candidate_config"
 "$AGENT_BINARY" --config "$candidate_config" check-config
 
+package_commerce_probe
 mv "$candidate_config" "$CONFIG_PATH"
 config_promoted=1
 systemctl enable "$SERVICE_NAME"

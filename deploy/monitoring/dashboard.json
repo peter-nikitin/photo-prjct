@@ -84,6 +84,13 @@
         {"query": "histogram_percentile(50, \"app.findme_http_request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"})"},
         {"query": "histogram_percentile(95, \"app.findme_http_request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"})"}
       ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "0", "y": "44", "w": "36", "h": "4"},
+      "chart": {"id": "commerce-worker-health", "title": "Commerce worker health (activation prerequisite)", "queries": {"targets": [
+        {"query": "\"commerce_worker_alive\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"},
+        {"query": "\"commerce_oldest_ready_age_seconds\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\", service=\"custom\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
     }
   ]
 }

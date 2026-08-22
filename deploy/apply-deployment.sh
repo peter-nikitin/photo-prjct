@@ -50,6 +50,13 @@ requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/ca
 requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
+requested_commerce_worker_enabled="${COMMERCE_WORKER_ENABLED:-False}"
+requested_commerce_payment_gateway_factory="${COMMERCE_PAYMENT_GATEWAY_FACTORY:-}"
+requested_commerce_email_sender_factory="${COMMERCE_EMAIL_SENDER_FACTORY:-}"
+requested_commerce_worker_factory="${COMMERCE_WORKER_FACTORY:-}"
+requested_commerce_order_access_signing_secret="${COMMERCE_ORDER_ACCESS_SIGNING_SECRET:-}"
+requested_commerce_support_contact="${COMMERCE_SUPPORT_CONTACT:-}"
+requested_commerce_worker_health_max_ready_age_seconds="${COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS:-300}"
 
 case "$requested_worker_replicas" in
     1|2)
@@ -59,6 +66,61 @@ case "$requested_worker_replicas" in
         exit 2
         ;;
 esac
+
+case "$requested_commerce_worker_enabled" in
+    True|False)
+        ;;
+    *)
+        echo "COMMERCE_WORKER_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+for commerce_adapter_factory in \
+    "$requested_commerce_payment_gateway_factory" \
+    "$requested_commerce_email_sender_factory"; do
+    case "$commerce_adapter_factory" in
+        commerce.test_payment_gateway.*|commerce.test_email_sender.*)
+            echo "Deployed Commerce configuration must not select a local/test adapter" >&2
+            exit 2
+            ;;
+    esac
+done
+
+case "$requested_commerce_worker_health_max_ready_age_seconds" in
+    ''|*[!0-9]*)
+        echo "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS must be between 1 and 3600" >&2
+        exit 2
+        ;;
+esac
+if [ "$requested_commerce_worker_health_max_ready_age_seconds" -lt 1 ] || \
+    [ "$requested_commerce_worker_health_max_ready_age_seconds" -gt 3600 ]; then
+    echo "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS must be between 1 and 3600" >&2
+    exit 2
+fi
+
+if [ "$requested_commerce_worker_enabled" = True ]; then
+    [ -n "$requested_commerce_payment_gateway_factory" ] || {
+        echo "Set COMMERCE_PAYMENT_GATEWAY_FACTORY before enabling the Commerce worker" >&2
+        exit 2
+    }
+    [ -n "$requested_commerce_email_sender_factory" ] || {
+        echo "Set COMMERCE_EMAIL_SENDER_FACTORY before enabling the Commerce worker" >&2
+        exit 2
+    }
+    [ -n "$requested_commerce_worker_factory" ] || {
+        echo "Set COMMERCE_WORKER_FACTORY before enabling the Commerce worker" >&2
+        exit 2
+    }
+    [ -n "$requested_commerce_order_access_signing_secret" ] || {
+        echo "Set COMMERCE_ORDER_ACCESS_SIGNING_SECRET before enabling the Commerce worker" >&2
+        exit 2
+    }
+    [ -n "$requested_commerce_support_contact" ] || {
+        echo "Set COMMERCE_SUPPORT_CONTACT before enabling the Commerce worker" >&2
+        exit 2
+    }
+fi
 
 command -v crontab >/dev/null 2>&1 || {
     echo "crontab is required for cart cleanup" >&2
@@ -285,39 +347,53 @@ compose() {
     compose_with_env_file "$DEPLOY_ROOT/.env" "$@"
 }
 
-compose_with_processing_profile() {
+compose_with_runtime_profiles() {
     processing_enabled="$1"
-    compose_env_file="$2"
-    shift 2
+    commerce_enabled="$2"
+    compose_env_file="$3"
+    shift 3
 
-    if [ "$processing_enabled" = True ]; then
+    if [ "$processing_enabled" = True ] && [ "$commerce_enabled" = True ]; then
+        compose_with_env_file "$compose_env_file" --profile worker --profile commerce "$@"
+    elif [ "$processing_enabled" = True ]; then
         compose_with_env_file "$compose_env_file" --profile worker "$@"
+    elif [ "$commerce_enabled" = True ]; then
+        compose_with_env_file "$compose_env_file" --profile commerce "$@"
     else
         compose_with_env_file "$compose_env_file" "$@"
     fi
 }
 
-compose_with_requested_processing_profile() {
-    compose_with_processing_profile "$requested_processing_enabled" "$DEPLOY_ROOT/.env" "$@"
+compose_with_requested_runtime_profiles() {
+    compose_with_runtime_profiles \
+        "$requested_processing_enabled" "$requested_commerce_worker_enabled" "$DEPLOY_ROOT/.env" "$@"
 }
 
-compose_reconcile_processing_profile() {
+compose_reconcile_runtime_profiles() {
     processing_enabled="$1"
-    compose_env_file="$2"
-    worker_replicas="$3"
+    commerce_enabled="$2"
+    compose_env_file="$3"
+    worker_replicas="$4"
 
+    if [ "$processing_enabled" = False ]; then
+        compose_with_env_file "$compose_env_file" --profile worker rm -sf worker || return 1
+    fi
+    if [ "$commerce_enabled" = False ]; then
+        compose_with_env_file "$compose_env_file" --profile commerce rm -sf commerce-worker || return 1
+    fi
     if [ "$processing_enabled" = True ]; then
-        compose_with_env_file "$compose_env_file" --profile worker \
+        compose_with_runtime_profiles "$processing_enabled" "$commerce_enabled" "$compose_env_file" \
             up -d --remove-orphans --scale worker="$worker_replicas"
     else
-        compose_with_env_file "$compose_env_file" --profile worker rm -sf worker || return 1
-        compose_with_env_file "$compose_env_file" up -d --remove-orphans
+        compose_with_runtime_profiles "$processing_enabled" "$commerce_enabled" "$compose_env_file" \
+            up -d --remove-orphans
     fi
 }
 
-compose_reconcile_requested_processing_profile() {
-    compose_reconcile_processing_profile \
-        "$requested_processing_enabled" "$DEPLOY_ROOT/.env" "$requested_worker_replicas"
+compose_reconcile_requested_runtime_profiles() {
+    compose_reconcile_runtime_profiles \
+        "$requested_processing_enabled" "$requested_commerce_worker_enabled" \
+        "$DEPLOY_ROOT/.env" "$requested_worker_replicas"
 }
 
 diagnostics() {
@@ -327,7 +403,7 @@ diagnostics() {
 
 worker_runtime_diagnostics() {
     echo "Worker runtime verification diagnostics:" >&2
-    compose_with_requested_processing_profile ps || true
+    compose_with_requested_runtime_profiles ps || true
     if [ -n "${worker_containers:-}" ]; then
         printf 'Expected worker containers (%s):\n%s\n' \
             "$requested_worker_replicas" "$worker_containers" >&2
@@ -337,7 +413,18 @@ worker_runtime_diagnostics() {
                 "$worker_container" 2>&1 || true
         done
     fi
-    compose_with_requested_processing_profile logs --tail=100 worker || true
+    compose_with_requested_runtime_profiles logs --tail=100 worker || true
+}
+
+commerce_worker_runtime_diagnostics() {
+    echo "Commerce worker runtime verification diagnostics:" >&2
+    compose_with_requested_runtime_profiles ps || true
+    compose_with_requested_runtime_profiles logs --tail=100 commerce-worker || true
+}
+
+fail_commerce_worker_runtime_verification() {
+    commerce_worker_runtime_diagnostics
+    fail "Requested deployment failed Commerce worker runtime verification"
 }
 
 fail_worker_runtime_verification() {
@@ -449,7 +536,14 @@ clear_candidate_compose_interpolation() {
         SELFIE_FEEDBACK_S3_ENDPOINT_URL \
         SELFIE_FEEDBACK_S3_REGION \
         SELFIE_FEEDBACK_KMS_KEY_ID \
-        SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED
+        SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED \
+        COMMERCE_PAYMENT_GATEWAY_FACTORY \
+        COMMERCE_EMAIL_SENDER_FACTORY \
+        COMMERCE_WORKER_FACTORY \
+        COMMERCE_ORDER_ACCESS_SIGNING_SECRET \
+        COMMERCE_SUPPORT_CONTACT \
+        COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS \
+        COMMERCE_WORKER_ENABLED
 }
 
 recover_previous_deployment() {
@@ -470,8 +564,9 @@ recover_previous_deployment() {
     mv "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
     previous_env_tmp=""
     clear_candidate_compose_interpolation
-    compose_reconcile_processing_profile \
-        "$previous_processing_enabled" "$DEPLOY_ROOT/.env" "$previous_worker_replicas" || return 1
+    compose_reconcile_runtime_profiles \
+        "$previous_processing_enabled" "$previous_commerce_worker_enabled" \
+        "$DEPLOY_ROOT/.env" "$previous_worker_replicas" || return 1
     echo "Previous application and worker profile reconciled" >&2
 }
 
@@ -548,6 +643,7 @@ phase() {
 phase snapshot
 previous_upload_enabled="False"
 previous_processing_enabled="False"
+previous_commerce_worker_enabled="False"
 previous_worker_replicas=1
 previous_env_exists=0
 previous_deployed_image_exists=0
@@ -574,6 +670,9 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_worker_replicas="$(
         sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
+    previous_commerce_worker_enabled="$(
+        sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
+    )"
     case "$previous_processing_enabled" in
         True|False)
             ;;
@@ -589,6 +688,13 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
             ;;
         *)
             fail "Previous PHOTO_WORKER_REPLICAS must be 1 or 2"
+            ;;
+    esac
+    case "$previous_commerce_worker_enabled" in
+        True|False)
+            ;;
+        *)
+            previous_commerce_worker_enabled="False"
             ;;
     esac
 fi
@@ -649,6 +755,13 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PRIVATE_MEDIA_S3_ACCESS_KEY_ID=%s\n' "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}"
     printf 'PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:-}"
     printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
+    printf 'COMMERCE_PAYMENT_GATEWAY_FACTORY=%s\n' "$requested_commerce_payment_gateway_factory"
+    printf 'COMMERCE_EMAIL_SENDER_FACTORY=%s\n' "$requested_commerce_email_sender_factory"
+    printf 'COMMERCE_WORKER_FACTORY=%s\n' "$requested_commerce_worker_factory"
+    printf 'COMMERCE_ORDER_ACCESS_SIGNING_SECRET=%s\n' "$requested_commerce_order_access_signing_secret"
+    printf 'COMMERCE_SUPPORT_CONTACT=%s\n' "$requested_commerce_support_contact"
+    printf 'COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS=%s\n' "$requested_commerce_worker_health_max_ready_age_seconds"
+    printf 'COMMERCE_WORKER_ENABLED=%s\n' "$requested_commerce_worker_enabled"
     printf 'WORKER_IMAGE=%s\n' "${WORKER_IMAGE:-}"
     printf 'PHOTO_PROCESSING_ENABLED=%s\n' "$requested_processing_enabled"
     printf 'PHOTO_PROCESSING_PREVIEW_ENABLED=%s\n' "$requested_preview_enabled"
@@ -760,7 +873,7 @@ if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
     fail "Certificate bootstrap failed"
 fi
 
-if ! compose_with_requested_processing_profile pull; then
+if ! compose_with_requested_runtime_profiles pull; then
     fail "Deployment image pull failed"
 fi
 
@@ -771,13 +884,14 @@ max_compose_attempts=3
 compose_wait_seconds=5
 while [ "$attempt" -le "$max_compose_attempts" ]; do
     compose_up_status=0
-    if [ "$previous_env_exists" -eq 0 ] && [ "$requested_processing_enabled" = False ]; then
+    if [ "$previous_env_exists" -eq 0 ] && [ "$requested_processing_enabled" = False ] && \
+        [ "$requested_commerce_worker_enabled" = False ]; then
         compose_up_command() {
             compose up -d --remove-orphans
         }
     else
         compose_up_command() {
-            compose_reconcile_requested_processing_profile
+            compose_reconcile_requested_runtime_profiles
         }
     fi
     if compose_up_command; then
@@ -835,7 +949,7 @@ fi
 
 phase worker-health
 if [ "$requested_processing_enabled" = True ]; then
-    worker_containers="$(compose_with_requested_processing_profile ps -q worker)"
+    worker_containers="$(compose_with_requested_runtime_profiles ps -q worker)"
     worker_container_count="$(
         printf '%s\n' "$worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
     )"
@@ -883,6 +997,44 @@ if [ "$requested_processing_enabled" = True ]; then
             sleep 2
         fi
         attempt=$((attempt + 1))
+    done
+fi
+
+commerce_worker_is_ready() {
+    commerce_worker_containers="$(compose_with_requested_runtime_profiles ps -q commerce-worker)"
+    commerce_worker_container_count="$(
+        printf '%s\n' "$commerce_worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
+    )"
+    if [ "$commerce_worker_container_count" -ne 1 ]; then
+        return 1
+    fi
+    commerce_worker_container="$commerce_worker_containers"
+    commerce_worker_state="$(
+        docker inspect \
+            --format '{{.State.Running}} {{.State.Restarting}} {{.State.OOMKilled}}' \
+            "$commerce_worker_container" 2>/dev/null || true
+    )"
+    if [ "$commerce_worker_state" != 'true false false' ]; then
+        return 1
+    fi
+    sh "$DEPLOY_ROOT/deploy/run-commerce-worker-health.sh"
+}
+
+if [ "$requested_commerce_worker_enabled" = True ]; then
+    commerce_worker_attempt=1
+    max_commerce_worker_attempts=6
+    commerce_worker_wait_seconds=5
+    while [ "$commerce_worker_attempt" -le "$max_commerce_worker_attempts" ]; do
+        if commerce_worker_is_ready; then
+            break
+        fi
+        if [ "$commerce_worker_attempt" -eq "$max_commerce_worker_attempts" ]; then
+            echo "Commerce worker readiness exhausted after ${max_commerce_worker_attempts} attempts" >&2
+            fail_commerce_worker_runtime_verification
+        fi
+        echo "Commerce worker readiness check attempt ${commerce_worker_attempt} failed; retrying after ${commerce_worker_wait_seconds}s" >&2
+        commerce_worker_attempt=$((commerce_worker_attempt + 1))
+        sleep "$commerce_worker_wait_seconds"
     done
 fi
 

@@ -1,6 +1,12 @@
 status:
   port: 16241
 
+# The Commerce worker probe is packaged at
+# /usr/local/lib/findme-commerce-worker-health/run-commerce-worker-health.sh.
+# It is intentionally not scheduled or collected here: activation needs an approved external
+# collector/scheduler, which runs the probe outside the Commerce worker and exports only its
+# worker_alive, oldest_ready_work_type, and oldest_ready_age_seconds status fields.
+
 storages:
   - name: metrics_buffer
     plugin: fs

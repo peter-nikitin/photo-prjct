@@ -27,6 +27,7 @@ def test_dashboard_is_importable_and_covers_only_configured_monitoring_streams()
         "Django request rate",
         "Django 5xx responses",
         "Django request latency (p50 / p95)",
+        "Commerce worker health (activation prerequisite)",
     }
     rendered_queries = "\n".join(
         target["query"] for chart in charts.values() for target in chart["queries"]["targets"]
@@ -74,7 +75,21 @@ def test_dashboard_is_importable_and_covers_only_configured_monitoring_streams()
     assert "/var/run/docker.sock" not in rendered_queries
 
 
-def test_alert_manifest_has_the_seven_exact_actionable_contracts() -> None:
+def test_commerce_worker_monitoring_records_only_safe_liveness_and_ready_work_signals() -> None:
+    dashboard = json.loads((ROOT / "deploy/monitoring/dashboard.json").read_text(encoding="utf-8"))
+    manifest = (ROOT / "deploy/monitoring/alerts.md").read_text(encoding="utf-8")
+    rendered = json.dumps(dashboard)
+
+    assert "Commerce worker health" in rendered
+    assert "commerce_worker_alive" in rendered
+    assert "commerce_oldest_ready_age_seconds" in rendered
+    assert "Commerce worker unavailable" in manifest
+    assert "Commerce ready work overdue" in manifest
+    for forbidden in ("email", "grant", "token", "payment_id", "provider"):
+        assert forbidden not in rendered.lower()
+
+
+def test_alert_manifest_has_the_baseline_and_disabled_commerce_alert_contracts() -> None:
     manifest = (ROOT / "deploy/monitoring/alerts.md").read_text(encoding="utf-8")
 
     expected_alerts = {
@@ -98,7 +113,7 @@ def test_alert_manifest_has_the_seven_exact_actionable_contracts() -> None:
             "5 minutes",
         ),
     }
-    assert manifest.count("## ") == 7
+    assert manifest.count("## ") == 9
     for name, required in expected_alerts.items():
         section = manifest.split(f"## {name}\n", 1)[1].split("\n## ", 1)[0]
         for value in required:

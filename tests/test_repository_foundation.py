@@ -418,6 +418,24 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     )
 
 
+def test_commerce_worker_uses_the_web_image_and_never_photo_worker_protocol() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
+    worker = compose["services"]["commerce-worker"]
+
+    assert worker["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
+    assert worker["command"] == "python manage.py run_commerce_worker"
+    assert worker["profiles"] == ["commerce"]
+    assert worker["restart"] == "unless-stopped"
+    assert worker["cpus"] == "0.25"
+    assert worker["mem_limit"] == "256m"
+    assert worker["pids_limit"] == 64
+    environment = worker["environment"]
+    assert "PHOTO_WORKER_API_URL" not in environment
+    assert "PHOTO_WORKER_TOKEN" not in environment
+    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in environment
+    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" not in environment
+
+
 def test_pre_commit_runs_full_mypy_for_staged_python_changes() -> None:
     config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
     hooks = [hook for repository in config["repos"] for hook in repository["hooks"]]

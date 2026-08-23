@@ -22,7 +22,11 @@ def test_deployment_commerce_worker_bypasses_the_web_entrypoint() -> None:
             "config",
         ],
         cwd=ROOT,
-        env={**os.environ, "APP_IMAGE": "review-app-image"},
+        env={
+            **os.environ,
+            "APP_ENV_FILE": ".env.example",
+            "APP_IMAGE": "review-app-image",
+        },
         text=True,
         capture_output=True,
         check=False,

@@ -27,6 +27,9 @@ EXPECTED_SECRET_KEYS = {
     "SECRET_KEY",
     "DB_PASSWORD",
     "LETSENCRYPT_EMAIL",
+    "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
+    "COMMERCE_POSTBOX_API_KEY_ID",
+    "COMMERCE_POSTBOX_API_KEY_SECRET",
     "MEDIA_S3_ACCESS_KEY_ID",
     "MEDIA_S3_SECRET_ACCESS_KEY",
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
@@ -38,6 +41,12 @@ EXPECTED_SECRET_KEYS = {
     "GHCR_READ_TOKEN",
     "YANDEX_MONITORING_API_KEY",
 }
+OPTIONAL_DARK_COMMERCE_SECRET_KEYS = {
+    "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
+    "COMMERCE_POSTBOX_API_KEY_ID",
+    "COMMERCE_POSTBOX_API_KEY_SECRET",
+}
+REQUIRED_SECRET_KEYS = EXPECTED_SECRET_KEYS - OPTIONAL_DARK_COMMERCE_SECRET_KEYS
 LOCAL_WEB_KEYS = {
     "SECRET_KEY",
     "MEDIA_S3_ACCESS_KEY_ID",
@@ -90,7 +99,12 @@ def _payload(values: dict[str, str | bytes], *, version: str = "version-exact") 
     return {"versionId": version, "entries": entries}
 
 
-def _metadata(*, version: str | None = "version-exact", **overrides: Any) -> dict[str, Any]:
+def _metadata(
+    *,
+    version: str | None = "version-exact",
+    payload_entry_keys: set[str] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": "e6q85jjl76r45maigtfb",
         "folderId": "b1g2qttgfhb4gdunvlge",
@@ -101,7 +115,9 @@ def _metadata(*, version: str | None = "version-exact", **overrides: Any) -> dic
             "id": version,
             "secretId": "e6q85jjl76r45maigtfb",
             "status": "ACTIVE",
-            "payloadEntryKeys": sorted(EXPECTED_SECRET_KEYS),
+            "payloadEntryKeys": sorted(
+                EXPECTED_SECRET_KEYS if payload_entry_keys is None else payload_entry_keys
+            ),
         }
     result.update(overrides)
     return result
@@ -198,7 +214,9 @@ def test_manifest_declares_complete_schema_and_closed_projections(
 ) -> None:
     entries = {entry["key"]: entry for entry in manifest["entries"]}
     assert set(entries) == EXPECTED_SECRET_KEYS
-    assert all(entry["required"] is True for entry in entries.values())
+    assert {
+        key for key, entry in entries.items() if entry["required"] is True
+    } == REQUIRED_SECRET_KEYS
     assert entries["VM_SSH_KEY"] == {
         "key": "VM_SSH_KEY",
         "target": "VM_SSH_KEY_FILE",
@@ -206,6 +224,18 @@ def test_manifest_declares_complete_schema_and_closed_projections(
         "required": True,
         "local": False,
     }
+    for key in (
+        "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
+        "COMMERCE_POSTBOX_API_KEY_ID",
+        "COMMERCE_POSTBOX_API_KEY_SECRET",
+    ):
+        assert entries[key] == {
+            "key": key,
+            "target": key,
+            "type": "text",
+            "required": False,
+            "local": False,
+        }
     assert {key for key, entry in entries.items() if entry["local"]} == LOCAL_WEB_KEYS
     assert {name: set(keys) for name, keys in manifest["consumers"].items()} == {
         "local-web": LOCAL_WEB_KEYS,
@@ -346,6 +376,50 @@ def test_payload_is_fetched_once_by_the_exact_active_version(
     )
     assert metadata_request.get_header("Authorization") == "Bearer iam-test-token"
     assert payload_request.get_header("Authorization") == "Bearer iam-test-token"
+
+
+def test_deploy_consumer_accepts_dark_payload_without_optional_commerce_entries(
+    resolver: ModuleType,
+    manifest: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    values = {
+        key: value
+        for key, value in _sentinel_values(manifest).items()
+        if key not in OPTIONAL_DARK_COMMERCE_SECRET_KEYS
+    }
+    result_path = tmp_path / "keys.json"
+    checker = textwrap.dedent(
+        """
+        import json, os, pathlib, sys
+        data = pathlib.Path(os.environ["FINDME_ENV_FILE"]).read_text()
+        keys = sorted(line.split("=", 1)[0] for line in data.splitlines() if "=" in line)
+        pathlib.Path(sys.argv[1]).write_text(json.dumps(keys))
+        """
+    )
+    http = _HttpBoundary(
+        [
+            _metadata(payload_entry_keys=REQUIRED_SECRET_KEYS),
+            _payload(values),
+        ]
+    )
+
+    assert (
+        _run_main(
+            resolver,
+            monkeypatch,
+            tmp_path,
+            http,
+            consumer="deploy",
+            command=[sys.executable, "-c", checker, str(result_path)],
+        )
+        == 0
+    )
+
+    projected_keys = set(json.loads(result_path.read_text()))
+    assert OPTIONAL_DARK_COMMERCE_SECRET_KEYS.isdisjoint(projected_keys)
+    assert {"SECRET_KEY", "DB_PASSWORD", "VM_SSH_KEY_FILE", "GHCR_READ_TOKEN"} <= projected_keys
 
 
 @pytest.mark.parametrize(

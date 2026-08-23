@@ -6,7 +6,7 @@
   <article aria-labelledby="simulator-title">
     <p><strong>Только для проверки — деньги не списываются.</strong></p>
     <h1 id="simulator-title">Тестовый банковский экран</h1>
-    <p>Заказ {{ order.public_number }}, сумма {{ order.total_kopecks }} коп., {{ order.currency }}.</p>
+    <p>Заказ {{ order.public_number }}, сумма {{ total_display }}.</p>
     <form method="post">
       {% csrf_token %}
       <p><button class="button" type="submit" name="outcome" value="succeeded">Подтвердить оплату</button></p>

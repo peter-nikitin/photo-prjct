@@ -17,6 +17,42 @@ the purpose of the dispatch.
 Review the **Deploy** workflow result and run the acceptance checks below. Do not SSH to invoke
 `deploy/apply-deployment.sh` directly or use a mutable checkout as a deployment source.
 
+## Commerce worker and Postbox email
+
+The Commerce worker is activated only by the canonical **Deploy** workflow. Keep the paid feature
+flags (`paid-events`, `paid-watermarked-previews`, `paid-photo-cart`, `paid-photo-purchase`, and
+`paid-photo-payment-simulator`) in Django Admin state `staff` for staff acceptance; deployment
+configuration is not the public exposure control.
+
+Set repository variables for the non-secret runtime contract:
+
+```text
+COMMERCE_WORKER_ENABLED=True
+COMMERCE_PUBLIC_ORIGIN=https://findme-photo.ru
+COMMERCE_PAYMENT_GATEWAY_FACTORY=commerce.payment_simulator.payment_simulator_gateway_factory
+COMMERCE_EMAIL_SENDER_FACTORY=commerce.postbox_email_sender.postbox_email_sender_factory
+COMMERCE_WORKER_FACTORY=commerce.runtime.commerce_worker_factory
+COMMERCE_EMAIL_FROM_ADDRESS=orders@findme-photo.ru
+COMMERCE_SUPPORT_CONTACT=support@findme-photo.ru
+COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS=300
+```
+
+`COMMERCE_ORDER_ACCESS_SIGNING_SECRET`, `COMMERCE_POSTBOX_API_KEY_ID`, and
+`COMMERCE_POSTBOX_API_KEY_SECRET` are Lockbox payload entries for the `deploy` consumer only. Do
+not store them as GitHub variables or pass them in workflow inputs. Production Compose projects
+Postbox credentials only to `commerce-worker`; the web container receives the order signing
+secret, support contact, public origin, and non-secret factory settings needed for checkout and
+order-return pages.
+
+Those three Lockbox entries are optional only while `COMMERCE_WORKER_ENABLED=False`, so the dark
+main deploy remains merge-compatible before Postbox credentials are provisioned. The enabled apply
+path fails closed before any deployment mutation when any of them is absent, or when
+`COMMERCE_PUBLIC_ORIGIN` is anything other than exactly `https://$PUBLIC_DOMAIN`.
+
+Before enabling the worker, verify the Postbox sender identity and DNS authentication outside this
+runbook's application deployment step. If readiness fails, Deploy restores the previous Compose
+profile and does not alter Order, grant, delivery, or feature-flag rows.
+
 ## Controlled privileged-package pause
 
 The workflow pauses when its push range changes `deploy/bootstrap-selfie-observability.sh` or
@@ -89,7 +125,13 @@ ssh -l petrnikitin 111.88.151.64 'cd /opt/photo-prjct && sh deploy/verify-selfie
 curl -fsS https://findme-photo.ru/health/
 ```
 
+If `COMMERCE_WORKER_ENABLED=True`, also run:
+
+```bash
+ssh -l petrnikitin 111.88.151.64 'cd /opt/photo-prjct && sh deploy/run-commerce-worker-health.sh'
+```
+
 Accept the release only when `deployed-image` matches the requested immutable image, expected
-Compose services are healthy, observability checks succeed, and public health returns
-`{"status": "ok"}`. If a check fails, investigate without speculative application-data, storage,
-or root-package mutation.
+Compose services are healthy, the Commerce worker health command succeeds when enabled,
+observability checks succeed, and public health returns `{"status": "ok"}`. If a check fails,
+investigate without speculative application-data, storage, or root-package mutation.

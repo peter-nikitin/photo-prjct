@@ -64,7 +64,7 @@ def event_catalog(request):
 def event_detail(request, slug: str, *, selfie_search_form=None):
     event = get_object_or_404(Event.objects.site_visible_to(request.user), slug=slug)
     mark_event_staff_preview(request, (event,))
-    if selfie_search_form is None and event.access_type == Event.AccessType.FREE:
+    if selfie_search_form is None:
         selfie_search_form = SelfieSearchUploadForm()
     selfie_feedback_enabled = bool(settings.SELFIE_FEEDBACK_ENABLED)
     gallery_photos: tuple[GalleryPhoto, ...] = ()

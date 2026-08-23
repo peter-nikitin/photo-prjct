@@ -338,6 +338,14 @@ jobs:
           SELFIE_FEEDBACK_S3_REGION: ${{ vars.SELFIE_FEEDBACK_S3_REGION || 'ru-central1' }}
           SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}
           SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED: ${{ vars.SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED || 'False' }}
+          COMMERCE_WORKER_ENABLED: ${{ vars.COMMERCE_WORKER_ENABLED || 'False' }}
+          COMMERCE_PUBLIC_ORIGIN: ${{ vars.COMMERCE_PUBLIC_ORIGIN || 'https://findme-photo.ru' }}
+          COMMERCE_PAYMENT_GATEWAY_FACTORY: ${{ vars.COMMERCE_PAYMENT_GATEWAY_FACTORY || 'commerce.payment_simulator.payment_simulator_gateway_factory' }}
+          COMMERCE_EMAIL_SENDER_FACTORY: ${{ vars.COMMERCE_EMAIL_SENDER_FACTORY || 'commerce.postbox_email_sender.postbox_email_sender_factory' }}
+          COMMERCE_WORKER_FACTORY: ${{ vars.COMMERCE_WORKER_FACTORY || 'commerce.runtime.commerce_worker_factory' }}
+          COMMERCE_EMAIL_FROM_ADDRESS: ${{ vars.COMMERCE_EMAIL_FROM_ADDRESS || 'orders@findme-photo.ru' }}
+          COMMERCE_SUPPORT_CONTACT: ${{ vars.COMMERCE_SUPPORT_CONTACT || 'support@findme-photo.ru' }}
+          COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS: ${{ vars.COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS || '300' }}
           GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
         run: |
           if [ "${{ inputs.cutover_compose_identity }}" = true ]; then

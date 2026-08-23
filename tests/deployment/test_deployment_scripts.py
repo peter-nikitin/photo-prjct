@@ -30,11 +30,19 @@ PREVIOUS_ENV = (
 def _real_commerce_worker_settings() -> dict[str, str]:
     return {
         "COMMERCE_WORKER_ENABLED": "True",
-        "COMMERCE_PAYMENT_GATEWAY_FACTORY": "commerce.bank_gateway.PaymentGateway",
-        "COMMERCE_EMAIL_SENDER_FACTORY": "commerce.mailer.EmailSender",
-        "COMMERCE_WORKER_FACTORY": "commerce.worker.CommerceWorker",
+        "COMMERCE_PUBLIC_ORIGIN": "https://findme-photo.ru",
+        "COMMERCE_PAYMENT_GATEWAY_FACTORY": (
+            "commerce.payment_simulator.payment_simulator_gateway_factory"
+        ),
+        "COMMERCE_EMAIL_SENDER_FACTORY": (
+            "commerce.postbox_email_sender.postbox_email_sender_factory"
+        ),
+        "COMMERCE_WORKER_FACTORY": "commerce.runtime.commerce_worker_factory",
+        "COMMERCE_EMAIL_FROM_ADDRESS": "orders@findme-photo.ru",
+        "COMMERCE_POSTBOX_API_KEY_ID": "postbox-api-key-id",
+        "COMMERCE_POSTBOX_API_KEY_SECRET": "postbox-secret-must-not-be-logged",
         "COMMERCE_ORDER_ACCESS_SIGNING_SECRET": "commerce-signing-secret",
-        "COMMERCE_SUPPORT_CONTACT": "support@example.com",
+        "COMMERCE_SUPPORT_CONTACT": "support@findme-photo.ru",
     }
 
 
@@ -98,6 +106,7 @@ esac
     assert result.returncode == 0, result.stderr
     command = commands.read_text(encoding="utf-8")
     assert "--project-name photo-prjct" in command
+    assert " exec -T web " in f" {command} "
     assert "commerce_worker_health --max-ready-age-seconds" in command
     assert "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS" in command
     assert "commerce-worker" not in command
@@ -1286,6 +1295,20 @@ def test_deployment_rejects_test_commerce_adapters_before_any_mutation(
     assert not (tmp_path / "apply.log").exists()
 
 
+def test_deployment_rejects_non_postbox_commerce_email_factory_before_any_mutation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(_real_commerce_worker_settings())
+    env["COMMERCE_EMAIL_SENDER_FACTORY"] = "commerce.smtp_email_sender.smtp_email_sender_factory"
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert "COMMERCE_EMAIL_SENDER_FACTORY must use the Yandex Postbox adapter" in result.stderr
+    assert not (tmp_path / "apply.log").exists()
+
+
 def test_disabled_commerce_worker_is_absent_from_the_deployment_profile(
     tmp_path: Path, fake_bin: Path
 ) -> None:
@@ -1312,8 +1335,96 @@ def test_enabled_commerce_worker_requires_real_settings_before_any_mutation(
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 2
-    assert "Set COMMERCE_PAYMENT_GATEWAY_FACTORY" in result.stderr
+    assert "Set COMMERCE_PUBLIC_ORIGIN" in result.stderr
     assert not (tmp_path / "apply.log").exists()
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://findme-photo.ru/",
+        "https://findme-photo.ru/orders",
+        "https://findme-photo.ru?continue=https://evil.example",
+        "https://findme-photo.ru#fragment",
+        "https://user@findme-photo.ru",
+        "https://findme-photo.ru:443",
+        "https://evil.example",
+        " https://findme-photo.ru",
+        "https://findme-photo.ru ",
+    ],
+)
+def test_enabled_commerce_worker_requires_canonical_public_origin_before_mutation(
+    tmp_path: Path, fake_bin: Path, origin: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(_real_commerce_worker_settings())
+    env["COMMERCE_PUBLIC_ORIGIN"] = origin
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert "COMMERCE_PUBLIC_ORIGIN must be https://findme-photo.ru" in result.stderr
+    assert not (tmp_path / "apply.log").exists()
+
+
+@pytest.mark.parametrize(
+    ("missing_name", "message"),
+    [
+        ("COMMERCE_PUBLIC_ORIGIN", "Set COMMERCE_PUBLIC_ORIGIN"),
+        ("COMMERCE_PAYMENT_GATEWAY_FACTORY", "Set COMMERCE_PAYMENT_GATEWAY_FACTORY"),
+        ("COMMERCE_EMAIL_SENDER_FACTORY", "Set COMMERCE_EMAIL_SENDER_FACTORY"),
+        ("COMMERCE_WORKER_FACTORY", "Set COMMERCE_WORKER_FACTORY"),
+        ("COMMERCE_EMAIL_FROM_ADDRESS", "Set COMMERCE_EMAIL_FROM_ADDRESS"),
+        ("COMMERCE_POSTBOX_API_KEY_ID", "Set COMMERCE_POSTBOX_API_KEY_ID"),
+        ("COMMERCE_POSTBOX_API_KEY_SECRET", "Set COMMERCE_POSTBOX_API_KEY_SECRET"),
+        (
+            "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
+            "Set COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
+        ),
+        ("COMMERCE_SUPPORT_CONTACT", "Set COMMERCE_SUPPORT_CONTACT"),
+    ],
+)
+def test_enabled_commerce_worker_requires_complete_postbox_configuration_before_mutation(
+    tmp_path: Path, fake_bin: Path, missing_name: str, message: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(_real_commerce_worker_settings())
+    env[missing_name] = ""
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert not (tmp_path / "apply.log").exists()
+
+
+def test_enabled_commerce_worker_persists_postbox_settings_without_logging_secret(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="commerce-worker-ready-after-retry")
+    env.update(_real_commerce_worker_settings())
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert "COMMERCE_PUBLIC_ORIGIN=https://findme-photo.ru" in deployed_env
+    assert (
+        "COMMERCE_PAYMENT_GATEWAY_FACTORY="
+        "commerce.payment_simulator.payment_simulator_gateway_factory" in deployed_env
+    )
+    assert (
+        "COMMERCE_EMAIL_SENDER_FACTORY="
+        "commerce.postbox_email_sender.postbox_email_sender_factory" in deployed_env
+    )
+    assert "COMMERCE_WORKER_FACTORY=commerce.runtime.commerce_worker_factory" in deployed_env
+    assert "COMMERCE_EMAIL_FROM_ADDRESS=orders@findme-photo.ru" in deployed_env
+    assert "COMMERCE_POSTBOX_API_KEY_ID=postbox-api-key-id" in deployed_env
+    assert "COMMERCE_POSTBOX_API_KEY_SECRET=postbox-secret-must-not-be-logged" in deployed_env
+    assert "COMMERCE_SUPPORT_CONTACT=support@findme-photo.ru" in deployed_env
+    assert "postbox-secret-must-not-be-logged" not in result.stdout
+    assert "postbox-secret-must-not-be-logged" not in result.stderr
+    assert "postbox-secret-must-not-be-logged" not in "\n".join(_apply_log(tmp_path))
 
 
 def test_enabled_commerce_worker_retries_readiness_until_its_lock_is_live(

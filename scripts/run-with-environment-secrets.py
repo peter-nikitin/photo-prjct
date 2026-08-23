@@ -326,8 +326,11 @@ def _active_version(
         not isinstance(payload_keys, list)
         or any(not isinstance(key, str) for key in payload_keys)
         or len(payload_keys) != len(set(payload_keys))
-        or set(payload_keys) != set(entries)
     ):
+        _fail("metadata", "metadata_mismatch")
+    payload_key_set = set(payload_keys)
+    required_keys = {key for key, specification in entries.items() if specification["required"]}
+    if not required_keys <= payload_key_set <= set(entries):
         _fail("metadata", "metadata_mismatch")
     version_id = version["id"]
     if not isinstance(version_id, str):
@@ -380,7 +383,9 @@ def _validate_payload(
         if specification["required"] and not value:
             _fail("payload", "empty_entry")
         values[key] = SecretValue(specification["type"], value)
-    missing = set(entries) - set(values)
+    missing = {key for key, specification in entries.items() if specification["required"]} - set(
+        values
+    )
     if missing:
         _fail("payload", "missing_entry")
     return values
@@ -422,7 +427,11 @@ def _materialize(
     records: list[str] = []
     for key in projection:
         specification = entries[key]
-        secret = values[key]
+        secret = values.get(key)
+        if secret is None:
+            if specification["required"]:
+                _fail("payload", "missing_entry")
+            continue
         target = specification["target"]
         if secret.kind == "binary":
             binary_path = root / f"binary-{len(records)}"

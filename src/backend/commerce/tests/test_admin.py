@@ -80,7 +80,13 @@ class CommerceAdminTests(TransactionTestCase):
             observed_at=timezone.now(),
         )
 
-    def make_order(self, *, status: str = str(Order.Status.PENDING)) -> Order:
+    def make_order(
+        self,
+        *,
+        status: str = str(Order.Status.PENDING),
+        total_kopecks: int = 30000,
+        unit_price_kopecks: int = 30000,
+    ) -> Order:
         paid_at = timezone.now() if status == str(Order.Status.PAID) else None
         with transaction.atomic():
             with connection.cursor() as cursor:
@@ -92,7 +98,7 @@ class CommerceAdminTests(TransactionTestCase):
                 event=self.event,
                 checkout_email="checkout@example.test",
                 delivery_email="checkout@example.test",
-                total_kopecks=30000,
+                total_kopecks=total_kopecks,
                 status=status,
                 paid_at=paid_at,
             )
@@ -100,8 +106,8 @@ class CommerceAdminTests(TransactionTestCase):
                 order=order,
                 photo=self.photo,
                 photo_public_id=self.photo.pk,
-                unit_price_kopecks=30000,
-                line_total_kopecks=30000,
+                unit_price_kopecks=unit_price_kopecks,
+                line_total_kopecks=total_kopecks,
             )
         order.delivery_email = "delivery@example.test"
         order.save(update_fields=["delivery_email"])
@@ -178,7 +184,7 @@ class CommerceAdminTests(TransactionTestCase):
         for field in (
             "event",
             "checkout_email",
-            "total_kopecks",
+            "total_display",
             "currency",
             "paid_at",
             "status",
@@ -189,6 +195,41 @@ class CommerceAdminTests(TransactionTestCase):
         self.assertTrue(any(inline.model is PaymentAttempt for inline in model_admin.inlines))
         self.assertTrue(any(inline.model is EmailDelivery for inline in model_admin.inlines))
         self.assertTrue(any(inline.model is OrderAccessGrant for inline in model_admin.inlines))
+
+    def test_admin_formats_monetary_values_as_rub_without_raw_kopeck_labels(self) -> None:
+        fractional_order = self.make_order(total_kopecks=45075, unit_price_kopecks=45075)
+        fractional_attempt = PaymentAttempt.objects.create(
+            order=fractional_order,
+            amount_kopecks=45075,
+            currency="RUB",
+            adapter_key="admin-test-gateway",
+            idempotency_key="admin-test-attempt-fractional",
+            provider_payment_id="safe-provider-reference-fractional",
+        )
+
+        order_list = self.client.get(reverse("admin:commerce_order_changelist"))
+        order_change = self.client.get(
+            reverse("admin:commerce_order_change", args=(self.order.pk,))
+        )
+        fractional_order_change = self.client.get(
+            reverse("admin:commerce_order_change", args=(fractional_order.pk,))
+        )
+        attempt_change = self.client.get(
+            reverse("admin:commerce_paymentattempt_change", args=(fractional_attempt.pk,))
+        )
+
+        self.assertContains(order_list, "300 ₽")
+        self.assertContains(order_list, "450,75 ₽")
+        self.assertContains(order_change, "300 ₽")
+        self.assertContains(fractional_order_change, "450,75 ₽")
+        self.assertContains(attempt_change, "450,75 ₽")
+        for response in (order_list, order_change, fractional_order_change, attempt_change):
+            with self.subTest(path=response.request["PATH_INFO"]):
+                self.assertNotContains(response, "коп.")
+                self.assertNotContains(response, "Total kopecks")
+                self.assertNotContains(response, "Amount kopecks")
+                self.assertNotContains(response, "Unit price kopecks")
+                self.assertNotContains(response, "Line total kopecks")
 
     def test_delivery_correction_uses_ordinary_admin_history_without_changing_checkout_email(
         self,

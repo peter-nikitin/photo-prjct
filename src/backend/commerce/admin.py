@@ -39,6 +39,11 @@ from commerce.payments import (
     mark_order_paid_manually,
     reconcile_payment_attempt,
 )
+from commerce.pricing import format_rub
+
+
+def _rub(amount_kopecks: int) -> str:
+    return format_rub(amount_kopecks)
 
 
 def _new_commerce_side_effects_enabled(request: HttpRequest) -> bool:
@@ -105,8 +110,16 @@ class ReadOnlyInline(admin.TabularInline):
 
 class OrderItemInline(ReadOnlyInline):
     model = OrderItem
-    fields = ("photo", "photo_public_id", "unit_price_kopecks", "quantity", "line_total_kopecks")
+    fields = ("photo", "photo_public_id", "unit_price_display", "quantity", "line_total_display")
     readonly_fields = fields
+
+    @admin.display(description="Цена за фото")
+    def unit_price_display(self, item: OrderItem) -> str:
+        return _rub(item.unit_price_kopecks)
+
+    @admin.display(description="Сумма строки")
+    def line_total_display(self, item: OrderItem) -> str:
+        return _rub(item.line_total_kopecks)
 
 
 class PaymentAttemptInline(ReadOnlyInline):
@@ -114,7 +127,7 @@ class PaymentAttemptInline(ReadOnlyInline):
     fields = (
         "adapter_key",
         "provider_payment_id",
-        "amount_kopecks",
+        "amount_display",
         "currency",
         "idempotency_key",
         "confirmation_url",
@@ -125,6 +138,10 @@ class PaymentAttemptInline(ReadOnlyInline):
         "updated_at",
     )
     readonly_fields = fields
+
+    @admin.display(description="Сумма платежа")
+    def amount_display(self, attempt: PaymentAttempt) -> str:
+        return _rub(attempt.amount_kopecks)
 
 
 class EmailDeliveryInline(ReadOnlyInline):
@@ -166,7 +183,7 @@ class CommerceAttentionInline(ReadOnlyInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ("public_number", "event", "status", "total_kopecks", "currency", "created_at")
+    list_display = ("public_number", "event", "status", "total_display", "currency", "created_at")
     list_filter = ("status", "currency", "event")
     search_fields = ("public_number", "checkout_email", "delivery_email")
     ordering = ("-created_at",)
@@ -175,7 +192,7 @@ class OrderAdmin(admin.ModelAdmin):
         "event",
         "checkout_email",
         "delivery_email",
-        "total_kopecks",
+        "total_display",
         "currency",
         "status",
         "paid_at",
@@ -188,7 +205,7 @@ class OrderAdmin(admin.ModelAdmin):
         "public_number",
         "event",
         "checkout_email",
-        "total_kopecks",
+        "total_display",
         "currency",
         "status",
         "paid_at",
@@ -224,6 +241,10 @@ class OrderAdmin(admin.ModelAdmin):
             return
         super().save_model(request, obj, form, change)
 
+    @admin.display(description="Сумма заказа", ordering="total_kopecks")
+    def total_display(self, order: Order) -> str:
+        return _rub(order.total_kopecks)
+
     @admin.display(description="Нормализованная платежная история")
     def payment_evidence(self, order: Order) -> str:
         values = PaymentEvidence.objects.filter(payment_attempt__order=order).values_list(
@@ -236,8 +257,8 @@ class OrderAdmin(admin.ModelAdmin):
         )
         return (
             "\n".join(
-                f"{source}: {provider_event_id or '—'}; {status}; {amount} "
-                f"{currency}; {observed_at:%F %T}"
+                f"{source}: {provider_event_id or '—'}; {status}; {_rub(amount)}; {currency}; "
+                f"{observed_at:%F %T}"
                 for source, provider_event_id, status, amount, currency, observed_at in values
             )
             or "—"
@@ -358,7 +379,7 @@ class PaymentAttemptAdmin(admin.ModelAdmin):
         "order",
         "adapter_key",
         "status",
-        "amount_kopecks",
+        "amount_display",
         "currency",
         "updated_at",
     )
@@ -366,7 +387,7 @@ class PaymentAttemptAdmin(admin.ModelAdmin):
     search_fields = ("order__public_number", "provider_payment_id", "idempotency_key")
     fields = (
         "order",
-        "amount_kopecks",
+        "amount_display",
         "currency",
         "adapter_key",
         "idempotency_key",
@@ -381,6 +402,10 @@ class PaymentAttemptAdmin(admin.ModelAdmin):
         "updated_at",
     )
     readonly_fields = fields
+
+    @admin.display(description="Сумма платежа", ordering="amount_kopecks")
+    def amount_display(self, attempt: PaymentAttempt) -> str:
+        return _rub(attempt.amount_kopecks)
 
     def has_add_permission(self, request) -> bool:  # noqa: ARG002
         return False
@@ -458,7 +483,7 @@ class PaymentEvidenceAdmin(admin.ModelAdmin):
         "payment_attempt",
         "source",
         "normalized_status",
-        "amount_kopecks",
+        "amount_display",
         "currency",
         "observed_at",
     )
@@ -469,12 +494,16 @@ class PaymentEvidenceAdmin(admin.ModelAdmin):
         "source",
         "provider_event_id",
         "normalized_status",
-        "amount_kopecks",
+        "amount_display",
         "currency",
         "observed_at",
         "created_at",
     )
     readonly_fields = fields
+
+    @admin.display(description="Сумма подтверждения", ordering="amount_kopecks")
+    def amount_display(self, evidence: PaymentEvidence) -> str:
+        return _rub(evidence.amount_kopecks)
 
     def has_add_permission(self, request) -> bool:  # noqa: ARG002
         return False

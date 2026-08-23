@@ -448,12 +448,12 @@ class CartViewTests(TestCase):
                 "photo_id": self.photo.pk,
                 "selected": True,
                 "item_count": 1,
-                "unit_price_kopecks": 30000,
                 "unit_price_display": "300 ₽",
-                "total_kopecks": 30000,
                 "total_display": "300 ₽",
             },
         )
+        self.assertNotIn("unit_price_kopecks", response.json())
+        self.assertNotIn("total_kopecks", response.json())
         cookie = response.cookies["findme_cart"]
         self.assertEqual(cookie.value, self.token)
         self.assertEqual(cookie["max-age"], 30 * 24 * 60 * 60)
@@ -570,12 +570,12 @@ class CartViewTests(TestCase):
             {
                 "selected": False,
                 "item_count": 0,
-                "unit_price_kopecks": 30000,
                 "unit_price_display": "300 ₽",
-                "total_kopecks": 0,
                 "total_display": "0 ₽",
             },
         )
+        self.assertNotIn("unit_price_kopecks", response.json())
+        self.assertNotIn("total_kopecks", response.json())
         self.assertFalse(Cart.objects.filter(event=self.event).exists())
         self.assertTrue(Cart.objects.filter(event=other_event).exists())
         self.assertEqual(response.cookies["findme_cart"].value, self.token)

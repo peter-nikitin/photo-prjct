@@ -276,6 +276,46 @@ class PageTests(TestCase):
 
         self.assertFalse(FeatureFlag.objects.filter(key="paid-events").exists())
 
+    def test_staff_visible_paid_event_gets_the_selfie_upload_form_under_the_staff_gallery_gate(
+        self,
+    ) -> None:
+        paid = self.make_event(
+            name="Staff paid gallery",
+            slug="staff-paid-gallery",
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+        detail_url = reverse("event_detail", kwargs={"slug": paid.slug})
+        ordinary_user = get_user_model().objects.create_user(username="paid-gallery-visitor")
+        staff_user = get_user_model().objects.create_user(
+            username="paid-gallery-staff",
+            is_staff=True,
+        )
+
+        with override_feature_flags(
+            {
+                PAID_EVENTS: FEATURE_FLAG_STAFF,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_STAFF,
+            }
+        ):
+            self.assertEqual(self.client.get(detail_url).status_code, 404)
+
+            self.client.force_login(ordinary_user)
+            self.assertEqual(self.client.get(detail_url).status_code, 404)
+
+            self.client.force_login(staff_user)
+            response = self.client.get(detail_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Поиск по селфи")
+        self.assertContains(response, ">Найти мои фото</button>")
+        submit_action = reverse("selfie_search:submit", kwargs={"event_slug": paid.slug})
+        self.assertContains(
+            response,
+            f'action="{submit_action}#selfie-search"',
+        )
+        self.assertIsNotNone(response.context["selfie_search_form"])
+
     def test_staff_draft_preview_warns_and_emits_no_public_analytics(self) -> None:
         published = self.make_event()
         draft = self.make_event(
@@ -932,7 +972,7 @@ class GalleryPageTests(TestCase):
         self.assertContains(response, 'data-cart-price data-photo-id="paid-cart-visible"', count=2)
         self.assertContains(response, 'aria-label="Удалить из корзины"')
         self.assertContains(response, 'aria-label="Добавить в корзину"')
-        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=4)
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=5)
         self.assertContains(
             response, 'name="return_to" value="/events/paid-cart-gallery/"', count=4
         )

@@ -1,9 +1,11 @@
 import time
 
 from django.conf import settings
+from django.core.checks import Tags
 from django.core.management.base import BaseCommand, CommandError
 from django.utils.module_loading import import_string
 
+from commerce.checks import COMMERCE_RUNTIME_CHECK_TAG
 from commerce.worker import (
     CommerceWorker,
     acquire_commerce_worker_lock,
@@ -13,6 +15,7 @@ from commerce.worker import (
 
 class Command(BaseCommand):
     help = "Run the bounded Commerce email and payment-reconciliation poller."
+    requires_system_checks = [Tags.models, COMMERCE_RUNTIME_CHECK_TAG]
 
     def add_arguments(self, parser) -> None:
         parser.add_argument("--once", action="store_true")

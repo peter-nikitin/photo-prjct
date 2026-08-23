@@ -2,14 +2,21 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from feature_flags.models import FeatureFlag
+from feature_flags.registry import (
+    PAID_EVENTS,
+    PAID_PHOTO_CART,
+    PAID_PHOTO_PAYMENT_SIMULATOR,
+    PAID_PHOTO_PURCHASE,
+    PAID_WATERMARKED_PREVIEWS,
+)
 
-_FLAGS = {
-    "paid-events": "Show paid events",
-    "paid-watermarked-previews": "Show accepted paid watermarked previews",
-    "paid-photo-cart": "Allow paid photo cart selection",
-    "paid-photo-purchase": "Allow paid photo checkout and fulfillment",
-    "paid-photo-payment-simulator": "Use the feature-gated test payment screen",
-}
+_LOCAL_PURCHASE_REVIEW_DEFINITIONS = (
+    PAID_EVENTS,
+    PAID_WATERMARKED_PREVIEWS,
+    PAID_PHOTO_CART,
+    PAID_PHOTO_PURCHASE,
+    PAID_PHOTO_PAYMENT_SIMULATOR,
+)
 
 
 class Command(BaseCommand):
@@ -19,12 +26,7 @@ class Command(BaseCommand):
         del args, options
         if settings.DEBUG is not True:
             raise CommandError("Local purchase bootstrap requires DEBUG=True.")
-        for key, description in _FLAGS.items():
-            FeatureFlag.objects.update_or_create(
-                key=key,
-                defaults={
-                    "description": description,
-                    "state": FeatureFlag.State.ON,
-                },
-            )
+        FeatureFlag.objects.filter(
+            key__in=[definition.key for definition in _LOCAL_PURCHASE_REVIEW_DEFINITIONS]
+        ).update(state=FeatureFlag.State.ON)
         self.stdout.write(self.style.SUCCESS("Local paid-photo flags are on."))

@@ -8,6 +8,61 @@ import yaml
 from tests.deployment.test_deployment_scripts import ROOT
 
 
+def test_deployment_commerce_worker_bypasses_the_web_entrypoint() -> None:
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "-f",
+            "docker-compose.deployment.yml",
+            "--profile",
+            "commerce",
+            "config",
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "APP_ENV_FILE": ".env.example",
+            "APP_IMAGE": "review-app-image",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commerce_worker = yaml.safe_load(result.stdout)["services"]["commerce-worker"]
+    assert commerce_worker["entrypoint"] == ["python", "manage.py", "run_commerce_worker"]
+    assert commerce_worker["command"] == []
+
+
+def test_base_local_commerce_worker_bypasses_the_web_entrypoint() -> None:
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "-f",
+            "docker-compose.yml",
+            "--profile",
+            "commerce",
+            "config",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commerce_worker = yaml.safe_load(result.stdout)["services"]["commerce-worker"]
+    assert commerce_worker["entrypoint"] == ["python", "manage.py", "run_commerce_worker"]
+    assert commerce_worker["command"] == []
+
+
 def test_local_purchase_compose_exposes_only_review_ports_and_all_workers() -> None:
     result = subprocess.run(
         [
@@ -40,6 +95,15 @@ def test_local_purchase_compose_exposes_only_review_ports_and_all_workers() -> N
         assert published["host_ip"] == "127.0.0.1"
         assert published["published"] == port
     web = compose["services"]["web"]
+    assert web["entrypoint"][:2] == ["/bin/sh", "-ec"]
+    assert [line.strip() for line in web["entrypoint"][2].splitlines() if line.strip()] == [
+        "python manage.py migrate --noinput",
+        "python manage.py sync_feature_flags",
+        "python manage.py bootstrap_photographer_group",
+        "python manage.py bootstrap_local_purchase_review",
+        "python manage.py collectstatic --noinput",
+        "exec python manage.py runserver 0.0.0.0:8000",
+    ]
     assert web["environment"]["PHOTO_UPLOAD_ENABLED"] == "True"
     assert web["environment"]["PHOTO_PROCESSING_PREVIEW_ENABLED"] == "True"
     assert web["environment"]["MEDIA_S3_ENDPOINT_URL"] == "http://minio.localhost:19000"

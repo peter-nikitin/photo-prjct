@@ -15,6 +15,7 @@ from django.urls import reverse
 from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET
 from feature_flags import services as feature_flag_services
+from feature_flags.registry import PAID_WATERMARKED_PREVIEWS
 from ingestion.storage import (
     ObjectMissing,
     PrivateUploadStorage,
@@ -33,7 +34,6 @@ from picflow.gallery import (
     gallery_photo_queryset,
 )
 from picflow.models import Event, EventFolder, Photo
-from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from prometheus_client import CONTENT_TYPE_LATEST
 from selfie_search.forms import SelfieSearchUploadForm
 from selfie_search.services.submission import gallery_search_faces_by_photo
@@ -195,7 +195,7 @@ def _public_media_resolver() -> PublicMediaResolver:
 
 
 def _paid_watermarked_previews_enabled(request) -> bool:
-    return feature_flag_services.is_enabled(PAID_WATERMARKED_PREVIEWS_FLAG, request.user)
+    return feature_flag_services.is_enabled(PAID_WATERMARKED_PREVIEWS, request.user)
 
 
 @require_GET

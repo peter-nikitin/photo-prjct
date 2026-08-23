@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manage Feature Flags"
+  short_description: "Safely manage runtime feature-gate lifecycles"
+  default_prompt: "Use $manage-feature-flags to safely add, operate, or retire this FindMe Photo release gate."

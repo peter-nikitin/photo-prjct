@@ -36,11 +36,15 @@ class BootstrapPhotographerGroupTests(TestCase):
 
 
 class EntrypointOrderingTests(SimpleTestCase):
-    def test_bootstrap_runs_between_migrate_and_collectstatic(self) -> None:
+    def test_feature_flag_sync_and_bootstrap_run_between_migrate_and_collectstatic(self) -> None:
         entrypoint = Path(__file__).parents[2] / "entrypoint.sh"
         contents = entrypoint.read_text()
         self.assertLess(
             contents.index("python manage.py migrate --noinput"),
+            contents.index("python manage.py sync_feature_flags"),
+        )
+        self.assertLess(
+            contents.index("python manage.py sync_feature_flags"),
             contents.index("python manage.py bootstrap_photographer_group"),
         )
         self.assertLess(

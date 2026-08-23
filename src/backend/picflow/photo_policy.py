@@ -3,10 +3,9 @@ from typing import cast
 from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
 from feature_flags import services as feature_flag_services
+from feature_flags.registry import PAID_WATERMARKED_PREVIEWS
 
 from picflow.models import Event, Photo
-
-PAID_WATERMARKED_PREVIEWS_FLAG = "paid-watermarked-previews"
 
 
 def policy_for_new_photo(
@@ -20,7 +19,7 @@ def policy_for_new_photo(
             cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED),
         )
     if event.access_type == Event.AccessType.PAID and feature_flag_services.is_enabled(
-        PAID_WATERMARKED_PREVIEWS_FLAG,
+        PAID_WATERMARKED_PREVIEWS,
         user,
     ):
         return (

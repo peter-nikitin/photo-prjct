@@ -8,6 +8,12 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
+from feature_flags.registry import (
+    PAID_EVENTS,
+    PAID_PHOTO_CART,
+    PAID_WATERMARKED_PREVIEWS,
+    FeatureDefinition,
+)
 from feature_flags.states import (
     FEATURE_FLAG_OFF,
     FEATURE_FLAG_ON,
@@ -16,7 +22,6 @@ from feature_flags.states import (
 )
 from feature_flags.testing import override_feature_flags
 from picflow.models import Event, Photo
-from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
@@ -29,7 +34,6 @@ from processing.models import (
 from commerce.identity import browser_token_sha256
 from commerce.models import Cart, CartItem
 
-PAID_PHOTO_CART_FLAG = "paid-photo-cart"
 FLAG_OFF = FEATURE_FLAG_OFF
 FLAG_STAFF = FEATURE_FLAG_STAFF
 FLAG_ON = FEATURE_FLAG_ON
@@ -44,7 +48,7 @@ class CartViewTests(TestCase):
     token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
     def setUp(self) -> None:
-        self.feature_flag_states: dict[str, FeatureFlagState] = {}
+        self.feature_flag_states: dict[FeatureDefinition, FeatureFlagState] = {}
         self.enterContext(override_feature_flags(self.feature_flag_states))
         self.photographer = get_user_model().objects.create_user(username="cart-photographer")
         self.event = self.make_event(name="Paid race", slug="paid-race")
@@ -149,9 +153,9 @@ class CartViewTests(TestCase):
     ) -> None:
         self.feature_flag_states.update(
             {
-                "paid-events": FLAG_ON,
-                PAID_PHOTO_CART_FLAG: cart,
-                PAID_WATERMARKED_PREVIEWS_FLAG: watermark,
+                PAID_EVENTS: FLAG_ON,
+                PAID_PHOTO_CART: cart,
+                PAID_WATERMARKED_PREVIEWS: watermark,
             }
         )
 
@@ -218,8 +222,8 @@ class CartViewTests(TestCase):
         self.client.force_login(staff)
         staff_response = self.client.get(self.detail_url())
         self.client.logout()
-        self.feature_flag_states[PAID_PHOTO_CART_FLAG] = FLAG_ON
-        self.feature_flag_states[PAID_WATERMARKED_PREVIEWS_FLAG] = FLAG_ON
+        self.feature_flag_states[PAID_PHOTO_CART] = FLAG_ON
+        self.feature_flag_states[PAID_WATERMARKED_PREVIEWS] = FLAG_ON
         public_response = self.client.get(self.detail_url())
 
         self.assertEqual(anonymous.status_code, 404)
@@ -231,9 +235,9 @@ class CartViewTests(TestCase):
     def test_parent_paid_events_gate_protects_cart_routes(self) -> None:
         self.enable()
         states = {
-            "paid-events": FLAG_STAFF,
-            PAID_PHOTO_CART_FLAG: FLAG_ON,
-            PAID_WATERMARKED_PREVIEWS_FLAG: FLAG_ON,
+            PAID_EVENTS: FLAG_STAFF,
+            PAID_PHOTO_CART: FLAG_ON,
+            PAID_WATERMARKED_PREVIEWS: FLAG_ON,
         }
 
         with override_feature_flags(states):
@@ -244,7 +248,7 @@ class CartViewTests(TestCase):
             self.client.force_login(staff)
             staff_response = self.client.get(self.detail_url())
             self.client.logout()
-            states["paid-events"] = FLAG_ON
+            states[PAID_EVENTS] = FLAG_ON
             public_response = self.client.get(self.detail_url())
 
         self.assertEqual(anonymous.status_code, 404)

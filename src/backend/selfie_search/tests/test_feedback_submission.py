@@ -10,11 +10,11 @@ from django.db import IntegrityError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.registry import PAID_EVENTS, PAID_WATERMARKED_PREVIEWS
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
-from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from PIL import Image
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -245,8 +245,8 @@ class FeedbackSubmissionTests(TestCase):
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         result = self.make_watermarked_result(search=search)
         states = {
-            "paid-events": FEATURE_FLAG_ON,
-            PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_OFF,
+            PAID_EVENTS: FEATURE_FLAG_ON,
+            PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_OFF,
         }
 
         gate_off = feedback_presentation(search, paid_watermarked_previews_enabled=False)
@@ -268,7 +268,7 @@ class FeedbackSubmissionTests(TestCase):
                     self.submission_data(labels=f'{{"{result.id}":"present"}}'),
                     HTTP_X_CSRFTOKEN=csrf_token,
                 )
-                states[PAID_WATERMARKED_PREVIEWS_FLAG] = FEATURE_FLAG_ON
+                states[PAID_WATERMARKED_PREVIEWS] = FEATURE_FLAG_ON
                 accepted = self.client.post(
                     self.feedback_url(token=token),
                     self.submission_data(labels=f'{{"{result.id}":"present"}}'),

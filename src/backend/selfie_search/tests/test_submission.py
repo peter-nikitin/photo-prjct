@@ -17,6 +17,7 @@ from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.registry import PAID_EVENTS
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
@@ -308,7 +309,7 @@ class SubmissionTests(TestCase):
         self.make_eligible_embedding(event=self.paid_event, photo_id="e")
         storage = RecordingStorage()
 
-        with override_feature_flags({"paid-events": FEATURE_FLAG_ON}):
+        with override_feature_flags({PAID_EVENTS: FEATURE_FLAG_ON}):
             created = submit_selfie_search(
                 event=self.event, selfie=valid_selfie(), storage=storage, user=self.user
             )
@@ -1184,7 +1185,7 @@ class GalleryPhotoSubmissionTests(TestCase):
                 user=self.user,
                 paid_watermarked_previews_enabled=False,
             )
-        with override_feature_flags({"paid-events": FEATURE_FLAG_ON}):
+        with override_feature_flags({PAID_EVENTS: FEATURE_FLAG_ON}):
             created = submit_gallery_photo_search(
                 event=paid_event,
                 photo=photo,

@@ -11,6 +11,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, modify_settings, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.registry import PAID_EVENTS, PAID_WATERMARKED_PREVIEWS, FeatureDefinition
 from feature_flags.states import FEATURE_FLAG_STAFF, FeatureFlagState
 from feature_flags.testing import override_feature_flags
 from ingestion.models import UploadItem
@@ -132,7 +133,7 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
     """Human-auditable proof across upload, processing, presentation, and authorization."""
 
     def setUp(self) -> None:
-        self.feature_flag_states: dict[str, FeatureFlagState] = {}
+        self.feature_flag_states: dict[FeatureDefinition, FeatureFlagState] = {}
         self.enterContext(override_feature_flags(self.feature_flag_states))
         self.staff = get_user_model().objects.create_user(
             username="watermark-flow-staff",
@@ -167,8 +168,8 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
     def enable_paid_gate_for_staff(self) -> None:
         self.feature_flag_states.update(
             {
-                "paid-events": FEATURE_FLAG_STAFF,
-                "paid-watermarked-previews": FEATURE_FLAG_STAFF,
+                PAID_EVENTS: FEATURE_FLAG_STAFF,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_STAFF,
             }
         )
 

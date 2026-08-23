@@ -50,7 +50,7 @@ class FeatureFlagAdminTests(TestCase):
             reverse("admin:feature_flags_featureflag_change", args=(self.flag.pk,)),
             {
                 "key": self.flag.key,
-                "description": "Release now visible to staff",
+                "description": "An attempted definition edit",
                 "state": FeatureFlag.State.STAFF,
                 "_save": "Save",
             },
@@ -59,9 +59,27 @@ class FeatureFlagAdminTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.flag.refresh_from_db()
         self.assertEqual(self.flag.state, FeatureFlag.State.STAFF)
+        self.assertEqual(self.flag.key, "admin-release")
+        self.assertEqual(self.flag.description, "Admin-managed release")
         history = LogEntry.objects.get(object_id=str(self.flag.pk), action_flag=CHANGE)
         self.assertEqual(history.user, self.user)
         self.assertEqual(history.content_type.app_label, "feature_flags")
+
+    def test_admin_disallows_adding_and_deleting_feature_definitions(self) -> None:
+        self.user.user_permissions.add(self.change_permission)
+        self.client.force_login(self.user)
+
+        self.assertFalse(self.model_admin.has_add_permission(self.request()))
+        self.assertFalse(self.model_admin.has_delete_permission(self.request(), self.flag))
+        self.assertEqual(
+            self.client.get(reverse("admin:feature_flags_featureflag_add")).status_code, 403
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("admin:feature_flags_featureflag_delete", args=(self.flag.pk,))
+            ).status_code,
+            403,
+        )
 
     def request(self):
         request = RequestFactory().get("/admin/")

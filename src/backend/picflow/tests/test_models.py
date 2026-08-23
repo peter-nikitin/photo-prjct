@@ -12,6 +12,7 @@ from django.db.models.deletion import ProtectedError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from feature_flags.models import FeatureFlag
+from feature_flags.registry import PAID_EVENTS, PAID_WATERMARKED_PREVIEWS
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
 
@@ -167,7 +168,7 @@ class EventModelTests(TestCase):
         )
         ordinary = get_user_model().objects.create_user(username="paid-ordinary")
         staff = get_user_model().objects.create_user(username="paid-staff", is_staff=True)
-        states = {"paid-events": FEATURE_FLAG_STAFF}
+        states = {PAID_EVENTS: FEATURE_FLAG_STAFF}
         fixtures = Event.objects.filter(
             pk__in=(free_published.pk, paid_published.pk, paid_draft.pk)
         )
@@ -182,13 +183,13 @@ class EventModelTests(TestCase):
                 {free_published.pk, paid_published.pk, paid_draft.pk},
             )
 
-            states["paid-events"] = FEATURE_FLAG_ON
+            states[PAID_EVENTS] = FEATURE_FLAG_ON
             self.assertEqual(
                 set(fixtures.site_visible_to(ordinary).values_list("pk", flat=True)),
                 {free_published.pk, paid_published.pk},
             )
 
-            states["paid-events"] = FEATURE_FLAG_OFF
+            states[PAID_EVENTS] = FEATURE_FLAG_OFF
             self.assertEqual(
                 set(fixtures.site_visible_to(staff).values_list("pk", flat=True)),
                 {free_published.pk},
@@ -468,7 +469,7 @@ class PhotoModelTests(TestCase):
     def test_free_photo_policy_stays_preview_first_when_paid_gate_is_enabled(self) -> None:
         from picflow.photo_policy import policy_for_new_photo
 
-        with override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_ON}):
+        with override_feature_flags({PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON}):
             self.assertEqual(
                 policy_for_new_photo(self.event, self.photographer),
                 ("preview_first_v1", "preview_required"),
@@ -487,7 +488,7 @@ class PhotoModelTests(TestCase):
                 policy_for_new_photo(self.event, self.photographer),
                 ("preview_first_v1", "preview_required"),
             )
-        with override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_OFF}):
+        with override_feature_flags({PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_OFF}):
             self.assertEqual(
                 policy_for_new_photo(self.event, self.photographer),
                 ("preview_first_v1", "preview_required"),
@@ -501,7 +502,7 @@ class PhotoModelTests(TestCase):
         self.event.access_type = Event.AccessType.PAID
         self.event.price_per_photo_kopecks = 30000
         self.event.save(update_fields=["access_type", "price_per_photo_kopecks"])
-        with override_feature_flags({"paid-watermarked-previews": FEATURE_FLAG_STAFF}):
+        with override_feature_flags({PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_STAFF}):
             self.assertEqual(
                 policy_for_new_photo(self.event, staff),
                 ("preview_first_watermarked_v1", "watermarked_preview_required"),

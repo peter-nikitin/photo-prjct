@@ -6,10 +6,15 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.registry import (
+    PAID_EVENTS,
+    PAID_PHOTO_CART,
+    PAID_WATERMARKED_PREVIEWS,
+    FeatureDefinition,
+)
 from feature_flags.states import FEATURE_FLAG_STAFF, FeatureFlagState
 from feature_flags.testing import override_feature_flags
 from picflow.models import Event, Photo
-from picflow.photo_policy import PAID_WATERMARKED_PREVIEWS_FLAG
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
@@ -22,7 +27,6 @@ from selfie_search.models import SelfieSearch, SelfieSearchResult
 
 from commerce.identity import browser_token_sha256
 from commerce.models import Cart, CartItem
-from commerce.views import PAID_PHOTO_CART_FLAG
 
 
 @override_settings(
@@ -34,7 +38,7 @@ class PaidPhotoCartCriticalPathTests(TestCase):
     token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
     def setUp(self) -> None:
-        self.feature_flag_states: dict[str, FeatureFlagState] = {}
+        self.feature_flag_states: dict[FeatureDefinition, FeatureFlagState] = {}
         self.enterContext(override_feature_flags(self.feature_flag_states))
         self.staff = get_user_model().objects.create_user(username="cart-flow-staff", is_staff=True)
         self.photographer = get_user_model().objects.create_user(username="cart-flow-photographer")
@@ -134,9 +138,9 @@ class PaidPhotoCartCriticalPathTests(TestCase):
     def enable_staff_gates(self) -> None:
         self.feature_flag_states.update(
             {
-                "paid-events": FEATURE_FLAG_STAFF,
-                PAID_PHOTO_CART_FLAG: FEATURE_FLAG_STAFF,
-                PAID_WATERMARKED_PREVIEWS_FLAG: FEATURE_FLAG_STAFF,
+                PAID_EVENTS: FEATURE_FLAG_STAFF,
+                PAID_PHOTO_CART: FEATURE_FLAG_STAFF,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_STAFF,
             }
         )
 

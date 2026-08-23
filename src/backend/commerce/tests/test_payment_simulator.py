@@ -96,6 +96,36 @@ class PaymentSimulatorFlowTests(CheckoutViewTestCase):
         self.assertEqual(order.status, Order.Status.PAID)
         self.assertEqual(EmailDelivery.objects.filter(order=order).count(), 1)
 
+    def test_simulator_page_formats_whole_ruble_amounts_with_the_canonical_rub_contract(
+        self,
+    ) -> None:
+        self.enable_simulator(FEATURE_FLAG_ON)
+        checkout = self.submit_checkout()
+        simulator_path = urlsplit(checkout["Location"]).path
+
+        response = self.client.get(simulator_path, HTTP_HOST=self.host)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "сумма 300 ₽.")
+        self.assertNotContains(response, "коп.")
+        self.assertNotContains(response, "30000")
+
+    def test_simulator_page_formats_fractional_ruble_amounts_with_the_canonical_rub_contract(
+        self,
+    ) -> None:
+        self.event.price_per_photo_kopecks = 45075
+        self.event.save(update_fields=["price_per_photo_kopecks"])
+        self.enable_simulator(FEATURE_FLAG_ON)
+        checkout = self.submit_checkout()
+        simulator_path = urlsplit(checkout["Location"]).path
+
+        response = self.client.get(simulator_path, HTTP_HOST=self.host)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "сумма 450,75 ₽.")
+        self.assertNotContains(response, "коп.")
+        self.assertNotContains(response, "45075")
+
     def test_simulator_page_preserves_same_origin_for_csrf_form_submission(self) -> None:
         self.enable_simulator(FEATURE_FLAG_ON)
         checkout = self.submit_checkout()

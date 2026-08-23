@@ -439,6 +439,7 @@ def payment_simulator(request: HttpRequest, provider_payment_id: str) -> HttpRes
             {
                 "order": attempt.order,
                 "attempt": attempt,
+                "total_display": format_rub(attempt.order.total_kopecks),
                 "yandex_metrika_counter_id": None,
             },
         )

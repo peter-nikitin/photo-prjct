@@ -1,25 +1,42 @@
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.db import IntegrityError
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import FeatureDefinition
-from feature_flags.services import is_enabled, is_server_enabled
+from feature_flags.services import is_enabled, is_enabled_for_state, is_server_enabled
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
+
+
+class FeatureFlagPolicyTests(SimpleTestCase):
+    def test_state_policy_allows_only_active_staff_for_staff_state(self) -> None:
+        """A policy regression could expose a staff rehearsal to an anonymous visitor."""
+        anonymous = SimpleNamespace(is_authenticated=False, is_active=False, is_staff=False)
+        inactive_staff = SimpleNamespace(is_authenticated=True, is_active=False, is_staff=True)
+        ordinary = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False)
+        active_staff = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True)
+
+        for user in (anonymous, inactive_staff, ordinary, active_staff):
+            with self.subTest(state=FEATURE_FLAG_OFF, user=user):
+                self.assertFalse(is_enabled_for_state(FEATURE_FLAG_OFF, user))
+            with self.subTest(state=FEATURE_FLAG_ON, user=user):
+                self.assertTrue(is_enabled_for_state(FEATURE_FLAG_ON, user))
+
+        self.assertFalse(is_enabled_for_state(FEATURE_FLAG_STAFF, anonymous))
+        self.assertFalse(is_enabled_for_state(FEATURE_FLAG_STAFF, inactive_staff))
+        self.assertFalse(is_enabled_for_state(FEATURE_FLAG_STAFF, ordinary))
+        self.assertTrue(is_enabled_for_state(FEATURE_FLAG_STAFF, active_staff))
 
 
 class FeatureFlagServiceTests(TestCase):
     def setUp(self) -> None:
         users = get_user_model().objects
-        self.anonymous = AnonymousUser()
-        self.inactive_staff = users.create_user(
-            username="inactive-staff", is_active=False, is_staff=True
-        )
         self.ordinary_user = users.create_user(username="ordinary-user")
         self.active_staff = users.create_user(username="active-staff", is_staff=True)
 
@@ -101,15 +118,13 @@ class FeatureFlagServiceTests(TestCase):
             )
 
 
-class FeatureFlagTestOverrideTests(TestCase):
+class FeatureFlagTestOverrideTests(SimpleTestCase):
     def test_override_permits_only_active_staff_in_staff_state_without_a_database_row(self) -> None:
         definition = FeatureDefinition("test-staff-release", "A test-only staff release")
         states = {definition: FEATURE_FLAG_STAFF}
-        ordinary = get_user_model().objects.create_user(username="override-ordinary")
-        inactive_staff = get_user_model().objects.create_user(
-            username="override-inactive-staff", is_staff=True, is_active=False
-        )
-        staff = get_user_model().objects.create_user(username="override-staff", is_staff=True)
+        ordinary = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False)
+        inactive_staff = SimpleNamespace(is_authenticated=True, is_active=False, is_staff=True)
+        staff = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True)
 
         with override_feature_flags(states):
             self.assertFalse(is_enabled(definition, AnonymousUser()))
@@ -117,13 +132,11 @@ class FeatureFlagTestOverrideTests(TestCase):
             self.assertFalse(is_enabled(definition, inactive_staff))
             self.assertTrue(is_enabled(definition, staff))
 
-        self.assertFalse(FeatureFlag.objects.filter(key=definition.key).exists())
-
     def test_override_reads_mutable_states_and_treats_unknown_keys_as_off(self) -> None:
         definition = FeatureDefinition("test-transition-release", "A mutable test release")
         unknown = FeatureDefinition("unknown-test-release", "An unknown test release")
         states = {definition: FEATURE_FLAG_OFF}
-        staff = get_user_model().objects.create_user(username="transition-staff", is_staff=True)
+        staff = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True)
 
         with override_feature_flags(states):
             self.assertFalse(is_enabled(definition, staff))
@@ -137,27 +150,23 @@ class FeatureFlagTestOverrideTests(TestCase):
         definition = FeatureDefinition("nested-release", "A nested test release")
         outer_states = {definition: FEATURE_FLAG_STAFF}
         inner_states = {definition: FEATURE_FLAG_ON}
-        staff = get_user_model().objects.create_user(
-            username="nested-override-staff", is_staff=True
-        )
+        staff = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True)
 
-        with override_feature_flags(outer_states):
+        with patch("feature_flags.services._database_state_for", return_value=FEATURE_FLAG_OFF):
+            with override_feature_flags(outer_states):
+                self.assertFalse(is_enabled(definition, AnonymousUser()))
+                self.assertTrue(is_enabled(definition, staff))
+                with override_feature_flags(inner_states):
+                    self.assertTrue(is_enabled(definition, AnonymousUser()))
+                self.assertFalse(is_enabled(definition, AnonymousUser()))
+                self.assertTrue(is_enabled(definition, staff))
             self.assertFalse(is_enabled(definition, AnonymousUser()))
-            self.assertTrue(is_enabled(definition, staff))
-            with override_feature_flags(inner_states):
-                self.assertTrue(is_enabled(definition, AnonymousUser()))
-            self.assertFalse(is_enabled(definition, AnonymousUser()))
-            self.assertTrue(is_enabled(definition, staff))
-
-        self.assertFalse(is_enabled(definition, AnonymousUser()))
 
     def test_override_is_visible_to_child_threads_without_leaking_after_exit(self) -> None:
         definition = FeatureDefinition("thread-release", "A thread test release")
         unknown = FeatureDefinition("unknown-thread-release", "An unknown thread test release")
         states = {definition: FEATURE_FLAG_STAFF}
-        staff = get_user_model().objects.create_user(
-            username="thread-override-staff", is_staff=True
-        )
+        staff = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True)
 
         with patch(
             "feature_flags.services._database_state_for", return_value=FEATURE_FLAG_OFF

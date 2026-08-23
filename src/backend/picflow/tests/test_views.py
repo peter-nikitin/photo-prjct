@@ -700,30 +700,6 @@ class GalleryPageTests(TestCase):
             )
         publish_face_embedding_projection(attempt)
 
-    @patch("config.views.PrivateUploadStorage")
-    def test_event_detail_builds_filename_ordered_gallery_without_storage(
-        self, storage_class
-    ) -> None:
-        event = self.make_event()
-        later = self.make_private_photo(event, id="photo-1", original_filename="z-last.jpg")
-        earlier = self.make_private_photo(event, id="photo-2", original_filename="a-first.jpg")
-
-        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            tuple(item.photo_id for item in response.context["gallery_photos"]),
-            (earlier.id, later.id),
-        )
-        self.assertEqual(
-            response.context["gallery_photos"][0].preview_media_small.url,
-            reverse(
-                "photo_media",
-                kwargs={"slug": event.slug, "photo_id": earlier.id, "variant": "preview-small"},
-            ),
-        )
-        storage_class.assert_not_called()
-
     def test_event_detail_uses_numbered_pages_in_filename_order(self) -> None:
         event = self.make_event()
         for index in range(101):

@@ -33,15 +33,18 @@ def _require_definition(definition: FeatureDefinition) -> FeatureDefinition:
     return definition
 
 
-def is_enabled(definition: FeatureDefinition, user: AbstractBaseUser | AnonymousUser) -> bool:
-    """Return whether a runtime release gate permits the current user."""
-    state = _state_for(_require_definition(definition))
-
+def is_enabled_for_state(state: FeatureFlagState, user: AbstractBaseUser | AnonymousUser) -> bool:
+    """Apply the pure visitor policy for one resolved runtime feature-gate state."""
     if state == FEATURE_FLAG_ON:
         return True
     return (
         state == FEATURE_FLAG_STAFF and user.is_authenticated and user.is_active and user.is_staff
     )
+
+
+def is_enabled(definition: FeatureDefinition, user: AbstractBaseUser | AnonymousUser) -> bool:
+    """Return whether a runtime release gate permits the current user."""
+    return is_enabled_for_state(_state_for(_require_definition(definition)), user)
 
 
 def is_server_enabled(definition: FeatureDefinition) -> bool:

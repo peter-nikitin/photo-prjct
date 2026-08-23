@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 import tomllib
@@ -12,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
+from typing import Protocol
 
 EXPENSIVE_SUITES = ("operational", "migrations", "visual")
 PRIMARY_LAYERS = {"operational", "migration", "product_flow"}
@@ -31,6 +34,10 @@ KNOWN_CATEGORIES = {
 }
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "tests" / "suite-selection.toml"
+
+
+class Digest(Protocol):
+    def update(self, data: bytes, /) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -240,19 +247,69 @@ def changed_files_from_git(repository: Path, base: str, head: str) -> list[str]:
 
 def fingerprint(repository: Path, base: str) -> str:
     base_revision = _run_git(repository, ["rev-parse", "--verify", f"{base}^{{commit}}"]).strip()
-    tracked_diff = _run_git(repository, ["diff", "--binary", base_revision.decode("ascii")])
+    base_name = base_revision.decode("ascii")
+    changed = _run_git(
+        repository,
+        ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRD", "-z", base_name],
+    )
     untracked = _run_git(repository, ["ls-files", "--others", "--exclude-standard", "-z"])
-    paths = sorted(path for path in untracked.split(b"\0") if path)
+    paths = _fingerprint_paths(changed.split(b"\0") + untracked.split(b"\0"))
     digest = hashlib.sha256()
-    for label, payload in ((b"base", base_revision), (b"tracked", tracked_diff)):
-        digest.update(label + b"\0" + str(len(payload)).encode() + b"\0" + payload)
+    _update_fingerprint_record(digest, b"base", base_revision)
     for path in paths:
-        if path.startswith(b".git/") or b"\0" in path:
-            raise ValueError("git returned an invalid untracked path")
-        content = (repository / path.decode("utf-8")).read_bytes()
-        digest.update(b"untracked\0" + str(len(path)).encode() + b"\0" + path)
-        digest.update(str(len(content)).encode() + b"\0" + content)
+        _update_fingerprint_record(digest, b"path", path.encode("utf-8"))
+        _update_fingerprint_final_state(digest, repository / path)
     return digest.hexdigest()
+
+
+def _fingerprint_paths(raw_paths: Sequence[bytes]) -> tuple[str, ...]:
+    paths: set[str] = set()
+    for raw_path in raw_paths:
+        if not raw_path:
+            continue
+        try:
+            supplied_path = raw_path.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("git fingerprint paths must be UTF-8") from error
+        path = _normalize_path(supplied_path)
+        if path is None or path == ".git" or path.startswith(".git/"):
+            raise ValueError("git returned an invalid fingerprint path")
+        paths.add(path)
+    return tuple(sorted(paths))
+
+
+def _update_fingerprint_record(digest: Digest, label: bytes, payload: bytes) -> None:
+    digest.update(label)
+    digest.update(b"\0")
+    digest.update(str(len(payload)).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(payload)
+
+
+def _update_fingerprint_final_state(digest: Digest, path: Path) -> None:
+    try:
+        state = path.lstat()
+    except FileNotFoundError:
+        _update_fingerprint_record(digest, b"exists", b"0")
+        return
+
+    _update_fingerprint_record(digest, b"exists", b"1")
+    mode = stat.S_IMODE(state.st_mode)
+    _update_fingerprint_record(digest, b"mode", f"{mode:o}".encode("ascii"))
+    if stat.S_ISREG(state.st_mode):
+        file_type = b"regular"
+        content = path.read_bytes()
+    elif stat.S_ISLNK(state.st_mode):
+        file_type = b"symlink"
+        content = os.fsencode(os.readlink(path))
+    elif stat.S_ISDIR(state.st_mode):
+        file_type = b"directory"
+        content = b""
+    else:
+        file_type = b"other"
+        content = b""
+    _update_fingerprint_record(digest, b"type", file_type)
+    _update_fingerprint_record(digest, b"content", content)
 
 
 def _github_output(selection: Selection) -> str:

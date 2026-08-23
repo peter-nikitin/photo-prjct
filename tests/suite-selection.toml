@@ -17,8 +17,16 @@ patterns = [
   "docker-compose*.yml",
   ".github/workflows/deploy.yml",
   "src/backend/config/settings.py",
+  "scripts/clone-deployed-db.sh",
+  "scripts/copy-object-storage-bucket.py",
+  "scripts/local-web.sh",
+  "scripts/monitor_public_health.py",
+  "scripts/reconcile_deploy_issue.py",
+  "scripts/run-with-environment-secrets.py",
+  "scripts/verify-environment-secret-projection.py",
   "tests/deployment/**",
   "tests/monitoring/**",
+  "tests/processing/test_worker_container_contract.py",
 ]
 suites = ["operational"]
 layer = "operational"
@@ -52,6 +60,7 @@ patterns = [
   "src/backend/**/static/**",
   "tests/visual/**",
   "tests/js/**",
+  "tests/test_visual_test_runner.py",
   "playwright.config.js",
   "Dockerfile.visual-tests",
   "docker-compose.visual.yml",
@@ -61,7 +70,8 @@ suites = ["visual"]
 [[categories]]
 name = "product-flow"
 patterns = [
-  "tests/processing/**",
+  "tests/processing/test_pipeline_e2e.py",
+  "tests/processing/test_selfie_search_e2e.py",
   "src/backend/commerce/tests/test_paid_photo_cart_flow.py",
   "src/backend/commerce/tests/test_paid_photo_purchase_flow.py",
   "src/backend/commerce/tests/test_payment_simulator.py",
@@ -72,7 +82,14 @@ layer = "product_flow"
 
 [[categories]]
 name = "python"
-patterns = ["src/**", "tests/**", "scripts/**", "conftest.py"]
+patterns = [
+  "src/**",
+  "tests/**",
+  "conftest.py",
+  "scripts/cleanup_stale_test_databases.py",
+  "scripts/create-worktree.py",
+  "scripts/run-in-test-env.sh",
+]
 suites = []
 
 [[categories]]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -179,6 +180,16 @@ def test_github_output_preserves_a_shell_metacharacter_filename_as_data(tmp_path
         ("src/backend/processing/tests/test_models.py", (False, True, False)),
         ("src/backend/config/settings.py", (True, False, False)),
         ("deploy/apply-deployment.sh", (True, True, False)),
+        ("scripts/clone-deployed-db.sh", (True, False, False)),
+        ("scripts/local-web.sh", (True, False, False)),
+        ("scripts/run-with-environment-secrets.py", (True, False, False)),
+        ("scripts/copy-object-storage-bucket.py", (True, False, False)),
+        ("scripts/monitor_public_health.py", (True, False, False)),
+        ("scripts/create-worktree.py", (False, False, False)),
+        ("scripts/run-in-test-env.sh", (False, False, False)),
+        ("scripts/unknown-entrypoint.py", (True, True, True)),
+        ("tests/processing/test_worker_container_contract.py", (True, False, False)),
+        ("tests/test_visual_test_runner.py", (False, False, True)),
     ],
 )
 def test_production_manifest_selects_runtime_and_schema_sensitive_paths(
@@ -231,6 +242,27 @@ def test_manifest_layer_patterns_keep_mixed_test_files_on_their_explicit_or_db_l
             config, "src/backend/picflow/migrations/0001_initial.py", True
         )
         == "migration"
+    )
+
+
+def test_production_manifest_reserves_operational_and_product_flow_test_boundaries() -> None:
+    config = select_test_suites.load_config(ROOT / "tests" / "suite-selection.toml")
+
+    assert (
+        select_test_suites.layer_for_path(
+            config, "tests/processing/test_worker_container_contract.py", True
+        )
+        == "operational"
+    )
+    assert (
+        select_test_suites.layer_for_path(config, "tests/processing/test_pipeline_e2e.py", True)
+        == "product_flow"
+    )
+    assert (
+        select_test_suites.layer_for_path(
+            config, "tests/processing/test_selfie_search_e2e.py", True
+        )
+        == "product_flow"
     )
 
 
@@ -289,20 +321,34 @@ def test_select_command_reads_changed_paths_from_git(tmp_path: Path) -> None:
     ]
 
 
-def test_fingerprint_changes_for_tracked_and_untracked_content(tmp_path: Path) -> None:
+def test_fingerprint_is_canonical_across_git_representations_and_final_states(
+    tmp_path: Path,
+) -> None:
     repository = init_repository(tmp_path)
     base = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True
     ).stdout.strip()
-    tracked = repository / "docs" / "guide.md"
-    tracked.write_text("changed\n", encoding="utf-8")
-    first = select_test_suites.fingerprint(repository, base)
-    tracked.write_text("changed again\n", encoding="utf-8")
-    second = select_test_suites.fingerprint(repository, base)
-    (repository / "task.txt").write_text("untracked\n", encoding="utf-8")
-    third = select_test_suites.fingerprint(repository, base)
+    package_file = repository / "task.txt"
+    package_file.write_text("same package\n", encoding="utf-8")
+    untracked = select_test_suites.fingerprint(repository, base)
 
-    assert first != second != third
+    subprocess.run(["git", "add", "task.txt"], cwd=repository, check=True)
+    staged = select_test_suites.fingerprint(repository, base)
+    subprocess.run(["git", "commit", "-qm", "package"], cwd=repository, check=True)
+    committed = select_test_suites.fingerprint(repository, base)
+
+    assert untracked == staged == committed
+
+    package_file.write_text("changed package\n", encoding="utf-8")
+    content_changed = select_test_suites.fingerprint(repository, base)
+    os.chmod(package_file, 0o755)
+    mode_changed = select_test_suites.fingerprint(repository, base)
+    package_file.rename(repository / "renamed-task.txt")
+    path_changed = select_test_suites.fingerprint(repository, base)
+    (repository / "docs" / "guide.md").unlink()
+    deleted = select_test_suites.fingerprint(repository, base)
+
+    assert committed != content_changed != mode_changed != path_changed != deleted
 
 
 def test_manifest_layer_ownership_is_specific_before_db_fallback(tmp_path: Path) -> None:

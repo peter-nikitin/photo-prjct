@@ -5,6 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+import conftest
+
 ROOT = Path(__file__).resolve().parents[1]
 PROCESSING_MIGRATION_CLASSES = (
     "ProcessingInitialMigrationTests",
@@ -75,3 +79,21 @@ def test_processing_migration_contract_collection_ignores_quiet_parent_addopts(
     monkeypatch.setenv("PYTEST_ADDOPTS", "-q")
 
     _assert_processing_migration_contract_layers()
+
+
+def test_migration_marker_requires_manifest_migration_selection() -> None:
+    assert (
+        conftest.resolve_layer(
+            PROCESSING_MODELS,
+            django_db_enabled=True,
+            explicit_layers={"migration"},
+        )
+        == "migration"
+    )
+
+    with pytest.raises(pytest.UsageError, match="conflicts with manifest"):
+        conftest.resolve_layer(
+            "src/backend/commerce/tests/test_models.py",
+            django_db_enabled=True,
+            explicit_layers={"migration"},
+        )

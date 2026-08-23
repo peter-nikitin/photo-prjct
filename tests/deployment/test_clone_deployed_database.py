@@ -14,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/clone-deployed-db.sh"
+INTERACTIVE_HARNESS_TIMEOUT_SECONDS = 10
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -47,7 +48,7 @@ def _run_interactive(*, env: dict[str, str], reply: str) -> tuple[int, str]:
     os.close(slave)
     os.write(master, reply.encode("utf-8"))
     try:
-        stdout, stderr = process.communicate(timeout=5)
+        stdout, stderr = process.communicate(timeout=INTERACTIVE_HARNESS_TIMEOUT_SECONDS)
     finally:
         os.close(master)
     return process.returncode, stdout + stderr

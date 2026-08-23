@@ -154,15 +154,22 @@ def _notification_phase_from_workflow(tmp_path: Path, failed_log: str) -> str:
     return arguments[arguments.index("--phase") + 1]
 
 
-def test_adr_index_lists_all_accepted_decisions() -> None:
+def test_adr_index_matches_decision_files() -> None:
     index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
     architecture = (ROOT / "docs/architecture.md").read_text(encoding="utf-8")
     open_decisions = architecture.partition("## Open decisions")[2].partition("## Change rules")[0]
 
-    for number in (*range(1, 5), 6, 7, *range(11, 15), 17, *range(19, 26), 27, 28):
-        assert re.search(rf"\| {number:04d} \|.*\| Accepted \|", index)
-    for number in (5, 8, 9, 10, 15, 26):
-        assert re.search(rf"\| {number:04d} \|.*\| Superseded \|", index)
+    decision_paths = (ROOT / "docs/adr").glob("[0-9][0-9][0-9][0-9]-*.md")
+    for decision_path in sorted(
+        path for path in decision_paths if not path.name.startswith("0000-")
+    ):
+        decision = decision_path.read_text(encoding="utf-8")
+        status = re.search(
+            r"^- Status: (Accepted|Proposed|Rejected|Superseded)$", decision, re.MULTILINE
+        )
+        assert status is not None, decision_path
+        number = decision_path.name[:4]
+        assert re.search(rf"\| {number} \|.*\| {status.group(1)} \|", index), decision_path
     assert "Authentication model and photographer/operator permissions" not in open_decisions
     assert "Private media lifecycle and retention policy" not in open_decisions
     assert "Background task framework, broker, retry semantics" not in open_decisions

@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved in conversation by the maintainer on 2026-08-23. Written review is pending. Implementation
-planning remains blocked until proposed ADR 0033 is explicitly accepted.
+Approved in conversation by the maintainer on 2026-08-23. ADR 0033 was accepted in the same review,
+so implementation planning may proceed.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), accepted constraints,
   change rules, current deployment topology, and security, privacy, and legal boundaries.
@@ -17,9 +17,9 @@ planning remains blocked until proposed ADR 0033 is explicitly accepted.
   [ADR 0002](../../adr/0002-postgresql-system-of-record.md),
   [ADR 0004](../../adr/0004-repository-engineering-knowledge.md),
   [ADR 0017](../../adr/0017-use-django-polled-photo-processing-jobs.md),
-  [ADR 0028](../../adr/0028-operate-one-canonical-deployment.md), and proposed
+  [ADR 0028](../../adr/0028-operate-one-canonical-deployment.md), and accepted
   [ADR 0033](../../adr/0033-keep-durable-knowledge-test-executable-contracts.md).
-- ADR impact: **Supersedes ADR 0004.** Proposed ADR 0033 retains Git-versioned durable decisions
+- ADR impact: **Supersedes ADR 0004.** Accepted ADR 0033 retains Git-versioned durable decisions
   while removing the requirement to encode narrative wording and duplicated operational guidance
   as executable CI contracts. The remaining test design conforms to ADRs 0001, 0002, 0017, and
   0028 by retaining Django module interfaces, real PostgreSQL witnesses, private-worker contracts,
@@ -223,7 +223,7 @@ is validated structurally; CI does not assert its prose.
 
 ## Engineering-Knowledge Decision
 
-Proposed ADR 0033 supersedes ADR 0004. Durable architecture, accepted decisions, active plans, and
+Accepted ADR 0033 supersedes ADR 0004. Durable architecture, accepted decisions, active plans, and
 project-specific agent workflows remain in Git beside the implementation. Their purpose is
 discoverability and review, not conversion of narrative prose into runtime behavior.
 

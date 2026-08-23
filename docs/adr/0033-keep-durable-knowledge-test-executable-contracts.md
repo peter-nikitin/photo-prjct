@@ -1,6 +1,6 @@
 # 0033: Keep durable knowledge and test executable contracts
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-23
 - Deciders: project maintainers
 - Supersedes: ADR 0004

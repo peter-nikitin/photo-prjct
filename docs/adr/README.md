@@ -23,7 +23,7 @@ place, and add the new record to this index.
 | 0001 | [Use a Django modular monolith](0001-django-modular-monolith.md) | Accepted |
 | 0002 | [Use PostgreSQL as the system of record](0002-postgresql-system-of-record.md) | Accepted |
 | 0003 | [Deploy with Docker Compose to Yandex Cloud](0003-docker-compose-yandex-cloud.md) | Accepted |
-| 0004 | [Keep engineering knowledge in the repository](0004-repository-engineering-knowledge.md) | Accepted |
+| 0004 | [Keep engineering knowledge in the repository](0004-repository-engineering-knowledge.md) | Superseded |
 | 0005 | [Promote immutable images through staging](0005-promote-images-through-staging.md) | Superseded |
 | 0006 | [Use Yandex Object Storage for media](0006-yandex-object-storage-media.md) | Accepted |
 | 0007 | [Use Nginx and Certbot for the HTTPS edge](0007-nginx-certbot-https-edge.md) | Accepted |
@@ -52,7 +52,7 @@ place, and add the new record to this index.
 | 0030 | [Use anonymous server-side event carts](0030-use-anonymous-server-side-event-carts.md) | Accepted |
 | 0031 | [Use orders and adapters for paid original delivery](0031-use-orders-and-adapters-for-paid-original-delivery.md) | Accepted |
 | 0032 | [Reconcile code-owned feature flags at startup](0032-reconcile-code-owned-feature-flags-at-startup.md) | Accepted |
-| 0033 | [Keep durable knowledge and test executable contracts](0033-keep-durable-knowledge-test-executable-contracts.md) | Proposed |
+| 0033 | [Keep durable knowledge and test executable contracts](0033-keep-durable-knowledge-test-executable-contracts.md) | Accepted |
 
 ## Public selfie-search outcome
 

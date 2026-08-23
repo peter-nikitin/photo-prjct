@@ -1,10 +1,10 @@
 # 0004: Keep engineering knowledge in the repository
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-07-11
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0032](0032-keep-durable-knowledge-test-executable-contracts.md)
 
 ## Context
 

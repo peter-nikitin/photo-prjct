@@ -1026,9 +1026,7 @@ def _mutation_response(
 def _snapshot_payload(snapshot: CartSnapshot) -> dict[str, object]:
     return {
         "item_count": snapshot.item_count,
-        "unit_price_kopecks": snapshot.unit_price_kopecks,
         "unit_price_display": format_rub(snapshot.unit_price_kopecks),
-        "total_kopecks": snapshot.total_kopecks,
         "total_display": format_rub(snapshot.total_kopecks),
     }
 

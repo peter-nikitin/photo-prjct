@@ -312,14 +312,23 @@ def test_implementation_review_package_includes_tracked_and_untracked_files(
 
 def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
     ci = _load_workflow("ci.yml")
+    selector = ci["jobs"]["select-test-suites"]
     quality = ci["jobs"]["quality"]
+    visual_job = ci["jobs"]["visual"]
 
     assert ci[True]["push"]["branches"] == ["main"]
     assert "pull_request" in ci[True]
+    assert selector["name"] == "Select test suites"
+    assert quality["name"] == "Quality core"
+    assert ci["jobs"]["operational"]["name"] == "Operational tests"
+    assert ci["jobs"]["migration"]["name"] == "Migration tests"
+    assert visual_job["name"] == "Visual tests"
+    assert quality["needs"] == ["select-test-suites"]
+    assert visual_job["needs"] == ["select-test-suites"]
     assert quality["permissions"] == {"contents": "read", "packages": "read"}
 
-    login = _workflow_step(ci, "quality", "Log in to GHCR for visual tests")
-    visual = _workflow_step(ci, "quality", "Run containerized visual regression tests")
+    login = _workflow_step(ci, "visual", "Log in to GHCR for visual tests")
+    visual = _workflow_step(ci, "visual", "Run containerized visual regression tests")
     assert login["uses"] == "docker/login-action@v3"
     assert login["with"] == {
         "registry": "ghcr.io",
@@ -332,14 +341,58 @@ def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
     assert "PUSH_VISUAL_TEST_IMAGE" not in visual["env"]
 
 
+def test_optional_ci_jobs_print_untrusted_selector_reasons_as_environment_data() -> None:
+    ci = _load_workflow("ci.yml")
+
+    for job_name, suite in (
+        ("operational", "operational"),
+        ("migration", "migrations"),
+        ("visual", "visual"),
+    ):
+        reason = _workflow_step(ci, job_name, "Selector reason")
+
+        assert reason["env"] == {
+            "SELECTOR_REASON": f"${{{{ needs.select-test-suites.outputs.{suite}_reason }}}}"
+        }
+        assert reason["run"] == "printf '%s\\n' \"$SELECTOR_REASON\""
+        assert f"needs.select-test-suites.outputs.{suite}_reason" not in reason["run"]
+
+
+def test_selected_operational_ci_has_the_core_django_environment() -> None:
+    ci = _load_workflow("ci.yml")
+    operational = ci["jobs"]["operational"]
+
+    assert operational["env"] == ci["jobs"]["quality"]["env"]
+    assert "services" not in operational
+    assert _workflow_step(ci, "operational", "Test operational layer")["if"] == (
+        "needs.select-test-suites.outputs.operational == 'true'"
+    )
+
+
+def test_unselected_migration_ci_has_no_service_dependency() -> None:
+    ci = _load_workflow("ci.yml")
+    migration = ci["jobs"]["migration"]
+    startup = _workflow_step(ci, "migration", "Start PostgreSQL")
+
+    assert "services" not in migration
+    assert startup["if"] == "needs.select-test-suites.outputs.migrations == 'true'"
+    assert "for attempt in $(seq 1 15); do" in startup["run"]
+    assert "docker ps --filter name=migration-postgres" in startup["run"]
+    assert "docker logs --tail 100 migration-postgres || true" in startup["run"]
+    assert startup["run"].rstrip().endswith("exit 1")
+
+
 def test_ci_checks_pull_request_migration_identity_with_full_git_history() -> None:
     ci = _load_workflow("ci.yml")
-    checkout = _workflow_step(ci, "quality", "Check out repository")
-    immutability = _workflow_step(ci, "quality", "Check migration immutability")
+    checkout = _workflow_step(ci, "migration", "Check out repository")
+    immutability = _workflow_step(ci, "migration", "Check migration immutability")
     migration_drift = _workflow_step(ci, "quality", "Check migration drift")
 
     assert checkout["with"] == {"fetch-depth": 0}
-    assert immutability["if"] == "github.event_name == 'pull_request'"
+    assert immutability["if"] == (
+        "needs.select-test-suites.outputs.migrations == 'true' && "
+        "github.event_name == 'pull_request'"
+    )
     assert immutability["run"] == (
         "python scripts/check_migration_immutability.py "
         "--base ${{ github.event.pull_request.base.sha }} "
@@ -403,6 +456,8 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     assert "pytest-xdist>=3.8,<4" in development_requirements.splitlines()
     assert pyproject["coverage"]["run"]["source"] == [
         "src/backend/config",
+        "src/backend/commerce",
+        "src/backend/feature_flags",
         "src/backend/ingestion",
         "src/backend/picflow",
         "src/backend/processing",
@@ -412,8 +467,9 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     assert _workflow_step(ci, "quality", "Static analysis")["run"] == (
         "make static RUFF=ruff MYPY=mypy"
     )
-    assert _workflow_step(ci, "quality", "Test with coverage")["run"] == (
-        "pytest -n 4 --dist loadscope --cov --cov-report=term-missing"
+    assert _workflow_step(ci, "quality", "Test core with coverage")["run"] == (
+        'pytest -n 4 --dist loadscope -m "not operational and not migration and '
+        'not clone_deployed_slow" --cov --cov-report=term-missing'
     )
     python_setup = _workflow_step(ci, "quality", "Set up Python")
     assert "src/worker/requirements.txt" in python_setup["with"]["cache-dependency-path"]
@@ -1101,7 +1157,7 @@ def test_visual_regression_runs_in_a_pinned_container_environment() -> None:
 
 def test_local_node_version_matches_ci_and_visual_container() -> None:
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
-    node_setup = _workflow_step(_load_workflow("ci.yml"), "quality", "Set up Node.js")
+    node_setup = _workflow_step(_load_workflow("ci.yml"), "visual", "Set up Node.js")
     dockerfile = (ROOT / "Dockerfile.visual-tests").read_text(encoding="utf-8")
 
     assert (ROOT / ".nvmrc").read_text(encoding="utf-8").strip() == "22"
@@ -1149,20 +1205,30 @@ def test_clone_deployed_suite_has_default_and_exhaustive_selection_contract() ->
     markers = pyproject["tool"]["pytest"]["ini_options"]["markers"]
     assert any(marker.startswith("clone_deployed_slow:") for marker in markers)
 
-    default_pytest = (
+    core_pytest = (
         "sh scripts/run-in-test-env.sh .venv/bin/pytest "
-        '-n 4 --dist loadscope -m "not clone_deployed_slow"'
+        '-n 4 --dist loadscope -m "not operational and not migration and not clone_deployed_slow"'
     )
-    assert make_dry_run("test") == [default_pytest]
+    assert make_dry_run("test") == [core_pytest]
     requested_selector = (
         "tests/test_repository_foundation.py::test_adr_index_lists_all_accepted_decisions"
     )
-    assert make_dry_run("test", requested_selector) == [f"{default_pytest} {requested_selector}"]
-    assert make_dry_run("check").count(f"{default_pytest} --cov --cov-report=term-missing") == 1
+    assert make_dry_run("test", requested_selector) == [f"{core_pytest} {requested_selector}"]
+    assert make_dry_run("check").count(f"{core_pytest} --cov --cov-report=term-missing") == 1
+    assert make_dry_run("test-operational") == [
+        "sh scripts/run-in-test-env.sh .venv/bin/pytest "
+        '-n 4 --dist loadscope -m "operational and not clone_deployed_slow"'
+    ]
+    assert make_dry_run("test-migrations") == [
+        "sh scripts/run-in-test-env.sh .venv/bin/pytest -n 4 --dist loadscope -m migration"
+    ]
+    assert make_dry_run("test-all") == [
+        "sh scripts/run-in-test-env.sh .venv/bin/pytest -n 4 --dist loadscope"
+    ]
 
     serial_pytest = (
         "sh scripts/run-in-test-env.sh .venv/bin/pytest "
-        '-n 0 --dist loadscope -m "not clone_deployed_slow"'
+        '-n 0 --dist loadscope -m "not operational and not migration and not clone_deployed_slow"'
     )
     assert make_dry_run("test", workers=0) == [serial_pytest]
     assert (

@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 MAKE = shutil.which("make")
 DOCKER = shutil.which("docker")
+READY_TIMEOUT_SECONDS = 30
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -96,6 +97,7 @@ case "$*" in
     printf '%s\n' compose-output-sentinel
     printf '%s\n' compose-error-sentinel >&2
     if [ "${DOCKER_COMPOSE_MODE:-}" = wait ]; then
+      /bin/sleep "${DOCKER_COMPOSE_READY_DELAY_SECONDS:-0}"
       trap ': > "$WAIT_CONTINUE"; exit 0' HUP INT TERM
       : > "$WAIT_READY"
       while [ ! -e "$WAIT_CONTINUE" ]; do /bin/sleep 0.01; done
@@ -492,24 +494,38 @@ def _finish_signal_test_process(
         return _terminate_process_group(process)
 
 
-@pytest.mark.parametrize("signal_number", [signal.SIGHUP, signal.SIGINT, signal.SIGTERM])
+@pytest.mark.parametrize(
+    ("signal_number", "ready_delay_seconds"),
+    [
+        (signal.SIGHUP, 0),
+        (signal.SIGINT, 0),
+        (signal.SIGTERM, 0),
+        (signal.SIGTERM, 11),
+    ],
+)
 def test_signals_clean_private_material_without_relaying_compose_output(
-    local_launcher_environment: dict[str, str], signal_number: int
+    local_launcher_environment: dict[str, str], signal_number: int, ready_delay_seconds: int
 ) -> None:
     """Would fail if an interrupt during Compose leaked local material or raw diagnostics."""
     assert MAKE is not None
     root = _install_launcher(local_launcher_environment)
+    started = time.monotonic()
     process = subprocess.Popen(
         [MAKE, "local-web"],
         cwd=root,
-        env={**os.environ, **local_launcher_environment, "DOCKER_COMPOSE_MODE": "wait"},
+        env={
+            **os.environ,
+            **local_launcher_environment,
+            "DOCKER_COMPOSE_MODE": "wait",
+            "DOCKER_COMPOSE_READY_DELAY_SECONDS": str(ready_delay_seconds),
+        },
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
     ready = Path(local_launcher_environment["WAIT_READY"])
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + READY_TIMEOUT_SECONDS
     try:
         while not ready.exists():
             return_code = process.poll()
@@ -520,8 +536,15 @@ def test_signals_clean_private_material_without_relaying_compose_output(
                     f"(returncode={return_code}, stdout={stdout!r}, stderr={stderr!r})"
                 )
             if time.monotonic() >= deadline:
-                pytest.fail("launcher did not create WAIT_READY within 10 seconds")
+                pytest.fail(
+                    "launcher did not create WAIT_READY within "
+                    f"{READY_TIMEOUT_SECONDS} seconds "
+                    f"(commands={_commands(local_launcher_environment)!r}, "
+                    f"temporary_roots={_temporary_roots(local_launcher_environment)!r})"
+                )
             time.sleep(0.02)
+
+        assert time.monotonic() - started >= ready_delay_seconds
 
         try:
             os.killpg(process.pid, signal_number)

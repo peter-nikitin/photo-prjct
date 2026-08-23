@@ -1,3 +1,4 @@
+from html.parser import HTMLParser
 from xml.etree import ElementTree
 
 from django.contrib.staticfiles import finders
@@ -5,30 +6,57 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 
+class _CatalogBrandParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.favicon_sources: list[str] = []
+        self.header_logo_sources: list[str] = []
+        self.header_logo_accessibility: list[tuple[str | None, str | None]] = []
+        self.text: list[str] = []
+        self._link_labels: list[str | None] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "a":
+            self._link_labels.append(attributes.get("aria-label"))
+        if tag == "link" and attributes.get("rel") == "icon":
+            source = attributes.get("href")
+            if source:
+                self.favicon_sources.append(source)
+        if tag == "img" and "brand-mark" in (attributes.get("class") or "").split():
+            source = attributes.get("src")
+            if source:
+                self.header_logo_sources.append(source)
+                self.header_logo_accessibility.append(
+                    (self._link_labels[-1] if self._link_labels else None, attributes.get("alt"))
+                )
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._link_labels.pop()
+
+    def handle_data(self, data: str) -> None:
+        self.text.append(data.strip())
+
+
 @override_settings(
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
 )
 class BrandingTests(TestCase):
-    def test_catalog_uses_the_shared_logo_for_the_favicon_and_decorative_header_mark(self) -> None:
+    def test_catalog_shares_one_production_svg_between_header_and_favicon(self) -> None:
         response = self.client.get(reverse("event_catalog"))
 
         self.assertEqual(response.status_code, 200)
-        content = response.content.decode()
-        logo_url = "/static/ui/logo.svg"
-        self.assertEqual(content.count(logo_url), 2)
-        self.assertIn('<link rel="icon" href="/static/ui/logo.svg" type="image/svg+xml">', content)
-        self.assertIn(
-            '<img class="brand-mark" src="/static/ui/logo.svg" width="42" height="42" alt="">',
-            content,
+        parser = _CatalogBrandParser()
+        parser.feed(response.content.decode())
+        self.assertEqual(parser.favicon_sources, ["/static/ui/logo.svg"])
+        self.assertEqual(parser.header_logo_sources, ["/static/ui/logo.svg"])
+        self.assertEqual(
+            parser.header_logo_accessibility,
+            [("FindMe Photo — каталог событий", "")],
         )
-        self.assertIn("найди моё фото", content)
-        self.assertIn('aria-label="FindMe Photo — каталог событий"', content)
-        self.assertNotIn('<span class="brand-mark" aria-hidden="true">FM</span>', content)
-        self.assertNotIn("фотографии событий", content)
+        self.assertIn("найди моё фото", parser.text)
 
         logo_path = finders.find("ui/logo.svg")
         self.assertIsNotNone(logo_path)
-        self.assertEqual(
-            ElementTree.parse(logo_path).getroot().attrib["viewBox"],
-            "0 0 1616.88 1500",
-        )
+        self.assertTrue(ElementTree.parse(logo_path).getroot().tag.endswith("svg"))

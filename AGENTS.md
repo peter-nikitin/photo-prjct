@@ -65,6 +65,23 @@ photographers and operators publish and manage event photos.
   Reviewers must classify findings as `blocking` or `future` using the criteria above. A `future`
   finding does not prevent approval or delivery.
 
+## Verification-suite evidence
+
+- Use [Testing](docs/testing.md) as the human entry point. It links to the selector, manifest, and
+  Make interfaces; do not duplicate changed-path rules in guidance or reports.
+- Use `$select-verification-suites` for focused test selection during implementation, review, and
+  handoff. Its selector, manifest, Make targets, and CI jobs are the executable source of truth.
+- Reuse evidence only when the recorded fingerprint equals the final package fingerprint and it
+  covers every selected suite. The current whole-package fingerprint invalidates all earlier suite
+  evidence after any package change; do not retain an affected-check exception until executable
+  suite-scoped fingerprints exist.
+- An implementer supplies final-package selected-suite evidence; a reviewer reruns only a named
+  gap, reproduction concern, or invalid package. After all task and review loops, the root
+  controller reruns the selector and fingerprint on the final branch, runs `make check`, and
+  ensures every selector-required expensive target has GREEN evidence for that exact fingerprint.
+  Exact-fingerprint evidence may be reused; otherwise the root runs each missing layer once. CI is
+  post-push repetition only.
+
 ## Subagent delegation
 
 - Execute approved implementation plans through the project `$execute-implementation-plan` skill.
@@ -93,13 +110,15 @@ photographers and operators publish and manage event photos.
   without requiring an implementer commit.
 - Review fixes remain unstaged and return to the same implementer. Re-review uses the updated
   working-tree diff and the same reviewer when available.
-- After the reviewer approves the exact working-tree package, the root controller reuses complete
-  implementer evidence from that unchanged package and runs only missing or invalidated checks
-  before staging the exact task files and creating one task commit. A task-file change invalidates
-  the checks whose behavior it can affect.
-- Run the complete local `make check` once on the final branch state after all task and review-fix
-  loops, not after every task. Run visual regression once on the final branch state only when the
-  branch changes visual behavior or baselines. After push, CI owns the complete repeated suite.
+- After the reviewer approves the exact working-tree package, the root controller reuses only
+  complete implementer evidence with the exact same fingerprint. With the current whole-package
+  fingerprint, any package fingerprint change invalidates every earlier suite result until the
+  selector exposes executable suite-scoped fingerprints. Before staging, the root runs each
+  missing selected layer once.
+- After all task and review-fix loops, the root reruns the selector and fingerprint on the final
+  branch, runs `make check` once, and ensures every selector-required expensive target has GREEN
+  evidence for that exact fingerprint. Selector output, not a semantic visual-change condition,
+  decides whether visual checks are required. After push, CI is repetition only.
 - A task must not receive intermediate implementation or review-fix commits; all approved task
   changes are consolidated into that single final commit.
 

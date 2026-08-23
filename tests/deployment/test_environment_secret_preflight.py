@@ -139,6 +139,144 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
     assert "stage-paused-observability-release" in json.dumps(stage)
 
 
+def test_staged_observability_source_is_bound_to_the_selected_deployment_sha(
+    tmp_path: Path,
+) -> None:
+    _assert_staged_deployment_source_identity(tmp_path)
+
+
+def test_deployment_commerce_worker_uses_the_web_app_without_photo_or_private_media_access() -> (
+    None
+):
+    """The commerce service must stay inside its application and least-privilege boundary."""
+    compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
+    commerce_worker = compose["services"]["commerce-worker"]
+    environment = commerce_worker["environment"]
+    web_environment = compose["services"]["web"]["environment"]
+
+    assert commerce_worker["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
+    assert commerce_worker["entrypoint"] == ["python", "manage.py", "run_commerce_worker"]
+    assert commerce_worker["command"] == []
+    assert commerce_worker["profiles"] == ["commerce"]
+    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in environment
+    assert not {key for key in environment if key.startswith(("PHOTO_WORKER_", "PRIVATE_MEDIA_"))}
+    assert "COMMERCE_POSTBOX_API_KEY_ID" in environment
+    assert "COMMERCE_POSTBOX_API_KEY_SECRET" in environment
+    assert "COMMERCE_POSTBOX_API_KEY_ID" not in web_environment
+    assert "COMMERCE_POSTBOX_API_KEY_SECRET" not in web_environment
+
+
+def test_commerce_secret_inventory_records_postbox_and_order_access_ownership() -> None:
+    inventory = (ROOT / "docs/runbooks/environment-secrets-inventory.md").read_text(
+        encoding="utf-8"
+    )
+
+    for key, owner, trigger in (
+        (
+            "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
+            "Commerce maintainer",
+            "Order grant signing-key rotation, suspected disclosure, or access-boundary change",
+        ),
+        (
+            "COMMERCE_POSTBOX_API_KEY_ID",
+            "Commerce email maintainer",
+            "Postbox API-key rotation, service-account scope change, or suspected disclosure",
+        ),
+        (
+            "COMMERCE_POSTBOX_API_KEY_SECRET",
+            "Commerce email maintainer",
+            "Postbox API-key rotation, service-account scope change, or suspected disclosure",
+        ),
+    ):
+        assert f"| `{key}` | {owner} | {trigger} |" in inventory
+
+
+def _assert_staged_deployment_source_identity(tmp_path: Path) -> None:
+    workflow = _workflow()
+    classify_job = workflow["jobs"]["classify-release"]
+    classify = next(
+        step for step in classify_job["steps"] if step.get("name") == "Classify deployment release"
+    )
+    stage = workflow["jobs"]["stage-observability-release"]
+    bind = next(
+        step for step in stage["steps"] if step.get("name") == "Bind source to staged commit"
+    )
+
+    assert classify_job["outputs"]["release_sha"] == "${{ steps.classify.outputs.release_sha }}"
+    assert classify["env"] == {"DEPLOYMENT_SHA": "${{ inputs.deployment_sha }}"}
+    assert stage["needs"] == ["classify-release"]
+    assert (
+        next(step for step in stage["steps"] if step.get("name") == "Check out staged commit")[
+            "with"
+        ]["ref"]
+        == "${{ needs.classify-release.outputs.release_sha }}"
+    )
+
+    script = classify["run"]
+    for expression, value in {
+        "${{ github.sha }}": "f" * 40,
+        "${{ github.event_name }}": "workflow_dispatch",
+        "${{ inputs.configure_monitoring_agent }}": "false",
+        "${{ inputs.validate_deploy_issue }}": "false",
+        "${{ inputs.stage_paused_observability_release }}": "false",
+        "${{ inputs.verify_paused_observability_release }}": "false",
+    }.items():
+        script = script.replace(expression, value)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        '#!/bin/sh\ncase "$1" in\n'
+        "  cat-file) exit 0 ;;\n"
+        "  rev-parse) printf '%s\\n' \"$EXPECTED_SHA\" ;;\n"
+        "  *) exit 2 ;;\nesac\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    output = tmp_path / "classifier-output"
+    expected_sha = "a" * 40
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DEPLOYMENT_SHA": "A" * 40,
+        "EXPECTED_SHA": expected_sha,
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+    }
+    result = subprocess.run(
+        ["/bin/sh", "-c", script], cwd=tmp_path, env=environment, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"release_sha={expected_sha}\n" in output.read_text(encoding="utf-8")
+
+    bind_script = bind["run"].replace(
+        "${{ needs.classify-release.outputs.release_sha }}", expected_sha
+    )
+    exact = tmp_path / "exact"
+    exact.mkdir()
+    exact_result = subprocess.run(
+        ["/bin/sh", "-c", bind_script],
+        cwd=exact,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert exact_result.returncode == 0, exact_result.stderr
+    assert (exact / "observability-release-sha").read_text(encoding="utf-8") == f"{expected_sha}\n"
+
+    mismatch = tmp_path / "mismatch"
+    mismatch.mkdir()
+    mismatch_result = subprocess.run(
+        ["/bin/sh", "-c", bind_script],
+        cwd=mismatch,
+        env={**environment, "EXPECTED_SHA": "b" * 40},
+        capture_output=True,
+        text=True,
+    )
+    assert mismatch_result.returncode != 0
+    assert not (mismatch / "observability-release-sha").exists()
+
+
 @pytest.mark.parametrize("consumer", CONSUMERS)
 def test_verifier_accepts_only_a_private_environment_file(consumer: str, tmp_path: Path) -> None:
     marker = f"preflight-sentinel-{uuid.uuid4().hex}"

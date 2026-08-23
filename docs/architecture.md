@@ -662,3 +662,7 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Before completing delivery, reconcile implemented behavior with the approved specification,
   applicable ADRs, and this document. Update implemented facts, or supersede a changed decision
   instead of editing an accepted ADR.
+- Verification has a separate delivery boundary: core runs on every pull request, while the
+  versioned selector chooses operational, migration, and visual layers from changed paths. The
+  final unchanged-package run belongs to the root controller; CI repeats it after push. See
+  [Testing](testing.md) and [ADR 0033](adr/0033-keep-durable-knowledge-test-executable-contracts.md).

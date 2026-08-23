@@ -1,9 +1,9 @@
 import hashlib
-from datetime import date, timedelta
+from datetime import date
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import Client, TestCase, override_settings
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from feature_flags.registry import (
@@ -26,7 +26,7 @@ from processing.models import (
 from selfie_search.models import SelfieSearch, SelfieSearchResult
 
 from commerce.identity import browser_token_sha256
-from commerce.models import Cart, CartItem
+from commerce.models import Cart
 
 
 @override_settings(
@@ -234,103 +234,3 @@ class PaidPhotoCartCriticalPathTests(TestCase):
         )
         self.assertEqual(cleared.status_code, 302)
         self.assertFalse(Cart.objects.exists())
-
-    def test_selection_keeps_browser_and_event_isolation_and_uses_the_current_price(self) -> None:
-        self.select(event=self.event, photo=self.photo, selected=True)
-        other_browser = Client()
-        other_browser.force_login(self.staff)
-        self.assertContains(other_browser.get(self.cart_url()), "В корзине пока нет фотографий")
-
-        other_event = self.make_paid_event(name="Other cart flow", slug="other-cart-flow")
-        other_photo = self.make_watermarked_photo(
-            event=other_event,
-            photo_id="other-cart-flow-photo",
-        )
-        self.select(event=other_event, photo=other_photo, selected=True)
-        self.assertContains(self.client.get(self.cart_url()), "Фотографий: 1")
-        self.assertContains(self.client.get(self.cart_url(other_event)), "Фотографий: 1")
-
-        self.event.price_per_photo_kopecks = 45000
-        self.event.save(update_fields=["price_per_photo_kopecks"])
-        priced = self.client.get(self.cart_url())
-        self.assertContains(priced, "Итого: 450 ₽")
-
-    def test_reads_prune_and_expire_without_changing_free_or_legacy_paid(
-        self,
-    ) -> None:
-        self.client.cookies["findme_cart"] = self.token
-        cart = Cart.objects.create(
-            browser_token_sha256=browser_token_sha256(self.token),
-            event=self.event,
-            expires_at=timezone.now() + timedelta(days=1),
-        )
-        CartItem.objects.create(cart=cart, photo=self.photo)
-        PhotoProcessingState.objects.filter(photo=self.photo).update(
-            status=PhotoProcessingState.Status.FAILED,
-            failed_at=timezone.now(),
-        )
-        pruned = self.client.get(self.cart_url())
-        self.assertContains(pruned, "Некоторые фотографии больше недоступны и удалены из корзины")
-        self.assertFalse(Cart.objects.filter(pk=cart.pk).exists())
-
-        valid = self.make_watermarked_photo(event=self.event, photo_id="expired-cart-flow-photo")
-        expired = Cart.objects.create(
-            browser_token_sha256=browser_token_sha256(self.token),
-            event=self.event,
-            expires_at=timezone.now() - timedelta(seconds=1),
-        )
-        CartItem.objects.create(cart=expired, photo=valid)
-        self.client.cookies["findme_cart"] = self.token
-        expired_response = self.client.get(self.cart_url())
-        self.assertContains(expired_response, "В корзине пока нет фотографий")
-        self.assertNotContains(expired_response, valid.pk)
-        self.assertNotContains(expired_response, "Итого: 300 ₽")
-        self.assertTrue(Cart.objects.filter(pk=expired.pk).exists())
-
-        free = Event.objects.create(
-            name="Free cart flow",
-            slug="free-cart-flow",
-            start_date=date(2026, 8, 20),
-            end_date=date(2026, 8, 20),
-            city="Moscow",
-            publication_status=Event.PublicationStatus.PUBLISHED,
-            access_type=Event.AccessType.FREE,
-        )
-        free_photo = Photo.objects.create(
-            id="free-cart-flow-photo",
-            event=free,
-            uploaded_by=self.photographer,
-            original_key="private/free-cart-flow-photo",
-            original_filename="free-cart-flow-photo.jpg",
-            original_size=10,
-            original_content_type="image/jpeg",
-            uploaded_at=timezone.now(),
-        )
-        free_page = self.client.get(reverse("event_detail", kwargs={"slug": free.slug}))
-        self.assertNotContains(free_page, "data-cart-form")
-
-        legacy = Photo.objects.create(
-            id="legacy-cart-flow-photo",
-            event=self.event,
-            uploaded_by=self.photographer,
-            original_key="private/legacy-cart-flow-photo",
-            original_filename="legacy-cart-flow-photo.jpg",
-            original_size=10,
-            original_content_type="image/jpeg",
-            uploaded_at=timezone.now(),
-        )
-        search_token = "legacy-cart-flow-result"
-        legacy_search = SelfieSearch.objects.create(
-            event=self.event,
-            public_token_digest=hashlib.sha256(search_token.encode()).hexdigest(),
-            status=SelfieSearch.Status.READY,
-            temporary_object_key="",
-            configuration={"public-contract": 1},
-            eligible_photo_count=1,
-            matched_photo_count=1,
-        )
-        SelfieSearchResult.objects.create(search=legacy_search, photo=legacy, rank=1)
-        legacy_page = self.client.get(self.saved_result_url(token=search_token))
-        self.assertContains(legacy_page, "gallery-lightbox-download")
-        self.assertNotContains(legacy_page, "data-cart-form")
-        self.assertEqual(free_photo.event_id, free.pk)

@@ -1,0 +1,124 @@
+version = 1
+
+[[categories]]
+name = "agent-tooling"
+patterns = [".agents/skills/**"]
+suites = []
+
+[[categories]]
+name = "documentation"
+patterns = ["docs/**", "README.md"]
+suites = []
+
+[[categories]]
+name = "operational"
+patterns = [
+  "deploy/**",
+  "docker-compose*.yml",
+  ".github/workflows/deploy.yml",
+  "src/backend/config/settings.py",
+  "scripts/clone-deployed-db.sh",
+  "scripts/copy-object-storage-bucket.py",
+  "scripts/local-web.sh",
+  "scripts/monitor_public_health.py",
+  "scripts/reconcile_deploy_issue.py",
+  "scripts/run-with-environment-secrets.py",
+  "scripts/verify-environment-secret-projection.py",
+  "tests/deployment/**",
+  "tests/monitoring/**",
+  "tests/processing/test_worker_container_contract.py",
+]
+suites = ["operational"]
+layer = "operational"
+
+[[categories]]
+name = "migrations"
+patterns = [
+  "src/backend/*/migrations/**",
+  "src/backend/*/models.py",
+  "src/backend/**/tests/test_*migration*.py",
+  "src/backend/processing/tests/test_models.py",
+  "scripts/check_migration_immutability.py",
+  "tests/test_migration_immutability.py",
+  "deploy/apply-deployment.sh",
+]
+layer_patterns = [
+  "src/backend/*/migrations/**",
+  "src/backend/*/models.py",
+  "src/backend/**/tests/test_*migration*.py",
+  "scripts/check_migration_immutability.py",
+  "tests/test_migration_immutability.py",
+  "deploy/apply-deployment.sh",
+]
+suites = ["migrations"]
+layer = "migration"
+
+[[categories]]
+name = "visual"
+patterns = [
+  "src/backend/**/templates/**",
+  "src/backend/**/static/**",
+  "tests/visual/**",
+  "tests/js/**",
+  "tests/test_visual_test_runner.py",
+  "playwright.config.js",
+  "Dockerfile.visual-tests",
+  "docker-compose.visual.yml",
+]
+suites = ["visual"]
+
+[[categories]]
+name = "product-flow"
+patterns = [
+  "tests/processing/test_pipeline_e2e.py",
+  "tests/processing/test_selfie_search_e2e.py",
+  "src/backend/commerce/tests/test_paid_photo_cart_flow.py",
+  "src/backend/commerce/tests/test_paid_photo_purchase_flow.py",
+  "src/backend/commerce/tests/test_payment_simulator.py",
+  "src/backend/processing/tests/test_paid_watermarked_preview_flow.py",
+]
+suites = []
+layer = "product_flow"
+
+[[categories]]
+name = "python"
+patterns = [
+  "src/**",
+  "tests/**",
+  "conftest.py",
+  "scripts/cleanup_stale_test_databases.py",
+  "scripts/create-worktree.py",
+  "scripts/run-in-test-env.sh",
+]
+suites = []
+
+[[categories]]
+name = "javascript"
+patterns = ["package.json", "package-lock.json"]
+suites = ["visual"]
+
+[[categories]]
+name = "workflow"
+patterns = [".github/workflows/**"]
+suites = ["operational", "migrations", "visual"]
+
+[[categories]]
+name = "build"
+patterns = [
+  "Makefile",
+  "pyproject.toml",
+  "requirements-dev.txt",
+  "Dockerfile",
+  "scripts/select_test_suites.py",
+]
+suites = ["operational", "migrations", "visual"]
+
+[[categories]]
+name = "configuration"
+patterns = [".pre-commit-config.yaml", ".nvmrc", ".gitignore", "tests/suite-selection.toml"]
+suites = ["operational", "migrations", "visual"]
+
+[[categories]]
+name = "repository"
+patterns = ["AGENTS.md", "LICENSE"]
+suites = []

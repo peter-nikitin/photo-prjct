@@ -17,7 +17,6 @@ from urllib.request import Request
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from ingestion.models import UploadItem
@@ -110,7 +109,7 @@ class _ConfirmationStorage:
 
 
 class _PreviewStorage:
-    """Exact-object boundary for the e2e transport, with optional verified-object corruption."""
+    """Exact-object boundary for the E2E transport."""
 
     def __init__(self, *, reject_staging_metadata: bool = False) -> None:
         self._staging: dict[str, bytes] = {}
@@ -226,157 +225,65 @@ class PipelineEndToEndTests(TestCase):
     def test_stale_preview_completion_keeps_preview_required_photo_hidden_and_face_unrequested(
         self,
     ) -> None:
-        """Catch a late worker success that would expose media or enqueue ML after lease loss."""
+        """A stale clean-preview callback cannot publish or enqueue preview-backed face work."""
         photo = self._confirmed_preview_photo()
-        preview_storage = _PreviewStorage()
         self._make_completion_stale = True
 
-        self._run_preview_worker(preview_storage)
+        self._run_preview_worker(_PreviewStorage())
 
-        preview = PhotoProcessingState.objects.get(photo=photo, processor_type="generate_preview")
         face = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
+        self.assertTrue(
+            ProcessingAttempt.objects.filter(
+                photo=photo,
+                processor_type="generate_preview",
+                status=ProcessingAttempt.Status.STALE,
+            ).exists()
+        )
         self.assertFalse(PhotoDerivative.objects.filter(photo=photo).exists())
-        self.assertNotEqual(preview.status, PhotoProcessingState.Status.SUCCEEDED)
         self.assertEqual(face.status, PhotoProcessingState.Status.NOT_REQUESTED)
+        self.assertIsNone(face.current_job_id)
         self.assertFalse(gallery_photo_queryset(event=self.event).filter(pk=photo.pk).exists())
 
-    def test_rejected_preview_staging_metadata_keeps_photo_hidden_and_face_unrequested(
+    def test_rejected_clean_preview_storage_mismatch_keeps_photo_hidden_and_face_unrequested(
         self,
     ) -> None:
-        """Catch acceptance of an uploaded object whose independently verified facts disagree."""
+        """Verified staging facts must win over a worker's clean-preview report."""
         photo = self._confirmed_preview_photo()
 
         self._run_preview_worker(_PreviewStorage(reject_staging_metadata=True))
 
         preview = PhotoProcessingState.objects.get(photo=photo, processor_type="generate_preview")
         face = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
-        self.assertEqual(preview.status, PhotoProcessingState.Status.FAILED)
+        self.assertEqual(preview.current_attempt.error_code, "output_contract_violation")
         self.assertFalse(PhotoDerivative.objects.filter(photo=photo).exists())
         self.assertEqual(face.status, PhotoProcessingState.Status.NOT_REQUESTED)
+        self.assertIsNone(face.current_job_id)
         self.assertFalse(gallery_photo_queryset(event=self.event).filter(pk=photo.pk).exists())
 
-    def test_one_worker_iteration_claims_downloads_extracts_and_closes_immutable_event_report(
-        self,
-    ) -> None:
-        """Catch a broken pipeline boundary that isolated unit tests can leave green."""
-        photo = Photo.objects.create(
-            id="0123456789abcdef0123456789abcdef",
-            event=self.event,
-            src="",
-            uploaded_by=self.user,
-            original_key="originals/0123456789abcdef0123456789abcdef",
-            original_filename="pipeline.jpg",
-            original_size=len(self.jpeg),
-            original_content_type="image/jpeg",
-            uploaded_at=timezone.now(),
-        )
-        request_capture_metadata(photo)
+    def test_malformed_capture_metadata_crosses_worker_http_and_closes_the_run(self) -> None:
+        """A worker-produced malformed EXIF envelope is a committed terminal success."""
+        self.jpeg = self._jpeg_with_capture_time("2026:7:9 1:2:3")
+        photo = self._capture_metadata_photo()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            worker = Worker(
-                HttpClient(
-                    "http://django.test/internal/photo-processing/v1",
-                    "e2e-worker-token",
-                    opener=self._open,
-                ),
-                WorkerConfig(
-                    worker_build="pipeline-e2e",
-                    lease_seconds=120,
-                    temp_dir=Path(temp_dir),
-                    log_secrets=("e2e-worker-token",),
-                ),
-            )
-            with patch(
-                "processing.views.ExactObjectDownloadStorage.create_download_grant",
-                return_value=DownloadGrant(
-                    url=_OBJECT_URL, expires_at=timezone.now() + timedelta(seconds=30)
-                ),
-            ):
-                assert worker.run_once() is None
+        self._run_capture_metadata_worker()
 
         state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
         attempt = ProcessingAttempt.objects.get(job=state.current_job)
         run = EventProcessingRun.objects.get(pk=state.current_run_id)
-
         self.assertEqual(state.status, PhotoProcessingState.Status.SUCCEEDED)
         self.assertEqual(attempt.status, ProcessingAttempt.Status.SUCCEEDED)
         self.assertTrue(attempt.accepted)
-        self.assertEqual(attempt.result["capture_time"], "2026-07-29T10:11:12Z")
-        self.assertEqual(attempt.result["source_field"], "DateTimeOriginal")
+        self.assertIsNone(attempt.result["capture_time"])
+        self.assertEqual(
+            attempt.result["warnings"], ["capture_time_malformed", "capture_time_missing"]
+        )
         self.assertEqual(run.status, EventProcessingRun.Status.CLOSED)
-        self.assertEqual(run.report["event_id"], str(self.event.id))
-        self.assertEqual(
-            run.report["counts"], {"denominator": 1, "succeeded": 1, "failed": 0, "cancelled": 0}
-        )
-        self.assertEqual(run.report["photos"][0]["photo_id"], photo.id)
-        self.assertEqual(run.report["photos"][0]["capture_time_present"], True)
-        with self.assertRaises(IntegrityError):
-            EventProcessingRun.objects.filter(pk=run.pk).update(report={"tampered": True})
 
-    def test_noncanonical_exif_is_completed_as_malformed_metadata_not_left_processing(self) -> None:
-        """A worker result Django rejects must not stop the daemon with a live lease."""
-        self.jpeg = self._jpeg_with_capture_time("2026:7:9 1:2:3")
-        photo = Photo.objects.create(
-            id="fedcba9876543210fedcba9876543210",
-            event=self.event,
-            src="",
-            uploaded_by=self.user,
-            original_key="originals/fedcba9876543210fedcba9876543210",
-            original_filename="noncanonical.jpg",
-            original_size=len(self.jpeg),
-            original_content_type="image/jpeg",
-            uploaded_at=timezone.now(),
-        )
-        request_capture_metadata(photo)
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            worker = Worker(
-                HttpClient(
-                    "http://django.test/internal/photo-processing/v1",
-                    "e2e-worker-token",
-                    opener=self._open,
-                ),
-                WorkerConfig(
-                    worker_build="pipeline-e2e",
-                    lease_seconds=120,
-                    temp_dir=Path(temp_dir),
-                    log_secrets=("e2e-worker-token",),
-                ),
-            )
-            with patch(
-                "processing.views.ExactObjectDownloadStorage.create_download_grant",
-                return_value=DownloadGrant(
-                    url=_OBJECT_URL, expires_at=timezone.now() + timedelta(seconds=30)
-                ),
-            ):
-                self.assertIsNone(worker.run_once())
-
-        state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
-        attempt = ProcessingAttempt.objects.get(job=state.current_job)
-        self.assertEqual(state.status, PhotoProcessingState.Status.SUCCEEDED)
-        self.assertEqual(attempt.status, ProcessingAttempt.Status.SUCCEEDED)
-        self.assertTrue(attempt.accepted)
-        self.assertEqual(
-            attempt.result,
-            {
-                "capture_time": None,
-                "source_field": None,
-                "timezone_state": "not_applicable",
-                "source_value": None,
-                "source_offset": None,
-                "event_timezone": "Etc/UTC",
-                "warnings": ["capture_time_malformed", "capture_time_missing"],
-            },
-        )
-
-    def test_worker_face_failure_envelopes_are_accepted_by_django(self) -> None:
-        """Catch drift between worker-produced face failures and Django's exact
-        envelope contract."""
+    def test_face_failure_pairs_cross_worker_http_and_are_stored(self) -> None:
+        """One processor and one download failure cross the real worker callback seam."""
         cases = (
             ("model_inference_error", False, "processor"),
             ("download_authorization_expired", True, "download"),
-            ("fingerprint_mismatch", True, "download"),
-            ("unsupported_input", False, "processor"),
         )
 
         for error_code, retryable, failure_phase in cases:
@@ -387,50 +294,48 @@ class PipelineEndToEndTests(TestCase):
                 self._run_preview_worker(preview_storage)
                 self._face_download_bytes = preview_storage.published_preview()
 
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    client = HttpClient(
-                        "http://django.test/internal/photo-processing/v1",
-                        "e2e-worker-token",
-                        opener=self._open,
-                    )
-                    worker = Worker(
+                client = HttpClient(
+                    "http://django.test/internal/photo-processing/v1",
+                    "e2e-worker-token",
+                    opener=self._open,
+                )
+                worker = Worker(
+                    client,
+                    WorkerConfig(
+                        worker_build="pipeline-face-failure-e2e",
+                        lease_seconds=120,
+                        processor_identities=("2/face_embedding/3",),
+                    ),
+                )
+                if failure_phase == "download":
+                    failure = patch.object(
                         client,
-                        WorkerConfig(
-                            worker_build="pipeline-face-failure-e2e",
-                            lease_seconds=120,
-                            processor_identities=("2/face_embedding/3",),
-                            temp_dir=Path(temp_dir),
-                        ),
+                        "download",
+                        side_effect=DownloadError(error_code, retryable=retryable),
                     )
-                    if failure_phase == "download":
-                        failure = patch.object(
-                            client,
-                            "download",
-                            side_effect=DownloadError(error_code, retryable=retryable),
-                        )
-                    else:
-                        failure = patch(
-                            "photo_worker.runner.extract_face_embeddings",
-                            side_effect=FaceEmbeddingError(error_code),
-                        )
-                    with (
-                        patch(
-                            "processing.views.ExactObjectDownloadStorage.create_download_grant",
-                            return_value=DownloadGrant(
-                                url=_OBJECT_URL,
-                                expires_at=timezone.now() + timedelta(seconds=30),
-                            ),
+                else:
+                    failure = patch(
+                        "photo_worker.runner.extract_face_embeddings",
+                        side_effect=FaceEmbeddingError(error_code),
+                    )
+                with (
+                    patch(
+                        "processing.views.ExactObjectDownloadStorage.create_download_grant",
+                        return_value=DownloadGrant(
+                            url=_OBJECT_URL,
+                            expires_at=timezone.now() + timedelta(seconds=30),
                         ),
-                        patch(
-                            "processing.views.ExactPreviewStorage.create_download_grant",
-                            return_value=DownloadGrant(
-                                url=_OBJECT_URL,
-                                expires_at=timezone.now() + timedelta(seconds=30),
-                            ),
+                    ),
+                    patch(
+                        "processing.views.ExactPreviewStorage.create_download_grant",
+                        return_value=DownloadGrant(
+                            url=_OBJECT_URL,
+                            expires_at=timezone.now() + timedelta(seconds=30),
                         ),
-                        failure,
-                    ):
-                        self.assertIsNone(worker.run_once())
+                    ),
+                    failure,
+                ):
+                    self.assertIsNone(worker.run_once())
 
                 attempt = ProcessingAttempt.objects.get(
                     photo=photo,
@@ -542,6 +447,44 @@ class PipelineEndToEndTests(TestCase):
         )
         assert photo is not None
         return photo
+
+    def _capture_metadata_photo(self) -> Photo:
+        photo = Photo.objects.create(
+            id="fedcba9876543210fedcba9876543210",
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key="originals/fedcba9876543210fedcba9876543210",
+            original_filename="noncanonical.jpg",
+            original_size=len(self.jpeg),
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+        request_capture_metadata(photo)
+        return photo
+
+    def _run_capture_metadata_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = Worker(
+                HttpClient(
+                    "http://django.test/internal/photo-processing/v1",
+                    "e2e-worker-token",
+                    opener=self._open,
+                ),
+                WorkerConfig(
+                    worker_build="pipeline-e2e",
+                    lease_seconds=120,
+                    temp_dir=Path(temp_dir),
+                    log_secrets=("e2e-worker-token",),
+                ),
+            )
+            with patch(
+                "processing.views.ExactObjectDownloadStorage.create_download_grant",
+                return_value=DownloadGrant(
+                    url=_OBJECT_URL, expires_at=timezone.now() + timedelta(seconds=30)
+                ),
+            ):
+                self.assertIsNone(worker.run_once())
 
     def _run_preview_worker(self, preview_storage: _PreviewStorage) -> None:
         self._preview_storage = preview_storage

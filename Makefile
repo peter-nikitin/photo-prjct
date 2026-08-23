@@ -1,4 +1,4 @@
-.PHONY: check db-clone-deployed hooks local-purchase-down local-purchase-up local-web static test test-clone-deployed worktree
+.PHONY: check db-clone-deployed hooks local-purchase-down local-purchase-up local-web static test test-all test-clone-deployed test-migrations test-operational worktree
 
 BASE ?= origin/main
 MYPY ?= .venv/bin/mypy
@@ -14,7 +14,16 @@ hooks:
 	.venv/bin/pre-commit install
 
 test:
-	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope -m "not clone_deployed_slow" $(TESTS)
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope -m "not operational and not migration and not clone_deployed_slow" $(TESTS)
+
+test-operational:
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope -m "operational and not clone_deployed_slow"
+
+test-migrations:
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope -m migration
+
+test-all:
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope
 
 static:
 	@status=0; \
@@ -24,7 +33,7 @@ static:
 	exit $$status
 
 check: static
-	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope -m "not clone_deployed_slow" --cov --cov-report=term-missing
+	sh scripts/run-in-test-env.sh .venv/bin/pytest -n $(PYTEST_XDIST_WORKERS) --dist loadscope -m "not operational and not migration and not clone_deployed_slow" --cov --cov-report=term-missing
 	sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py check
 	sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py makemigrations --check --dry-run
 

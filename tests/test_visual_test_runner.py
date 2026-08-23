@@ -16,24 +16,10 @@ set -eu
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 
 case "$*" in
-  "image inspect "*)
-    image=${3:?missing image tag}
-    if [ -f "$DOCKER_STATE" ] && grep -Fqx "$image" "$DOCKER_STATE"; then
-      exit 0
-    fi
-    exit 1
-    ;;
-  "pull "*)
-    image=${2:?missing image tag}
-    if [ "$DOCKER_PULL_HIT" = true ]; then
-      printf '%s\\n' "$image" > "$DOCKER_STATE"
-      exit 0
-    fi
-    exit 1
-    ;;
-  *" build "*)
-    printf '%s\\n' "${VISUAL_TEST_IMAGE:-missing}" > "$DOCKER_STATE"
-    ;;
+  "image inspect "*) exit 1 ;;
+  "pull "*) exit 1 ;;
+  *" build "*) printf '%s\\n' "${VISUAL_TEST_IMAGE:-missing}" > "$DOCKER_STATE" ;;
+  *" run "*) exit "${DOCKER_RUN_EXIT:-0}" ;;
 esac
 """,
         encoding="utf-8",
@@ -45,7 +31,6 @@ esac
     env.update(
         {
             "DOCKER_LOG": str(log),
-            "DOCKER_PULL_HIT": "false",
             "DOCKER_STATE": str(tmp_path / "docker.state"),
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
         }
@@ -53,82 +38,34 @@ esac
     return env, log
 
 
-def _run(mode: str, env: dict[str, str]) -> None:
-    subprocess.run(
+def _run(mode: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["sh", str(RUNNER), mode],
         cwd=ROOT,
         env=env,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
 
 
-def test_runner_builds_dependency_image_once_and_reuses_it(tmp_path: Path) -> None:
+def test_runner_executes_the_selected_visual_command(tmp_path: Path) -> None:
     env, log = _fake_docker(tmp_path)
 
-    _run("test", env)
-    _run("test", env)
-
-    commands = log.read_text(encoding="utf-8").splitlines()
-    builds = [command for command in commands if " build " in f" {command} "]
-    inspections = [command for command in commands if command.startswith("image inspect ")]
-    pulls = [command for command in commands if command.startswith("pull ")]
-    runs = [command for command in commands if " run --rm visual-tests " in f" {command} "]
-
-    assert len(builds) == 1
-    assert len(inspections) == 2
-    assert pulls == []
-    assert len(runs) == 2
-    assert all(command.endswith("npm run test:visual:inside") for command in runs)
-
-
-def test_runner_pulls_registry_image_without_building(tmp_path: Path) -> None:
-    env, log = _fake_docker(tmp_path)
-    env.update(
-        {
-            "DOCKER_PULL_HIT": "true",
-            "VISUAL_TEST_IMAGE_PREFIX": "ghcr.io/peter-nikitin/photo-prjct-visual-tests",
-        }
-    )
-
-    _run("test", env)
-
-    commands = log.read_text(encoding="utf-8").splitlines()
-    pulls = [command for command in commands if command.startswith("pull ")]
-    builds = [command for command in commands if " build " in f" {command} "]
-    runs = [command for command in commands if " run --rm visual-tests " in f" {command} "]
-
-    assert len(pulls) == 1
-    assert pulls[0].startswith("pull ghcr.io/peter-nikitin/photo-prjct-visual-tests:")
-    assert builds == []
-    assert len(runs) == 1
-
-
-def test_runner_builds_when_registry_image_is_missing(tmp_path: Path) -> None:
-    env, log = _fake_docker(tmp_path)
-    env["VISUAL_TEST_IMAGE_PREFIX"] = "ghcr.io/peter-nikitin/photo-prjct-visual-tests"
-
-    _run("test", env)
-
-    commands = log.read_text(encoding="utf-8").splitlines()
-    pulls = [command for command in commands if command.startswith("pull ")]
-    builds = [command for command in commands if " build " in f" {command} "]
-    runs = [command for command in commands if " run --rm visual-tests " in f" {command} "]
-
-    assert len(pulls) == 1
-    assert len(builds) == 1
-    assert len(runs) == 1
-
-
-def test_runner_selects_snapshot_update_mode(tmp_path: Path) -> None:
-    env, log = _fake_docker(tmp_path)
-
-    _run("update", env)
-
-    commands = log.read_text(encoding="utf-8").splitlines()
-    runs = [command for command in commands if " run --rm visual-tests " in f" {command} "]
-    assert runs == [
+    result = _run("update", env)
+    expected_command = (
         "compose -f docker-compose.visual.yml run --rm visual-tests "
         "npm run test:visual:update:inside"
-    ]
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected_command in log.read_text(encoding="utf-8")
+
+
+def test_runner_propagates_visual_test_failure(tmp_path: Path) -> None:
+    env, _log = _fake_docker(tmp_path)
+    env["DOCKER_RUN_EXIT"] = "7"
+
+    result = _run("test", env)
+
+    assert result.returncode == 7

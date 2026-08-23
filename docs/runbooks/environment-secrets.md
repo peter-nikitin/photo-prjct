@@ -13,6 +13,9 @@ environment, make the runtime read Lockbox, or expose payload values.
   repository `peter-nikitin/photo-prjct`, and subject `repo:peter-nikitin/photo-prjct:ref:refs/heads/main`.
 - Only the manifest's `local-web`, `deploy`, `remote-check`, and `public-monitor` projections are
   authorized. Repository variables provide reviewed non-secret configuration.
+- Commerce order-link signing and Postbox SMTP credentials are `deploy` projection entries only.
+  The application workflow supplies Commerce factory paths, sender address, public origin, support
+  contact, and worker-enable state as repository variables; do not add provider credentials there.
 - No GitHub Environment participates. Do not use GitHub Environment secret or variable commands.
 - Do not run `yc config list`, `yc lockbox payload get`, `set -x`, `env`, or `printenv` while
   handling this procedure.
@@ -152,8 +155,11 @@ and rollback version ID.
 
 ### Success evidence
 
-For an empty secret, create the first complete version through standard input; never guess a base
-version. Verify exact metadata and one permitted consumer's sanitized resolver result:
+For an empty secret, create the first version through standard input; never guess a base version.
+It must contain every required manifest key. The Commerce signing secret and Postbox API-key
+entries may be omitted only for a dark deploy with `COMMERCE_WORKER_ENABLED=False`; the enabled
+deployment path rejects their absence before any mutation. Verify exact metadata and one permitted
+consumer's sanitized resolver result:
 
 ```bash
 yc lockbox secret add-version --id e6q85jjl76r45maigtfb \
@@ -225,8 +231,9 @@ yc lockbox secret get --id e6q85jjl76r45maigtfb --format json
 yc lockbox secret list-versions --id e6q85jjl76r45maigtfb --format json
 ```
 
-Verify the new current version's exact manifest key set and the affected consumer without showing its
-environment file. Running services keep prior values until a reviewed canonical deployment.
+Verify the new current version's required manifest key set, any present optional Commerce entries,
+and the affected consumer without showing its environment file. Running services keep prior values
+until a reviewed canonical deployment.
 
 ### Rollback
 

@@ -53,10 +53,16 @@ def _configured_adapter(setting_name: str):
 
 def _public_origin() -> str:
     origin = getattr(settings, "COMMERCE_PUBLIC_ORIGIN", "")
-    if not isinstance(origin, str) or not origin or origin.endswith("/"):
+    if (
+        not isinstance(origin, str)
+        or not origin
+        or origin != origin.strip()
+        or origin.endswith("/")
+    ):
         raise ValueError("Commerce public origin is required without a trailing slash.")
     parsed = urlsplit(origin)
-    if parsed.scheme == "https" and parsed.netloc and not parsed.path:
+    public_domain = getattr(settings, "PUBLIC_DOMAIN", "")
+    if isinstance(public_domain, str) and public_domain and origin == f"https://{public_domain}":
         return origin
     if (
         settings.DEBUG is True
@@ -64,6 +70,12 @@ def _public_origin() -> str:
         and parsed.hostname in {"localhost", "127.0.0.1"}
         and parsed.netloc
         and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.username is None
+        and parsed.password is None
     ):
         return origin
-    raise ValueError("Commerce public origin must use HTTPS outside local debug.")
+    raise ValueError(
+        "Commerce public origin must be HTTPS and match https://PUBLIC_DOMAIN outside local debug."
+    )

@@ -178,6 +178,18 @@ def _deployment_values() -> dict[str, str]:
         "SELFIE_FEEDBACK_S3_REGION": "ru-central1",
         "SELFIE_FEEDBACK_KMS_KEY_ID": "kms-id",
         "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED": "False",
+        "COMMERCE_WORKER_ENABLED": "True",
+        "COMMERCE_PUBLIC_ORIGIN": "https://findme-photo.ru",
+        "COMMERCE_PAYMENT_GATEWAY_FACTORY": (
+            "commerce.payment_simulator.payment_simulator_gateway_factory"
+        ),
+        "COMMERCE_EMAIL_SENDER_FACTORY": (
+            "commerce.postbox_email_sender.postbox_email_sender_factory"
+        ),
+        "COMMERCE_WORKER_FACTORY": "commerce.runtime.commerce_worker_factory",
+        "COMMERCE_EMAIL_FROM_ADDRESS": "orders@findme-photo.ru",
+        "COMMERCE_SUPPORT_CONTACT": "support@findme-photo.ru",
+        "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS": "300",
         "GHCR_USERNAME": "peter-nikitin",
     }
 
@@ -438,6 +450,45 @@ def test_deploy_helper_preserves_the_existing_deployment_apply_boundary() -> Non
     assert "DEPLOY_ROOT=/opt/photo-prjct" in source
     assert "COMPOSE_PROJECT_NAME=photo-prjct" in source
     assert "exec sh /opt/photo-prjct/deploy/apply-deployment.sh" in source
+
+
+def test_deploy_workflow_supplies_commerce_runtime_without_provider_secrets() -> None:
+    workflow = _workflow("deploy.yml")
+    run_deployment = _step(workflow["jobs"]["deploy"], "Run deployment")
+
+    assert (
+        run_deployment["env"]
+        | {
+            "COMMERCE_WORKER_ENABLED": "${{ vars.COMMERCE_WORKER_ENABLED || 'False' }}",
+            "COMMERCE_PUBLIC_ORIGIN": (
+                "${{ vars.COMMERCE_PUBLIC_ORIGIN || 'https://findme-photo.ru' }}"
+            ),
+            "COMMERCE_PAYMENT_GATEWAY_FACTORY": (
+                "${{ vars.COMMERCE_PAYMENT_GATEWAY_FACTORY || "
+                "'commerce.payment_simulator.payment_simulator_gateway_factory' }}"
+            ),
+            "COMMERCE_EMAIL_SENDER_FACTORY": (
+                "${{ vars.COMMERCE_EMAIL_SENDER_FACTORY || "
+                "'commerce.postbox_email_sender.postbox_email_sender_factory' }}"
+            ),
+            "COMMERCE_WORKER_FACTORY": (
+                "${{ vars.COMMERCE_WORKER_FACTORY || 'commerce.runtime.commerce_worker_factory' }}"
+            ),
+            "COMMERCE_EMAIL_FROM_ADDRESS": (
+                "${{ vars.COMMERCE_EMAIL_FROM_ADDRESS || 'orders@findme-photo.ru' }}"
+            ),
+            "COMMERCE_SUPPORT_CONTACT": (
+                "${{ vars.COMMERCE_SUPPORT_CONTACT || 'support@findme-photo.ru' }}"
+            ),
+            "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS": (
+                "${{ vars.COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS || '300' }}"
+            ),
+        }
+        == run_deployment["env"]
+    )
+    assert "COMMERCE_ORDER_ACCESS_SIGNING_SECRET" not in run_deployment["env"]
+    assert "COMMERCE_POSTBOX_API_KEY_ID" not in run_deployment["env"]
+    assert "COMMERCE_POSTBOX_API_KEY_SECRET" not in run_deployment["env"]
 
 
 def test_manual_compose_cutover_is_an_exact_secret_safe_remote_operation(

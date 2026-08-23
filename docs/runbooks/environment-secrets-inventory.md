@@ -44,6 +44,9 @@ local-only. `VM_SSH_KEY` is binary and becomes only `VM_SSH_KEY_FILE`.
 | `SECRET_KEY` | `SECRET_KEY` | text | yes | `local-web`, `deploy` |
 | `DB_PASSWORD` | `DB_PASSWORD` | text | no | `deploy` |
 | `LETSENCRYPT_EMAIL` | `LETSENCRYPT_EMAIL` | text | no | `deploy` |
+| `COMMERCE_ORDER_ACCESS_SIGNING_SECRET` | `COMMERCE_ORDER_ACCESS_SIGNING_SECRET` | text | no | `deploy` |
+| `COMMERCE_POSTBOX_API_KEY_ID` | `COMMERCE_POSTBOX_API_KEY_ID` | text | no | `deploy` |
+| `COMMERCE_POSTBOX_API_KEY_SECRET` | `COMMERCE_POSTBOX_API_KEY_SECRET` | text | no | `deploy` |
 | `MEDIA_S3_ACCESS_KEY_ID` | `MEDIA_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `deploy` |
 | `MEDIA_S3_SECRET_ACCESS_KEY` | `MEDIA_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `deploy` |
 | `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` | `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `deploy` |
@@ -63,9 +66,11 @@ scripts/run-with-environment-secrets.py \
   --identity <yc|github-oidc> -- <child command>
 ```
 
-It reads the active metadata and one matching payload version, validates the complete key set, and
-passes only the selected projection through a mode-0600 file named by `FINDME_ENV_FILE`. Callers
-cannot select a secret, version, or projection.
+It reads the active metadata and one matching payload version, validates every required key plus
+any reviewed optional Commerce key that is present, and passes only the selected projection through
+a mode-0600 file named by `FINDME_ENV_FILE`. Callers cannot select a secret, version, or
+projection. The Commerce signing and Postbox keys may be absent only while the deployed Commerce
+worker remains disabled; an enabled deploy rejects their absence before mutation.
 
 ## Repository variables
 
@@ -86,6 +91,9 @@ not necessarily the only permitted reader.
 | `SECRET_KEY` | Application maintainer | Django signing-key incident or approved coordinated application rotation |
 | `DB_PASSWORD` | Database maintainer | Database role rotation, suspected disclosure, or access removal |
 | `LETSENCRYPT_EMAIL` | Edge maintainer | Certificate-account contact change or account recovery |
+| `COMMERCE_ORDER_ACCESS_SIGNING_SECRET` | Commerce maintainer | Order grant signing-key rotation, suspected disclosure, or access-boundary change |
+| `COMMERCE_POSTBOX_API_KEY_ID` | Commerce email maintainer | Postbox API-key rotation, service-account scope change, or suspected disclosure |
+| `COMMERCE_POSTBOX_API_KEY_SECRET` | Commerce email maintainer | Postbox API-key rotation, service-account scope change, or suspected disclosure |
 | `MEDIA_S3_ACCESS_KEY_ID` | Media storage maintainer | Object Storage key rotation, scope change, or suspected disclosure |
 | `MEDIA_S3_SECRET_ACCESS_KEY` | Media storage maintainer | Object Storage key rotation, scope change, or suspected disclosure |
 | `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` | Private media maintainer | Object Storage key rotation, scope change, or suspected disclosure |

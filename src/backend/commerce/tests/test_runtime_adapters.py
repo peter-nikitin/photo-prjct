@@ -68,3 +68,23 @@ class CommerceRuntimeFactoryTests(SimpleTestCase):
 
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             commerce_worker_factory()
+
+    @override_settings(DEBUG=False, PUBLIC_DOMAIN="findme-photo.ru")
+    def test_worker_factory_rejects_non_canonical_public_origin_outside_debug(self) -> None:
+        from commerce.runtime import commerce_worker_factory
+
+        invalid_origins = (
+            "https://findme-photo.ru/",
+            "https://findme-photo.ru/orders",
+            "https://findme-photo.ru?continue=https://evil.example",
+            "https://findme-photo.ru#fragment",
+            "https://user@findme-photo.ru",
+            "https://findme-photo.ru:443",
+            "https://evil.example",
+            " https://findme-photo.ru",
+            "https://findme-photo.ru ",
+        )
+        for origin in invalid_origins:
+            with self.subTest(origin=origin), override_settings(COMMERCE_PUBLIC_ORIGIN=origin):
+                with self.assertRaisesRegex(ValueError, "Commerce public origin"):
+                    commerce_worker_factory()

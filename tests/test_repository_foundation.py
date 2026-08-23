@@ -843,6 +843,18 @@ def test_canonical_secret_inventory_records_every_owner_and_rotation_trigger() -
             "Edge maintainer",
             "Certificate-account contact change or account recovery",
         ),
+        "COMMERCE_ORDER_ACCESS_SIGNING_SECRET": (
+            "Commerce maintainer",
+            "Order grant signing-key rotation, suspected disclosure, or access-boundary change",
+        ),
+        "COMMERCE_POSTBOX_API_KEY_ID": (
+            "Commerce email maintainer",
+            "Postbox API-key rotation, service-account scope change, or suspected disclosure",
+        ),
+        "COMMERCE_POSTBOX_API_KEY_SECRET": (
+            "Commerce email maintainer",
+            "Postbox API-key rotation, service-account scope change, or suspected disclosure",
+        ),
         "MEDIA_S3_ACCESS_KEY_ID": (
             "Media storage maintainer",
             "Object Storage key rotation, scope change, or suspected disclosure",
@@ -1166,9 +1178,78 @@ def test_clone_deployed_suite_has_default_and_exhaustive_selection_contract() ->
 
 def test_deployment_compose_uses_an_immutable_application_image() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
+    web_environment = compose["services"]["web"]["environment"]
+    commerce_environment = compose["services"]["commerce-worker"]["environment"]
 
     assert compose["services"]["web"]["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
-    assert compose["services"]["web"]["env_file"] == ["${APP_ENV_FILE:-.env}"]
+    assert "env_file" not in compose["services"]["web"]
+    assert set(web_environment) == {
+        "SECRET_KEY",
+        "DEBUG",
+        "ALLOWED_HOSTS",
+        "DB_NAME",
+        "DB_USER",
+        "DB_PASSWORD",
+        "DB_HOST",
+        "DB_PORT",
+        "GUNICORN_WORKERS",
+        "GUNICORN_THREADS",
+        "GUNICORN_TIMEOUT",
+        "GUNICORN_MAX_REQUESTS",
+        "GUNICORN_MAX_REQUESTS_JITTER",
+        "PUBLIC_DOMAIN",
+        "PUBLIC_DOMAIN_ALIAS",
+        "MEDIA_STORAGE_BACKEND",
+        "MEDIA_S3_ENDPOINT_URL",
+        "MEDIA_S3_REGION",
+        "MEDIA_S3_PUBLIC_BUCKET",
+        "MEDIA_S3_ACCESS_KEY_ID",
+        "MEDIA_S3_SECRET_ACCESS_KEY",
+        "PHOTO_UPLOAD_ENABLED",
+        "PRIVATE_MEDIA_S3_BUCKET",
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
+        "PRIVATE_MEDIA_ALLOWED_ORIGINS",
+        "WORKER_IMAGE",
+        "PHOTO_PROCESSING_ENABLED",
+        "PHOTO_PROCESSING_PREVIEW_ENABLED",
+        "PHOTO_PROCESSING_FACE_ENABLED",
+        "PHOTO_PROCESSING_WORKER_TOKEN",
+        "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS",
+        "PHOTO_PROCESSING_MAX_REQUEST_BYTES",
+        "PHOTO_WORKER_BUILD",
+        "PHOTO_WORKER_LEASE_SECONDS",
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES",
+        "PHOTO_WORKER_PROCESSOR_TYPES",
+        "PHOTO_WORKER_REPLICAS",
+        "SELFIE_SEARCH_MAX_UPLOAD_BYTES",
+        "SELFIE_SEARCH_MAX_PIXELS",
+        "SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS",
+        "SELFIE_SEARCH_EMBEDDING_MODEL",
+        "SELFIE_SEARCH_EMBEDDING_DIMENSIONS",
+        "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD",
+        "SELFIE_SEARCH_TEMPORARY_PREFIX",
+        "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS",
+        "SELFIE_FEEDBACK_ENABLED",
+        "SELFIE_FEEDBACK_S3_BUCKET",
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
+        "SELFIE_FEEDBACK_S3_ENDPOINT_URL",
+        "SELFIE_FEEDBACK_S3_REGION",
+        "SELFIE_FEEDBACK_KMS_KEY_ID",
+        "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED",
+        "COMMERCE_PUBLIC_ORIGIN",
+        "COMMERCE_PAYMENT_GATEWAY_FACTORY",
+        "COMMERCE_EMAIL_SENDER_FACTORY",
+        "COMMERCE_WORKER_FACTORY",
+        "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
+        "COMMERCE_SUPPORT_CONTACT",
+        "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS",
+    }
+    assert "COMMERCE_POSTBOX_API_KEY_ID" not in web_environment
+    assert "COMMERCE_POSTBOX_API_KEY_SECRET" not in web_environment
+    assert "COMMERCE_POSTBOX_API_KEY_ID" in commerce_environment
+    assert "COMMERCE_POSTBOX_API_KEY_SECRET" in commerce_environment
     assert "healthcheck" in compose["services"]["web"]
 
 

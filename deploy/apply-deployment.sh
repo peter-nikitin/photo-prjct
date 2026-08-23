@@ -51,9 +51,13 @@ requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
 requested_commerce_worker_enabled="${COMMERCE_WORKER_ENABLED:-False}"
+requested_commerce_public_origin="${COMMERCE_PUBLIC_ORIGIN:-}"
 requested_commerce_payment_gateway_factory="${COMMERCE_PAYMENT_GATEWAY_FACTORY:-}"
 requested_commerce_email_sender_factory="${COMMERCE_EMAIL_SENDER_FACTORY:-}"
 requested_commerce_worker_factory="${COMMERCE_WORKER_FACTORY:-}"
+requested_commerce_email_from_address="${COMMERCE_EMAIL_FROM_ADDRESS:-}"
+requested_commerce_postbox_api_key_id="${COMMERCE_POSTBOX_API_KEY_ID:-}"
+requested_commerce_postbox_api_key_secret="${COMMERCE_POSTBOX_API_KEY_SECRET:-}"
 requested_commerce_order_access_signing_secret="${COMMERCE_ORDER_ACCESS_SIGNING_SECRET:-}"
 requested_commerce_support_contact="${COMMERCE_SUPPORT_CONTACT:-}"
 requested_commerce_worker_health_max_ready_age_seconds="${COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS:-300}"
@@ -100,16 +104,61 @@ if [ "$requested_commerce_worker_health_max_ready_age_seconds" -lt 1 ] || \
 fi
 
 if [ "$requested_commerce_worker_enabled" = True ]; then
+    [ -n "$requested_commerce_public_origin" ] || {
+        echo "Set COMMERCE_PUBLIC_ORIGIN before enabling the Commerce worker" >&2
+        exit 2
+    }
+    expected_commerce_public_origin="https://$PUBLIC_DOMAIN"
+    if [ "$requested_commerce_public_origin" != "$expected_commerce_public_origin" ]; then
+        echo "COMMERCE_PUBLIC_ORIGIN must be https://$PUBLIC_DOMAIN" >&2
+        exit 2
+    fi
     [ -n "$requested_commerce_payment_gateway_factory" ] || {
         echo "Set COMMERCE_PAYMENT_GATEWAY_FACTORY before enabling the Commerce worker" >&2
         exit 2
     }
+    if [ "$requested_commerce_payment_gateway_factory" != commerce.payment_simulator.payment_simulator_gateway_factory ]; then
+        echo "COMMERCE_PAYMENT_GATEWAY_FACTORY must use the staff-only simulator adapter for this release" >&2
+        exit 2
+    fi
     [ -n "$requested_commerce_email_sender_factory" ] || {
         echo "Set COMMERCE_EMAIL_SENDER_FACTORY before enabling the Commerce worker" >&2
         exit 2
     }
+    if [ "$requested_commerce_email_sender_factory" != commerce.postbox_email_sender.postbox_email_sender_factory ]; then
+        echo "COMMERCE_EMAIL_SENDER_FACTORY must use the Yandex Postbox adapter" >&2
+        exit 2
+    fi
     [ -n "$requested_commerce_worker_factory" ] || {
         echo "Set COMMERCE_WORKER_FACTORY before enabling the Commerce worker" >&2
+        exit 2
+    }
+    if [ "$requested_commerce_worker_factory" != commerce.runtime.commerce_worker_factory ]; then
+        echo "COMMERCE_WORKER_FACTORY must use the reviewed Commerce worker factory" >&2
+        exit 2
+    fi
+    [ -n "$requested_commerce_email_from_address" ] || {
+        echo "Set COMMERCE_EMAIL_FROM_ADDRESS before enabling the Commerce worker" >&2
+        exit 2
+    }
+    case "$requested_commerce_email_from_address" in
+        *@localhost|*@localhost.*|localhost|*' '*|*@)
+            echo "COMMERCE_EMAIL_FROM_ADDRESS must be a non-local sender address" >&2
+            exit 2
+            ;;
+        *@*)
+            ;;
+        *)
+            echo "COMMERCE_EMAIL_FROM_ADDRESS must be a non-local sender address" >&2
+            exit 2
+            ;;
+    esac
+    [ -n "$requested_commerce_postbox_api_key_id" ] || {
+        echo "Set COMMERCE_POSTBOX_API_KEY_ID before enabling the Commerce worker" >&2
+        exit 2
+    }
+    [ -n "$requested_commerce_postbox_api_key_secret" ] || {
+        echo "Set COMMERCE_POSTBOX_API_KEY_SECRET before enabling the Commerce worker" >&2
         exit 2
     }
     [ -n "$requested_commerce_order_access_signing_secret" ] || {
@@ -537,9 +586,13 @@ clear_candidate_compose_interpolation() {
         SELFIE_FEEDBACK_S3_REGION \
         SELFIE_FEEDBACK_KMS_KEY_ID \
         SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED \
+        COMMERCE_PUBLIC_ORIGIN \
         COMMERCE_PAYMENT_GATEWAY_FACTORY \
         COMMERCE_EMAIL_SENDER_FACTORY \
         COMMERCE_WORKER_FACTORY \
+        COMMERCE_EMAIL_FROM_ADDRESS \
+        COMMERCE_POSTBOX_API_KEY_ID \
+        COMMERCE_POSTBOX_API_KEY_SECRET \
         COMMERCE_ORDER_ACCESS_SIGNING_SECRET \
         COMMERCE_SUPPORT_CONTACT \
         COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS \
@@ -755,9 +808,13 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PRIVATE_MEDIA_S3_ACCESS_KEY_ID=%s\n' "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}"
     printf 'PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:-}"
     printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
+    printf 'COMMERCE_PUBLIC_ORIGIN=%s\n' "$requested_commerce_public_origin"
     printf 'COMMERCE_PAYMENT_GATEWAY_FACTORY=%s\n' "$requested_commerce_payment_gateway_factory"
     printf 'COMMERCE_EMAIL_SENDER_FACTORY=%s\n' "$requested_commerce_email_sender_factory"
     printf 'COMMERCE_WORKER_FACTORY=%s\n' "$requested_commerce_worker_factory"
+    printf 'COMMERCE_EMAIL_FROM_ADDRESS=%s\n' "$requested_commerce_email_from_address"
+    printf 'COMMERCE_POSTBOX_API_KEY_ID=%s\n' "$requested_commerce_postbox_api_key_id"
+    printf 'COMMERCE_POSTBOX_API_KEY_SECRET=%s\n' "$requested_commerce_postbox_api_key_secret"
     printf 'COMMERCE_ORDER_ACCESS_SIGNING_SECRET=%s\n' "$requested_commerce_order_access_signing_secret"
     printf 'COMMERCE_SUPPORT_CONTACT=%s\n' "$requested_commerce_support_contact"
     printf 'COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS=%s\n' "$requested_commerce_worker_health_max_ready_age_seconds"

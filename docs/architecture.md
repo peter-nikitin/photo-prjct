@@ -371,7 +371,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; canonical-deployment activation and customer outcomes are not evidenced |
 | Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no canonical-deployment activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
-| Commerce | Anonymous event carts, promotions, orders, payment state, download entitlement | Disabled-default anonymous server-side event cart is merged; current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703) and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. Neither paid gate nor real paid assets were directly observed as active; legal-cookie review, worker/staff smoke, explicit gate activation, and live verification remain blockers; promotions, packages, orders, payment state, and download entitlement remain proposed |
+| Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, and paid-original entitlement | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, and Commerce worker deployment wiring are implemented behind paid runtime gates. Public activation, a real bank adapter, fiscal/legal review, promotions, packages, refunds, and ZIP delivery remain later work |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
@@ -516,11 +516,12 @@ eligible watermarked items and current event price determine every response; the
 success path executes the committed [`apply-deployment.sh` install path](../deploy/apply-deployment.sh#L907).
 Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. Requests fail closed on expiry while physical deletion is left to cleanup. The `paid-photo-cart` runtime gate is absent/off by default and was not directly observed as active.
 
-Public activation remains blocked on approved real watermark assets and worker, staff smoke,
-necessary-cookie legal review, an explicit gate mutation, and live verification. The selection state
-grants no download entitlement. Checkout, immutable Orders, normalized payment attempts, trusted
-manual recovery, durable access-email work, and protected per-item original signing are implemented
-locally, disabled by default. Packages, promotions, refunds, and ZIP delivery remain later work.
+Public activation remains blocked on staff smoke, necessary-cookie legal review, an explicit public
+gate mutation, and live verification. The selection state grants no download entitlement. Checkout,
+immutable Orders, normalized payment attempts, trusted manual recovery, durable access-email work,
+and protected per-item original signing are implemented behind the paid runtime gates. The deployed
+acceptance path uses the staff-only payment simulator and can run a single Commerce worker through
+the canonical Deploy workflow. Packages, promotions, refunds, and ZIP delivery remain later work.
 
 ADR 0031 accepts immutable single-event RUB Orders, normalized PaymentAttempts behind a narrow
 bank adapter, authoritative server evidence or trusted manual payment confirmation, and permanent
@@ -528,9 +529,10 @@ original entitlement derived from each paid OrderItem. Anonymous access uses a s
 purchase-browser capability plus permanent revocable Order grants. Email is asynchronous
 notification, and a separate PostgreSQL-polling Commerce worker owns delivery and payment
 reconciliation with durable operator attention. This accepted purchase boundary is implemented
-locally, disabled by default; concrete bank/email protocols, fiscal and legal contracts, public
-activation, refunds, and ZIP delivery remain later work. The local deterministic adapters prove
-repository behavior only and perform no network payment or email delivery.
+behind staff-controlled runtime gates. The repository includes a Yandex Postbox SMTPS sender
+adapter and canonical deployment wiring that projects Postbox credentials only to the Commerce
+worker. A real bank adapter, fiscal and legal contracts, public activation, refunds, and ZIP
+delivery remain later work; the deployed acceptance payment path is the staff-only simulator.
 
 ## Security, privacy, and legal boundaries
 
@@ -608,8 +610,9 @@ repository behavior only and perform no network payment or email delivery.
 6. **Face governance, validation, and search:** approve biometric policy and independently benchmark
    face models before delivering embeddings, event filtering, removal, and candidate UX.
 7. **Commerce:** the accepted anonymous event-cart selection and purchase boundaries are
-   implemented locally, disabled by default. Concrete bank and email adapters, legal/fiscal
-   approval, worker activation, public rollout evidence, packages, promotions, refunds, and ZIP
+   implemented behind paid runtime gates. The staff acceptance path uses a simulated payment
+   adapter, Postbox email sender, and one canonical-deployment Commerce worker. A real bank
+   adapter, fiscal/legal approval, public rollout evidence, packages, promotions, refunds, and ZIP
    delivery remain later work.
 8. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
 
@@ -618,8 +621,9 @@ repository behavior only and perform no network payment or email delivery.
 Checkout snapshots the cart's selected photo IDs and current event price into immutable OrderItems.
 Payment, entitlement, access grants, email delivery, and original signing are separate Commerce
 services; a cart bearer remains selection-only. `PublicMediaResolver` remains the sole owner of
-public-media selection. The purchase implementation is local and disabled by default, so no real
-provider, activation, or live-customer evidence is claimed.
+public-media selection. The paid purchase implementation remains staff-gated by default. It has a
+real Postbox email sender and deployable Commerce worker, while real bank payment, public
+activation, and live-customer evidence are separate release gates.
 
 ## Deferred beyond MVP
 

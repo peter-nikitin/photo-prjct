@@ -37,6 +37,10 @@ class FeatureFlagPolicyTests(SimpleTestCase):
 class FeatureFlagServiceTests(TestCase):
     def setUp(self) -> None:
         users = get_user_model().objects
+        self.anonymous = AnonymousUser()
+        self.inactive_staff = users.create_user(
+            username="inactive-staff", is_active=False, is_staff=True
+        )
         self.ordinary_user = users.create_user(username="ordinary-user")
         self.active_staff = users.create_user(username="active-staff", is_staff=True)
 

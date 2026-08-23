@@ -665,4 +665,4 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - Verification has a separate delivery boundary: core runs on every pull request, while the
   versioned selector chooses operational, migration, and visual layers from changed paths. The
   final unchanged-package run belongs to the root controller; CI repeats it after push. See
-  [Testing](testing.md) and [ADR 0032](adr/0032-keep-durable-knowledge-test-executable-contracts.md).
+  [Testing](testing.md) and [ADR 0033](adr/0033-keep-durable-knowledge-test-executable-contracts.md).

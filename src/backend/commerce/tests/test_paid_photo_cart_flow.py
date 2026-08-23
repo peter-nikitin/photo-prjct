@@ -26,7 +26,7 @@ from processing.models import (
 from selfie_search.models import SelfieSearch, SelfieSearchResult
 
 from commerce.identity import browser_token_sha256
-from commerce.models import Cart, CartItem
+from commerce.models import Cart
 
 
 @override_settings(

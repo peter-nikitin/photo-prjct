@@ -4,7 +4,7 @@
 - Date: 2026-07-11
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: [ADR 0032](0032-keep-durable-knowledge-test-executable-contracts.md)
+- Superseded by: [ADR 0033](0033-keep-durable-knowledge-test-executable-contracts.md)
 
 ## Context
 

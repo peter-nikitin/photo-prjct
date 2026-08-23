@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import psycopg
+import pytest
 from psycopg import sql
 
 from scripts.cleanup_stale_test_databases import _process_is_alive, stale_database_names
@@ -31,6 +32,7 @@ def test_cleanup_treats_identifiers_larger_than_a_system_pid_as_not_alive() -> N
     assert _process_is_alive(10**100) is False
 
 
+@pytest.mark.django_db
 def test_cleanup_reclaims_database_left_by_an_interrupted_run() -> None:
     stale_name = f"findme_test_{os.getpid()}_interrupted"
     connection_arguments = {
@@ -70,6 +72,7 @@ def test_cleanup_reclaims_database_left_by_an_interrupted_run() -> None:
             )
 
 
+@pytest.mark.django_db
 def test_cleanup_never_forces_active_test_database_connections_closed() -> None:
     active_name = f"findme_test_{os.getpid()}_active"
     connection_arguments = {

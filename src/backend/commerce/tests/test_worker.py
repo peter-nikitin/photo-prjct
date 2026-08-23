@@ -9,7 +9,7 @@ from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
 from django.core.management import CommandError, call_command
 from django.db import close_old_connections, connection, transaction
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from picflow.models import Event, Photo
 
 from commerce.attention import open_attention
@@ -852,3 +852,12 @@ class CommerceWorkerTests(TransactionTestCase):
             call_command("run_commerce_worker", "--once")
         with self.assertRaisesRegex(CommandError, "worker is not live"):
             call_command("commerce_worker_health", "--max-ready-age-seconds", "300")
+
+    @override_settings(
+        PHOTO_PROCESSING_ENABLED=False,
+        PHOTO_PROCESSING_FACE_ENABLED=False,
+    )
+    def test_worker_command_does_not_require_unrelated_photo_processing(self) -> None:
+        """Commerce startup must not inherit web-only selfie-search prerequisites."""
+        with self.assertRaisesRegex(CommandError, "COMMERCE_WORKER_FACTORY"):
+            call_command("run_commerce_worker", "--once", skip_checks=False)

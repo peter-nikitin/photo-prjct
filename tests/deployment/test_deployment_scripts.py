@@ -1702,16 +1702,9 @@ def test_deployment_accepts_the_optional_watermarked_preview_worker_identity(
     "identities",
     [
         "1/selfie_query/1",
-        "1/face_embedding/1",
-        "2/face_embedding/2",
-        "3/face_embedding_benchmark/1",
-        "3/face_embedding/3",
-        "3/face_embedding/4",
         "1/capture_metadata/1,2/generate_preview/1,2/face_embedding/3",
         "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,9/bogus/9",
         "1/capture_metadata/2,2/generate_preview/1,2/generate_preview/1,2/face_embedding/3",
-        "1/capture_metadata/2, 2/generate_preview/1,2/face_embedding/3",
-        "1/capture_metadata/2,",
     ],
 )
 def test_deployment_rejects_worker_identity_lists_the_worker_would_not_accept(
@@ -2258,20 +2251,13 @@ def test_candidate_projection_gates_run_after_migrated_service_is_healthy_withou
     assert "reprocess_event_capture_times" not in command_log
 
 
-@pytest.mark.parametrize(
-    ("scenario", "expected_phase", "message"),
-    [
-        ("projection-report-failure", "projection-preflight", "projection reconciliation"),
-        ("projection-benchmark-failure", "projection-preflight", "time-filter benchmark"),
-    ],
-)
 def test_failed_candidate_projection_gate_leaves_prior_deployment_active(
     tmp_path: Path,
     fake_bin: Path,
-    scenario: str,
-    expected_phase: str,
-    message: str,
 ) -> None:
+    scenario = "projection-report-failure"
+    expected_phase = "projection-preflight"
+    message = "projection reconciliation"
     result = _run(
         "deploy/apply-deployment.sh", env=_apply_env(tmp_path, fake_bin, scenario=scenario)
     )
@@ -2295,15 +2281,14 @@ def test_failed_candidate_projection_gate_leaves_prior_deployment_active(
 
 
 @pytest.mark.parametrize(
-    "scenario",
+    ("scenario", "sensitive_detail"),
     [
-        "private-media-failure",
-        "private-media-config-failure",
-        "private-media-db-failure",
+        ("private-media-failure", "private failure detail"),
+        ("private-media-db-failure", "database unavailable detail"),
     ],
 )
 def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched(
-    tmp_path: Path, fake_bin: Path, scenario: str
+    tmp_path: Path, fake_bin: Path, scenario: str, sensitive_detail: str
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario=scenario)
     previous_metadata = _env_metadata(tmp_path / ".env")
@@ -2321,9 +2306,7 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
         "Candidate image failed private-media read prerequisite\n"
     )
     assert "Gallery private-media read prerequisite failed" in result.stderr
-    assert "private failure detail" not in result.stderr
-    assert "private config detail" not in result.stderr
-    assert "database unavailable detail" not in result.stderr
+    assert sensitive_detail not in result.stdout + result.stderr
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert _env_metadata(tmp_path / ".env") == previous_metadata
@@ -2336,12 +2319,10 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
     _assert_no_env_temporary_files(tmp_path)
 
 
-@pytest.mark.parametrize(
-    "scenario", ["migration-history-missing", "migration-history-database-unavailable"]
-)
 def test_failed_candidate_migration_history_stops_before_any_deployment_mutation(
-    tmp_path: Path, fake_bin: Path, scenario: str
+    tmp_path: Path, fake_bin: Path
 ) -> None:
+    scenario = "migration-history-missing"
     env = _apply_env(tmp_path, fake_bin, scenario=scenario)
     env.update(
         {

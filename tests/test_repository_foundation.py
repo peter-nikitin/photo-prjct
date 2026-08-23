@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -185,25 +186,58 @@ def _envs(step: dict[str, Any]) -> set[str]:
     return {name.strip() for name in envs.split(",") if name.strip()}
 
 
-def test_project_skill_ui_configuration_is_valid() -> None:
-    for skill_name in (
-        "deliver-operational-change",
-        "execute-implementation-plan",
-        "manage-yandex-cloud",
-        "update-visual-design",
-        "write-adr",
-        "write-plan",
-        "write-spec",
-    ):
-        skill_dir = ROOT / ".agents" / "skills" / skill_name
+def _assert_project_skill_metadata(skills_root: Path) -> None:
+    skill_dirs = sorted(path.parent for path in skills_root.glob("*/SKILL.md"))
+    assert skill_dirs, f"No project skills found in {skills_root}"
+    interface_keys = {"display_name", "short_description", "default_prompt"}
+
+    for skill_dir in skill_dirs:
+        skill_parts = (skill_dir / "SKILL.md").read_text(encoding="utf-8").split("---", 2)
+        assert len(skill_parts) == 3 and not skill_parts[0].strip(), (
+            f"{skill_dir}: SKILL.md must begin with YAML frontmatter"
+        )
+        frontmatter = yaml.safe_load(skill_parts[1])
+        assert isinstance(frontmatter, dict), f"{skill_dir}: invalid skill frontmatter"
+        assert set(frontmatter) == {"name", "description"}, f"{skill_dir}: invalid skill schema"
+        assert frontmatter["name"] == skill_dir.name, (
+            f"{skill_dir}: skill name must match directory"
+        )
+        assert isinstance(frontmatter["description"], str) and frontmatter["description"].strip(), (
+            f"{skill_dir}: skill description must be non-empty"
+        )
+
         ui_config = yaml.safe_load(
             (skill_dir / "agents" / "openai.yaml").read_text(encoding="utf-8")
         )
-        assert set(ui_config["interface"]) == {
-            "display_name",
-            "short_description",
-            "default_prompt",
-        }
+        assert isinstance(ui_config, dict), f"{skill_dir}: invalid UI configuration"
+        assert set(ui_config) == {"interface"}, f"{skill_dir}: invalid UI configuration schema"
+        interface = ui_config["interface"]
+        assert isinstance(interface, dict) and set(interface) == interface_keys, (
+            f"{skill_dir}: invalid interface schema"
+        )
+        assert all(isinstance(value, str) and value.strip() for value in interface.values()), (
+            f"{skill_dir}: interface values must be non-empty strings"
+        )
+
+
+def test_project_skill_ui_configuration_is_valid() -> None:
+    _assert_project_skill_metadata(ROOT / ".agents" / "skills")
+
+
+def test_project_skill_ui_configuration_rejects_incomplete_interface(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "example-skill"
+    (skill_dir / "agents").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: example-skill\ndescription: Example project skill\n---\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "agents" / "openai.yaml").write_text(
+        "interface:\n  display_name: Example\n  short_description: Example\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="interface"):
+        _assert_project_skill_metadata(tmp_path)
 
 
 def test_implementation_plan_harness_has_project_specific_role_contracts() -> None:

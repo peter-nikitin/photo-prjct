@@ -38,6 +38,12 @@ model.
 
 ## Task loop
 
+Before implementation, review, or handoff test selection, implementers and reviewers use
+`$select-verification-suites`. It owns selector invocation, final-package fingerprints, evidence
+reuse, and the boundary between role checks and the root/CI final gates. With the current
+whole-package fingerprint, any fingerprint change invalidates every earlier suite result; do not
+apply an affected-check exception until executable suite-scoped fingerprints exist.
+
 1. Fill [implementer-prompt.md](implementer-prompt.md) with task-local paths and decisions.
 2. The implementer performs red-green TDD, self-reviews, and records exact commands, exit statuses,
    summaries, and that final GREEN followed the last task-file change. It returns `DONE`,
@@ -48,12 +54,13 @@ model.
    `blocking` or `future` under `AGENTS.md`.
 5. Return blocking fixes to the same implementer and use
    [re-review-prompt.md](re-review-prompt.md) with the same reviewer when available.
-6. After approval, root reuses complete evidence for the unchanged review package and runs only
-   missing, invalidated, or risk-specific checks before staging the exact task files and creating
-   the one task commit. A task-file change invalidates checks whose behavior it can affect.
-7. After all task and review-fix loops, root runs `make check` once on the final branch state. Run
-   visual regression once only when the branch changes visual behavior or baselines. CI owns the
-   complete repeated suite after push.
+6. After approval, root reuses only complete evidence with the exact final-package fingerprint;
+   otherwise it runs each missing selected layer once before staging the exact task files and
+   creating the one task commit.
+7. After all task and review-fix loops, root reruns the selector and fingerprint on the final
+   branch, runs `make check` once, and ensures every selector-required expensive target has GREEN
+   evidence for that exact fingerprint. Selector output decides whether visual checks are
+   required. CI is post-push repetition only.
 
 Subagents never run `git add`, commit, amend, push, merge, or change branches.
 

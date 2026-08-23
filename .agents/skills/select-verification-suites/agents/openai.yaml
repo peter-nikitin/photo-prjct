@@ -1,0 +1,4 @@
+interface:
+  display_name: "Select Verification Suites"
+  short_description: "Choose focused checks and reusable evidence"
+  default_prompt: "Use $select-verification-suites to select the minimum complete verification set and record final-package evidence."

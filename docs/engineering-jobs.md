@@ -76,18 +76,26 @@ contract, so I can reproduce production-relevant behavior locally.
 
 ### EJ-002 — Contributor — Receive complete CI feedback
 
-When I update a pull request or `main` advances, I want formatting, lint, types, PostgreSQL tests,
-migrations, Django checks, and visual regression to run automatically, so I can detect regressions
-before merge and validate the integrated branch. Pull requests also protect the identities of base
-migrations, so an environment that already applied them can upgrade safely.
+When I update a pull request or `main` advances, I want formatting, lint, types, core PostgreSQL
+tests, Django checks, and the required changed-path layers to run automatically, so I can detect
+regressions before merge and validate the integrated branch. Core runs on every pull request;
+operational, migration, and visual jobs are selected deterministically and report why they were not
+run. Pull requests also protect the identities of base migrations, so an environment that already
+applied them can upgrade safely.
 
 Pull requests run through the `pull_request` trigger, while branch-push validation is limited to
 `main`. Updating a feature branch therefore does not create a duplicate push run alongside its pull
 request run.
 
 - Status: Validated
-- Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`scripts/check_migration_immutability.py`](../scripts/check_migration_immutability.py), [`tests/test_migration_immutability.py`](../tests/test_migration_immutability.py), [migration conflict runbook](runbooks/django-migration-conflicts.md), [`pyproject.toml`](../pyproject.toml), and [`package.json`](../package.json)
-- Last updated: 2026-07-17
+- Evidence: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml),
+  [`scripts/select_test_suites.py`](../scripts/select_test_suites.py),
+  [`tests/suite-selection.toml`](../tests/suite-selection.toml),
+  [`scripts/check_migration_immutability.py`](../scripts/check_migration_immutability.py),
+  [`tests/test_migration_immutability.py`](../tests/test_migration_immutability.py),
+  [migration conflict runbook](runbooks/django-migration-conflicts.md), [`pyproject.toml`](../pyproject.toml),
+  and [`package.json`](../package.json)
+- Last updated: 2026-08-23
 
 ### EJ-003 — Maintainer — Deploy an immutable image to the canonical deployment
 
@@ -134,10 +142,16 @@ rebuilding it.
 CI computes the same dependency key and pulls the corresponding read-only GHCR image before falling
 back to a local build. A separate main-only workflow publishes a new keyed image when the visual
 Dockerfile or dependency lock files change; pull requests never receive package write permission.
+The stable visual CI job runs when the selector chooses the visual layer and otherwise records its
+explicit non-selection reason.
 
 - Status: Validated
-- Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml), [`tests/visual/run-in-container.sh`](../tests/visual/run-in-container.sh), [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py)
-- Last updated: 2026-07-19
+- Evidence: [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests),
+  [`docker-compose.visual.yml`](../docker-compose.visual.yml), [`.github/workflows/ci.yml`](../.github/workflows/ci.yml),
+  [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml),
+  [`tests/visual/run-in-container.sh`](../tests/visual/run-in-container.sh), and
+  [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py)
+- Last updated: 2026-08-23
 
 ### EJ-006 — Maintainer — Retire the image-promotion path
 
@@ -534,6 +548,8 @@ This log is append-only.
 | 2026-07-19 | EJ-005 | Validated | Validated | Local visual runs now reuse a dependency-keyed image; [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py) verifies build-once behavior. |
 | 2026-07-19 | EJ-002 | Validated | Validated | Pull requests retain the complete suite while branch-push CI is limited to `main`; [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and [`tests/test_repository_foundation.py`](../tests/test_repository_foundation.py) enforce the trigger contract. |
 | 2026-07-19 | EJ-005 | Validated | Validated | CI reuses a dependency-keyed GHCR image with build fallback, and [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml) publishes changed dependency images only from `main`. |
+| 2026-08-23 | EJ-002 | Validated | Validated | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) now keeps `Quality core`, `Operational tests`, `Migration tests`, and `Visual tests` stable while [`scripts/select_test_suites.py`](../scripts/select_test_suites.py) selects the expensive layers. |
+| 2026-08-23 | EJ-005 | Validated | Validated | The pinned visual container remains reproducible; CI runs its stable visual job only when [`tests/suite-selection.toml`](../tests/suite-selection.toml) selects that layer and otherwise records the reason. |
 | 2026-07-19 | EJ-011 | Not recorded | Validated | Behavioral deployment tests verify candidate private-media preflight, ordering, temporary-environment cleanup, and the absence of an IAM mutation path; no live environment activation is claimed. |
 | 2026-07-19 | EJ-011 | Validated | Validated | Clarified boundary: automated tests cover candidate pull failure, no-row skip, successful one-byte read/close, sanitized storage construction/open failures with pre-promotion state preserved, and promotion-fault temporary-file cleanup; empty-read/read-exception/close-exception paths and live activation are not claimed. |
 | 2026-07-19 | EJ-011 | Validated | Validated | Fresh unprovisioned deployments now skip the unavailable ORM gate based on absence of the successful `deployed-image` marker; established deployments retain the fail-closed database/no-row/storage gate, and neither skip is live `GetObject` evidence. |

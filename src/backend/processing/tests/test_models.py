@@ -2,6 +2,7 @@ import importlib
 from datetime import date
 from typing import Any
 
+import pytest
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -1161,6 +1162,7 @@ class _ProcessingMigrationTestCase(TransactionTestCase):
             super().tearDown()
 
 
+@pytest.mark.migration
 class ProcessingInitialMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [("picflow", "0005_validate_photo_private_original_constraints")]
     migrate_to = [("processing", "0001_initial")]
@@ -1205,6 +1207,7 @@ class ProcessingInitialMigrationTests(_ProcessingMigrationTestCase):
         MigrationExecutor(connection).migrate(self.migrate_to)
 
 
+@pytest.mark.migration
 class ProcessingMigrationFunctionTests(TestCase):
     def test_legacy_backfill_consumes_photos_in_bounded_batches(self) -> None:
         migration = importlib.import_module("processing.migrations.0001_initial")
@@ -1247,6 +1250,7 @@ class ProcessingMigrationFunctionTests(TestCase):
         self.assertEqual(batches, [500, 1])
 
 
+@pytest.mark.migration
 class ProcessingFaceEmbeddingMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [("processing", "0001_initial")]
     migrate_to = [("processing", "0002_add_face_embedding_schema")]
@@ -1276,6 +1280,7 @@ class ProcessingFaceEmbeddingMigrationTests(_ProcessingMigrationTestCase):
             self.assertNotIn(model_name, reverted_apps.all_models.get("processing", {}))
 
 
+@pytest.mark.migration
 class ProcessingPreviewDerivativeMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [("processing", "0002_add_face_embedding_schema")]
     migrate_to = [("processing", "0003_add_preview_derivative_schema")]
@@ -1294,6 +1299,7 @@ class ProcessingPreviewDerivativeMigrationTests(_ProcessingMigrationTestCase):
         self.assertNotIn("photoderivative", reverted_apps.all_models.get("processing", {}))
 
 
+@pytest.mark.migration
 class ProcessingWatermarkedDerivativeProducerMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [
         ("picflow", "0012_paid_watermarked_photo_policy"),
@@ -1416,6 +1422,7 @@ class ProcessingWatermarkedDerivativeProducerMigrationTests(_ProcessingMigration
             )
 
 
+@pytest.mark.migration
 class ProcessingFaceIndexNameMigrationTests(_ProcessingMigrationTestCase):
     migrate_from = [("processing", "0003_add_preview_derivative_schema")]
     migrate_to = [("processing", "0004_shorten_face_index_names")]
@@ -1506,6 +1513,7 @@ class ProcessingFaceIndexNameMigrationTests(_ProcessingMigrationTestCase):
         MigrationExecutor(connection).migrate(self.migrate_to)
 
 
+@pytest.mark.migration
 class ProcessingFaceQualityGenerationMigrationTests(TransactionTestCase):
     migrate_from = [("processing", "0006_face_cluster_corpus")]
     migrate_to = [("processing", "0007_face_quality_generation")]

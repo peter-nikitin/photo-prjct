@@ -174,6 +174,9 @@ def test_github_output_preserves_a_shell_metacharacter_filename_as_data(tmp_path
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
+        (".agents/skills/select-verification-suites/SKILL.md", (False, False, False)),
+        ("src/backend/commerce/tests/test_models.py", (False, False, False)),
+        ("src/backend/processing/tests/test_models.py", (False, True, False)),
         ("src/backend/config/settings.py", (True, False, False)),
         ("deploy/apply-deployment.sh", (True, True, False)),
     ],
@@ -186,6 +189,49 @@ def test_production_manifest_selects_runtime_and_schema_sensitive_paths(
     )
 
     assert (selection.operational, selection.migrations, selection.visual) == expected
+
+
+def test_processing_model_migration_contracts_select_the_migration_suite() -> None:
+    path = "src/backend/processing/tests/test_models.py"
+    selection = select_test_suites.select_suites(
+        select_test_suites.load_config(ROOT / "tests" / "suite-selection.toml"), [path]
+    )
+
+    assert selection.core is True
+    assert selection.migrations is True
+    assert selection.reasons["migrations"] == (path,)
+
+
+def test_manifest_layer_patterns_keep_mixed_test_files_on_their_explicit_or_db_layer(
+    tmp_path: Path,
+) -> None:
+    manifest = write_manifest(
+        tmp_path,
+        MANIFEST.replace(
+            '"src/backend/*/migrations/**", "tests/test_migration_immutability.py"',
+            '"src/backend/*/migrations/**", "tests/test_migration_immutability.py", '
+            '"src/backend/processing/tests/test_models.py"',
+        ).replace(
+            'layer = "migration"',
+            'layer = "migration"\n'
+            'layer_patterns = ["src/backend/*/migrations/**", '
+            '"tests/test_migration_immutability.py"]',
+        ),
+    )
+    config = select_test_suites.load_config(manifest)
+
+    assert (
+        select_test_suites.layer_for_path(
+            config, "src/backend/processing/tests/test_models.py", True
+        )
+        == "db"
+    )
+    assert (
+        select_test_suites.layer_for_path(
+            config, "src/backend/picflow/migrations/0001_initial.py", True
+        )
+        == "migration"
+    )
 
 
 def init_repository(tmp_path: Path) -> Path:

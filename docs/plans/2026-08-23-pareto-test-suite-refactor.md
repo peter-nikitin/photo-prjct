@@ -374,13 +374,41 @@ Run these commands on the unchanged final reviewed branch, in this order:
    migration drift pass once.
 3. `make test-operational` only when the final selector chooses `operational` — complete layer
    passes once.
-4. `make test-migrations BASE=0b0585a HEAD=HEAD` only when selected — migration tests and
-   immutability pass once.
+4. When the selector chooses `migrations`, run both `make test-migrations` and
+   `.venv/bin/python scripts/check_migration_immutability.py --base 0b0585a --head HEAD` once —
+   the first verifies the migration layer and the second verifies the actual package's migration
+   identity.
 5. `npm run test:js` and `npm run test:visual` only when selected — JavaScript and visual regression
    pass once. Visual baselines are not updated unless visual behavior intentionally changed.
 6. `make test-all` is the manual exhaustive interface; run it for final implementation evidence if
    its coverage is not already the union of steps 2–5, not as an automatic duplicate after every
    role.
+
+### Measured task evidence before final root verification
+
+The dated branch-base comparison below is structural or collection-only evidence from Task 7;
+layer runtimes and package coverage are the final GREEN evidence recorded by their owning tasks.
+They are directional delivery metrics, not additional acceptance gates.
+
+| Metric | 2026-08-23 structural base `0b0585a` | Reconciled task package |
+| --- | ---: | ---: |
+| Named Python test definitions | 1,911 | 1,861 (-50, -2.62%) |
+| Python test files | 154 | 155 (+1 classifier regression) |
+| Python test LOC | 72,315 | 70,791 (-1,524, -2.11%) |
+| Collected Python cases | No collected baseline at `0b0585a`; Task 1 post-taxonomy reference: 2,444 | 2,381 (-63, -2.58% from post-taxonomy reference) |
+| Layer collection | Not recorded as one baseline | 802 unit, 1,118 db, 35 product-flow, 384 operational, 42 migration |
+| PostgreSQL-capable core share | Not recorded as one baseline | 1,153 of 1,955 core cases (59.0%) |
+| JavaScript / visual scenarios | Not recorded by this task | 108 / 57 |
+
+Task 5 recorded 74.06 seconds wall time and 88.48% branch coverage for its five core packages;
+Task 6 recorded 93.11 seconds and 82.66% for processing, selfie search, and the worker. Task 4
+recorded 129.59 seconds for the operational layer and 16.41 seconds for migrations. Its JUnit
+measurement reported 273.46 seconds of summed operational case duration; no final branch-wide
+per-file duration scan was run in this task. Coverage configuration includes all eight maintained
+production Python packages with branch `fail_under = 75`. The 2.11% LOC reduction misses the
+non-gating 20–30% directional range. The Task 5 and Task 6 measurements cover disjoint packages
+(and Task 6's sample grew), so they do not establish material whole-core acceleration; the final
+root-owned core run supplies the comparable wall time and slow-file ranking.
 
 ## Operational impact and rollout
 

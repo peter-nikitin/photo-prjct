@@ -67,6 +67,8 @@ photographers and operators publish and manage event photos.
 
 ## Verification-suite evidence
 
+- Use [Testing](docs/testing.md) as the human entry point. It links to the selector, manifest, and
+  Make interfaces; do not duplicate changed-path rules in guidance or reports.
 - Use `$select-verification-suites` for focused test selection during implementation, review, and
   handoff. Its selector, manifest, Make targets, and CI jobs are the executable source of truth.
 - Reuse evidence only when the recorded fingerprint equals the final package fingerprint and it

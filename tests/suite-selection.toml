@@ -1,6 +1,11 @@
 version = 1
 
 [[categories]]
+name = "agent-tooling"
+patterns = [".agents/skills/**"]
+suites = []
+
+[[categories]]
 name = "documentation"
 patterns = ["docs/**", "README.md"]
 suites = []
@@ -21,6 +26,15 @@ layer = "operational"
 [[categories]]
 name = "migrations"
 patterns = [
+  "src/backend/*/migrations/**",
+  "src/backend/*/models.py",
+  "src/backend/**/tests/test_*migration*.py",
+  "src/backend/processing/tests/test_models.py",
+  "scripts/check_migration_immutability.py",
+  "tests/test_migration_immutability.py",
+  "deploy/apply-deployment.sh",
+]
+layer_patterns = [
   "src/backend/*/migrations/**",
   "src/backend/*/models.py",
   "src/backend/**/tests/test_*migration*.py",

@@ -34,7 +34,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                 f"conflicting explicit layer markers for {path}: {sorted(explicit_layers)}"
             )
         expected_layer = layer_for_path(CONFIG, path, _uses_django_database(item))
-        if explicit_layers and explicit_layers != {expected_layer}:
+        migration_override = explicit_layers == {"migration"} and expected_layer == "db"
+        if explicit_layers and explicit_layers != {expected_layer} and not migration_override:
             raise pytest.UsageError(
                 f"explicit layer ownership for {path} conflicts with manifest: "
                 f"{sorted(explicit_layers)} != {expected_layer}"

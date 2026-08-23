@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 EXPENSIVE_SUITES = ("operational", "migrations", "visual")
 PRIMARY_LAYERS = {"operational", "migration", "product_flow"}
 KNOWN_CATEGORIES = {
+    "agent-tooling",
     "documentation",
     "operational",
     "migrations",
@@ -38,6 +39,7 @@ class PathCategory:
     patterns: tuple[str, ...]
     suites: tuple[str, ...]
     layer: str | None
+    layer_patterns: tuple[str, ...] | None
 
 
 @dataclass(frozen=True)
@@ -103,7 +105,7 @@ def load_config(path: Path) -> SuiteSelectionConfig:
     for row in category_rows:
         if not isinstance(row, dict):
             raise ValueError("categories entries must be tables")
-        unsupported = set(row) - {"name", "patterns", "suites", "layer"}
+        unsupported = set(row) - {"name", "patterns", "suites", "layer", "layer_patterns"}
         missing = {"name", "patterns", "suites"} - set(row)
         if unsupported:
             raise ValueError(f"unsupported category keys: {sorted(unsupported)}")
@@ -131,7 +133,18 @@ def load_config(path: Path) -> SuiteSelectionConfig:
             raise ValueError("operational layer must select only the operational suite")
         if layer == "migration" and suites != ("migrations",):
             raise ValueError("migration layer must select only the migrations suite")
-        categories.append(PathCategory(name, patterns, suites, layer))
+        raw_layer_patterns = row.get("layer_patterns")
+        if raw_layer_patterns is None:
+            layer_patterns = patterns if layer else None
+        else:
+            if layer is None:
+                raise ValueError(f"category {name!r} has layer patterns without a layer")
+            if not isinstance(raw_layer_patterns, list) or not raw_layer_patterns:
+                raise ValueError(f"category {name!r} layer patterns must be a non-empty array")
+            layer_patterns = tuple(_normalize_pattern(pattern) for pattern in raw_layer_patterns)
+            if not set(layer_patterns).issubset(patterns):
+                raise ValueError(f"category {name!r} layer patterns must be selected patterns")
+        categories.append(PathCategory(name, patterns, suites, layer, layer_patterns))
     missing_suites = set(EXPENSIVE_SUITES) - seen_suites
     if missing_suites:
         raise ValueError(f"missing suite ownership: {sorted(missing_suites)}")
@@ -188,7 +201,11 @@ def layer_for_path(config: SuiteSelectionConfig, path: str, django_db_enabled: b
     if normalized is None:
         raise ValueError(f"cannot classify malformed test path {path!r}")
     layers = {
-        category.layer for category in _matching_categories(config, normalized) if category.layer
+        category.layer
+        for category in _matching_categories(config, normalized)
+        if category.layer
+        and category.layer_patterns
+        and any(fnmatchcase(normalized, pattern) for pattern in category.layer_patterns)
     }
     if len(layers) > 1:
         raise ValueError(f"conflicting manifest layer ownership for {normalized}: {sorted(layers)}")

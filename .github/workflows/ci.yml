@@ -33,7 +33,7 @@ jobs:
           --format github >> "$GITHUB_OUTPUT"
 
   quality:
-    name: Quality core
+    name: Quality checks
     needs: [select-test-suites]
     runs-on: ubuntu-latest
     permissions:

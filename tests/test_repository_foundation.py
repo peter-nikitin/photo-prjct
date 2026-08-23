@@ -151,7 +151,7 @@ def test_ci_reuses_visual_image_with_read_only_package_access() -> None:
     assert ci[True]["push"]["branches"] == ["main"]
     assert "pull_request" in ci[True]
     assert selector["name"] == "Select test suites"
-    assert quality["name"] == "Quality core"
+    assert quality["name"] == "Quality checks"
     assert ci["jobs"]["operational"]["name"] == "Operational tests"
     assert ci["jobs"]["migration"]["name"] == "Migration tests"
     assert visual_job["name"] == "Visual tests"

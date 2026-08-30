@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved by the maintainer on 2026-08-30. Proposed ADR 0034 must be explicitly accepted before an
-implementation plan is written.
+Approved by the maintainer on 2026-08-30. ADR 0034 was accepted on 2026-08-30, so implementation
+planning may proceed.
 
 - Related architecture: [`docs/architecture.md`](../../architecture.md), public selfie search,
   private media delivery, paid-order fulfillment, runtime feature gates, privacy, and operational
@@ -27,14 +27,13 @@ implementation plan is written.
   [ADR 0028](../../adr/0028-operate-one-canonical-deployment.md),
   [ADR 0029](../../adr/0029-use-watermarked-previews-for-paid-photos.md),
   [ADR 0031](../../adr/0031-use-orders-and-adapters-for-paid-original-delivery.md), and
-  [ADR 0032](../../adr/0032-reconcile-code-owned-feature-flags-at-startup.md), with proposed
+  [ADR 0032](../../adr/0032-reconcile-code-owned-feature-flags-at-startup.md), with accepted
   [ADR 0034](../../adr/0034-stream-page-scoped-photo-archives-through-django.md) for this increment.
-- ADR impact: **Requires a new ADR.** Streaming an aggregate archive body through Django is a
+- ADR impact: **Resolved by accepted ADR 0034.** Streaming an aggregate archive body through Django is a
   deliberate exception to ADR 0020's rule that application requests authorize media while Object
   Storage serves media bodies directly. The ADR must accept the page-sized streaming exception,
   preserve all existing authorization and exact-object boundaries, and record why a temporary
-  stored archive and background archive job are not selected. Proposed ADR 0034 records that
-  choice. Planning must not begin until it is explicitly accepted.
+  stored archive and background archive job are not selected. ADR 0034 records that choice.
 
 ## Outcome
 

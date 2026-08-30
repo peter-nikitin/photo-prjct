@@ -53,6 +53,7 @@ place, and add the new record to this index.
 | 0031 | [Use orders and adapters for paid original delivery](0031-use-orders-and-adapters-for-paid-original-delivery.md) | Accepted |
 | 0032 | [Reconcile code-owned feature flags at startup](0032-reconcile-code-owned-feature-flags-at-startup.md) | Accepted |
 | 0033 | [Keep durable knowledge and test executable contracts](0033-keep-durable-knowledge-test-executable-contracts.md) | Accepted |
+| 0034 | [Stream page-scoped photo archives through Django](0034-stream-page-scoped-photo-archives-through-django.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -83,8 +84,15 @@ supersedes that denial only after a qualifying Order becomes paid.
 single-event RUB Orders, normalized PaymentAttempts behind a narrow gateway adapter, trusted manual
 payment confirmation, paid-OrderItem original entitlement, permanent revocable anonymous Order
 links, asynchronous email delivery, and durable Commerce attention. The concrete bank/email
-protocols, fiscal and legal contracts, public activation, refunds, and ZIP delivery remain later
-work.
+protocols, fiscal and legal contracts, public activation, and refunds remain later work.
+
+[ADR 0034](0034-stream-page-scoped-photo-archives-through-django.md) accepts and the repository
+implements a narrow exception to ADR 0020 for an authorized page-scoped aggregate ZIP body: Django
+streams at most one numbered page of private originals without retaining an archive. The code-owned
+`bulk-photo-download` definition reconciles in `off`; deployment, activation, maximum-page
+capacity acceptance, and live customer evidence remain incomplete. Individual downloads retain
+direct signed Object Storage delivery, and all selfie-result and paid-Order authorization remains
+unchanged.
 
 [ADR 0022](0022-use-numbered-gallery-pages.md) supersedes only ADR 0020's cursor-pagination
 follow-up. Normal galleries and ready selfie-search results use bounded numbered pages; all media

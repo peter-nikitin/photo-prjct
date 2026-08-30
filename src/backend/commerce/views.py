@@ -1,9 +1,11 @@
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from urllib.parse import urlsplit
 
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.core.paginator import InvalidPage
+from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.urls import Resolver404, resolve, reverse
 from django.utils.cache import patch_vary_headers
@@ -14,12 +16,20 @@ from django.views.decorators.debug import sensitive_post_parameters, sensitive_v
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from feature_flags import services as feature_flag_services
 from feature_flags.registry import (
+    BULK_PHOTO_DOWNLOAD,
     PAID_PHOTO_CART,
     PAID_PHOTO_PAYMENT_SIMULATOR,
     PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
 )
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageUnavailable
+from picflow.archive import (
+    ArchiveObservation,
+    ArchiveSourceMissing,
+    ArchiveSourceUnavailable,
+    prepare_zip_archive,
+)
+from picflow.archive_presentation import archive_page_action
 from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhoto,
@@ -44,9 +54,11 @@ from commerce.delivery import ResendOrderAccessRateLimited, resend_order_access
 from commerce.forms import CheckoutForm
 from commerce.identity import parse_browser_token
 from commerce.models import Order, OrderAccessGrant, OrderItem, PaymentAttempt
+from commerce.order_items import order_item_page
 from commerce.original_delivery import (
     PurchasedOriginalDenied,
     PurchasedOriginalUnavailable,
+    authorize_purchased_archive,
     sign_purchased_original,
 )
 from commerce.payment_gateway import (
@@ -79,6 +91,8 @@ CART_COOKIE_NAME = "findme_cart"
 CART_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 PURCHASE_COOKIE_NAME = "findme_purchase"
 PURCHASE_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
+
+logger = logging.getLogger(__name__)
 
 
 class CartExceptionReporterFilter(SafeExceptionReporterFilter):
@@ -182,6 +196,10 @@ def paid_cart_enabled(request: HttpRequest) -> bool:
 
 def paid_purchase_enabled(request: HttpRequest) -> bool:
     return feature_flag_services.is_enabled(PAID_PHOTO_PURCHASE, request.user)
+
+
+def bulk_photo_download_enabled(request: HttpRequest) -> bool:
+    return feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user)
 
 
 @sensitive_variables()
@@ -549,6 +567,26 @@ def grant_order_download(
 
 
 @require_GET
+def order_archive(request: HttpRequest, public_number: str) -> HttpResponse:
+    return _archive_order(request, public_number=public_number)
+
+
+@require_GET
+def grant_order_archive(
+    request: HttpRequest,
+    public_number: str,
+    grant_identifier: str,
+    signature: str,
+) -> HttpResponse:
+    return _archive_order(
+        request,
+        public_number=public_number,
+        grant_identifier=grant_identifier,
+        grant_signature=signature,
+    )
+
+
+@require_GET
 def order_media(
     request: HttpRequest,
     public_number: str,
@@ -619,6 +657,13 @@ def _render_order(
     if authorized is None:
         return _purchase_not_found()
     order_instance, access_grant = authorized
+    try:
+        items_page = order_item_page(
+            order=order_instance,
+            page_number=request.GET.get("page"),
+        )
+    except InvalidPage:
+        return _purchase_not_found()
     support_contact = _configured_support_contact()
     if support_contact is None:
         return _purchase_not_found()
@@ -629,11 +674,30 @@ def _render_order(
             "event": order_instance.event,
             "order_presentation": order_presentation(
                 order=order_instance,
+                items_page=items_page,
                 media_url_builder=_order_media_url_builder(
                     order=order_instance,
                     access_grant=access_grant,
                     grant_signature=grant_signature,
                 ),
+            ),
+            "order_items_page": items_page,
+            "order_url": _order_page_url(
+                order=order_instance,
+                access_grant=access_grant,
+                grant_signature=grant_signature,
+                items_page=items_page,
+            ),
+            "archive_action": _order_archive_action(
+                request=request,
+                order=order_instance,
+                items_page=items_page,
+            ),
+            "archive_url": _order_archive_url(
+                order=order_instance,
+                access_grant=access_grant,
+                grant_signature=grant_signature,
+                items_page=items_page,
             ),
             "access_grant": access_grant,
             "grant_signature": grant_signature if access_grant is not None else None,
@@ -645,6 +709,134 @@ def _render_order(
     if record_customer_access:
         record_order_customer_access(order=order_instance)
     return response
+
+
+@sensitive_variables()
+def _archive_order(
+    request: HttpRequest,
+    *,
+    public_number: str,
+    grant_identifier: str | None = None,
+    grant_signature: str | None = None,
+) -> HttpResponse:
+    if not paid_purchase_enabled(request) or not bulk_photo_download_enabled(request):
+        return _purchase_not_found()
+    order_instance = Order.objects.filter(public_number=public_number).first()
+    if order_instance is None:
+        return _purchase_not_found()
+    try:
+        authorized = authorize_purchased_archive(
+            order=order_instance,
+            page_number=request.GET.get("page"),
+            purchase_browser_token=_purchase_browser_token(request),
+            grant_identifier=grant_identifier,
+            grant_signature=grant_signature,
+            order_access_signing_secret=getattr(
+                settings,
+                "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
+                "",
+            ),
+        )
+    except PurchasedOriginalDenied:
+        return _purchase_not_found()
+    except PurchasedOriginalUnavailable:
+        return private_purchase_response(HttpResponse(status=503))
+    try:
+        archive = prepare_zip_archive(
+            entries=authorized.entries,
+            storage_factory=_archive_storage,
+            observation=ArchiveObservation(
+                context="paid_order",
+                page=authorized.page.number,
+            ),
+        )
+    except (ArchiveSourceMissing, ArchiveSourceUnavailable, StorageUnavailable, ValueError):
+        return private_purchase_response(HttpResponse(status=503))
+    response = StreamingHttpResponse(archive, content_type="application/zip")
+    archive_filename = _order_archive_filename(
+        order=order_instance,
+        page=authorized.page,
+    )
+    response["Content-Disposition"] = f'attachment; filename="{archive_filename}"'
+    response["X-Accel-Buffering"] = "no"
+    return private_purchase_response(response)
+
+
+def _order_archive_action(*, request: HttpRequest, order: Order, items_page):
+    if order.status != Order.Status.PAID or not bulk_photo_download_enabled(request):
+        return None
+    return archive_page_action(
+        item_count=len(items_page.object_list),
+        page_number=items_page.number,
+        page_count=items_page.paginator.num_pages,
+    )
+
+
+def _order_page_url(
+    *,
+    order: Order,
+    access_grant: OrderAccessGrant | None,
+    grant_signature: str | None,
+    items_page,
+) -> str:
+    if access_grant is not None and grant_signature is not None:
+        url = reverse(
+            "commerce:grant_order",
+            kwargs={
+                "public_number": order.public_number,
+                "grant_identifier": access_grant.pk,
+                "signature": grant_signature,
+            },
+        )
+    else:
+        url = reverse(
+            "commerce:order",
+            kwargs={"public_number": order.public_number},
+        )
+    if items_page.number == 1:
+        return url
+    return f"{url}?page={items_page.number}"
+
+
+def _order_archive_url(
+    *,
+    order: Order,
+    access_grant: OrderAccessGrant | None,
+    grant_signature: str | None,
+    items_page,
+) -> str | None:
+    if len(items_page.object_list) < 2:
+        return None
+    if access_grant is not None and grant_signature is not None:
+        url = reverse(
+            "commerce:grant_order_archive",
+            kwargs={
+                "public_number": order.public_number,
+                "grant_identifier": access_grant.pk,
+                "signature": grant_signature,
+            },
+        )
+    else:
+        url = reverse(
+            "commerce:order_archive",
+            kwargs={"public_number": order.public_number},
+        )
+    if items_page.paginator.num_pages == 1:
+        return url
+    return f"{url}?page={items_page.number}"
+
+
+def _order_archive_filename(*, order: Order, page) -> str:
+    if page.paginator.num_pages == 1:
+        return f"findme-photo-order-{order.public_number}.zip"
+    return f"findme-photo-order-{order.public_number}-page-{page.number}.zip"
+
+
+def _archive_storage() -> PrivateUploadStorage:
+    try:
+        return PrivateUploadStorage()
+    except (TypeError, ValueError):
+        raise StorageUnavailable() from None
 
 
 def _order_status(

@@ -1,14 +1,19 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
+from typing import Literal, cast
 
+from django.core.paginator import InvalidPage, Page
 from django.db import transaction
 from django.utils import timezone
 from ingestion.storage import ObjectChanged, ObjectMismatch, ObjectMissing, StorageUnavailable
+from picflow.archive import ArchiveEntry
 from picflow.gallery import FinalObjectStorage
 
 from commerce.attention import open_attention
 from commerce.capabilities import purchase_browser_authorizes_order, verify_order_access_grant
 from commerce.models import DownloadGrantAudit, Order, OrderAccessGrant, OrderItem
+from commerce.order_items import order_item_page
 
 
 class PurchasedOriginalDenied(Exception):
@@ -28,6 +33,12 @@ class PurchasedOriginalUnavailable(Exception):
 @dataclass(frozen=True)
 class PurchasedOriginalDownload:
     signed_url: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class PurchasedOrderArchive:
+    entries: tuple[ArchiveEntry, ...] = field(repr=False)
+    page: Page[OrderItem] = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -107,6 +118,65 @@ def sign_purchased_original(
     return PurchasedOriginalDownload(signed_url=signed_url)
 
 
+def authorize_purchased_archive(
+    *,
+    order: Order,
+    page_number: object,
+    purchase_browser_token: object,
+    grant_identifier: object,
+    grant_signature: object,
+    order_access_signing_secret: str | bytes | None,
+    now: datetime | None = None,
+) -> PurchasedOrderArchive:
+    """Authorize and audit one paid Order page before any archive bytes begin."""
+    if order.pk is None:
+        raise PurchasedOriginalDenied()
+    current_time = now or timezone.now()
+    try:
+        with transaction.atomic():
+            current_order = Order.objects.select_for_update().filter(pk=order.pk).first()
+            if current_order is None:
+                raise PurchasedOriginalDenied()
+            authorization = _authorize_order(
+                order=current_order,
+                purchase_browser_token=purchase_browser_token,
+                grant_identifier=grant_identifier,
+                grant_signature=grant_signature,
+                order_access_signing_secret=order_access_signing_secret,
+                now=current_time,
+            )
+            if current_order.status != Order.Status.PAID:
+                raise PurchasedOriginalDenied()
+            try:
+                page = order_item_page(order=current_order, page_number=page_number)
+            except InvalidPage:
+                raise PurchasedOriginalDenied() from None
+            if len(page.object_list) < 2:
+                raise PurchasedOriginalDenied()
+
+            entries = tuple(
+                _archive_entry_for_item(order_item=item, now=current_time)
+                for item in page.object_list
+            )
+            for item in page.object_list:
+                DownloadGrantAudit.objects.create(
+                    order_item=item,
+                    authorization_source=authorization.source,
+                    access_grant=authorization.access_grant,
+                )
+            if current_order.first_customer_access_at is None:
+                current_order.first_customer_access_at = current_time
+                current_order.save(update_fields=["first_customer_access_at"])
+    except _ExactOriginalMissing as failure:
+        _record_missing_original(
+            order_id=failure.order_id,
+            order_item_id=failure.order_item_id,
+            now=current_time,
+        )
+        raise PurchasedOriginalUnavailable() from None
+    return PurchasedOrderArchive(entries=entries, page=page)
+
+
 def _authorize_order(
     *,
     order: Order,
@@ -171,6 +241,40 @@ def _sign_exact_original(
     except StorageUnavailable:
         raise _ExactOriginalUnavailable() from None
     return signed_url
+
+
+def _archive_entry_for_item(*, order_item: OrderItem, now: datetime) -> ArchiveEntry:
+    photo = order_item.photo
+    content_type = photo.original_content_type
+    photo_id = photo.pk
+    if (
+        not isinstance(photo_id, str)
+        or not photo_id
+        or len(photo_id) > 32
+        or not all(
+            character.isascii() and (character.isalnum() or character in "-_")
+            for character in photo_id
+        )
+        or not isinstance(photo.original_key, str)
+        or not photo.original_key
+        or isinstance(photo.original_size, bool)
+        or not isinstance(photo.original_size, int)
+        or photo.original_size < 0
+        or content_type not in {"image/jpeg", "image/png"}
+    ):
+        raise _ExactOriginalMissing(order_item.order_id, order_item.pk)
+    return ArchiveEntry(
+        photo_id=photo_id,
+        original_key=photo.original_key,
+        original_size=photo.original_size,
+        original_content_type=cast(Literal["image/jpeg", "image/png"], content_type),
+        on_source_missing=partial(
+            _record_missing_original,
+            order_id=order_item.order_id,
+            order_item_id=order_item.pk,
+            now=now,
+        ),
+    )
 
 
 def _record_missing_original(*, order_id: int, order_item_id: int, now: datetime) -> None:

@@ -131,6 +131,7 @@ class OriginalDeliveryTests(TestCase):
         photo: Photo,
         browser_digest: str,
         status: object,
+        total_kopecks: int = 30000,
     ) -> Order:
         normalized_status = str(status)
         order = Order.objects.create(
@@ -138,7 +139,7 @@ class OriginalDeliveryTests(TestCase):
             event=event,
             purchase_browser_token_sha256=browser_digest,
             checkout_email="buyer@example.test",
-            total_kopecks=30000,
+            total_kopecks=total_kopecks,
             status=normalized_status,
             paid_at=self.now if normalized_status == str(Order.Status.PAID) else None,
         )
@@ -404,3 +405,199 @@ class OriginalDeliveryTests(TestCase):
 
         self.assertEqual(CommerceAttention.objects.count(), 0)
         self.assertFalse(DownloadGrantAudit.objects.exists())
+
+    def test_paid_archive_authorizes_exact_page_and_audits_every_item_before_streaming(
+        self,
+    ) -> None:
+        delivery = load_original_delivery()
+        archive_capability = issue_purchase_browser_capability(order_created_at=self.now)
+        archive_order = self.make_order(
+            public_number="FM-TUVW2345",
+            event=self.event,
+            photo=self.photo,
+            browser_digest=archive_capability.token_sha256,
+            status=Order.Status.PAID,
+            total_kopecks=60000,
+        )
+        second_photo = self.make_private_photo(
+            event=self.event,
+            photo_id="paid-photo-two",
+            original_key="originals/44444444444444444444444444444444",
+        )
+        second_item = OrderItem.objects.create(
+            order=archive_order,
+            photo=second_photo,
+            photo_public_id=second_photo.pk,
+            unit_price_kopecks=30000,
+            line_total_kopecks=30000,
+        )
+
+        archive = delivery.authorize_purchased_archive(
+            order=archive_order,
+            page_number=None,
+            purchase_browser_token=archive_capability.token,
+            grant_identifier=None,
+            grant_signature=None,
+            order_access_signing_secret=self.signing_secret,
+            now=self.now,
+        )
+
+        self.assertEqual(
+            tuple(entry.photo_id for entry in archive.entries),
+            (self.photo.pk, second_photo.pk),
+        )
+        self.assertEqual(archive.page.number, 1)
+        self.assertEqual(archive.page.paginator.count, 2)
+        self.assertEqual(
+            set(DownloadGrantAudit.objects.values_list("order_item_id", flat=True)),
+            {archive_order.items.exclude(pk=second_item.pk).get().pk, second_item.pk},
+        )
+        archive_order.refresh_from_db()
+        self.assertEqual(archive_order.first_customer_access_at, self.now)
+
+    def test_paid_archive_rejects_nonpaid_invalid_page_and_foreign_or_revoked_authority(
+        self,
+    ) -> None:
+        delivery = load_original_delivery()
+        foreign_capability = issue_purchase_browser_capability(order_created_at=self.now)
+        foreign_order = self.make_order(
+            public_number="FM-EFGH2345",
+            event=self.event,
+            photo=self.unpurchased_photo,
+            browser_digest=foreign_capability.token_sha256,
+            status=Order.Status.PAID,
+        )
+
+        attempts = (
+            {"order": foreign_order, "purchase_browser_token": self.purchase_capability.token},
+            {"page_number": "2"},
+        )
+        for overrides in attempts:
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(delivery.PurchasedOriginalDenied):
+                    delivery.authorize_purchased_archive(
+                        order=overrides.get("order", self.order),
+                        page_number=overrides.get("page_number"),
+                        purchase_browser_token=overrides.get(
+                            "purchase_browser_token", self.purchase_capability.token
+                        ),
+                        grant_identifier=None,
+                        grant_signature=None,
+                        order_access_signing_secret=self.signing_secret,
+                        now=self.now,
+                    )
+
+        revoke_order_access_grant(self.grant)
+        with self.assertRaises(delivery.PurchasedOriginalDenied):
+            self.issue_archive_with_grant(delivery)
+        Order.objects.filter(pk=self.order.pk).update(status=Order.Status.PENDING, paid_at=None)
+        with self.assertRaises(delivery.PurchasedOriginalDenied):
+            delivery.authorize_purchased_archive(
+                order=self.order,
+                page_number=None,
+                purchase_browser_token=self.purchase_capability.token,
+                grant_identifier=None,
+                grant_signature=None,
+                order_access_signing_secret=self.signing_secret,
+                now=self.now,
+            )
+        self.assertFalse(DownloadGrantAudit.objects.exists())
+
+    def issue_archive_with_grant(self, delivery):
+        return delivery.authorize_purchased_archive(
+            order=self.order,
+            page_number=None,
+            purchase_browser_token=None,
+            grant_identifier=self.grant.pk,
+            grant_signature=sign_order_access_grant(
+                grant=self.grant, signing_secret=self.signing_secret
+            ),
+            order_access_signing_secret=self.signing_secret,
+            now=self.now,
+        )
+
+    def test_archive_metadata_and_later_source_failure_open_one_exact_attention(self) -> None:
+        delivery = load_original_delivery()
+        archive_capability = issue_purchase_browser_capability(order_created_at=self.now)
+        archive_order = self.make_order(
+            public_number="FM-XYZA2345",
+            event=self.event,
+            photo=self.photo,
+            browser_digest=archive_capability.token_sha256,
+            status=Order.Status.PAID,
+            total_kopecks=60000,
+        )
+        second_photo = self.make_private_photo(
+            event=self.event,
+            photo_id="paid-attention-two",
+            original_key="originals/55555555555555555555555555555555",
+        )
+        OrderItem.objects.create(
+            order=archive_order,
+            photo=second_photo,
+            photo_public_id=second_photo.pk,
+            unit_price_kopecks=30000,
+            line_total_kopecks=30000,
+        )
+        archive = delivery.authorize_purchased_archive(
+            order=archive_order,
+            page_number=None,
+            purchase_browser_token=archive_capability.token,
+            grant_identifier=None,
+            grant_signature=None,
+            order_access_signing_secret=self.signing_secret,
+            now=self.now,
+        )
+
+        entry = next(entry for entry in archive.entries if entry.photo_id == self.photo.pk)
+        self.assertIsNotNone(entry.on_source_missing)
+        entry.on_source_missing()
+        entry.on_source_missing()
+
+        attention = CommerceAttention.objects.get()
+        self.assertEqual(attention.kind, CommerceAttention.Kind.ORIGINAL_MISSING)
+        self.assertEqual(
+            attention.subject,
+            f"order-item:{archive_order.items.get(photo=self.photo).pk}",
+        )
+        self.assertEqual(attention.order_id, archive_order.pk)
+
+        invalid_capability = issue_purchase_browser_capability(order_created_at=self.now)
+        invalid_photo = self.make_private_photo(
+            event=self.event,
+            photo_id="aaa-invalid-archive-photo",
+            original_key="originals/66666666666666666666666666666666",
+            original_content_type="image/gif",
+        )
+        invalid_order = self.make_order(
+            public_number="FM-BCDE2345",
+            event=self.event,
+            photo=invalid_photo,
+            browser_digest=invalid_capability.token_sha256,
+            status=Order.Status.PAID,
+            total_kopecks=60000,
+        )
+        OrderItem.objects.create(
+            order=invalid_order,
+            photo=self.unpurchased_photo,
+            photo_public_id=self.unpurchased_photo.pk,
+            unit_price_kopecks=30000,
+            line_total_kopecks=30000,
+        )
+        with self.assertRaises(delivery.PurchasedOriginalUnavailable):
+            delivery.authorize_purchased_archive(
+                order=invalid_order,
+                page_number=None,
+                purchase_browser_token=invalid_capability.token,
+                grant_identifier=None,
+                grant_signature=None,
+                order_access_signing_secret=self.signing_secret,
+                now=self.now,
+            )
+        self.assertEqual(CommerceAttention.objects.count(), 2)
+        self.assertTrue(
+            CommerceAttention.objects.filter(
+                order=invalid_order,
+                subject=f"order-item:{invalid_order.items.get(photo=invalid_photo).pk}",
+            ).exists()
+        )

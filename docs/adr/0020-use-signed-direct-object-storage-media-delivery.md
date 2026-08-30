@@ -8,7 +8,9 @@
   attachment-download exclusion; [ADR 0022](0022-use-numbered-gallery-pages.md) for the
   cursor-pagination follow-up only; and
   [ADR 0029](0029-use-watermarked-previews-for-paid-photos.md) for normal paid-gallery denial and
-  original selection by the new paid-photo generation only
+  original selection by the new paid-photo generation only; and
+  [ADR 0034](0034-stream-page-scoped-photo-archives-through-django.md) only for an authorized
+  page-scoped aggregate archive body
 
 ## Context
 

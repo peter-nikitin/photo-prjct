@@ -2,6 +2,7 @@ import logging
 import re
 from functools import wraps
 from time import monotonic
+from typing import Literal, cast
 from urllib.parse import urlencode
 
 from commerce.views import (
@@ -17,13 +18,24 @@ from django.http import (
     HttpResponse,
     HttpResponseBase,
     JsonResponse,
+    StreamingHttpResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET, require_POST
-from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
+from feature_flags import services as feature_flag_services
+from feature_flags.registry import BULK_PHOTO_DOWNLOAD
+from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError, StorageUnavailable
 from picflow.access import mark_event_staff_preview
+from picflow.archive import (
+    ArchiveEntry,
+    ArchiveObservation,
+    ArchiveSourceMissing,
+    ArchiveSourceUnavailable,
+    prepare_zip_archive,
+)
+from picflow.archive_presentation import archive_page_action
 from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhotoFactory,
@@ -282,12 +294,23 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
                         kwargs={"event_slug": search.event.slug, "public_token": public_token},
                     ),
                 }
+    archive_action = _result_archive_action(request=request, search=search, page=selfie_search_page)
     response = render(
         request,
         "selfie_search/result.html",
         {
             "cart_presentation": cart_state.presentation if cart_state is not None else None,
             "event": search.event,
+            "archive_action": archive_action,
+            "archive_url": (
+                _result_archive_url(
+                    search=search,
+                    public_token=public_token,
+                    page=selfie_search_page,
+                )
+                if archive_action is not None
+                else None
+            ),
             "gallery_photos": gallery_photos,
             "gallery_result_items": gallery_result_items,
             "feedback": feedback_context,
@@ -428,12 +451,113 @@ def result_download(request, event_slug: str, public_token: str, photo_id: str) 
     return redirect(signed_url)
 
 
+@require_GET
+def result_archive(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
+    if not feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user):
+        return _not_found_response()
+    search = _public_search(request, event_slug=event_slug, public_token=public_token)
+    if search is None or search.event.access_type != Event.AccessType.FREE:
+        return _not_found_response()
+    try:
+        page = saved_ready_result_page(
+            search=search,
+            page_number=request.GET.get("page"),
+            paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
+        )
+    except InvalidPage:
+        return _not_found_response()
+    entries = _archive_entries(page)
+    if entries is None or len(entries) < 2:
+        return _not_found_response()
+    try:
+        archive = prepare_zip_archive(
+            entries=entries,
+            storage_factory=_archive_storage,
+            observation=ArchiveObservation(context="free_result", page=page.number),
+        )
+    except ArchiveSourceMissing:
+        return _not_found_response()
+    except (ArchiveSourceUnavailable, StorageUnavailable):
+        return HttpResponse(status=503)
+    response = StreamingHttpResponse(archive, content_type="application/zip")
+    response["Content-Disposition"] = (
+        f'attachment; filename="{_result_archive_filename(search=search, page=page)}"'
+    )
+    response["Cache-Control"] = "private, no-store"
+    response["Referrer-Policy"] = "no-referrer"
+    response["X-Accel-Buffering"] = "no"
+    return response
+
+
 def _event_page(request, event_slug: str, form: SelfieSearchUploadForm, *, status: int = 200):
     from config.views import event_detail
 
     response = event_detail(request, event_slug, selfie_search_form=form)
     response.status_code = status
     return response
+
+
+def _result_archive_action(*, request, search: SelfieSearch, page):
+    if (
+        page is None
+        or search.event.access_type != Event.AccessType.FREE
+        or not feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user)
+    ):
+        return None
+    return archive_page_action(
+        item_count=len(page.object_list),
+        page_number=page.number,
+        page_count=page.paginator.num_pages,
+    )
+
+
+def _result_archive_url(*, search: SelfieSearch, public_token: str, page) -> str:
+    url = reverse(
+        "selfie_search:result_archive",
+        kwargs={"event_slug": search.event.slug, "public_token": public_token},
+    )
+    if page.paginator.num_pages == 1:
+        return url
+    return f"{url}?{urlencode({'page': page.number})}"
+
+
+def _archive_entries(page) -> tuple[ArchiveEntry, ...] | None:
+    entries: list[ArchiveEntry] = []
+    for row in page.object_list:
+        photo = row.photo
+        if (
+            not isinstance(photo.original_key, str)
+            or not photo.original_key
+            or isinstance(photo.original_size, bool)
+            or not isinstance(photo.original_size, int)
+            or photo.original_size < 0
+            or photo.original_content_type not in {"image/jpeg", "image/png"}
+        ):
+            return None
+        entries.append(
+            ArchiveEntry(
+                photo_id=photo.pk,
+                original_key=photo.original_key,
+                original_size=photo.original_size,
+                original_content_type=cast(
+                    Literal["image/jpeg", "image/png"], photo.original_content_type
+                ),
+            )
+        )
+    return tuple(entries)
+
+
+def _archive_storage() -> PrivateUploadStorage:
+    try:
+        return PrivateUploadStorage()
+    except (TypeError, ValueError):
+        raise StorageUnavailable() from None
+
+
+def _result_archive_filename(*, search: SelfieSearch, page) -> str:
+    if page.paginator.num_pages == 1:
+        return f"findme-photo-{search.event.slug}-search-results.zip"
+    return f"findme-photo-{search.event.slug}-search-page-{page.number}.zip"
 
 
 _TERMINAL_SEARCH_STATUSES = frozenset(

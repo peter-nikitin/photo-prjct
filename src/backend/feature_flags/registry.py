@@ -40,6 +40,9 @@ PAID_PHOTO_PURCHASE: Final = FeatureDefinition(
 PAID_PHOTO_PAYMENT_SIMULATOR: Final = FeatureDefinition(
     "paid-photo-payment-simulator", "Use the feature-gated test payment screen"
 )
+BULK_PHOTO_DOWNLOAD: Final = FeatureDefinition(
+    "bulk-photo-download", "Allow page-scoped photo archive downloads"
+)
 
 FEATURE_DEFINITIONS: Final = (
     PAID_EVENTS,
@@ -47,6 +50,7 @@ FEATURE_DEFINITIONS: Final = (
     PAID_PHOTO_CART,
     PAID_PHOTO_PURCHASE,
     PAID_PHOTO_PAYMENT_SIMULATOR,
+    BULK_PHOTO_DOWNLOAD,
 )
 
 validate_feature_definitions(FEATURE_DEFINITIONS)

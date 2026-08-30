@@ -31,6 +31,7 @@ visual_patterns = [
         name="visual_order_pending_status",
     ),
     path("order/paid/", views.order_paid, name="visual_order_paid"),
+    path("order/paid/multi/", views.order_paid_multi, name="visual_order_paid_multi"),
     path("order/email-failed/", views.order_email_failed, name="visual_order_email_failed"),
     path(
         "event/gallery-staff-preview/",
@@ -82,6 +83,11 @@ visual_patterns = [
         "event/selfie-search/ready/",
         views.selfie_search_ready,
         name="visual_selfie_search_ready",
+    ),
+    path(
+        "event/selfie-search/ready/single/",
+        views.selfie_search_ready_single,
+        name="visual_selfie_search_ready_single",
     ),
     path(
         "event/selfie-search/ready/paid/",

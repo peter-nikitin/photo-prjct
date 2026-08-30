@@ -241,6 +241,19 @@
   margin-bottom: 22px;
 }
 
+.selfie-search-archive-action {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin: -8px 0 22px;
+}
+
+.selfie-search-archive-action p {
+  max-width: 65ch;
+  margin: 0;
+  color: var(--muted);
+}
+
 .selfie-search-terminal-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -397,7 +410,8 @@
 
   .selfie-search .button,
   .selfie-search-terminal-actions > .button,
-  .selfie-search-feedback-actions .button {
+  .selfie-search-feedback-actions .button,
+  .selfie-search-archive-action .button {
     width: 100%;
   }
 

@@ -1,9 +1,10 @@
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
+from django.core.paginator import Page
 from picflow.gallery import GalleryPhoto, GalleryPhotoFactory, MediaUrlBuilder
 
-from commerce.models import Order
+from commerce.models import Order, OrderItem
 from commerce.pricing import format_rub
 from commerce.services import CartSnapshot
 
@@ -44,11 +45,15 @@ class OrderPresentation:
     status_display: str
     total_display: str
     masked_delivery_email: str
+    item_count: int
     photos: tuple[OrderPhotoPresentation, ...]
 
 
 def order_presentation(
-    *, order: Order, media_url_builder: MediaUrlBuilder | None = None
+    *,
+    order: Order,
+    items_page: Page[OrderItem],
+    media_url_builder: MediaUrlBuilder | None = None,
 ) -> OrderPresentation:
     """Present the immutable customer-safe Order facts without payment/provider evidence."""
     status_display = {
@@ -65,6 +70,7 @@ def order_presentation(
         status_display=status_display,
         total_display=format_rub(order.total_kopecks),
         masked_delivery_email=_mask_email(order.delivery_email),
+        item_count=items_page.paginator.count,
         photos=tuple(
             OrderPhotoPresentation(
                 photo=GalleryPhotoFactory.from_photo(
@@ -74,7 +80,7 @@ def order_presentation(
                 ),
                 unit_price_display=format_rub(item.unit_price_kopecks),
             )
-            for item in order.items.select_related("photo").order_by("photo_id")
+            for item in items_page.object_list
         ),
     )
 

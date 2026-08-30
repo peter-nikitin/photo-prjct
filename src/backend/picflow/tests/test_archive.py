@@ -63,14 +63,14 @@ def _entry(
     key: str | None = None,
     size: int = 3,
     content_type: str = "image/jpeg",
-    on_source_failure: Callable[[], None] | None = None,
+    on_source_missing: Callable[[], None] | None = None,
 ) -> ArchiveEntry:
     return ArchiveEntry(
         photo_id=photo_id,
         original_key=key or f"originals/{photo_id}",
         original_size=size,
         original_content_type=content_type,  # type: ignore[arg-type]
-        on_source_failure=on_source_failure,
+        on_source_missing=on_source_missing,
     )
 
 
@@ -166,7 +166,7 @@ class PreparedZipArchiveTests(SimpleTestCase):
         with self.subTest("missing"):
             with self.assertRaises(ArchiveSourceMissing):
                 prepare_zip_archive(
-                    entries=(_entry("missing", on_source_failure=missing_callback),),
+                    entries=(_entry("missing", on_source_missing=missing_callback),),
                     storage=_Storage([ObjectMissing()]),
                 )
             missing_callback.assert_called_once_with()
@@ -176,7 +176,7 @@ class PreparedZipArchiveTests(SimpleTestCase):
         with self.subTest("mismatch"):
             with self.assertRaises(ArchiveSourceMissing):
                 prepare_zip_archive(
-                    entries=(_entry("mismatch", size=3, on_source_failure=mismatch_callback),),
+                    entries=(_entry("mismatch", size=3, on_source_missing=mismatch_callback),),
                     storage=_Storage([_opened(mismatched_body, size=4)]),
                 )
             mismatch_callback.assert_called_once_with()
@@ -187,11 +187,11 @@ class PreparedZipArchiveTests(SimpleTestCase):
 
         with self.assertRaises(ArchiveSourceUnavailable):
             prepare_zip_archive(
-                entries=(_entry("unavailable", on_source_failure=callback),),
+                entries=(_entry("unavailable", on_source_missing=callback),),
                 storage=_Storage([StorageUnavailable()]),
             )
 
-        callback.assert_called_once_with()
+        callback.assert_not_called()
 
     def test_unreadable_first_source_fails_during_preparation(self) -> None:
         callback = Mock()
@@ -199,11 +199,11 @@ class PreparedZipArchiveTests(SimpleTestCase):
 
         with self.assertRaises(ArchiveSourceUnavailable):
             prepare_zip_archive(
-                entries=(_entry("unreadable", on_source_failure=callback),),
+                entries=(_entry("unreadable", on_source_missing=callback),),
                 storage=_Storage([_opened(unreadable, size=3)]),
             )
 
-        callback.assert_called_once_with()
+        callback.assert_not_called()
         self.assertEqual(unreadable.close_calls, 1)
 
     def test_callback_failure_is_logged_without_sensitive_exception_values(self) -> None:
@@ -220,7 +220,7 @@ class PreparedZipArchiveTests(SimpleTestCase):
                     entries=(
                         _entry(
                             "mismatch",
-                            on_source_failure=failing_callback,
+                            on_source_missing=failing_callback,
                         ),
                     ),
                     storage=_Storage([_opened(_Body([]), size=4)]),
@@ -244,7 +244,7 @@ class PreparedZipArchiveTests(SimpleTestCase):
         stream = prepare_zip_archive(
             entries=(
                 _entry("first"),
-                _entry("failed", on_source_failure=callback),
+                _entry("failed", on_source_missing=callback),
                 _entry("later", size=5),
             ),
             storage=storage,
@@ -255,11 +255,28 @@ class PreparedZipArchiveTests(SimpleTestCase):
             while True:
                 sent.append(next(stream))
 
-        callback.assert_called_once_with()
+        callback.assert_not_called()
         self.assertEqual(failed.close_calls, 1)
         self.assertEqual(storage.opened_keys, ["originals/first", "originals/failed"])
         with self.assertRaises(BadZipFile):
             ZipFile(BytesIO(b"".join(sent))).infolist()
+
+    def test_later_missing_source_invokes_only_its_missing_callback(self) -> None:
+        first = _Body([b"one"])
+        missing = _Body([ObjectMissing()])
+        callback = Mock()
+        stream = prepare_zip_archive(
+            entries=(
+                _entry("first"),
+                _entry("missing", on_source_missing=callback),
+            ),
+            storage=_Storage([_opened(first, size=3), _opened(missing, size=3)]),
+        )
+
+        with self.assertRaises(ArchiveSourceMissing):
+            b"".join(stream)
+
+        callback.assert_called_once_with()
 
     def test_rejects_unsafe_photo_identifiers_without_touching_storage(self) -> None:
         storage = _Storage([])

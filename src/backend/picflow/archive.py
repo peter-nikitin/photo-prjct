@@ -42,7 +42,7 @@ class ArchiveEntry:
     original_key: str
     original_size: int
     original_content_type: Literal["image/jpeg", "image/png"]
-    on_source_failure: Callable[[], None] | None = None
+    on_source_missing: Callable[[], None] | None = None
 
 
 class _BoundedSink:
@@ -293,20 +293,19 @@ def _read_source(entry: ArchiveEntry, body: ReadableBody) -> bytes:
 
 
 def _source_missing(entry: ArchiveEntry) -> ArchiveSourceMissing:
-    _notify_source_failure(entry)
+    _notify_source_missing(entry)
     return ArchiveSourceMissing()
 
 
 def _source_unavailable(entry: ArchiveEntry) -> ArchiveSourceUnavailable:
-    _notify_source_failure(entry)
     return ArchiveSourceUnavailable()
 
 
-def _notify_source_failure(entry: ArchiveEntry) -> None:
-    if entry.on_source_failure is None:
+def _notify_source_missing(entry: ArchiveEntry) -> None:
+    if entry.on_source_missing is None:
         return
     try:
-        entry.on_source_failure()
+        entry.on_source_missing()
     except Exception:
         logger.error(
             "archive source failure callback failed",

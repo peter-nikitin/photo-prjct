@@ -46,21 +46,30 @@
           {% endfor %}
           </tbody>
         </table>
+        {% if order_items_page.paginator.num_pages > 1 %}
+          {% include "ui/gallery_pagination.html" with pagination_page=order_items_page pagination_label="Страницы заказа" %}
+        {% endif %}
       </section>
       <aside class="order-summary-panel" aria-label="Сводка заказа">
         <p class="order-status order-status--{{ order_presentation.status }}" data-order-status role="status" aria-live="polite" tabindex="-1">{{ order_presentation.status_display }}</p>
         <p class="order-poll-message" data-order-poll-message role="status" aria-live="polite" hidden></p>
         <dl class="order-summary">
           <div><dt>Дата заказа</dt><dd>{{ order_presentation.created_at_display }}</dd></div>
-          <div><dt>Фотографий</dt><dd>{{ order_presentation.photos|length }}</dd></div>
+          <div><dt>Фотографий</dt><dd>{% firstof order_presentation.item_count order_presentation.photos|length %}</dd></div>
           <div class="order-summary-email"><dt>Электронная почта</dt><dd>{{ order_presentation.masked_delivery_email }}</dd></div>
           <div class="order-summary-total"><dt>Итого</dt><dd>{{ order_presentation.total_display }}</dd></div>
         </dl>
         {% if order_presentation.status == 'paid' %}
+          {% if archive_action %}
+            <div class="order-archive-action">
+              <a class="button" href="{{ archive_url }}">{{ archive_action.label }}</a>
+              {% if archive_action.helper_text %}<p>{{ archive_action.helper_text }}</p>{% endif %}
+            </div>
+          {% endif %}
           {% if access_grant %}
-            <form class="order-resend" data-order-resend method="post" action="{% url 'commerce:grant_order_resend' public_number=order_presentation.public_number grant_identifier=access_grant.pk signature=grant_signature %}">
+            <form class="order-resend order-resend--secondary" data-order-resend method="post" action="{% url 'commerce:grant_order_resend' public_number=order_presentation.public_number grant_identifier=access_grant.pk signature=grant_signature %}">
           {% else %}
-            <form class="order-resend" data-order-resend method="post" action="{% url 'commerce:order_resend' public_number=order_presentation.public_number %}">
+            <form class="order-resend order-resend--secondary" data-order-resend method="post" action="{% url 'commerce:order_resend' public_number=order_presentation.public_number %}">
           {% endif %}
             {% csrf_token %}
             <button type="submit" data-order-resend-button>Отправить письмо ещё раз</button>

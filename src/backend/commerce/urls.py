@@ -20,6 +20,11 @@ urlpatterns = [
         name="order_download",
     ),
     path(
+        "orders/<str:public_number>/download/",
+        views.order_archive,
+        name="order_archive",
+    ),
+    path(
         "orders/<str:public_number>/photos/<str:photo_id>/media/<str:variant>/",
         views.order_media,
         name="order_media",
@@ -40,6 +45,11 @@ urlpatterns = [
         "orders/<str:public_number>/access/<str:grant_identifier>/<str:signature>/photos/<str:photo_id>/download/",
         views.grant_order_download,
         name="grant_order_download",
+    ),
+    path(
+        "orders/<str:public_number>/access/<str:grant_identifier>/<str:signature>/download/",
+        views.grant_order_archive,
+        name="grant_order_archive",
     ),
     path(
         "orders/<str:public_number>/access/<str:grant_identifier>/<str:signature>/photos/<str:photo_id>/media/<str:variant>/",

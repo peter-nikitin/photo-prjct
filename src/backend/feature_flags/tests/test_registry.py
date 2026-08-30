@@ -3,6 +3,7 @@ from dataclasses import FrozenInstanceError
 from django.test import SimpleTestCase
 
 from feature_flags.registry import (
+    BULK_PHOTO_DOWNLOAD,
     FEATURE_DEFINITIONS,
     PAID_EVENTS,
     PAID_PHOTO_CART,
@@ -50,6 +51,7 @@ class FeatureDefinitionTests(SimpleTestCase):
                 PAID_PHOTO_CART,
                 PAID_PHOTO_PURCHASE,
                 PAID_PHOTO_PAYMENT_SIMULATOR,
+                BULK_PHOTO_DOWNLOAD,
             ),
         )
         self.assertEqual(
@@ -66,5 +68,6 @@ class FeatureDefinitionTests(SimpleTestCase):
                     "paid-photo-payment-simulator",
                     "Use the feature-gated test payment screen",
                 ),
+                ("bulk-photo-download", "Allow page-scoped photo archive downloads"),
             ),
         )

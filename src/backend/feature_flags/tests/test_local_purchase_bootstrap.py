@@ -7,7 +7,7 @@ from feature_flags.registry import FEATURE_DEFINITIONS
 
 class LocalPurchaseBootstrapTests(TestCase):
     @override_settings(DEBUG=True)
-    def test_bootstrap_enables_only_the_five_purchase_review_flags(self) -> None:
+    def test_bootstrap_enables_only_the_local_purchase_review_flags(self) -> None:
         call_command("sync_feature_flags", verbosity=0)
         call_command("bootstrap_local_purchase_review", verbosity=0)
 

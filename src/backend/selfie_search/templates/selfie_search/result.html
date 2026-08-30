@@ -34,6 +34,12 @@
       <section class="event-gallery selfie-search-results" data-event-gallery aria-labelledby="selfie-search-matches-title">
         <h2 id="selfie-search-matches-title">Возможные совпадения</h2>
         <p class="selfie-search-count">Найдено фотографий: {{ search.matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
+        {% if archive_action %}
+          <div class="selfie-search-archive-action">
+            <a class="button" href="{{ archive_url }}">{{ archive_action.label }}</a>
+            {% if archive_action.helper_text %}<p>{{ archive_action.helper_text }}</p>{% endif %}
+          </div>
+        {% endif %}
         {% if gallery_photos %}
           <div class="event-gallery-grid">
             {% for result, photo in gallery_result_items %}

@@ -22,10 +22,16 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
-from feature_flags.registry import PAID_EVENTS, PAID_PHOTO_CART, PAID_WATERMARKED_PREVIEWS
-from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
+from feature_flags.registry import (
+    BULK_PHOTO_DOWNLOAD,
+    PAID_EVENTS,
+    PAID_PHOTO_CART,
+    PAID_WATERMARKED_PREVIEWS,
+)
+from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
+from picflow.archive import ArchiveSourceMissing, ArchiveSourceUnavailable
 from picflow.gallery import GalleryPhotoFactory
 from picflow.models import Event, Photo
 from PIL import Image
@@ -1205,10 +1211,221 @@ class PublicSelfieResultViewTests(TestCase):
             },
         )
 
+    def result_archive_url(self, *, event: Event, token: str) -> str:
+        return reverse(
+            "selfie_search:result_archive",
+            kwargs={"event_slug": event.slug, "public_token": token},
+        )
+
     def assert_bearer_headers(self, response) -> None:
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    def test_free_ready_result_archive_is_gate_controlled_and_streams_the_saved_page(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        later = self.make_private_photo(search.event, photo_id="archive-later")
+        first = self.make_private_photo(search.event, photo_id="archive-first")
+        self.add_result(search=search, photo=later, rank=2)
+        self.add_result(search=search, photo=first, rank=1)
+        archive = iter((b"zip-body",))
+        storage = Mock()
+
+        with (
+            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
+            patch("selfie_search.views._archive_storage", return_value=storage),
+            patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
+        ):
+            response = self.client.get(self.result_archive_url(event=search.event, token=token))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/zip")
+        self.assertEqual(
+            response["Content-Disposition"],
+            'attachment; filename="findme-photo-city-run-search-results.zip"',
+        )
+        self.assertNotIn("Content-Length", response)
+        self.assertEqual(response["X-Accel-Buffering"], "no")
+        self.assert_bearer_headers(response)
+        self.assertEqual(b"".join(response.streaming_content), b"zip-body")
+        entries = prepare.call_args.kwargs["entries"]
+        self.assertEqual(tuple(entry.photo_id for entry in entries), (first.pk, later.pk))
+        self.assertEqual(
+            tuple(entry.original_key for entry in entries),
+            (first.original_key, later.original_key),
+        )
+        self.assertIs(prepare.call_args.kwargs["storage"], storage)
+
+    def test_page_two_archive_action_preserves_its_rendered_page_boundary(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photos = []
+        for rank in range(1, 103):
+            photo = self.make_private_photo(search.event, photo_id=f"archive-page-{rank:03d}")
+            self.add_result(search=search, photo=photo, rank=rank)
+            photos.append(photo)
+        archive_url = self.result_archive_url(event=search.event, token=token)
+        archive = iter((b"second-page-zip",))
+        storage = Mock()
+
+        with override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}):
+            page = self.client.get(self.result_url(event=search.event, token=token), {"page": 2})
+            with (
+                patch("selfie_search.views._archive_storage", return_value=storage),
+                patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
+            ):
+                response = self.client.get(f"{archive_url}?page=2")
+
+        self.assertContains(page, f'href="{archive_url}?page=2"')
+        self.assertContains(page, "Скачать эту страницу")
+        self.assertContains(
+            page,
+            (
+                "В архив попадут 2 фотографии со страницы 2 из 2. "
+                "Остальные страницы можно скачать отдельно."
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Disposition"],
+            'attachment; filename="findme-photo-city-run-search-page-2.zip"',
+        )
+        entries = prepare.call_args.kwargs["entries"]
+        self.assertEqual(
+            tuple(entry.photo_id for entry in entries),
+            (photos[100].pk, photos[101].pk),
+        )
+
+    def test_free_ready_result_archive_denies_off_and_anonymous_staff_gate(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        for rank in (1, 2):
+            self.add_result(
+                search=search,
+                photo=self.make_private_photo(search.event),
+                rank=rank,
+            )
+        staff = get_user_model().objects.create_user(username="archive-staff", is_staff=True)
+
+        with (
+            patch(
+                "selfie_search.views._archive_storage",
+                side_effect=StorageUnavailable(),
+            ) as storage,
+            patch("selfie_search.views.prepare_zip_archive") as prepare,
+        ):
+            with override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_OFF}):
+                off = self.client.get(self.result_archive_url(event=search.event, token=token))
+            with override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_STAFF}):
+                anonymous = self.client.get(
+                    self.result_archive_url(event=search.event, token=token)
+                )
+                self.client.force_login(staff)
+                staff_allowed = self.client.get(
+                    self.result_archive_url(event=search.event, token=token)
+                )
+
+        self.assertEqual(off.status_code, 404)
+        self.assertEqual(anonymous.status_code, 404)
+        self.assertEqual(staff_allowed.status_code, 503)
+        storage.assert_called_once()
+        prepare.assert_not_called()
+
+    def test_archive_denies_paid_invalid_and_small_result_pages_without_opening_storage(
+        self,
+    ) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photo = self.make_private_photo(search.event)
+        self.add_result(search=search, photo=photo, rank=1)
+        paid_event = self.make_event(
+            name="Paid archive", slug="paid-archive", access_type=Event.AccessType.PAID
+        )
+        paid_search, paid_token = self.make_search(
+            event=paid_event, status=SelfieSearch.Status.READY
+        )
+        for rank in (1, 2):
+            self.add_result(
+                search=paid_search,
+                photo=self.make_private_photo(paid_event),
+                rank=rank,
+            )
+
+        with (
+            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
+            patch("selfie_search.views._archive_storage") as storage,
+        ):
+            responses = (
+                self.client.get(self.result_archive_url(event=search.event, token=token)),
+                self.client.get(
+                    self.result_archive_url(event=search.event, token=token), {"page": "0"}
+                ),
+                self.client.get(
+                    self.result_archive_url(event=search.event, token=token), {"page": "wrong"}
+                ),
+                self.client.get(self.result_archive_url(event=paid_event, token=paid_token)),
+                self.client.get(self.result_archive_url(event=search.event, token="wrong-token")),
+            )
+
+        self.assertEqual(tuple(response.status_code for response in responses), (404,) * 5)
+        storage.assert_not_called()
+
+    def test_archive_maps_first_source_failures_before_streaming(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        for rank in (1, 2):
+            self.add_result(
+                search=search,
+                photo=self.make_private_photo(search.event),
+                rank=rank,
+            )
+        storage = Mock()
+
+        with (
+            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
+            patch("selfie_search.views._archive_storage", return_value=storage),
+            patch(
+                "selfie_search.views.prepare_zip_archive",
+                side_effect=[ArchiveSourceMissing(), ArchiveSourceUnavailable()],
+            ),
+        ):
+            missing = self.client.get(self.result_archive_url(event=search.event, token=token))
+            unavailable = self.client.get(self.result_archive_url(event=search.event, token=token))
+
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(unavailable.status_code, 503)
+        self.assert_bearer_headers(missing)
+        self.assert_bearer_headers(unavailable)
+
+    def test_free_result_page_shows_archive_only_when_enabled_and_paid_cart_stays_bulk_free(
+        self,
+    ) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        for rank in (1, 2):
+            self.add_result(
+                search=search,
+                photo=self.make_private_photo(search.event),
+                rank=rank,
+            )
+        paid_event = self.make_event(
+            name="Paid archive UI", slug="paid-archive-ui", access_type=Event.AccessType.PAID
+        )
+        paid_search, paid_token = self.make_search(
+            event=paid_event, status=SelfieSearch.Status.READY
+        )
+        for rank in (1, 2):
+            self.add_result(
+                search=paid_search,
+                photo=self.make_private_photo(paid_event),
+                rank=rank,
+            )
+
+        with override_feature_flags(
+            {BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON, PAID_EVENTS: FEATURE_FLAG_ON}
+        ):
+            free = self.client.get(self.result_url(event=search.event, token=token))
+            paid = self.client.get(self.result_url(event=paid_event, token=paid_token))
+
+        self.assertContains(free, "Скачать все")
+        self.assertContains(free, self.result_archive_url(event=search.event, token=token))
+        self.assertNotContains(paid, "Скачать все")
+        self.assertNotContains(paid, "Скачать эту страницу")
 
     def test_bearer_result_suppresses_metrika_while_catalog_keeps_one_counter(self) -> None:
         search, token = self.make_search()

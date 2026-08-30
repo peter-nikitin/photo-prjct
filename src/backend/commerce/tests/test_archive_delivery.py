@@ -6,7 +6,7 @@ from django.urls import reverse
 from feature_flags.registry import BULK_PHOTO_DOWNLOAD
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
 from ingestion.storage import ObjectMissing, OpenedObject, StorageUnavailable
-from picflow.archive import ArchiveSourceMissing, ArchiveSourceUnavailable
+from picflow.archive import ArchiveObservation, ArchiveSourceMissing, ArchiveSourceUnavailable
 
 from commerce.capabilities import create_order_access_grant, sign_order_access_grant
 from commerce.models import CommerceAttention, DownloadGrantAudit
@@ -66,7 +66,7 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
 
     def test_browser_archive_has_exact_name_headers_entries_audits_and_first_access(self) -> None:
         with (
-            patch("commerce.views._archive_storage", return_value=_Storage()),
+            patch("commerce.views._archive_storage", return_value=_Storage()) as storage_factory,
             patch("commerce.views.prepare_zip_archive", return_value=iter((b"zip",))) as prepare,
         ):
             response = self.client.get(self.archive_url())
@@ -86,6 +86,12 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
             tuple(entry.photo_id for entry in entries),
             (self.photo.pk, self.photo_ids[0]),
         )
+        self.assertEqual(
+            prepare.call_args.kwargs["observation"],
+            ArchiveObservation(context="paid_order", page=1),
+        )
+        self.assertIs(prepare.call_args.kwargs["storage_factory"], storage_factory)
+        storage_factory.assert_not_called()
         self.assertEqual(DownloadGrantAudit.objects.count(), 2)
         self.order.refresh_from_db()
         self.assertIsNotNone(self.order.first_customer_access_at)
@@ -182,6 +188,70 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
                 self.assertEqual(response.status_code, 503)
 
         self.assertFalse(CommerceAttention.objects.exists())
+
+    def test_storage_setup_failure_is_observed_once_without_sensitive_values(self) -> None:
+        grant = create_order_access_grant(order=self.order, source="checkout")
+        signature = sign_order_access_grant(
+            grant=grant,
+            signing_secret="order-view-test-secret",
+        )
+        grant_url = reverse(
+            "commerce:grant_order_archive",
+            kwargs={
+                "public_number": self.order.public_number,
+                "grant_identifier": grant.pk,
+                "signature": signature,
+            },
+        )
+        self.client.cookies.pop("findme_purchase", None)
+        sensitive_exception = "https://storage.example/private?key=paid-secret"
+        storage_failure = StorageUnavailable()
+        storage_failure.args = (sensitive_exception,)
+
+        with (
+            patch(
+                "commerce.views._archive_storage",
+                side_effect=storage_failure,
+            ),
+            self.assertLogs("picflow.archive", level="WARNING") as captured,
+        ):
+            response = self.client.get(grant_url)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        outcome_records = [
+            record for record in captured.records if hasattr(record, "archive_context")
+        ]
+        self.assertEqual(len(outcome_records), 1)
+        record = outcome_records[0]
+        archive_fields = {
+            key: value for key, value in record.__dict__.items() if key.startswith("archive_")
+        }
+        duration = archive_fields.pop("archive_duration_seconds")
+        self.assertGreaterEqual(duration, 0.0)
+        self.assertEqual(
+            archive_fields,
+            {
+                "archive_context": "paid_order",
+                "archive_page": 1,
+                "archive_file_count": 2,
+                "archive_declared_input_bytes": 20,
+                "archive_streamed_bytes": 0,
+                "archive_outcome": "setup_failure",
+            },
+        )
+        formatted_record = repr(record.__dict__)
+        for sensitive_value in (
+            self.order.public_number,
+            str(grant.pk),
+            signature,
+            *(item.photo.original_key for item in self.order.items.select_related("photo")),
+            *(item.photo.original_filename for item in self.order.items.select_related("photo")),
+            sensitive_exception,
+        ):
+            self.assertNotIn(sensitive_value, formatted_record)
+        self.assertIsNone(record.exc_info)
 
     def test_first_identity_mismatch_opens_exact_attention(self) -> None:
         with patch(

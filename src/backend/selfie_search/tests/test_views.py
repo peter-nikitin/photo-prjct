@@ -31,7 +31,7 @@ from feature_flags.registry import (
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
-from picflow.archive import ArchiveSourceMissing, ArchiveSourceUnavailable
+from picflow.archive import ArchiveObservation, ArchiveSourceMissing, ArchiveSourceUnavailable
 from picflow.gallery import GalleryPhotoFactory
 from picflow.models import Event, Photo
 from PIL import Image
@@ -1233,7 +1233,7 @@ class PublicSelfieResultViewTests(TestCase):
 
         with (
             override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
-            patch("selfie_search.views._archive_storage", return_value=storage),
+            patch("selfie_search.views._archive_storage", return_value=storage) as storage_factory,
             patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
         ):
             response = self.client.get(self.result_archive_url(event=search.event, token=token))
@@ -1254,7 +1254,12 @@ class PublicSelfieResultViewTests(TestCase):
             tuple(entry.original_key for entry in entries),
             (first.original_key, later.original_key),
         )
-        self.assertIs(prepare.call_args.kwargs["storage"], storage)
+        self.assertIs(prepare.call_args.kwargs["storage_factory"], storage_factory)
+        storage_factory.assert_not_called()
+        self.assertEqual(
+            prepare.call_args.kwargs["observation"],
+            ArchiveObservation(context="free_result", page=1),
+        )
 
     def test_page_two_archive_action_preserves_its_rendered_page_boundary(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -1270,7 +1275,9 @@ class PublicSelfieResultViewTests(TestCase):
         with override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}):
             page = self.client.get(self.result_url(event=search.event, token=token), {"page": 2})
             with (
-                patch("selfie_search.views._archive_storage", return_value=storage),
+                patch(
+                    "selfie_search.views._archive_storage", return_value=storage
+                ) as storage_factory,
                 patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
             ):
                 response = self.client.get(f"{archive_url}?page=2")
@@ -1294,6 +1301,12 @@ class PublicSelfieResultViewTests(TestCase):
             tuple(entry.photo_id for entry in entries),
             (photos[100].pk, photos[101].pk),
         )
+        self.assertEqual(
+            prepare.call_args.kwargs["observation"],
+            ArchiveObservation(context="free_result", page=2),
+        )
+        self.assertIs(prepare.call_args.kwargs["storage_factory"], storage_factory)
+        storage_factory.assert_not_called()
 
     def test_free_ready_result_archive_denies_off_and_anonymous_staff_gate(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -1310,7 +1323,6 @@ class PublicSelfieResultViewTests(TestCase):
                 "selfie_search.views._archive_storage",
                 side_effect=StorageUnavailable(),
             ) as storage,
-            patch("selfie_search.views.prepare_zip_archive") as prepare,
         ):
             with override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_OFF}):
                 off = self.client.get(self.result_archive_url(event=search.event, token=token))
@@ -1327,7 +1339,6 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(anonymous.status_code, 404)
         self.assertEqual(staff_allowed.status_code, 503)
         storage.assert_called_once()
-        prepare.assert_not_called()
 
     def test_archive_denies_paid_invalid_and_small_result_pages_without_opening_storage(
         self,
@@ -1392,6 +1403,65 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(unavailable.status_code, 503)
         self.assert_bearer_headers(missing)
         self.assert_bearer_headers(unavailable)
+
+    def test_archive_storage_setup_failure_is_observed_once_without_sensitive_values(
+        self,
+    ) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        photos = []
+        for rank in (1, 2):
+            photo = self.make_private_photo(
+                search.event,
+                photo_id=f"free-storage-sensitive-{rank}",
+            )
+            self.add_result(search=search, photo=photo, rank=rank)
+            photos.append(photo)
+        sensitive_exception = "https://storage.example/private?key=free-secret"
+        storage_failure = StorageUnavailable()
+        storage_failure.args = (sensitive_exception,)
+
+        with (
+            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
+            patch(
+                "selfie_search.views._archive_storage",
+                side_effect=storage_failure,
+            ),
+            self.assertLogs("picflow.archive", level="WARNING") as captured,
+        ):
+            response = self.client.get(self.result_archive_url(event=search.event, token=token))
+
+        self.assertEqual(response.status_code, 503)
+        self.assert_bearer_headers(response)
+        outcome_records = [
+            record for record in captured.records if hasattr(record, "archive_context")
+        ]
+        self.assertEqual(len(outcome_records), 1)
+        record = outcome_records[0]
+        archive_fields = {
+            key: value for key, value in record.__dict__.items() if key.startswith("archive_")
+        }
+        duration = archive_fields.pop("archive_duration_seconds")
+        self.assertGreaterEqual(duration, 0.0)
+        self.assertEqual(
+            archive_fields,
+            {
+                "archive_context": "free_result",
+                "archive_page": 1,
+                "archive_file_count": 2,
+                "archive_declared_input_bytes": 10,
+                "archive_streamed_bytes": 0,
+                "archive_outcome": "setup_failure",
+            },
+        )
+        formatted_record = repr(record.__dict__)
+        for sensitive_value in (
+            token,
+            *(photo.original_key for photo in photos),
+            *(photo.original_filename for photo in photos),
+            sensitive_exception,
+        ):
+            self.assertNotIn(sensitive_value, formatted_record)
+        self.assertIsNone(record.exc_info)
 
     def test_free_result_page_shows_archive_only_when_enabled_and_paid_cart_stays_bulk_free(
         self,

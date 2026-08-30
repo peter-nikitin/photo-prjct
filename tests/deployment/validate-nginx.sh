@@ -122,6 +122,8 @@ exercise_bearer_error_logging() {
     event_headers="$runtime_log_dir/event.headers"
     static_headers="$runtime_log_dir/static.headers"
     commerce_http_headers="$runtime_log_dir/commerce-http.headers"
+    order_archive_http_headers="$runtime_log_dir/order-archive-http.headers"
+    order_archive_https_headers="$runtime_log_dir/order-archive-https.headers"
     request_body="$runtime_log_dir/request-body.bin"
     runtime_rendered="$runtime_log_dir/runtime.conf"
     bearer_token="bearer-log-token-$name-$$"
@@ -140,6 +142,8 @@ exercise_bearer_error_logging() {
     commerce_http_grant="commerce-http-grant-$name-$$"
     commerce_http_signature="commerce-http-signature-$name-$$"
     commerce_http_path="/orders/runtime/access/$commerce_http_grant/$commerce_http_signature/?commerce-http-marker=$sentinel_tracking"
+    order_archive_public_number="order-archive-public-number-$name-$$"
+    order_archive_path="/orders/$order_archive_public_number/download/?order-archive-query=$sentinel_tracking"
     ordinary_path="/runtime-proxy-check-$name?ordinary=ordinary-query-$name"
     internal_path="/internal/photo-processing/"
 
@@ -220,6 +224,29 @@ exercise_bearer_error_logging() {
         exit 1
     fi
     assert_private_commerce_headers "$commerce_http_headers"
+
+    order_archive_http_status="$(request_http_status "$order_archive_http_headers" findme-photo.ru "$runtime_http_port" "$order_archive_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent")"
+    if [ "$order_archive_http_status" != 308 ]; then
+        echo "$name canonical HTTP order archive redirect returned $order_archive_http_status instead of 308" >&2
+        exit 1
+    fi
+    if ! tr -d '\r' < "$order_archive_http_headers" | grep -Fxiq "Location: https://findme-photo.ru$order_archive_path"; then
+        echo "$name canonical HTTP order archive redirect changed its canonical target" >&2
+        exit 1
+    fi
+    assert_private_commerce_headers "$order_archive_http_headers"
+
+    order_archive_https_status="$(request_status "$order_archive_https_headers" findme-photo.ru "$runtime_port" "$order_archive_path" \
+        --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
+        --user-agent "$sentinel_user_agent")"
+    if [ "$order_archive_https_status" != 502 ]; then
+        echo "$name HTTPS order archive proxy returned $order_archive_https_status instead of 502" >&2
+        docker logs "$runtime_container" >&2 || true
+        exit 1
+    fi
+    assert_private_commerce_headers "$order_archive_https_headers"
 
     submission_status="$(request_status "$submission_headers" findme-photo.ru "$runtime_port" "$submission_path" \
         --header "X-Forwarded-For: $sentinel_client_ip" --header "Referer: $sentinel_referrer" \
@@ -408,6 +435,34 @@ exercise_bearer_error_logging() {
         cat "$commerce_http_access_log" >&2
         exit 1
     fi
+    order_archive_access_log="$runtime_log_dir/order-archive-access.log"
+    grep -F '<order-archive>' "$access_log" > "$order_archive_access_log" || true
+    if [ "$(wc -l < "$order_archive_access_log" | tr -d '[:space:]')" -ne 2 ]; then
+        echo "$name did not write both redacted order archive access lines" >&2
+        cat "$order_archive_access_log" >&2 || true
+        exit 1
+    fi
+    if ! awk '!/^-[[:space:]]+-[[:space:]]+-[[:space:]]+\[/{ exit 1 }' "$order_archive_access_log"; then
+        echo "$name order archive access line did not start with fixed client/user placeholders" >&2
+        cat "$order_archive_access_log" >&2
+        exit 1
+    fi
+    if ! grep -E '"GET <order-archive>" (308|502) [0-9]+ "-" "-" [0-9]+\.[0-9]{3}$' "$order_archive_access_log" >/dev/null; then
+        echo "$name order archive access line omitted fixed safe fields" >&2
+        cat "$order_archive_access_log" >&2
+        exit 1
+    fi
+    for order_archive_log in "$order_archive_access_log" "$error_log" "$container_log"; do
+        if grep -Fq "$order_archive_public_number" "$order_archive_log" || \
+           grep -Fq "$sentinel_tracking" "$order_archive_log" || \
+           grep -Fq "$sentinel_referrer" "$order_archive_log" || \
+           grep -Fq "$sentinel_user_agent" "$order_archive_log" || \
+           grep -Fq "$sentinel_client_ip" "$order_archive_log"; then
+            echo "$name persisted private order archive metadata in $(basename "$order_archive_log")" >&2
+            cat "$order_archive_log" >&2 || true
+            exit 1
+        fi
+    done
     for commerce_log in "$commerce_http_access_log" "$error_log" "$container_log"; do
         if grep -Fq "$commerce_http_grant" "$commerce_log" || \
            grep -Fq "$commerce_http_signature" "$commerce_log" || \
@@ -539,6 +594,7 @@ validate_variant() {
     grep -Fq 'map $uri $selfie_search_access_user_agent {' "$rendered"
     grep -Fq '~^/events/[^/]+/selfie-search/$ "$request_method <selfie-search>";' "$rendered"
     grep -Fq '~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "$request_method <order-access>";' "$rendered"
+    grep -Fq '~^/orders/[^/]+/download/$ "$request_method <order-archive>";' "$rendered"
     grep -Fq '"$request_method <selfie-search>"' "$rendered"
     grep -Fq 'log_format selfie_search_safe' "$rendered"
     grep -Fq "log_format selfie_search_safe '\$selfie_search_access_client_address - \$selfie_search_access_remote_user" "$rendered"
@@ -550,15 +606,20 @@ validate_variant() {
     grep -Fq 'location ~ ^/events/[^/]+/selfie-search/$ {' "$rendered"
     grep -Fq 'location ~ ^/events/[^/]+/selfie-search/[^/]+(?:/|$) {' "$rendered"
     grep -Fq 'location ~ ^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) {' "$rendered"
+    order_archive_locations="$(grep -Fc 'location ~ ^/orders/[^/]+/download/$ {' "$rendered")"
+    if [ "$order_archive_locations" -ne 2 ]; then
+        echo "$name must define exact canonical HTTP and HTTPS order archive locations" >&2
+        exit 1
+    fi
     grep -Fq 'add_header Cache-Control "private, no-store" always;' "$rendered"
     grep -Fq 'add_header Vary "Cookie" always;' "$rendered"
     grep -Fq 'error_log /dev/null emerg;' "$rendered"
     expected_access_logs=5
-    expected_bearer_error_logs=4
+    expected_bearer_error_logs=6
     if [ -n "$alias" ]; then
         grep -Fq "server_name $alias;" "$rendered"
         expected_access_logs=6
-        expected_bearer_error_logs=7
+        expected_bearer_error_logs=9
     elif grep -Fq 'server_name www.findme-photo.ru;' "$rendered"; then
         echo "$name retained the optional alias server" >&2
         exit 1

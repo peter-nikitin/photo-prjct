@@ -24,6 +24,7 @@ from feature_flags.registry import (
 )
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageUnavailable
 from picflow.archive import (
+    ArchiveObservation,
     ArchiveSourceMissing,
     ArchiveSourceUnavailable,
     prepare_zip_archive,
@@ -743,7 +744,11 @@ def _archive_order(
     try:
         archive = prepare_zip_archive(
             entries=authorized.entries,
-            storage=_archive_storage(),
+            storage_factory=_archive_storage,
+            observation=ArchiveObservation(
+                context="paid_order",
+                page=authorized.page.number,
+            ),
         )
     except (ArchiveSourceMissing, ArchiveSourceUnavailable, StorageUnavailable, ValueError):
         return private_purchase_response(HttpResponse(status=503))
@@ -754,14 +759,6 @@ def _archive_order(
     )
     response["Content-Disposition"] = f'attachment; filename="{archive_filename}"'
     response["X-Accel-Buffering"] = "no"
-    logger.info(
-        "paid order archive prepared",
-        extra={
-            "archive_context": "paid_order",
-            "archive_page": authorized.page.number,
-            "archive_file_count": len(authorized.entries),
-        },
-    )
     return private_purchase_response(response)
 
 

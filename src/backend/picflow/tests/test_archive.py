@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from io import BytesIO
+from typing import Literal
 from unittest.mock import Mock
 from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
@@ -12,10 +13,17 @@ from ingestion.storage import ObjectMissing, OpenedObject, StorageUnavailable
 from picflow.archive import (
     ZIP_STREAM_CHUNK_SIZE,
     ArchiveEntry,
+    ArchiveObservation,
     ArchiveSourceMissing,
     ArchiveSourceUnavailable,
     prepare_zip_archive,
 )
+
+
+def _observation(
+    *, context: Literal["free_result", "paid_order"] = "free_result", page: int = 1
+) -> ArchiveObservation:
+    return ArchiveObservation(context=context, page=page)
 
 
 class _Body:
@@ -51,6 +59,10 @@ class _Storage:
         if isinstance(opened.body, _Body):
             self._active_bodies.append(opened.body)
         return opened
+
+
+def _storage_factory(storage: _Storage) -> Callable[[], _Storage]:
+    return lambda: storage
 
 
 def _opened(body: _Body, *, size: int, content_type: str = "image/jpeg") -> OpenedObject:
@@ -95,7 +107,8 @@ class PreparedZipArchiveTests(SimpleTestCase):
                     content_type="image/png",
                 ),
             ),
-            storage=storage,
+            storage_factory=_storage_factory(storage),
+            observation=_observation(),
         )
         archive_bytes = b"".join(stream)
 
@@ -120,7 +133,11 @@ class PreparedZipArchiveTests(SimpleTestCase):
         second = _Body([b"two"])
         storage = _Storage([_opened(first, size=3), _opened(second, size=3)])
 
-        stream = prepare_zip_archive(entries=(_entry("first"), _entry("second")), storage=storage)
+        stream = prepare_zip_archive(
+            entries=(_entry("first"), _entry("second")),
+            storage_factory=_storage_factory(storage),
+            observation=_observation(),
+        )
 
         self.assertEqual(storage.opened_keys, ["originals/first"])
         self.assertEqual(first.close_calls, 0)
@@ -140,7 +157,8 @@ class PreparedZipArchiveTests(SimpleTestCase):
                     _entry("first", size=ZIP_STREAM_CHUNK_SIZE + 1),
                     _entry("second", size=9),
                 ),
-                storage=storage,
+                storage_factory=_storage_factory(storage),
+                observation=_observation(),
             )
         )
 
@@ -153,7 +171,11 @@ class PreparedZipArchiveTests(SimpleTestCase):
         first = _Body([b"one"])
         second = _Body([b"two"])
         storage = _Storage([_opened(first, size=3), _opened(second, size=3)])
-        stream = prepare_zip_archive(entries=(_entry("first"), _entry("second")), storage=storage)
+        stream = prepare_zip_archive(
+            entries=(_entry("first"), _entry("second")),
+            storage_factory=_storage_factory(storage),
+            observation=_observation(),
+        )
 
         next(stream)
         stream.close()
@@ -167,7 +189,8 @@ class PreparedZipArchiveTests(SimpleTestCase):
             with self.assertRaises(ArchiveSourceMissing):
                 prepare_zip_archive(
                     entries=(_entry("missing", on_source_missing=missing_callback),),
-                    storage=_Storage([ObjectMissing()]),
+                    storage_factory=_storage_factory(_Storage([ObjectMissing()])),
+                    observation=_observation(),
                 )
             missing_callback.assert_called_once_with()
 
@@ -177,7 +200,8 @@ class PreparedZipArchiveTests(SimpleTestCase):
             with self.assertRaises(ArchiveSourceMissing):
                 prepare_zip_archive(
                     entries=(_entry("mismatch", size=3, on_source_missing=mismatch_callback),),
-                    storage=_Storage([_opened(mismatched_body, size=4)]),
+                    storage_factory=_storage_factory(_Storage([_opened(mismatched_body, size=4)])),
+                    observation=_observation(),
                 )
             mismatch_callback.assert_called_once_with()
             self.assertEqual(mismatched_body.close_calls, 1)
@@ -188,7 +212,8 @@ class PreparedZipArchiveTests(SimpleTestCase):
         with self.assertRaises(ArchiveSourceUnavailable):
             prepare_zip_archive(
                 entries=(_entry("unavailable", on_source_missing=callback),),
-                storage=_Storage([StorageUnavailable()]),
+                storage_factory=_storage_factory(_Storage([StorageUnavailable()])),
+                observation=_observation(),
             )
 
         callback.assert_not_called()
@@ -200,7 +225,8 @@ class PreparedZipArchiveTests(SimpleTestCase):
         with self.assertRaises(ArchiveSourceUnavailable):
             prepare_zip_archive(
                 entries=(_entry("unreadable", on_source_missing=callback),),
-                storage=_Storage([_opened(unreadable, size=3)]),
+                storage_factory=_storage_factory(_Storage([_opened(unreadable, size=3)])),
+                observation=_observation(),
             )
 
         callback.assert_not_called()
@@ -223,7 +249,8 @@ class PreparedZipArchiveTests(SimpleTestCase):
                             on_source_missing=failing_callback,
                         ),
                     ),
-                    storage=_Storage([_opened(_Body([]), size=4)]),
+                    storage_factory=_storage_factory(_Storage([_opened(_Body([]), size=4)])),
+                    observation=_observation(),
                 )
 
         formatted_logs = "\n".join(
@@ -247,7 +274,8 @@ class PreparedZipArchiveTests(SimpleTestCase):
                 _entry("failed", on_source_missing=callback),
                 _entry("later", size=5),
             ),
-            storage=storage,
+            storage_factory=_storage_factory(storage),
+            observation=_observation(),
         )
 
         sent: list[bytes] = []
@@ -270,7 +298,10 @@ class PreparedZipArchiveTests(SimpleTestCase):
                 _entry("first"),
                 _entry("missing", on_source_missing=callback),
             ),
-            storage=_Storage([_opened(first, size=3), _opened(missing, size=3)]),
+            storage_factory=_storage_factory(
+                _Storage([_opened(first, size=3), _opened(missing, size=3)])
+            ),
+            observation=_observation(),
         )
 
         with self.assertRaises(ArchiveSourceMissing):
@@ -282,6 +313,208 @@ class PreparedZipArchiveTests(SimpleTestCase):
         storage = _Storage([])
 
         with self.assertRaises(ValueError):
-            prepare_zip_archive(entries=(_entry("../secret"),), storage=storage)
+            prepare_zip_archive(
+                entries=(_entry("../secret"),),
+                storage_factory=_storage_factory(storage),
+                observation=_observation(),
+            )
 
         self.assertEqual(storage.opened_keys, [])
+
+    def test_completed_observation_counts_emitted_zip_bytes_for_both_contexts(self) -> None:
+        for context in ("free_result", "paid_order"):
+            with self.subTest(context=context):
+                clock = Mock(side_effect=(10.0, 12.5))
+                sensitive_values = (
+                    f"photo-sensitive-{context}",
+                    f"originals/private-sensitive-{context}",
+                    f"bearer-sensitive-{context}",
+                )
+                with self.assertLogs("picflow.archive", level="INFO") as captured:
+                    archive_bytes = b"".join(
+                        prepare_zip_archive(
+                            entries=(_entry(sensitive_values[0], key=sensitive_values[1], size=3),),
+                            storage_factory=_storage_factory(
+                                _Storage([_opened(_Body([b"one"]), size=3)])
+                            ),
+                            observation=_observation(context=context, page=7),
+                            clock=clock,
+                        )
+                    )
+
+                self._assert_outcome_record(
+                    captured.records,
+                    context=context,
+                    page=7,
+                    file_count=1,
+                    declared_input_bytes=3,
+                    streamed_bytes=len(archive_bytes),
+                    duration_seconds=2.5,
+                    outcome="completed",
+                    sensitive_values=sensitive_values,
+                )
+
+    def test_interrupted_observation_counts_only_chunks_already_yielded(self) -> None:
+        for context in ("free_result", "paid_order"):
+            with self.subTest(context=context):
+                clock = Mock(side_effect=(20.0, 21.25))
+                stream = prepare_zip_archive(
+                    entries=(_entry("interrupted-sensitive", size=3),),
+                    storage_factory=_storage_factory(_Storage([_opened(_Body([b"one"]), size=3)])),
+                    observation=_observation(context=context, page=2),
+                    clock=clock,
+                )
+
+                with self.assertLogs("picflow.archive", level="INFO") as captured:
+                    emitted = next(stream)
+                    stream.close()
+
+                self._assert_outcome_record(
+                    captured.records,
+                    context=context,
+                    page=2,
+                    file_count=1,
+                    declared_input_bytes=3,
+                    streamed_bytes=len(emitted),
+                    duration_seconds=1.25,
+                    outcome="interrupted",
+                    sensitive_values=(
+                        "interrupted-sensitive",
+                        "originals/interrupted-sensitive",
+                    ),
+                )
+
+    def test_setup_failure_observation_covers_validation_first_open_and_first_read(self) -> None:
+        cases = (
+            (
+                "validation",
+                (_entry("../validation-sensitive"),),
+                _Storage([]),
+                ValueError,
+                0,
+                0,
+            ),
+            (
+                "first-open",
+                (_entry("first-open-sensitive"),),
+                _Storage([ObjectMissing()]),
+                ArchiveSourceMissing,
+                1,
+                3,
+            ),
+            (
+                "first-read",
+                (_entry("first-read-sensitive"),),
+                _Storage([_opened(_Body([OSError("exception-sensitive")]), size=3)]),
+                ArchiveSourceUnavailable,
+                1,
+                3,
+            ),
+        )
+        for index, (name, entries, storage, exception, file_count, declared_bytes) in enumerate(
+            cases, start=1
+        ):
+            with self.subTest(name=name):
+                clock = Mock(side_effect=(30.0, 30.5))
+                with self.assertLogs("picflow.archive", level="WARNING") as captured:
+                    with self.assertRaises(exception):
+                        prepare_zip_archive(
+                            entries=entries,
+                            storage_factory=_storage_factory(storage),
+                            observation=_observation(
+                                context="free_result" if index % 2 else "paid_order",
+                                page=index,
+                            ),
+                            clock=clock,
+                        )
+
+                self._assert_outcome_record(
+                    captured.records,
+                    context="free_result" if index % 2 else "paid_order",
+                    page=index,
+                    file_count=file_count,
+                    declared_input_bytes=declared_bytes,
+                    streamed_bytes=0,
+                    duration_seconds=0.5,
+                    outcome="setup_failure",
+                    sensitive_values=(
+                        "validation-sensitive",
+                        "first-open-sensitive",
+                        "first-read-sensitive",
+                        "exception-sensitive",
+                    ),
+                )
+
+    def test_source_failure_observation_preserves_emitted_byte_count(self) -> None:
+        for context in ("free_result", "paid_order"):
+            with self.subTest(context=context):
+                clock = Mock(side_effect=(40.0, 43.0))
+                stream = prepare_zip_archive(
+                    entries=(
+                        _entry("first-sensitive"),
+                        _entry("later-sensitive", key="originals/private-later-sensitive"),
+                    ),
+                    storage_factory=_storage_factory(
+                        _Storage([_opened(_Body([b"one"]), size=3), ObjectMissing()])
+                    ),
+                    observation=_observation(context=context, page=4),
+                    clock=clock,
+                )
+                emitted: list[bytes] = []
+
+                with self.assertLogs("picflow.archive", level="WARNING") as captured:
+                    with self.assertRaises(ArchiveSourceMissing):
+                        while True:
+                            emitted.append(next(stream))
+
+                self._assert_outcome_record(
+                    captured.records,
+                    context=context,
+                    page=4,
+                    file_count=2,
+                    declared_input_bytes=6,
+                    streamed_bytes=len(b"".join(emitted)),
+                    duration_seconds=3.0,
+                    outcome="source_failure",
+                    sensitive_values=(
+                        "first-sensitive",
+                        "later-sensitive",
+                        "originals/private-later-sensitive",
+                    ),
+                )
+
+    def _assert_outcome_record(
+        self,
+        records: list[logging.LogRecord],
+        *,
+        context: str,
+        page: int,
+        file_count: int,
+        declared_input_bytes: int,
+        streamed_bytes: int,
+        duration_seconds: float,
+        outcome: str,
+        sensitive_values: tuple[str, ...],
+    ) -> None:
+        outcome_records = [record for record in records if hasattr(record, "archive_context")]
+        self.assertEqual(len(outcome_records), 1)
+        record = outcome_records[0]
+        archive_fields = {
+            key: value for key, value in record.__dict__.items() if key.startswith("archive_")
+        }
+        self.assertEqual(
+            archive_fields,
+            {
+                "archive_context": context,
+                "archive_page": page,
+                "archive_file_count": file_count,
+                "archive_declared_input_bytes": declared_input_bytes,
+                "archive_streamed_bytes": streamed_bytes,
+                "archive_duration_seconds": duration_seconds,
+                "archive_outcome": outcome,
+            },
+        )
+        formatted_record = repr(record.__dict__)
+        for sensitive_value in sensitive_values:
+            self.assertNotIn(sensitive_value, formatted_record)
+        self.assertIsNone(record.exc_info)

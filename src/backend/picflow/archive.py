@@ -4,6 +4,7 @@ import logging
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from time import monotonic
 from typing import Literal, Protocol, Self
 from zipfile import ZIP_STORED, ZipFile
 
@@ -32,6 +33,20 @@ class ArchiveSourceMissing(Exception):
 
 class ArchiveSourceUnavailable(Exception):
     """The original cannot currently be read from object storage."""
+
+
+@dataclass(frozen=True)
+class ArchiveObservation:
+    """Low-cardinality context for one archive transfer outcome."""
+
+    context: Literal["free_result", "paid_order"]
+    page: int
+
+    def __post_init__(self) -> None:
+        if self.context not in ("free_result", "paid_order"):
+            raise ValueError("archive observation context is unsupported")
+        if isinstance(self.page, bool) or not isinstance(self.page, int) or self.page < 1:
+            raise ValueError("archive observation page must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -86,6 +101,9 @@ class PreparedZipArchive(Iterator[bytes]):
         storage: FinalObjectStorage,
         first_opened: OpenedObject,
         first_prefix: bytes,
+        observation: ArchiveObservation,
+        started_at: float,
+        clock: Callable[[], float],
     ) -> None:
         self._entries = entries
         self._storage = storage
@@ -94,6 +112,12 @@ class PreparedZipArchive(Iterator[bytes]):
         self._current_body: ReadableBody | None = first_opened.body
         self._stream: Iterator[bytes] | None = None
         self._closed = False
+        self._observation = observation
+        self._started_at = started_at
+        self._clock = clock
+        self._declared_input_bytes = sum(entry.original_size for entry in entries)
+        self._streamed_bytes = 0
+        self._outcome_recorded = False
 
     def __iter__(self) -> Self:
         return self
@@ -118,12 +142,12 @@ class PreparedZipArchive(Iterator[bytes]):
             if callable(close):
                 close()
         self._close_current_body()
+        self._record_outcome("interrupted")
 
     def _stream_zip(self) -> Iterator[bytes]:
         sink = _BoundedSink()
         archive = ZipFile(sink, mode="w", compression=ZIP_STORED, allowZip64=True)
         completed = False
-        streamed_bytes = 0
         try:
             for index, entry in enumerate(self._entries):
                 opened = self._first_opened if index == 0 else _open_entry(self._storage, entry)
@@ -135,8 +159,7 @@ class PreparedZipArchive(Iterator[bytes]):
                         copied = len(prefix)
                         if prefix:
                             member.write(prefix)
-                            streamed_bytes += len(prefix)
-                            yield from sink.drain()
+                            yield from self._drain_sink(sink)
                         if index == 0 and not prefix:
                             data = b""
                         else:
@@ -146,55 +169,53 @@ class PreparedZipArchive(Iterator[bytes]):
                             if copied > entry.original_size:
                                 raise _source_missing(entry)
                             member.write(data)
-                            streamed_bytes += len(data)
-                            yield from sink.drain()
+                            yield from self._drain_sink(sink)
                             data = _read_source(entry, opened.body)
                     if copied != entry.original_size:
                         raise _source_missing(entry)
                 finally:
                     self._close_current_body()
-                yield from sink.drain()
+                yield from self._drain_sink(sink)
             archive.close()
             completed = True
-            yield from sink.drain()
-            logger.info(
-                "archive stream completed",
-                extra={
-                    "archive_outcome": "completed",
-                    "archive_file_count": len(self._entries),
-                    "archive_streamed_bytes": streamed_bytes,
-                },
-            )
+            yield from self._drain_sink(sink)
+            self._record_outcome("completed")
         except GeneratorExit:
-            logger.info(
-                "archive stream interrupted",
-                extra={"archive_outcome": "interrupted", "archive_file_count": len(self._entries)},
-            )
+            self._record_outcome("interrupted")
             raise
-        except ArchiveSourceMissing:
+        except (ArchiveSourceMissing, ArchiveSourceUnavailable):
             sink.discard()
-            logger.warning(
-                "archive source failed",
-                extra={
-                    "archive_outcome": "source_failure",
-                    "archive_file_count": len(self._entries),
-                },
-            )
+            self._record_outcome("source_failure")
             raise
-        except ArchiveSourceUnavailable:
+        except Exception:
             sink.discard()
-            logger.warning(
-                "archive source unavailable",
-                extra={
-                    "archive_outcome": "source_failure",
-                    "archive_file_count": len(self._entries),
-                },
-            )
+            self._record_outcome("source_failure")
             raise
         finally:
             if not completed:
                 self._close_current_body()
                 archive.fp = None
+
+    def _drain_sink(self, sink: _BoundedSink) -> Iterator[bytes]:
+        for chunk in sink.drain():
+            self._streamed_bytes += len(chunk)
+            yield chunk
+
+    def _record_outcome(
+        self,
+        outcome: Literal["completed", "interrupted", "source_failure"],
+    ) -> None:
+        if self._outcome_recorded:
+            return
+        self._outcome_recorded = True
+        _log_archive_outcome(
+            observation=self._observation,
+            file_count=len(self._entries),
+            declared_input_bytes=self._declared_input_bytes,
+            streamed_bytes=self._streamed_bytes,
+            duration_seconds=max(0.0, self._clock() - self._started_at),
+            outcome=outcome,
+        )
 
     def _close_current_body(self) -> None:
         if self._current_body is not None:
@@ -204,26 +225,76 @@ class PreparedZipArchive(Iterator[bytes]):
 
 
 def prepare_zip_archive(
-    *, entries: Sequence[ArchiveEntry], storage: FinalObjectStorage
+    *,
+    entries: Sequence[ArchiveEntry],
+    storage_factory: Callable[[], FinalObjectStorage],
+    observation: ArchiveObservation,
+    clock: Callable[[], float] = monotonic,
 ) -> PreparedZipArchive:
     """Preflight the first exact original, then return its single-use streaming ZIP body."""
-    prepared_entries = tuple(entries)
-    _validate_entries(prepared_entries)
-    first_opened = _open_entry(storage, prepared_entries[0])
+    started_at = clock()
+    prepared_entries: tuple[ArchiveEntry, ...] = ()
+    file_count = 0
+    declared_input_bytes = 0
     try:
-        first_prefix = _read_source(prepared_entries[0], first_opened.body)
-        if len(first_prefix) > prepared_entries[0].original_size:
-            raise _source_missing(prepared_entries[0])
-        if not first_prefix and prepared_entries[0].original_size:
-            raise _source_missing(prepared_entries[0])
-    except (ArchiveSourceMissing, ArchiveSourceUnavailable):
-        first_opened.body.close()
+        prepared_entries = tuple(entries)
+        _validate_entries(prepared_entries)
+        file_count = len(prepared_entries)
+        declared_input_bytes = sum(entry.original_size for entry in prepared_entries)
+        storage = storage_factory()
+        first_opened = _open_entry(storage, prepared_entries[0])
+        try:
+            first_prefix = _read_source(prepared_entries[0], first_opened.body)
+            if len(first_prefix) > prepared_entries[0].original_size:
+                raise _source_missing(prepared_entries[0])
+            if not first_prefix and prepared_entries[0].original_size:
+                raise _source_missing(prepared_entries[0])
+        except (ArchiveSourceMissing, ArchiveSourceUnavailable):
+            first_opened.body.close()
+            raise
+    except Exception:
+        _log_archive_outcome(
+            observation=observation,
+            file_count=file_count,
+            declared_input_bytes=declared_input_bytes,
+            streamed_bytes=0,
+            duration_seconds=max(0.0, clock() - started_at),
+            outcome="setup_failure",
+        )
         raise
     return PreparedZipArchive(
         entries=prepared_entries,
         storage=storage,
         first_opened=first_opened,
         first_prefix=first_prefix,
+        observation=observation,
+        started_at=started_at,
+        clock=clock,
+    )
+
+
+def _log_archive_outcome(
+    *,
+    observation: ArchiveObservation,
+    file_count: int,
+    declared_input_bytes: int,
+    streamed_bytes: int,
+    duration_seconds: float,
+    outcome: Literal["completed", "interrupted", "setup_failure", "source_failure"],
+) -> None:
+    log_level = logging.INFO if outcome in ("completed", "interrupted") else logging.WARNING
+    logger.log(
+        log_level,
+        "archive stream outcome",
+        extra={
+            "archive_context": observation.context,
+            "archive_page": observation.page,
+            "archive_file_count": file_count,
+            "archive_declared_input_bytes": declared_input_bytes,
+            "archive_streamed_bytes": streamed_bytes,
+            "archive_duration_seconds": duration_seconds,
+            "archive_outcome": outcome,
+        },
     )
 
 

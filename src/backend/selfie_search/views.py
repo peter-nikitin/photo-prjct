@@ -30,6 +30,7 @@ from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError,
 from picflow.access import mark_event_staff_preview
 from picflow.archive import (
     ArchiveEntry,
+    ArchiveObservation,
     ArchiveSourceMissing,
     ArchiveSourceUnavailable,
     prepare_zip_archive,
@@ -469,7 +470,11 @@ def result_archive(request, event_slug: str, public_token: str) -> HttpResponseB
     if entries is None or len(entries) < 2:
         return _not_found_response()
     try:
-        archive = prepare_zip_archive(entries=entries, storage=_archive_storage())
+        archive = prepare_zip_archive(
+            entries=entries,
+            storage_factory=_archive_storage,
+            observation=ArchiveObservation(context="free_result", page=page.number),
+        )
     except ArchiveSourceMissing:
         return _not_found_response()
     except (ArchiveSourceUnavailable, StorageUnavailable):

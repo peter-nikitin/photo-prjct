@@ -34,6 +34,7 @@ const desktopPages = [
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
   ['order-pending', '/__visual__/order/pending/'],
   ['order-paid', '/__visual__/order/paid/'],
+  ['order-paid-multi', '/__visual__/order/paid/multi/'],
   ['order-email-failed', '/__visual__/order/email-failed/'],
   ['event-gallery-staff-preview', '/__visual__/event/gallery-staff-preview/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
@@ -45,6 +46,7 @@ const desktopPages = [
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-ready-single', '/__visual__/event/selfie-search/ready/single/'],
   ['selfie-search-ready-paid', '/__visual__/event/selfie-search/ready/paid/'],
   ['selfie-search-ready-staff-preview', '/__visual__/event/selfie-search/ready/staff-preview/'],
   ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
@@ -74,6 +76,7 @@ const mobilePages = [
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
   ['order-pending', '/__visual__/order/pending/'],
   ['order-paid', '/__visual__/order/paid/'],
+  ['order-paid-multi', '/__visual__/order/paid/multi/'],
   ['order-email-failed', '/__visual__/order/email-failed/'],
   ['event-gallery-staff-preview', '/__visual__/event/gallery-staff-preview/'],
   ['event-gallery-empty', '/__visual__/event/gallery-empty/'],
@@ -85,6 +88,7 @@ const mobilePages = [
   ['selfie-search-empty', '/__visual__/event/selfie-search/empty/'],
   ['selfie-search-error', '/__visual__/event/selfie-search/error/'],
   ['selfie-search-ready', '/__visual__/event/selfie-search/ready/'],
+  ['selfie-search-ready-single', '/__visual__/event/selfie-search/ready/single/'],
   ['selfie-search-ready-paid', '/__visual__/event/selfie-search/ready/paid/'],
   ['selfie-search-ready-staff-preview', '/__visual__/event/selfie-search/ready/staff-preview/'],
   ['selfie-search-feedback-problem', '/__visual__/event/selfie-search/feedback-problem/'],
@@ -334,6 +338,105 @@ test.describe('mobile visual regression', () => {
       });
     });
   }
+});
+
+test('archive actions preserve the page boundary and paid result denial', async ({ page }) => {
+  for (const [path, expected] of [
+    [
+      '/__visual__/event/selfie-search/ready/single/',
+      { label: 'Скачать все', helper: null, pages: false },
+    ],
+    [
+      '/__visual__/event/selfie-search/ready/',
+      {
+        label: 'Скачать эту страницу',
+        helper: 'В архив попадут 2 фотографии со страницы 1 из 2. Остальные страницы можно скачать отдельно.',
+        pages: true,
+      },
+    ],
+    [
+      '/__visual__/order/paid/',
+      { label: 'Скачать все', helper: null, pages: false },
+    ],
+    [
+      '/__visual__/order/paid/multi/',
+      {
+        label: 'Скачать эту страницу',
+        helper: 'В архив попадут 2 фотографии со страницы 1 из 2. Остальные страницы можно скачать отдельно.',
+        pages: true,
+      },
+    ],
+  ]) {
+    await page.goto(path);
+    const action = page.locator('.selfie-search-archive-action, .order-archive-action');
+    await expect(action).toHaveCount(1);
+    await expect(action.getByRole('link')).toHaveText(expected.label);
+    if (expected.helper) {
+      await expect(action.locator('p')).toHaveText(expected.helper);
+    } else {
+      await expect(action.locator('p')).toHaveCount(0);
+    }
+    if (expected.pages) {
+      await expect(page.locator('.gallery-pagination')).toHaveCount(1);
+      await expect(page.locator('.gallery-pagination-status')).toHaveText('Страница 1 из 2');
+    } else {
+      await expect(page.locator('.gallery-pagination')).toHaveCount(0);
+    }
+  }
+
+  await page.goto('/__visual__/event/selfie-search/ready/paid/');
+  await expect(page.locator('.selfie-search-archive-action')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Скачать все' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Скачать эту страницу' })).toHaveCount(0);
+
+  await page.goto('/__visual__/order/paid/multi/');
+  await expect(page.locator('.order-summary dt').filter({ hasText: 'Фотографий' }).locator('..')).toHaveText(
+    'Фотографий3',
+  );
+  await expect(page.locator('.order-summary-total')).toHaveText('Итого900 ₽');
+});
+
+test('mobile archive action fills the result width and paid Order action hierarchy is explicit', async ({
+  page,
+}) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await page.goto('/__visual__/event/selfie-search/ready/');
+  const mobileGeometry = await page.locator('.selfie-search-results').evaluate((result) => {
+    const action = result.querySelector('.selfie-search-archive-action .button');
+    const resultRect = result.getBoundingClientRect();
+    const actionRect = action?.getBoundingClientRect();
+    return {
+      actionWidth: actionRect?.width,
+      resultWidth: resultRect.width,
+    };
+  });
+  expect(mobileGeometry.actionWidth).toBeCloseTo(mobileGeometry.resultWidth, 0);
+
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await page.goto('/__visual__/order/paid/multi/');
+  await expect(page.locator('.order-resend--secondary button')).toHaveText(
+    'Отправить письмо ещё раз',
+  );
+  const hierarchy = await page.locator('.order-summary-panel').evaluate((summary) => {
+    const archive = summary.querySelector('.order-archive-action .button');
+    const resend = summary.querySelector('.order-resend--secondary button');
+    const archiveStyle = archive && getComputedStyle(archive);
+    const resendStyle = resend && getComputedStyle(resend);
+    return {
+      archiveBeforeResend: Boolean(
+        archive && resend && archive.getBoundingClientRect().top < resend.getBoundingClientRect().top,
+      ),
+      archiveBackground: archiveStyle?.backgroundColor,
+      archiveColor: archiveStyle?.color,
+      resendBackground: resendStyle?.backgroundColor,
+      resendColor: resendStyle?.color,
+    };
+  });
+  expect(hierarchy.archiveBeforeResend).toBe(true);
+  expect(hierarchy.archiveBackground).toBe('rgb(11, 107, 104)');
+  expect(hierarchy.archiveColor).toBe('rgb(255, 255, 255)');
+  expect(hierarchy.resendBackground).toBe('rgb(255, 255, 255)');
+  expect(hierarchy.resendColor).toBe('rgb(20, 20, 20)');
 });
 
 test('saved selfie-search history is private, event-scoped, navigable, and removable', async ({ page }) => {

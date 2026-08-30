@@ -12,6 +12,8 @@ from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import render
 from django.test import override_settings
+from django.urls import reverse
+from picflow.archive_presentation import archive_page_action
 from picflow.forms import EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from selfie_search.forms import SelfieSearchUploadForm
 
@@ -157,6 +159,7 @@ class FixtureOrderPresentation:
     status_display: str
     total_display: str
     masked_delivery_email: str
+    item_count: int
     photos: tuple[FixtureOrderPhotoPresentation, ...]
 
 
@@ -325,20 +328,22 @@ def _cart_presentation(
     )
 
 
-def _order_presentation(*, status: str) -> FixtureOrderPresentation:
+def _order_presentation(
+    *, status: str, photos: tuple[FixtureGalleryPhoto, ...], item_count: int
+) -> FixtureOrderPresentation:
     status_display = {
         "pending": "Проверяем оплату",
         "paid": "Заказ оплачен",
     }[status]
-    photos = PAID_GALLERY_PHOTOS[:2]
     return FixtureOrderPresentation(
         public_number="FM-ABCDEFGH",
         created_at_display="18.06.2026",
         event_name=EVENTS[0].name,
         status=status,
         status_display=status_display,
-        total_display="600 ₽",
+        total_display=f"{item_count * 300} ₽",
         masked_delivery_email="a***a@example.com",
+        item_count=item_count,
         photos=tuple(FixtureOrderPhotoPresentation(photo=photo) for photo in photos),
     )
 
@@ -825,10 +830,22 @@ def _selfie_search_ready(
     event: FixtureEvent,
     photos: tuple[FixtureGalleryPhoto, ...] = SELFIE_RESULT_PHOTOS,
     cart_presentation: FixtureCartPresentation | None = None,
+    archive_available: bool = True,
 ) -> HttpResponse:
+    selfie_search_page = Paginator(photos, 2).page(1)
+    visible_photos = tuple(selfie_search_page.object_list)
     results = tuple(
         FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
-        for index in range(1, 4)
+        for index in range(1, len(visible_photos) + 1)
+    )
+    archive_action = (
+        archive_page_action(
+            item_count=len(visible_photos),
+            page_number=selfie_search_page.number,
+            page_count=selfie_search_page.paginator.num_pages,
+        )
+        if archive_available
+        else None
     )
     return _render(
         request,
@@ -836,9 +853,21 @@ def _selfie_search_ready(
         {
             "event": event,
             "cart_presentation": cart_presentation,
-            "gallery_photos": photos,
-            "gallery_result_items": tuple(zip(results, photos, strict=True)),
-            "selfie_search_page": Paginator(photos, 2).page(1),
+            "archive_action": archive_action,
+            "archive_url": (
+                reverse(
+                    "selfie_search:result_archive",
+                    kwargs={
+                        "event_slug": event.slug,
+                        "public_token": "visual-ready-result",
+                    },
+                )
+                if archive_action is not None
+                else None
+            ),
+            "gallery_photos": visible_photos,
+            "gallery_result_items": tuple(zip(results, visible_photos, strict=True)),
+            "selfie_search_page": selfie_search_page,
             "is_terminal": True,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
             "status_url": "",
@@ -850,12 +879,17 @@ def selfie_search_ready(request: HttpRequest) -> HttpResponse:
     return _selfie_search_ready(request, event=EVENTS[0])
 
 
+def selfie_search_ready_single(request: HttpRequest) -> HttpResponse:
+    return _selfie_search_ready(request, event=EVENTS[0], photos=SELFIE_RESULT_PHOTOS[:2])
+
+
 def selfie_search_ready_paid(request: HttpRequest) -> HttpResponse:
     return _selfie_search_ready(
         request,
         event=EVENTS[0],
         photos=PAID_SELFIE_RESULT_PHOTOS,
         cart_presentation=_cart_presentation(PAID_SELFIE_RESULT_PHOTOS, selected_ids=("1190",)),
+        archive_available=False,
     )
 
 
@@ -888,17 +922,48 @@ def cart_empty(request: HttpRequest) -> HttpResponse:
     )
 
 
+def _order_context(
+    *, status: str, photos: tuple[FixtureGalleryPhoto, ...], archive_available: bool
+) -> dict[str, Any]:
+    order_items_page = Paginator(photos, 2).page(1)
+    visible_photos = tuple(order_items_page.object_list)
+    archive_action = (
+        archive_page_action(
+            item_count=len(visible_photos),
+            page_number=order_items_page.number,
+            page_count=order_items_page.paginator.num_pages,
+        )
+        if archive_available
+        else None
+    )
+    return {
+        "event": EVENTS[0],
+        "archive_action": archive_action,
+        "archive_url": (
+            reverse(
+                "commerce:order_archive",
+                kwargs={"public_number": "FM-ABCDEFGH"},
+            )
+            if archive_action is not None
+            else None
+        ),
+        "order_items_page": order_items_page,
+        "order_presentation": _order_presentation(
+            status=status,
+            photos=visible_photos,
+            item_count=order_items_page.paginator.count,
+        ),
+        "support_contact": "support@example.com",
+        "yandex_metrika_counter_id": None,
+    }
+
+
 def order_pending(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "commerce/order.html",
-        {
-            "event": EVENTS[0],
-            "order_presentation": _order_presentation(status="pending"),
-            "order_status_url": "/__visual__/order/pending/status/",
-            "support_contact": "support@example.com",
-            "yandex_metrika_counter_id": None,
-        },
+        _order_context(status="pending", photos=PAID_GALLERY_PHOTOS[:2], archive_available=False)
+        | {"order_status_url": "/__visual__/order/pending/status/"},
     )
 
 
@@ -910,12 +975,15 @@ def order_paid(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "commerce/order.html",
-        {
-            "event": EVENTS[0],
-            "order_presentation": _order_presentation(status="paid"),
-            "support_contact": "support@example.com",
-            "yandex_metrika_counter_id": None,
-        },
+        _order_context(status="paid", photos=PAID_GALLERY_PHOTOS[:2], archive_available=True),
+    )
+
+
+def order_paid_multi(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "commerce/order.html",
+        _order_context(status="paid", photos=PAID_GALLERY_PHOTOS[:3], archive_available=True),
     )
 
 
@@ -923,13 +991,8 @@ def order_email_failed(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "commerce/order.html",
-        {
-            "event": EVENTS[0],
-            "order_presentation": _order_presentation(status="paid"),
-            "resend_feedback": "Не удалось отправить письмо. Попробуйте ещё раз.",
-            "support_contact": "support@example.com",
-            "yandex_metrika_counter_id": None,
-        },
+        _order_context(status="paid", photos=PAID_GALLERY_PHOTOS[:2], archive_available=True)
+        | {"resend_feedback": "Не удалось отправить письмо. Попробуйте ещё раз."},
     )
 
 

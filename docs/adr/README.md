@@ -86,10 +86,13 @@ payment confirmation, paid-OrderItem original entitlement, permanent revocable a
 links, asynchronous email delivery, and durable Commerce attention. The concrete bank/email
 protocols, fiscal and legal contracts, public activation, and refunds remain later work.
 
-[ADR 0034](0034-stream-page-scoped-photo-archives-through-django.md) accepts a narrow exception to
-ADR 0020 for an authorized page-scoped aggregate ZIP body: Django streams at most one numbered page
-of private originals without retaining an archive. Individual downloads retain direct signed
-Object Storage delivery, and all selfie-result and paid-Order authorization remains unchanged.
+[ADR 0034](0034-stream-page-scoped-photo-archives-through-django.md) accepts and the repository
+implements a narrow exception to ADR 0020 for an authorized page-scoped aggregate ZIP body: Django
+streams at most one numbered page of private originals without retaining an archive. The code-owned
+`bulk-photo-download` definition reconciles in `off`; deployment, activation, maximum-page
+capacity acceptance, and live customer evidence remain incomplete. Individual downloads retain
+direct signed Object Storage delivery, and all selfie-result and paid-Order authorization remains
+unchanged.
 
 [ADR 0022](0022-use-numbered-gallery-pages.md) supersedes only ADR 0020's cursor-pagination
 follow-up. Normal galleries and ready selfie-search results use bounded numbered pages; all media

@@ -371,7 +371,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; canonical-deployment activation and customer outcomes are not evidenced |
 | Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no canonical-deployment activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
-| Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, and paid-original entitlement | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, and Commerce worker deployment wiring are implemented behind paid runtime gates. ADR 0034 accepts page-scoped ZIP delivery but it is not yet implementation evidence. Public activation, a real bank adapter, fiscal/legal review, promotions, packages, and refunds remain later work |
+| Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, paid-original entitlement, and page-scoped archive delivery | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, Commerce worker deployment wiring, and ADR 0034's streaming page-scoped ZIP delivery are implemented behind runtime gates. The code-owned `bulk-photo-download` gate reconciles to `off`; public activation, maximum-page capacity acceptance, live customer evidence, a real bank adapter, fiscal/legal review, promotions, packages, and refunds remain later work |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
@@ -521,7 +521,7 @@ gate mutation, and live verification. The selection state grants no download ent
 immutable Orders, normalized payment attempts, trusted manual recovery, durable access-email work,
 and protected per-item original signing are implemented behind the paid runtime gates. The deployed
 acceptance path uses the staff-only payment simulator and can run a single Commerce worker through
-the canonical Deploy workflow. Packages, promotions, refunds, and ZIP delivery remain later work.
+the canonical Deploy workflow. Packages, promotions, and refunds remain later work.
 
 ADR 0031 accepts immutable single-event RUB Orders, normalized PaymentAttempts behind a narrow
 bank adapter, authoritative server evidence or trusted manual payment confirmation, and permanent
@@ -531,8 +531,13 @@ notification, and a separate PostgreSQL-polling Commerce worker owns delivery an
 reconciliation with durable operator attention. This accepted purchase boundary is implemented
 behind staff-controlled runtime gates. The repository includes a Yandex Postbox SMTPS sender
 adapter and canonical deployment wiring that projects Postbox credentials only to the Commerce
-worker. A real bank adapter, fiscal and legal contracts, public activation, refunds, and ZIP
-delivery remain later work; the deployed acceptance payment path is the staff-only simulator.
+worker. A real bank adapter, fiscal and legal contracts, public activation, and refunds remain later
+work; the deployed acceptance payment path is the staff-only simulator. ADR 0034's repository
+implementation adds a page-scoped streaming ZIP only for an authorized free ready-result page or
+paid Order page. It stores no archive, streams one private original at a time through Django, and
+is hidden and denied by the reconciled default-off `bulk-photo-download` gate. Deployment, gate
+activation, representative maximum-page capacity acceptance, and live customer evidence remain
+explicitly incomplete.
 
 ## Security, privacy, and legal boundaries
 
@@ -609,11 +614,11 @@ delivery remain later work; the deployed acceptance payment path is the staff-on
    photos before delivering corrections and event-scoped search.
 6. **Face governance, validation, and search:** approve biometric policy and independently benchmark
    face models before delivering embeddings, event filtering, removal, and candidate UX.
-7. **Commerce:** the accepted anonymous event-cart selection and purchase boundaries are
-   implemented behind paid runtime gates. The staff acceptance path uses a simulated payment
-   adapter, Postbox email sender, and one canonical-deployment Commerce worker. A real bank
-   adapter, fiscal/legal approval, public rollout evidence, packages, promotions, refunds, and ZIP
-   delivery remain later work.
+7. **Commerce:** the accepted anonymous event-cart selection, purchase boundaries, and default-off
+   page-scoped ZIP delivery are implemented behind runtime gates. The staff acceptance path uses a
+   simulated payment adapter, Postbox email sender, and one canonical-deployment Commerce worker.
+   A real bank adapter, fiscal/legal approval, public rollout evidence, packages, promotions,
+   refunds, and archive capacity acceptance remain later work.
 8. **Operational readiness:** monitoring, alerting, backup/restore evidence, capacity limits, and runbooks.
 
 ### Checkout, payment, entitlement, and original-delivery seam

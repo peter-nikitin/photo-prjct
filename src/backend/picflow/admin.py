@@ -58,6 +58,8 @@ class EventAdmin(admin.ModelAdmin):
 
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
+            if not self.is_bound and self.instance._state.adding:
+                self.initial.setdefault("timezone_name", "Europe/Moscow")
             if self.instance.price_per_photo_kopecks is not None:
                 self.initial.setdefault(
                     "price_per_photo_rub",

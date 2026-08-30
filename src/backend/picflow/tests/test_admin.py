@@ -53,6 +53,31 @@ class EventAdminTests(TestCase):
 
         self.assertContains(response, 'name="timezone_name"')
 
+    def test_admin_prefills_moscow_timezone_for_new_event(self) -> None:
+        response = self.client.get(reverse("admin:picflow_event_add"))
+
+        self.assertEqual(
+            response.context["adminform"].form["timezone_name"].value(),
+            "Europe/Moscow",
+        )
+
+    def test_admin_preserves_existing_event_timezone(self) -> None:
+        event = Event.objects.create(
+            name="London Run",
+            slug="london-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="London",
+            timezone_name="Europe/London",
+        )
+
+        response = self.client.get(reverse("admin:picflow_event_change", args=[event.pk]))
+
+        self.assertEqual(
+            response.context["adminform"].form["timezone_name"].value(),
+            "Europe/London",
+        )
+
     def test_admin_exposes_the_rub_photo_price_field(self) -> None:
         response = self.client.get(reverse("admin:picflow_event_add"))
 

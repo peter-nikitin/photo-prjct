@@ -4,7 +4,8 @@
 - Date: 2026-07-13
 - Deciders: project maintainer
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0035](0035-use-django-polled-yandex-disk-import.md) only for the source-byte
+  transport of public Yandex Disk imports; local browser uploads retain this decision.
 
 ## Context
 

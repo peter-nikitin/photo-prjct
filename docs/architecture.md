@@ -221,6 +221,12 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 
 ## Accepted constraints
 
+- [ADR 0035](adr/0035-use-django-polled-yandex-disk-import.md) accepts public Yandex Disk import
+  through a dedicated ingestion worker polling a private Django API backed by PostgreSQL.
+  This is accepted but not implemented. It makes a narrow exception to ADRs 0013/0014 for that
+  source while retaining local browser uploads, private original publication, and standard
+  processing enrollment.
+
 - Start as a Django modular monolith; extract services only after measured operational need.
 - Use PostgreSQL as the transactional system of record.
 - Deploy the initial product as containers through Docker Compose on a Yandex Cloud VM.
@@ -640,6 +646,7 @@ activation, and live-customer evidence are separate release gates.
 - Kubernetes, service mesh, and independently deployed microservices without demonstrated need.
 
 ## Open decisions
+
 
 Each item needs evidence and an ADR before implementation commits the architecture:
 

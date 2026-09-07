@@ -54,6 +54,7 @@ place, and add the new record to this index.
 | 0032 | [Reconcile code-owned feature flags at startup](0032-reconcile-code-owned-feature-flags-at-startup.md) | Accepted |
 | 0033 | [Keep durable knowledge and test executable contracts](0033-keep-durable-knowledge-test-executable-contracts.md) | Accepted |
 | 0034 | [Stream page-scoped photo archives through Django](0034-stream-page-scoped-photo-archives-through-django.md) | Accepted |
+| 0035 | [Use Django-polled Yandex Disk import](0035-use-django-polled-yandex-disk-import.md) | Accepted |
 
 ## Public selfie-search outcome
 

@@ -43,6 +43,28 @@ services:
       - web
     restart: unless-stopped
 
+  import-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.import-worker
+    profiles:
+      - import
+    environment:
+      PHOTO_IMPORT_API_URL: http://web:8000/internal/photo-import/v1/
+      PHOTO_IMPORT_WORKER_TOKEN: ${PHOTO_IMPORT_WORKER_TOKEN:-}
+      PHOTO_IMPORT_BUILD: ${PHOTO_IMPORT_BUILD:-local}
+    depends_on:
+      - web
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp/photo-import:size=67108864,uid=10002,gid=10002,mode=0700
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 32
+
   commerce-worker:
     build: .
     entrypoint: ["python", "manage.py", "run_commerce_worker"]

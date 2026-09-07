@@ -9,14 +9,9 @@ from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
 from django.utils import timezone
-from picflow.models import Event, Photo
-from picflow.photo_policy import policy_for_new_photo
+from picflow.models import Photo
 from PIL import Image
-from processing.services.enrollment import (
-    GENERATE_PREVIEW_CONFIGURATION,
-    request_capture_metadata,
-    request_generate_preview,
-)
+from processing.services.enrollment import GENERATE_PREVIEW_CONFIGURATION
 
 from ingestion.models import UploadItem
 from ingestion.services.batches import (
@@ -25,6 +20,13 @@ from ingestion.services.batches import (
     _locked_item,
     _locked_owned_batch,
     classify_failure,
+)
+from ingestion.services.publication import (
+    OriginalVerificationError,
+    VerifiedOriginal,
+    publish_photo,
+    verify_jpeg_object,
+    verify_object_identity,
 )
 from ingestion.storage import (
     ObjectChanged,
@@ -83,24 +85,14 @@ def confirm_upload_item(
                 if recovering_final:
                     checkpoint = item.verified_source_etag or ""
                 else:
-                    source = storage.inspect(key=item.incoming_key)
-                    _require_source_metadata(item=item, identity=source)
-                    if item.expected_size < 4:
-                        raise _VerificationFailure("invalid_jpeg")
-                    first = storage.read_range(
-                        key=item.incoming_key,
-                        etag_wire=source.etag_wire,
-                        start=0,
-                        end=1,
-                    )
-                    last = storage.read_range(
-                        key=item.incoming_key,
-                        etag_wire=source.etag_wire,
-                        start=item.expected_size - 2,
-                        end=item.expected_size - 1,
-                    )
-                    if first != b"\xff\xd8" or last != b"\xff\xd9":
-                        raise _VerificationFailure("invalid_jpeg")
+                    try:
+                        source = verify_jpeg_object(
+                            storage=storage,
+                            key=item.incoming_key,
+                            expected_size=item.expected_size,
+                        )
+                    except OriginalVerificationError as error:
+                        raise _VerificationFailure(error.code) from None
 
                     checkpoint = source.etag_value
                     source_etag_wire = source.etag_wire
@@ -152,6 +144,12 @@ def confirm_upload_item(
             if preview_first
             else None
         )
+        original = VerifiedOriginal(
+            key=item.final_key,
+            identity=final,
+            filename=item.original_filename,
+            oriented_geometry=preview_geometry,
+        )
         _run_failpoint(failpoint, "after_preview_geometry")
 
         with transaction.atomic():
@@ -166,43 +164,19 @@ def confirm_upload_item(
                 _require_authorized(item)
                 if not checkpoint or item.verified_source_etag != checkpoint:
                     raise ObjectChanged()
-                event = Event.objects.select_for_update().get(pk=batch.event_id)
                 if item.folder_id is not None and item.folder.event_id != batch.event_id:
                     raise ItemStateConflict(
                         "folder_event_mismatch", "The upload folder does not belong to this event."
                     )
 
-                now = timezone.now()
-                processing_generation, gallery_media_policy = policy_for_new_photo(
-                    event,
-                    uploader,
-                )
-                photo = Photo.objects.create(
-                    id=item.id.hex,
-                    event=event,
+                photo = publish_photo(
+                    photo_id=item.id.hex,
+                    uploader=uploader,
+                    event=batch.event,
                     folder=item.folder,
-                    src="",
-                    uploaded_by=batch.uploader,
-                    original_key=item.final_key,
-                    original_filename=item.original_filename,
-                    original_size=item.expected_size,
-                    original_content_type=item.declared_content_type,
-                    uploaded_at=now,
-                    processing_generation=processing_generation,
-                    gallery_media_policy=gallery_media_policy,
+                    original=original,
                 )
-                if event.timezone_name is not None:
-                    request_capture_metadata(
-                        photo,
-                        verified_source_etag=item.verified_source_etag,
-                    )
-                if preview_geometry is not None:
-                    request_generate_preview(
-                        photo,
-                        pixel_width=preview_geometry[0],
-                        pixel_height=preview_geometry[1],
-                        verified_source_etag=item.verified_source_etag,
-                    )
+                now = timezone.now()
                 item.photo = photo
                 item.status = UploadItem.Status.UPLOADED
                 item.error_code = ""
@@ -263,20 +237,16 @@ def _inspect_recoverable_final(*, storage: ConfirmationStorage, item: UploadItem
     return True
 
 
-def _require_source_metadata(*, item: UploadItem, identity: ObjectIdentity) -> None:
-    if identity.size != item.expected_size:
-        raise _VerificationFailure("size_mismatch")
-    if identity.content_type != item.declared_content_type:
-        raise _VerificationFailure("content_type_mismatch")
-
-
 def _require_final_identity(*, item: UploadItem, identity: ObjectIdentity, checkpoint: str) -> None:
-    if (
-        identity.etag_value != checkpoint
-        or identity.size != item.expected_size
-        or identity.content_type != item.declared_content_type
-    ):
-        raise ObjectMismatch()
+    try:
+        verify_object_identity(
+            identity=identity,
+            expected_size=item.expected_size,
+            expected_etag=checkpoint,
+            expected_content_type=item.declared_content_type,
+        )
+    except OriginalVerificationError:
+        raise ObjectMismatch() from None
 
 
 def _require_authorized(item: UploadItem) -> None:

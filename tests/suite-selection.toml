@@ -14,6 +14,7 @@ suites = []
 name = "operational"
 patterns = [
   "deploy/**",
+  ".env.example",
   "docker-compose*.yml",
   ".github/workflows/deploy.yml",
   "src/backend/config/settings.py",
@@ -27,6 +28,8 @@ patterns = [
   "tests/deployment/**",
   "tests/monitoring/**",
   "tests/processing/test_worker_container_contract.py",
+  "tests/processing/test_import_worker_container_contract.py",
+  "Dockerfile.import-worker",
 ]
 suites = ["operational"]
 layer = "operational"
@@ -37,6 +40,7 @@ patterns = [
   "src/backend/*/migrations/**",
   "src/backend/*/models.py",
   "src/backend/**/tests/test_*migration*.py",
+  "src/backend/ingestion/tests/test_import_upgrade.py",
   "src/backend/processing/tests/test_models.py",
   "scripts/check_migration_immutability.py",
   "tests/test_migration_immutability.py",
@@ -46,6 +50,7 @@ layer_patterns = [
   "src/backend/*/migrations/**",
   "src/backend/*/models.py",
   "src/backend/**/tests/test_*migration*.py",
+  "src/backend/ingestion/tests/test_import_upgrade.py",
   "scripts/check_migration_immutability.py",
   "tests/test_migration_immutability.py",
   "deploy/apply-deployment.sh",
@@ -71,6 +76,7 @@ suites = ["visual"]
 name = "product-flow"
 patterns = [
   "tests/processing/test_pipeline_e2e.py",
+  "src/backend/ingestion/tests/test_import_flow.py",
   "tests/processing/test_selfie_search_e2e.py",
   "src/backend/commerce/tests/test_paid_photo_cart_flow.py",
   "src/backend/commerce/tests/test_paid_photo_purchase_flow.py",

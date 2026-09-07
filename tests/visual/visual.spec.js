@@ -59,6 +59,7 @@ const desktopPages = [
   ['upload-partial', '/__visual__/upload/partial/'],
   ['upload-complete', '/__visual__/upload/complete/'],
   ['upload-folders', '/__visual__/upload/folders/'],
+  ['upload-imports', '/__visual__/upload/imports/'],
   ['reference-orders', '/__visual__/reference/orders/'],
   ['reference-promotions', '/__visual__/reference/promotions/'],
   ['reference-purchased', '/__visual__/reference/purchased/'],
@@ -100,6 +101,7 @@ const mobilePages = [
   ['upload-partial', '/__visual__/upload/partial/'],
   ['upload-complete', '/__visual__/upload/complete/'],
   ['upload-folders', '/__visual__/upload/folders/'],
+  ['upload-imports', '/__visual__/upload/imports/'],
 ];
 
 function collectBrowserFailures(page) {
@@ -338,6 +340,37 @@ test.describe('mobile visual regression', () => {
       });
     });
   }
+});
+
+test('Yandex Disk import fixture restores bounded server-owned outcomes and accessible controls', async ({ page }) => {
+  await page.goto('/__visual__/upload/imports/');
+
+  await expect(page.locator('[data-import-card]')).toHaveCount(6);
+  await expect(page.locator('[data-import-status]')).toHaveText([
+    'Завершено',
+    'Завершено',
+    'Загружаем',
+    'Завершено с ошибками',
+    'Приостановлено',
+    'Завершено',
+  ]);
+  await expect(page.locator('[data-import-subfolder-warning]:visible')).toHaveText(
+    'В папке по ссылке есть вложенные папки. Фотографии из них загружены не будут.',
+  );
+  await expect(page.locator('[data-import-message]:visible')).toHaveText([
+    'В указанной папке нет JPEG-файлов для загрузки',
+    'Новых фотографий нет',
+    'Загрузка завершена. Обработка фотографий продолжается',
+  ]);
+
+  const source = page.locator('[data-import-source-url]');
+  await source.focus();
+  await expect(source).toBeFocused();
+  await source.fill('https://disk.yandex.ru/d/public-folder');
+  await expect(page.locator('[data-import-submit]')).toBeEnabled();
+  await page.locator('[data-import-submit]').focus();
+  await expect(page.locator('[data-import-submit]')).toBeFocused();
+  await expect(page.locator('[data-import-list-pagination]')).toBeHidden();
 });
 
 test('archive actions preserve the page boundary and paid result denial', async ({ page }) => {

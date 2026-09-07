@@ -1,7 +1,10 @@
 # Public Yandex Disk Photo Import Implementation Plan
 
 - Date: 2026-09-07
-- Status: Ready for maintainer review; implementation and deployment have not started.
+- Status: Implementation present; local acceptance recorded. Deployment and activation have not started.
+- Execution evidence: [Container and upgrade acceptance](2026-09-07-yandex-disk-import-acceptance.md),
+  [operational runbook](../runbooks/yandex-disk-photo-import.md). The task checklist below is the
+  original execution procedure; delivery distinguishes local verification from live activation.
 - Owner: project maintainer
 - Related specification: [Approved import design](../superpowers/specs/2026-09-07-yandex-disk-photo-import-design.md)
 - Related architecture: [Photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing)

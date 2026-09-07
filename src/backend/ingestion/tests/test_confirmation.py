@@ -235,6 +235,10 @@ class ConfirmationTests(TransactionTestCase):
         self.assertEqual(item.verified_source_etag, "source-etag")
         self.assertEqual(self.storage.promote_etags, ['"source-etag"'])
         self.assertEqual(self.storage.objects[item.final_key][0], self.jpeg)
+        self.assertEqual(
+            (second.processing_generation, second.gallery_media_policy),
+            ("legacy_original_v1", "legacy_original_allowed"),
+        )
 
     def test_confirmation_copies_the_registered_folder_to_photo(self) -> None:
         folder = EventFolder.objects.create(event=self.event, name="Старт")

@@ -216,6 +216,115 @@
         </article>
       </template>
     </section>
+
+    <section class="import-panel"
+             data-import-root
+             data-import-enabled="{{ photo_import_enabled|yesno:'true,false' }}"
+             data-import-history-enabled="{{ photo_import_history_enabled|yesno:'true,false' }}"
+             data-import-collection-url="{{ photo_import_urls.collection|default:'/photographer/uploads/imports/' }}"
+             data-import-detail-url-template="{{ photo_import_urls.detail|default:'/photographer/uploads/imports/{batch}/' }}"
+             data-import-items-url-template="{{ photo_import_urls.items|default:'/photographer/uploads/imports/{batch}/items/' }}"
+             data-import-retry-url-template="{{ photo_import_urls.retry|default:'/photographer/uploads/imports/{batch}/retry/' }}"
+             data-csrf-token="{{ csrf_token }}"
+             hidden>
+      <div class="import-heading">
+        <div>
+          <p class="eyebrow">Яндекс Диск</p>
+          <h2>Загрузка по ссылке</h2>
+        </div>
+        <p>Задачи выполняются на сервере и сохраняют прогресс после закрытия страницы.</p>
+      </div>
+
+      {% if photo_import_enabled %}
+        <form class="import-form" data-import-form>
+          <label class="upload-field" for="import-folder">
+            <span>Папка мероприятия</span>
+            <select id="import-folder" data-import-folder disabled>
+              <option value="">Сначала выберите событие</option>
+              {% for event in events %}
+                <option value="" data-import-folder-option data-event-id="{{ event.pk }}">Без папки</option>
+                {% for folder in event.folders.all %}
+                  <option value="{{ folder.pk }}" data-import-folder-option data-event-id="{{ event.pk }}">{{ folder.name }}</option>
+                {% endfor %}
+              {% endfor %}
+            </select>
+          </label>
+          <label class="upload-field import-link-field" for="import-source-url">
+            <span>Ссылка на публичную папку Яндекс Диска</span>
+            <input id="import-source-url"
+                   data-import-source-url
+                   type="url"
+                   inputmode="url"
+                   autocomplete="url"
+                   placeholder="https://disk.yandex.ru/d/…"
+                   required>
+            <small>Загрузим только JPEG-файлы из указанной папки, без подпапок</small>
+          </label>
+          <button class="button import-submit" type="submit" data-import-submit disabled>Загрузить</button>
+          <p class="import-form-message" data-import-form-message role="status" aria-live="polite"></p>
+        </form>
+      {% endif %}
+
+      <div class="import-history" data-import-history>
+        <div class="import-history-heading">
+          <h3>Импорты</h3>
+          <p data-import-list-status role="status" aria-live="polite">Загружаем сохранённый прогресс…</p>
+        </div>
+        <div class="import-list" data-import-list></div>
+        <nav class="import-pagination" data-import-list-pagination aria-label="Страницы импортов" hidden>
+          <span data-import-list-page-status></span>
+          <span>
+            <button type="button" data-import-list-previous>Назад</button>
+            <button type="button" data-import-list-next>Далее</button>
+          </span>
+        </nav>
+      </div>
+
+      <template data-import-card-template>
+        <article class="import-card" data-import-card>
+          <header class="import-card-heading">
+            <div>
+              <p class="import-destination"><strong data-import-event></strong><span data-import-folder-name></span></p>
+              <time data-import-created></time>
+            </div>
+            <span class="import-status" data-import-status></span>
+          </header>
+          <p class="import-accepted" data-import-accepted>Задача принята. Можно закрыть страницу — загрузка продолжится на сервере</p>
+          <p class="import-result-message" data-import-message hidden></p>
+          <dl class="import-metrics">
+            <div><dt>JPEG</dt><dd data-import-jpeg>0</dd></div>
+            <div><dt>Загружено</dt><dd data-import-imported>0</dd></div>
+            <div><dt>Уже было</dt><dd data-import-duplicate>0</dd></div>
+            <div><dt>Ошибки</dt><dd data-import-error>0</dd></div>
+            <div><dt>Ожидают</dt><dd data-import-pending>0</dd></div>
+            <div><dt>Пропущено</dt><dd data-import-unsupported>0</dd></div>
+          </dl>
+          <p class="import-warning" data-import-subfolder-warning hidden>
+            В папке по ссылке есть вложенные папки. Фотографии из них загружены не будут.
+          </p>
+          <p class="import-error" data-import-error-message hidden></p>
+          <div class="import-card-actions">
+            <button type="button" data-import-show-items>Показать файлы</button>
+            <button type="button" data-import-retry hidden>Повторить ошибки</button>
+          </div>
+          <p class="import-error" data-import-action-status role="status" aria-live="polite" hidden></p>
+          <div class="import-items" data-import-items hidden>
+            <div data-import-item-list></div>
+            <nav class="import-pagination" data-import-items-pagination aria-label="Страницы файлов" hidden>
+              <span data-import-items-page-status></span>
+              <span>
+                <button type="button" data-import-items-previous>Назад</button>
+                <button type="button" data-import-items-next>Далее</button>
+              </span>
+            </nav>
+          </div>
+        </article>
+      </template>
+      <template data-import-item-template>
+        <p class="import-item" data-import-item><strong data-import-item-name></strong><span data-import-item-state></span><span data-import-item-error hidden></span></p>
+      </template>
+    </section>
     <script src="{% static 'ui/upload-coordinator.js' %}"></script>
+    <script src="{% static 'ui/import-coordinator.js' %}"></script>
   </div>
 {% endblock %}

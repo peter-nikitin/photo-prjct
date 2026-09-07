@@ -35,6 +35,7 @@ EXPECTED_SECRET_KEYS = {
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
     "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
     "PHOTO_PROCESSING_WORKER_TOKEN",
+    "PHOTO_IMPORT_WORKER_TOKEN",
     "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
     "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
     "VM_SSH_KEY",
@@ -42,6 +43,7 @@ EXPECTED_SECRET_KEYS = {
     "YANDEX_MONITORING_API_KEY",
 }
 OPTIONAL_DARK_COMMERCE_SECRET_KEYS = {
+    "PHOTO_IMPORT_WORKER_TOKEN",
     "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
     "COMMERCE_POSTBOX_API_KEY_ID",
     "COMMERCE_POSTBOX_API_KEY_SECRET",
@@ -54,6 +56,7 @@ LOCAL_WEB_KEYS = {
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
     "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
     "PHOTO_PROCESSING_WORKER_TOKEN",
+    "PHOTO_IMPORT_WORKER_TOKEN",
     "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
     "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
 }
@@ -425,7 +428,7 @@ def test_deploy_consumer_accepts_dark_payload_without_optional_commerce_entries(
 @pytest.mark.parametrize(
     ("mutate", "reason"),
     [
-        (lambda payload: payload["entries"].pop(), "missing_entry"),
+        (lambda payload: payload["entries"].pop(0), "missing_entry"),
         (lambda payload: payload["entries"].append(dict(payload["entries"][0])), "duplicate_entry"),
         (
             lambda payload: payload["entries"].append({"key": "UNREVIEWED", "textValue": "x"}),

@@ -43,6 +43,9 @@ PAID_PHOTO_PAYMENT_SIMULATOR: Final = FeatureDefinition(
 BULK_PHOTO_DOWNLOAD: Final = FeatureDefinition(
     "bulk-photo-download", "Allow page-scoped photo archive downloads"
 )
+YANDEX_DISK_IMPORT: Final = FeatureDefinition(
+    "yandex-disk-import", "Allow server-side photo import from Yandex Disk"
+)
 
 FEATURE_DEFINITIONS: Final = (
     PAID_EVENTS,
@@ -51,6 +54,7 @@ FEATURE_DEFINITIONS: Final = (
     PAID_PHOTO_PURCHASE,
     PAID_PHOTO_PAYMENT_SIMULATOR,
     BULK_PHOTO_DOWNLOAD,
+    YANDEX_DISK_IMPORT,
 )
 
 validate_feature_definitions(FEATURE_DEFINITIONS)

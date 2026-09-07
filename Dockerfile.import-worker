@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+WORKDIR /import-worker
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY src/import_worker/requirements.txt ./requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+RUN useradd --create-home --uid 10002 importer && mkdir /tmp/photo-import && chown importer:importer /tmp/photo-import
+COPY src/import_worker/import_worker ./import_worker
+USER importer
+CMD ["python", "-m", "import_worker"]

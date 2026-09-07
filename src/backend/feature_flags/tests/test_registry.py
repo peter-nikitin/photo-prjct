@@ -10,6 +10,7 @@ from feature_flags.registry import (
     PAID_PHOTO_PAYMENT_SIMULATOR,
     PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
+    YANDEX_DISK_IMPORT,
     FeatureDefinition,
     validate_feature_definitions,
 )
@@ -52,6 +53,7 @@ class FeatureDefinitionTests(SimpleTestCase):
                 PAID_PHOTO_PURCHASE,
                 PAID_PHOTO_PAYMENT_SIMULATOR,
                 BULK_PHOTO_DOWNLOAD,
+                YANDEX_DISK_IMPORT,
             ),
         )
         self.assertEqual(
@@ -69,5 +71,9 @@ class FeatureDefinitionTests(SimpleTestCase):
                     "Use the feature-gated test payment screen",
                 ),
                 ("bulk-photo-download", "Allow page-scoped photo archive downloads"),
+                (
+                    "yandex-disk-import",
+                    "Allow server-side photo import from Yandex Disk",
+                ),
             ),
         )

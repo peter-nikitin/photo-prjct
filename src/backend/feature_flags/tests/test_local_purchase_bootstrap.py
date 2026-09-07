@@ -2,7 +2,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase, override_settings
 
 from feature_flags.models import FeatureFlag
-from feature_flags.registry import FEATURE_DEFINITIONS
+from feature_flags.registry import FEATURE_DEFINITIONS, YANDEX_DISK_IMPORT
 
 
 class LocalPurchaseBootstrapTests(TestCase):
@@ -14,7 +14,13 @@ class LocalPurchaseBootstrapTests(TestCase):
         self.assertEqual(
             list(FeatureFlag.objects.values_list("key", "description", "state")),
             sorted(
-                (definition.key, definition.description, FeatureFlag.State.ON)
+                (
+                    definition.key,
+                    definition.description,
+                    FeatureFlag.State.OFF
+                    if definition == YANDEX_DISK_IMPORT
+                    else FeatureFlag.State.ON,
+                )
                 for definition in FEATURE_DEFINITIONS
             ),
         )

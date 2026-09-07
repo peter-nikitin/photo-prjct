@@ -140,6 +140,14 @@ PHOTO_UPLOAD_CONCURRENCY = env.int("PHOTO_UPLOAD_CONCURRENCY", default=4)
 PHOTO_UPLOAD_GRANT_TTL_SECONDS = env.int("PHOTO_UPLOAD_GRANT_TTL_SECONDS", default=600)
 PHOTO_UPLOAD_STALE_AFTER_SECONDS = env.int("PHOTO_UPLOAD_STALE_AFTER_SECONDS", default=86_400)
 
+# The import worker is an independent capability with its own bearer credential.  Both remain
+# disabled unless explicitly configured; the browser release gate is checked separately.
+PHOTO_IMPORT_ENABLED = _exact_environment_boolean("PHOTO_IMPORT_ENABLED")
+PHOTO_IMPORT_WORKER_TOKEN = env("PHOTO_IMPORT_WORKER_TOKEN", default="")
+PHOTO_IMPORT_MAX_JSON_BYTES = env.int("PHOTO_IMPORT_MAX_JSON_BYTES", default=1024 * 1024)
+if not 256 <= PHOTO_IMPORT_MAX_JSON_BYTES <= 1024 * 1024:
+    raise ImproperlyConfigured("PHOTO_IMPORT_MAX_JSON_BYTES must be between 256 and 1048576")
+
 # Disabled by default: the private worker API also denies every request unless its separate
 # environment-provided bearer token is present.  This token is never shared with Django, users,
 # or object storage and must never be logged or persisted.

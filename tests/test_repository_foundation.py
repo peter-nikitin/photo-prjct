@@ -239,9 +239,23 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
     ci = _load_workflow("ci.yml")
     development_requirements = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
 
-    assert pyproject["mypy"]["files"] == ["src/backend", "src/worker/photo_worker"]
-    assert pytest_config["pythonpath"] == [".", "src/backend", "src/worker"]
-    assert pytest_config["testpaths"] == ["src/backend", "src/worker/tests", "tests"]
+    assert pyproject["mypy"]["files"] == [
+        "src/backend",
+        "src/worker/photo_worker",
+        "src/import_worker/import_worker",
+    ]
+    assert pytest_config["pythonpath"] == [
+        ".",
+        "src/backend",
+        "src/worker",
+        "src/import_worker",
+    ]
+    assert pytest_config["testpaths"] == [
+        "src/backend",
+        "src/worker/tests",
+        "src/import_worker/tests",
+        "tests",
+    ]
     assert "pytest-xdist>=3.8,<4" in development_requirements.splitlines()
     assert pyproject["coverage"]["run"]["source"] == [
         "src/backend/config",
@@ -252,6 +266,7 @@ def test_root_quality_contract_includes_processing_and_standalone_worker() -> No
         "src/backend/processing",
         "src/backend/selfie_search",
         "src/worker/photo_worker",
+        "src/import_worker/import_worker",
     ]
     assert _workflow_step(ci, "quality", "Static analysis")["run"] == (
         "make static RUFF=ruff MYPY=mypy"

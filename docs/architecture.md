@@ -223,9 +223,13 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 
 - [ADR 0035](adr/0035-use-django-polled-yandex-disk-import.md) accepts public Yandex Disk import
   through a dedicated ingestion worker polling a private Django API backed by PostgreSQL.
-  This is accepted but not implemented. It makes a narrow exception to ADRs 0013/0014 for that
-  source while retaining local browser uploads, private original publication, and standard
-  processing enrollment.
+  The implementation uses durable import scopes, manifests and attempt-owned storage checkpoints,
+  the private `/internal/photo-import/v1/` API, and an opt-in `import` Compose profile. It makes a
+  narrow exception to ADRs 0013/0014 while retaining local browser uploads, private original
+  publication, and standard processing enrollment. The capability and `yandex-disk-import` gate
+  default to off. [Local acceptance](plans/2026-09-07-yandex-disk-import-acceptance.md) records
+  container and upgrade checks; [the runbook](runbooks/yandex-disk-photo-import.md) separates
+  these from deployment, real-source acceptance, and activation.
 
 - Start as a Django modular monolith; extract services only after measured operational need.
 - Use PostgreSQL as the transactional system of record.

@@ -133,6 +133,9 @@ def _write_executable(path: Path, body: str) -> None:
 def _deployment_values() -> dict[str, str]:
     return {
         "APP_IMAGE": "ghcr.io/peter-nikitin/photo-prjct:test-image",
+        "IMPORT_WORKER_IMAGE": "import:test-image",
+        "PHOTO_IMPORT_BUILD": "test-image",
+        "PHOTO_IMPORT_ENABLED": "False",
         "WORKER_IMAGE": "ghcr.io/peter-nikitin/photo-prjct-worker:test-image",
         "DEBUG": "False",
         "ALLOWED_HOSTS": "staging.findme-photo.ru",

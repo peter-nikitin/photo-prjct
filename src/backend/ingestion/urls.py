@@ -1,11 +1,27 @@
 from django.urls import path
 
-from ingestion import views
+from ingestion import import_views, views
 
 urlpatterns = [
     path("login/", views.PhotographerLoginView.as_view(), name="photographer_login"),
     path("logout/", views.PhotographerLogoutView.as_view(), name="photographer_logout"),
     path("uploads/", views.upload_page, name="upload_page"),
+    path("uploads/imports/", import_views.import_collection, name="import_collection"),
+    path(
+        "uploads/imports/<uuid:batch>/",
+        import_views.import_detail,
+        name="import_detail",
+    ),
+    path(
+        "uploads/imports/<uuid:batch>/items/",
+        import_views.import_items,
+        name="import_items",
+    ),
+    path(
+        "uploads/imports/<uuid:batch>/retry/",
+        import_views.import_retry,
+        name="import_retry",
+    ),
     path("uploads/batches/", views.upload_batch_create, name="upload_batch_create"),
     path(
         "uploads/<uuid:batch>/resume/",

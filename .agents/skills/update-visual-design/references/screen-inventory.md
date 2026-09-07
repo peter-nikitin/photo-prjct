@@ -15,8 +15,10 @@ This inventory is the canonical map from visual concepts to Django templates and
 | Shared public shell | production | `src/backend/templates/ui/base.html` | none | covered by production screen routes | covered by production screen snapshots |
 | Search workspace | design-reference | `tests/visual/templates/design_reference/search.html` | none | `/__visual__/reference/search/` | `desktop-reference-search.png`, `mobile-reference-search.png` |
 | Operator dashboard | design-reference | `tests/visual/templates/design_reference/dashboard.html` | none | `/__visual__/reference/dashboard/` | `desktop-reference-dashboard.png` |
-| Event management | design-reference | `tests/visual/templates/design_reference/events.html` | none | `/__visual__/reference/events/` | `desktop-reference-events.png` |
-| Upload | production | `src/backend/templates/ingestion/upload.html` | `/photographer/uploads/` | `/__visual__/upload/empty/`, `/__visual__/upload/active/`, `/__visual__/upload/partial/`, `/__visual__/upload/complete/`, `/__visual__/upload/folders/`, `/__visual__/upload/imports/` | `desktop-upload-empty.png`, `desktop-upload-active.png`, `desktop-upload-partial.png`, `desktop-upload-complete.png`, `desktop-upload-folders.png`, `desktop-upload-imports.png`, `mobile-upload-empty.png`, `mobile-upload-active.png`, `mobile-upload-partial.png`, `mobile-upload-complete.png`, `mobile-upload-folders.png`, `mobile-upload-imports.png` |
+| Event metadata/catalog editor | design-reference | `tests/visual/templates/design_reference/events.html` | none | `/__visual__/reference/events/` | `desktop-reference-events.png` |
+| Workspace event chooser | production | `src/backend/templates/ingestion/upload.html` | `/photographer/uploads/` | `/__visual__/upload/chooser/` | `desktop-upload-chooser.png`, `mobile-upload-chooser.png` |
+| Event photo workspace / administration | production | `src/backend/templates/picflow/event_management.html`, `src/backend/templates/picflow/_event_photo_results.html` | `/manage/events/<event_id>/photos/` | `/__visual__/workspace/photos/`, `/__visual__/workspace/photos/filtered-empty/`, `/__visual__/workspace/photos/hidden/`, `/__visual__/workspace/photos/error/` | `desktop-workspace-photos.png`, `desktop-workspace-photos-filtered-empty.png`, `desktop-workspace-photos-hidden.png`, `desktop-workspace-photos-error.png`, `mobile-workspace-photos.png`, `mobile-workspace-photos-filtered-empty.png`, `mobile-workspace-photos-hidden.png`, `mobile-workspace-photos-error.png` |
+| Event photo workspace / upload | production | `src/backend/templates/picflow/event_management.html`, `src/backend/templates/ingestion/_upload_workspace.html`, `src/backend/templates/ingestion/_yandex_disk_import.html` | `/manage/events/<event_id>/photos/` | `/__visual__/upload/empty/`, `/__visual__/upload/active/`, `/__visual__/upload/partial/`, `/__visual__/upload/processing/`, `/__visual__/upload/complete/`, `/__visual__/upload/folders/`, `/__visual__/upload/imports/` | `desktop-upload-empty.png`, `desktop-upload-active.png`, `desktop-upload-partial.png`, `desktop-upload-processing.png`, `desktop-upload-complete.png`, `desktop-upload-folders.png`, `desktop-upload-imports.png`, `mobile-upload-empty.png`, `mobile-upload-active.png`, `mobile-upload-partial.png`, `mobile-upload-processing.png`, `mobile-upload-complete.png`, `mobile-upload-folders.png`, `mobile-upload-imports.png` |
 | Orders | design-reference | `tests/visual/templates/design_reference/orders.html` | none | `/__visual__/reference/orders/` | `desktop-reference-orders.png` |
 | Promotions | design-reference | `tests/visual/templates/design_reference/promotions.html` | none | `/__visual__/reference/promotions/` | `desktop-reference-promotions.png` |
 | Purchased photos | design-reference | `tests/visual/templates/design_reference/purchased.html` | none | `/__visual__/reference/purchased/` | `desktop-reference-purchased.png` |
@@ -118,3 +120,12 @@ On 2026-09-07, the production upload page added server-side Yandex Disk import. 
 desktop and 390px mobile `upload-imports` baselines cover empty, duplicates-only, active with the
 direct-subfolder warning, partial, paused, and completed-with-processing-active imports. Existing
 local-upload routes remain gate-off baselines.
+
+On 2026-09-07, the canonical uploader and import fragments moved to the fixed-event production
+photo workspace. Existing upload fixture routes/baselines now render that workspace. The separate
+metadata/catalog editor reference remains unchanged; it is not a photo-workspace predecessor.
+The admin populated, filtered-empty, hidden, and processing-error baselines use coherent event-wide
+status totals and displayed result counts. The photographer baselines distinguish active, partial,
+fully uploaded but still processing, and fully processed histories. The unique keep-open or
+safe-to-close guidance sits above folder targets at both widths. Browser checks cover two authors in
+one folder, numbered-page selection, and filters/folder creation without replacing an active queue.

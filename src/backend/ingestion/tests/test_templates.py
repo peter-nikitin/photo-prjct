@@ -37,11 +37,11 @@ class UploadTemplateTests(TestCase):
         self.client.force_login(self.user)
 
     def test_upload_page_renders_accessible_grouped_queue_shell(self) -> None:
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "ingestion/upload.html")
-        self.assertContains(response, 'name="event_id"')
+        self.assertTemplateUsed(response, "ingestion/_upload_workspace.html")
+        self.assertContains(response, f'data-event-id="{self.event.pk}"')
         self.assertContains(response, self.event.name)
         self.assertContains(response, 'type="file"')
         self.assertContains(response, 'accept="image/jpeg,.jpg,.jpeg"')
@@ -65,6 +65,16 @@ class UploadTemplateTests(TestCase):
         )
         self.assertContains(response, 'src="/static/ui/upload-coordinator.js"')
 
+    def test_local_transfer_copy_matches_confirmed_completion_contract(self) -> None:
+        for state, message in (
+            ("active", "Держите страницу открытой — идёт загрузка"),
+            ("complete", "Все фотографии загружены. Можно закрыть страницу"),
+        ):
+            with self.subTest(state=state):
+                html = render_to_string("ingestion/_upload_workspace.html", {"upload_state": state})
+                self.assertIn(message, html)
+                self.assertIn("Обработка продолжится в фоне.", html)
+
     def test_upload_page_renders_event_scoped_folder_targets_safely(self) -> None:
         start = EventFolder.objects.create(event=self.event, name="Старт")
         unsafe = EventFolder.objects.create(
@@ -80,21 +90,21 @@ class UploadTemplateTests(TestCase):
         )
         other_folder = EventFolder.objects.create(event=other_event, name="Трасса")
 
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
         html = response.content.decode()
 
-        self.assertIn(f'data-folder-targets data-event-id="{self.event.id}" hidden', html)
-        self.assertIn(f'data-folder-targets data-event-id="{other_event.id}" hidden', html)
+        self.assertIn(f'data-folder-targets data-event-id="{self.event.id}"', html)
+        self.assertNotIn(f'data-folder-targets data-event-id="{other_event.id}"', html)
         self.assertIn('data-folder-target data-folder-id=""', html)
         self.assertIn(f'data-folder-id="{start.id}"', html)
         self.assertIn(f'data-folder-id="{unsafe.id}"', html)
-        self.assertIn(f'data-folder-id="{other_folder.id}"', html)
+        self.assertNotIn(f'data-folder-id="{other_folder.id}"', html)
         self.assertIn("data-folder-target-input", html)
         self.assertIn("Финиш &lt;script&gt;alert(1)&lt;/script&gt;", html)
         self.assertNotIn("<script>alert(1)</script>", html)
 
     def test_upload_page_omits_deferred_controls_claims_and_private_keys(self) -> None:
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
         html = response.content.decode()
 
         for forbidden in (
@@ -140,7 +150,7 @@ class UploadTemplateTests(TestCase):
             final_key=f"originals/{uuid4().hex}",
         )
 
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
 
         self.assertEqual(response.context["unfinished_batches"][0].id, owned.id)
         self.assertEqual(len(response.context["unfinished_batches"]), 1)
@@ -159,7 +169,7 @@ class UploadTemplateTests(TestCase):
             final_key=f"originals/{uuid4().hex}",
         )
 
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
 
         self.assertContains(response, "data-unfinished-upload")
         self.assertContains(response, f'data-resume-batch-id="{batch.id}"')
@@ -222,9 +232,10 @@ class UploadTemplateTests(TestCase):
         ]
 
         html = render_to_string(
-            "ingestion/upload.html",
+            "ingestion/_upload_workspace.html",
             {
-                "events": [self.event],
+                "event": self.event,
+                "folders": [],
                 "upload_state": "active",
                 "upload_queue_groups": queue_groups,
             },

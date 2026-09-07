@@ -54,7 +54,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-020 | Operator | Cache a frozen private event-original corpus | Candidate | 2026-08-07 |
 | EJ-021 | Operator | Prepare private sampled face-quality review evidence | Validated | 2026-08-08 |
 | EJ-022 | Maintainer | Gate preview-backed version-4 face generation activation | Delivered | 2026-08-10 |
-| EJ-023 | Maintainer | Keep event-photo folders durable and safely filterable | Validated | 2026-08-15 |
+| EJ-023 | Maintainer | Keep event-photo folders durable and safely filterable | Validated | 2026-09-07 |
 | EJ-024 | Maintainer | Prepare paid watermarked-preview activation | In progress | 2026-08-21 |
 | EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | Delivered | 2026-08-21 |
 | EJ-026 | Maintainer | Keep paid purchase dark until external prerequisites are approved | In progress | 2026-08-22 |
@@ -418,10 +418,17 @@ authority.
   cover durable named-folder and `Без папки` assignments through mixed-batch registration,
   confirmation, retries, and resume; [`src/backend/picflow/tests/test_views.py`](../src/backend/picflow/tests/test_views.py)
   covers stable event-local GET filtering, capture-time composition, and pagination. Folder values
-  do not alter existing upload ownership, gallery eligibility, or media authorization. The mass
-  editor for already uploaded photos, its photographer/time filters, and its permission model are
-  explicitly deferred. No CI, canonical deployment, or customer evidence is claimed.
-- Last updated: 2026-08-15
+  do not alter existing upload ownership, gallery eligibility, or media authorization.
+  Local 2026-09-07 evidence in [`src/backend/picflow/tests/test_event_management.py`](../src/backend/picflow/tests/test_event_management.py),
+  [`src/backend/picflow/tests/test_event_management_views.py`](../src/backend/picflow/tests/test_event_management_views.py),
+  [`src/backend/picflow/tests/test_event_management_media.py`](../src/backend/picflow/tests/test_event_management_media.py),
+  [`src/backend/picflow/tests/test_event_management_status.py`](../src/backend/picflow/tests/test_event_management_status.py),
+  and [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js) covers strict event-wide admin
+  filters, 100-photo paging, atomic move/hide/show, protected folders, independent Django
+  permissions, reauthorized private media, current processing summaries, and bounded status refresh
+  that preserves selection, focus, and upload state. Uploaders still select existing targets and
+  cannot edit saved photos. No CI, canonical deployment, or customer evidence is claimed.
+- Last updated: 2026-09-07
 
 ### EJ-024 — Maintainer — Prepare paid watermarked-preview activation
 
@@ -578,3 +585,4 @@ This log is append-only.
 | 2026-08-21 | EJ-019 | Validated | Delivered | Correction: Release B commit `d5b21e4` already delivered the capture-time projection reader; this row corrects the stale current-state value to that already-delivered state. Customer outcome is not validated. |
 | 2026-08-21 | EJ-025 | In progress | Delivered | The automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded and executes the committed [`install-cart-cleanup-cron.sh` installation path](../deploy/apply-deployment.sh#L907); live crontab presence and actual cleanup execution remain unvalidated. |
 | 2026-08-22 | EJ-026 | Not recorded | In progress | Local, disabled-default purchase capability now has order/payment/delivery/recovery evidence; real adapters, legal/fiscal approval, worker activation, deployment, and customer evidence remain external prerequisites. |
+| 2026-09-07 | EJ-023 | Validated | Validated | Local private-workspace evidence adds strict all-photo administrative filters and atomic mutations, permissioned media, current processing status, and mounted refresh behavior while preserving event-folder storage and upload authority boundaries. No CI, deployment, or live evidence is claimed. |

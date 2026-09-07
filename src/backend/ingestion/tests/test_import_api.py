@@ -710,3 +710,31 @@ class ImportBrowserCsrfTests(TestCase):
 
         self.assertEqual(browser.status_code, 403)
         self.assertEqual(worker.status_code, 200)
+
+    def test_event_scoped_collection_is_owned_even_for_superuser_and_validates_scope(self):
+        admin = get_user_model().objects.create_superuser(username="scope-admin", password="pass")
+        another = Event.objects.create(
+            name="Another",
+            slug="another",
+            start_date="2026-09-01",
+            end_date="2026-09-01",
+            city="Moscow",
+        )
+        own = ImportBatch.objects.create(
+            owner=admin, event=self.event, submitted_source_key="one", submission_key="own"
+        )
+        ImportBatch.objects.create(
+            owner=self.owner, event=self.event, submitted_source_key="two", submission_key="foreign"
+        )
+        ImportBatch.objects.create(
+            owner=admin, event=another, submitted_source_key="three", submission_key="other-event"
+        )
+        self.client.force_login(admin)
+        url = reverse("import_collection")
+        scoped = self.client.get(url, {"event_id": self.event.pk}).json()
+        self.assertEqual([row["id"] for row in scoped["imports"]], [str(own.pk)])
+        self.assertEqual(scoped["pagination"]["total"], 1)
+        self.assertEqual(self.client.get(url).json()["pagination"]["total"], 3)
+        for value in ("", "bad", "0", "-1", "9" * 100, "999999"):
+            self.assertIn(self.client.get(url, {"event_id": value}).status_code, (400, 404))
+        self.assertEqual(self.client.get(url + "?event_id=1&event_id=2").status_code, 400)

@@ -6,6 +6,7 @@ from processing.admin_progress import admin_processing_progress
 from config import views
 
 urlpatterns = [
+    path("", include("picflow.event_management_urls")),
     path("internal/photo-processing/v1/", include("processing.urls")),
     path("internal/photo-import/v1/", include("ingestion.import_worker_urls")),
     path(

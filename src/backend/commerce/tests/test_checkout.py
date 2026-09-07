@@ -5,12 +5,21 @@ from threading import Lock
 from time import monotonic, sleep
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
 from django.test import RequestFactory, TransactionTestCase, override_settings
 from django.utils import timezone
 from django.views.debug import technical_500_response
 from picflow.models import Event, Photo
+from processing.models import (
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+    EventProcessingRun,
+    PhotoDerivative,
+    PhotoProcessingState,
+    ProcessingAttempt,
+    ProcessingJob,
+)
 
 from commerce.capabilities import purchase_browser_authorizes_order
 from commerce.checkout import (
@@ -242,6 +251,84 @@ class CheckoutServiceTests(TransactionTestCase):
             )
         return order
 
+    def make_purchasable_watermarked_photo(self) -> Photo:
+        owner = get_user_model().objects.create_user(username="hidden-checkout-owner")
+        photo = Photo.objects.create(
+            id="hidden-checkout-photo",
+            event=self.event,
+            src="",
+            uploaded_by=owner,
+            original_key="originals/hidden-checkout-photo.jpg",
+            original_filename="hidden-checkout-photo.jpg",
+            original_size=123,
+            original_content_type="image/jpeg",
+            uploaded_at=self.now,
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        configuration = {
+            GENERATE_WATERMARKED_PREVIEW_PROCESSOR: {"variant": "preview-watermarked-v1"}
+        }
+        run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash="a" * 64,
+        )
+        job = ProcessingJob.objects.create(
+            event=self.event,
+            run=run,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=self.now,
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=2,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=self.now,
+            accepted=True,
+        )
+        PhotoProcessingState.objects.create(
+            photo=photo,
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            status=PhotoProcessingState.Status.SUCCEEDED,
+            current_run=run,
+            current_job=job,
+            current_attempt=attempt,
+            accepted_attempt=attempt,
+            succeeded_at=self.now,
+        )
+        PhotoDerivative.objects.create(
+            photo=photo,
+            variant="preview-watermarked-v1",
+            final_key="derivatives/previews/hidden-checkout-photo/preview-watermarked-v1/accepted.jpg",
+            byte_size=10,
+            content_type="image/jpeg",
+            width=10,
+            height=10,
+            oriented_source_width=10,
+            oriented_source_height=10,
+            sha256="b" * 64,
+            accepted_attempt=attempt,
+        )
+        return photo
+
     def test_originating_cart_digest_is_validated_immutable_indexed_and_pending_unique(
         self,
     ) -> None:
@@ -289,6 +376,43 @@ class CheckoutServiceTests(TransactionTestCase):
         self.assertFalse(Cart.objects.filter(pk=self.cart.pk).exists())
         self.assertEqual(Order.objects.count(), 0)
         self.assertEqual(PaymentAttempt.objects.count(), 0)
+
+    def test_hidden_paid_photo_is_pruned_and_cannot_start_a_new_checkout(self) -> None:
+        photo = self.make_purchasable_watermarked_photo()
+        self.cart.items.all().delete()
+        CartItem.objects.create(cart=self.cart, photo=photo)
+        visible = read_cart(
+            event=self.event,
+            browser_token=self.cart_token,
+            watermarked_previews_enabled=True,
+            now=self.now,
+        )
+        self.assertEqual(visible.photo_ids, (photo.pk,))
+        photo.is_hidden = True
+        photo.save(update_fields=["is_hidden"])
+
+        hidden = read_cart(
+            event=self.event,
+            browser_token=self.cart_token,
+            watermarked_previews_enabled=True,
+            now=self.now,
+        )
+
+        self.assertEqual(hidden.photo_ids, ())
+        self.assertTrue(hidden.pruned)
+        self.assertFalse(Cart.objects.filter(pk=self.cart.pk).exists())
+        replacement = Cart.objects.create(
+            event=self.event,
+            browser_token_sha256=browser_token_sha256(self.cart_token),
+            expires_at=self.now + timedelta(days=1),
+        )
+        CartItem.objects.create(cart=replacement, photo=photo)
+        gateway = self.gateway()
+        with self.assertRaises(CheckoutEmptyCart):
+            self.checkout(gateway=gateway)
+        self.assertEqual(gateway.requests, [])
+        self.assertFalse(Order.objects.exists())
+        self.assertFalse(PaymentAttempt.objects.exists())
 
     def test_checkout_normalizes_the_single_delivery_email(self) -> None:
         with self.purchasable(self.first_photo):

@@ -218,6 +218,7 @@ class Photo(models.Model):
         default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
         db_default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
     )
+    is_hidden = models.BooleanField(default=False, db_default=False)
     capture_time = models.DateTimeField(null=True, blank=True, editable=False)
     capture_time_source_attempt = models.ForeignKey(
         "processing.ProcessingAttempt",

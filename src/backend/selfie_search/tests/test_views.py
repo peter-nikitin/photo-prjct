@@ -1261,6 +1261,32 @@ class PublicSelfieResultViewTests(TestCase):
             ArchiveObservation(context="free_result", page=1),
         )
 
+    def test_free_result_archive_excludes_a_hidden_saved_member_before_storage(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        first = self.make_private_photo(search.event, photo_id="archive-visible-first")
+        hidden = self.make_private_photo(search.event, photo_id="archive-hidden")
+        last = self.make_private_photo(search.event, photo_id="archive-visible-last")
+        for rank, photo in enumerate((first, hidden, last), start=1):
+            self.add_result(search=search, photo=photo, rank=rank)
+        hidden.is_hidden = True
+        hidden.save(update_fields=["is_hidden"])
+        archive = iter((b"visible-only-zip",))
+
+        with (
+            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
+            patch("selfie_search.views._archive_storage") as storage_factory,
+            patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
+        ):
+            response = self.client.get(self.result_archive_url(event=search.event, token=token))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b"".join(response.streaming_content), b"visible-only-zip")
+        self.assertEqual(
+            tuple(entry.photo_id for entry in prepare.call_args.kwargs["entries"]),
+            (first.pk, last.pk),
+        )
+        storage_factory.assert_not_called()
+
     def test_page_two_archive_action_preserves_its_rendered_page_boundary(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         photos = []
@@ -2444,6 +2470,49 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertFalse(response.streaming)
         self.assert_bearer_headers(response)
         resolver.resolve_download.assert_called_once_with(photo=photo)
+
+    def test_hidden_saved_result_is_suppressed_and_show_restores_immutable_membership(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        hidden = self.make_private_photo(search.event, photo_id="saved-hidden")
+        visible = self.make_private_photo(search.event, photo_id="saved-visible")
+        hidden_result = self.add_result(search=search, photo=hidden, rank=1)
+        visible_result = self.add_result(search=search, photo=visible, rank=2)
+        hidden.is_hidden = True
+        hidden.save(update_fields=["is_hidden"])
+
+        with patch("selfie_search.views._public_media_resolver") as resolver_factory:
+            hidden_page = self.client.get(self.result_url(event=search.event, token=token))
+            hidden_media = self.client.get(
+                self.result_media_url(
+                    event=search.event,
+                    token=token,
+                    photo=hidden,
+                    variant="preview-small",
+                )
+            )
+            hidden_download = self.client.get(
+                self.result_download_url(event=search.event, token=token, photo=hidden)
+            )
+
+        self.assertNotContains(hidden_page, f'data-photo-id="{hidden.pk}"')
+        self.assertContains(hidden_page, f'data-photo-id="{visible.pk}"')
+        self.assertEqual((hidden_media.status_code, hidden_download.status_code), (404, 404))
+        resolver_factory.assert_not_called()
+        self.assertEqual(
+            list(search.results.order_by("rank").values_list("pk", "rank")),
+            [(hidden_result.pk, 1), (visible_result.pk, 2)],
+        )
+
+        hidden.is_hidden = False
+        hidden.save(update_fields=["is_hidden"])
+        restored_page = self.client.get(self.result_url(event=search.event, token=token))
+
+        self.assertContains(restored_page, f'data-photo-id="{hidden.pk}"')
+        self.assertContains(restored_page, f'data-photo-id="{visible.pk}"')
+        self.assertEqual(
+            list(search.results.order_by("rank").values_list("pk", "rank")),
+            [(hidden_result.pk, 1), (visible_result.pk, 2)],
+        )
 
     def test_watermarked_saved_result_media_uses_semantic_routes_and_download_denies_before_signing(
         self,

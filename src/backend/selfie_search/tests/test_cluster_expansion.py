@@ -246,6 +246,38 @@ class ClusterExpansionTests(TestCase):
         )
         self.assertEqual(expansion.outcome, "expanded")
 
+    def test_hidden_cluster_member_is_not_added_to_a_new_result(self) -> None:
+        anchor = self.detection("visible-cluster-anchor")
+        hidden = self.detection("hidden-cluster-member")
+        Photo.objects.filter(pk=hidden.attempt.photo_id).update(is_hidden=True)
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=self.corpus,
+            cluster_key="visibility-cluster",
+            representative_detection=anchor,
+            member_count=2,
+        )
+        for index, detection in enumerate((anchor, hidden)):
+            FaceClusterMember.objects.create(
+                event=self.event,
+                corpus=self.corpus,
+                cluster=cluster,
+                detection=detection,
+                member_index=index,
+                distance_to_representative=index / 10,
+            )
+        self.publish()
+
+        expansion = expand_ranked_photos(
+            self.search,
+            (RankedPhoto(anchor.attempt.photo_id, anchor.id, 0.1),),
+            (1.0,) + (0.0,) * 127,
+            self.activation,
+        )
+
+        self.assertEqual([row.photo_id for row in expansion.results], [anchor.attempt.photo_id])
+        self.assertEqual(expansion.cluster_expanded_photo_count, 0)
+
     def test_missing_activation_keeps_complete_direct_only_snapshot(self) -> None:
         direct = RankedPhoto(photo_id="direct", detection_id=uuid4(), cosine_distance=0.1)
 

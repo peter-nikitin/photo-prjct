@@ -2,11 +2,12 @@
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 from urllib.parse import urlencode
 
 from commerce.forms import CheckoutForm
+from django import forms
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
@@ -32,6 +33,9 @@ class FixtureUser:
 
     def get_username(self) -> str:
         return self.username
+
+    def has_perms(self, permissions: tuple[str, ...]) -> bool:
+        return all(self.has_perm(permission) for permission in permissions)
 
     def has_perm(self, permission: str) -> bool:
         return permission == "ingestion.upload_photos"
@@ -78,7 +82,7 @@ class FixtureEvent:
 
 
 @dataclass(frozen=True)
-class FixtureUnfinishedUpload:
+class FixtureUploadBatch:
     id: str
     event_id: str
     event_name: str
@@ -86,7 +90,10 @@ class FixtureUnfinishedUpload:
     last_activity_at: datetime
     expected_count: int
     confirmed_count: int
+    failed_count: int
     unresolved_count: int
+    can_close: bool
+    processing: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -213,8 +220,23 @@ DRAFT_EVENT = replace(
     publication_status="draft",
 )
 
+
+def _processing_summary(
+    *, succeeded: int = 0, processing: int = 0, queued: int = 0, failed: int = 0
+) -> dict[str, Any]:
+    return {
+        "total": succeeded + processing + queued + failed,
+        "categories": {
+            "succeeded": succeeded,
+            "processing": processing,
+            "queued": queued,
+            "failed": failed,
+        },
+    }
+
+
 UNFINISHED_UPLOADS = (
-    FixtureUnfinishedUpload(
+    FixtureUploadBatch(
         id="batch-resume-1",
         event_id="london-10k",
         event_name="London 10K",
@@ -222,7 +244,53 @@ UNFINISHED_UPLOADS = (
         last_activity_at=datetime(2026, 6, 9, 14, 30),
         expected_count=2,
         confirmed_count=1,
+        failed_count=0,
         unresolved_count=1,
+        can_close=False,
+        processing=_processing_summary(queued=1),
+    ),
+)
+
+ACTIVE_UPLOADS = (
+    FixtureUploadBatch(
+        id="batch-lifecycle",
+        event_id="london-10k",
+        event_name="London 10K",
+        created_at=datetime(2026, 6, 9, 15, 0),
+        last_activity_at=datetime(2026, 6, 9, 15, 2),
+        expected_count=3,
+        confirmed_count=1,
+        failed_count=0,
+        unresolved_count=2,
+        can_close=False,
+        processing=_processing_summary(queued=1),
+    ),
+)
+
+PARTIAL_UPLOADS = (
+    replace(
+        ACTIVE_UPLOADS[0],
+        confirmed_count=1,
+        failed_count=2,
+        unresolved_count=2,
+        processing=_processing_summary(succeeded=1),
+    ),
+)
+
+PROCESSING_UPLOADS = (
+    replace(
+        ACTIVE_UPLOADS[0],
+        confirmed_count=3,
+        unresolved_count=0,
+        can_close=True,
+        processing=_processing_summary(succeeded=1, processing=1, queued=1),
+    ),
+)
+
+COMPLETE_UPLOADS = (
+    replace(
+        PROCESSING_UPLOADS[0],
+        processing=_processing_summary(succeeded=3),
     ),
 )
 
@@ -1083,8 +1151,7 @@ def _upload(
     state: str,
     summary: dict[str, int | str],
     queue: tuple[MappingProxyType[str, Any], ...] = (),
-    unfinished_uploads: tuple[FixtureUnfinishedUpload, ...] = (),
-    selected_event_id: str = "",
+    batch_history: tuple[FixtureUploadBatch, ...] = (),
     photo_import_enabled: bool = False,
     photo_import_history_enabled: bool = False,
     photo_import_urls: dict[str, str] | None = None,
@@ -1093,18 +1160,24 @@ def _upload(
     with override_settings(PHOTO_UPLOAD_ENABLED=True):
         return _render(
             request,
-            "ingestion/upload.html",
+            "picflow/event_management.html",
             {
-                "events": EVENTS,
+                "event": SimpleNamespace(**vars(EVENTS[0]), pk=42),
+                "folders": EVENTS[0].folders.all(),
+                "can_upload": True,
+                "can_inspect": False,
+                "batch_page": Paginator(batch_history, 20).page(1),
+                "resumable_batch_ids": tuple(row.id for row in batch_history if not row.can_close),
                 "upload_limits": UPLOAD_LIMITS,
                 "upload_state": state,
                 "upload_summary": summary,
                 "upload_queue_groups": _upload_queue_groups(queue),
-                "unfinished_batches": unfinished_uploads,
-                "selected_event_id": selected_event_id,
+                "unfinished_batches": batch_history,
                 "photo_import_enabled": photo_import_enabled,
                 "photo_import_history_enabled": photo_import_history_enabled,
                 "photo_import_urls": photo_import_urls or {},
+                "status_url": "/__visual__/workspace/status-api/?role=upload",
+                "batch_history_url": "/__visual__/workspace/batch-history-api/",
             },
         )
 
@@ -1147,7 +1220,7 @@ def upload_empty(request: HttpRequest) -> HttpResponse:
         request,
         state="empty",
         summary={"progress": 0, "total": 0, "uploaded": 0, "failed": 0, "bytes": "0 Б"},
-        unfinished_uploads=UNFINISHED_UPLOADS if request.GET.get("resume") else (),
+        batch_history=UNFINISHED_UPLOADS if request.GET.get("resume") else (),
     )
 
 
@@ -1156,13 +1229,14 @@ def upload_active(request: HttpRequest) -> HttpResponse:
         request,
         state="active",
         summary={
-            "progress": 36,
-            "total": 128,
-            "uploaded": 41,
+            "progress": 56,
+            "total": 3,
+            "uploaded": 1,
             "failed": 0,
-            "bytes": "2,1 из 5,8 ГБ",
+            "bytes": "29,2 из 59,2 МБ",
         },
         queue=ACTIVE_UPLOAD_QUEUE,
+        batch_history=ACTIVE_UPLOADS,
     )
 
 
@@ -1172,12 +1246,29 @@ def upload_partial(request: HttpRequest) -> HttpResponse:
         state="partial",
         summary={
             "progress": 100,
-            "total": 128,
-            "uploaded": 124,
-            "failed": 4,
-            "bytes": "5,6 ГБ",
+            "total": 3,
+            "uploaded": 1,
+            "failed": 2,
+            "bytes": "17,8 из 60,7 МБ",
         },
         queue=PARTIAL_UPLOAD_QUEUE,
+        batch_history=PARTIAL_UPLOADS,
+    )
+
+
+def upload_processing(request: HttpRequest) -> HttpResponse:
+    return _upload(
+        request,
+        state="complete",
+        summary={
+            "progress": 100,
+            "total": 3,
+            "uploaded": 3,
+            "failed": 0,
+            "bytes": "60,7 МБ",
+        },
+        queue=COMPLETE_UPLOAD_QUEUE,
+        batch_history=PROCESSING_UPLOADS,
     )
 
 
@@ -1187,12 +1278,13 @@ def upload_complete(request: HttpRequest) -> HttpResponse:
         state="complete",
         summary={
             "progress": 100,
-            "total": 128,
-            "uploaded": 128,
+            "total": 3,
+            "uploaded": 3,
             "failed": 0,
-            "bytes": "5,8 ГБ",
+            "bytes": "60,7 МБ",
         },
         queue=COMPLETE_UPLOAD_QUEUE,
+        batch_history=COMPLETE_UPLOADS,
     )
 
 
@@ -1202,7 +1294,7 @@ def upload_folders(request: HttpRequest) -> HttpResponse:
         state="active",
         summary={"progress": 56, "total": 3, "uploaded": 1, "failed": 0, "bytes": "60,7 МБ"},
         queue=FOLDER_UPLOAD_QUEUE,
-        selected_event_id="london-10k",
+        batch_history=ACTIVE_UPLOADS,
     )
 
 
@@ -1211,7 +1303,6 @@ def upload_imports(request: HttpRequest) -> HttpResponse:
         request,
         state="empty",
         summary={"progress": 0, "total": 0, "uploaded": 0, "failed": 0, "bytes": "0 Б"},
-        selected_event_id="london-10k",
         photo_import_enabled=True,
         photo_import_history_enabled=True,
         photo_import_urls={
@@ -1313,3 +1404,381 @@ def reference_promotions(request: HttpRequest) -> HttpResponse:
 
 def reference_purchased(request: HttpRequest) -> HttpResponse:
     return _reference(request, "purchased", orders=ORDERS[:2], photos=PHOTOS[:3])
+
+
+def upload_chooser(request: HttpRequest) -> HttpResponse:
+    return _render(
+        request,
+        "ingestion/upload.html",
+        {
+            "events": [
+                SimpleNamespace(**vars(item), pk=index) for index, item in enumerate(EVENTS, 42)
+            ]
+        },
+    )
+
+
+ADMIN_PHOTOS = (
+    {
+        "id": "anna-finish-a",
+        "filename": "finish-1048.jpg",
+        "is_hidden": False,
+        "thumbnail_url": "/static/images/run-city-1842.png",
+        "original_url": "/static/images/run-city-1842.png",
+        "photographer": "Анна Смирнова",
+        "uploader_id": "1",
+        "folder_name": "Финиш",
+        "folder_id": "8",
+        "capture_time": datetime(2026, 6, 8, 9, 18),
+        "processing": {"category_label": "Обработано", "stages": []},
+    },
+    {
+        "id": "maxim-finish",
+        "filename": "finish-1190.jpg",
+        "is_hidden": False,
+        "thumbnail_url": "/static/images/run-track-1190.png",
+        "original_url": "/static/images/run-track-1190.png",
+        "photographer": "Максим Орлов",
+        "uploader_id": "2",
+        "folder_name": "Финиш",
+        "folder_id": "8",
+        "capture_time": datetime(2026, 6, 8, 9, 21),
+        "processing": {"category_label": "Обрабатывается", "stages": []},
+    },
+    {
+        "id": "hidden-finish",
+        "filename": "hidden-1842.jpg",
+        "is_hidden": True,
+        "thumbnail_url": "/static/images/run-finish-1842.png",
+        "original_url": "/static/images/run-finish-1842.png",
+        "photographer": "Анна Смирнова",
+        "uploader_id": "1",
+        "folder_name": "Финиш",
+        "folder_id": "8",
+        "capture_time": None,
+        "processing": {"category_label": "Обработано", "stages": []},
+    },
+    {
+        "id": "error-unfiled",
+        "filename": "error-3125.jpg",
+        "is_hidden": False,
+        "thumbnail_url": None,
+        "original_url": "/static/images/run-expo-3125.png",
+        "photographer": None,
+        "uploader_id": "",
+        "folder_name": None,
+        "folder_id": "",
+        "capture_time": None,
+        "processing": {
+            "category_label": "Ошибка",
+            "stages": [{"label": "Превью", "status_label": "Ошибка"}],
+        },
+    },
+)
+
+INTERACTION_PHOTOS = (
+    ADMIN_PHOTOS[0],
+    ADMIN_PHOTOS[1],
+    {
+        **ADMIN_PHOTOS[0],
+        "id": "anna-finish-b",
+        "filename": "finish-1301.jpg",
+        "thumbnail_url": "/static/images/run-finish-1842.png",
+        "original_url": "/static/images/run-finish-1842.png",
+        "capture_time": datetime(2026, 6, 8, 9, 24),
+    },
+)
+
+
+def _visual_filter_form(folders, data: QueryDict):
+    class VisualFilterForm(forms.Form):
+        folder = forms.MultipleChoiceField(
+            required=False,
+            choices=[(folder.pk, folder.name) for folder in folders],
+            widget=forms.CheckboxSelectMultiple,
+        )
+        unfiled = forms.CharField(required=False)
+        uploader = forms.MultipleChoiceField(
+            required=False,
+            choices=((1, "Анна Смирнова"), (2, "Максим Орлов")),
+            widget=forms.CheckboxSelectMultiple,
+        )
+        uploader_unknown = forms.ChoiceField(required=False, choices=(("1", "Не указан"),))
+        from_ = forms.CharField(required=False)
+        to = forms.CharField(required=False)
+        without_capture_time = forms.CharField(required=False)
+        visibility = forms.ChoiceField(
+            required=False,
+            choices=(("all", "Все"), ("visible", "Видимые"), ("hidden", "Скрытые")),
+        )
+        processing = forms.MultipleChoiceField(
+            required=False,
+            choices=(
+                ("processing", "Обрабатывается"),
+                ("queued", "Ожидает обработки"),
+                ("failed", "Ошибка"),
+                ("cancelled", "Остановлена"),
+                ("succeeded", "Обработано"),
+                ("not_started", "Не запущена"),
+                ("not_required", "Не требуется"),
+            ),
+            widget=forms.CheckboxSelectMultiple,
+        )
+
+        def __init__(self) -> None:
+            super().__init__(data=data)
+            self.fields["from"] = self.fields.pop("from_")
+            for name in ("from", "to"):
+                self.fields[name].widget.attrs.update(
+                    min="2026-09-06T00:00", max="2026-09-06T23:59"
+                )
+
+    return VisualFilterForm()
+
+
+def _canonical_visual_query(data: QueryDict) -> str:
+    values = []
+    for name in ("folder", "uploader", "processing"):
+        values.extend((name, value) for value in data.getlist(name) if value)
+    for name in ("unfiled", "uploader_unknown", "from", "to", "without_capture_time"):
+        value = data.get(name)
+        if value:
+            values.append((name, value))
+    visibility = data.get("visibility")
+    if visibility and visibility != "all":
+        values.append(("visibility", visibility))
+    return urlencode(values)
+
+
+def _event_photo_context(
+    request: HttpRequest,
+    *,
+    scenario: str,
+    combined: bool = False,
+) -> dict[str, Any]:
+    folders = EVENTS[0].folders.all()
+    requested = request.GET.copy()
+    if not requested.get("visibility"):
+        requested["visibility"] = "all"
+    photos = list(INTERACTION_PHOTOS if scenario == "interaction" else ADMIN_PHOTOS)
+    if scenario == "filtered-empty":
+        requested = QueryDict("folder=4&uploader=2&visibility=all")
+        photos = []
+    elif scenario == "hidden":
+        requested = QueryDict("visibility=hidden")
+        photos = [ADMIN_PHOTOS[2]]
+    elif scenario == "error":
+        requested = QueryDict("visibility=all&processing=failed")
+        photos = [ADMIN_PHOTOS[3]]
+    elif scenario == "interaction":
+        uploader_ids = set(requested.getlist("uploader"))
+        if uploader_ids:
+            photos = [photo for photo in photos if photo["uploader_id"] in uploader_ids]
+
+    page_size = 2 if scenario == "interaction" else 100
+    photo_page = Paginator(photos, page_size).get_page(requested.get("page", 1))
+    canonical_query = _canonical_visual_query(requested)
+    canonical_url = request.path
+    page_number = photo_page.number
+    query_values = canonical_query
+    if page_number > 1:
+        query_values = (
+            f"{query_values}&page={page_number}" if query_values else f"page={page_number}"
+        )
+    if query_values:
+        canonical_url = f"{canonical_url}?{query_values}"
+
+    context = {
+        "event": SimpleNamespace(**vars(EVENTS[0]), pk=42),
+        "folders": folders,
+        "can_inspect": True,
+        "can_upload": combined,
+        "filters_valid": True,
+        "filter_form": _visual_filter_form(folders, requested),
+        "page_form": SimpleNamespace(page=SimpleNamespace(errors="")),
+        "capabilities": SimpleNamespace(
+            can_change_photos=True,
+            can_add_folders=True,
+            can_change_folders=True,
+            can_delete_folders=True,
+        ),
+        "canonical_query": canonical_query,
+        "canonical_url": canonical_url,
+        "results_url": (
+            "/__visual__/workspace/results/"
+            if scenario == "interaction"
+            else "/manage/events/42/photos/results/"
+        ),
+        "folder_create_url": (
+            "/__visual__/workspace/folders/create/"
+            if scenario == "interaction"
+            else "/manage/events/42/photos/folders/create/"
+        ),
+        "folder_rename_url": "/manage/events/42/photos/folders/rename/",
+        "folder_delete_url": "/manage/events/42/photos/folders/delete/",
+        "photo_action_url": "/manage/events/42/photos/actions/",
+        "photo_page": photo_page,
+        "processing_summary": {
+            "total": 4,
+            "categories": {"processing": 1, "queued": 0, "failed": 1},
+        },
+        "status_url": (
+            "/__visual__/workspace/status-api/"
+            f"?role={'both' if combined else 'admin'}&scenario={scenario}"
+        ),
+        "batch_history_url": "/__visual__/workspace/batch-history-api/",
+    }
+    if combined:
+        context.update(
+            {
+                "batch_page": Paginator(ACTIVE_UPLOADS, 20).page(1),
+                "resumable_batch_ids": (ACTIVE_UPLOADS[0].id,),
+                "upload_limits": UPLOAD_LIMITS,
+                "upload_state": "active",
+                "upload_summary": {
+                    "progress": 56,
+                    "total": 3,
+                    "uploaded": 1,
+                    "failed": 0,
+                    "bytes": "29,2 из 59,2 МБ",
+                },
+                "upload_queue_groups": _upload_queue_groups(ACTIVE_UPLOAD_QUEUE),
+                "unfinished_batches": ACTIVE_UPLOADS,
+                "photo_import_enabled": False,
+                "photo_import_history_enabled": False,
+                "photo_import_urls": {},
+            }
+        )
+    return context
+
+
+def _event_photo_workspace(request: HttpRequest, *, scenario: str, combined: bool = False):
+    request.user = FixtureUser("Администратор", is_staff=True)
+    return _render(
+        request,
+        "picflow/event_management.html",
+        _event_photo_context(request, scenario=scenario, combined=combined),
+    )
+
+
+def event_photo_workspace(request: HttpRequest) -> HttpResponse:
+    context = _event_photo_context(request, scenario="populated")
+    status_integration = request.GET.get("status_integration")
+    if status_integration in {"1", "refresh"}:
+        context.update(
+            {
+                "can_upload": True,
+                "photo_page": Paginator(
+                    [] if status_integration == "1" else list(ADMIN_PHOTOS),
+                    100,
+                ).page(1),
+                "processing_summary": {
+                    "total": 0,
+                    "categories": {"processing": 0, "queued": 0, "failed": 0},
+                },
+                "batch_page": Paginator([], 20).page(1),
+                "resumable_batch_ids": (),
+                "upload_limits": UPLOAD_LIMITS,
+                "upload_state": "empty",
+                "upload_summary": {
+                    "progress": 0,
+                    "total": 0,
+                    "uploaded": 0,
+                    "failed": 0,
+                    "bytes": "0 Б",
+                },
+                "upload_queue_groups": (),
+                "unfinished_batches": (),
+                "photo_import_enabled": status_integration == "1",
+                "photo_import_history_enabled": status_integration == "1",
+                "photo_import_urls": {
+                    "collection": "/__visual__/upload/imports-api/",
+                    "detail": "/__visual__/upload/imports-api/{batch}/",
+                    "items": "/__visual__/upload/imports-api/{batch}/items/",
+                    "retry": "/__visual__/upload/imports-api/{batch}/retry/",
+                },
+                "status_url": "/__visual__/workspace/status-api/?role=both",
+            }
+        )
+    request.user = FixtureUser("Администратор", is_staff=True)
+    return _render(request, "picflow/event_management.html", context)
+
+
+def event_photo_workspace_filtered_empty(request: HttpRequest) -> HttpResponse:
+    return _event_photo_workspace(request, scenario="filtered-empty")
+
+
+def event_photo_workspace_hidden(request: HttpRequest) -> HttpResponse:
+    return _event_photo_workspace(request, scenario="hidden")
+
+
+def event_photo_workspace_error(request: HttpRequest) -> HttpResponse:
+    return _event_photo_workspace(request, scenario="error")
+
+
+def event_photo_workspace_interaction(request: HttpRequest) -> HttpResponse:
+    return _event_photo_workspace(request, scenario="interaction", combined=True)
+
+
+def event_photo_workspace_results(request: HttpRequest) -> HttpResponse:
+    request.user = FixtureUser("Администратор", is_staff=True)
+    context = _event_photo_context(request, scenario="interaction", combined=True)
+    response = _render(request, "picflow/_event_photo_results.html", context)
+    response.headers["X-Event-Photo-Canonical-Url"] = context["canonical_url"]
+    return response
+
+
+def event_photo_folder_create(request: HttpRequest) -> JsonResponse:
+    return JsonResponse(
+        {
+            "folders": [
+                {"id": folder.pk, "name": folder.name} for folder in EVENTS[0].folders.all()
+            ]
+            + [{"id": 12, "name": "Награждение"}]
+        }
+    )
+
+
+def event_photo_status_api(request: HttpRequest) -> JsonResponse:
+    role = request.GET.get("role", "both")
+    scenario = request.GET.get("scenario", "populated")
+    payload: dict[str, Any] = {
+        "server_timestamp": "2026-09-07T10:00:00+03:00",
+        "has_active_work": False,
+        "capabilities": {
+            "can_inspect": role in {"admin", "both"},
+            "can_upload": role in {"upload", "both"},
+        },
+    }
+    if role in {"admin", "both"}:
+        filtered_result_count = {
+            "filtered-empty": 0,
+            "hidden": 1,
+            "error": 1,
+            "interaction": 3,
+        }.get(scenario, 4)
+        if scenario == "interaction" and request.GET.getlist("uploader"):
+            filtered_result_count = sum(
+                photo["uploader_id"] in request.GET.getlist("uploader")
+                for photo in INTERACTION_PHOTOS
+            )
+        payload["admin"] = {
+            "summary": {
+                "total": 4,
+                "categories": {"processing": 1, "queued": 0, "failed": 1},
+            },
+            "filtered_result_count": filtered_result_count,
+            "result_list_changed": False,
+            "photos": [],
+        }
+    if role in {"upload", "both"}:
+        payload["batches"] = []
+    return JsonResponse(payload)
+
+
+def event_photo_batch_history_api(request: HttpRequest) -> HttpResponse:
+    return HttpResponse(
+        '<div data-batch-history-fragment data-batch-page="1">'
+        "<p data-batch-history-empty>Сохранённых загрузок пока нет.</p></div>",
+        content_type="text/html",
+    )

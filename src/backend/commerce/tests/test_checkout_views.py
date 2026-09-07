@@ -28,7 +28,7 @@ from feature_flags.testing import override_feature_flags
 from picflow.models import Event, Photo
 
 from commerce.identity import browser_token_sha256
-from commerce.models import Cart, CartItem, Order, PaymentAttempt
+from commerce.models import Cart, CartItem, Order, OrderItem, PaymentAttempt
 from commerce.payment_gateway import PaymentGatewayError, PaymentGatewayErrorCategory
 from commerce.test_payment_gateway import DeterministicPaymentGateway, TestPaymentOutcome
 
@@ -448,6 +448,49 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
         self.assertEqual(order.status, Order.Status.PENDING)
         self.assertEqual(accepted["Cache-Control"], "private, no-store")
         self.assertEqual(accepted["Referrer-Policy"], "no-referrer")
+
+    def test_verified_payment_still_fulfills_an_existing_order_after_its_photo_is_hidden(
+        self,
+    ) -> None:
+        self.enable(purchase=FEATURE_FLAG_ON)
+        gateway = DeterministicPaymentGateway(
+            outcome=TestPaymentOutcome.SUCCESS,
+            notification_secret=b"checkout-view-test-secret",
+        )
+        with self.purchasable(), patch("commerce.views._payment_gateway", return_value=gateway):
+            checkout = self.client.post(
+                self.checkout_url(),
+                {"email": "buyer@example.test"},
+            )
+            order = Order.objects.get()
+            attempt = PaymentAttempt.objects.get(order=order)
+            self.photo.is_hidden = True
+            self.photo.save(update_fields=["is_hidden"])
+            body = json.dumps(
+                {
+                    "provider_payment_id": attempt.provider_payment_id,
+                    "provider_event_id": "hidden-photo-payment-success",
+                    "status": "succeeded",
+                    "amount_kopecks": 30000,
+                    "currency": "RUB",
+                }
+            ).encode()
+            signature = hmac.new(b"checkout-view-test-secret", body, sha256).hexdigest()
+            callback = Client(enforce_csrf_checks=True).post(
+                self.notification_url(),
+                body,
+                content_type="application/json",
+                HTTP_X_TEST_PAYMENT_SIGNATURE=signature,
+            )
+
+        order.refresh_from_db()
+        self.assertEqual(checkout.status_code, 302)
+        self.assertEqual(callback.status_code, 204)
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(
+            list(OrderItem.objects.filter(order=order).values_list("photo_id", flat=True)),
+            [self.photo.pk],
+        )
 
     @override_settings(DEBUG=False)
     def test_checkout_exception_report_redacts_email_and_purchase_bearers(self) -> None:

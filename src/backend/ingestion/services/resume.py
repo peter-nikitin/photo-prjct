@@ -6,6 +6,7 @@ from uuid import UUID
 
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db.models import Count, Exists, OuterRef, Prefetch, Q
+from picflow.models import Event
 
 from ingestion.models import UploadBatch, UploadItem
 
@@ -53,14 +54,22 @@ class ResumeManifest:
     items: tuple[ResumeManifestItem, ...]
 
 
-def list_unfinished_batches(uploader: AbstractBaseUser) -> tuple[UnfinishedBatchSummary, ...]:
+def list_unfinished_batches(
+    uploader: AbstractBaseUser, *, event: Event, batch_ids: tuple[UUID, ...]
+) -> tuple[UnfinishedBatchSummary, ...]:
     """Return only resumable batches belonging to the requesting uploader."""
-    rows = _owned_unfinished_batches(uploader).annotate(
-        confirmed_count=Count("items", filter=Q(items__photo__isnull=False)),
-        failed_count=Count(
-            "items",
-            filter=Q(items__status=UploadItem.Status.FAILED, items__photo__isnull=True),
-        ),
+    if len(batch_ids) > 20:
+        raise ValueError("resume history must contain at most 20 batches")
+    rows = (
+        _owned_unfinished_batches(uploader)
+        .filter(event=event, pk__in=batch_ids)
+        .annotate(
+            confirmed_count=Count("items", filter=Q(items__photo__isnull=False)),
+            failed_count=Count(
+                "items",
+                filter=Q(items__status=UploadItem.Status.FAILED, items__photo__isnull=True),
+            ),
+        )
     )
     return tuple(
         UnfinishedBatchSummary(

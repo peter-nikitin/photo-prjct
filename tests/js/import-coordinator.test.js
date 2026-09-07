@@ -280,7 +280,7 @@ test('changing the event starts a new submission and supports Без папки'
   assert.equal(bodies[1].folder_id, null);
 });
 
-test('event then folder then pasted link submits the chosen folder', async () => {
+test('fixed event and chosen folder survive pasted link without an event selector', async () => {
   const bodies = [];
   const eventSelect = new FakeNode();
   const form = new FakeNode();
@@ -304,6 +304,7 @@ test('event then folder then pasted link submits the chosen folder', async () =>
 
   const root = new FakeNode({
     dataset: {
+      eventId: '7',
       importHistoryEnabled: 'true',
       importEnabled: 'true',
       importCollectionUrl: '/imports/',
@@ -344,8 +345,6 @@ test('event then folder then pasted link submits the chosen folder', async () =>
       clearTimeout() {},
     });
 
-    eventSelect.value = '7';
-    await eventSelect.dispatch('change');
     start.selected = true;
     source.value = 'https://disk.yandex.ru/d/key';
     await source.dispatch('input');
@@ -381,7 +380,7 @@ test('progress update preserves an expanded item page and focused action control
   }
 });
 
-test('gate-off retry, file-page, and poll failures stay sanitized and clear after success', async () => {
+test('cancelled departure preserves import polling; gate-off errors recover and pagehide stops it', async () => {
   const card = fakeCard();
   const actionStatus = card.querySelector('[data-import-action-status]');
   const list = new FakeNode();
@@ -395,6 +394,7 @@ test('gate-off retry, file-page, and poll failures stay sanitized and clear afte
   listPagination.nodes.set('[data-import-list-next]', listNext);
   const root = new FakeNode({
     dataset: {
+      eventId: '7',
       importHistoryEnabled: 'true',
       importEnabled: 'false',
       importCollectionUrl: '/imports/',
@@ -411,6 +411,9 @@ test('gate-off retry, file-page, and poll failures stay sanitized and clear afte
   root.nodes.set('[data-import-list-next]', listNext);
   root.nodes.set('[data-import-item-template]', new FakeNode());
 
+  const workspaceEvents = [];
+  const lifecycle = new Map();
+  root.ownerDocument = { dispatchEvent(event) { workspaceEvents.push(event.type); } };
   let retrySucceeds = false;
   let itemsSucceed = false;
   let detailSucceeds = false;
@@ -442,7 +445,8 @@ test('gate-off retry, file-page, and poll failures stay sanitized and clear afte
       throw new Error('unexpected request');
     },
     crypto: { randomUUID: () => 'submission-1' },
-    addEventListener() {},
+    addEventListener(type, listener) { lifecycle.set(type, listener); },
+    CustomEvent: class { constructor(type) { this.type = type; } },
     setTimeout() { return 1; },
     clearTimeout() {},
   };
@@ -480,16 +484,23 @@ test('gate-off retry, file-page, and poll failures stay sanitized and clear afte
     assert.doesNotMatch(actionStatus.textContent, /private/);
 
     detailSucceeds = true;
+    workspaceEvents.length = 0;
     coordinator.activeIds.add('import-1');
     await coordinator.poll();
+    assert.deepEqual(workspaceEvents, ['findme:event-photo-import-progress']);
+    assert.equal(lifecycle.has('beforeunload'), false);
+    assert.equal(coordinator.stopped, false);
     assert.equal(actionStatus.textContent, '');
     assert.equal(actionStatus.hidden, true);
 
+    assert.equal(typeof lifecycle.get('pagehide'), 'function');
     retrySucceeds = true;
     await root.dispatch('click', { target: retryTarget });
     await flushPromises();
     assert.equal(actionStatus.textContent, '');
     assert.equal(actionStatus.hidden, true);
+    lifecycle.get('pagehide')();
+    assert.equal(coordinator.stopped, true);
   } finally {
     global.document = previousDocument;
   }
@@ -582,4 +593,20 @@ test('a terminal import remains polled while server processing is active', async
 
   assert.deepEqual([...coordinator.activeIds], ['import-1']);
   assert.equal(scheduled.length, 1);
+});
+
+
+test('fixed event history keeps its scope on every paginated request', async () => {
+  const requested = [];
+  const coordinator = new ImportCoordinator({
+    eventId: 42, urls: { collection: '/imports/' }, render() {},
+    fetch: async (url) => {
+      requested.push(new URL(url, 'https://app.example'));
+      return response(200, { contract_version: 1, imports: [], pagination: { page: 1, page_size: 20, total: 0, pages: 0 } });
+    },
+  });
+  await coordinator.loadPage(1);
+  await coordinator.loadPage(2);
+  assert.deepEqual(requested.map((url) => url.searchParams.get('event_id')), ['42', '42']);
+  assert.deepEqual(requested.map((url) => url.searchParams.get('page')), ['1', '2']);
 });

@@ -256,13 +256,17 @@ class OrderViewTests(OrderViewFixture):
         order.refresh_from_db()
         self.assertIsNotNone(order.first_customer_access_at)
 
-    def test_unpublished_order_item_still_uses_its_exact_watermarked_media_route(self) -> None:
+    def test_hidden_unpublished_order_item_still_uses_its_exact_watermarked_media_route(
+        self,
+    ) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
         order = self.make_order()
         resolver = Mock()
         resolver.resolve_signed.return_value = "https://storage.test.invalid/watermark"
         self.event.publication_status = self.event.PublicationStatus.UNAVAILABLE
         self.event.save(update_fields=["publication_status"])
+        self.photo.is_hidden = True
+        self.photo.save(update_fields=["is_hidden"])
 
         with patch("commerce.views._purchased_watermarked_media_resolver", return_value=resolver):
             page = self.client.get(self.order_url(order))
@@ -355,6 +359,8 @@ class OrderViewTests(OrderViewFixture):
             grant=grant,
             signing_secret="order-view-test-secret",
         )
+        self.photo.is_hidden = True
+        self.photo.save(update_fields=["is_hidden"])
         del self.client.cookies["findme_purchase"]
         access_url = reverse(
             "commerce:grant_order",

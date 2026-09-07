@@ -406,12 +406,18 @@
           : waiting
             ? 'Загрузка не завершена: выберите недостающие файлы.'
             : '';
-      message.textContent = globalError || (needsAction
+      message.textContent = globalError || (summary.total > 0 && summary.uploaded === summary.total
+        ? 'Все фотографии загружены. Можно закрыть страницу'
+        : coordinator.active
+          ? 'Держите страницу открытой — идёт загрузка'
+        : needsAction
         ? incompleteMessage
         : summary.total
           ? `${summary.uploaded} из ${summary.total} файлов загружено${summary.failed ? `, ошибок: ${summary.failed}` : '.'}`
           : 'Здесь появится общий прогресс.');
     }
+    const background = root.querySelector('[data-summary-background]');
+    if (background) background.hidden = Boolean(globalError) || !(summary.total > 0 && summary.uploaded === summary.total);
     if (percent) percent.textContent = `${summary.progress}%`;
     if (progress) {
       progress.value = summary.progress;
@@ -437,46 +443,42 @@
   }
 
   function bindFolderTargets(root, onSelection) {
-    const targets = Array.from(root.querySelectorAll?.('[data-folder-target]') || []);
+    const targets = () => Array.from(root.querySelectorAll?.('[data-folder-target]') || []);
     const clear = () => {
       delete root.dataset.dragActive;
-      for (const target of targets) {
+      for (const target of targets()) {
         delete target.dataset.dragActive;
         const copy = target.querySelector('[data-folder-target-copy]');
         if (copy) copy.textContent = target.dataset.defaultCopy;
       }
     };
-    const activate = (target) => {
-      clear();
-      root.dataset.dragActive = 'true';
-      target.dataset.dragActive = 'true';
-      const copy = target.querySelector('[data-folder-target-copy]');
-      if (copy) {
-        copy.textContent = target.dataset.folderId
-          ? `Загрузить в «${target.dataset.folderName}»`
-          : 'Загрузить без папки';
-      }
+    const targetFor = (event) => {
+      const target = event.target?.closest?.('[data-folder-target]');
+      return target && root.contains(target) ? target : null;
     };
-    for (const target of targets) {
-      target.addEventListener('dragenter', (event) => {
-        event.preventDefault();
-        activate(target);
-      });
-      target.addEventListener('dragover', (event) => {
-        event.preventDefault();
-        activate(target);
-      });
-      target.addEventListener('dragleave', (event) => {
-        if (!target.contains(event.relatedTarget)) clear();
-      });
-      target.addEventListener('drop', (event) => {
-        event.preventDefault();
-        clear();
-        onSelection(event.dataTransfer.files, folderFromTarget(target));
-      });
-      target.querySelector('[data-folder-target-input]')?.addEventListener('change', (event) => {
-        onSelection(event.currentTarget.files, folderFromTarget(target));
-        event.currentTarget.value = '';
+    for (const type of ['dragenter', 'dragover', 'dragleave', 'drop', 'change']) {
+      root.addEventListener?.(type, (event) => {
+        const target = targetFor(event);
+        if (!target) return;
+        if (type === 'change') {
+          if (!event.target.matches('[data-folder-target-input]')) return;
+          onSelection(event.target.files, folderFromTarget(target));
+          event.target.value = '';
+        } else if (type === 'dragleave') {
+          if (!target.contains(event.relatedTarget)) clear();
+        } else if (type === 'drop') {
+          event.preventDefault();
+          clear();
+          onSelection(event.dataTransfer.files, folderFromTarget(target));
+        } else {
+          event.preventDefault();
+          clear();
+          root.dataset.dragActive = 'true';
+          target.dataset.dragActive = 'true';
+          const copy = target.querySelector('[data-folder-target-copy]');
+          if (copy) copy.textContent = target.dataset.folderId
+            ? `Загрузить в «${target.dataset.folderName}»` : 'Загрузить без папки';
+        }
       });
     }
     root.addEventListener?.('dragend', clear);
@@ -485,6 +487,20 @@
 
   function bindUploadPage(root, dependencies = {}) {
     if (!root) return null;
+    if (root.uploadCoordinator) return root.uploadCoordinator;
+    const eventId = Number(root.dataset.eventId);
+    if (!Number.isSafeInteger(eventId) || eventId <= 0) return null;
+    let previousActive = false;
+    let previousBatchId = null;
+    const notifyActivity = (coordinator) => {
+      if (previousActive === coordinator.active && previousBatchId === coordinator.batchId) return;
+      previousActive = coordinator.active;
+      previousBatchId = coordinator.batchId;
+      const document = root.ownerDocument || globalScope.document;
+      if (document && globalScope.CustomEvent) document.dispatchEvent(new globalScope.CustomEvent(
+        'findme:event-photo-upload-activity', { detail: { active: coordinator.active, batchId: coordinator.batchId } },
+      ));
+    };
     let globalError = '';
     const config = {
       createBatchUrl: root.dataset.createBatchUrl,
@@ -510,23 +526,18 @@
       AbortController: dependencies.AbortController || globalScope.AbortController,
       setTimeout: dependencies.setTimeout || globalScope.setTimeout.bind(globalScope),
       clearTimeout: dependencies.clearTimeout || globalScope.clearTimeout.bind(globalScope),
-      onChange: () => renderPage(root, coordinator, globalError),
+      onChange: () => {
+        renderPage(root, coordinator, globalError);
+        notifyActivity(coordinator);
+      },
     });
     const resumeInput = root.querySelector('#resume-upload-files');
-    const eventSelect = root.querySelector('#upload-event');
     const startUpload = root.querySelector('[data-start-upload]');
     let resumeManifest = null;
     const stage = (files, folder) => {
       globalError = '';
-      if (!eventSelect.value) {
-        globalError = 'Сначала выберите событие.';
-        renderPage(root, coordinator, globalError);
-        eventSelect.focus();
-        return;
-      }
       try {
         coordinator.stage(files, folder);
-        eventSelect.disabled = true;
         if (startUpload) startUpload.disabled = !coordinator.items.length;
       } catch (error) {
         globalError = error instanceof SelectionError ? error.message : 'Не удалось продолжить загрузку. Повторите попытку.';
@@ -539,22 +550,15 @@
       startUpload.disabled = true;
       globalError = '';
       try {
-        await coordinator.start(eventSelect.value);
+        await coordinator.start(eventId);
       } catch (error) {
         globalError = uploadErrorMessage(error);
         coordinator.active = false;
+        notifyActivity(coordinator);
         if (!coordinator.batchId) startUpload.disabled = false;
         renderPage(root, coordinator, globalError);
       }
     });
-    const syncFolderTargets = () => {
-      for (const collection of root.querySelectorAll?.('[data-folder-targets]') || []) {
-        collection.hidden = collection.dataset.eventId !== eventSelect.value;
-      }
-    };
-    eventSelect?.addEventListener?.('change', syncFolderTargets);
-    if (eventSelect && root.dataset.initialEventId) eventSelect.value = root.dataset.initialEventId;
-    if (eventSelect) syncFolderTargets();
     resumeInput?.addEventListener('change', async () => {
       if (!resumeManifest || !resumeInput.files.length) return;
       globalError = '';
@@ -563,17 +567,19 @@
       } catch (error) {
         globalError = error instanceof SelectionError ? error.message : 'Не удалось продолжить загрузку. Повторите попытку.';
         coordinator.active = false;
+        notifyActivity(coordinator);
         renderPage(root, coordinator, globalError);
       }
     });
     root.querySelector('[data-unfinished-uploads]')?.addEventListener('click', async (event) => {
       const resume = event.target.closest('[data-resume-batch]');
-      if (!resume) return;
+      if (!resume || coordinator.active) return;
       globalError = '';
       try {
-        resumeManifest = await coordinator.loadResumeManifest(resume.dataset.resumeBatchId);
-        eventSelect.value = String(resumeManifest.batch.event.id);
-        eventSelect.disabled = true;
+        if (coordinator.shouldWarnBeforeUnload() && !globalScope.confirm('Незавершённую очередь потребуется выбрать заново. Открыть другую загрузку?')) return;
+        const manifest = await coordinator.loadResumeManifest(resume.dataset.resumeBatchId);
+        if (Number(manifest.batch.event.id) !== eventId) throw new SelectionError('Другая загрузка.');
+        resumeManifest = manifest;
         resumeInput.value = '';
         resumeInput.click();
       } catch (error) {
@@ -733,7 +739,19 @@
         maxFileBytes: this.config.maxFileBytes,
         crypto: this.crypto,
       });
-      const selection = await matchResumeSelection(files, manifest, { subtle: this.crypto.subtle });
+      this.preparingResume = true;
+      this.active = true;
+      this.onChange(this);
+      let selection;
+      try {
+        selection = await matchResumeSelection(files, manifest, { subtle: this.crypto.subtle });
+      } catch (error) {
+        this.active = false;
+        throw error;
+      } finally {
+        this.preparingResume = false;
+        this.onChange(this);
+      }
       const matches = new Map(selection.matches.map((match) => [match.manifestItem.id, match.file]));
       this.batchId = manifest.batch.id;
       this.finalizing = false;
@@ -1102,7 +1120,7 @@
     }
 
     shouldWarnBeforeUnload() {
-      return this.active;
+      return Boolean(this.preparingResume) || this.items.some((item) => item.status !== 'uploaded');
     }
 
     async control(url, body, token = null) {

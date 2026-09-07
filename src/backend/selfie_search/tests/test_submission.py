@@ -671,6 +671,35 @@ class SubmissionTests(TestCase):
             [row.detection_id for row in expected],
         )
 
+    def test_hidden_photo_is_excluded_from_new_direct_search_candidates(self) -> None:
+        visible = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="visible-search-candidate",
+            vector=[1.0] + [0.0] * 127,
+        )
+        hidden = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="hidden-search-candidate",
+            vector=[1.0] + [0.0] * 127,
+        )
+        Photo.objects.filter(pk="hidden-search-candidate").update(is_hidden=True)
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest="h" * 64,
+            temporary_object_key="selfie-search/hidden-candidate",
+            configuration=submission_configuration(
+                event=self.event, content_type="image/jpeg", content_size=1
+            ),
+            configuration_hash="h" * 64,
+        )
+
+        candidates = compatible_search_candidates(search)
+
+        self.assertEqual(
+            [candidate.detection_id for candidate in candidates], [visible.detection_id]
+        )
+        self.assertNotIn(hidden.detection_id, [candidate.detection_id for candidate in candidates])
+
     def test_draft_event_is_rejected_without_upload_or_search(self) -> None:
         storage = RecordingStorage()
 

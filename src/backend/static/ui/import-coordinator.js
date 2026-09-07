@@ -103,8 +103,9 @@
   }
 
   class ImportCoordinator {
-    constructor({ fetch, urls, csrfToken, randomUUID, render, schedule, cancel }) {
+    constructor({ fetch, urls, csrfToken, randomUUID, render, schedule, cancel, eventId = null }) {
       this.fetch = fetch;
+      this.eventId = eventId;
       this.urls = urls;
       this.csrfToken = csrfToken;
       this.randomUUID = randomUUID;
@@ -152,7 +153,9 @@
     }
 
     async loadPage(page = 1) {
-      const payload = await this.request(`${this.urls.collection}?page=${page}&page_size=${PAGE_SIZE}`, { credentials: 'same-origin' });
+      const query = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) });
+      if (this.eventId !== null) query.set('event_id', String(this.eventId));
+      const payload = await this.request(`${this.urls.collection}?${query}`, { credentials: 'same-origin' });
       this.page = page;
       this.activeIds = new Set(payload.imports.filter((record) => !TERMINAL.has(record.status) || record.processing_active === true).map((record) => record.id));
       this.render({ type: 'list', records: payload.imports, pagination: payload.pagination });
@@ -268,9 +271,13 @@
 
   function bindImportPage(root, environment = globalScope) {
     if (!root || root.dataset.importHistoryEnabled !== 'true') return null;
+    if (root.importCoordinator) return root.importCoordinator;
+    const eventId = Number(root.dataset.eventId);
+    if (!Number.isSafeInteger(eventId) || eventId <= 0) return null;
     const section = root;
     const list = root.querySelector('[data-import-list]');
     const coordinator = new ImportCoordinator({
+      eventId,
       fetch: environment.fetch.bind(environment),
       urls: {
         collection: root.dataset.importCollectionUrl,
@@ -283,6 +290,12 @@
       schedule: (callback, delay) => environment.setTimeout(callback, delay),
       cancel: (timer) => environment.clearTimeout(timer),
       render(change) {
+        if (['created', 'list', 'updated'].includes(change.type)) {
+          const document = root.ownerDocument || environment.document;
+          if (document && environment.CustomEvent) document.dispatchEvent(new environment.CustomEvent(
+            'findme:event-photo-import-progress', { detail: { eventId } },
+          ));
+        }
         if (change.type === 'list') {
           list.replaceChildren(...change.records.map((record) => renderCard(root, record)));
           section.hidden = change.records.length === 0 && root.dataset.importEnabled !== 'true';
@@ -329,18 +342,16 @@
     root.importCoordinator = coordinator;
     section.hidden = root.dataset.importEnabled !== 'true';
 
-    const eventSelect = document.querySelector('#upload-event');
     const form = root.querySelector('[data-import-form]');
     const folderSelect = root.querySelector('[data-import-folder]');
     const source = root.querySelector('[data-import-source-url]');
     const submit = root.querySelector('[data-import-submit]');
     function syncForm(resetFolder = false) {
       if (!form) return;
-      const eventId = eventSelect.value;
       let first = null;
       let currentMatches = false;
       for (const option of folderSelect.querySelectorAll('[data-import-folder-option]')) {
-        const matches = option.dataset.eventId === eventId;
+        const matches = Number(option.dataset.eventId) === eventId;
         option.hidden = !matches;
         option.disabled = !matches;
         if (matches && first === null) first = option;
@@ -351,13 +362,13 @@
       submit.disabled = !eventId || !source.value.trim();
     }
     if (form) {
-      eventSelect.addEventListener('change', () => syncForm(true));
+      root.addEventListener('findme:event-photo-folders-refreshed', () => syncForm());
       source.addEventListener('input', () => syncForm());
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         submit.disabled = true;
         try {
-          await coordinator.submit({ eventId: eventSelect.value, folderId: folderSelect.value, sourceUrl: source.value.trim() });
+          await coordinator.submit({ eventId, folderId: folderSelect.value, sourceUrl: source.value.trim() });
           source.value = '';
         } catch (_error) {
           // The same submission key is retained for an explicit retry.
@@ -399,7 +410,6 @@
       setText(root, '[data-import-list-status]', 'Не удалось загрузить страницу импортов. Попробуйте ещё раз.');
     }));
     environment.addEventListener('pagehide', () => coordinator.stop(), { once: true });
-    environment.addEventListener('beforeunload', () => coordinator.stop(), { once: true });
     coordinator.loadPage(1).catch(() => {
       setText(root, '[data-import-list-status]', 'Не удалось загрузить сохранённый прогресс. Обновите страницу.');
       section.hidden = root.dataset.importEnabled !== 'true';

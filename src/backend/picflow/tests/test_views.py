@@ -31,10 +31,12 @@ from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
 from processing.models import (
+    BIB_RECOGNITION_PROCESSOR,
     CAPTURE_METADATA_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+    BibReading,
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
@@ -80,6 +82,35 @@ class NavigationMarkupParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag == "a":
             self._anchor_depth -= 1
+
+
+class SearchFormMarkupParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.current_form: str | None = None
+        self.inputs: dict[str, list[tuple[str | None, str]]] = {
+            "selfie": [],
+            "bib": [],
+            "manual": [],
+        }
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "form":
+            if "data-selfie-search-form" in attributes:
+                self.current_form = "selfie"
+            elif "data-bib-search-form" in attributes:
+                self.current_form = "bib"
+            elif "data-manual-time-filter-form" in attributes:
+                self.current_form = "manual"
+        elif tag == "input" and self.current_form is not None:
+            self.inputs[self.current_form].append(
+                (attributes.get("name"), attributes.get("type") or "text")
+            )
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self.current_form = None
 
 
 @override_settings(
@@ -563,6 +594,152 @@ class GalleryPageTests(TestCase):
             accepted=True,
             result={"capture_time": capture_time},
         )
+
+    def publish_bib(self, photo: Photo, *, number: str) -> BibReading:
+        configuration = {"bib_recognition": {"generation": 1}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=1,
+            processor_type=BIB_RECOGNITION_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=uuid4().hex + uuid4().hex,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=1,
+            processor_type=BIB_RECOGNITION_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=1,
+            processor_type=BIB_RECOGNITION_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        return BibReading.objects.create(
+            photo=photo,
+            source_attempt=attempt,
+            number=number,
+            evidence={"source": "accepted"},
+        )
+
+    def test_bib_form_visibility_follows_event_and_stays_separate_from_selfie_upload(self) -> None:
+        disabled = self.make_event(name="Bib disabled", slug="bib-disabled")
+
+        disabled_response = self.client.get(reverse("event_detail", kwargs={"slug": disabled.slug}))
+
+        self.assertNotContains(disabled_response, "data-bib-search-form")
+
+        enabled = self.make_event(name="Bib enabled", slug="bib-enabled", bib_search_enabled=True)
+        enabled_response = self.client.get(reverse("event_detail", kwargs={"slug": enabled.slug}))
+        markup = SearchFormMarkupParser()
+        markup.feed(enabled_response.content.decode(enabled_response.charset))
+
+        self.assertContains(enabled_response, "data-bib-search-form")
+        self.assertIn(("selfie", "file"), markup.inputs["selfie"])
+        self.assertNotIn(("bib", "text"), markup.inputs["selfie"])
+        self.assertEqual(markup.inputs["bib"], [("bib", "text")])
+
+    def test_bib_query_filters_exactly_and_invalid_or_blank_queries_do_not_filter(self) -> None:
+        event = self.make_event(slug="bib-query", bib_search_enabled=True)
+        leading_zero = self.make_private_photo(event, id="leading-zero", original_filename="a.jpg")
+        plain = self.make_private_photo(event, id="plain", original_filename="b.jpg")
+        self.publish_bib(leading_zero, number="00123")
+        self.publish_bib(plain, number="123")
+        url = reverse("event_detail", kwargs={"slug": event.slug})
+
+        filtered = self.client.get(url, {"bib": " 00123 "})
+        blank = self.client.get(url, {"bib": "   "})
+        invalid = self.client.get(url, {"bib": "１２３"})
+
+        self.assertEqual(
+            tuple(item.photo_id for item in filtered.context["gallery_photos"]),
+            (leading_zero.pk,),
+        )
+        self.assertEqual(filtered.context["gallery_pagination_query_pairs"], (("bib", "00123"),))
+        self.assertEqual(
+            tuple(item.photo_id for item in blank.context["gallery_photos"]),
+            (leading_zero.pk, plain.pk),
+        )
+        self.assertFalse(blank.context["gallery_filters_active"])
+        self.assertTrue(invalid.context["bib_search_invalid"])
+        self.assertEqual(invalid.context["gallery_photos"], ())
+        self.assertContains(invalid, "Введите номер от 1 до 16 цифр.")
+        self.assertNotContains(invalid, "По выбранным фильтрам фотографий не найдено.")
+        self.assertContains(invalid, 'aria-describedby="id_bib_error"')
+        self.assertContains(invalid, 'id="id_bib_error"', count=1)
+
+        filtered_markup = SearchFormMarkupParser()
+        filtered_markup.feed(filtered.content.decode(filtered.charset))
+        invalid_markup = SearchFormMarkupParser()
+        invalid_markup.feed(invalid.content.decode(invalid.charset))
+        self.assertIn(("bib", "hidden"), filtered_markup.inputs["manual"])
+        self.assertNotIn(("bib", "hidden"), invalid_markup.inputs["manual"])
+
+    def test_bib_pagination_preserves_number_and_existing_gallery_filters(self) -> None:
+        event = self.make_event(
+            slug="bib-pagination",
+            bib_search_enabled=True,
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 10),
+            timezone_name="Europe/London",
+        )
+        folder = EventFolder.objects.create(event=event, name="Финиш")
+        for index in range(101):
+            photo = self.make_private_photo(
+                event,
+                id=f"bib-page-{index:03}",
+                original_filename=f"image-{index:03}.jpg",
+                folder=folder,
+            )
+            capture_attempt = self.capture_evidence(photo, capture_time="2026-06-10T10:00:00Z")
+            Photo.objects.filter(pk=photo.pk).update(
+                capture_time=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+                capture_time_source_attempt=capture_attempt,
+            )
+            self.publish_bib(photo, number="00123")
+        url = reverse("event_detail", kwargs={"slug": event.slug})
+
+        response = self.client.get(
+            url,
+            {
+                "bib": "00123",
+                "folder": str(folder.pk),
+                "from": "2026-06-10T09:00",
+                "to": "2026-06-10T11:00",
+                "page": "2",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["gallery_pagination_query_pairs"],
+            (
+                ("folder", str(folder.pk)),
+                ("from", "2026-06-10T09:00"),
+                ("to", "2026-06-10T11:00"),
+                ("bib", "00123"),
+            ),
+        )
+        self.assertContains(response, "bib=00123")
+        self.assertContains(response, 'name="bib" value="00123"')
+        self.assertEqual(len(response.context["gallery_photos"]), 1)
 
     def publish_preview(
         self,

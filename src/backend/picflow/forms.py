@@ -6,6 +6,22 @@ from django import forms
 from picflow.models import Event, EventFolder
 
 
+class BibSearchForm(forms.Form):
+    bib = forms.RegexField(
+        regex=r"\A[0-9]{1,16}\Z",
+        required=False,
+        strip=True,
+        error_messages={"invalid": "Введите номер от 1 до 16 цифр."},
+        widget=forms.TextInput(
+            attrs={
+                "autocomplete": "off",
+                "inputmode": "numeric",
+                "maxlength": "16",
+            }
+        ),
+    )
+
+
 class EventGalleryFolderFilterForm(forms.Form):
     """Normalize the optional, event-scoped folder choices in a gallery request."""
 

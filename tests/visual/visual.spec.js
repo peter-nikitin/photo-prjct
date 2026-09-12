@@ -1524,6 +1524,39 @@ test('discovery columns are side by side on desktop and stack before the gallery
   }
 });
 
+test('bib and selfie searches stay separate beside each other on desktop and stack on mobile', async ({ page }) => {
+  for (const [viewport, mobile] of [
+    [DESKTOP_VIEWPORT, false],
+    [MOBILE_VIEWPORT, true],
+  ]) {
+    await page.setViewportSize(viewport);
+    await preloadCookieAcknowledgement(page);
+    await page.goto('/__visual__/event/gallery-populated/');
+    await settlePage(page);
+
+    const selfieForm = page.locator('[data-selfie-search-form]');
+    const bibForm = page.locator('[data-bib-search-form]');
+    await expect(selfieForm.locator('input[type="file"]')).toHaveCount(1);
+    await expect(selfieForm.locator('input[name="bib"]')).toHaveCount(0);
+    await expect(bibForm.locator('input[name="bib"]')).toHaveCount(1);
+    await expect(bibForm.locator('input[type="file"]')).toHaveCount(0);
+
+    const layout = await page.evaluate(() => {
+      const selfie = document.querySelector('#selfie-search')?.getBoundingClientRect();
+      const bib = document.querySelector('#bib-search')?.getBoundingClientRect();
+      return {
+        beside: Boolean(selfie && bib && Math.abs(selfie.top - bib.top) < 1 && selfie.left < bib.left),
+        stacked: Boolean(selfie && bib && selfie.top < bib.top),
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+      };
+    });
+    expect(layout.beside).toBe(!mobile);
+    expect(layout.stacked).toBe(mobile);
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  }
+});
+
 test('filtered discovery is closed on mobile with an accessible reset', async ({ page }) => {
   await page.setViewportSize(MOBILE_VIEWPORT);
   await preloadCookieAcknowledgement(page);
@@ -1554,6 +1587,7 @@ test('desktop discovery keeps upload and time controls aligned without overlap',
       timeFrom: bounds('.manual-time-filter input[name="from"]'),
       timeTo: bounds('.manual-time-filter input[name="to"]'),
       timeSubmit: bounds('.manual-time-filter button[type="submit"]'),
+      manual: bounds('.manual-time-filter'),
     };
   });
   expect(layout.selfieFile).not.toBeNull();
@@ -1561,9 +1595,13 @@ test('desktop discovery keeps upload and time controls aligned without overlap',
   expect(layout.timeFrom).not.toBeNull();
   expect(layout.timeTo).not.toBeNull();
   expect(layout.timeSubmit).not.toBeNull();
+  expect(layout.manual).not.toBeNull();
   expect(layout.selfieFile.bottom).toBeLessThanOrEqual(layout.selfieSubmit.top);
   expect(layout.timeFrom.right).toBeLessThanOrEqual(layout.timeTo.left);
-  expect(layout.timeTo.right).toBeLessThanOrEqual(layout.timeSubmit.left);
+  expect(layout.timeFrom.width).toBeGreaterThanOrEqual(180);
+  expect(layout.timeTo.width).toBeGreaterThanOrEqual(180);
+  expect(layout.timeTo.bottom).toBeLessThanOrEqual(layout.timeSubmit.top);
+  expect(layout.timeSubmit.right).toBeLessThanOrEqual(layout.manual.right);
 
   await page.setViewportSize(INTERMEDIATE_DESKTOP_VIEWPORT);
   await page.reload();
@@ -1572,14 +1610,17 @@ test('desktop discovery keeps upload and time controls aligned without overlap',
     const bounds = (selector) => {
       const element = document.querySelector(selector);
       if (!element) return null;
-      const { bottom, left, right, top } = element.getBoundingClientRect();
-      return { bottom, left, right, top };
+      const { bottom, left, right, top, width } = element.getBoundingClientRect();
+      return { bottom, left, right, top, width };
     };
     return {
       selfie: bounds('#selfie-search'),
       selfieFile: bounds('#selfie-search input[type="file"]'),
       selfieSubmit: bounds('#selfie-search button[type="submit"]'),
+      bib: bounds('#bib-search'),
       manual: bounds('.manual-time-filter'),
+      timeFrom: bounds('.manual-time-filter input[name="from"]'),
+      timeTo: bounds('.manual-time-filter input[name="to"]'),
       clientWidth: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
     };
@@ -1587,9 +1628,13 @@ test('desktop discovery keeps upload and time controls aligned without overlap',
   expect(intermediate.selfieFile).not.toBeNull();
   expect(intermediate.selfieSubmit).not.toBeNull();
   expect(intermediate.selfie).not.toBeNull();
+  expect(intermediate.bib).not.toBeNull();
   expect(intermediate.manual).not.toBeNull();
+  expect(intermediate.timeFrom.width).toBeGreaterThanOrEqual(180);
+  expect(intermediate.timeTo.width).toBeGreaterThanOrEqual(180);
   expect(intermediate.selfieFile.bottom).toBeLessThanOrEqual(intermediate.selfieSubmit.top);
-  expect(intermediate.selfie.right).toBeLessThanOrEqual(intermediate.manual.left);
+  expect(intermediate.selfie.right).toBeLessThanOrEqual(intermediate.bib.left);
+  expect(intermediate.selfie.bottom).toBeLessThanOrEqual(intermediate.manual.top);
   expect(intermediate.scrollWidth).toBeLessThanOrEqual(intermediate.clientWidth);
 });
 

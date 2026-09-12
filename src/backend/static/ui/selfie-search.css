@@ -21,6 +21,52 @@
   box-shadow: none;
 }
 
+.event-discovery-layout:has(> .bib-search) {
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 0.7fr) minmax(0, 1.55fr);
+}
+
+.event-discovery-layout:has(> .bib-search) .manual-time-filter-controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.event-discovery-layout:has(> .bib-search) .manual-time-filter-controls .button {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.bib-search-form {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bib-search-form label {
+  font-weight: 800;
+}
+
+.bib-search-form input[type="text"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font: inherit;
+}
+
+.bib-search-error {
+  margin: 0;
+  color: #a82d22;
+  font-weight: 750;
+}
+
+.bib-search-error p {
+  margin: 0;
+}
+
 .selfie-search h2 {
   margin-bottom: 14px;
 }
@@ -403,12 +449,39 @@
   align-items: center;
 }
 
+@media (min-width: 621px) and (max-width: 1100px) {
+  .event-discovery-layout:has(> .bib-search) {
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 0.7fr);
+  }
+
+  .event-discovery-layout:has(> .bib-search) .manual-time-filter {
+    grid-column: 1 / -1;
+    padding-top: 28px;
+    padding-left: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+}
+
 @media (max-width: 620px) {
+  .event-discovery-layout:has(> .bib-search) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .event-discovery-layout:has(> .bib-search) .manual-time-filter-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .event-discovery-layout:has(> .bib-search) .manual-time-filter-controls .button {
+    grid-column: auto;
+  }
+
   .selfie-search {
     margin-inline: -2px;
   }
 
   .selfie-search .button,
+  .bib-search .button,
   .selfie-search-terminal-actions > .button,
   .selfie-search-feedback-actions .button,
   .selfie-search-archive-action .button {

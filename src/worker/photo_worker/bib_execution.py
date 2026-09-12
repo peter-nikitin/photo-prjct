@@ -56,16 +56,20 @@ def _kill_tree(process: subprocess.Popen[bytes]) -> None:
 def _execute(
     command: list[str], *, deadline_seconds: float, check_cancelled: Callable[[], None]
 ) -> dict[str, Any]:
+    before_pid_events = _pid_limit_events()
     output = bytearray()
     deadline = time.monotonic() + deadline_seconds
     with _termination_cleanup():
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise BibExecutionError(_resource_failure_code(before_pid_events)) from error
         try:
             assert process.stdout is not None
             with selectors.DefaultSelector() as selector:
@@ -88,7 +92,7 @@ def _execute(
                         time.sleep(min(0.01, remaining))
             check_cancelled()
             if process.returncode != 0:
-                raise BibExecutionError("model_inference_error")
+                raise BibExecutionError(_resource_failure_code(before_pid_events))
             try:
                 result = json.loads(output)
             except (ValueError, UnicodeError) as error:
@@ -104,12 +108,33 @@ def _execute(
                     "model_inference_error",
                 }:
                     code = "model_inference_error"
+                if code == "model_inference_error":
+                    code = _resource_failure_code(before_pid_events)
                 raise BibExecutionError(code)
             return result
         finally:
             _kill_tree(process)
             if process.stdout is not None:
                 process.stdout.close()
+
+
+def _pid_limit_events() -> int | None:
+    """Only kernel counters corroborate resource errors; child stderr stays discarded."""
+    try:
+        for line in Path("/sys/fs/cgroup/pids.events").read_text().splitlines():
+            key, value = line.split()
+            if key == "max":
+                return int(value)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _resource_failure_code(before: int | None) -> str:
+    after = _pid_limit_events()
+    if before is not None and after is not None and after > before:
+        return "runtime_resource_exhausted"
+    return "model_inference_error"
 
 
 def run_bib_recognition(

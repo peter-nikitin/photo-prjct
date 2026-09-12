@@ -156,6 +156,9 @@ def load_adaface_runtime(model_directory: Path) -> AdaFaceRuntime:
         import safetensors.torch
         import torch
 
+        from photo_worker.runtime_threads import configure_torch
+
+        configure_torch(torch)
         module = _load_model_module(source)
         model = module.IR_18(
             input_size=(ADAFACE_INPUT_SIZE, ADAFACE_INPUT_SIZE),

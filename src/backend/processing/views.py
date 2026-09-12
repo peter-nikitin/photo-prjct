@@ -179,6 +179,10 @@ _PROCESSOR_FAILURES = {
         "input_too_large": (False, "The input exceeded its declared limit."),
         "malformed_response": (False, "The visual response was malformed."),
         "model_inference_error": (False, "The bib models could not process the image."),
+        "runtime_resource_exhausted": (
+            False,
+            "Bib recognition exhausted its process or thread limit.",
+        ),
         "model_inference_timeout": (True, "Bib recognition exceeded its deadline."),
         "network_interruption": (True, "A temporary network interruption occurred."),
         "ocr_failed": (False, "Bib OCR could not process the image."),

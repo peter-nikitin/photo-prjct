@@ -497,6 +497,39 @@ class BibCompletionTests(TestCase):
             Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
         )
 
+    def test_pid_resource_failure_is_terminal_code_owned_and_sanitized(self) -> None:
+        claimed = self.claim()
+        endpoint = f"/internal/photo-processing/v1/attempts/{claimed.attempt.id}/fail"
+        body = self.failure_body(claimed, error_code="runtime_resource_exhausted", retryable=True)
+        response = self.client.post(
+            endpoint,
+            data=json.dumps(body),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer worker-secret",
+        )
+        self.assertEqual(response.status_code, 400)
+        body["retryable"] = False
+        body["error_detail"] = "private raw stderr token https://private.invalid/key"
+        response = self.client.post(
+            endpoint,
+            data=json.dumps(body),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer worker-secret",
+        )
+        self.assertEqual(response.status_code, 400)
+        body["error_detail"] = "bounded noncanonical diagnostic"
+        response = self.client.post(
+            endpoint,
+            data=json.dumps(body),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer worker-secret",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        claimed.attempt.refresh_from_db()
+        self.assertEqual(claimed.attempt.error_code, "runtime_resource_exhausted")
+        self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.FAILED)
+        self.assertNotIn("private", claimed.attempt.error_detail)
+
     def test_failure_envelope_one_byte_over_limit_does_not_finish_attempt(self) -> None:
         claimed = self.claim()
         body = self.failure_body(claimed, error_code="ocr_failed", retryable=False)

@@ -243,3 +243,33 @@ def test_image_smoke_exercises_current_adaface_and_sface_consumers(tmp_path, mon
         for kind in ("photo", "selfie")
         for model in ("sface", "adaface-ir18-webface4m")
     }
+
+
+def test_child_resource_limit_is_corroborated_by_cgroup_event(monkeypatch):
+    from photo_worker.bib_execution import BibExecutionError, _execute
+
+    readings = iter([10, 11])
+    monkeypatch.setattr(
+        "photo_worker.bib_execution._pid_limit_events", lambda: next(readings), raising=False
+    )
+    with pytest.raises(BibExecutionError) as raised:
+        _execute(
+            [sys.executable, "-c", 'raise RuntimeError("secret stderr must not escape")'],
+            deadline_seconds=3,
+            check_cancelled=lambda: None,
+        )
+    assert raised.value.code == "runtime_resource_exhausted"
+    assert "secret" not in str(raised.value)
+
+
+def test_unverified_child_model_failure_keeps_generic_code(monkeypatch):
+    from photo_worker.bib_execution import BibExecutionError, _execute
+
+    monkeypatch.setattr("photo_worker.bib_execution._pid_limit_events", lambda: 10, raising=False)
+    with pytest.raises(BibExecutionError) as raised:
+        _execute(
+            [sys.executable, "-c", 'raise RuntimeError("model failed")'],
+            deadline_seconds=3,
+            check_cancelled=lambda: None,
+        )
+    assert raised.value.code == "model_inference_error"

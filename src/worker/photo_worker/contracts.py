@@ -203,6 +203,7 @@ FAILURE_RETRYABLE = {
     "fingerprint_mismatch": True,
     "input_too_large": False,
     "model_inference_error": False,
+    "runtime_resource_exhausted": False,
     "model_inference_timeout": True,
     "network_interruption": True,
     "no_face_detected": False,

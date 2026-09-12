@@ -12,6 +12,7 @@ from django.contrib.auth import get_user_model
 from django.db import close_old_connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
+from picflow.gallery import gallery_photo_queryset
 from picflow.models import Event, Photo
 
 from processing.contracts import AttemptCompletion, ClaimedJob, CompletionConflict
@@ -30,6 +31,7 @@ from processing.services.enrollment import (
     PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
     SCRFD_FACE_EMBEDDING_CONFIGURATION,
     _configuration_hash,
+    reconcile_bib_recognition,
     request_processor,
 )
 from processing.services.jobs import claim_job
@@ -93,7 +95,12 @@ class _PreviewPublicationFixture:
             face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
-    def _claim(self, identifier: str = "preview-publication"):
+    def _claim(
+        self,
+        identifier: str = "preview-publication",
+        *,
+        bib_policy: str = "disabled",
+    ):
         original_key = hashlib.sha256(identifier.encode()).hexdigest()[:32]
         photo = Photo.objects.create(
             id=identifier,
@@ -105,6 +112,7 @@ class _PreviewPublicationFixture:
             original_size=20,
             original_content_type="image/jpeg",
             uploaded_at=timezone.now(),
+            bib_processing_policy=bib_policy,
         )
         request_processor(
             photo,
@@ -155,8 +163,8 @@ class _PreviewPublicationFixture:
             height=1000,
         )
 
-    def _claim_watermark(self, identifier: str):
-        photo, clean_claim = self._claim(identifier)
+    def _claim_watermark(self, identifier: str, *, bib_policy: str = "disabled"):
+        photo, clean_claim = self._claim(identifier, bib_policy=bib_policy)
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
         photo.gallery_media_policy = Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
         photo.save(update_fields=["processing_generation", "gallery_media_policy"])
@@ -236,6 +244,53 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         self.assertEqual(state.status, PhotoProcessingState.Status.SUCCEEDED)
         self.assertEqual(state.accepted_attempt_id, claimed.attempt.id)
 
+    def test_accepted_preview_enrolls_applicable_bib_work_after_publication(self) -> None:
+        photo, claimed = self._claim(
+            "preview-bib-publication",
+            bib_policy="original_v1",
+        )
+        Photo.objects.filter(pk=photo.pk).update(
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        object = self._stored_object()
+
+        complete_preview_attempt(
+            claimed.attempt.id,
+            result=self._result(object),
+            storage=FakePreviewStorage(object),
+        )
+
+        self.assertTrue(PhotoDerivative.objects.filter(photo=photo).exists())
+        bib = PhotoProcessingState.objects.get(photo=photo, processor_type="bib_recognition")
+        self.assertEqual(bib.status, PhotoProcessingState.Status.QUEUED)
+
+    @patch(
+        "processing.services.enrollment.request_bib_recognition",
+        side_effect=RuntimeError("queue unavailable"),
+    )
+    def test_bib_enqueue_failure_never_rolls_back_accepted_preview(self, request_bib) -> None:
+        photo, claimed = self._claim(
+            "preview-bib-enqueue-failure",
+            bib_policy="original_v1",
+        )
+        Photo.objects.filter(pk=photo.pk).update(
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        object = self._stored_object()
+
+        complete_preview_attempt(
+            claimed.attempt.id,
+            result=self._result(object),
+            storage=FakePreviewStorage(object),
+        )
+
+        self.assertTrue(PhotoDerivative.objects.filter(photo=photo).exists())
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type="generate_preview")
+        self.assertEqual(state.status, PhotoProcessingState.Status.SUCCEEDED)
+        request_bib.assert_called_once()
+
     def test_watermark_attempt_uses_the_same_verified_immutable_publication_state_machine(
         self,
     ) -> None:
@@ -284,6 +339,80 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         )
         self.assertEqual(state.accepted_attempt_id, claimed.attempt.id)
         self.assertEqual(storage.promote_final_keys, [derivative.final_key])
+
+    def test_paid_bib_waits_for_watermark_then_enrolls_after_gallery_publication(self) -> None:
+        Event.objects.filter(pk=self.event.pk).update(
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=500,
+        )
+        self.event.refresh_from_db()
+        photo, clean_derivative, claimed = self._claim_watermark(
+            "watermark-bib-publication",
+            bib_policy="original_v1",
+        )
+
+        self.assertFalse(
+            ProcessingJob.objects.filter(photo=photo, processor_type="bib_recognition").exists()
+        )
+        self.assertEqual(reconcile_bib_recognition(), [])
+        self.assertFalse(
+            gallery_photo_queryset(
+                event=self.event,
+                paid_watermarked_previews_enabled=True,
+            ).filter(pk=photo.pk)
+        )
+        content = b"watermark-bib-publication"
+        object = PreviewObject(
+            etag_wire='"watermark-bib-publication"',
+            etag_value="watermark-bib-publication",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=clean_derivative.width,
+            height=clean_derivative.height,
+        )
+
+        complete_preview_attempt(
+            claimed.attempt.id,
+            result=self._watermark_result(object),
+            storage=FakePreviewStorage(object),
+        )
+
+        self.assertTrue(
+            gallery_photo_queryset(
+                event=self.event,
+                paid_watermarked_previews_enabled=True,
+            ).filter(pk=photo.pk)
+        )
+        bib = PhotoProcessingState.objects.get(photo=photo, processor_type="bib_recognition")
+        self.assertEqual(bib.status, PhotoProcessingState.Status.QUEUED)
+
+    def test_paid_watermark_failure_does_not_publish_or_enroll_bib(self) -> None:
+        Event.objects.filter(pk=self.event.pk).update(
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=500,
+        )
+        self.event.refresh_from_db()
+        photo, _, claimed = self._claim_watermark(
+            "watermark-bib-failure",
+            bib_policy="original_v1",
+        )
+
+        jobs.fail_attempt(
+            claimed.attempt.id,
+            error_code="output_contract_violation",
+            retryable=False,
+        )
+
+        self.assertFalse(
+            gallery_photo_queryset(
+                event=self.event,
+                paid_watermarked_previews_enabled=True,
+            ).filter(pk=photo.pk)
+        )
+        self.assertFalse(
+            ProcessingJob.objects.filter(photo=photo, processor_type="bib_recognition").exists()
+        )
 
     def test_watermark_duplicate_completion_is_idempotent_and_conflict_is_rejected(self) -> None:
         photo, _, claimed = self._claim_watermark("watermark-duplicate")

@@ -369,10 +369,11 @@ class ProcessingModelTests(TestCase):
                     photo=self.photo,
                     source_attempt=attempt,
                     number=invalid,
-                    evidence={},
+                    evidence={"decision": "accepted"},
                 )
-                with self.assertRaises(ValidationError):
+                with self.assertRaises(ValidationError) as raised:
                     reading.full_clean()
+                self.assertIn("number", raised.exception.message_dict)
 
         for invalid in ("", "١٢٣", "12 3"):
             with self.subTest(database_invalid=invalid), transaction.atomic():
@@ -416,16 +417,25 @@ class ProcessingModelTests(TestCase):
             self.make_bib_attempt(status=ProcessingAttempt.Status.FAILED, accepted=False),
         )
 
+        valid = BibReading(
+            photo=self.photo,
+            source_attempt=self.make_bib_attempt(),
+            number="42",
+            evidence={"decision": "accepted"},
+        )
+        valid.full_clean()
+
         for attempt in invalid_attempts:
             with self.subTest(attempt=attempt.pk):
                 reading = BibReading(
                     photo=self.photo,
                     source_attempt=attempt,
                     number="42",
-                    evidence={},
+                    evidence={"decision": "accepted"},
                 )
-                with self.assertRaises(ValidationError):
+                with self.assertRaises(ValidationError) as raised:
                     reading.full_clean()
+                self.assertIn("source_attempt", raised.exception.message_dict)
 
     def test_bib_reading_evidence_uses_the_bounded_json_contract(self) -> None:
         BibReading = apps.get_model("processing", "BibReading")

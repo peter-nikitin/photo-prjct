@@ -40,6 +40,11 @@ GENERATE_WATERMARKED_PREVIEW_CONTRACT = ProcessorContract(
     contract_version=2,
     processor_version=1,
 )
+BIB_RECOGNITION_CONTRACT = ProcessorContract(
+    processor_type="bib_recognition",
+    contract_version=1,
+    processor_version=1,
+)
 PREVIEW_FACE_EMBEDDING_CONTRACT = ProcessorContract(
     processor_type="face_embedding",
     contract_version=2,

@@ -37,7 +37,9 @@ from selfie_search.services.ranking import QueryVectorError, RankingError, valid
 from selfie_search.storage import StoredTemporarySelfie, TemporarySelfieStorage
 
 from processing.auth import has_worker_token
+from processing.bib_validation import BibResultError, validate_bib_result
 from processing.contracts import (
+    BIB_RECOGNITION_CONTRACT,
     CAPTURE_METADATA_CONTRACT,
     FACE_EMBEDDING_BENCHMARK_CONTRACT,
     FACE_EMBEDDING_CONTRACT,
@@ -60,6 +62,7 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.results import parse_canonical_timestamp
+from processing.services.bibs import complete_bib_attempt
 from processing.services.face_quality import (
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
     LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
@@ -169,6 +172,23 @@ _PROCESSOR_FAILURES = {
     "generate_preview": _GENERATE_PREVIEW_FAILURES,
     "generate_watermarked_preview": _GENERATE_WATERMARKED_PREVIEW_FAILURES,
     "selfie_query": _SELFIE_QUERY_FAILURES,
+    "bib_recognition": {
+        "decode_failed": (False, "The original image could not be decoded."),
+        "download_authorization_expired": (True, "Download authorization expired."),
+        "fingerprint_mismatch": (True, "The downloaded input did not match its fingerprint."),
+        "input_too_large": (False, "The input exceeded its declared limit."),
+        "malformed_response": (False, "The visual response was malformed."),
+        "model_inference_error": (False, "The bib models could not process the image."),
+        "model_inference_timeout": (True, "Bib recognition exceeded its deadline."),
+        "network_interruption": (True, "A temporary network interruption occurred."),
+        "ocr_failed": (False, "Bib OCR could not process the image."),
+        "output_contract_violation": (False, "Bib evidence violated its bounds."),
+        "result_contract_failure": (False, "Bib evidence violated its result contract."),
+        "storage_unavailable": (True, "Object storage is temporarily unavailable."),
+        "unsupported_input": (False, "The input is unsupported."),
+        "visual_runtime_error": (False, "The visual bib runtime failed."),
+        "visual_timeout": (True, "The visual bib runtime exceeded its deadline."),
+    },
 }
 _PROCESSOR_RESULT_WARNINGS = {
     "capture_metadata": _CAPTURE_METADATA_WARNINGS,
@@ -177,6 +197,7 @@ _PROCESSOR_RESULT_WARNINGS = {
     "generate_preview": _GENERATE_PREVIEW_WARNING_CODES,
     "generate_watermarked_preview": _GENERATE_WATERMARKED_PREVIEW_WARNING_CODES,
     "selfie_query": set(),
+    "bib_recognition": set(),
 }
 
 
@@ -326,7 +347,11 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
     kind = _attempt_kind(reference)
     if kind is None:
         return _not_found()
-    data, error = _json_object(request, required=_success_fields())
+    data, error = _json_object(
+        request,
+        required=_success_fields(),
+        maximum_bytes=_terminal_request_max(reference.attempt_id, kind),
+    )
     if error is not None:
         return error
     assert data is not None
@@ -373,7 +398,9 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
             "worker_started_at": data["started_at"],
             "worker_finished_at": data["finished_at"],
         }
-        if attempt.processor_type in {
+        if attempt.processor_type == BIB_RECOGNITION_CONTRACT.processor_type:
+            completion = complete_bib_attempt(reference.attempt_id, **completion_kwargs)
+        elif attempt.processor_type in {
             GENERATE_PREVIEW_CONTRACT.processor_type,
             GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
         }:
@@ -382,6 +409,8 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
             completion = complete_attempt(reference.attempt_id, **completion_kwargs)
     except ProcessingAttempt.DoesNotExist:
         return _not_found()
+    except BibResultError:
+        return _invalid_result()
     except StorageUnavailable:
         return _error(
             "storage_unavailable", "Object storage is temporarily unavailable.", status=503
@@ -403,7 +432,11 @@ def fail(request: HttpRequest, attempt_id: str) -> JsonResponse:
     kind = _attempt_kind(reference)
     if kind is None:
         return _not_found()
-    data, error = _json_object(request, required=_failure_fields())
+    data, error = _json_object(
+        request,
+        required=_failure_fields(),
+        maximum_bytes=_terminal_request_max(reference.attempt_id, kind),
+    )
     if error is not None:
         return error
     assert data is not None
@@ -839,16 +872,15 @@ def _validate_grant_lease(
 
 
 def _json_object(
-    request: HttpRequest, *, required: set[str]
+    request: HttpRequest, *, required: set[str], maximum_bytes: int | None = None
 ) -> tuple[dict[str, Any] | None, JsonResponse | None]:
+    maximum_bytes = maximum_bytes or settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES
     declared = request.headers.get("Content-Length")
-    if declared is not None and (
-        not declared.isdecimal() or int(declared) > settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES
-    ):
+    if declared is not None and (not declared.isdecimal() or int(declared) > maximum_bytes):
         return None, _invalid_request()
     try:
-        raw = request.read(settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES + 1)
-        if len(raw) > settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES:
+        raw = request.read(maximum_bytes + 1)
+        if len(raw) > maximum_bytes:
             return None, _invalid_request()
         parsed = json.loads(raw or b"{}")
     except (RequestDataTooBig, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
@@ -1054,6 +1086,11 @@ def _attempt_kind(reference: AttemptReference) -> str | None:
 def _processor_contract(processor_type: str, contract_version: int, processor_version: int) -> bool:
     return (contract_version, processor_type, processor_version) in {
         (
+            BIB_RECOGNITION_CONTRACT.contract_version,
+            BIB_RECOGNITION_CONTRACT.processor_type,
+            BIB_RECOGNITION_CONTRACT.processor_version,
+        ),
+        (
             CAPTURE_METADATA_CONTRACT.contract_version,
             CAPTURE_METADATA_CONTRACT.processor_type,
             CAPTURE_METADATA_CONTRACT.processor_version,
@@ -1165,6 +1202,21 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
     ):
         return False
     if outcome == "success":
+        if attempt.processor_type == BIB_RECOGNITION_CONTRACT.processor_type:
+            try:
+                bib = attempt.configuration["bib_recognition"]
+                source_sha256 = data["result"]["source_sha256"]
+                expected_source_sha256 = attempt.input_fingerprint.get(
+                    "source_sha256", source_sha256
+                )
+                validate_bib_result(
+                    data["result"],
+                    expected_source_sha256=expected_source_sha256,
+                    expected_configuration_sha256=bib["inference_configuration_sha256"],
+                )
+            except (BibResultError, KeyError, TypeError):
+                return False
+            return True
         if not _valid_result(
             data["result"],
             attempt.processor_type,
@@ -1317,6 +1369,23 @@ def _valid_result(
     }:
         return _valid_preview_result(value, processor_type=processor_type)
     return False
+
+
+def _terminal_request_max(attempt_id: UUID, kind: str) -> int:
+    if kind != "photo":
+        return settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES
+    attempt = (
+        ProcessingAttempt.objects.filter(pk=attempt_id)
+        .only("processor_type", "configuration")
+        .first()
+    )
+    if attempt is None or attempt.processor_type != BIB_RECOGNITION_CONTRACT.processor_type:
+        return settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES
+    worker = attempt.configuration.get("worker")
+    value = worker.get("api_response_max_bytes") if isinstance(worker, dict) else None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES
+    return min(value, settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES)
 
 
 def _valid_capture_metadata_result(value: object, *, configuration: object) -> bool:

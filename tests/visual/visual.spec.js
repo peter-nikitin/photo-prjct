@@ -54,9 +54,15 @@ const desktopPages = [
   ['reference-search', '/__visual__/reference/search/'],
   ['reference-dashboard', '/__visual__/reference/dashboard/'],
   ['reference-events', '/__visual__/reference/events/'],
+  ['workspace-photos', '/__visual__/workspace/photos/'],
+  ['workspace-photos-filtered-empty', '/__visual__/workspace/photos/filtered-empty/'],
+  ['workspace-photos-hidden', '/__visual__/workspace/photos/hidden/'],
+  ['workspace-photos-error', '/__visual__/workspace/photos/error/'],
+  ['upload-chooser', '/__visual__/upload/chooser/'],
   ['upload-empty', '/__visual__/upload/empty/'],
   ['upload-active', '/__visual__/upload/active/'],
   ['upload-partial', '/__visual__/upload/partial/'],
+  ['upload-processing', '/__visual__/upload/processing/'],
   ['upload-complete', '/__visual__/upload/complete/'],
   ['upload-folders', '/__visual__/upload/folders/'],
   ['upload-imports', '/__visual__/upload/imports/'],
@@ -96,9 +102,15 @@ const mobilePages = [
   ['selfie-search-feedback-marking', '/__visual__/event/selfie-search/feedback-marking/'],
   ['legal', '/__visual__/legal/'],
   ['reference-search', '/__visual__/reference/search/'],
+  ['workspace-photos', '/__visual__/workspace/photos/'],
+  ['workspace-photos-filtered-empty', '/__visual__/workspace/photos/filtered-empty/'],
+  ['workspace-photos-hidden', '/__visual__/workspace/photos/hidden/'],
+  ['workspace-photos-error', '/__visual__/workspace/photos/error/'],
+  ['upload-chooser', '/__visual__/upload/chooser/'],
   ['upload-empty', '/__visual__/upload/empty/'],
   ['upload-active', '/__visual__/upload/active/'],
   ['upload-partial', '/__visual__/upload/partial/'],
+  ['upload-processing', '/__visual__/upload/processing/'],
   ['upload-complete', '/__visual__/upload/complete/'],
   ['upload-folders', '/__visual__/upload/folders/'],
   ['upload-imports', '/__visual__/upload/imports/'],
@@ -133,6 +145,9 @@ function collectBrowserFailures(page) {
 }
 
 async function settlePage(page) {
+  await page.locator('img[loading="lazy"]').evaluateAll((images) => {
+    for (const image of images) image.loading = 'eager';
+  });
   await page.waitForLoadState('networkidle');
   await page.waitForFunction(() =>
     Array.from(document.images).every((image) => image.complete && image.naturalWidth > 0),
@@ -179,6 +194,24 @@ async function capturePage(page, { path, snapshot, viewport, cookieAcknowledged 
   expect(response, `Expected a document response for ${path}`).not.toBeNull();
   expect(response.status(), `Expected ${path} to load successfully`).toBeLessThan(400);
   await settlePage(page);
+  if (path.startsWith('/__visual__/workspace/photos/')) {
+    const expectedFiltered = path.includes('/filtered-empty/')
+      ? '0'
+      : path === '/__visual__/workspace/photos/'
+        ? '4'
+        : '1';
+    await expect(page.locator('[data-event-photo-summary-total]')).toHaveText('4');
+    await expect(page.locator('[data-event-photo-summary-category="processing"]')).toHaveText('1');
+    await expect(page.locator('[data-event-photo-summary-category="failed"]')).toHaveText('1');
+    await expect(page.locator('[data-event-photo-filtered-count]')).toHaveText(expectedFiltered);
+  }
+  if (['/__visual__/upload/active/', '/__visual__/upload/folders/'].includes(path)) {
+    await expect(page.locator('[data-summary-message]')).toHaveText('Держите страницу открытой — идёт загрузка');
+  } else if (path === '/__visual__/upload/complete/') {
+    await expect(page.locator('[data-summary-message]')).toHaveText('Все фотографии загружены. Можно закрыть страницу');
+    await expect(page.locator('[data-summary-background]')).toBeVisible();
+    await expect(page.locator('[data-summary-background]')).toHaveText('Обработка продолжится в фоне.');
+  }
 
   const dimensions = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
@@ -227,7 +260,7 @@ async function installUploadStubs(
     if (request.method() === 'GET' && url.pathname.endsWith('/batch-resume-1/resume/')) {
       return route.fulfill({
         json: {
-          batch: { id: 'batch-resume-1', event: { id: 'london-10k', name: 'London 10K' } },
+          batch: { id: 'batch-resume-1', event: { id: 42, name: 'London 10K' } },
           items: [
             {
               id: 'confirmed', filename: 'confirmed.jpg', size: 9, last_modified_ms: null,
@@ -317,6 +350,379 @@ async function selectUnfiledUploadFiles(page, files) {
     .setInputFiles(files);
   await page.locator('[data-start-upload]').click();
 }
+
+function workspaceStatus({
+  photoAvailable = false,
+  batchAvailable = false,
+  batchCanClose = true,
+  processingFailed = false,
+} = {}) {
+  return {
+    server_timestamp: '2026-09-07T10:00:00+03:00',
+    has_active_work: photoAvailable,
+    capabilities: { can_inspect: true, can_upload: true },
+    admin: {
+      summary: {
+        total: photoAvailable ? 1 : 0,
+        has_active_work: photoAvailable,
+        categories: { processing: photoAvailable ? 1 : 0, queued: 0, failed: 0 },
+      },
+      filtered_result_count: photoAvailable ? 1 : 0,
+      result_list_changed: photoAvailable,
+      photos: [],
+    },
+    batches: batchAvailable ? [{
+      id: 'batch-1', status: batchCanClose ? 'completed' : 'uploading',
+      confirmed_count: batchCanClose ? 1 : 0, expected_count: 1,
+      failed_count: 0, unresolved_count: batchCanClose ? 0 : 1,
+      can_close: batchCanClose, has_active_work: !batchCanClose,
+      processing: {
+        total: 1,
+        has_active_work: false,
+        categories: {
+          succeeded: 0, processing: 0, queued: 0, failed: processingFailed ? 1 : 0,
+        },
+      },
+    }] : [],
+  };
+}
+
+test('new local upload joins empty owned history and keeps the bound queue and resume input', async ({ page }) => {
+  const statusRequests = [];
+  let releaseCompletedStatus;
+  const completedStatus = new Promise((resolve) => { releaseCompletedStatus = resolve; });
+  await page.route('**/__visual__/workspace/status-api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const batchAvailable = url.searchParams.getAll('batch_id').includes('batch-1');
+    statusRequests.push(url.toString());
+    if (batchAvailable) await completedStatus;
+    await route.fulfill({ json: workspaceStatus({ batchAvailable, processingFailed: true }) });
+  });
+  await page.route('**/__visual__/workspace/batch-history-api/**', async (route) => {
+    await route.fulfill({
+      contentType: 'text/html',
+      body: `<div data-batch-history-fragment data-batch-page="1">
+        <article data-batch-status-id="batch-1" data-unfinished-upload>
+          <h3>Новая загрузка</h3>
+          <p data-batch-status-progress>0 из 1 загружено · осталось 1</p>
+          <p data-batch-status-state>Загрузка не завершена.</p>
+          <p data-batch-status-processing>Обработано: 0 · обрабатывается: 0 · ожидает: 0 · ошибок: 0</p>
+          <button type="button" data-resume-batch data-resume-batch-id="batch-1">Продолжить загрузку</button>
+        </article>
+      </div>`,
+    });
+  });
+  const upload = await installUploadStubs(page);
+  await page.goto('/__visual__/workspace/photos/?status_integration=1');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    window.__task5UploadCoordinator = root.uploadCoordinator;
+    window.__task5ResumeInput = document.querySelector('#resume-upload-files');
+    window.__task5Queue = document.querySelector('[data-upload-queue]');
+  });
+
+  await selectUnfiledUploadFiles(page, [{
+    name: 'fresh.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('fresh-photo'),
+  }]);
+  const card = page.locator('[data-batch-status-id="batch-1"]');
+  await expect(card).toBeVisible();
+  await expect(card).toHaveAttribute('data-unfinished-upload', '');
+  await expect(card.locator('[data-resume-batch]')).toBeVisible();
+  await expect(card.locator('[data-batch-status-state]')).toHaveText('Загрузка не завершена.');
+
+  releaseCompletedStatus();
+  await expect(card.locator('[data-batch-status-state]')).toHaveText(
+    'Все фотографии загружены. Можно закрыть страницу',
+  );
+  await expect(card.locator('[data-batch-status-processing]')).toContainText('Обработано: 0');
+  await expect(card.locator('[data-batch-status-processing]')).toContainText('Ожидает обработки: 0');
+  await expect(card.locator('[data-batch-status-processing]')).toContainText('Ошибки: 1');
+  await expect(card).not.toHaveAttribute('data-unfinished-upload', '');
+  await expect(card.locator('[data-resume-batch]')).toHaveCount(0);
+  expect(await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    return root.uploadCoordinator === window.__task5UploadCoordinator
+      && document.querySelector('#resume-upload-files') === window.__task5ResumeInput
+      && document.querySelector('[data-upload-queue]') === window.__task5Queue;
+  })).toBe(true);
+  expect(upload.controlCalls.some(({ path }) => path.endsWith('/finalize/'))).toBe(true);
+  expect(statusRequests.some((url) => new URL(url).searchParams.get('batch_id') === 'batch-1')).toBe(true);
+});
+
+test('joined history pagination keeps the latest canonical photo filters and page', async ({ page }) => {
+  await page.route('**/__visual__/workspace/status-api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const batchAvailable = url.searchParams.getAll('batch_id').includes('batch-1');
+    await route.fulfill({ json: workspaceStatus({ batchAvailable, batchCanClose: false }) });
+  });
+  await page.route('**/__visual__/workspace/batch-history-api/**', async (route) => {
+    await route.fulfill({
+      contentType: 'text/html',
+      body: `<div data-batch-history-fragment data-batch-page="1">
+        <article data-batch-status-id="batch-1" data-unfinished-upload>
+          <p data-batch-status-progress>0 из 1 загружено · осталось 1</p>
+          <p data-batch-status-state>Загрузка не завершена.</p>
+          <p data-batch-status-processing></p>
+          <button type="button" data-resume-batch data-resume-batch-id="batch-1">Продолжить загрузку</button>
+        </article>
+        <nav><a href="?batch_id=batch-1&amp;batch_page=2" data-batch-history-page="2">Далее</a></nav>
+      </div>`,
+    });
+  });
+  await page.goto('/__visual__/workspace/photos/?status_integration=1');
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent(
+    'findme:event-photo-upload-activity',
+    { detail: { active: true, batchId: 'batch-1' } },
+  )));
+  const next = page.locator('[data-batch-history-page="2"]');
+  await expect(next).toBeVisible();
+
+  const firstTarget = await page.evaluate(() => {
+    document.querySelector('[data-event-photo-fragment]').dataset.canonicalUrl =
+      '/manage/events/42/photos/?visibility=hidden&folder=finish&page=2';
+    const link = document.querySelector('[data-batch-history-page="2"]');
+    link.addEventListener('click', (event) => event.preventDefault(), { once: true });
+    link.click();
+    return link.getAttribute('href');
+  });
+  let target = new URL(firstTarget, 'https://photos.test');
+  expect(target.searchParams.get('visibility')).toBe('hidden');
+  expect(target.searchParams.get('folder')).toBe('finish');
+  expect(target.searchParams.get('page')).toBe('2');
+  expect(target.searchParams.get('batch_page')).toBe('2');
+  expect(target.searchParams.has('batch_id')).toBe(false);
+
+  const changedTarget = await page.evaluate(() => {
+    document.querySelector('[data-event-photo-fragment]').dataset.canonicalUrl =
+      '/manage/events/42/photos/?visibility=visible&uploader=17&page=4';
+    const link = document.querySelector('[data-batch-history-page="2"]');
+    link.addEventListener('click', (event) => event.preventDefault(), { once: true });
+    link.click();
+    return link.getAttribute('href');
+  });
+  target = new URL(changedTarget, 'https://photos.test');
+  expect(target.searchParams.get('visibility')).toBe('visible');
+  expect(target.searchParams.get('uploader')).toBe('17');
+  expect(target.searchParams.get('page')).toBe('4');
+  expect(target.searchParams.get('batch_page')).toBe('2');
+  expect(target.searchParams.has('batch_id')).toBe(false);
+});
+
+test('zero-photo import progress wakes management when the first photo appears without a local warning', async ({ page }) => {
+  let photoAvailable = false;
+  let statusCalls = 0;
+  const activeImport = {
+    id: 'import-task-5', status: 'transferring',
+    event: { id: 42, name: 'London 10K' }, folder: null,
+    created_at: '2026-09-07T10:00:00+03:00', completed_at: null,
+    counts: { jpeg: 1, imported: 0, duplicate: 0, error: 0, pending: 1, unsupported: 0, directory: 0 },
+    error_code: '', processing_active: false,
+  };
+  await page.route('**/__visual__/workspace/status-api/**', async (route) => {
+    statusCalls += 1;
+    await route.fulfill({ json: workspaceStatus({ photoAvailable }) });
+  });
+  await page.route('**/__visual__/upload/imports-api/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/import-task-5/')) {
+      photoAvailable = true;
+      return route.fulfill({
+        json: {
+          contract_version: 1,
+          batch: {
+            ...activeImport,
+            status: 'completed',
+            completed_at: '2026-09-07T10:00:05+03:00',
+            counts: { ...activeImport.counts, imported: 1, pending: 0 },
+            processing_active: true,
+          },
+        },
+      });
+    }
+    return route.fulfill({
+      json: {
+        contract_version: 1,
+        imports: [activeImport],
+        pagination: { page: 1, page_size: 20, total: 1, pages: 1 },
+      },
+    });
+  });
+  await page.goto('/__visual__/workspace/photos/?status_integration=1');
+  await expect(page.locator('[data-event-photo-summary-total]')).toHaveText('0');
+  await page.evaluate(() => document.querySelector('[data-import-root]').importCoordinator.poll());
+
+  await expect(page.locator('[data-event-photo-summary-total]')).toHaveText('1');
+  await expect(page.locator('[data-event-photo-summary-category="processing"]')).toHaveText('1');
+  expect(statusCalls).toBeGreaterThan(1);
+  expect(await page.evaluate(() => ({
+    localActive: document.querySelector('[data-event-photo-status-root]').eventPhotoStatusController.localUploadActive,
+    warns: document.querySelector('[data-upload-root]').uploadCoordinator.shouldWarnBeforeUnload(),
+  }))).toEqual({ localActive: false, warns: false });
+});
+
+test('status list refresh preserves canonical selection, filter focus, scroll, and upload state', async ({ page }) => {
+  let resultRequests = 0;
+  await page.route('**/__visual__/workspace/status-api/**', async (route) => {
+    await route.fulfill({ json: workspaceStatus({ photoAvailable: true }) });
+  });
+  await page.goto('/__visual__/workspace/photos/?status_integration=refresh');
+  const refresh = page.locator('[data-event-photo-result-list-refresh]');
+  await expect(refresh).toBeVisible();
+  await page.locator('[data-photo-select]').first().check();
+  const filter = page.locator('[name="from"]');
+  await filter.focus();
+  await page.evaluate(() => window.scrollTo(0, 600));
+  const before = await page.evaluate(() => {
+    window.__task5UploadCoordinator = document.querySelector('[data-upload-root]').uploadCoordinator;
+    window.__task5ResumeInput = document.querySelector('#resume-upload-files');
+    window.__task5Queue = document.querySelector('[data-upload-queue]');
+    return {
+      fragment: document.querySelector('[data-event-photo-fragment]').outerHTML,
+      scrollY: window.scrollY,
+    };
+  });
+  await page.route('**/manage/events/42/photos/results/**', async (route) => {
+    resultRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      headers: { 'X-Event-Photo-Canonical-Url': '/manage/events/42/photos/' },
+      body: before.fragment,
+    });
+  });
+
+  await page.evaluate(() => document.querySelector('[data-event-photo-result-list-refresh]').click());
+  await expect.poll(() => resultRequests).toBe(1);
+  await expect(page.locator('[data-photo-select]').first()).toBeChecked();
+  const afterRefresh = await page.evaluate(() => ({
+    focused: document.activeElement?.getAttribute('name'),
+    identitiesPreserved:
+      document.querySelector('[data-upload-root]').uploadCoordinator === window.__task5UploadCoordinator
+      && document.querySelector('#resume-upload-files') === window.__task5ResumeInput
+      && document.querySelector('[data-upload-queue]') === window.__task5Queue,
+    scrollY: window.scrollY,
+  }));
+  expect(afterRefresh.focused).toBe('from');
+  expect(afterRefresh.identitiesPreserved).toBe(true);
+  expect(Math.abs(afterRefresh.scrollY - before.scrollY)).toBeLessThanOrEqual(2);
+
+  await filter.fill('2026-09-06T10:00');
+  await filter.focus();
+  await page.evaluate(() => document.querySelector('[data-event-photo-result-list-refresh]').click());
+  await expect(page.locator('[data-event-photo-status-message]')).toHaveText(
+    'Примените или сбросьте изменения фильтров перед обновлением списка.',
+  );
+  expect(resultRequests).toBe(1);
+  await expect(filter).toHaveValue('2026-09-06T10:00');
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('name'))).toBe('from');
+});
+
+test('upload guidance stays above folder targets on mobile and desktop', async ({ page }) => {
+  for (const [path, viewport, message, backgroundVisible] of [
+    [
+      '/__visual__/upload/active/',
+      MOBILE_VIEWPORT,
+      'Держите страницу открытой — идёт загрузка',
+      false,
+    ],
+    [
+      '/__visual__/upload/complete/',
+      DESKTOP_VIEWPORT,
+      'Все фотографии загружены. Можно закрыть страницу',
+      true,
+    ],
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(path);
+    const guidance = page.locator('[data-upload-guidance]');
+    await expect(guidance).toBeVisible();
+    await expect(guidance.locator('[data-summary-message]')).toHaveText(message);
+    if (backgroundVisible) await expect(guidance.locator('[data-summary-background]')).toBeVisible();
+    else await expect(guidance.locator('[data-summary-background]')).toBeHidden();
+    const geometry = await page.evaluate(() => {
+      const banner = document.querySelector('[data-upload-guidance]').getBoundingClientRect();
+      const firstTarget = document.querySelector('[data-folder-target]').getBoundingClientRect();
+      return { bannerTop: banner.top, bannerBottom: banner.bottom, targetTop: firstTarget.top };
+    });
+    expect(geometry.bannerBottom).toBeLessThan(geometry.targetTop);
+    if (viewport === MOBILE_VIEWPORT) expect(geometry.bannerBottom).toBeLessThanOrEqual(viewport.height);
+  }
+});
+
+test('canonical admin states keep status totals aligned with displayed results', async ({ page }) => {
+  for (const [path, total, processing, failed, filtered, cards] of [
+    ['/__visual__/workspace/photos/', '4', '1', '1', '4', 4],
+    ['/__visual__/workspace/photos/filtered-empty/', '4', '1', '1', '0', 0],
+    ['/__visual__/workspace/photos/hidden/', '4', '1', '1', '1', 1],
+    ['/__visual__/workspace/photos/error/', '4', '1', '1', '1', 1],
+  ]) {
+    await page.goto(path);
+    await expect(page.locator('[data-event-photo-summary-total]')).toHaveText(total);
+    await expect(page.locator('[data-event-photo-summary-category="processing"]')).toHaveText(processing);
+    await expect(page.locator('[data-event-photo-summary-category="failed"]')).toHaveText(failed);
+    await expect(page.locator('[data-event-photo-filtered-count]')).toHaveText(filtered);
+    await expect(page.locator('[data-photo-status-id]')).toHaveCount(cards);
+  }
+});
+
+test('admin explicit selection survives canonical numbered pages', async ({ page }) => {
+  await page.goto('/__visual__/workspace/interaction/');
+  await page.locator('[data-photo-status-id="anna-finish-a"] [data-photo-select]').check();
+  await expect(page.locator('[data-selection-summary]')).toHaveText('Выбрано: 1');
+
+  await page.locator('[data-event-photo-page]').click();
+  await expect(page.locator('[data-photo-status-id="anna-finish-b"]')).toBeVisible();
+  await expect(page.locator('[data-selection-summary]')).toHaveText('Выбрано: 1');
+  await page.locator('[data-select-page]').click();
+
+  await expect(page.locator('[data-selection-summary]')).toHaveText('Выбрано: 2');
+  expect(await page.evaluate(() => [
+    ...document.querySelector('[data-event-photo-management-root]')
+      .eventPhotoManagementController.selection.photoIds,
+  ].sort())).toEqual(['anna-finish-a', 'anna-finish-b']);
+});
+
+test('two-author filtering and folder creation preserve an active upload queue', async ({ page }) => {
+  await page.goto('/__visual__/workspace/interaction/');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    const coordinator = root.uploadCoordinator;
+    coordinator.active = true;
+    coordinator.items = [
+      {
+        clientItemId: 'active-queue-item',
+        file: { name: 'active.jpg', size: 10 },
+        folderId: 8,
+        folderLabel: 'Финиш',
+        status: 'uploading',
+        progress: 42,
+        error: '',
+      },
+    ];
+    window.FindMeUpload.renderPage(root, coordinator);
+    window.__task6UploadRoot = root;
+    window.__task6UploadCoordinator = coordinator;
+    window.__task6Queue = root.querySelector('[data-upload-queue]');
+  });
+
+  await page.getByRole('checkbox', { name: 'Анна Смирнова' }).check();
+  await page.getByRole('button', { name: 'Применить фильтры' }).click();
+  await expect(page.locator('[data-photo-status-id="anna-finish-a"]')).toBeVisible();
+  await expect(page.locator('[data-photo-status-id="maxim-finish"]')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: 'Максим Орлов' })).toBeVisible();
+
+  await page.locator('[data-folder-create-form] input[name="name"]').fill('Награждение');
+  await page.locator('[data-folder-create-form] button[type="submit"]').click();
+  await expect(page.locator('[data-folder-target][data-folder-name="Награждение"]')).toBeVisible();
+  await expect(page.locator('[data-upload-queue]')).toContainText('active.jpg');
+  expect(await page.evaluate(() => {
+    const root = document.querySelector('[data-upload-root]');
+    return root === window.__task6UploadRoot
+      && root.uploadCoordinator === window.__task6UploadCoordinator
+      && root.querySelector('[data-upload-queue]') === window.__task6Queue
+      && root.uploadCoordinator.active;
+  })).toBe(true);
+});
 
 test.describe('desktop visual regression', () => {
   for (const [name, path] of desktopPages) {
@@ -1629,15 +2035,15 @@ test('browser coordinator completes a successful upload and announces progress',
   const stubs = await installUploadStubs(page);
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page, [
     { name: 'one.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('one') },
     { name: 'two.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('two') },
   ]);
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
-  await expect(page.locator('[data-summary-message]')).toContainText('2 из 2');
-  await expect(page.getByRole('status')).toContainText('2 из 2');
+  await expect(page.locator('[data-summary-message]')).toHaveText('Все фотографии загружены. Можно закрыть страницу');
+  await expect(page.locator('[data-uploaded-count]')).toHaveText('2');
   const uploadedToggle = page.locator('[data-queue-group-toggle="uploaded"]');
   await expect(uploadedToggle).toHaveAttribute('aria-expanded', 'false');
   await uploadedToggle.click();
@@ -1745,26 +2151,16 @@ test('desktop upload summary keeps controls, geometry, and every metric visible 
   expect(measurements[0].fontVariantNumeric).toContain('tabular-nums');
 });
 
-test('mobile upload summary reserves separate metric and message rows', async ({ page }) => {
-  await page.setViewportSize(MOBILE_VIEWPORT);
-  await page.goto('/__visual__/upload/active/');
-  const boxes = await page.evaluate(() => {
-    const metrics = document.querySelector('.summary-metrics').getBoundingClientRect().toJSON();
-    const message = document.querySelector('[data-summary-message]').getBoundingClientRect().toJSON();
-    return { metrics, message };
-  });
-
-  expect(boxes.message.y).toBeGreaterThanOrEqual(boxes.metrics.y + boxes.metrics.height);
-});
-
 test('returning photographer resumes only the unfinished item from an owned batch', async ({ page }) => {
   const stubs = await installUploadStubs(page);
   await page.goto('/__visual__/upload/empty/?resume=1');
 
+  const pickerReady = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Продолжить загрузку' }).click();
-  await expect(page.locator('#upload-event')).toHaveValue('london-10k');
-  await expect(page.locator('#upload-event')).toBeDisabled();
-  await page.locator('#resume-upload-files').setInputFiles([
+  const picker = await pickerReady;
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
+  await expect(page.locator('#upload-event')).toHaveCount(0);
+  await picker.setFiles([
     { name: 'confirmed.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('confirmed') },
     { name: 'pending.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('pending') },
   ]);
@@ -1800,7 +2196,7 @@ test('browser coordinator accepts a dropped JPEG when the browser omits its MIME
 }) => {
   const stubs = await installUploadStubs(page);
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   const finishTarget = page.locator('[data-folder-targets]:not([hidden]) [data-folder-target][data-folder-name="Финиш"]');
   await finishTarget.evaluate((dropTarget) => {
     const transfer = new DataTransfer();
@@ -1834,7 +2230,7 @@ test('browser coordinator accepts a dropped JPEG when the browser omits its MIME
 test('browser coordinator preserves success when another upload fails', async ({ page }) => {
   const stubs = await installUploadStubs(page, { storageStatuses: [204, 400] });
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page, [
     { name: 'good.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('good') },
     { name: 'bad.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('bad') },
@@ -1850,7 +2246,7 @@ test('browser coordinator preserves success when another upload fails', async ({
 test('slow upload has an active close warning and visible cancel control', async ({ page }) => {
   const stubs = await installUploadStubs(page, { storageDelay: 400 });
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page, {
     name: 'slow.jpg',
     mimeType: 'image/jpeg',
@@ -1880,7 +2276,7 @@ test('cancel is visible during authorization and aborts the pending control requ
   const stubs = await installUploadStubs(page, { authorizeDelay: 1000 });
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page, {
     name: 'cancel-authorization.jpg',
     mimeType: 'image/jpeg',
@@ -1900,7 +2296,7 @@ test('cancel is visible during authorization and aborts the pending control requ
 test('expired grant is refreshed once without starting another data attempt', async ({ page }) => {
   const stubs = await installUploadStubs(page, { storageStatuses: [403, 204] });
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page, {
     name: 'expired.jpg',
     mimeType: 'image/jpeg',
@@ -1919,7 +2315,7 @@ test('expired grant is refreshed once without starting another data attempt', as
 test('browser queue never exceeds four simultaneous transfers', async ({ page }) => {
   const stubs = await installUploadStubs(page, { storageDelay: 100 });
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page,
     Array.from({ length: 8 }, (_, index) => ({
       name: `${index}.jpg`,
@@ -1937,7 +2333,7 @@ test('browser queue never exceeds four simultaneous transfers', async ({ page })
 test('failed file can be retried from the keyboard without losing its row', async ({ page }) => {
   const stubs = await installUploadStubs(page, { storageStatuses: [400, 204] });
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page, {
     name: 'keyboard.jpg',
     mimeType: 'image/jpeg',
@@ -1965,7 +2361,7 @@ test('manual retry 503 remains retryable without leaking an unhandled page error
   });
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page, {
     name: 'retry-503.jpg',
     mimeType: 'image/jpeg',
@@ -1991,7 +2387,7 @@ test('manual retry confirm failure is contained without an unhandled page error'
   });
   await preloadCookieAcknowledgement(page);
   await page.goto('/__visual__/upload/empty/');
-  await page.locator('#upload-event').selectOption({ index: 1 });
+  await expect(page.locator('[data-upload-root]')).toHaveAttribute('data-event-id', '42');
   await selectUnfiledUploadFiles(page, {
     name: 'retry-confirm-503.jpg',
     mimeType: 'image/jpeg',

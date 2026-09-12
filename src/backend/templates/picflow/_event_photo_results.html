@@ -1,0 +1,103 @@
+{% load tz %}
+<div class="event-photo-fragment"
+     data-event-photo-fragment
+     data-filter-valid="{{ filters_valid|yesno:'true,false' }}"
+     data-canonical-query="{{ canonical_query }}"
+     data-canonical-url="{{ canonical_url }}"
+     data-filtered-count="{{ photo_page.paginator.count }}">
+  <div class="workspace-summary event-photo-summary">
+    <div>
+      <p class="eyebrow">Управление</p>
+      <h2>Фотографии</h2>
+      <p>Сохранено: <strong data-event-photo-summary-total>{{ processing_summary.total }}</strong></p>
+    </div>
+    <nav aria-label="Быстрые фильтры обработки">
+      <a href="?processing=processing">В обработке <span data-event-photo-summary-category="processing">{{ processing_summary.categories.processing }}</span></a>
+      <a href="?processing=queued">Ожидают <span data-event-photo-summary-category="queued">{{ processing_summary.categories.queued }}</span></a>
+      <a href="?processing=failed">Ошибки <span data-event-photo-summary-category="failed">{{ processing_summary.categories.failed }}</span></a>
+    </nav>
+  </div>
+
+  <form class="event-photo-filters" method="get" action="{{ canonical_url|default:request.path }}" data-event-photo-filter-form>
+    <div class="event-photo-filter-heading">
+      <div><h3>Фильтры</h3><p>Внутри группы — любой выбранный вариант, между группами — все условия сразу.</p></div>
+      <a href="{% url 'event_management' event.pk %}" data-event-photo-filter-reset>Сбросить</a>
+    </div>
+    <div class="event-photo-filter-grid">
+      <fieldset><legend>Папки</legend>{{ filter_form.folder }}
+        <label class="event-photo-check"><input type="checkbox" name="unfiled" value="1"{% if filter_form.unfiled.value == '1' %} checked{% endif %}>Без папки</label>
+        {{ filter_form.folder.errors }}{{ filter_form.unfiled.errors }}
+      </fieldset>
+      <fieldset><legend>Фотографы</legend>{{ filter_form.uploader }}
+        {% if filter_form.uploader_unknown.field.choices %}<label class="event-photo-check"><input type="checkbox" name="uploader_unknown" value="1"{% if filter_form.uploader_unknown.value == '1' %} checked{% endif %}>Не указан</label>{% endif %}
+        {{ filter_form.uploader.errors }}{{ filter_form.uploader_unknown.errors }}
+      </fieldset>
+      <fieldset><legend>Время съёмки</legend>
+        <p class="event-photo-timezone">{% if event.timezone_name %}Часовой пояс: {{ event.timezone_name }}{% else %}Часовой пояс мероприятия не указан{% endif %}</p>
+        <label>С <input type="datetime-local" name="from" value="{{ filter_form.from.value|default:'' }}" min="{{ filter_form.from.field.widget.attrs.min }}" max="{{ filter_form.from.field.widget.attrs.max }}"></label>
+        <label>До <input type="datetime-local" name="to" value="{{ filter_form.to.value|default:'' }}" min="{{ filter_form.to.field.widget.attrs.min }}" max="{{ filter_form.to.field.widget.attrs.max }}"></label>
+        <label class="event-photo-check"><input type="checkbox" name="without_capture_time" value="1"{% if filter_form.without_capture_time.value == '1' %} checked{% endif %}>Без времени съёмки</label>
+        {{ filter_form.from.errors }}{{ filter_form.to.errors }}{{ filter_form.without_capture_time.errors }}
+      </fieldset>
+      <fieldset><legend>Видимость</legend>{{ filter_form.visibility }}{{ filter_form.visibility.errors }}</fieldset>
+      <fieldset><legend>Обработка</legend>{{ filter_form.processing }}{{ filter_form.processing.errors }}</fieldset>
+    </div>
+    {{ page_form.page.errors }}{{ filter_form.non_field_errors }}
+    <button class="button" type="submit">Применить фильтры</button>
+  </form>
+
+  {% if capabilities.can_add_folders or capabilities.can_change_folders or capabilities.can_delete_folders %}
+  <section class="event-folder-manager" aria-labelledby="event-folders-title">
+    <div class="event-photo-filter-heading"><div><h3 id="event-folders-title">Папки мероприятия</h3><p>Собирайте фотографии по участкам или этапам. Папку, которая уже используется, удалить нельзя.</p></div></div>
+    {% if capabilities.can_add_folders %}<form method="post" action="{{ folder_create_url }}" data-folder-create-form>{% csrf_token %}<label>Новая папка <input name="name" maxlength="255" required></label><button type="submit">Создать</button><p data-form-errors role="alert"></p></form>{% endif %}
+    <div class="event-folder-list" data-event-folder-list>
+      {% for folder in folders %}<article data-event-folder-row data-folder-id="{{ folder.pk }}">
+        {% if capabilities.can_change_folders %}<form method="post" action="{{ folder_rename_url }}" data-folder-rename-form>{% csrf_token %}<input type="hidden" name="folder" value="{{ folder.pk }}"><label><span class="visually-hidden">Название папки</span><input name="name" value="{{ folder.name }}" maxlength="255" required></label><button type="submit">Сохранить</button><p data-form-errors role="alert"></p></form>{% else %}<strong>{{ folder.name }}</strong>{% endif %}
+        {% if capabilities.can_delete_folders %}<form method="post" action="{{ folder_delete_url }}" data-folder-delete-form>{% csrf_token %}<input type="hidden" name="folder" value="{{ folder.pk }}"><button type="submit">Удалить</button><p data-form-errors role="alert"></p></form>{% endif %}
+      </article>{% empty %}<p>Папок пока нет.</p>{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if filters_valid %}
+    <section class="event-photo-results-heading">
+      <div><h3>Результаты</h3><p>Найдено: <strong data-event-photo-filtered-count>{{ photo_page.paginator.count }}</strong></p></div>
+      {% if capabilities.can_change_photos %}
+      <div class="event-photo-selection-tools">
+        <button type="button" data-select-page>Выбрать страницу</button>
+        <button type="button" data-select-all-filtered>Выбрать все результаты</button>
+        <button type="button" data-clear-selection>Снять выбор</button>
+        <p data-selection-summary>Ничего не выбрано</p>
+      </div>
+      {% endif %}
+    </section>
+    {% if capabilities.can_change_photos %}
+    <form class="event-photo-actions" method="post" action="{{ photo_action_url }}" data-photo-action-form>{% csrf_token %}
+      <label>Папка <select name="target_folder"><option value="">Без папки</option>{% for folder in folders %}<option value="{{ folder.pk }}">{{ folder.name }}</option>{% endfor %}</select></label>
+      <button type="submit" name="action" value="move" disabled>Переместить</button>
+      <button type="submit" name="action" value="hide" disabled>Скрыть</button>
+      <button type="submit" name="action" value="show" disabled>Показать</button>
+      <p data-form-errors role="alert"></p>
+    </form>
+    {% endif %}
+    <p data-event-photo-result-list-changed hidden><span data-event-photo-result-list-message></span> <button type="button" data-event-photo-result-list-refresh>Обновить список</button></p>
+    <div class="workspace-photos" data-event-photo-results>
+      {% for photo in photo_page %}
+      <article class="workspace-photo{% if photo.is_hidden %} is-hidden{% endif %}" data-photo-status-id="{{ photo.id }}">
+        {% if capabilities.can_change_photos %}<label class="event-photo-card-select"><input type="checkbox" value="{{ photo.id }}" data-photo-select><span>Выбрать</span></label>{% endif %}
+        <a class="workspace-photo-image" href="{{ photo.original_url }}" target="_blank" rel="noopener noreferrer" aria-label="Открыть оригинал {{ photo.filename }}">
+          {% if photo.thumbnail_url %}<img src="{{ photo.thumbnail_url }}" alt="{{ photo.filename }}" loading="lazy">{% else %}<span>Превью пока нет</span>{% endif %}
+        </a>
+        <div class="workspace-photo-copy"><strong>{{ photo.filename }}</strong><p>{% if photo.capture_time %}{% timezone event.timezone_name|default:"UTC" %}{{ photo.capture_time|date:"d.m.Y H:i" }}{% endtimezone %}{% if not event.timezone_name %} UTC{% endif %}{% else %}Без времени{% endif %}</p><p>{{ photo.photographer|default:"Фотограф не указан" }} · {{ photo.folder_name|default:"Без папки" }}</p><p>{% if photo.is_hidden %}<strong>Скрыто</strong>{% else %}Видимо{% endif %}</p><p data-photo-status-category>{{ photo.processing.category_label }}</p><p data-photo-status-stages>{% for stage in photo.processing.stages %}{{ stage.label }}: {{ stage.status_label }}{% if not forloop.last %} · {% endif %}{% endfor %}</p></div>
+      </article>
+      {% empty %}<div class="event-photo-empty"><p><strong>По этим условиям фотографий нет.</strong></p><a href="{% url 'event_management' event.pk %}" data-event-photo-filter-reset>Сбросить фильтры</a></div>{% endfor %}
+    </div>
+    {% if photo_page.paginator.num_pages > 1 %}<nav class="workspace-pagination" aria-label="Страницы фотографий">
+      {% if photo_page.has_previous %}<a href="{% url 'event_management' event.pk %}?{% if canonical_query %}{{ canonical_query }}&amp;{% endif %}page={{ photo_page.previous_page_number }}" data-event-photo-page>Назад</a>{% endif %}
+      <span>Страница {{ photo_page.number }} из {{ photo_page.paginator.num_pages }}</span>
+      {% if photo_page.has_next %}<a href="{% url 'event_management' event.pk %}?{% if canonical_query %}{{ canonical_query }}&amp;{% endif %}page={{ photo_page.next_page_number }}" data-event-photo-page>Далее</a>{% endif %}
+    </nav>{% endif %}
+  {% else %}
+    <section class="event-photo-invalid" role="alert"><h3>Исправьте фильтры</h3><p>Список и массовые действия недоступны, пока в фильтрах есть ошибка.</p></section>
+  {% endif %}
+</div>

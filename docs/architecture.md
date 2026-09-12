@@ -259,9 +259,17 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - Treat `EventFolder` as event-scoped catalog metadata, never as an Object Storage prefix. Django
   Admin manages normalized names inline with the event; a nullable protected folder assignment
   travels from an `UploadItem` through confirmation to its `Photo`. One browser queue and one
-  batch may contain several named folders and `Без папки`. Reassigning already uploaded photos,
-  including a photographer-facing mass editor and its authorization boundary, is explicitly
-  deferred.
+  batch may contain several named folders and `Без папки`. The private event-photo workspace
+  manages folders and saved photo assignments with independent administrative permissions.
+  Assignments remain protected by `Photo`, `UploadItem`, and import references; moving a photo
+  changes catalog metadata only. Photographers choose existing upload targets and cannot edit
+  saved photographs.
+- Keep `/manage/events/<event_id>/photos/` separate from the public visitor page. Administrative
+  reads require active staff with both event and photo view permissions; photo and folder mutations
+  additionally require their specific Django permissions. Upload permission remains independent.
+  The upload entry page selects an event, while the fixed-event workspace owns one local queue and
+  a separate Yandex Disk import controller. Folder selection and feature gates do not grant
+  administrative or media authority.
 - Run the first Stage 3 photo processor as a separately runnable worker that polls a private Django
   API backed by PostgreSQL jobs and leases. Give it no database or permanent Object Storage
   credentials; issue only short-lived exact-object media grants, as defined by
@@ -328,15 +336,15 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   those contexts' existing authorization before redirecting to a short-lived signed exact-object
   attachment URL. Rendered cards provide a subdued download action, and GLightbox provides the
   same action in its built-in bottom description area. ADR 0019's result-membership and ADR 0020's
-  transport, signing, expiry, and storage boundaries remain unchanged; commerce entitlements remain
-  future work.
+  transport, signing, expiry, and storage boundaries remain unchanged; paid order entitlement uses
+  the separate ADR 0031 authority.
 - For a new explicit paid-watermarked photo generation, accept one private clean preview for ML and
   one public-presentation watermarked preview. The repository implements the new explicit pair,
   independent clean-preview downstream enrollment, immutable watermark publication, and gated
   paid-gallery and ready-result presentation. Both paid presentation roles select only the accepted
-  watermark and original presentation/download are denied; existing rows receive no backfill, as
+  watermark and original public presentation/download are denied; existing rows receive no backfill, as
   defined by [ADR 0029](adr/0029-use-watermarked-previews-for-paid-photos.md). The focused local
-  Django checks passed on 2026-08-20. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. Neither paid runtime gate nor real paid artwork was directly observed as active. The anonymous cart consumes only this presentation boundary and cannot authorize media bytes. Customer activation still requires necessary-cookie legal review, worker/staff smoke evidence, and explicit gate activation. Purchase, entitlement, and purchased-original delivery remain unimplemented.
+  Django checks passed on 2026-08-20. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. Neither paid runtime gate nor real paid artwork was directly observed as active. The anonymous cart consumes only this presentation boundary and cannot authorize media bytes. Customer activation still requires necessary-cookie legal review, worker/staff smoke evidence, and explicit gate activation. Purchase, entitlement, and purchased-original delivery are implemented locally behind their independent default-off boundary; no live payment or customer evidence is claimed.
 - Implement optional event-scoped selfie expansion from an immutable conservative face-cluster
   corpus. The repository builds and publishes versioned anonymous corpora from compatible accepted
   gallery embeddings, evaluates them through the private closed-benchmark CLI, records immutable
@@ -411,14 +419,15 @@ broker, vector engine, and ML implementations shown for later processing require
 
 ### Photo ingestion and indexing
 
-1. An authorized photographer creates a batch for any event. The photographer may access only their
-   own batches; superusers retain administrative visibility. PostgreSQL preserves unfinished batch
-   and item state, so an open upload page can list the photographer's unfinished batches and, after
-   explicit reselection of local files, reconstruct its browser queue while skipping server-confirmed
-   items. Each item durably retains its event-scoped folder or `NULL` (`Без папки`) across
-   registration, retry, and resume; confirmation copies that exact assignment to the photo.
-   Closing the page still stops unfinished browser transfers; it does not retain local-file access
-   or continue transfer in the background.
+1. An authorized photographer creates a batch for any event and sees a bounded, newest-first history
+   of their own current-event batches, including completed batches; superusers retain administrative
+   visibility. PostgreSQL preserves batch and item state so explicit reselection reconstructs only
+   unresolved local items and skips server-confirmed items. Each item durably retains its event-scoped
+   folder or `NULL` (`Без папки`) across registration, retry, and resume; confirmation copies that
+   assignment to the photo. The browser may show `Все фотографии загружены. Можно закрыть страницу`
+   only after every selected local file has received server confirmation. Processing then continues
+   independently. Closing earlier stops unfinished browser transfers because local-file access is not
+   retained. Server-side Yandex Disk import has its separate durable lifecycle under ADR 0035.
 2. A browser-managed queue uploads files with bounded concurrency to generated keys in a private
    incoming prefix using constrained 10-minute presigned POST grants.
 3. In a confirmation request, Django verifies the incoming object and binds validation and
@@ -465,6 +474,35 @@ broker, vector engine, and ML implementations shown for later processing require
 4. Folder values do not grant authority. Existing gallery eligibility and media authorization run
    unchanged before any folder predicate, so filtering cannot expose non-public, paid, unprocessed,
    or cross-event media.
+
+### Private event-photo management
+
+1. Administrative reads begin with every photo in the event, independently of public eligibility.
+   Strict folder and uploader groups use `OR` within each group and `AND` between groups; visibility,
+   current processing category, inclusive event-local capture range, and missing-time mode remain
+   distinct. A requested range fails validation when the event timezone is missing, and invalid
+   values never broaden the administrative set. Results use bounded 100-photo numbered pages and
+   include hidden, legacy, and no-preview rows.
+2. Explicit photo IDs persist across pages until a filter change. Page selection affects only the
+   displayed page, while all-filtered mutations recompute the validated event queryset at execution.
+   Move, hide, and show operations validate event ownership, run atomically, report the actual
+   changed count, and preserve photo identity, uploader, original bytes, and processing state.
+   Referenced folders remain protected from deletion, including upload and import references.
+3. `Photo.is_hidden` is reversible public eligibility metadata. Normal galleries, new and saved
+   selfie results, free result-page archives, carts, and new checkout reject hidden photos. Existing
+   immutable paid orders, valid late payment of an existing pending order, paid-order media, and
+   paid page archives keep their separate entitlement authority. Hiding neither deletes storage nor
+   resets processing; already-authorized streams and issued grants retain their accepted lifetime.
+4. The processing read model resolves current applicable stages and accepted outcomes without
+   enrolling or mutating work. Event summaries include hidden photos and ignore gallery filters;
+   photographer batch summaries count confirmed membership only. The workspace offers no processing
+   command controls.
+5. Status reads are private and bounded. Dedicated nodes refresh without replacing the local upload
+   coordinator, queue, or photo-card roots; queued or retry work keeps polling active, terminal work
+   stops it, and local uploads or import progress wake it. Concurrent wakeups coalesce, failures keep
+   stale values with bounded backoff, and batch history remains owner-and-event scoped. Administrative
+   preview and original URLs reauthorize the request before signing or private legacy streaming and
+   expose no raw storage identifier.
 
 ### Search
 
@@ -574,6 +612,12 @@ explicitly incomplete.
   narrow the already-authorized gallery, and media delivery authorization is unchanged.
 - Photographer routes require the additive upload permission, and non-superuser batch access is
   restricted to the owning uploader.
+- Private event-photo status and administrative media routes recheck the independent role and event
+  permissions on every request. Status JSON contains bounded product state rather than storage keys;
+  administrative media is reauthorized before a short-lived signature or private legacy stream.
+- Reversible hiding removes current public eligibility without changing paid-order entitlement,
+  processing state, folder assignment, ownership, stored originals, or previously issued grant
+  lifetime. Administrative all-photo reads therefore must not reuse a public hidden-filtered queryset.
 - Secrets and credentials are environment-provided; `.env` files remain untracked.
 - The cart token is a narrow anonymous bearer for selection only, never a customer identity,
   selfie-result bearer, or media authority. PostgreSQL stores its SHA-256 digest, not the raw token;

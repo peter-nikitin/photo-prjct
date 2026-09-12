@@ -68,9 +68,9 @@ function manifestItem({
 }
 
 test('browser binder uses the environment passed to the module factory', () => {
-  const eventSelect = { value: '', focus() {} };
   const root = {
     dataset: {
+      eventId: '42',
       createBatchUrl: '/batches/',
       registerUrlTemplate: '/{batch}/items/',
       authorizeUrlTemplate: '/{batch}/items/{item}/authorize/',
@@ -85,7 +85,7 @@ test('browser binder uses the environment passed to the module factory', () => {
       concurrency: '4',
     },
     querySelector(selector) {
-      return selector === '#upload-event' ? eventSelect : null;
+      return null;
     },
   };
 
@@ -119,6 +119,7 @@ function summaryRoot() {
   const nodes = new Map([
     ['#upload-summary-title', {}],
     ['[data-summary-message]', {}],
+    ['[data-summary-background]', {}],
     ['[data-summary-percent]', {}],
     ['[data-upload-progress]', {}],
     ['[data-total-count]', {}],
@@ -386,7 +387,7 @@ test('folder drop target keeps one active zone across nested leaves and clears o
     const input = { addEventListener() {} };
     return {
       dataset: { folderId: id, folderName: name, defaultCopy: 'Перетащите JPEG сюда' },
-      addEventListener(type, listener) { listeners.set(`${id}:${type}`, listener); },
+      closest() { return this; },
       contains(node) { return node === child; },
       querySelector(selector) {
         if (selector === '[data-folder-target-copy]') return copy;
@@ -399,14 +400,17 @@ test('folder drop target keeps one active zone across nested leaves and clears o
   const child = {};
   const plain = makeTarget('', 'Без папки');
   const finish = makeTarget('8', 'Финиш');
+  const targets = [plain, finish];
   const root = {
     dataset: {},
-    querySelectorAll() { return [plain, finish]; },
+    querySelectorAll() { return targets; },
+    contains(target) { return targets.includes(target); },
     addEventListener(type, listener) { listeners.set(`root:${type}`, listener); },
   };
   const selections = [];
   bindFolderTargets(root, (files, folder) => selections.push({ files, folder }));
-  const drag = (type, target, relatedTarget = null) => listeners.get(`${target.dataset.folderId}:${type}`)({
+  const drag = (type, target, relatedTarget = null) => listeners.get(`root:${type}`)({
+    target,
     preventDefault() {}, dataTransfer: { files: ['finish.jpg'] }, relatedTarget,
   });
 
@@ -1285,4 +1289,93 @@ test('resume finalizes only after every durable manifest item reaches a terminal
 
   assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
   assert.equal(getMaxActive(), 4);
+});
+
+test('departure warning covers selected and recoverable files but clears after confirmation', () => {
+  const { coordinator } = makeHarness();
+  coordinator.items = [{ status: 'pending' }];
+  assert.equal(coordinator.shouldWarnBeforeUnload(), true);
+  coordinator.items[0].status = 'failed';
+  assert.equal(coordinator.shouldWarnBeforeUnload(), true);
+  coordinator.items[0].status = 'waiting';
+  assert.equal(coordinator.shouldWarnBeforeUnload(), true);
+  coordinator.items[0].status = 'uploaded';
+  coordinator.active = true; // Server finalization is outstanding; originals are confirmed.
+  assert.equal(coordinator.shouldWarnBeforeUnload(), false);
+});
+
+function mountedUpload(harness = makeHarness(), nodes = {}) {
+  const listeners = new Map();
+  const events = [];
+  const start = { disabled: true, addEventListener(type, callback) { listeners.set(`start:${type}`, callback); } };
+  const root = {
+    dataset: {
+      eventId: '42', createBatchUrl: '/batches/', registerUrlTemplate: '/{batch}/items/',
+      authorizeUrlTemplate: '/{batch}/items/{item}/authorize/', retryUrlTemplate: '/{batch}/items/{item}/retry/',
+      confirmUrlTemplate: '/{batch}/items/{item}/confirm/', failedUrlTemplate: '/{batch}/items/{item}/failed/',
+      finalizeUrlTemplate: '/{batch}/finalize/', resumeManifestUrlTemplate: '/{batch}/resume/',
+      maxFiles: '220', maxFileBytes: '10', registrationChunk: '100', concurrency: '4',
+    },
+    ownerDocument: { dispatchEvent(event) { events.push(event); } },
+    querySelector(selector) { return nodes[selector] || (selector === '[data-start-upload]' ? start : null); },
+    querySelectorAll() { return []; },
+    addEventListener(type, callback) { listeners.set(type, callback); },
+  };
+  const coordinator = bindUploadPage(root, harness.coordinator);
+  return { root, coordinator, events, listeners, start, harness };
+}
+
+test('fixed workspace emits pre-registration activity, new batch identity and final completion once', async () => {
+  const mounted = mountedUpload();
+  assert.equal(bindUploadPage(mounted.root, mounted.harness.coordinator), mounted.coordinator);
+  mounted.coordinator.stage([file('one.jpg', 4)]);
+  mounted.start.disabled = false;
+  const completion = mounted.listeners.get('start:click')();
+  assert.equal(mounted.events[0].detail.active, true);
+  assert.equal(mounted.events[0].detail.batchId, null);
+  await completion;
+  assert.equal(mounted.harness.calls[0].body.event_id, 42);
+  assert.ok(mounted.events.some((event) => event.detail.active && event.detail.batchId === 'batch-1'));
+  assert.deepEqual(mounted.events.at(-1).detail, { active: false, batchId: 'batch-1' });
+  assert.ok(mounted.events.every((event) => event.type === 'findme:event-photo-upload-activity'));
+});
+
+test('success copy requires confirmation, never transfer progress or terminal failure', () => {
+  const root = summaryRoot();
+  const coordinator = { active: false, items: [{ file: { size: 4 }, status: 'failed', progress: 100 }] };
+  renderPage(root, coordinator);
+  assert.doesNotMatch(root.node('[data-summary-message]').textContent, /Можно закрыть/);
+  coordinator.active = true;
+  coordinator.items[0].status = 'uploading';
+  renderPage(root, coordinator);
+  assert.equal(root.node('[data-summary-message]').textContent, 'Держите страницу открытой — идёт загрузка');
+  assert.equal(root.node('[data-summary-background]').hidden, true);
+  coordinator.items[0].status = 'uploaded';
+  renderPage(root, coordinator);
+  assert.equal(root.node('[data-summary-message]').textContent, 'Все фотографии загружены. Можно закрыть страницу');
+  assert.equal(root.node('[data-summary-background]').hidden, false);
+});
+
+test('resume reports active browser work while asynchronous file matching is pending', async () => {
+  const { coordinator } = makeHarness();
+  const manifest = { batch: { id: 'batch-1', event: { id: 42 } }, items: [manifestItem({ id: 'item-1', filename: 'one.jpg' })] };
+  const completion = coordinator.resume([file('one.jpg', 4, 1000)], manifest);
+  assert.equal(coordinator.active, true);
+  await completion;
+});
+
+
+test('fixed workspace rejects another event resume manifest before opening files or replacing queue', async () => {
+  let resumeClick;
+  let pickerOpened = false;
+  const harness = makeHarness();
+  harness.coordinator.fetch = async () => response(200, { batch: { id: 'other', event: { id: 43 } }, items: [] });
+  const mounted = mountedUpload(harness, {
+    '[data-unfinished-uploads]': { addEventListener(_type, callback) { resumeClick = callback; } },
+    '#resume-upload-files': { addEventListener() {}, click() { pickerOpened = true; } },
+  });
+  await resumeClick({ target: { closest: () => ({ dataset: { resumeBatchId: 'other' } }) } });
+  assert.equal(pickerOpened, false);
+  assert.equal(mounted.coordinator.batchId, null);
+  assert.deepEqual(mounted.coordinator.items, []);
 });

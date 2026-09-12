@@ -33,8 +33,8 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-001 | Operator | Publish an event | Validated | 2026-07-17 |
 | PJ-002 | Visitor | Discover published events | Validated | 2026-07-17 |
 | PJ-003 | Visitor | Review event details | Validated | 2026-07-17 |
-| PJ-004 | Photographer | Upload an event batch | Validated | 2026-08-15 |
-| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-08-21 |
+| PJ-004 | Photographer | Upload an event batch | Validated | 2026-09-07 |
+| PJ-005 | Visitor | Browse an event gallery | Validated | 2026-09-07 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
 | PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
 | PJ-008 | Customer | Find photos by face | In progress | 2026-08-20 |
@@ -97,11 +97,16 @@ can submit it for processing.
   `git diff --check` also passed.
   Local 2026-08-15 folder evidence adds event-admin management and one shared queue for named
   folders plus `Без папки`; each assignment survives registration, retry, confirmation, and resume.
-  Existing upload ownership and incoming-object authorization remain unchanged. Moving already
-  uploaded photos, including a photographer-facing mass editor, is deliberately deferred.
+  Existing upload ownership and incoming-object authorization remain unchanged.
+  Local 2026-09-07 evidence mounts the existing uploader in a fixed-event workspace, keeps one
+  browser queue while filters and folder targets change, and records bounded current-event history
+  for both completed and unfinished owned batches. The prominent close guidance appears only after
+  every selected file is confirmed by the server; unresolved items still require explicit local
+  reselection. Saved-photo move/hide/show controls belong to the administrator, while the separate
+  Yandex Disk import retains its server-owned lifecycle.
   This is local automated evidence only; CI, canonical deployment, and customer validation are not
   recorded.
-- Last updated: 2026-08-15
+- Last updated: 2026-09-07
 
 ### PJ-005 — Visitor — Browse an event gallery
 
@@ -115,11 +120,18 @@ event.
   survive numbered pagination, and invalid or foreign values cannot widen the event gallery.
   Existing gallery-media authorization is unchanged. This new evidence is local only; it does not
   claim CI, canonical deployment, or customer validation.
-  On 2026-08-20, 215 focused Django tests passed for the paid-watermark repository slice: newly
+  At the 2026-08-20 checkpoint, 215 focused Django tests passed for the paid-watermark repository slice: newly
   confirmed paid photos use the explicit policy, appear only after accepted watermark evidence,
   present the watermark in both gallery roles, and omit the download action. This is local
   repository evidence only. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded. The paid-watermark gate and real artwork were not directly observed as active; purchase, entitlement, and purchased-original delivery remain unimplemented.
-- Last updated: 2026-08-21
+  Local 2026-09-07 visibility evidence makes hiding a current public-eligibility condition for the
+  normal gallery, saved and new selfie output, free result-page archives, carts, and new checkout.
+  Showing restores eligibility when the other public conditions hold. Existing immutable paid
+  orders, valid late payment of an existing pending order, purchased-original delivery, and paid
+  order-page archives retain their separate authorization. The earlier unimplemented-entitlement
+  statement describes only the 2026-08-20 checkpoint; current purchase status is tracked in
+  PJ-010 and PJ-011. No CI, deployment, gate activation, or live customer evidence is claimed here.
+- Last updated: 2026-09-07
 
 ### PJ-006 — Operator — Review processing results
 
@@ -353,3 +365,5 @@ This log is append-only.
 | 2026-08-22 | PJ-010 | Candidate | In progress | Checkout, immutable orders, deterministic local payment transitions, and recovery are implemented locally, disabled by default; no real provider, activation, or customer evidence is claimed. |
 | 2026-08-22 | PJ-011 | Candidate | In progress | Paid OrderItem original signing through browser or revocable grant is implemented locally, disabled by default; no real provider, activation, or customer evidence is claimed. |
 | 2026-08-22 | PJ-016 | In progress | In progress | Cart selection remains separate from the newly local, disabled-default purchase boundary; real adapter, worker, activation, and customer evidence remain pending. |
+| 2026-09-07 | PJ-004 | Validated | Validated | Local fixed-event workspace evidence covers the existing owned uploader, completed and unfinished history, server-confirmed close guidance, and queue preservation across filters and folder creation. Administrative saved-photo editing is a separate permission boundary. No CI, deployment, or live evidence is claimed. |
+| 2026-09-07 | PJ-005 | Validated | Validated | Local product-flow evidence adds reversible hiding across current public gallery, selfie, archive, cart, and checkout paths while preserving immutable paid-order media and archive authority. Historical delivery evidence remains unchanged; no current deployment or customer claim is added. |

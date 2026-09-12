@@ -457,7 +457,7 @@ class PhotoModelTests(TestCase):
 
         self.assertEqual(
             loader.graph.leaf_nodes("picflow"),
-            [("picflow", "0013_event_photo_price")],
+            [("picflow", "0014_photo_is_hidden")],
         )
         migration = loader.get_migration("picflow", "0012_paid_watermarked_photo_policy")
         self.assertEqual(

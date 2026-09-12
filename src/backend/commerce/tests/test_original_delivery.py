@@ -289,12 +289,14 @@ class OriginalDeliveryTests(TestCase):
         self.assertEqual(storage.signed_requests, [])
         self.assertFalse(DownloadGrantAudit.objects.exists())
 
-    def test_paid_item_survives_unpublication_and_hidden_watermark_presentation(self) -> None:
+    def test_hidden_paid_item_survives_unpublication_and_keeps_original_access(self) -> None:
         """Rechecking public gallery eligibility would wrongly erase paid fulfillment."""
         delivery = load_original_delivery()
         storage = _RecordingStorage()
         self.event.publication_status = Event.PublicationStatus.UNAVAILABLE
         self.event.save(update_fields=["publication_status"])
+        self.photo.is_hidden = True
+        self.photo.save(update_fields=["is_hidden"])
 
         download = self.issue_with_browser(delivery, storage)
 
@@ -431,6 +433,8 @@ class OriginalDeliveryTests(TestCase):
             unit_price_kopecks=30000,
             line_total_kopecks=30000,
         )
+        second_photo.is_hidden = True
+        second_photo.save(update_fields=["is_hidden"])
 
         archive = delivery.authorize_purchased_archive(
             order=archive_order,

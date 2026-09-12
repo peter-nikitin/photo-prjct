@@ -15,9 +15,9 @@ from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_POST
-from feature_flags.registry import YANDEX_DISK_IMPORT
-from feature_flags.services import is_enabled
+from picflow.event_management_access import event_management_denial
 from picflow.models import Event
 
 from ingestion.forms import (
@@ -46,12 +46,10 @@ from ingestion.services.batches import (
     report_item_failed,
 )
 from ingestion.services.confirmation import confirm_upload_item
-from ingestion.services.resume import ResumeManifest, get_resume_manifest, list_unfinished_batches
+from ingestion.services.resume import ResumeManifest, get_resume_manifest
 from ingestion.storage import PrivateUploadStorage, StorageError
 
 UploadView = Callable[..., HttpResponse]
-_URL_BATCH = UUID("00000000-0000-4000-8000-000000000001")
-_URL_ITEM = UUID("00000000-0000-4000-8000-000000000002")
 
 
 class PhotographerLoginView(LoginView):
@@ -104,67 +102,17 @@ def _upload_access(*, json_errors: bool = False) -> Callable[[UploadView], Uploa
     return decorate
 
 
+@never_cache
 @require_GET
-@_upload_access()
 def upload_page(request: HttpRequest) -> HttpResponse:
-    photo_import_enabled = settings.PHOTO_IMPORT_ENABLED and is_enabled(
-        YANDEX_DISK_IMPORT, request.user
-    )
+    denial = event_management_denial(request)
+    if denial is not None:
+        return denial
     return render(
         request,
         "ingestion/upload.html",
-        {
-            "events": Event.objects.prefetch_related("folders"),
-            "upload_limits": {
-                "max_files": settings.PHOTO_UPLOAD_MAX_FILES,
-                "max_files_label": f"{settings.PHOTO_UPLOAD_MAX_FILES:,}".replace(",", " "),
-                "max_file_bytes": settings.PHOTO_UPLOAD_MAX_FILE_BYTES,
-                "max_file_megabytes": settings.PHOTO_UPLOAD_MAX_FILE_BYTES // (1024 * 1024),
-                "registration_chunk": settings.PHOTO_UPLOAD_REGISTRATION_CHUNK,
-                "concurrency": settings.PHOTO_UPLOAD_CONCURRENCY,
-            },
-            "upload_state": "empty",
-            "upload_control_urls": _upload_control_urls(),
-            "unfinished_batches": list_unfinished_batches(request.user),
-            "photo_import_enabled": photo_import_enabled,
-            "photo_import_history_enabled": True,
-            "photo_import_urls": _photo_import_urls(),
-        },
+        {"events": Event.objects.all(), "yandex_metrika_counter_id": None},
     )
-
-
-def _upload_control_urls() -> dict[str, str]:
-    batch = str(_URL_BATCH)
-    item = str(_URL_ITEM)
-
-    def item_url(name: str) -> str:
-        return (
-            reverse(name, args=[_URL_BATCH, _URL_ITEM])
-            .replace(batch, "{batch}")
-            .replace(item, "{item}")
-        )
-
-    return {
-        "register": reverse("upload_items_register", args=[_URL_BATCH]).replace(batch, "{batch}"),
-        "authorize": item_url("upload_item_authorize"),
-        "retry": item_url("upload_item_retry"),
-        "confirm": item_url("upload_item_confirm"),
-        "failed": item_url("upload_item_failed"),
-        "finalize": reverse("upload_batch_finalize", args=[_URL_BATCH]).replace(batch, "{batch}"),
-        "resume_manifest": reverse("upload_batch_resume_manifest", args=[_URL_BATCH]).replace(
-            batch, "{batch}"
-        ),
-    }
-
-
-def _photo_import_urls() -> dict[str, str]:
-    batch = str(_URL_BATCH)
-    return {
-        "collection": reverse("import_collection"),
-        "detail": reverse("import_detail", args=[_URL_BATCH]).replace(batch, "{batch}"),
-        "items": reverse("import_items", args=[_URL_BATCH]).replace(batch, "{batch}"),
-        "retry": reverse("import_retry", args=[_URL_BATCH]).replace(batch, "{batch}"),
-    }
 
 
 @require_GET

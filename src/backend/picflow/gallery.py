@@ -252,7 +252,12 @@ def saved_result_photo_queryset(
 
 
 def _public_photo_queryset(*, event: Event) -> QuerySet[Photo]:
-    return Photo.objects.filter(event=event, src="", original_key__isnull=False)
+    return Photo.objects.filter(
+        event=event,
+        is_hidden=False,
+        src="",
+        original_key__isnull=False,
+    )
 
 
 def _legacy_or_clean_preview_ready() -> Q:

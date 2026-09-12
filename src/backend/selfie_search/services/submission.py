@@ -544,7 +544,9 @@ def _compatible_embeddings(
     if not generations:
         raise ValueError("invalid face-embedding generation")
 
-    embeddings = compatible_face_embedding_queryset(event, generations)
+    embeddings = compatible_face_embedding_queryset(event, generations).filter(
+        detection__attempt__photo__is_hidden=False
+    )
     if photo_ids is not None:
         embeddings = embeddings.filter(detection__attempt__photo_id__in=photo_ids)
     return embeddings

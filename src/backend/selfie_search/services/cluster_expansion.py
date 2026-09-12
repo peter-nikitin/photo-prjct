@@ -223,7 +223,12 @@ def _accepted_face_photo_queryset(event: Event):
         processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
     )
     return (
-        Photo.objects.filter(event=event, src="", original_key__isnull=False)
+        Photo.objects.filter(
+            event=event,
+            is_hidden=False,
+            src="",
+            original_key__isnull=False,
+        )
         .filter(
             Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
             | accepted_clean_preview

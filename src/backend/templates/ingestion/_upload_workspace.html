@@ -1,0 +1,169 @@
+  <div class="upload-screen"
+       data-upload-root
+       data-state="{{ upload_state|default:'empty' }}"
+       data-create-batch-url="{% url 'upload_batch_create' %}"
+       data-register-url-template="{{ upload_control_urls.register|default:'/photographer/uploads/{batch}/items/' }}"
+       data-authorize-url-template="{{ upload_control_urls.authorize|default:'/photographer/uploads/{batch}/items/{item}/authorize/' }}"
+       data-retry-url-template="{{ upload_control_urls.retry|default:'/photographer/uploads/{batch}/items/{item}/retry/' }}"
+       data-confirm-url-template="{{ upload_control_urls.confirm|default:'/photographer/uploads/{batch}/items/{item}/confirm/' }}"
+       data-failed-url-template="{{ upload_control_urls.failed|default:'/photographer/uploads/{batch}/items/{item}/failed/' }}"
+       data-finalize-url-template="{{ upload_control_urls.finalize|default:'/photographer/uploads/{batch}/finalize/' }}"
+       data-resume-manifest-url-template="{{ upload_control_urls.resume_manifest|default:'/photographer/uploads/{batch}/resume/' }}"
+       data-csrf-token="{{ csrf_token }}"
+       data-max-files="{{ upload_limits.max_files|default:10000 }}"
+       data-max-file-bytes="{{ upload_limits.max_file_bytes|default:52428800 }}"
+       data-registration-chunk="{{ upload_limits.registration_chunk|default:100 }}"
+       data-concurrency="{{ upload_limits.concurrency|default:4 }}"
+       data-event-id="{{ event.pk }}">
+    <section class="upload-workspace" aria-labelledby="upload-settings-title">
+      <div class="upload-guidance" data-upload-guidance role="status" aria-live="polite" aria-atomic="true">
+        <p class="summary-message" data-summary-message>
+          {% if upload_state == "complete" %}Все фотографии загружены. Можно закрыть страницу{% elif upload_state == "partial" %}Успешные файлы сохранены. Повторите передачу файлов с ошибкой.{% elif upload_state == "active" %}Держите страницу открытой — идёт загрузка{% else %}Здесь появится общий прогресс.{% endif %}
+        </p>
+        <p class="summary-message" data-summary-background{% if upload_state != "complete" %} hidden{% endif %}>Обработка продолжится в фоне.</p>
+      </div>
+      <div class="upload-controls">
+        <h2 id="upload-settings-title">Новая загрузка</h2>
+        <div class="folder-target-collections" data-folder-target-collections>
+            <section class="folder-targets" data-folder-targets data-event-id="{{ event.pk }}" aria-label="Папки события {{ event.name }}">
+              <p class="folder-targets-heading">Выберите папку для файлов</p>
+              <label class="folder-target" data-folder-target data-folder-id="" data-folder-name="Без папки" data-default-copy="Перетащите JPEG сюда">
+                <svg class="drop-target-icon icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>
+                <span class="folder-target-copy"><strong data-folder-target-copy>Перетащите JPEG сюда</strong><span>Загрузить без папки</span></span>
+                <span class="button file-picker">Выбрать фотографии</span>
+                <input class="visually-hidden" data-folder-target-input type="file" accept="image/jpeg,.jpg,.jpeg" multiple>
+              </label>
+              {% for folder in folders %}
+                <label class="folder-target" data-folder-target data-folder-id="{{ folder.pk }}" data-folder-name="{{ folder.name }}" data-default-copy="Перетащите JPEG сюда">
+                  <svg class="drop-target-icon icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>
+                  <span class="folder-target-copy"><strong data-folder-target-copy>Перетащите JPEG сюда</strong><span>Загрузить в «{{ folder.name }}»</span></span>
+                  <span class="button file-picker">Выбрать фотографии</span>
+                  <input class="visually-hidden" data-folder-target-input type="file" accept="image/jpeg,.jpg,.jpeg" multiple>
+                </label>
+                  {% endfor %}
+            </section>
+        </div>
+        <button class="button upload-start-button" type="button" data-start-upload disabled>Начать загрузку</button>
+
+        <p class="close-warning">
+          <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#alert"></use></svg>
+          <span>Закрытие или перезагрузка страницы остановит незавершённые передачи. Уже загруженные фотографии сохранятся.</span>
+        </p>
+      </div>
+
+      <aside class="upload-summary" aria-labelledby="upload-summary-title">
+        <div class="summary-heading">
+          <div>
+            <p class="eyebrow">Текущая очередь</p>
+            <h2 id="upload-summary-title">
+              {% if upload_state == "complete" %}Загрузка завершена{% elif upload_state == "partial" %}Загружено частично{% elif upload_state == "active" %}Идёт загрузка{% else %}Файлы не выбраны{% endif %}
+            </h2>
+          </div>
+          <span class="summary-percent" data-summary-percent>{{ upload_summary.progress|default:0 }}%</span>
+        </div>
+        <progress data-upload-progress max="100" value="{{ upload_summary.progress|default:0 }}">
+          {{ upload_summary.progress|default:0 }}%
+        </progress>
+        <dl class="summary-metrics">
+          <div><dt>Выбрано</dt><dd class="summary-value" data-total-count>{{ upload_summary.total|default:0 }}</dd></div>
+          <div><dt>Загружено</dt><dd class="summary-value" data-uploaded-count>{{ upload_summary.uploaded|default:0 }}</dd></div>
+          <div><dt>Ошибки</dt><dd class="summary-value" data-failed-count>{{ upload_summary.failed|default:0 }}</dd></div>
+          <div><dt>Объём</dt><dd class="summary-value" data-total-bytes>{{ upload_summary.bytes|default:"0 Б" }}</dd></div>
+        </dl>
+      </aside>
+    </section>
+
+    <section class="queue-panel" aria-labelledby="queue-title">
+      <div class="queue-heading">
+        <div>
+          <p class="eyebrow">Файлы</p>
+          <h2 id="queue-title">Состояние очереди</h2>
+        </div>
+      </div>
+      <div class="queue-list" data-upload-queue>
+        {% for group in upload_queue_groups %}
+          <section class="queue-group" data-queue-group="{{ group.key }}">
+            <h3 class="queue-group-heading">
+              <button class="queue-group-toggle"
+                      type="button"
+                      data-queue-group-toggle="{{ group.key }}"
+                      aria-expanded="{{ group.expanded|yesno:'true,false' }}"
+                      aria-controls="queue-group-{{ group.key }}">
+                <span data-queue-group-label>{{ group.label }}</span>
+                <span class="queue-group-count"><span data-queue-group-count>{{ group.count }}</span><span class="visually-hidden"> файлов</span></span>
+              </button>
+            </h3>
+            <div id="queue-group-{{ group.key }}" class="queue-group-content" data-queue-group-content{% if not group.expanded %} hidden{% endif %}>
+              <div class="queue-group-items" data-queue-group-items>
+                {% if group.expanded %}
+                  {% for item in group.items|slice:":20" %}
+                    <article class="queue-item queue-item-{{ item.status_class }}" data-rendered-queue-item>
+                      <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>
+                      <div class="queue-file-copy">
+                        <strong>{{ item.name }}</strong>
+                        <span>{{ item.meta }}</span>
+                        <span data-file-folder>Папка: {{ item.folder_label|default:"Без папки" }}</span>
+                        {% if item.error %}<p id="queue-error-{{ group.key }}-{{ forloop.counter }}" class="queue-error">{{ item.error }}</p>{% endif %}
+                      </div>
+                      <div class="queue-item-progress">
+                        <span>{{ item.status }}</span>
+                        <progress max="100" value="{{ item.progress }}">{{ item.progress }}%</progress>
+                      </div>
+                      {% if item.retry %}
+                        <button class="retry-button" type="button" data-retry-item aria-describedby="queue-error-{{ group.key }}-{{ forloop.counter }}">Повторить</button>
+                      {% endif %}
+                    </article>
+                  {% endfor %}
+                {% endif %}
+              </div>
+              {% if group.count > 20 %}
+                <nav class="queue-pagination" data-queue-pagination aria-label="Навигация по группе {{ group.label }}">
+                  <span data-queue-page-status>Показаны 1–20 из {{ group.count }}</span>
+                  <span class="queue-pagination-controls">
+                    <button type="button" data-queue-previous-page data-queue-page-group="{{ group.key }}" disabled>Назад</button>
+                    <button type="button" data-queue-next-page data-queue-page-group="{{ group.key }}">Далее</button>
+                  </span>
+                </nav>
+              {% endif %}
+            </div>
+          </section>
+        {% empty %}
+          <div class="queue-empty" data-queue-empty>
+            <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#image"></use></svg>
+            <p><strong>Очередь пока пуста</strong><span>Выбранные фотографии появятся здесь.</span></p>
+          </div>
+        {% endfor %}
+      </div>
+      <template id="upload-queue-group-template">
+        <section class="queue-group" data-queue-group>
+          <h3 class="queue-group-heading">
+            <button class="queue-group-toggle" type="button" data-queue-group-toggle aria-expanded="false">
+              <span data-queue-group-label></span>
+              <span class="queue-group-count"><span data-queue-group-count></span><span class="visually-hidden"> файлов</span></span>
+            </button>
+          </h3>
+          <div class="queue-group-content" data-queue-group-content hidden>
+            <div class="queue-group-items" data-queue-group-items></div>
+            <nav class="queue-pagination" data-queue-pagination aria-label="Навигация по группе" hidden>
+              <span data-queue-page-status></span>
+              <span class="queue-pagination-controls">
+                <button type="button" data-queue-previous-page>Назад</button>
+                <button type="button" data-queue-next-page>Далее</button>
+              </span>
+            </nav>
+          </div>
+        </section>
+      </template>
+      <template id="upload-queue-row-template">
+        <article class="queue-item">
+          <span class="queue-file-icon" aria-hidden="true"><svg class="icon"><use href="{{ ui_icons }}#image"></use></svg></span>
+          <div class="queue-file-copy"><strong data-file-name></strong><span data-file-meta></span><span data-file-folder></span><p data-file-error></p></div>
+          <div class="queue-item-progress"><span data-file-status></span><progress max="100" value="0">0%</progress></div>
+          <button class="retry-button" type="button" data-retry-item>Повторить</button>
+          <button class="cancel-button" type="button" data-cancel-item>Отменить</button>
+        </article>
+      </template>
+    </section>
+
+    {% include "ingestion/_batch_history.html" %}
+  </div>

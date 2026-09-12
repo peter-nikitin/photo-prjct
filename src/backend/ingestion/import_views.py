@@ -49,11 +49,19 @@ def _import_mutation(view):  # noqa: ANN001, ANN201
 @_upload_access(json_errors=True)
 def import_collection(request: HttpRequest) -> HttpResponse:
     if request.method == "GET":
-        page = _pagination(request)
+        page = _pagination(request, event_scope=True)
         if page is None:
             return _invalid_request()
         page_number, page_size = page
         queryset = _visible_batches(request).order_by("-created_at", "-id")
+        if "event_id" in request.GET:
+            values = request.GET.getlist("event_id")
+            if len(values) != 1 or not _bounded_decimal(values[0], maximum=_MAX_SIGNED_BIGINT):
+                return _invalid_request()
+            event_id = int(values[0])
+            if not Event.objects.filter(pk=event_id).exists():
+                return _not_found()
+            queryset = queryset.filter(event_id=event_id, owner_id=request.user.pk)
         return _batch_page(queryset, page_number=page_number, page_size=page_size)
     if not settings.PHOTO_IMPORT_ENABLED:
         return _not_found()
@@ -312,8 +320,9 @@ def _public_source_key(value: object) -> str | None:
     return key if _SOURCE_KEY.fullmatch(key) is not None else None
 
 
-def _pagination(request: HttpRequest) -> tuple[int, int] | None:
-    if set(request.GET) - {"page", "page_size"}:
+def _pagination(request: HttpRequest, *, event_scope: bool = False) -> tuple[int, int] | None:
+    allowed = {"page", "page_size", "event_id"} if event_scope else {"page", "page_size"}
+    if set(request.GET) - allowed:
         return None
     raw_page = request.GET.get("page", "1")
     raw_size = request.GET.get("page_size", "20")

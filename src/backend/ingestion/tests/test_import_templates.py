@@ -44,7 +44,7 @@ class ImportTemplateTests(TestCase):
             state=FeatureFlag.State.ON,
         )
 
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
         html = response.content.decode()
 
         self.assertContains(response, "data-import-form")
@@ -68,14 +68,14 @@ class ImportTemplateTests(TestCase):
             submission_key="submission-1",
         )
 
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
 
         self.assertNotContains(response, "data-import-form")
         self.assertContains(response, 'data-import-history-enabled="true"')
         self.assertContains(response, 'data-import-enabled="false"')
 
     def test_import_shell_contains_durable_progress_and_exact_alerts(self) -> None:
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
 
         self.assertContains(response, "data-import-list")
         self.assertContains(response, "data-import-list-pagination")
@@ -93,6 +93,6 @@ class ImportTemplateTests(TestCase):
     def test_revoked_upload_rights_still_deny_the_page(self) -> None:
         self.user.user_permissions.clear()
 
-        response = self.client.get(reverse("upload_page"))
+        response = self.client.get(reverse("event_management", args=[self.event.pk]))
 
         self.assertEqual(response.status_code, 403)

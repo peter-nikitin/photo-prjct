@@ -156,7 +156,7 @@ class UploadPermissionTests(TestCase):
         self.client.force_login(self.photographer)
         for method, url in self.endpoints():
             response = self.call(self.client, method, url)
-            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response.status_code, 403 if url == reverse("upload_page") else 404)
 
         self.assertNotEqual(self.client.get(reverse("photographer_login")).status_code, 404)
         self.assertNotEqual(self.client.post(reverse("photographer_logout")).status_code, 404)

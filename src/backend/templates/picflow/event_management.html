@@ -1,0 +1,28 @@
+{% extends "ui/base.html" %}
+{% load static tz %}
+{% block title %}Фотографии · {{ event.name }} — FindMe Photo{% endblock %}
+{% block body_class %}upload-page{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/upload.css' %}">{% if can_inspect %}<link rel="stylesheet" href="{% static 'ui/event-photo-management.css' %}">{% endif %}{% endblock %}
+{% block content %}
+{% url 'event_management_status' event.pk as default_status_url %}
+<div class="upload-screen event-workspace" data-event-photo-status-root data-event-id="{{ event.pk }}" data-status-url="{{ status_url|default:default_status_url }}" data-batch-history-url="{{ batch_history_url }}">
+  <header class="upload-heading"><div><a href="{% url 'upload_page' %}">← Все мероприятия</a><p class="eyebrow">Фотографии мероприятия</p><h1>{{ event.name }}</h1><p>{{ event.start_date|date:"d.m.Y" }} · {{ event.city }}</p></div>
+    <div class="account-chip"><span>{{ request.user.get_username }}</span><form method="post" action="{% url 'photographer_logout' %}">{% csrf_token %}<button type="submit">Выйти</button></form></div>
+  </header>
+  {% if can_inspect %}
+  <section data-event-photo-admin data-event-photo-private-status data-event-photo-management-root data-results-url="{{ results_url }}" aria-label="Фотографии мероприятия">
+    {% include "picflow/_event_photo_results.html" %}
+  </section>
+  {% endif %}
+  {% if can_upload %}
+  <section class="upload-screen" data-event-photo-upload data-event-photo-private-status aria-label="Мои загрузки мероприятия">
+    {% include "ingestion/_upload_workspace.html" %}
+    {% include "ingestion/_yandex_disk_import.html" %}
+  </section>
+  {% endif %}
+  <div role="status" aria-live="polite"><span data-event-photo-status-message></span><time data-event-photo-status-updated-at hidden></time></div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script src="{% static 'ui/event-photo-status.js' %}" defer></script>{% if can_inspect %}<script src="{% static 'ui/event-photo-management.js' %}" defer></script>{% endif %}{% if can_upload %}<script src="{% static 'ui/upload-coordinator.js' %}" defer></script><script src="{% static 'ui/import-coordinator.js' %}" defer></script>{% endif %}
+{% endblock %}

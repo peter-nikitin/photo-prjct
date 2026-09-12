@@ -25,6 +25,9 @@ class ResumeServiceTests(TestCase):
             city="Moscow",
         )
 
+    def batch_ids(self):
+        return tuple(UploadBatch.objects.filter(event=self.event).values_list("pk", flat=True))
+
     def batch(self, *, uploader=None, status=UploadBatch.Status.CREATED, expected=3) -> UploadBatch:
         return UploadBatch.objects.create(
             uploader=uploader or self.uploader,
@@ -83,7 +86,9 @@ class ResumeServiceTests(TestCase):
             last_activity_at=timezone.now() - timedelta(hours=1)
         )
 
-        summaries = list_unfinished_batches(self.uploader)
+        summaries = list_unfinished_batches(
+            self.uploader, event=self.event, batch_ids=self.batch_ids()
+        )
 
         self.assertEqual([summary.id for summary in summaries], [newer.id, older.id])
         self.assertEqual(summaries[0].event_name, self.event.name)
@@ -109,7 +114,9 @@ class ResumeServiceTests(TestCase):
         resumable = self.batch(status=UploadBatch.Status.FAILED, expected=1)
         self.item(resumable, status=UploadItem.Status.FAILED)
 
-        summaries = list_unfinished_batches(self.uploader)
+        summaries = list_unfinished_batches(
+            self.uploader, event=self.event, batch_ids=self.batch_ids()
+        )
 
         self.assertEqual([summary.id for summary in summaries], [resumable.id])
 
@@ -127,8 +134,9 @@ class ResumeServiceTests(TestCase):
             self.item(batch, status=UploadItem.Status.FAILED, filename=f"{index}-failed.jpg")
             self.item(batch, confirmed=True, filename=f"{index}-confirmed.jpg")
 
+        ids = self.batch_ids()
         with self.assertNumQueries(1):
-            summaries = list_unfinished_batches(self.uploader)
+            summaries = list_unfinished_batches(self.uploader, event=self.event, batch_ids=ids)
 
         self.assertEqual(len(summaries), 4)
         self.assertEqual(

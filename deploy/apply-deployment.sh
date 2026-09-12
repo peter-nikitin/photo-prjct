@@ -43,6 +43,20 @@ printf 'DEPLOY_PHASE=validate elapsed_seconds=%s\n' "$(elapsed_seconds)"
 : "${GUNICORN_MAX_REQUESTS_JITTER:?Set GUNICORN_MAX_REQUESTS_JITTER}"
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
 requested_image="$APP_IMAGE"
+requested_import_enabled="${PHOTO_IMPORT_ENABLED:-False}"
+case "$requested_import_enabled" in
+    True)
+        : "${IMPORT_WORKER_IMAGE:?Set IMPORT_WORKER_IMAGE}"
+        : "${PHOTO_IMPORT_WORKER_TOKEN:?Set PHOTO_IMPORT_WORKER_TOKEN}"
+        : "${PHOTO_IMPORT_BUILD:?Set PHOTO_IMPORT_BUILD}"
+        case "$IMPORT_WORKER_IMAGE" in
+            *:"${APP_IMAGE##*:}") ;;
+            *) echo "Import and web images must use the same release tag" >&2; exit 2 ;;
+        esac
+        ;;
+    False) ;;
+    *) echo "PHOTO_IMPORT_ENABLED must be True or False" >&2; exit 2 ;;
+esac
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
@@ -596,10 +610,44 @@ clear_candidate_compose_interpolation() {
         COMMERCE_ORDER_ACCESS_SIGNING_SECRET \
         COMMERCE_SUPPORT_CONTACT \
         COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS \
-        COMMERCE_WORKER_ENABLED
+        COMMERCE_WORKER_ENABLED \
+        PHOTO_IMPORT_ENABLED \
+        PHOTO_IMPORT_WORKER_TOKEN \
+        PHOTO_IMPORT_BUILD \
+        IMPORT_WORKER_IMAGE
+}
+
+stop_import_before_web_change() {
+    import_env_file="$1"
+    import_enabled="$2"
+    if [ "$import_enabled" = True ]; then
+        # A failed candidate can be unhealthy: worker stop is authoritative even if gate close fails.
+        compose_with_env_file "$import_env_file" exec -T web python manage.py shell --no-imports -c \
+            'from feature_flags.models import FeatureFlag; FeatureFlag.objects.filter(key="yandex-disk-import").update(state="off")' || true
+    fi
+    # Container identity remains available even when disabled configuration has no image.
+    # Do not activate the import profile merely to remove an existing worker.
+    import_containers="$(docker ps -aq \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=import-worker")" || return 1
+    for import_container in $import_containers; do
+        docker rm -f "$import_container" || return 1
+    done
+    if [ "$import_enabled" = True ]; then
+        # API v1 accepts leases up to 300 seconds. Preserve DB and immutable objects.
+        sleep 300
+    fi
+}
+
+start_import_after_web_ready() {
+    import_env_file="$1"
+    compose_with_env_file "$import_env_file" --profile import run --rm --no-deps -T \
+        import-worker python -m import_worker --check-ready || return 1
+    compose_with_env_file "$import_env_file" --profile import up -d --no-deps import-worker
 }
 
 recover_previous_deployment() {
+    stop_import_before_web_change "$DEPLOY_ROOT/.env" "$requested_import_enabled" || return 1
     restore_previous_deployment_markers || return 1
 
     if [ "$previous_env_exists" -eq 0 ]; then
@@ -620,6 +668,10 @@ recover_previous_deployment() {
     compose_reconcile_runtime_profiles \
         "$previous_processing_enabled" "$previous_commerce_worker_enabled" \
         "$DEPLOY_ROOT/.env" "$previous_worker_replicas" || return 1
+    if [ "$previous_import_enabled" = True ]; then
+        compose_with_env_file "$DEPLOY_ROOT/.env" up -d --wait web || return 1
+        start_import_after_web_ready "$DEPLOY_ROOT/.env" || return 1
+    fi
     echo "Previous application and worker profile reconciled" >&2
 }
 
@@ -694,6 +746,7 @@ phase() {
 }
 
 phase snapshot
+previous_import_enabled="False"
 previous_upload_enabled="False"
 previous_processing_enabled="False"
 previous_commerce_worker_enabled="False"
@@ -714,6 +767,8 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_env_exists=1
     previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not snapshot previous deployment environment"
     cp -p "$DEPLOY_ROOT/.env" "$previous_env_tmp" || fail "Could not snapshot previous deployment environment"
+    previous_import_enabled="$(sed -n 's/^PHOTO_IMPORT_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    case "$previous_import_enabled" in True|False) ;; *) previous_import_enabled=False ;; esac
     previous_upload_enabled="$(
         sed -n 's/^PHOTO_UPLOAD_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
@@ -782,6 +837,11 @@ umask 077
 requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
 {
     printf 'APP_IMAGE=%s\n' "$requested_image"
+    printf 'IMPORT_WORKER_IMAGE=%s\n' "${IMPORT_WORKER_IMAGE:-}"
+    printf 'PHOTO_IMPORT_ENABLED=%s\n' "$requested_import_enabled"
+    printf 'PHOTO_IMPORT_WORKER_TOKEN=%s\n' "${PHOTO_IMPORT_WORKER_TOKEN:-}"
+    printf 'PHOTO_IMPORT_BUILD=%s\n' "${PHOTO_IMPORT_BUILD:-}"
+
     printf 'SECRET_KEY=%s\n' "$SECRET_KEY"
     printf 'DEBUG=%s\n' "$DEBUG"
     printf 'ALLOWED_HOSTS=%s\n' "$ALLOWED_HOSTS"
@@ -866,6 +926,10 @@ elif ! compose_with_env_file "$requested_env_tmp" pull web; then
     fail "Candidate application image pull failed"
 fi
 
+if [ "$requested_import_enabled" = True ]; then
+    compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
+fi
+
 gallery_media_preflight='
 from contextlib import closing
 from ingestion.storage import PrivateUploadStorage
@@ -921,6 +985,9 @@ phase observability-reconcile
 observability_installed=1
 mutation_started=1
 sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
+if [ "$previous_env_exists" -eq 1 ]; then
+    stop_import_before_web_change "$DEPLOY_ROOT/.env" "$previous_import_enabled" || fail "Import worker stop failed"
+fi
 mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
 requested_env_tmp=""
 
@@ -991,6 +1058,10 @@ while [ "$attempt" -le "$max_attempts" ]; do
     attempt=$((attempt + 1))
     sleep 5
 done
+
+if [ "$requested_import_enabled" = True ]; then
+    start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
+fi
 
 phase projection-preflight
 if ! compose run --rm --no-deps -T \

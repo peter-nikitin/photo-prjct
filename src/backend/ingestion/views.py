@@ -16,6 +16,8 @@ from django.shortcuts import render
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_POST
+from feature_flags.registry import YANDEX_DISK_IMPORT
+from feature_flags.services import is_enabled
 from picflow.models import Event
 
 from ingestion.forms import (
@@ -105,6 +107,9 @@ def _upload_access(*, json_errors: bool = False) -> Callable[[UploadView], Uploa
 @require_GET
 @_upload_access()
 def upload_page(request: HttpRequest) -> HttpResponse:
+    photo_import_enabled = settings.PHOTO_IMPORT_ENABLED and is_enabled(
+        YANDEX_DISK_IMPORT, request.user
+    )
     return render(
         request,
         "ingestion/upload.html",
@@ -121,6 +126,9 @@ def upload_page(request: HttpRequest) -> HttpResponse:
             "upload_state": "empty",
             "upload_control_urls": _upload_control_urls(),
             "unfinished_batches": list_unfinished_batches(request.user),
+            "photo_import_enabled": photo_import_enabled,
+            "photo_import_history_enabled": True,
+            "photo_import_urls": _photo_import_urls(),
         },
     )
 
@@ -146,6 +154,16 @@ def _upload_control_urls() -> dict[str, str]:
         "resume_manifest": reverse("upload_batch_resume_manifest", args=[_URL_BATCH]).replace(
             batch, "{batch}"
         ),
+    }
+
+
+def _photo_import_urls() -> dict[str, str]:
+    batch = str(_URL_BATCH)
+    return {
+        "collection": reverse("import_collection"),
+        "detail": reverse("import_detail", args=[_URL_BATCH]).replace(batch, "{batch}"),
+        "items": reverse("import_items", args=[_URL_BATCH]).replace(batch, "{batch}"),
+        "retry": reverse("import_retry", args=[_URL_BATCH]).replace(batch, "{batch}"),
     }
 
 

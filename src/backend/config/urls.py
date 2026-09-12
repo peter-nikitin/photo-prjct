@@ -7,6 +7,7 @@ from config import views
 
 urlpatterns = [
     path("internal/photo-processing/v1/", include("processing.urls")),
+    path("internal/photo-import/v1/", include("ingestion.import_worker_urls")),
     path(
         "payments/notification/",
         commerce_views.payment_notification,

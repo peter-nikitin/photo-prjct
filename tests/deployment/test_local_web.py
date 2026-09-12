@@ -295,6 +295,7 @@ def test_real_compose_merge_excludes_checkout_deployment_only_environment(
         "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "payload-private-key",
         "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "payload-private-secret",
         "PHOTO_PROCESSING_WORKER_TOKEN": "payload-worker-token",
+        "PHOTO_IMPORT_WORKER_TOKEN": "",
         "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "payload-feedback-key",
         "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "payload-feedback-secret",
         "DEBUG": "True",

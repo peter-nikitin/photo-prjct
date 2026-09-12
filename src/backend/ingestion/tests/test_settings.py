@@ -30,6 +30,9 @@ INGESTION_SETTING_NAMES = (
     "PHOTO_UPLOAD_CONCURRENCY",
     "PHOTO_UPLOAD_GRANT_TTL_SECONDS",
     "PHOTO_UPLOAD_STALE_AFTER_SECONDS",
+    "PHOTO_IMPORT_ENABLED",
+    "PHOTO_IMPORT_WORKER_TOKEN",
+    "PHOTO_IMPORT_MAX_JSON_BYTES",
 )
 
 INGESTION_ENVIRONMENT_NAMES = (
@@ -44,6 +47,9 @@ INGESTION_ENVIRONMENT_NAMES = (
     "PHOTO_UPLOAD_CONCURRENCY",
     "PHOTO_UPLOAD_GRANT_TTL_SECONDS",
     "PHOTO_UPLOAD_STALE_AFTER_SECONDS",
+    "PHOTO_IMPORT_ENABLED",
+    "PHOTO_IMPORT_WORKER_TOKEN",
+    "PHOTO_IMPORT_MAX_JSON_BYTES",
 )
 
 
@@ -100,6 +106,29 @@ def test_photo_upload_defaults_are_approved_security_caps() -> None:
     assert isolated_settings["PHOTO_UPLOAD_CONCURRENCY"] == 4
     assert isolated_settings["PHOTO_UPLOAD_GRANT_TTL_SECONDS"] == 600
     assert isolated_settings["PHOTO_UPLOAD_STALE_AFTER_SECONDS"] == 86_400
+    assert isolated_settings["PHOTO_IMPORT_ENABLED"] is False
+    assert isolated_settings["PHOTO_IMPORT_WORKER_TOKEN"] == ""
+    assert isolated_settings["PHOTO_IMPORT_MAX_JSON_BYTES"] == 1024 * 1024
+
+
+def test_photo_import_capability_uses_exact_boolean_and_bounded_envelope() -> None:
+    enabled = load_isolated_ingestion_settings(
+        PHOTO_IMPORT_ENABLED="True",
+        PHOTO_IMPORT_WORKER_TOKEN="dedicated-token",
+        PHOTO_IMPORT_MAX_JSON_BYTES="524288",
+    )
+
+    assert enabled["PHOTO_IMPORT_ENABLED"] is True
+    assert enabled["PHOTO_IMPORT_WORKER_TOKEN"] == "dedicated-token"
+    assert enabled["PHOTO_IMPORT_MAX_JSON_BYTES"] == 512 * 1024
+
+
+def test_photo_import_envelope_rejects_a_limit_smaller_than_its_error_contract() -> None:
+    with pytest.raises(subprocess.CalledProcessError):
+        load_isolated_ingestion_settings(PHOTO_IMPORT_MAX_JSON_BYTES="255")
+
+    minimum = load_isolated_ingestion_settings(PHOTO_IMPORT_MAX_JSON_BYTES="256")
+    assert minimum["PHOTO_IMPORT_MAX_JSON_BYTES"] == 256
 
 
 def test_private_media_origins_are_trimmed_when_parsed_from_environment() -> None:

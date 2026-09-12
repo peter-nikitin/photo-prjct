@@ -122,6 +122,13 @@ visual_patterns = [
     path("upload/partial/", views.upload_partial, name="visual_upload_partial"),
     path("upload/complete/", views.upload_complete, name="visual_upload_complete"),
     path("upload/folders/", views.upload_folders, name="visual_upload_folders"),
+    path("upload/imports/", views.upload_imports, name="visual_upload_imports"),
+    path("upload/imports-api/", views.upload_imports_api, name="visual_upload_imports_api"),
+    path(
+        "upload/imports-api/<str:batch>/",
+        views.upload_import_detail_api,
+        name="visual_upload_import_detail_api",
+    ),
     path("reference/orders/", views.reference_orders, name="visual_reference_orders"),
     path(
         "reference/promotions/",

@@ -38,6 +38,8 @@ services:
       MEDIA_S3_PUBLIC_BUCKET: ${MEDIA_S3_PUBLIC_BUCKET:-}
       MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:-}
       MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:-}
+      PHOTO_IMPORT_ENABLED: ${PHOTO_IMPORT_ENABLED:-False}
+      PHOTO_IMPORT_WORKER_TOKEN: ${PHOTO_IMPORT_WORKER_TOKEN:-}
       PHOTO_UPLOAD_ENABLED: ${PHOTO_UPLOAD_ENABLED:-False}
       PRIVATE_MEDIA_S3_BUCKET: ${PRIVATE_MEDIA_S3_BUCKET:-}
       PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}
@@ -123,6 +125,26 @@ services:
       driver: journald
       options:
         tag: "findme.service=worker"
+
+  import-worker:
+    image: ${IMPORT_WORKER_IMAGE:-}
+    profiles:
+      - import
+    environment:
+      PHOTO_IMPORT_API_URL: http://web:8000/internal/photo-import/v1/
+      PHOTO_IMPORT_WORKER_TOKEN: ${PHOTO_IMPORT_WORKER_TOKEN:-}
+      PHOTO_IMPORT_BUILD: ${PHOTO_IMPORT_BUILD:-local}
+    depends_on:
+      - web
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp/photo-import:size=67108864,uid=10002,gid=10002,mode=0700
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 32
 
   commerce-worker:
     image: ${APP_IMAGE:?APP_IMAGE must be set}

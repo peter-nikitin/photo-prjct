@@ -11,7 +11,7 @@ quote-style = "double"
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src/backend", "src/worker/photo_worker"]
+files = ["src/backend", "src/worker/photo_worker", "src/import_worker/import_worker"]
 exclude = ["src/backend/picflow/migrations"]
 check_untyped_defs = true
 ignore_missing_imports = true
@@ -21,8 +21,8 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
-pythonpath = [".", "src/backend", "src/worker"]
-testpaths = ["src/backend", "src/worker/tests", "tests"]
+pythonpath = [".", "src/backend", "src/worker", "src/import_worker"]
+testpaths = ["src/backend", "src/worker/tests", "src/import_worker/tests", "tests"]
 addopts = "--strict-config --strict-markers --import-mode=importlib"
 markers = [
   "unit: pure or non-database test layer",
@@ -45,6 +45,7 @@ source = [
     "src/backend/processing",
     "src/backend/selfie_search",
     "src/worker/photo_worker",
+    "src/import_worker/import_worker",
 ]
 omit = ["*/migrations/*", "*/tests/*", "*/asgi.py", "*/wsgi.py"]
 

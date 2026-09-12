@@ -201,6 +201,7 @@ jobs:
     outputs:
       app_image: ${{ steps.image.outputs.app_image }}
       worker_image: ${{ steps.image.outputs.worker_image }}
+      import_worker_image: ${{ steps.image.outputs.import_worker_image }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -224,6 +225,16 @@ jobs:
           release_sha="${{ needs.classify-release.outputs.release_sha }}"
           echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${release_sha}" >> "$GITHUB_OUTPUT"
           echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" >> "$GITHUB_OUTPUT"
+          echo "import_worker_image=ghcr.io/${GITHUB_REPOSITORY}-import-worker:${release_sha}" >> "$GITHUB_OUTPUT"
+      - name: Build and push import image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.import-worker
+          push: true
+          tags: ${{ steps.image.outputs.import_worker_image }}
+          cache-from: type=gha,scope=import-worker
+          cache-to: type=gha,mode=max,scope=import-worker,ignore-error=true
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -293,6 +304,9 @@ jobs:
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
           WORKER_IMAGE: ${{ needs.build.outputs.worker_image }}
+          IMPORT_WORKER_IMAGE: ${{ needs.build.outputs.import_worker_image }}
+          PHOTO_IMPORT_ENABLED: ${{ vars.PHOTO_IMPORT_ENABLED || 'False' }}
+          PHOTO_IMPORT_BUILD: ${{ needs.classify-release.outputs.release_sha }}
           DEBUG: "False"
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
           GUNICORN_WORKERS: '5'

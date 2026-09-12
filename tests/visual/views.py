@@ -1085,6 +1085,9 @@ def _upload(
     queue: tuple[MappingProxyType[str, Any], ...] = (),
     unfinished_uploads: tuple[FixtureUnfinishedUpload, ...] = (),
     selected_event_id: str = "",
+    photo_import_enabled: bool = False,
+    photo_import_history_enabled: bool = False,
+    photo_import_urls: dict[str, str] | None = None,
 ) -> HttpResponse:
     request.user = FixtureUser("Анна Смирнова")
     with override_settings(PHOTO_UPLOAD_ENABLED=True):
@@ -1099,6 +1102,9 @@ def _upload(
                 "upload_queue_groups": _upload_queue_groups(queue),
                 "unfinished_batches": unfinished_uploads,
                 "selected_event_id": selected_event_id,
+                "photo_import_enabled": photo_import_enabled,
+                "photo_import_history_enabled": photo_import_history_enabled,
+                "photo_import_urls": photo_import_urls or {},
             },
         )
 
@@ -1198,6 +1204,103 @@ def upload_folders(request: HttpRequest) -> HttpResponse:
         queue=FOLDER_UPLOAD_QUEUE,
         selected_event_id="london-10k",
     )
+
+
+def upload_imports(request: HttpRequest) -> HttpResponse:
+    return _upload(
+        request,
+        state="empty",
+        summary={"progress": 0, "total": 0, "uploaded": 0, "failed": 0, "bytes": "0 Б"},
+        selected_event_id="london-10k",
+        photo_import_enabled=True,
+        photo_import_history_enabled=True,
+        photo_import_urls={
+            "collection": "/__visual__/upload/imports-api/",
+            "detail": "/__visual__/upload/imports-api/{batch}/",
+            "items": "/__visual__/upload/imports-api/{batch}/items/",
+            "retry": "/__visual__/upload/imports-api/{batch}/retry/",
+        },
+    )
+
+
+def upload_imports_api(request: HttpRequest) -> JsonResponse:
+    records = _visual_import_records()
+    return JsonResponse(
+        {
+            "contract_version": 1,
+            "imports": records,
+            "pagination": {"page": 1, "page_size": 20, "total": len(records), "pages": 1},
+        }
+    )
+
+
+def upload_import_detail_api(request: HttpRequest, batch: str) -> JsonResponse:
+    record = next(item for item in _visual_import_records() if item["id"] == batch)
+    return JsonResponse({"contract_version": 1, "batch": record})
+
+
+def _visual_import_records() -> tuple[dict[str, Any], ...]:
+    return (
+        _visual_import("import-empty", "completed", "Без папки"),
+        _visual_import("import-duplicates", "completed", "Старт", jpeg=8, duplicate=8),
+        _visual_import(
+            "import-active",
+            "transferring",
+            "Финиш",
+            jpeg=48,
+            directory=2,
+            unsupported=3,
+            imported=19,
+            pending=29,
+        ),
+        _visual_import(
+            "import-partial", "partial", "Старт", jpeg=12, imported=9, duplicate=1, error=2
+        ),
+        _visual_import("import-paused", "paused", "Без папки", jpeg=30, imported=11, pending=19),
+        _visual_import(
+            "import-completed",
+            "completed",
+            "Финиш",
+            jpeg=24,
+            imported=24,
+            processing_active=True,
+        ),
+    )
+
+
+def _visual_import(
+    import_id: str,
+    status: str,
+    folder: str,
+    *,
+    jpeg: int = 0,
+    directory: int = 0,
+    unsupported: int = 0,
+    imported: int = 0,
+    duplicate: int = 0,
+    error: int = 0,
+    pending: int = 0,
+    processing_active: bool = False,
+) -> dict[str, Any]:
+    return {
+        "id": import_id,
+        "status": status,
+        "event": {"id": "london-10k", "name": "London 10K"},
+        "folder": None if folder == "Без папки" else {"id": folder.lower(), "name": folder},
+        "created_at": "2026-09-07T10:30:00+03:00",
+        "completed_at": "2026-09-07T10:42:00+03:00" if status in {"completed", "partial"} else None,
+        "counts": {
+            "jpeg": jpeg,
+            "directory": directory,
+            "unsupported": unsupported,
+            "imported": imported,
+            "duplicate": duplicate,
+            "error": error,
+            "pending": pending,
+        },
+        "error_code": "",
+        "processing_active": processing_active,
+    }
 
 
 def reference_orders(request: HttpRequest) -> HttpResponse:

@@ -16,7 +16,7 @@ This inventory is the canonical map from visual concepts to Django templates and
 | Search workspace | design-reference | `tests/visual/templates/design_reference/search.html` | none | `/__visual__/reference/search/` | `desktop-reference-search.png`, `mobile-reference-search.png` |
 | Operator dashboard | design-reference | `tests/visual/templates/design_reference/dashboard.html` | none | `/__visual__/reference/dashboard/` | `desktop-reference-dashboard.png` |
 | Event management | design-reference | `tests/visual/templates/design_reference/events.html` | none | `/__visual__/reference/events/` | `desktop-reference-events.png` |
-| Upload | production | `src/backend/templates/ingestion/upload.html` | `/photographer/uploads/` | `/__visual__/upload/empty/`, `/__visual__/upload/active/`, `/__visual__/upload/partial/`, `/__visual__/upload/complete/`, `/__visual__/upload/folders/` | `desktop-upload-empty.png`, `desktop-upload-active.png`, `desktop-upload-partial.png`, `desktop-upload-complete.png`, `desktop-upload-folders.png`, `mobile-upload-empty.png`, `mobile-upload-active.png`, `mobile-upload-partial.png`, `mobile-upload-complete.png`, `mobile-upload-folders.png` |
+| Upload | production | `src/backend/templates/ingestion/upload.html` | `/photographer/uploads/` | `/__visual__/upload/empty/`, `/__visual__/upload/active/`, `/__visual__/upload/partial/`, `/__visual__/upload/complete/`, `/__visual__/upload/folders/`, `/__visual__/upload/imports/` | `desktop-upload-empty.png`, `desktop-upload-active.png`, `desktop-upload-partial.png`, `desktop-upload-complete.png`, `desktop-upload-folders.png`, `desktop-upload-imports.png`, `mobile-upload-empty.png`, `mobile-upload-active.png`, `mobile-upload-partial.png`, `mobile-upload-complete.png`, `mobile-upload-folders.png`, `mobile-upload-imports.png` |
 | Orders | design-reference | `tests/visual/templates/design_reference/orders.html` | none | `/__visual__/reference/orders/` | `desktop-reference-orders.png` |
 | Promotions | design-reference | `tests/visual/templates/design_reference/promotions.html` | none | `/__visual__/reference/promotions/` | `desktop-reference-promotions.png` |
 | Purchased photos | design-reference | `tests/visual/templates/design_reference/purchased.html` | none | `/__visual__/reference/purchased/` | `desktop-reference-purchased.png` |
@@ -113,3 +113,8 @@ archive primary action, and the white resend secondary action. The added desktop
 snapshots are `desktop-selfie-search-ready-single.png`, `mobile-selfie-search-ready-single.png`,
 `desktop-order-paid-multi.png`, and `mobile-order-paid-multi.png`; the intentionally changed ready
 and paid Order baselines were refreshed.
+
+On 2026-09-07, the production upload page added server-side Yandex Disk import. The deterministic
+desktop and 390px mobile `upload-imports` baselines cover empty, duplicates-only, active with the
+direct-subfolder warning, partial, paused, and completed-with-processing-active imports. Existing
+local-upload routes remain gate-off baselines.

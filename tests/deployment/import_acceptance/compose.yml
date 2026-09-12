@@ -1,0 +1,70 @@
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_DB: app, POSTGRES_USER: app, POSTGRES_PASSWORD: app }
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U app]
+      interval: 1s
+      retries: 30
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data
+    environment: { MINIO_ROOT_USER: local-minio, MINIO_ROOT_PASSWORD: local-minio-password }
+    tmpfs: [/data]
+  web:
+    image: findme-import-task6-web
+    entrypoint: [/bin/sh, -ec]
+    command: ['python manage.py migrate --noinput && python manage.py sync_feature_flags && python /fixtures/seed.py && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 1 --threads 2 --timeout 180']
+    environment:
+      SECRET_KEY: disposable-acceptance
+      DEBUG: 'False'
+      ALLOWED_HOSTS: web,proxy
+      DB_PORT: "5432"
+      DB_HOST: db
+      DB_NAME: app
+      DB_USER: app
+      DB_PASSWORD: app
+      PRIVATE_MEDIA_ALLOWED_ORIGINS: http://proxy:8080
+      PHOTO_UPLOAD_ENABLED: 'True'
+      PHOTO_IMPORT_ENABLED: 'True'
+      PHOTO_IMPORT_WORKER_TOKEN: fixture-token
+      PHOTO_PROCESSING_ENABLED: 'True'
+      PHOTO_PROCESSING_FACE_ENABLED: 'True'
+      PRIVATE_MEDIA_S3_BUCKET: local-private
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: local-minio
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: local-minio-password
+      MEDIA_S3_ENDPOINT_URL: http://minio:9000
+      MEDIA_S3_REGION: us-east-1
+      PYTHONPATH: /app/src/backend
+    volumes: [./:/fixtures:ro]
+    depends_on:
+      db: { condition: service_healthy }
+    mem_limit: 512m
+  proxy:
+    image: nginx:1.27-alpine
+    volumes: [./nginx.conf:/etc/nginx/nginx.conf:ro]
+    depends_on: [web]
+    mem_limit: 64m
+  source:
+    image: findme-import-task6-worker
+    command: [python, /fixtures/source_server.py]
+    volumes: [./:/fixtures:ro]
+    read_only: true
+    mem_limit: 128m
+  worker:
+    image: findme-import-task6-worker
+    command: [python, /fixtures/run.py]
+    environment:
+      PYTHONPATH: /import-worker
+      PHOTO_IMPORT_API_URL: http://proxy:8080/internal/photo-import/v1/
+      PHOTO_IMPORT_WORKER_TOKEN: fixture-token
+    volumes: [./:/fixtures:ro]
+    tmpfs: ["/tmp/photo-import:size=67108864,uid=10002,gid=10002,mode=0700"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: '0.5'
+    pids_limit: 32
+    depends_on: [proxy, source]

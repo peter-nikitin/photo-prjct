@@ -127,6 +127,10 @@ server {
     add_header X-Frame-Options "DENY" always;
 
     # The worker reaches Django through the private Compose network, never the public edge.
+    location ^~ /internal/photo-import/ {
+        return 404;
+    }
+
     location ^~ /internal/photo-processing/ {
         return 404;
     }

@@ -1,3 +1,11 @@
+FROM debian:bookworm-slim AS llama-build
+RUN apt-get update && apt-get install -y --no-install-recommends cmake g++ make ca-certificates && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:2de0d87eda4696e9f6bbd771d4c623267f4e95856cce6f99793f91522f993e43 https://github.com/ggml-org/llama.cpp/archive/5266f24da75dc449bd56cbed7addb9c8e4a6a73e.tar.gz /tmp/llama.tar.gz
+RUN mkdir /src && tar -xzf /tmp/llama.tar.gz -C /src --strip-components=1 \
+    && cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON \
+    && cmake --build /build --target llama-server -j 2 \
+    && mkdir /runtime && cp /build/bin/llama-server /build/bin/*.so* /runtime/
+
 FROM alpine:3.21 AS face-models
 
 RUN apk add --no-cache unzip
@@ -10,7 +18,11 @@ FROM python:3.12-slim
 
 WORKDIR /worker
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+COPY --from=llama-build /runtime /worker/llama
+
+ENV LD_LIBRARY_PATH=/worker/llama \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PHOTO_WORKER_SCRFD_MODEL_PATH=/worker/models/det_10g.onnx \
     PHOTO_WORKER_SFACE_MODEL_PATH=/worker/models/face_recognition_sface_2021dec.onnx \
@@ -31,13 +43,23 @@ ADD --checksum=sha256:0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087
 ADD --checksum=sha256:3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b https://huggingface.co/minchul/cvlface_adaface_ir18_webface4m/resolve/0dd53f188fa27968b0a1326970ebf4aeb37ce2ca/model.safetensors /worker/models/adaface-ir18-webface4m/model.safetensors
 ADD --checksum=sha256:e31be55c60b538c15151887e911b7535e2f0e1114a13427ba06483e1cd2a63f9 https://huggingface.co/minchul/cvlface_adaface_ir18_webface4m/raw/0dd53f188fa27968b0a1326970ebf4aeb37ce2ca/models/iresnet/model.py /worker/models/adaface-ir18-webface4m/models/iresnet/model.py
 
+RUN mkdir -p /worker/models/bib
+ADD --checksum=sha256:089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/d38d39f5972e27cd58023f9b1e9f994b0c85ca47/Qwen3VL-2B-Instruct-Q4_K_M.gguf /worker/models/bib/Qwen3VL-2B-Instruct-Q4_K_M.gguf
+ADD --checksum=sha256:f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82 https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/d38d39f5972e27cd58023f9b1e9f994b0c85ca47/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf /worker/models/bib/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf
+ADD --checksum=sha256:4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx /worker/models/bib/ch_PP-OCRv5_det_mobile.onnx
+ADD --checksum=sha256:5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5 https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx /worker/models/bib/ch_PP-OCRv5_rec_mobile.onnx
+ADD --checksum=sha256:e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx /worker/models/bib/ch_ppocr_mobile_v2.0_cls_mobile.onnx
+# The pinned recognizer embeds the exact dictionary; extract and verify it without ONNX tooling.
+RUN python -c "import onnxruntime,pathlib; p=pathlib.Path('/worker/models/bib'); m=onnxruntime.InferenceSession(str(p/'ch_PP-OCRv5_rec_mobile.onnx')); (p/'dictionary.txt').write_text(m.get_modelmeta().custom_metadata_map['character'], encoding='utf-8')" \
+    && echo "17665d27ed39f0deb82007859992d626d3105d0ee4578c120b7c72138dc04d05  /worker/models/bib/dictionary.txt" | sha256sum -c -
+
 RUN useradd --create-home --uid 10001 worker
 COPY src/worker/photo_worker ./photo_worker
 RUN chown -R worker:worker /worker
 
 USER worker
 
-RUN python -m photo_worker.runtime_contract
-RUN python -m photo_worker.model_smoke
+RUN --network=none python -m photo_worker.runtime_contract
+RUN --network=none python -m photo_worker.model_smoke
 
 CMD ["python", "-m", "photo_worker"]

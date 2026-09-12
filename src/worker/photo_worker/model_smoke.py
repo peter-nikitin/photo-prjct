@@ -32,6 +32,8 @@ def main() -> None:
         path.write_bytes(jpeg.tobytes())
         _assert_photo_embedding_no_face(path)
         _assert_selfie_query_no_face(path)
+        _assert_preview_paths(path)
+        _assert_bib_models(path)
         decoded = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
 
     if decoded is None:
@@ -41,28 +43,32 @@ def main() -> None:
 
 
 def _assert_photo_embedding_no_face(path: Path) -> None:
-    result = extract_face_embeddings(
-        path,
-        max_bytes=path.stat().st_size,
-        detection_threshold=0.5,
-    )
-    if result.model != "sface" or result.faces != () or result.warnings != ("no_faces_detected",):
-        raise RuntimeError("face_model_smoke_unexpected_photo_result")
+    for model in ("sface", "adaface-ir18-webface4m"):
+        result = extract_face_embeddings(
+            path,
+            max_bytes=path.stat().st_size,
+            detection_threshold=0.5,
+            model=model,
+        )
+        if result.model != model or result.faces != () or result.warnings != ("no_faces_detected",):
+            raise RuntimeError("face_model_smoke_unexpected_photo_result")
 
 
 def _assert_selfie_query_no_face(path: Path) -> None:
-    try:
-        extract_selfie_embedding(
-            path,
-            max_bytes=path.stat().st_size,
-            content_type="image/jpeg",
-            detection_threshold=0.5,
-        )
-    except FaceEmbeddingError as error:
-        if error.code == "no_face_detected":
-            return
-        raise RuntimeError("face_model_smoke_unexpected_selfie_error") from error
-    raise RuntimeError("face_model_smoke_expected_no_face")
+    for model in ("sface", "adaface-ir18-webface4m"):
+        try:
+            extract_selfie_embedding(
+                path,
+                max_bytes=path.stat().st_size,
+                content_type="image/jpeg",
+                detection_threshold=0.5,
+                model=model,
+            )
+        except FaceEmbeddingError as error:
+            if error.code == "no_face_detected":
+                continue
+            raise RuntimeError("face_model_smoke_unexpected_selfie_error") from error
+        raise RuntimeError("face_model_smoke_expected_no_face")
 
 
 def _exercise_adaface_feature(cv2: Any, np: Any, image: Any) -> None:
@@ -86,6 +92,64 @@ def _exercise_adaface_feature(cv2: Any, np: Any, image: Any) -> None:
         raise RuntimeError("face_model_smoke_invalid_feature")
     if not math.isclose(sum(value * value for value in feature), 1.0, rel_tol=1e-5):
         raise RuntimeError("face_model_smoke_invalid_feature")
+
+
+def _assert_preview_paths(path: Path) -> None:
+    from photo_worker.contracts import OutputSlot
+    from photo_worker.preview import generate_preview
+    from photo_worker.watermark import WATERMARK_ASSET_SHA256S, generate_watermarked_preview
+
+    for variant in ("preview-small-v1", "preview-watermarked-v1"):
+        slot = OutputSlot(
+            variant=variant,
+            upload_url="",
+            upload_expires_at="",
+            content_type="image/jpeg",
+            staging_key="",
+            max_bytes=10 * 1024 * 1024,
+            max_width=1600,
+            max_height=1600,
+            checksum_algorithm="sha256",
+        )
+        destination = path.with_name(variant + ".jpg")
+        if variant == "preview-small-v1":
+            generate_preview(path, destination, max_input_bytes=path.stat().st_size, slot=slot)
+        else:
+            generate_watermarked_preview(
+                path,
+                destination,
+                max_input_bytes=path.stat().st_size,
+                slot=slot,
+                asset_sha256s=WATERMARK_ASSET_SHA256S,
+            )
+    print("preview-model-smoke-ok")
+
+
+def _assert_bib_models(path: Path) -> None:
+    from photo_worker.bib_execution import MODEL_DIRECTORY, OCR_CONFIG
+    from photo_worker.bib_recognition import (
+        BIB_CONFIGURATION_SHA256,
+        RapidOCREngine,
+        verify_runtime_versions,
+    )
+    from photo_worker.bib_visual import LlamaVisualReader
+    from photo_worker.contracts import BIB_INFERENCE_CONFIGURATION_SHA256
+
+    if BIB_CONFIGURATION_SHA256 != BIB_INFERENCE_CONFIGURATION_SHA256:
+        raise RuntimeError("bib_configuration_identity_mismatch")
+    verify_runtime_versions()
+    ocr = RapidOCREngine.from_experiment_config(OCR_CONFIG, repository=MODEL_DIRECTORY)
+    ocr.infer(path)
+    with LlamaVisualReader(model_path=MODEL_DIRECTORY) as reader:
+        from PIL import Image
+
+        crop = path.with_suffix(".png")
+        with Image.open(path) as image:
+            image.save(crop)
+        reading = reader.read(image_id="synthetic-smoke", image_path=crop)
+        if reading.status != "complete" or reading.numbers != ():
+            raise RuntimeError("bib_model_smoke_expected_empty_numbers")
+    print("bib-model-smoke-ok")
 
 
 if __name__ == "__main__":

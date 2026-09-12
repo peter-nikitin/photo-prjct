@@ -24,7 +24,7 @@ from processing.models import (
 from processing.services import jobs
 
 BIB_INFERENCE_CONFIGURATION_SHA256 = (
-    "b6a80c7157b9032b6fe7f3f45cd334d65fdf3566cd1b430e393e14aaa110e590"
+    "9a92bd7655cbec0708400aebd6de432706526c230db009959a2fbffa45290a22"
 )
 
 _BIB_CONFIGURATION: dict[str, object] = {

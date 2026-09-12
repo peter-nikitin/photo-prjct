@@ -10,8 +10,8 @@ from typing import Protocol
 
 from photo_worker.watermark import verify_packaged_watermark_assets
 
-MAX_RUNTIME_BYTES = 2048 * 1024 * 1024
-MODEL_DIRECTORIES = (Path("/worker/models"),)
+MAX_RUNTIME_BYTES = 4096 * 1024 * 1024
+MODEL_DIRECTORIES = (Path("/worker/models"), Path("/worker/llama"))
 
 
 class TorchVersion(Protocol):
@@ -58,7 +58,7 @@ def verify_runtime_contract(
     runtime_directories = (*site_package_directories, *model_directories)
     runtime_bytes = sum(_directory_size(directory) for directory in runtime_directories)
     if runtime_bytes > MAX_RUNTIME_BYTES:
-        raise RuntimeError("Worker site-packages and models exceed 2048 MiB")
+        raise RuntimeError("Worker site-packages and models exceed 4096 MiB")
 
 
 if __name__ == "__main__":

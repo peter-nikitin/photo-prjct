@@ -105,7 +105,7 @@ class HttpClient:
     ) -> dict[str, Any]:
         if not 0 < response_max_bytes <= MAX_JSON_FIELD_BYTES:
             raise ValueError("response_max_bytes must be a bounded positive integer")
-        body = json.dumps(payload, separators=(",", ":")).encode()
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
         request = Request(
             f"{self._api_url}/{path.lstrip('/')}",
             data=body,

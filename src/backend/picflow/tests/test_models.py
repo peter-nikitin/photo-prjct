@@ -39,6 +39,14 @@ class EventModelTests(TestCase):
 
         self.assertEqual(event.face_search_generation, Event.FaceSearchGeneration.ADAFACE_V5)
 
+    def test_new_event_defaults_bib_search_to_disabled(self) -> None:
+        event = self.make_event(name="Bib disabled default", slug="bib-disabled-default")
+        field = Event._meta.get_field("bib_search_enabled")
+
+        self.assertFalse(event.bib_search_enabled)
+        self.assertIs(field.default, False)
+        self.assertIs(field.db_default, False)
+
     def test_string_representation_uses_name(self) -> None:
         self.assertEqual(str(self.make_event()), "Test Run")
 
@@ -420,6 +428,42 @@ class PhotoModelTests(TestCase):
         self.assertEqual(photo.processing_generation, "legacy_original_v1")
         self.assertEqual(photo.gallery_media_policy, "legacy_original_allowed")
 
+    def test_bib_processing_policy_defaults_disabled_with_exact_choices(self) -> None:
+        photo = self.private_photo()
+        field = Photo._meta.get_field("bib_processing_policy")
+
+        self.assertEqual(photo.bib_processing_policy, "disabled")
+        self.assertEqual(field.max_length, 16)
+        self.assertEqual(
+            [value for value, _label in field.choices],
+            ["disabled", "original_v1"],
+        )
+        self.assertEqual(field.default, Photo.BibProcessingPolicy.DISABLED)
+        self.assertEqual(field.db_default, Photo.BibProcessingPolicy.DISABLED)
+
+    def test_bib_processing_policy_is_immutable_after_photo_creation(self) -> None:
+        photo = self.private_photo(bib_processing_policy="original_v1")
+        photo.save()
+
+        photo.bib_processing_policy = "disabled"
+        with self.assertRaisesRegex(ValidationError, "Bib processing policy cannot be changed"):
+            photo.save(update_fields=["bib_processing_policy"])
+
+        photo.refresh_from_db()
+        self.assertEqual(photo.bib_processing_policy, "original_v1")
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Photo.objects.filter(pk=photo.pk).update(bib_processing_policy="disabled")
+
+        photo.refresh_from_db()
+        self.assertEqual(photo.bib_processing_policy, "original_v1")
+
+    def test_bib_processing_policy_rejects_unknown_values_at_database_boundary(self) -> None:
+        invalid = self.private_photo(bib_processing_policy="future_policy")
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            invalid.save()
+
     def test_processing_policy_fields_accept_exactly_three_documented_pairs(self) -> None:
         generation_field = Photo._meta.get_field("processing_generation")
         policy_field = Photo._meta.get_field("gallery_media_policy")
@@ -457,7 +501,7 @@ class PhotoModelTests(TestCase):
 
         self.assertEqual(
             loader.graph.leaf_nodes("picflow"),
-            [("picflow", "0014_photo_is_hidden")],
+            [("picflow", "0015_bib_search_policy")],
         )
         migration = loader.get_migration("picflow", "0012_paid_watermarked_photo_policy")
         self.assertEqual(

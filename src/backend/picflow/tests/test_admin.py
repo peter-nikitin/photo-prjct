@@ -53,6 +53,34 @@ class EventAdminTests(TestCase):
 
         self.assertContains(response, 'name="timezone_name"')
 
+    def test_admin_exposes_and_edits_the_bib_search_checkbox(self) -> None:
+        add_response = self.client.get(reverse("admin:picflow_event_add"))
+        self.assertContains(add_response, 'name="bib_search_enabled"')
+
+        event = Event.objects.create(
+            name="Bib admin run",
+            slug="bib-admin-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        enable_response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]),
+            self.event_change_data(event, bib_search_enabled="on"),
+        )
+        self.assertEqual(enable_response.status_code, 302)
+        event.refresh_from_db()
+        self.assertTrue(event.bib_search_enabled)
+
+        disable_data = self.event_change_data(event)
+        disable_data.pop("bib_search_enabled")
+        disable_response = self.client.post(
+            reverse("admin:picflow_event_change", args=[event.pk]), disable_data
+        )
+        self.assertEqual(disable_response.status_code, 302)
+        event.refresh_from_db()
+        self.assertFalse(event.bib_search_enabled)
+
     def test_admin_prefills_moscow_timezone_for_new_event(self) -> None:
         response = self.client.get(reverse("admin:picflow_event_add"))
 
@@ -171,6 +199,7 @@ class EventAdminTests(TestCase):
             "event": str(photo.event_id),
             "processing_generation": photo.processing_generation,
             "gallery_media_policy": photo.gallery_media_policy,
+            "bib_processing_policy": photo.bib_processing_policy,
             "_save": "Save",
         }
         values.update(overrides)
@@ -201,6 +230,7 @@ class EventAdminTests(TestCase):
                 "uploaded_at_1": "12:00:00",
                 "processing_generation": (Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1),
                 "gallery_media_policy": (Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
+                "bib_processing_policy": Photo.BibProcessingPolicy.DISABLED,
                 "_save": "Save",
             },
         )
@@ -377,6 +407,37 @@ class EventAdminTests(TestCase):
             Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
         )
 
+    def test_photo_admin_rejects_bib_processing_policy_changes(self) -> None:
+        event = Event.objects.create(
+            name="Bib immutable run",
+            slug="bib-immutable-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+        )
+        photo = Photo.objects.create(
+            id="bib-immutable-photo",
+            event=event,
+            src="photos/bib-immutable.jpg",
+            bib_processing_policy=Photo.BibProcessingPolicy.ORIGINAL_V1,
+        )
+
+        response = self.client.post(
+            reverse("admin:picflow_photo_change", args=[photo.pk]),
+            self.photo_change_data(
+                photo,
+                bib_processing_policy=Photo.BibProcessingPolicy.DISABLED,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Bib processing policy cannot be changed after the photo has been created.",
+            response.context["adminform"].form.errors["bib_processing_policy"],
+        )
+        photo.refresh_from_db()
+        self.assertEqual(photo.bib_processing_policy, Photo.BibProcessingPolicy.ORIGINAL_V1)
+
     def test_photo_admin_rejects_folderless_photo_move_and_keeps_original_event_frozen(
         self,
     ) -> None:
@@ -542,6 +603,8 @@ class EventAdminTests(TestCase):
             "folders-MAX_NUM_FORMS": "1000",
             "_save": "Save",
         }
+        if event.bib_search_enabled:
+            values["bib_search_enabled"] = "on"
         values.update(overrides)
         return values
 

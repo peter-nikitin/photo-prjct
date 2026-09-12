@@ -289,6 +289,156 @@ class ProcessingModelTests(TestCase):
             FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
         return attempt
 
+    def make_bib_attempt(
+        self,
+        *,
+        photo: Photo | None = None,
+        processor_type: str = "bib_recognition",
+        status: Any = ProcessingAttempt.Status.SUCCEEDED,
+        accepted: bool = True,
+    ) -> ProcessingAttempt:
+        attempt_photo = photo or self.photo
+        run = self.make_run(processor_type=processor_type)
+        job = self.make_job(run=run, photo=attempt_photo, processor_type=processor_type)
+        return ProcessingAttempt.objects.create(
+            event=self.event,
+            run=run,
+            job=job,
+            photo=attempt_photo,
+            contract_version=1,
+            processor_type=processor_type,
+            processor_version=1,
+            configuration={},
+            input_fingerprint={},
+            status=status,
+            terminal_at=(
+                None if status == ProcessingAttempt.Status.IN_PROGRESS else timezone.now()
+            ),
+            accepted=accepted,
+        )
+
+    def test_bib_reading_model_is_registered(self) -> None:
+        self.assertIn("bibreading", apps.get_app_config("processing").models)
+
+    def test_bib_reading_preserves_leading_zeros_and_is_unique_per_photo_number(self) -> None:
+        BibReading = apps.get_model("processing", "BibReading")
+        attempt = self.make_bib_attempt()
+        leading = BibReading.objects.create(
+            photo=self.photo,
+            source_attempt=attempt,
+            number="007",
+            evidence={"ocr": {"text": "007"}},
+        )
+        BibReading.objects.create(
+            photo=self.photo,
+            source_attempt=attempt,
+            number="7",
+            evidence={"ocr": {"text": "7"}},
+        )
+
+        self.assertEqual(leading.number, "007")
+        self.assertEqual(
+            set(BibReading.objects.filter(photo=self.photo).values_list("number", flat=True)),
+            {"007", "7"},
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            BibReading.objects.create(
+                photo=self.photo,
+                source_attempt=attempt,
+                number="007",
+                evidence={"candidate": "duplicate"},
+            )
+
+        other_photo = self.make_private_photo("same-bib-other-photo", self.event)
+        BibReading.objects.create(
+            photo=other_photo,
+            source_attempt=self.make_bib_attempt(photo=other_photo),
+            number="007",
+            evidence={},
+        )
+
+    def test_bib_reading_number_has_model_and_database_ascii_bounds(self) -> None:
+        BibReading = apps.get_model("processing", "BibReading")
+        field = BibReading._meta.get_field("number")
+        attempt = self.make_bib_attempt()
+
+        self.assertEqual(field.max_length, 16)
+        for invalid in ("", "12345678901234567", "١٢٣", "１２３", "12 3"):
+            with self.subTest(invalid=invalid):
+                reading = BibReading(
+                    photo=self.photo,
+                    source_attempt=attempt,
+                    number=invalid,
+                    evidence={},
+                )
+                with self.assertRaises(ValidationError):
+                    reading.full_clean()
+
+        for invalid in ("", "١٢٣", "12 3"):
+            with self.subTest(database_invalid=invalid), transaction.atomic():
+                with self.assertRaises(IntegrityError):
+                    BibReading.objects.create(
+                        photo=self.photo,
+                        source_attempt=attempt,
+                        number=invalid,
+                        evidence={},
+                    )
+
+    def test_bib_reading_has_search_index_and_protects_source_attempt(self) -> None:
+        BibReading = apps.get_model("processing", "BibReading")
+        source_attempt = self.make_bib_attempt()
+        reading = BibReading.objects.create(
+            photo=self.photo,
+            source_attempt=source_attempt,
+            number="42",
+            evidence={},
+        )
+
+        self.assertIn(
+            ("number", "photo"),
+            {tuple(index.fields) for index in BibReading._meta.indexes},
+        )
+        self.assertEqual(
+            BibReading._meta.get_field("source_attempt").remote_field.on_delete.__name__,
+            "PROTECT",
+        )
+        with self.assertRaises(ProtectedError):
+            source_attempt.delete()
+        self.assertTrue(BibReading.objects.filter(pk=reading.pk).exists())
+
+    def test_bib_reading_model_validation_requires_matching_accepted_bib_attempt(self) -> None:
+        BibReading = apps.get_model("processing", "BibReading")
+        other_photo = self.make_private_photo("bib-source-other", self.event)
+        invalid_attempts = (
+            self.make_bib_attempt(photo=other_photo),
+            self.make_bib_attempt(processor_type="capture_metadata"),
+            self.make_bib_attempt(accepted=False),
+            self.make_bib_attempt(status=ProcessingAttempt.Status.FAILED, accepted=False),
+        )
+
+        for attempt in invalid_attempts:
+            with self.subTest(attempt=attempt.pk):
+                reading = BibReading(
+                    photo=self.photo,
+                    source_attempt=attempt,
+                    number="42",
+                    evidence={},
+                )
+                with self.assertRaises(ValidationError):
+                    reading.full_clean()
+
+    def test_bib_reading_evidence_uses_the_bounded_json_contract(self) -> None:
+        BibReading = apps.get_model("processing", "BibReading")
+        reading = BibReading(
+            photo=self.photo,
+            source_attempt=self.make_bib_attempt(),
+            number="42",
+            evidence={"payload": "x" * (JSON_MAX_BYTES + 1)},
+        )
+
+        with self.assertRaises(ValidationError):
+            reading.full_clean()
+
     def test_face_projection_keeps_same_photo_generations_separate(self) -> None:
         baseline = self.make_face_attempt(
             contract_version=1,

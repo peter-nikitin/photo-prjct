@@ -38,7 +38,7 @@ Execute this plan with `$execute-implementation-plan`.
 
 ### Task 1: Persist event applicability and searchable bib projections
 
-**Files:** `src/backend/picflow/models.py`, `src/backend/picflow/admin.py`, `src/backend/picflow/migrations/0014_bib_search_policy.py`, `src/backend/picflow/tests/test_admin.py`, `src/backend/processing/models.py`, `src/backend/processing/migrations/0009_bib_reading_projection.py`, `src/backend/processing/tests/test_models.py`, `tests/processing/test_bib_upgrade.py`.
+**Files:** `src/backend/picflow/models.py`, `src/backend/picflow/admin.py`, `src/backend/picflow/migrations/0015_bib_search_policy.py`, `src/backend/picflow/tests/test_admin.py`, `src/backend/processing/models.py`, `src/backend/processing/migrations/0009_bib_reading_projection.py`, `src/backend/processing/tests/test_models.py`, `tests/processing/test_bib_upgrade.py`.
 
 - **Specification:** [Event and photo applicability](../superpowers/specs/2026-09-12-bib-number-production-search-design.md#4-event-and-photo-applicability), [Search projection and query](../superpowers/specs/2026-09-12-bib-number-production-search-design.md#8-search-projection-and-query).
 - **Depends on:** None.

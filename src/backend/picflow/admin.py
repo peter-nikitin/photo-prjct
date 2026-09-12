@@ -54,6 +54,7 @@ class EventAdmin(admin.ModelAdmin):
                 "access_type",
                 "price_per_photo_rub",
                 "publication_status",
+                "bib_search_enabled",
             )
 
         def __init__(self, *args, **kwargs) -> None:
@@ -114,7 +115,10 @@ class EventAdmin(admin.ModelAdmin):
     fieldsets = (
         ("Content", {"fields": ("name", "slug", "description", "cover")}),
         ("Schedule", {"fields": ("start_date", "end_date", "city", "timezone_name")}),
-        ("Access and publication", {"fields": ("access_type", "publication_status")}),
+        (
+            "Access and publication",
+            {"fields": ("access_type", "publication_status", "bib_search_enabled")},
+        ),
         ("Commerce", {"fields": ("price_per_photo_rub",)}),
     )
 
@@ -139,6 +143,7 @@ class PhotoAdmin(admin.ModelAdmin):
                 "uploaded_at",
                 "processing_generation",
                 "gallery_media_policy",
+                "bib_processing_policy",
             )
 
         def clean(self):
@@ -153,6 +158,7 @@ class PhotoAdmin(admin.ModelAdmin):
                     "event": persisted.event,
                     "processing_generation": persisted.processing_generation,
                     "gallery_media_policy": persisted.gallery_media_policy,
+                    "bib_processing_policy": persisted.bib_processing_policy,
                 }
                 immutable_errors = {
                     "event": "Event cannot be changed after the photo has been created.",
@@ -161,6 +167,9 @@ class PhotoAdmin(admin.ModelAdmin):
                     ),
                     "gallery_media_policy": (
                         "Gallery media policy cannot be changed after the photo has been created."
+                    ),
+                    "bib_processing_policy": (
+                        "Bib processing policy cannot be changed after the photo has been created."
                     ),
                 }
                 if persisted.order_items.filter(order__status="paid").exists():

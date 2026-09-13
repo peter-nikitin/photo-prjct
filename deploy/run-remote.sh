@@ -665,7 +665,7 @@ case "$mode" in
 esac
 
 quoted_program=$(quote_for_remote_shell "$REMOTE_PROGRAM")
-run_quietly_with_stdin remote remote_failed "$remote_environment" ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" "$remote_target" "exec python3 -c '$quoted_program' '$mode'"
+run_quietly_with_stdin remote remote_failed "$remote_environment" ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i "$key_file" "$remote_target" "exec python3 -c '$quoted_program' '$mode'"
 if [ "$mode" = face-embedding-benchmark ]; then
     cat "$command_output"
 fi

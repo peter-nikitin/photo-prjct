@@ -184,20 +184,17 @@ run_quietly_with_stdin() {
         active_child=''
     else
         active_child=''
+        if [ "${mode:-}" = deploy ]; then
+            relay_deployment_markers
+        fi
         fail "$stage" "$code"
     fi
 }
 
 relay_deployment_markers() {
-    awk '
-        /^DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+$/ {
-            print
-            next
-        }
-        /^DEPLOY_RESULT=(success|failure) phase=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) rollback=(not-needed|succeeded|failed) elapsed_seconds=[0-9]+$/ {
-            print
-        }
-    ' "$command_output"
+    LC_ALL=C grep -Eo \
+        '(DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+|DEPLOY_RESULT=(success|failure) phase=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) rollback=(not-needed|succeeded|failed) elapsed_seconds=[0-9]+)$' \
+        "$command_output" || true
 }
 
 quote_for_remote_shell() {

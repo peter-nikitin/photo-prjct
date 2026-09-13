@@ -101,7 +101,7 @@ def _validate_filter_scope(event: Event, filters: EventPhotoFilters) -> None:
 def event_photo_queryset(event: Event, filters: EventPhotoFilters) -> QuerySet[Photo]:
     """Return all event photos matching one validated administrative filter object."""
     _validate_filter_scope(event, filters)
-    photos = annotate_photo_processing_status(Photo.objects.filter(event=event))
+    photos = Photo.objects.filter(event=event)
     if filters.folder_ids or filters.include_unfiled:
         folder_scope = Q(folder_id__in=filters.folder_ids)
         if filters.include_unfiled:
@@ -125,7 +125,9 @@ def event_photo_queryset(event: Event, filters: EventPhotoFilters) -> QuerySet[P
     elif filters.visibility == VISIBILITY_HIDDEN:
         photos = photos.filter(is_hidden=True)
     if filters.processing_categories:
-        photos = photos.filter(processing_category__in=filters.processing_categories)
+        photos = annotate_photo_processing_status(photos).filter(
+            processing_category__in=filters.processing_categories
+        )
     return photos.order_by(F("capture_time").asc(nulls_last=True), "pk").distinct()
 
 

@@ -2,8 +2,10 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.http import QueryDict
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from ingestion.models import UploadBatch, UploadItem
 from processing.models import GENERATE_PREVIEW_PROCESSOR
 
@@ -213,6 +215,36 @@ class EventPhotoQuerysetTests(EventManagementTestCase):
         queryset = event_photo_queryset(self.event, form.filters)
         self.assertEqual(queryset.count(), 1)
         self.assertEqual(list(queryset.values_list("pk", flat=True)), [photo.pk])
+
+    def test_processing_projection_is_only_added_for_a_processing_filter(self) -> None:
+        photo = private_photo(self.event, self.alice)
+        unfiltered_form = self.form()
+        processing_form = self.form("processing=not_started")
+        self.assertTrue(unfiltered_form.is_valid(), unfiltered_form.errors)
+        self.assertTrue(processing_form.is_valid(), processing_form.errors)
+
+        with CaptureQueriesContext(connection) as unfiltered_queries:
+            self.assertEqual(
+                list(
+                    event_photo_queryset(self.event, unfiltered_form.filters).values_list(
+                        "pk", flat=True
+                    )
+                ),
+                [photo.pk],
+            )
+        with CaptureQueriesContext(connection) as processing_queries:
+            self.assertEqual(
+                list(
+                    event_photo_queryset(self.event, processing_form.filters).values_list(
+                        "pk", flat=True
+                    )
+                ),
+                [photo.pk],
+            )
+
+        processing_table = "processing_photoprocessingstate"
+        self.assertNotIn(processing_table, unfiltered_queries.captured_queries[0]["sql"].lower())
+        self.assertIn(processing_table, processing_queries.captured_queries[0]["sql"].lower())
 
     def test_page_is_100_photos_in_capture_time_then_id_order(self) -> None:
         photos = [self.legacy_photo(f"legacy-{index:03d}") for index in range(101)]

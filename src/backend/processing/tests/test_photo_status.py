@@ -3,7 +3,9 @@ from itertools import count
 from typing import cast
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -424,9 +426,10 @@ class PhotoProcessingStatusTests(TestCase):
             STATE_PROCESSING,
         )
 
-        summary = summarize_photo_processing(
-            Photo.objects.filter(pk__in=[succeeded.pk, active.pk, not_required.pk])
-        )
+        with CaptureQueriesContext(connection) as queries:
+            summary = summarize_photo_processing(
+                Photo.objects.filter(pk__in=[succeeded.pk, active.pk, not_required.pk])
+            )
 
         self.assertEqual(summary["total"], 3)
         self.assertEqual(sum(summary["categories"].values()), 3)
@@ -438,6 +441,50 @@ class PhotoProcessingStatusTests(TestCase):
         self.assertEqual(summary["stages"][CAPTURE_METADATA_PROCESSOR]["processing"], 1)
         self.assertEqual(summary["stages"][CAPTURE_METADATA_PROCESSOR][STAGE_NOT_REQUIRED], 1)
         self.assertEqual(sum(summary["stages"][CAPTURE_METADATA_PROCESSOR].values()), 3)
+        self.assertEqual(len(queries), 1)
+        processing_table = "processing_photoprocessingstate"
+        summary_sql = queries.captured_queries[0]["sql"].lower()
+        self.assertIn(processing_table, summary_sql)
+        self.assertIn("count(", summary_sql)
+        self.assertIn("group by", summary_sql)
+
+    def test_summary_keeps_identity_success_and_dependency_rules(self) -> None:
+        old_face = self.private_photo("summary-old-face", generation=GENERATION_PREVIEW)
+        self.set_stage(old_face, CAPTURE_METADATA_PROCESSOR, STATE_SUCCEEDED)
+        self.set_stage(old_face, GENERATE_PREVIEW_PROCESSOR, STATE_SUCCEEDED)
+        self.set_stage(
+            old_face,
+            FACE_EMBEDDING_PROCESSOR,
+            STATE_SUCCEEDED,
+            contract_version=2,
+            processor_version=3,
+        )
+        waiting = self.private_photo("summary-waiting", generation=GENERATION_WATERMARKED)
+        self.set_stage(waiting, GENERATE_PREVIEW_PROCESSOR, STATE_QUEUED)
+        invalid_success = self.private_photo("summary-invalid-success")
+        invalid_state = self.set_stage(
+            invalid_success,
+            CAPTURE_METADATA_PROCESSOR,
+            STATE_SUCCEEDED,
+        )
+        self.set_stage(invalid_success, FACE_EMBEDDING_PROCESSOR, STATE_SUCCEEDED)
+        PhotoProcessingState.objects.filter(pk=invalid_state.pk).update(accepted_attempt=None)
+
+        summary = summarize_photo_processing(
+            Photo.objects.filter(pk__in=[old_face.pk, waiting.pk, invalid_success.pk])
+        )
+
+        self.assertEqual(summary["categories"][CATEGORY_QUEUED], 1)
+        self.assertEqual(summary["categories"][CATEGORY_NOT_STARTED], 2)
+        self.assertEqual(summary["stages"][CAPTURE_METADATA_PROCESSOR][STATE_SUCCEEDED], 1)
+        self.assertEqual(summary["stages"][CAPTURE_METADATA_PROCESSOR][STAGE_NOT_STARTED], 2)
+        self.assertEqual(summary["stages"][GENERATE_PREVIEW_PROCESSOR][STATE_SUCCEEDED], 1)
+        self.assertEqual(summary["stages"][GENERATE_PREVIEW_PROCESSOR][STATE_QUEUED], 1)
+        self.assertEqual(summary["stages"][FACE_EMBEDDING_PROCESSOR][STAGE_WAITING], 1)
+        self.assertEqual(summary["stages"][FACE_EMBEDDING_PROCESSOR][STAGE_NOT_STARTED], 1)
+        self.assertEqual(
+            summary["stages"][GENERATE_WATERMARKED_PREVIEW_PROCESSOR][STAGE_WAITING], 1
+        )
 
     def test_annotation_is_sql_filterable_and_detail_queries_do_not_grow_per_photo(self) -> None:
         first = self.private_photo("bounded-first")

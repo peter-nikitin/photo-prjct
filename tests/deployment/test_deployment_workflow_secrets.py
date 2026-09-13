@@ -423,6 +423,8 @@ def test_deploy_helper_uses_private_files_and_ssh_stdin_without_disclosing_value
     assert "deploy" in scp_arguments
     assert "StrictHostKeyChecking=yes" in ssh_arguments
     assert "UserKnownHostsFile=" in ssh_arguments
+    assert "ServerAliveInterval=30" in ssh_arguments
+    assert "ServerAliveCountMax=20" in ssh_arguments
     assert "/dev/null" not in ssh_arguments
     assert str(tmp_path / "staging-key") in ssh_arguments
     assert sentinel in ssh_stdin

@@ -1,11 +1,16 @@
 from datetime import UTC, datetime, timedelta
 
+from django.db import connection
+from django.http import QueryDict
 from django.test import Client, RequestFactory, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.models import ImportBatch, ImportScope, UploadBatch
 
 from picflow import event_management_views
+from picflow.event_management import event_photo_queryset
+from picflow.event_management_forms import EventPhotoFilterForm
 from picflow.models import EventFolder, Photo
 from picflow.tests.event_management_helpers import (
     captured_at,
@@ -149,6 +154,40 @@ class EventManagementViewTests(TestCase):
         self.assertNotIn("secret-", repr(page.object_list))
         second = self.client.get(self.url, {"page": 2})
         self.assertEqual([p.id for p in second.context_data["photo_page"]], ["legacy-098"])
+
+    def test_admin_page_projects_processing_only_for_the_bounded_page(self):
+        Photo.objects.bulk_create(
+            [
+                Photo(
+                    id=f"bounded-{index:03d}",
+                    event=self.event,
+                    src=f"photos/bounded-{index:03d}.jpg",
+                )
+                for index in range(101)
+            ]
+        )
+        form = EventPhotoFilterForm(self.event, QueryDict())
+        self.assertTrue(form.is_valid(), form.errors)
+
+        with CaptureQueriesContext(connection) as queries:
+            page = event_management_views.admin_photo_page(
+                event_photo_queryset(self.event, form.filters)
+            )
+
+        self.assertEqual(page.paginator.count, 101)
+        self.assertEqual(len(page), 100)
+        processing_queries = [
+            query["sql"]
+            for query in queries.captured_queries
+            if "processing_photoprocessingstate" in query["sql"].lower()
+        ]
+        self.assertEqual(len(processing_queries), 2)
+        status_projection_queries = [
+            query for query in processing_queries if '"processing_category"' in query.lower()
+        ]
+        self.assertEqual(len(status_projection_queries), 1)
+        self.assertIn("bounded-099", status_projection_queries[0])
+        self.assertNotIn("bounded-100", status_projection_queries[0])
 
     def test_filters_are_strict_for_initial_and_fragment_gets(self):
         folder = EventFolder.objects.create(event=self.event, name="Finish")

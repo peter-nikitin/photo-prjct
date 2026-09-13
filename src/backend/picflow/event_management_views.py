@@ -72,7 +72,7 @@ def admin_photo_page(photos: QuerySet[Photo], *, page: str | int = 1) -> Page[Ad
         100,
     ).get_page(page)
     rows = list(selected)
-    page_photos = photos.filter(pk__in=[photo.pk for photo in rows])
+    page_photos = Photo.objects.filter(pk__in=[photo.pk for photo in rows])
     thumbnails = set(with_admin_thumbnail(page_photos).values_list("pk", flat=True))
     details = {row["photo_id"]: row for row in photo_processing_details(page_photos)}
     cards = [

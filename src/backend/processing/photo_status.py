@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from functools import reduce
 from operator import or_
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 from django.db.models import (
     BooleanField,
@@ -121,6 +121,16 @@ _ACTIVE_STAGE_STATUSES = (
     _STATE_RETRY_WAIT,
     STAGE_WAITING,
 )
+_FINISHED_STAGE_STATUSES = (_STATE_SUCCEEDED, STAGE_NOT_REQUIRED)
+_CategoryRuleKind = Literal["any", "all_finished_required", "capture_required"]
+_CATEGORY_RULES: tuple[tuple[str, _CategoryRuleKind, tuple[str, ...]], ...] = (
+    (CATEGORY_PROCESSING, "any", (_STATE_PROCESSING,)),
+    (CATEGORY_QUEUED, "any", (_STATE_QUEUED, _STATE_RETRY_WAIT, STAGE_WAITING)),
+    (CATEGORY_FAILED, "any", (_STATE_FAILED,)),
+    (CATEGORY_CANCELLED, "any", (_STATE_CANCELLED,)),
+    (CATEGORY_SUCCEEDED, "all_finished_required", _FINISHED_STAGE_STATUSES),
+    (CATEGORY_NOT_STARTED, "capture_required", ()),
+)
 _PREVIEW_GENERATIONS = (
     cast(str, Photo.ProcessingGeneration.PREVIEW_FIRST_V1),
     cast(str, Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1),
@@ -209,21 +219,33 @@ def _current_identity(processor_type: str) -> Q:
     )
 
 
-def _current_states(processor_type: str) -> QuerySet[PhotoProcessingState]:
-    successful_result = Q(
+def _successful_state_result() -> Q:
+    return Q(
         status=_STATE_SUCCEEDED,
         current_attempt_id=F("accepted_attempt_id"),
         current_job_id=F("accepted_attempt__job_id"),
         accepted_attempt__accepted=True,
         accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
     )
-    return (
-        PhotoProcessingState.objects.filter(
-            photo_id=OuterRef("pk"),
-            processor_type=processor_type,
-        )
-        .filter(_current_identity(processor_type))
-        .filter(~Q(status=_STATE_SUCCEEDED) | successful_result)
+
+
+def _valid_current_states() -> QuerySet[PhotoProcessingState]:
+    current_identity = reduce(
+        or_,
+        (
+            Q(processor_type=processor_type) & _current_identity(processor_type)
+            for processor_type in _PROCESSOR_TYPES
+        ),
+    )
+    return PhotoProcessingState.objects.filter(current_identity).filter(
+        ~Q(status=_STATE_SUCCEEDED) | _successful_state_result()
+    )
+
+
+def _current_states(processor_type: str) -> QuerySet[PhotoProcessingState]:
+    return _valid_current_states().filter(
+        photo_id=OuterRef("pk"),
+        processor_type=processor_type,
     )
 
 
@@ -259,6 +281,48 @@ def _stage_status_expression(processor_type: str) -> Case:
     return Case(*cases, default=Value(STAGE_NOT_STARTED), output_field=CharField())
 
 
+def _processing_category_expression() -> Case:
+    capture_required = _required(CAPTURE_METADATA_PROCESSOR)
+
+    def condition(kind: _CategoryRuleKind, statuses: tuple[str, ...]) -> Q:
+        if kind == "any":
+            return _any_stage(statuses)
+        if kind == "all_finished_required":
+            all_finished = reduce(
+                lambda left, right: left & right,
+                (
+                    Q(**{f"_processing_{processor_type}_status__in": statuses})
+                    for processor_type in _PROCESSOR_TYPES
+                ),
+            )
+            return all_finished & capture_required
+        return capture_required
+
+    return Case(
+        *(
+            When(condition(kind, statuses), then=Value(category))
+            for category, kind, statuses in _CATEGORY_RULES
+        ),
+        default=Value(CATEGORY_NOT_REQUIRED),
+        output_field=CharField(),
+    )
+
+
+def _processing_category_from_stage_statuses(statuses: dict[str, str]) -> str:
+    values = statuses.values()
+    capture_required = statuses[CAPTURE_METADATA_PROCESSOR] != STAGE_NOT_REQUIRED
+    for category, kind, rule_statuses in _CATEGORY_RULES:
+        if kind == "any":
+            matches = any(status in rule_statuses for status in values)
+        elif kind == "all_finished_required":
+            matches = capture_required and all(status in rule_statuses for status in values)
+        else:
+            matches = capture_required
+        if matches:
+            return category
+    return CATEGORY_NOT_REQUIRED
+
+
 def annotate_photo_processing_status(photos: QuerySet[Photo]) -> QuerySet[Photo]:
     """Annotate a caller-scoped Photo queryset with one SQL-filterable category."""
     raw_annotations = {}
@@ -281,44 +345,8 @@ def annotate_photo_processing_status(photos: QuerySet[Photo]) -> QuerySet[Photo]
         }
     )
     has_active_work = _any_stage(_ACTIVE_STAGE_STATUSES)
-    all_finished = reduce(
-        lambda left, right: left & right,
-        (
-            Q(
-                **{
-                    f"_processing_{processor_type}_status__in": (
-                        _STATE_SUCCEEDED,
-                        STAGE_NOT_REQUIRED,
-                    )
-                }
-            )
-            for processor_type in _PROCESSOR_TYPES
-        ),
-    )
-    category = Case(
-        When(_any_stage((_STATE_PROCESSING,)), then=Value(CATEGORY_PROCESSING)),
-        When(
-            _any_stage(
-                (
-                    _STATE_QUEUED,
-                    _STATE_RETRY_WAIT,
-                    STAGE_WAITING,
-                )
-            ),
-            then=Value(CATEGORY_QUEUED),
-        ),
-        When(_any_stage((_STATE_FAILED,)), then=Value(CATEGORY_FAILED)),
-        When(
-            _any_stage((_STATE_CANCELLED,)),
-            then=Value(CATEGORY_CANCELLED),
-        ),
-        When(all_finished & _required(CAPTURE_METADATA_PROCESSOR), then=Value(CATEGORY_SUCCEEDED)),
-        When(_required(CAPTURE_METADATA_PROCESSOR), then=Value(CATEGORY_NOT_STARTED)),
-        default=Value(CATEGORY_NOT_REQUIRED),
-        output_field=CharField(),
-    )
     return annotated.annotate(
-        processing_category=category,
+        processing_category=_processing_category_expression(),
         has_active_work=Case(
             When(has_active_work, then=Value(True)),
             default=Value(False),
@@ -329,18 +357,28 @@ def annotate_photo_processing_status(photos: QuerySet[Photo]) -> QuerySet[Photo]
 
 def summarize_photo_processing(photos: QuerySet[Photo]) -> PhotoProcessingSummary:
     """Return grouped counts for exactly the caller-authorized Photo queryset."""
-    annotated = annotate_photo_processing_status(photos.order_by())
     category_counts = {category: 0 for category in _CATEGORY_VALUES}
-    for row in annotated.values("processing_category").annotate(count=Count("pk")):
-        category_counts[cast(str, row["processing_category"])] = cast(int, row["count"])
-
-    stage_counts: dict[str, dict[str, int]] = {}
-    for processor_type in _PROCESSOR_TYPES:
-        alias = f"_processing_{processor_type}_status"
-        counts = {status: 0 for status in _STAGE_STATUS_VALUES}
-        for row in annotated.values(alias).annotate(count=Count("pk")):
-            counts[cast(str, row[alias])] = cast(int, row["count"])
-        stage_counts[processor_type] = counts
+    stage_counts = {
+        processor_type: {status: 0 for status in _STAGE_STATUS_VALUES}
+        for processor_type in _PROCESSOR_TYPES
+    }
+    aliases = {
+        processor_type: f"_processing_{processor_type}_status"
+        for processor_type in _PROCESSOR_TYPES
+    }
+    rows = (
+        annotate_photo_processing_status(photos.order_by())
+        .values(*aliases.values())
+        .annotate(_summary_count=Count("pk"))
+    )
+    for row in rows:
+        count = cast(int, row["_summary_count"])
+        statuses = {
+            processor_type: cast(str, row[alias]) for processor_type, alias in aliases.items()
+        }
+        category_counts[_processing_category_from_stage_statuses(statuses)] += count
+        for processor_type, status in statuses.items():
+            stage_counts[processor_type][status] += count
 
     return {
         "total": sum(category_counts.values()),

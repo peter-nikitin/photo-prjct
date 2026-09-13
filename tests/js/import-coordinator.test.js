@@ -289,6 +289,7 @@ test('fixed event and chosen folder survive pasted link without an event selecto
   const submit = new FakeNode();
   const list = new FakeNode();
   const listStatus = new FakeNode();
+  const importPanel = new FakeNode();
   const listPagination = new FakeNode();
   const listPageStatus = new FakeNode();
   const listPrevious = new FakeNode();
@@ -315,6 +316,7 @@ test('fixed event and chosen folder survive pasted link without an event selecto
     },
   });
   root.nodes.set('[data-import-list]', list);
+  root.nodes.set('[data-import-panel]', importPanel);
   root.nodes.set('[data-import-list-status]', listStatus);
   root.nodes.set('[data-import-list-pagination]', listPagination);
   root.nodes.set('[data-import-list-previous]', listPrevious);
@@ -386,6 +388,7 @@ test('cancelled departure preserves import polling; gate-off errors recover and 
   const list = new FakeNode();
   list.nodes.set('[data-import-id="import-1"]', card);
   const listStatus = new FakeNode();
+  const importPanel = new FakeNode();
   const listPagination = new FakeNode();
   listPagination.nodes.set('[data-import-list-page-status]', new FakeNode());
   const listPrevious = new FakeNode();
@@ -405,6 +408,7 @@ test('cancelled departure preserves import polling; gate-off errors recover and 
     },
   });
   root.nodes.set('[data-import-list]', list);
+  root.nodes.set('[data-import-panel]', importPanel);
   root.nodes.set('[data-import-list-status]', listStatus);
   root.nodes.set('[data-import-list-pagination]', listPagination);
   root.nodes.set('[data-import-list-previous]', listPrevious);
@@ -455,6 +459,9 @@ test('cancelled departure preserves import polling; gate-off errors recover and 
   try {
     const coordinator = bindImportPage(root, environment);
     await flushPromises();
+
+    assert.equal(root.hidden, false);
+    assert.equal(importPanel.hidden, true);
 
     const retryTarget = { closest: (selector) => (
       selector === '[data-import-card]' ? card : selector === '[data-import-retry]' ? retryTarget : null

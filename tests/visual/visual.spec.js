@@ -779,6 +779,18 @@ test('Yandex Disk import fixture restores bounded server-owned outcomes and acce
   await expect(page.locator('[data-import-list-pagination]')).toBeHidden();
 });
 
+test('upload sources stack before local folder targets collapse at tablet width', async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.goto('/__visual__/upload/imports/');
+
+  const localSource = await page.locator('[data-upload-source-local]').boundingBox();
+  const importSource = await page.locator('[data-upload-source-import]').boundingBox();
+  const localTargetCopy = await page.locator('[data-folder-target-copy]').first().boundingBox();
+
+  expect(importSource.y).toBeGreaterThanOrEqual(localSource.y + localSource.height);
+  expect(localTargetCopy.width).toBeGreaterThan(100);
+});
+
 test('archive actions preserve the page boundary and paid result denial', async ({ page }) => {
   for (const [path, expected] of [
     [

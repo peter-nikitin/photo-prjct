@@ -68,6 +68,10 @@
   gap: 18px;
 }
 
+.upload-workspace--with-import {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .upload-guidance {
   display: grid;
   grid-column: 1 / -1;
@@ -120,6 +124,42 @@
   margin-bottom: 22px;
 }
 
+.upload-source-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+}
+
+.upload-source-card {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.upload-source-card:only-child {
+  grid-column: 1 / -1;
+}
+
+.upload-source-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.upload-source-heading h3,
+.upload-source-heading p {
+  margin: 0;
+}
+
+.upload-source-heading > p:last-child:not(.eyebrow) {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .upload-field {
   display: grid;
   gap: 8px;
@@ -155,7 +195,6 @@
 .folder-targets {
   display: grid;
   gap: 10px;
-  margin-top: 18px;
 }
 
 .folder-targets[hidden] {
@@ -619,13 +658,8 @@
 
 .import-form {
   display: grid;
-  grid-template-columns: minmax(180px, 0.42fr) minmax(260px, 1fr) auto;
-  align-items: end;
+  grid-template-columns: 1fr;
   gap: 14px;
-  margin-top: 22px;
-  padding: 18px;
-  border-radius: 12px;
-  background: rgb(11 107 104 / 6%);
 }
 
 .import-link-field small {
@@ -635,6 +669,7 @@
 
 .import-submit {
   min-height: 48px;
+  width: 100%;
 }
 
 .import-submit:disabled {
@@ -643,7 +678,6 @@
 }
 
 .import-form-message {
-  grid-column: 1 / -1;
   min-height: 1.3em;
   margin: 0;
   color: var(--teal);
@@ -852,16 +886,14 @@
     min-height: 320px;
   }
 
-  .import-form {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .import-submit {
-    grid-column: 1 / -1;
-  }
-
   .import-metrics {
     grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 1100px) {
+  .upload-source-options {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -917,15 +949,6 @@
   .import-pagination {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .import-form {
-    grid-template-columns: 1fr;
-  }
-
-  .import-submit {
-    grid-column: auto;
-    width: 100%;
   }
 
   .import-metrics {

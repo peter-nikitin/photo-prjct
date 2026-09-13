@@ -1,48 +1,11 @@
-    <section class="import-panel"
-             data-import-root
-             data-event-id="{{ event.pk }}"
-             data-import-enabled="{{ photo_import_enabled|yesno:'true,false' }}"
-             data-import-history-enabled="{{ photo_import_history_enabled|yesno:'true,false' }}"
-             data-import-collection-url="{{ photo_import_urls.collection|default:'/photographer/uploads/imports/' }}"
-             data-import-detail-url-template="{{ photo_import_urls.detail|default:'/photographer/uploads/imports/{batch}/' }}"
-             data-import-items-url-template="{{ photo_import_urls.items|default:'/photographer/uploads/imports/{batch}/items/' }}"
-             data-import-retry-url-template="{{ photo_import_urls.retry|default:'/photographer/uploads/imports/{batch}/retry/' }}"
-             data-csrf-token="{{ csrf_token }}"
-             hidden>
+    <section class="import-panel" data-import-panel hidden>
       <div class="import-heading">
         <div>
           <p class="eyebrow">Яндекс Диск</p>
-          <h2>Загрузка по ссылке</h2>
+          <h2>История загрузок по ссылке</h2>
         </div>
-        <p>Задачи выполняются на сервере и сохраняют прогресс после закрытия страницы.</p>
+        <p>Здесь сохраняются прогресс и результаты серверных импортов.</p>
       </div>
-
-      {% if photo_import_enabled %}
-        <form class="import-form" data-import-form>
-          <label class="upload-field" for="import-folder">
-            <span>Папка мероприятия</span>
-            <select id="import-folder" data-import-folder disabled>
-                <option value="" data-import-folder-option data-event-id="{{ event.pk }}">Без папки</option>
-                {% for folder in folders %}
-                  <option value="{{ folder.pk }}" data-import-folder-option data-event-id="{{ event.pk }}">{{ folder.name }}</option>
-                {% endfor %}
-            </select>
-          </label>
-          <label class="upload-field import-link-field" for="import-source-url">
-            <span>Ссылка на публичную папку Яндекс Диска</span>
-            <input id="import-source-url"
-                   data-import-source-url
-                   type="url"
-                   inputmode="url"
-                   autocomplete="url"
-                   placeholder="https://disk.yandex.ru/d/…"
-                   required>
-            <small>Загрузим только JPEG-файлы из указанной папки, без подпапок</small>
-          </label>
-          <button class="button import-submit" type="submit" data-import-submit disabled>Загрузить</button>
-          <p class="import-form-message" data-import-form-message role="status" aria-live="polite"></p>
-        </form>
-      {% endif %}
 
       <div class="import-history" data-import-history>
         <div class="import-history-heading">

@@ -1,0 +1,71 @@
+# Disposable, one-event acceptance. Never reads the checkout .env.
+services:
+  db:
+    image: postgres:16
+    environment: {POSTGRES_DB: app, POSTGRES_USER: app, POSTGRES_PASSWORD: local-only}
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U app]
+      interval: 2s
+      retries: 30
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data
+    environment: {MINIO_ROOT_USER: local-minio, MINIO_ROOT_PASSWORD: local-minio-password}
+    tmpfs: [/data]
+  web:
+    image: findme-photo-web:bib-local
+    build: {context: ., dockerfile: Dockerfile}
+    entrypoint: [/bin/sh, -ec]
+    command: ['python manage.py migrate --noinput && python manage.py sync_feature_flags && python /acceptance/cohort.py seed && python manage.py collectstatic --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --threads 2 --timeout 180']
+    environment:
+      SECRET_KEY: disposable-bib-acceptance
+      DEBUG: 'False'
+      ALLOWED_HOSTS: web,localhost,127.0.0.1,testserver
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: app
+      DB_USER: app
+      DB_PASSWORD: local-only
+      PHOTO_UPLOAD_ENABLED: 'True'
+      PHOTO_PROCESSING_ENABLED: 'True'
+      PHOTO_PROCESSING_PREVIEW_ENABLED: 'True'
+      PHOTO_PROCESSING_FACE_ENABLED: 'True'
+      PHOTO_PROCESSING_WORKER_TOKEN: local-bib-worker-token
+      PRIVATE_MEDIA_ALLOWED_ORIGINS: http://web:8000
+      PRIVATE_MEDIA_S3_BUCKET: local-private
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: local-minio
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: local-minio-password
+      MEDIA_S3_ENDPOINT_URL: http://minio:9000
+      MEDIA_S3_REGION: us-east-1
+      BIB_EVENT_SLUG: ${BIB_EVENT_SLUG:?}
+      PYTHONPATH: /app/src/backend
+    volumes:
+      - ./experiments/bib_search/worker_acceptance:/acceptance:ro
+      - ${BIB_SOURCE_ROOT:?}:/source:ro
+      - ${BIB_BASELINE:?}:/baseline.json:ro
+    ports: ['127.0.0.1:18210:8000']
+    depends_on:
+      db: {condition: service_healthy}
+      minio: {condition: service_started}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/', timeout=3)"]
+      interval: 2s
+      retries: 60
+    mem_limit: 768m
+  worker:
+    image: findme-photo-worker:bib-local
+    environment:
+      PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
+      PHOTO_WORKER_TOKEN: local-bib-worker-token
+      PHOTO_WORKER_BUILD: bib-local-production-acceptance
+      PHOTO_WORKER_LEASE_SECONDS: '120'
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: 1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2,1/bib_recognition/1
+      PHOTO_WORKER_PROCESSOR_TYPES: selfie_query,face_embedding,capture_metadata,generate_preview
+      PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO: 'true'
+    depends_on:
+      web: {condition: service_healthy}
+    cpus: '2.0'
+    mem_limit: 6g
+    pids_limit: 64
+    restart: 'no'

@@ -338,6 +338,8 @@ jobs:
           PHOTO_WORKER_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_PROCESSOR_IDENTITIES || '1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2' }}
           PHOTO_WORKER_PROCESSOR_TYPES: ${{ vars.PHOTO_WORKER_PROCESSOR_TYPES || 'selfie_query,face_embedding,capture_metadata,generate_preview' }}
           PHOTO_WORKER_REPLICAS: ${{ vars.PHOTO_WORKER_REPLICAS || '1' }}
+          PHOTO_WORKER_CPUS: ${{ vars.PHOTO_WORKER_CPUS || '1.0' }}
+          PHOTO_WORKER_MEMORY_LIMIT: ${{ vars.PHOTO_WORKER_MEMORY_LIMIT || '2g' }}
           SELFIE_SEARCH_MAX_UPLOAD_BYTES: ${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}
           SELFIE_SEARCH_MAX_PIXELS: ${{ vars.SELFIE_SEARCH_MAX_PIXELS || '25000000' }}
           SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS: ${{ vars.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS || '120' }}

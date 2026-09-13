@@ -195,3 +195,131 @@ def test_rapidocr_preflight_rejects_changed_engine_parameters(tmp_path: Path) ->
     config.write_text(json.dumps({"engine_parameters": {"Det": {"thresh": 0.31}}}))
     with pytest.raises(RuntimeError, match="parameters do not match"):
         RapidOCREngine.from_experiment_config(config, repository=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("number", "extended_text"), [("500", "500N"), ("500", "500м"), ("0042", "0042km")]
+)
+def test_recognition_does_not_promote_numeric_part_of_overlapping_alphanumeric_text(
+    tmp_path: Path,
+    number: str,
+    extended_text: str,
+) -> None:
+    source = tmp_path / "photo.jpg"
+    digest = _jpeg(source, (400, 400))
+    # Measured overlapping reads of the distance label on 00001_Vlad.jpg.
+    numeric = OCRRegion(
+        polygon=((137, 178), (181, 131), (203, 151), (158, 198)),
+        text=number,
+        confidence=0.99069,
+    )
+    extended = OCRRegion(
+        polygon=((131, 182), (182, 125), (207, 147), (156, 204)),
+        text=extended_text,
+        confidence=0.80878,
+    )
+    visual = FakeVisual(VisualReading.complete(json.dumps({"numbers": [number]}), (number,)))
+
+    class ContextOCR(FakeOCR):
+        def infer(self, path: Path) -> OCRTileResult:
+            output = super().infer(path)
+            if path.name == "context-check.png":
+                return OCRTileResult((OCRRegion(extended.polygon, number + "m", 0.9107),), 1.0, 2.0)
+            return output
+
+    result = recognize_photo(
+        source, source_sha256=digest, ocr=ContextOCR((numeric, extended)), visual=visual
+    )
+
+    assert result.candidates == ()
+    assert visual.calls == []
+
+
+def test_alphanumeric_conflict_does_not_suppress_a_separate_bib_with_same_number(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "photo.jpg"
+    digest = _jpeg(source, (400, 400))
+    regions = (
+        OCRRegion(((10, 10), (40, 10), (40, 30), (10, 30)), "42", 0.99),
+        OCRRegion(((10, 10), (45, 10), (45, 30), (10, 30)), "42km", 0.9),
+        OCRRegion(((210, 210), (240, 210), (240, 230), (210, 230)), "42", 0.98),
+    )
+    result = recognize_photo(
+        source,
+        source_sha256=digest,
+        ocr=FakeOCR(regions),
+        visual=FakeVisual(VisualReading.complete('{"numbers":["42"]}', ("42",))),
+    )
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].polygon == regions[2].polygon
+    assert result.candidates[0].supporting_region_count == 1
+
+
+def test_overlapping_non_distance_suffix_noise_keeps_confirmed_bib(tmp_path: Path) -> None:
+    source = tmp_path / "photo.jpg"
+    digest = _jpeg(source, (400, 400))
+    regions = (
+        OCRRegion(((14, 128), (148, 133), (146, 195), (12, 190)), "259", 0.99551),
+        OCRRegion(((23, 128), (148, 135), (144, 197), (20, 190)), "259", 0.99718),
+        OCRRegion(((21, 127), (184, 134), (181, 198), (18, 191)), "259A", 0.79368),
+    )
+    result = recognize_photo(
+        source,
+        source_sha256=digest,
+        ocr=FakeOCR(regions),
+        visual=FakeVisual(VisualReading.complete('{"numbers":["259"]}', ("259",))),
+    )
+    assert len(result.candidates) == 1
+    assert result.candidates[0].polygon == regions[1].polygon
+    assert result.candidates[0].supporting_region_count == 2
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    json.loads(Path(__file__).with_name("fixtures").joinpath("bib-distance-ocr.json").read_text()),
+    ids=lambda evidence: evidence["name"],
+)
+def test_measured_corpus_preserves_confirmed_bibs_and_rejects_distance(
+    tmp_path: Path,
+    evidence: dict,
+) -> None:
+    class RecordedOCR:
+        def infer(self, path: Path) -> OCRTileResult:
+            if path.name == "context-check.png":
+                regions = evidence["context_regions"]
+                x, y = 0, 0
+            else:
+                x, y = map(int, path.stem.split("-")[1:])
+                regions = [r for r in evidence["regions"] if r["tile"] == [x, y]]
+            return OCRTileResult(
+                tuple(
+                    OCRRegion(
+                        tuple((px - x, py - y) for px, py in r["polygon"]),
+                        r["text"],
+                        r["confidence"],
+                    )
+                    for r in regions
+                ),
+                1.0,
+                2.0,
+            )
+
+    source = tmp_path / "photo.jpg"
+    digest = _jpeg(source, tuple(evidence["size"]))
+    result = recognize_photo(
+        source,
+        source_sha256=digest,
+        ocr=RecordedOCR(),
+        visual=FakeVisual(VisualReading.complete('{"numbers":[]}', ())),
+    )
+    actual = [
+        {
+            "number": c.number,
+            "polygon": [list(point) for point in c.polygon],
+            "supporting_region_count": c.supporting_region_count,
+        }
+        for c in result.candidates
+    ]
+    assert actual == evidence["expected"]

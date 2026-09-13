@@ -28,6 +28,8 @@ from .bib_visual import (
 TILE_SIZE = 1280
 MAX_STRIDE = 960
 OCR_MIN_CONFIDENCE = 0.5
+ALPHANUMERIC_CONFLICT_MIN_IOU = 0.5
+DISTANCE_SUFFIXES = ("m", "м", "km", "км", "k", "к")
 MAX_CANDIDATES = 64
 MAX_DIGITS = 16
 MAX_RAW_OCR_BYTES = 256
@@ -52,6 +54,13 @@ BIB_CONFIGURATION_SHA256 = hashlib.sha256(
             "tile_size": TILE_SIZE,
             "max_stride": MAX_STRIDE,
             "ocr_min_confidence": OCR_MIN_CONFIDENCE,
+            "numeric_token_validation": {
+                "rule": "reject-overlapping-distance-token-v1",
+                "distance_suffixes": DISTANCE_SUFFIXES,
+                "ambiguous_context_ocr": "one-unmarked-original-context-per-number",
+                "min_iou": ALPHANUMERIC_CONFLICT_MIN_IOU,
+                "min_confidence": OCR_MIN_CONFIDENCE,
+            },
             "ocr_engine_parameters_sha256": OCR_ENGINE_PARAMETERS_SHA256,
             "ocr_models": OCR_MODEL_HASHES,
             "visual_model_revision": MODEL_REVISION,
@@ -181,6 +190,38 @@ def context_square(
     return left, top, left + side, top + side
 
 
+def unambiguous_numeric_regions(number: str, regions: list[OCRRegion]) -> list[OCRRegion]:
+    """Keep numeric regions unless overlapping OCR identifies that number with a distance unit."""
+    conflicts = [region for region in regions if _is_distance_token(number, region.text)]
+    return [
+        region
+        for region in regions
+        if region.text.strip() == number
+        and not any(
+            _region_iou(region, conflict) >= ALPHANUMERIC_CONFLICT_MIN_IOU for conflict in conflicts
+        )
+    ]
+
+
+def _is_distance_token(number: str, text: str) -> bool:
+    stripped = text.strip()
+    return stripped.startswith(number) and stripped[len(number) :].casefold() in DISTANCE_SUFFIXES
+
+
+def _region_iou(first: OCRRegion, second: OCRRegion) -> float:
+    def bounds(region: OCRRegion) -> tuple[float, float, float, float]:
+        xs, ys = zip(*region.polygon, strict=True)
+        return min(xs), min(ys), max(xs), max(ys)
+
+    left1, top1, right1, bottom1 = bounds(first)
+    left2, top2, right2, bottom2 = bounds(second)
+    intersection = max(0.0, min(right1, right2) - max(left1, left2)) * max(
+        0.0, min(bottom1, bottom2) - max(top1, top2)
+    )
+    union = (right1 - left1) * (bottom1 - top1) + (right2 - left2) * (bottom2 - top2) - intersection
+    return intersection / union if union > 0 else 0.0
+
+
 def recognize_photo(
     source_path: Path,
     *,
@@ -220,27 +261,67 @@ def recognize_photo(
                         if len(region.text.encode("utf-8")) > MAX_RAW_OCR_BYTES:
                             raise BibBoundsError("raw OCR text exceeds 256 UTF-8 bytes")
                         stripped = region.text.strip()
+                        suffix = stripped.lstrip("0123456789")
+                        number = stripped[: len(stripped) - len(suffix)]
                         if (
-                            not stripped.isascii()
-                            or not stripped.isdigit()
+                            not number
+                            or (suffix and not suffix.isalpha())
                             or region.confidence < OCR_MIN_CONFIDENCE
                         ):
                             continue
-                        if len(stripped) > MAX_DIGITS:
+                        if len(number) > MAX_DIGITS:
                             raise BibBoundsError("digit string exceeds 16 digits")
                         mapped = OCRRegion(
                             polygon=tuple((px + x, py + y) for px, py in region.polygon),
                             text=region.text,
                             confidence=region.confidence,
                         )
-                        grouped.setdefault(stripped, []).append(mapped)
+                        grouped.setdefault(number, []).append(mapped)
                         if len(grouped) > MAX_CANDIDATES:
                             raise BibBoundsError("photo exceeds 64 unique OCR candidates")
             if len(grouped) > MAX_CANDIDATES:
                 raise BibBoundsError("photo exceeds 64 unique OCR candidates")
             candidates: list[BibCandidate] = []
-            for number, support in sorted(grouped.items()):
+            for number, regions in sorted(grouped.items()):
+                support = unambiguous_numeric_regions(number, regions)
+                if not support:
+                    continue
                 representative = max(support, key=lambda region: region.confidence)
+                # A suffix disagreement can be recognition noise (for example 259A).
+                # Re-read the existing context once and require an actual distance unit.
+                if any(
+                    region.text.strip() != number
+                    and _region_iou(representative, region) >= ALPHANUMERIC_CONFLICT_MIN_IOU
+                    for region in regions
+                ):
+                    check_box = context_square(representative.polygon, width, height)
+                    check_path = temp_path / "context-check.png"
+                    with oriented.crop(check_box) as check:
+                        check.save(check_path, format="PNG")
+                    check_output = ocr.infer(check_path)
+                    check_path.unlink()
+                    preparation_ms += check_output.preparation_ms
+                    inference_ms += check_output.inference_ms
+                    for region in check_output.regions:
+                        if len(region.text.encode("utf-8")) > MAX_RAW_OCR_BYTES:
+                            raise BibBoundsError("raw OCR text exceeds 256 UTF-8 bytes")
+                        if region.confidence >= OCR_MIN_CONFIDENCE and _is_distance_token(
+                            number, region.text
+                        ):
+                            regions.append(
+                                OCRRegion(
+                                    polygon=tuple(
+                                        (px + check_box[0], py + check_box[1])
+                                        for px, py in region.polygon
+                                    ),
+                                    text=region.text,
+                                    confidence=region.confidence,
+                                )
+                            )
+                    support = unambiguous_numeric_regions(number, regions)
+                    if not support:
+                        continue
+                    representative = max(support, key=lambda region: region.confidence)
                 candidate_id = hashlib.sha256(f"{source_sha256}\0{number}".encode()).hexdigest()[
                     :24
                 ]

@@ -4,7 +4,7 @@ from photo_worker.contracts import (
 )
 from processing.services.bibs import BIB_INFERENCE_CONFIGURATION_SHA256, bib_configuration
 
-LINUX_BIB_CONFIGURATION_SHA256 = "9a92bd7655cbec0708400aebd6de432706526c230db009959a2fbffa45290a22"
+LINUX_BIB_CONFIGURATION_SHA256 = "32b3f2c94202df7c90e5c799c9ca21b760d5d2ac9c376fe578f6f330e415edf9"
 
 
 def test_backend_claim_uses_the_packaged_linux_bib_configuration_identity() -> None:

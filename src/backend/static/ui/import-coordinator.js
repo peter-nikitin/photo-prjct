@@ -274,7 +274,7 @@
     if (root.importCoordinator) return root.importCoordinator;
     const eventId = Number(root.dataset.eventId);
     if (!Number.isSafeInteger(eventId) || eventId <= 0) return null;
-    const section = root;
+    const section = root.querySelector('[data-import-panel]');
     const list = root.querySelector('[data-import-list]');
     const coordinator = new ImportCoordinator({
       eventId,

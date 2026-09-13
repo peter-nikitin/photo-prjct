@@ -48,6 +48,10 @@ class ImportTemplateTests(TestCase):
         html = response.content.decode()
 
         self.assertContains(response, "data-import-form")
+        self.assertContains(response, "data-upload-source-options")
+        self.assertContains(response, "data-upload-source-local")
+        self.assertContains(response, "data-upload-source-import")
+        self.assertContains(response, "upload-workspace--with-import")
         self.assertContains(response, 'type="url"')
         self.assertContains(response, "data-import-folder-option")
         self.assertContains(response, f'data-event-id="{self.event.pk}"')

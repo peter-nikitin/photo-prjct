@@ -15,7 +15,19 @@
   </section>
   {% endif %}
   {% if can_upload %}
-  <section class="upload-screen" data-event-photo-upload data-event-photo-private-status aria-label="Мои загрузки мероприятия">
+  <section class="upload-screen"
+           data-event-photo-upload
+           data-event-photo-private-status
+           data-import-root
+           data-event-id="{{ event.pk }}"
+           data-import-enabled="{{ photo_import_enabled|yesno:'true,false' }}"
+           data-import-history-enabled="{{ photo_import_history_enabled|yesno:'true,false' }}"
+           data-import-collection-url="{{ photo_import_urls.collection|default:'/photographer/uploads/imports/' }}"
+           data-import-detail-url-template="{{ photo_import_urls.detail|default:'/photographer/uploads/imports/{batch}/' }}"
+           data-import-items-url-template="{{ photo_import_urls.items|default:'/photographer/uploads/imports/{batch}/items/' }}"
+           data-import-retry-url-template="{{ photo_import_urls.retry|default:'/photographer/uploads/imports/{batch}/retry/' }}"
+           data-csrf-token="{{ csrf_token }}"
+           aria-label="Мои загрузки мероприятия">
     {% include "ingestion/_upload_workspace.html" %}
     {% include "ingestion/_yandex_disk_import.html" %}
   </section>

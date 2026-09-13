@@ -15,7 +15,7 @@
        data-registration-chunk="{{ upload_limits.registration_chunk|default:100 }}"
        data-concurrency="{{ upload_limits.concurrency|default:4 }}"
        data-event-id="{{ event.pk }}">
-    <section class="upload-workspace" aria-labelledby="upload-settings-title">
+    <section class="upload-workspace{% if photo_import_enabled %} upload-workspace--with-import{% endif %}" aria-labelledby="upload-settings-title">
       <div class="upload-guidance" data-upload-guidance role="status" aria-live="polite" aria-atomic="true">
         <p class="summary-message" data-summary-message>
           {% if upload_state == "complete" %}Все фотографии загружены. Можно закрыть страницу{% elif upload_state == "partial" %}Успешные файлы сохранены. Повторите передачу файлов с ошибкой.{% elif upload_state == "active" %}Держите страницу открытой — идёт загрузка{% else %}Здесь появится общий прогресс.{% endif %}
@@ -24,7 +24,13 @@
       </div>
       <div class="upload-controls">
         <h2 id="upload-settings-title">Новая загрузка</h2>
-        <div class="folder-target-collections" data-folder-target-collections>
+        <div class="upload-source-options" data-upload-source-options>
+          <section class="upload-source-card" data-upload-source-local aria-labelledby="local-upload-source-title">
+            <div class="upload-source-heading">
+              <p class="eyebrow">С устройства</p>
+              <h3 id="local-upload-source-title">Выберите фотографии</h3>
+            </div>
+            <div class="folder-target-collections" data-folder-target-collections>
             <section class="folder-targets" data-folder-targets data-event-id="{{ event.pk }}" aria-label="Папки события {{ event.name }}">
               <p class="folder-targets-heading">Выберите папку для файлов</p>
               <label class="folder-target" data-folder-target data-folder-id="" data-folder-name="Без папки" data-default-copy="Перетащите JPEG сюда">
@@ -42,13 +48,25 @@
                 </label>
                   {% endfor %}
             </section>
-        </div>
-        <button class="button upload-start-button" type="button" data-start-upload disabled>Начать загрузку</button>
+            </div>
+            <button class="button upload-start-button" type="button" data-start-upload disabled>Начать загрузку</button>
 
-        <p class="close-warning">
-          <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#alert"></use></svg>
-          <span>Закрытие или перезагрузка страницы остановит незавершённые передачи. Уже загруженные фотографии сохранятся.</span>
-        </p>
+            <p class="close-warning">
+              <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#alert"></use></svg>
+              <span>Закрытие или перезагрузка страницы остановит незавершённые передачи. Уже загруженные фотографии сохранятся.</span>
+            </p>
+          </section>
+          {% if photo_import_enabled %}
+          <section class="upload-source-card upload-source-import" data-upload-source-import aria-labelledby="yandex-upload-source-title">
+            <div class="upload-source-heading">
+              <p class="eyebrow">Яндекс Диск</p>
+              <h3 id="yandex-upload-source-title">Вставьте публичную ссылку</h3>
+              <p>Задача продолжит выполняться на сервере после закрытия страницы.</p>
+            </div>
+            {% include "ingestion/_yandex_disk_import_form.html" %}
+          </section>
+          {% endif %}
+        </div>
       </div>
 
       <aside class="upload-summary" aria-labelledby="upload-summary-title">

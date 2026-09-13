@@ -135,3 +135,8 @@ On 2026-09-12, bib-enabled production event fixtures added the independent GET b
 beside selfie search on desktop and above manual search in the 390px mobile stack. The existing
 event gallery, face chooser, selfie entry/history/rejection, empty, filtered-empty, invalid,
 paid, and staff-preview baselines were refreshed; no visual route or snapshot name was added.
+
+On 2026-09-13, the fixed-event upload workspace grouped device selection and Yandex Disk import
+inside one `Новая загрузка` panel. The existing desktop and 390px mobile upload baselines were
+refreshed: enabled imports render the two source cards side by side on desktop and stacked on
+mobile, while gate-off fixtures retain the device-only source card.

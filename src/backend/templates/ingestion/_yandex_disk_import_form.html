@@ -1,0 +1,24 @@
+<form class="import-form" data-import-form>
+  <label class="upload-field" for="import-folder">
+    <span>Папка мероприятия</span>
+    <select id="import-folder" data-import-folder disabled>
+      <option value="" data-import-folder-option data-event-id="{{ event.pk }}">Без папки</option>
+      {% for folder in folders %}
+        <option value="{{ folder.pk }}" data-import-folder-option data-event-id="{{ event.pk }}">{{ folder.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="upload-field import-link-field" for="import-source-url">
+    <span>Ссылка на публичную папку Яндекс Диска</span>
+    <input id="import-source-url"
+           data-import-source-url
+           type="url"
+           inputmode="url"
+           autocomplete="url"
+           placeholder="https://disk.yandex.ru/d/…"
+           required>
+    <small>Загрузим только JPEG-файлы из указанной папки, без подпапок</small>
+  </label>
+  <button class="button import-submit" type="submit" data-import-submit disabled>Загрузить</button>
+  <p class="import-form-message" data-import-form-message role="status" aria-live="polite"></p>
+</form>

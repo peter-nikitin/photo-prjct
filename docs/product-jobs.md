@@ -36,7 +36,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-004 | Photographer | Upload an event batch | Validated | 2026-09-07 |
 | PJ-005 | Visitor | Browse an event gallery | Validated | 2026-09-07 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
-| PJ-007 | Customer | Find photos by bib | Candidate | 2026-07-17 |
+| PJ-007 | Customer | Find photos by bib | In progress | 2026-09-13 |
 | PJ-008 | Customer | Find photos by face | In progress | 2026-08-20 |
 | PJ-009 | Visitor | Receive a free-event original | Delivered | 2026-08-21 |
 | PJ-010 | Customer | Purchase selected photos | In progress | 2026-08-22 |
@@ -147,9 +147,20 @@ result, so I can keep published search data reliable.
 When I know a participant bib number, I want to search within one event, so I can find likely photos
 quickly.
 
-- Status: Candidate
-- Evidence: [Target MVP architecture — Search](architecture.md#search)
-- Last updated: 2026-07-17
+- Status: In progress
+- Evidence: The repository now implements a disabled-default event checkbox, immutable new-photo
+  enrollment policy, pinned Linux/CPU `1/bib_recognition/1` processing, accepted-only indexed
+  projections, and a separate exact event-scoped `?bib=` form. The saved local Istra full-cycle
+  artifact processed and kept published all 37 photos, completed 37/37 bib jobs without retry or
+  failure, recovered all user-confirmed numbers, returned no user-rejected junk, and passed exact
+  search, leading-zero, and event-isolation checks. The same run recorded 40 accepted, 24 rejected,
+  and zero uncertain candidates. The product job remains in progress because its Docker Desktop
+  host recorded swap activity; the required production-equivalent Linux resource gate, canonical
+  deployment with all events disabled, first-event observation, and customer-outcome evidence are
+  incomplete. See the [approved design](superpowers/specs/2026-09-12-bib-number-production-search-design.md),
+  [local acceptance contract](../experiments/bib_search/README.md), and
+  [activation runbook](runbooks/bib-number-recognition.md).
+- Last updated: 2026-09-13
 
 ### PJ-008 — Customer — Find photos by face
 
@@ -367,3 +378,4 @@ This log is append-only.
 | 2026-08-22 | PJ-016 | In progress | In progress | Cart selection remains separate from the newly local, disabled-default purchase boundary; real adapter, worker, activation, and customer evidence remain pending. |
 | 2026-09-07 | PJ-004 | Validated | Validated | Local fixed-event workspace evidence covers the existing owned uploader, completed and unfinished history, server-confirmed close guidance, and queue preservation across filters and folder creation. Administrative saved-photo editing is a separate permission boundary. No CI, deployment, or live evidence is claimed. |
 | 2026-09-07 | PJ-005 | Validated | Validated | Local product-flow evidence adds reversible hiding across current public gallery, selfie, archive, cart, and checkout paths while preserving immutable paid-order media and archive authority. Historical delivery evidence remains unchanged; no current deployment or customer claim is added. |
+| 2026-09-13 | PJ-007 | Candidate | In progress | The disabled-default repository path and one 37-photo local full cycle pass recognition-quality, publication, exact-search, leading-zero, and event-isolation checks. Docker Desktop swap keeps the production-equivalent Linux resource gate, canonical activation, first/second event observations, and customer outcome incomplete. |

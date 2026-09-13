@@ -294,6 +294,10 @@ def remote_boundary(tmp_path: Path) -> Path:
         fi
         printf '%s\\n' "$@" > "$SSH_ARGUMENTS"
         cat > "$SSH_STDIN"
+        if [ "${SSH_FAIL_AFTER_OUTPUT:-0}" = 1 ]; then
+          [ -z "${SSH_STDOUT:-}" ] || printf '%s\n' "$SSH_STDOUT"
+          exit 48
+        fi
         [ "${FAIL_SSH:-0}" != 1 ] || exit 48
         remote_command=''
         for argument in "$@"; do
@@ -448,6 +452,34 @@ def test_deploy_helper_stops_before_ssh_when_copy_fails_and_cleans_private_files
     assert result.stderr == "[remote] stage=copy status=error code=copy_failed\n"
     assert sentinel not in result.stdout
     assert sentinel not in result.stderr
+    assert not list(tmp_path.glob("findme-remote.*"))
+
+
+def test_failed_deploy_relays_only_safe_phase_markers_before_sanitized_error(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    environment, sentinel = _remote_environment(tmp_path, remote_boundary)
+    environment.update(
+        SSH_FAIL_AFTER_OUTPUT="1",
+        SSH_STDOUT=(
+            '{"status":"ok"}'
+            "DEPLOY_PHASE=projection-preflight elapsed_seconds=45\n"
+            f"unsafe diagnostic {sentinel}\n"
+            "DEPLOY_RESULT=failure phase=projection-preflight "
+            "rollback=succeeded elapsed_seconds=67"
+        ),
+    )
+
+    result = _run_helper(["deploy"], environment)
+
+    assert result.returncode == 2
+    assert result.stdout == (
+        "DEPLOY_PHASE=projection-preflight elapsed_seconds=45\n"
+        "DEPLOY_RESULT=failure phase=projection-preflight "
+        "rollback=succeeded elapsed_seconds=67\n"
+    )
+    assert result.stderr == "[remote] stage=remote status=error code=remote_failed\n"
+    assert sentinel not in result.stdout + result.stderr
     assert not list(tmp_path.glob("findme-remote.*"))
 
 

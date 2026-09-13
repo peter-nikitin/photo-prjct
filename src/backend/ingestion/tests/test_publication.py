@@ -1,4 +1,5 @@
 from datetime import date
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -8,7 +9,7 @@ from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.services.publication import VerifiedOriginal, publish_photo
 from ingestion.storage import ObjectIdentity
-from picflow.models import Event, EventFolder
+from picflow.models import Event, EventFolder, Photo
 from processing.models import PhotoProcessingState
 
 
@@ -83,6 +84,77 @@ class PublicationTests(TransactionTestCase):
         self.assertEqual(preview.status, PhotoProcessingState.Status.QUEUED)
         self.assertEqual(preview.current_job.input_fingerprint["pixel_width"], 1_200)
         self.assertEqual(preview.current_job.input_fingerprint["pixel_height"], 800)
+
+    def test_publish_photo_snapshots_enabled_event_bib_policy(self) -> None:
+        self.event.bib_search_enabled = True
+        self.event.save(update_fields=["bib_search_enabled"])
+
+        with transaction.atomic():
+            photo = publish_photo(
+                photo_id="bib-enabled-photo",
+                uploader=self.uploader,
+                event=self.event,
+                folder=None,
+                original=self.original,
+            )
+
+        self.assertEqual(photo.bib_processing_policy, Photo.BibProcessingPolicy.ORIGINAL_V1)
+        bib = PhotoProcessingState.objects.get(photo=photo, processor_type="bib_recognition")
+        self.assertEqual(bib.status, PhotoProcessingState.Status.QUEUED)
+        self.assertEqual(bib.current_job.processor_version, 1)
+        self.event.bib_search_enabled = False
+        self.event.save(update_fields=["bib_search_enabled"])
+        photo.refresh_from_db()
+        bib.refresh_from_db()
+        self.assertEqual(photo.bib_processing_policy, Photo.BibProcessingPolicy.ORIGINAL_V1)
+        self.assertEqual(bib.status, PhotoProcessingState.Status.QUEUED)
+
+    def test_publish_photo_snapshots_disabled_event_bib_policy(self) -> None:
+        with transaction.atomic():
+            photo = publish_photo(
+                photo_id="bib-disabled-photo",
+                uploader=self.uploader,
+                event=self.event,
+                folder=None,
+                original=self.original,
+            )
+
+        self.assertEqual(photo.bib_processing_policy, Photo.BibProcessingPolicy.DISABLED)
+        self.event.bib_search_enabled = True
+        self.event.save(update_fields=["bib_search_enabled"])
+        photo.refresh_from_db()
+        self.assertEqual(photo.bib_processing_policy, Photo.BibProcessingPolicy.DISABLED)
+        self.assertFalse(
+            PhotoProcessingState.objects.filter(
+                photo=photo, processor_type="bib_recognition"
+            ).exists()
+        )
+
+    @patch(
+        "processing.services.enrollment.request_bib_recognition",
+        side_effect=RuntimeError("queue unavailable"),
+    )
+    def test_bib_enqueue_failure_does_not_roll_back_immediate_publication(
+        self, request_bib
+    ) -> None:
+        self.event.bib_search_enabled = True
+        self.event.save(update_fields=["bib_search_enabled"])
+
+        with transaction.atomic():
+            photo = publish_photo(
+                photo_id="bib-enqueue-failure",
+                uploader=self.uploader,
+                event=self.event,
+                folder=None,
+                original=self.original,
+            )
+
+        self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
+        self.assertEqual(
+            Photo.objects.get(pk=photo.pk).gallery_media_policy,
+            Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
+        )
+        request_bib.assert_called_once()
 
     @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_publish_photo_uses_paid_policy_without_changing_enrollment_identity(self) -> None:

@@ -101,7 +101,7 @@ def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() 
     if "yunet" in dockerfile.lower():
         failures.append("worker image still contains YuNet")
     requirements = (ROOT / "src/worker/requirements.txt").read_text(encoding="utf-8")
-    if "onnxruntime==1.23.2" not in requirements:
+    if "onnxruntime==1.29.0" not in requirements:
         failures.append("missing pinned ONNX Runtime")
 
     for relative_path, checksum, endpoint in ADAFACE_ARTIFACTS:
@@ -120,7 +120,7 @@ def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() 
     if "HF_HUB_OFFLINE=1" not in dockerfile:
         failures.append("runtime does not declare offline model loading")
 
-    smoke_command = "RUN python -m photo_worker.model_smoke"
+    smoke_command = "RUN --network=none python -m photo_worker.model_smoke"
     if smoke_command not in dockerfile:
         failures.append("missing build-time face model smoke")
     else:
@@ -238,7 +238,7 @@ def test_worker_image_uses_cpu_only_torch_and_verifies_its_runtime_budget(
         distributions=[Distribution("torch")],
     )
     (models / "one-byte-over-budget.bin").write_bytes(b"x")
-    with pytest.raises(RuntimeError, match="2048 MiB"):
+    with pytest.raises(RuntimeError, match="4096 MiB"):
         runtime_contract.verify_runtime_contract(
             torch_module=CpuTorch,
             site_package_directories=[site_packages],
@@ -289,8 +289,8 @@ def test_deployment_worker_profile_is_bounded_and_isolated_from_web_configuratio
     assert worker.get("env_file") is None
     assert worker["depends_on"] == {"web": {"condition": "service_healthy"}}
     assert worker["restart"] == "unless-stopped"
-    assert worker["cpus"] == "1.0"
-    assert worker["mem_limit"] == "2g"
+    assert worker["cpus"] == "${PHOTO_WORKER_CPUS:-1.0}"
+    assert worker["mem_limit"] == "${PHOTO_WORKER_MEMORY_LIMIT:-2g}"
     assert worker["pids_limit"] == 64
     assert worker["environment"] == {
         "PHOTO_WORKER_API_URL": "http://web:8000/internal/photo-processing/v1",
@@ -386,3 +386,22 @@ def _dotenv_values(path: Path) -> dict[str, str]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     )
+
+
+def test_bib_image_pins_linux_runtime_and_runs_offline_smokes():
+    dockerfile = (ROOT / "Dockerfile.worker").read_text()
+    for token in (
+        "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
+        "2de0d87eda4696e9f6bbd771d4c623267f4e95856cce6f99793f91522f993e43",
+        "GGML_NATIVE=OFF",
+        "d38d39f5972e27cd58023f9b1e9f994b0c85ca47",
+        "089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae",
+        "f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82",
+        "RUN --network=none python -m photo_worker.model_smoke",
+    ):
+        assert token in dockerfile
+
+
+def test_bib_runtime_loader_finds_the_packaged_shared_libraries():
+    dockerfile = (ROOT / "Dockerfile.worker").read_text()
+    assert "LD_LIBRARY_PATH=/worker/llama" in dockerfile

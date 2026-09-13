@@ -16,12 +16,14 @@ from pathlib import Path
 from time import monotonic
 from typing import Protocol
 
+from photo_worker.bib_execution import BibExecutionError, run_bib_recognition
 from photo_worker.client import ApiError, CallbackResult, DownloadError, HttpClient, UploadError
 from photo_worker.contracts import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     FAILURE_RETRYABLE,
     PREVIEW_CONTRACT_VERSION,
     PROCESSOR_TYPE,
+    PROCESSOR_TYPE_BIB_RECOGNITION,
     PROCESSOR_TYPE_FACE_EMBEDDING,
     PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
@@ -72,6 +74,7 @@ _SUPPORTED_IDENTITIES = {
     (2, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW),
     (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY),
     (1, PROCESSOR_TYPE_SELFIE_QUERY, PROCESSOR_VERSION_SELFIE_QUERY),
+    (1, PROCESSOR_TYPE_BIB_RECOGNITION, 1),
 }
 
 
@@ -145,6 +148,7 @@ class WorkerConfig:
             PROCESSOR_TYPE_GENERATE_PREVIEW,
             PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
             PROCESSOR_TYPE_SELFIE_QUERY,
+            PROCESSOR_TYPE_BIB_RECOGNITION,
         }
         if self.processor_type is not None and self.processor_type not in supported:
             raise ValueError("unsupported processor type")
@@ -480,7 +484,16 @@ class Worker:
             keeper.raise_if_lost()
             compute_started = monotonic()
             try:
-                result = self._run_processor(job, input_path, preview_path)
+                result = (
+                    run_bib_recognition(
+                        input_path,
+                        source_sha256=getattr(job.input_fingerprint, "source_sha256", None),
+                        deadline_seconds=job.configuration.bib_deadline_seconds or 300,
+                        check_cancelled=keeper.raise_if_lost,
+                    )
+                    if job.processor_type == PROCESSOR_TYPE_BIB_RECOGNITION
+                    else self._run_processor(job, input_path, preview_path)
+                )
             finally:
                 compute_ms = _milliseconds(compute_started)
             if isinstance(result, (PreviewResult, WatermarkedPreviewResult)):
@@ -550,6 +563,7 @@ class Worker:
                     secrets=self._config.log_secrets,
                 )
         except (
+            BibExecutionError,
             DownloadError,
             InputTooLarge,
             MetadataError,
@@ -864,7 +878,7 @@ def _default_processor_identity(processor_type: str) -> tuple[int, str, int]:
 def _assert_terminal_size(payload: dict[str, object], maximum: int) -> None:
     import json
 
-    if len(json.dumps(payload, separators=(",", ":")).encode()) > maximum:
+    if len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()) > maximum:
         raise ApiError(
             "invalid_api_response",
             retryable=False,

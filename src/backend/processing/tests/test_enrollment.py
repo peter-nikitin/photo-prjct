@@ -8,6 +8,7 @@ from picflow.models import Event, Photo
 
 from processing.contracts import QUALITY_FACE_EMBEDDING_CONTRACT
 from processing.models import (
+    BIB_RECOGNITION_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     EventProcessingRun,
     PhotoDerivative,
@@ -15,6 +16,7 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
+from processing.services.bibs import bib_configuration
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     FACE_EMBEDDING_CONFIGURATION,
@@ -28,8 +30,10 @@ from processing.services.enrollment import (
     CaptureTimeReprocessingTarget,
     capture_metadata_configuration,
     enroll_event_capture_time_reprocessing,
+    reconcile_bib_recognition,
     reconcile_capture_metadata,
     reconcile_face_embedding,
+    request_bib_recognition,
     request_capture_metadata,
     request_face_embedding_candidate_enqueue,
     request_face_embedding_enqueue,
@@ -773,3 +777,92 @@ class CaptureMetadataEnrollmentTests(TestCase):
             [third.pk],
         )
         self.assertEqual(ProcessingJob.objects.count(), 3)
+
+
+class BibRecognitionEnrollmentTests(TestCase):
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="bib-enrollment-owner")
+        self.event = Event.objects.create(
+            name="Bib enrollment event",
+            slug="bib-enrollment-event",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="Europe/Moscow",
+        )
+
+    def photo(
+        self,
+        suffix: str,
+        *,
+        policy: str = "original_v1",
+        preview_first: bool = False,
+    ) -> Photo:
+        return Photo.objects.create(
+            id=f"bib-{suffix}",
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/bib-{suffix}",
+            original_filename=f"{suffix}.jpg",
+            original_size=10,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+            processing_generation=(
+                Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+                if preview_first
+                else Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+            ),
+            gallery_media_policy=(
+                Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+                if preview_first
+                else Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
+            ),
+            bib_processing_policy=policy,
+        )
+
+    def test_request_is_post_publication_idempotent_and_uses_generation_one(self) -> None:
+        photo = self.photo("eligible")
+
+        first = request_bib_recognition(photo)
+        second = request_bib_recognition(photo)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(first.status, PhotoProcessingState.Status.QUEUED)
+        self.assertEqual(ProcessingJob.objects.filter(photo=photo).count(), 1)
+        job = ProcessingJob.objects.get(photo=photo)
+        self.assertEqual(
+            (job.contract_version, job.processor_type, job.processor_version),
+            (1, BIB_RECOGNITION_PROCESSOR, 1),
+        )
+        self.assertEqual(job.configuration, bib_configuration())
+
+    def test_request_keeps_disabled_and_unpublished_preview_photos_not_requested(self) -> None:
+        disabled = self.photo("disabled", policy="disabled")
+        unpublished = self.photo("unpublished", preview_first=True)
+
+        for photo in (disabled, unpublished):
+            state = request_bib_recognition(photo)
+            self.assertEqual(state.status, PhotoProcessingState.Status.NOT_REQUESTED)
+            self.assertIsNone(state.current_job)
+
+        self.assertFalse(ProcessingJob.objects.filter(processor_type=BIB_RECOGNITION_PROCESSOR))
+
+    def test_reconciliation_uses_persisted_policy_and_publication_not_current_event_checkbox(
+        self,
+    ) -> None:
+        originally_enabled = self.photo("persisted-enabled")
+        disabled = self.photo("persisted-disabled", policy="disabled")
+        unpublished = self.photo("preview-not-published", preview_first=True)
+        self.event.bib_search_enabled = False
+        self.event.save(update_fields=["bib_search_enabled"])
+
+        reconciled = reconcile_bib_recognition(limit=1)
+
+        self.assertEqual([state.photo_id for state in reconciled], [originally_enabled.pk])
+        for photo in (disabled, unpublished):
+            self.assertFalse(
+                ProcessingJob.objects.filter(
+                    photo=photo, processor_type=BIB_RECOGNITION_PROCESSOR
+                ).exists()
+            )

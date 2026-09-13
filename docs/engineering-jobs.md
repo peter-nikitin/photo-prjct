@@ -58,6 +58,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-024 | Maintainer | Prepare paid watermarked-preview activation | In progress | 2026-08-21 |
 | EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | Delivered | 2026-08-21 |
 | EJ-026 | Maintainer | Keep paid purchase dark until external prerequisites are approved | In progress | 2026-08-22 |
+| EJ-027 | Maintainer | Gate bib-recognition activation | In progress | 2026-09-13 |
 
 ## Job details
 
@@ -468,6 +469,28 @@ real bank and email adapters only after their operational and legal contracts ar
   is claimed.
 - Last updated: 2026-08-22
 
+### EJ-027 — Maintainer — Gate bib-recognition activation
+
+When I prepare bib-number search for an event, I want one pinned sequential worker and a measured
+event cohort with explicit stop conditions, so I can activate recognition without putting photo
+publication or the canonical VM at risk.
+
+- Status: In progress
+- Evidence: The repository implements immutable per-photo applicability, versioned attempts and
+  accepted-only projections, the pinned Linux/CPU `1/bib_recognition/1` worker, exact event reports,
+  deployment validation for one worker replica and bounded CPU/memory values, and the isolated
+  [one-event acceptance harness](../experiments/bib_search/README.md). The saved Istra run processed
+  37/37 applicable photos successfully with zero retries, failures, lease expiry, restarts, OOM, or
+  public-health failures. It retained 40 accepted, 24 rejected, and zero uncertain candidates,
+  recovered every user-confirmed number, returned no reviewed junk, and passed exact search plus
+  event isolation. Peak cgroup memory was 3,607,793,664 bytes, selecting 5120 MiB with 2 CPUs;
+  bib total time was about 31.7 seconds p50, 58.5 seconds p95, and 70.9 seconds maximum. Docker
+  Desktop recorded 12,351 swap-in and 18,913 swap-out pages during the cohort, so this remains a
+  candidate sizing result rather than an activation setting. A production-equivalent Linux resource
+  run, disabled canonical deployment, first-event observation, and second-event confirmation remain
+  incomplete; follow the [bib recognition runbook](runbooks/bib-number-recognition.md).
+- Last updated: 2026-09-13
+
 ### EJ-017 — Developer — Read canonical secret projections consistently
 
 When I run the application locally or use an approved workflow, I want one managed secret authority
@@ -586,3 +609,4 @@ This log is append-only.
 | 2026-08-21 | EJ-025 | In progress | Delivered | The automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded and executes the committed [`install-cart-cleanup-cron.sh` installation path](../deploy/apply-deployment.sh#L907); live crontab presence and actual cleanup execution remain unvalidated. |
 | 2026-08-22 | EJ-026 | Not recorded | In progress | Local, disabled-default purchase capability now has order/payment/delivery/recovery evidence; real adapters, legal/fiscal approval, worker activation, deployment, and customer evidence remain external prerequisites. |
 | 2026-09-07 | EJ-023 | Validated | Validated | Local private-workspace evidence adds strict all-photo administrative filters and atomic mutations, permissioned media, current processing status, and mounted refresh behavior while preserving event-folder storage and upload authority boundaries. No CI, deployment, or live evidence is claimed. |
+| 2026-09-13 | EJ-027 | Not recorded | In progress | The pinned disabled-default bib path and 37-photo local quality/publication/search cycle are implemented. Docker Desktop swap leaves the production-equivalent Linux resource gate, canonical deployment, and first/second event observations incomplete. |

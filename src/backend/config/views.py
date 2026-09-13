@@ -23,7 +23,7 @@ from ingestion.storage import (
     StorageUnavailable,
 )
 from picflow.access import mark_event_staff_preview
-from picflow.forms import EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
+from picflow.forms import BibSearchForm, EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhoto,
@@ -69,6 +69,16 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     selfie_feedback_enabled = bool(settings.SELFIE_FEEDBACK_ENABLED)
     gallery_photos: tuple[GalleryPhoto, ...] = ()
     gallery_page_data = None
+    bib_search_form = None
+    bib_search_invalid = False
+    bib_number = None
+    if event.bib_search_enabled:
+        bib_search_form = BibSearchForm(request.GET if "bib" in request.GET else None)
+        if bib_search_form.is_bound:
+            if bib_search_form.is_valid():
+                bib_number = bib_search_form.cleaned_data["bib"] or None
+            else:
+                bib_search_invalid = True
     manual_time_filter_form = None
     manual_time_filter_invalid = False
     gallery_folder_choices_data: tuple[EventFolder, ...] = ()
@@ -95,10 +105,12 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
         manual_time_filter_form = EventGalleryTimeFilterForm(event, request.GET)
         if manual_time_filter_form.is_requested and not manual_time_filter_form.is_valid():
             manual_time_filter_invalid = True
-        else:
+        elif not bib_search_invalid:
             bounds = manual_time_filter_form.utc_bounds
             gallery_filters_active = (
-                manual_time_filter_form.is_requested or gallery_folder_filter_form.is_requested
+                manual_time_filter_form.is_requested
+                or gallery_folder_filter_form.is_requested
+                or bib_number is not None
             )
             query_pairs = [
                 ("folder", str(folder_id))
@@ -111,6 +123,8 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                     query_pairs.append(("from", manual_time_filter_form.cleaned_data["from"]))
                 if manual_time_filter_form.cleaned_data["to"]:
                     query_pairs.append(("to", manual_time_filter_form.cleaned_data["to"]))
+            if bib_number is not None:
+                query_pairs.append(("bib", bib_number))
             gallery_pagination_query_pairs = tuple(query_pairs)
             gallery_pagination_query = urlencode(gallery_pagination_query_pairs)
             try:
@@ -121,6 +135,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                     capture_time_end=bounds[1] if bounds else None,
                     folder_ids=gallery_folder_filter_form.selected_folder_ids,
                     include_unfiled=gallery_folder_filter_form.include_unfiled,
+                    bib_number=bib_number,
                     paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
                 )
             except InvalidPage:
@@ -164,6 +179,9 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
         {
             "cart_presentation": cart_state.presentation if cart_state is not None else None,
             "event": event,
+            "bib_number": bib_number,
+            "bib_search_form": bib_search_form,
+            "bib_search_invalid": bib_search_invalid,
             "gallery_photos": gallery_photos,
             "gallery_page": gallery_page_data,
             "manual_time_filter_form": manual_time_filter_form,

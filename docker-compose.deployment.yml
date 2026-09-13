@@ -118,8 +118,8 @@ services:
       web:
         condition: service_healthy
     restart: unless-stopped
-    cpus: "1.0"
-    mem_limit: 2g
+    cpus: "${PHOTO_WORKER_CPUS:-1.0}"
+    mem_limit: ${PHOTO_WORKER_MEMORY_LIMIT:-2g}
     pids_limit: 64
     logging:
       driver: journald

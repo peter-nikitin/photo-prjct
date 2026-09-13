@@ -35,6 +35,12 @@ PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW = 1
 PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW = 3
 PROCESSOR_TYPE_SELFIE_QUERY = "selfie_query"
 PROCESSOR_VERSION_SELFIE_QUERY = 2
+PROCESSOR_TYPE_BIB_RECOGNITION = "bib_recognition"
+PROCESSOR_VERSION_BIB_RECOGNITION = 1
+BIB_CONTRACT_VERSION = 1
+BIB_INFERENCE_CONFIGURATION_SHA256 = (
+    "32b3f2c94202df7c90e5c799c9ca21b760d5d2ac9c376fe578f6f330e415edf9"
+)
 MAX_FACE_EMBEDDINGS_PER_JOB = 32
 MAX_FACE_EMBEDDING_DIMENSIONS = ADAFACE_EMBEDDING_DIMENSIONS
 SFACE_FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
@@ -183,6 +189,7 @@ FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
 }
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _SELFIE_KEY = re.compile(r"selfie-search/[0-9a-f]{32}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 _ORIGINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
 _PUBLISHED_PREVIEW_KEY = re.compile(
     r"derivatives/previews/(?P<photo_id>[A-Za-z0-9_-]{1,32})/preview-small-v1/"
@@ -196,6 +203,7 @@ FAILURE_RETRYABLE = {
     "fingerprint_mismatch": True,
     "input_too_large": False,
     "model_inference_error": False,
+    "runtime_resource_exhausted": False,
     "model_inference_timeout": True,
     "network_interruption": True,
     "no_face_detected": False,
@@ -203,11 +211,16 @@ FAILURE_RETRYABLE = {
     "quality_rejected": False,
     "storage_unavailable": True,
     "unsupported_input": False,
+    "output_contract_violation": False,
 }
 
 
 class ContractError(ValueError):
     """The API returned a payload incompatible with this worker build."""
+
+
+def _safe_sha256(value: object) -> bool:
+    return isinstance(value, str) and _SHA256.fullmatch(value) is not None
 
 
 def redact(value: object, *, secrets: tuple[str, ...] = ()) -> str:
@@ -232,6 +245,7 @@ class InputFingerprint:
     original_content_type: str | None = None
     verified_source_etag: str | None = None
     version_evidence: str | None = None
+    source_sha256: str | None = None
     object_key: str | None = None
     object_size: int | None = None
     object_content_type: str | None = None
@@ -249,6 +263,7 @@ class InputFingerprint:
             "verified_source_etag",
             "version_evidence",
         }
+        bib_original_fields = original_fields | {"source_sha256"}
         generic_fields = {
             "object_key",
             "object_size",
@@ -260,7 +275,7 @@ class InputFingerprint:
         }
         if not isinstance(value, dict) or not _bounded_json(value):
             raise ContractError("invalid input fingerprint")
-        if set(value) == original_fields:
+        if set(value) in {frozenset(original_fields), frozenset(bib_original_fields)}:
             if contract_version not in {CONTRACT_VERSION, 3}:
                 raise ContractError("invalid input fingerprint")
             key = value["original_key"]
@@ -279,6 +294,13 @@ class InputFingerprint:
                     contract_version != 3
                     or (isinstance(key, str) and _ORIGINAL_KEY.fullmatch(key) is not None)
                 )
+                and (
+                    set(value) == original_fields
+                    or (
+                        contract_version == BIB_CONTRACT_VERSION
+                        and _safe_sha256(value["source_sha256"])
+                    )
+                )
             ):
                 raise ContractError("invalid input fingerprint")
             return cls(
@@ -287,6 +309,7 @@ class InputFingerprint:
                 original_content_type=content_type,
                 verified_source_etag=etag,
                 version_evidence=evidence,
+                source_sha256=cast(str | None, value.get("source_sha256")),
             )
         if set(value) != generic_fields or contract_version not in {PREVIEW_CONTRACT_VERSION, 3}:
             raise ContractError("invalid input fingerprint")
@@ -373,6 +396,8 @@ class ProcessorConfiguration:
     event_timezone: str | None = None
     quality_thresholds: FaceQualityThresholds | None = None
     watermark_asset_sha256s: dict[str, str] | None = None
+    bib_inference_configuration_sha256: str | None = None
+    bib_deadline_seconds: int | None = None
 
     @classmethod
     def from_value(cls, value: object) -> ProcessorConfiguration:
@@ -425,6 +450,14 @@ class ProcessorConfiguration:
             "worker",
         }
         expected_adaface_selfie = expected_selfie | {"adaface", "scrfd"}
+        expected_bib = {
+            "retry_policy",
+            "max_cohort_size",
+            "report_max_bytes",
+            "report_row_limits",
+            "bib_recognition",
+            "worker",
+        }
         if not isinstance(value, dict) or not _bounded_json(value):
             raise ContractError("invalid processor configuration")
         if set(value) == expected_capture:
@@ -469,6 +502,9 @@ class ProcessorConfiguration:
             watermark_config = None
             selfie_config = value["selfie_query"]
             configuration_kind = "selfie_query"
+        elif set(value) == expected_bib:
+            capture = face_config = preview_config = watermark_config = selfie_config = None
+            configuration_kind = PROCESSOR_TYPE_BIB_RECOGNITION
         else:
             raise ContractError("invalid processor configuration")
 
@@ -531,7 +567,48 @@ class ProcessorConfiguration:
         ):
             raise ContractError("invalid processor configuration")
 
-        if selfie_config is not None:
+        bib_config = value.get("bib_recognition")
+        bib_identity: str | None = None
+        bib_deadline: int | None = None
+        if configuration_kind == PROCESSOR_TYPE_BIB_RECOGNITION:
+            if not (
+                isinstance(bib_config, dict)
+                and set(bib_config)
+                == {
+                    "inference_configuration_sha256",
+                    "generation",
+                    "deadline_seconds",
+                    "result_max_bytes",
+                }
+                and bib_config["inference_configuration_sha256"]
+                == BIB_INFERENCE_CONFIGURATION_SHA256
+                and type(bib_config["generation"]) is int
+                and bib_config["generation"] == 1
+                and bib_config["deadline_seconds"] == 300
+                and bib_config["result_max_bytes"] == 120 * 1024
+                and value["max_cohort_size"] == 100
+                and worker["terminal_result_max_bytes"] == 128 * 1024
+                and worker
+                == {
+                    "api_response_max_bytes": 128 * 1024,
+                    "concurrency": 1,
+                    "heartbeat_interval_seconds": 30,
+                    "lease_duration_seconds": 120,
+                    "max_input_bytes": 50 * 1024 * 1024,
+                    "max_pixels": 100_000_000,
+                    "poll_min_delay_seconds": 5,
+                    "terminal_result_max_bytes": 128 * 1024,
+                }
+            ):
+                raise ContractError("invalid processor configuration")
+            bib_identity = cast(str, bib_config["inference_configuration_sha256"])
+            bib_deadline = 300
+            max_faces = 1
+            face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
+            model = SFACE_MODEL_NAME
+            embedding_dimensions = SFACE_EMBEDDING_DIMENSIONS
+            minimum_face_px = 1
+        elif selfie_config is not None:
             is_adaface = (
                 isinstance(selfie_config, dict)
                 and selfie_config.get("model") == ADAFACE_MODEL_NAME
@@ -770,6 +847,8 @@ class ProcessorConfiguration:
                 if configuration_kind == "generate_watermarked_preview"
                 else None
             ),
+            bib_inference_configuration_sha256=bib_identity,
+            bib_deadline_seconds=bib_deadline,
         )
 
 
@@ -1013,6 +1092,11 @@ class ClaimedJob:
                     PROCESSOR_TYPE_FACE_EMBEDDING,
                     PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
                 ),
+                (
+                    BIB_CONTRACT_VERSION,
+                    PROCESSOR_TYPE_BIB_RECOGNITION,
+                    PROCESSOR_VERSION_BIB_RECOGNITION,
+                ),
             }
             identity_matches_contract = (
                 (
@@ -1053,6 +1137,18 @@ class ClaimedJob:
                             and _valid_preview_input_geometry(input_geometry, photo_fingerprint)
                         )
                     )
+                )
+                or (
+                    identity
+                    == (
+                        BIB_CONTRACT_VERSION,
+                        PROCESSOR_TYPE_BIB_RECOGNITION,
+                        PROCESSOR_VERSION_BIB_RECOGNITION,
+                    )
+                    and configuration.configuration_kind == PROCESSOR_TYPE_BIB_RECOGNITION
+                    and photo_fingerprint.original_key is not None
+                    and _ORIGINAL_KEY.fullmatch(photo_fingerprint.original_key) is not None
+                    and input_geometry is None
                 )
                 or (
                     preview
@@ -1427,6 +1523,11 @@ def _processor_version(processor_type: str, contract_version: int = CONTRACT_VER
         return PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW
     if processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
         return PROCESSOR_VERSION_SELFIE_QUERY
+    if (
+        processor_type == PROCESSOR_TYPE_BIB_RECOGNITION
+        and contract_version == BIB_CONTRACT_VERSION
+    ):
+        return PROCESSOR_VERSION_BIB_RECOGNITION
     raise ContractError("unsupported processor type")
 
 
@@ -1462,6 +1563,7 @@ def _download_url(value: object) -> bool:
     local_minio_endpoint = (parsed.netloc, parsed.hostname, port) in {
         ("minio:9000", "minio", 9000),
         ("minio.localhost:19000", "minio.localhost", 19000),
+        ("minio.localhost:19200", "minio.localhost", 19200),
     }
     local_minio = (
         os.environ.get("PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO") == "true"

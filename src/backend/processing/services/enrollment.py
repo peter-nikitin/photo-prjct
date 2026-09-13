@@ -14,7 +14,9 @@ from django.db.models import F, Q
 from django.utils import timezone
 from picflow.models import Event, Photo
 
+from processing.contracts import BIB_RECOGNITION_CONTRACT
 from processing.models import (
+    BIB_RECOGNITION_PROCESSOR,
     CAPTURE_METADATA_PROCESSOR,
     FACE_EMBEDDING_BENCHMARK_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
@@ -26,6 +28,7 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingJob,
 )
+from processing.services.bibs import bib_configuration
 from processing.services.jobs import transition_capture_time_projection
 
 CONTRACT_VERSION = 1
@@ -816,6 +819,24 @@ def request_capture_metadata(
         )
 
 
+def request_bib_recognition(
+    photo: Photo, *, verified_source_etag: str | None = None
+) -> PhotoProcessingState:
+    """Queue bib work only from the photo's immutable policy and accepted publication."""
+    return request_processor(
+        photo=photo,
+        processor_type=BIB_RECOGNITION_CONTRACT.processor_type,
+        contract_version=BIB_RECOGNITION_CONTRACT.contract_version,
+        processor_version=BIB_RECOGNITION_CONTRACT.processor_version,
+        configuration=bib_configuration(),
+        verified_source_etag=verified_source_etag,
+        enabled=(
+            photo.bib_processing_policy == Photo.BibProcessingPolicy.ORIGINAL_V1
+            and _has_accepted_publication(photo)
+        ),
+    )
+
+
 def request_face_embedding_enqueue(
     photo: Photo, *, verified_source_etag: str | None = None
 ) -> PhotoProcessingState:
@@ -1172,6 +1193,36 @@ def reconcile_capture_metadata(
     )
 
 
+def reconcile_bib_recognition(
+    *, limit: int = DEFAULT_RECONCILIATION_LIMIT
+) -> list[PhotoProcessingState]:
+    """Enroll a bounded set selected only by persisted photo policy and publication."""
+    if not 1 <= limit <= MAX_RECONCILIATION_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_RECONCILIATION_LIMIT}")
+    reconciled: list[PhotoProcessingState] = []
+    candidates = Photo.objects.filter(
+        bib_processing_policy=Photo.BibProcessingPolicy.ORIGINAL_V1,
+        original_key__isnull=False,
+        original_key__gt="",
+        original_size__isnull=False,
+        original_content_type="image/jpeg",
+    ).order_by("pk")
+    for photo in candidates:
+        if not _has_accepted_publication(photo):
+            continue
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo,
+            processor_type=BIB_RECOGNITION_PROCESSOR,
+            defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+        )
+        if state.status != PhotoProcessingState.Status.NOT_REQUESTED or state.current_job_id:
+            continue
+        reconciled.append(request_bib_recognition(photo))
+        if len(reconciled) >= limit:
+            break
+    return reconciled
+
+
 def reconcile_face_embedding(
     *, limit: int = DEFAULT_RECONCILIATION_LIMIT
 ) -> list[PhotoProcessingState]:
@@ -1282,6 +1333,22 @@ def _is_eligible(photo: Photo) -> bool:
     )
 
 
+def _has_accepted_publication(photo: Photo) -> bool:
+    if photo.processing_generation == Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1:
+        return photo.gallery_media_policy == Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
+    if (
+        photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        and photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+    ):
+        return _accepted_preview(photo) is not None
+    if (
+        photo.processing_generation == Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
+        and photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+    ):
+        return _accepted_watermarked_preview(photo) is not None
+    return False
+
+
 def _input_fingerprint(
     photo: Photo, *, verified_source_etag: str | None
 ) -> dict[str, int | str | None]:
@@ -1302,21 +1369,37 @@ def _input_fingerprint(
 
 
 def _accepted_preview(photo: Photo) -> PhotoDerivative | None:
-    preview = PhotoDerivative.objects.filter(photo=photo, variant="preview-small-v1").first()
-    if preview is None:
+    return _accepted_derivative(
+        photo,
+        variant="preview-small-v1",
+        processor_type=GENERATE_PREVIEW_PROCESSOR,
+    )
+
+
+def _accepted_watermarked_preview(photo: Photo) -> PhotoDerivative | None:
+    return _accepted_derivative(
+        photo,
+        variant="preview-watermarked-v1",
+        processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+    )
+
+
+def _accepted_derivative(
+    photo: Photo, *, variant: str, processor_type: str
+) -> PhotoDerivative | None:
+    derivative = PhotoDerivative.objects.filter(photo=photo, variant=variant).first()
+    if derivative is None:
         return None
     try:
-        state = PhotoProcessingState.objects.get(
-            photo=photo, processor_type=GENERATE_PREVIEW_PROCESSOR
-        )
+        state = PhotoProcessingState.objects.get(photo=photo, processor_type=processor_type)
     except PhotoProcessingState.DoesNotExist:
         return None
     if (
         state.status != PhotoProcessingState.Status.SUCCEEDED
-        or state.accepted_attempt_id != preview.accepted_attempt_id
+        or state.accepted_attempt_id != derivative.accepted_attempt_id
     ):
         return None
-    return preview
+    return derivative
 
 
 def _derivative_fingerprint(

@@ -1,0 +1,100 @@
+{
+  "engine_parameters": {
+    "candidate_min_confidence": 0.5,
+    "Cls": {
+      "cls_batch_num": 6,
+      "cls_image_shape": [
+        3,
+        48,
+        192
+      ],
+      "cls_thresh": 0.9,
+      "engine_type": "onnxruntime",
+      "label_list": [
+        "0",
+        "180"
+      ],
+      "lang_type": "ch",
+      "model_dir": null,
+      "model_path": "var/bib-search/models/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "model_type": "mobile",
+      "ocr_version": "PP-OCRv4",
+      "task_type": "cls"
+    },
+    "Det": {
+      "box_thresh": 0.5,
+      "engine_type": "onnxruntime",
+      "lang_type": "ch",
+      "limit_side_len": 736,
+      "limit_type": "min",
+      "max_candidates": 1000,
+      "mean": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "model_dir": null,
+      "model_path": "var/bib-search/models/ch_PP-OCRv5_det_mobile.onnx",
+      "model_type": "mobile",
+      "ocr_version": "PP-OCRv5",
+      "score_mode": "fast",
+      "std": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "task_type": "det",
+      "thresh": 0.3,
+      "unclip_ratio": 1.6,
+      "use_dilation": true
+    },
+    "EngineConfig": {
+      "onnxruntime": {
+        "cpu_ep_cfg": {
+          "arena_extend_strategy": "kSameAsRequested"
+        },
+        "enable_cpu_mem_arena": false,
+        "inter_op_num_threads": 1,
+        "intra_op_num_threads": 1,
+        "use_cann": false,
+        "use_coreml": false,
+        "use_cuda": false,
+        "use_dml": false
+      }
+    },
+    "Global": {
+      "font_path": null,
+      "log_level": "info",
+      "max_side_len": 2000,
+      "min_height": 30,
+      "min_side_len": 30,
+      "model_root_dir": null,
+      "return_single_char_box": false,
+      "return_word_box": false,
+      "text_score": 0.0,
+      "use_cls": true,
+      "use_det": true,
+      "use_preprocess_img": true,
+      "use_rec": true,
+      "use_vertical_padding": true,
+      "width_height_ratio": 8
+    },
+    "Rec": {
+      "engine_type": "onnxruntime",
+      "lang_type": "ch",
+      "model_dir": null,
+      "model_path": "var/bib-search/models/ch_PP-OCRv5_rec_mobile.onnx",
+      "model_type": "mobile",
+      "ocr_version": "PP-OCRv5",
+      "rec_batch_num": 6,
+      "rec_img_shape": [
+        3,
+        48,
+        320
+      ],
+      "rec_keys_path": "var/bib-search/models/dictionary.txt",
+      "task_type": "rec"
+    },
+    "disable_onnxruntime_telemetry": true
+  }
+}

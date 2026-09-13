@@ -15,7 +15,7 @@ from django.shortcuts import render
 from django.test import override_settings
 from django.urls import reverse
 from picflow.archive_presentation import archive_page_action
-from picflow.forms import EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
+from picflow.forms import BibSearchForm, EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from selfie_search.forms import SelfieSearchUploadForm
 
 
@@ -72,6 +72,7 @@ class FixtureEvent:
     timezone_name: str = "Europe/London"
     folders: FixtureFolderCollection = FixtureFolderCollection()
     publication_status: str = "published"
+    bib_search_enabled: bool = False
 
     @property
     def pk(self) -> str:
@@ -192,6 +193,7 @@ EVENTS = (
         "Городской забег с несколькими точками съёмки на трассе.",
         cover=FixtureImage("/static/images/run-city-1842.png"),
         folders=FixtureFolderCollection((FixtureFolder(4, "Старт"), FixtureFolder(8, "Финиш"))),
+        bib_search_enabled=True,
     ),
     FixtureEvent(
         "Brighton Ride",
@@ -729,6 +731,8 @@ def _gallery_context(
             pagination_query_pairs.append(("to", manual_time_filter_form.cleaned_data["to"]))
     return {
         "event": EVENTS[0],
+        "bib_search_form": BibSearchForm(),
+        "bib_search_invalid": False,
         "gallery_photos": photos,
         "gallery_page": gallery_page,
         "manual_time_filter_form": manual_time_filter_form,

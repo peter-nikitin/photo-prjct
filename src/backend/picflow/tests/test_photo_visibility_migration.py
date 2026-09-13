@@ -19,7 +19,7 @@ class PhotoVisibilityMigrationTests(TransactionTestCase):
 
     def test_existing_photo_relationships_and_media_identity_survive_as_visible(self) -> None:
         executor = MigrationExecutor(connection)
-        self.assertIn(self.migrate_to, executor.loader.graph.leaf_nodes("picflow"))
+        self.assertIn(self.migrate_to, executor.loader.graph.nodes)
         executor.migrate([self.migrate_from])
         old_apps = executor.loader.project_state([self.migrate_from]).apps
         Event = old_apps.get_model("picflow", "Event")

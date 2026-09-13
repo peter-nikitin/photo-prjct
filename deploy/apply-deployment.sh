@@ -62,6 +62,24 @@ requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}"
 requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
+requested_worker_cpus="${PHOTO_WORKER_CPUS:-1.0}"
+requested_worker_memory_limit="${PHOTO_WORKER_MEMORY_LIMIT:-2g}"
+case "$requested_worker_cpus" in
+    1|1.0|2|2.0) ;;
+    *) echo "PHOTO_WORKER_CPUS must be 1.0 or 2.0" >&2; exit 2 ;;
+esac
+case "$requested_worker_memory_limit" in
+    2g|3g|4g|5g|6g|2048m|2560m|3072m|3584m|4096m|4608m|5120m|5632m|6144m) ;;
+    *) echo "PHOTO_WORKER_MEMORY_LIMIT must be 2 to 6 GiB in 512 MiB increments" >&2; exit 2 ;;
+esac
+case ",$requested_worker_processor_identities," in
+    *,1/bib_recognition/1,*)
+        if [ "$requested_worker_replicas" != 1 ]; then
+            echo "bib_recognition requires PHOTO_WORKER_REPLICAS=1" >&2
+            exit 2
+        fi
+        ;;
+esac
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
 requested_commerce_worker_enabled="${COMMERCE_WORKER_ENABLED:-False}"
@@ -219,7 +237,7 @@ while :; do
             ;;
     esac
     case "$processor_identity" in
-        1/selfie_query/2|1/capture_metadata/2|2/generate_preview/1|2/generate_watermarked_preview/1|2/face_embedding/3|3/face_embedding/5)
+        1/selfie_query/2|1/capture_metadata/2|2/generate_preview/1|2/generate_watermarked_preview/1|2/face_embedding/3|3/face_embedding/5|1/bib_recognition/1)
             ;;
         *)
             echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
@@ -584,6 +602,8 @@ clear_candidate_compose_interpolation() {
         PHOTO_WORKER_PROCESSOR_IDENTITIES \
         PHOTO_WORKER_PROCESSOR_TYPES \
         PHOTO_WORKER_REPLICAS \
+        PHOTO_WORKER_CPUS \
+        PHOTO_WORKER_MEMORY_LIMIT \
         SELFIE_SEARCH_MAX_UPLOAD_BYTES \
         SELFIE_SEARCH_MAX_PIXELS \
         SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS \
@@ -891,6 +911,8 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PHOTO_WORKER_PROCESSOR_IDENTITIES=%s\n' "$requested_worker_processor_identities"
     printf 'PHOTO_WORKER_PROCESSOR_TYPES=%s\n' "$requested_processor_types"
     printf 'PHOTO_WORKER_REPLICAS=%s\n' "$requested_worker_replicas"
+    printf 'PHOTO_WORKER_CPUS=%s\n' "$requested_worker_cpus"
+    printf 'PHOTO_WORKER_MEMORY_LIMIT=%s\n' "$requested_worker_memory_limit"
     printf 'SELFIE_SEARCH_MAX_UPLOAD_BYTES=%s\n' "$requested_selfie_search_max_upload_bytes"
     printf 'SELFIE_SEARCH_MAX_PIXELS=%s\n' "$requested_selfie_search_max_pixels"
     printf 'SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS=%s\n' "$requested_selfie_search_download_ttl_seconds"

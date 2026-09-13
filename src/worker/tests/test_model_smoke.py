@@ -17,7 +17,7 @@ def test_model_smoke_passes_the_scrfd_threshold_to_both_consumers(
     def extract_photo(_path: Path, **kwargs: object) -> FaceEmbeddingResult:
         calls["photo"] = float(kwargs["detection_threshold"])
         return FaceEmbeddingResult(
-            model="sface",
+            model=str(kwargs["model"]),
             faces=(),
             has_single_query_face_usable=False,
             warnings=("no_faces_detected",),

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 from django.contrib.auth.base_user import AbstractBaseUser
+from django.db import transaction
 from django.utils import timezone
 from picflow.models import Event, EventFolder, Photo
 from picflow.photo_policy import policy_for_new_photo
 from processing.services.enrollment import request_capture_metadata, request_generate_preview
 
 from ingestion.storage import ObjectIdentity
+
+logger = logging.getLogger(__name__)
 
 
 class OriginalVerificationStorage(Protocol):
@@ -79,6 +83,11 @@ def publish_photo(
     """Publish a verified original and enroll processing in the caller's transaction."""
     locked_event = Event.objects.select_for_update().get(pk=event.pk)
     processing_generation, gallery_media_policy = policy_for_new_photo(locked_event, uploader)
+    bib_processing_policy = (
+        Photo.BibProcessingPolicy.ORIGINAL_V1
+        if locked_event.bib_search_enabled
+        else Photo.BibProcessingPolicy.DISABLED
+    )
     photo = Photo.objects.create(
         id=photo_id,
         event=locked_event,
@@ -92,6 +101,7 @@ def publish_photo(
         uploaded_at=timezone.now(),
         processing_generation=processing_generation,
         gallery_media_policy=gallery_media_policy,
+        bib_processing_policy=bib_processing_policy,
     )
     if locked_event.timezone_name is not None:
         request_capture_metadata(
@@ -105,4 +115,29 @@ def publish_photo(
             pixel_height=original.oriented_geometry[1],
             verified_source_etag=original.identity.etag_value,
         )
+    if (
+        photo.bib_processing_policy == Photo.BibProcessingPolicy.ORIGINAL_V1
+        and photo.processing_generation == Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1
+    ):
+        transaction.on_commit(
+            lambda: _request_bib_after_publication(
+                photo.pk, verified_source_etag=original.identity.etag_value
+            )
+        )
     return photo
+
+
+def _request_bib_after_publication(
+    photo_id: str, *, verified_source_etag: str | None = None
+) -> None:
+    """Best-effort downstream enqueue after the gallery publication commits."""
+    from processing.services.enrollment import request_bib_recognition
+
+    try:
+        request_bib_recognition(
+            Photo.objects.get(pk=photo_id), verified_source_etag=verified_source_etag
+        )
+    except Exception:
+        logger.exception(
+            "bib enrollment failed after photo publication", extra={"photo_id": photo_id}
+        )

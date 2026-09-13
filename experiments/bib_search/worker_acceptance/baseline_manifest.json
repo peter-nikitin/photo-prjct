@@ -1,0 +1,608 @@
+{
+  "schema_version": 1,
+  "corpus": {
+    "key": "istra",
+    "digest": "4f96a71b7a65381523dca6a9ead16d4193984c21914995a2122e555f554cda69",
+    "photos": [
+      {
+        "height": 2333,
+        "relative_path": "00001_Vlad.jpg",
+        "sha256": "64e3252027fd96a7d2b3fcce3dd5d381a1c7a2d6df0726b8046ce0a136fc3670",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00002_Vlad.jpg",
+        "sha256": "6277df02c0c3f09f72b636d34fb0dc6d64dfb63312b79fe75ab325dcdd264b30",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00003_Vlad.jpg",
+        "sha256": "a5c5076fe686ee31d293bf0fc40466732a1d71c25a2c638e1d0358dd1763eb5c",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00004_Vlad.jpg",
+        "sha256": "03c37746f62468212418e2e60510d768043b775ec18589d3d076bc13f9c702b8",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00005_Vlad.jpg",
+        "sha256": "565df899834d7c1404f7e473c18ed0f36e1ec8b2d1d74b87e8bbc6ee2ac73f70",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00006_Vlad.jpg",
+        "sha256": "8fbc0b0695d16a26a54b985f020b2605fef6c362bd627747a06aa11159872a84",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00007_Vlad.jpg",
+        "sha256": "3e4adff819296d91e0a96a3350cbb1e91871c73a3a8fade72a9ae91e9ec6a1dd",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00008_Vlad.jpg",
+        "sha256": "47b3104a8d4298696f8841514069e7c130a66863f6b161251dc2e23c2577ebc4",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00009_Vlad.jpg",
+        "sha256": "38217fd5b046be1fef477ce3fb5d0a689aff25e4407fd26f9634b9b281f5769f",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00010_Vlad.jpg",
+        "sha256": "4533e001b9bf6897ffafa04ec5a6b94e31823a3d26203873badada7333fccfb8",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00011_Vlad.jpg",
+        "sha256": "e96e58a86f7a7fb2735a8e770d8b290c277b061a96308b756f6286b9f480ad1c",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00012_Vlad.jpg",
+        "sha256": "ea2529fcd6093b1300d9287bf747c2812b41622c06e4cc054673e796fdadf74e",
+        "width": 3500
+      },
+      {
+        "height": 3500,
+        "relative_path": "00013_Vlad.jpg",
+        "sha256": "cae4675b8fe6a0d033597ed70961698e60f5b716be34459067582f380711911e",
+        "width": 2333
+      },
+      {
+        "height": 2333,
+        "relative_path": "00014_Vlad.jpg",
+        "sha256": "a33bacc8c537b084bdd9beb806f86a353ea4064b8009e09e6baafb7d2804703e",
+        "width": 3500
+      },
+      {
+        "height": 3500,
+        "relative_path": "00015_Vlad.jpg",
+        "sha256": "b9eebd34ce7150fc6a4d06319c27a29955ad6575da47054ea9397b5a90581a93",
+        "width": 2333
+      },
+      {
+        "height": 2333,
+        "relative_path": "00016_Vlad.jpg",
+        "sha256": "7430753879797a8bc50a6d340a93eb6f7824573b2175ff4d9664b75082564fbc",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00017_Vlad.jpg",
+        "sha256": "2418f7e25bb8ba6c3a95d53d79e982073f3249d91296f98499997208f324842b",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00018_Vlad.jpg",
+        "sha256": "dadfd3fc98a1f311b787b3ac3cac9c5f33c210beafcf5d83024794944b9aad69",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00019_Vlad.jpg",
+        "sha256": "c547044bca4bf8609e9c914afaaf0315a2c5733acae068e8410b9c1ccfb607ab",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00020_Vlad.jpg",
+        "sha256": "cc5adf61bcfb82b0eca3a16128be571e688ca39b3735daea43712ce4c4a23322",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00021_Vlad.jpg",
+        "sha256": "b330f0dcb96fd9f8f56df8950cf102183eb690c4530d015394df70e20c37728d",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00022_Vlad.jpg",
+        "sha256": "b8c197beb71c41d210a8d85530ebb5ad062c23c03710332c9c056a0f846ea2a2",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00023_Vlad.jpg",
+        "sha256": "f130f5b3f10bee9c5359ad81a63ddb7437eaa857bcf2fe33756ad9e9aed345cd",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00024_Vlad.jpg",
+        "sha256": "b802ee4c47ac4f6e17526b4901d2768fa567c528786fe979c85590f2455e5bc9",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00025_Vlad.jpg",
+        "sha256": "c920096c906c6bd61aacf58f21d7e88b16c3e7d400c6006994062e20906a81bc",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00026_Vlad.jpg",
+        "sha256": "c529d9b4b61cea67cd09ec772fa2d132e15a404080cd3d5d64045be26f376d00",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00027_Vlad.jpg",
+        "sha256": "fd7793f597202c5d2c3acde57bc83998306345ddf03ba8407f23866c059aa520",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00028_Vlad.jpg",
+        "sha256": "e91d73ac08e011f698a2f40785959587981525e2733472bde4eca1515ba6a27f",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00029_Vlad.jpg",
+        "sha256": "182e560d42d0013743a5df87af87b0d8a3c7de45d7399012718a4999a9ddab89",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00030_Vlad.jpg",
+        "sha256": "3149e2e7a3444187eaa18781ddc27ce7c983aac9548e2f09fc33217d05da72a4",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00031_Vlad.jpg",
+        "sha256": "e8c5cbe1af95e48ae13baf56d8b1673cb8a3a0bb5bbf6f9ae04d74dca8a46c75",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00032_Vlad.jpg",
+        "sha256": "52b5c7de2bd95d4908b55e71f560c36d43f92888718761e1f573b495c75e88fd",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00033_Vlad.jpg",
+        "sha256": "60c17c0612a4f00b30c94c1511e0f9480dfb7074d9e1ba6f560f88f08c3161d4",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00034_Vlad.jpg",
+        "sha256": "66597269a8d592b60319a4de5e9031984e5120da28fe8482cb245ad6dabbb1a2",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00035_Vlad.jpg",
+        "sha256": "49832fb85cdf5bdba4297139401d7e552bfe96927cd1059cdc9c306752bbf24c",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00036_Vlad.jpg",
+        "sha256": "486b44c4c62544190d6d3a1fcd19c3f3ae2af85a87bdfb870ec0aeeb42b618ea",
+        "width": 3500
+      },
+      {
+        "height": 2333,
+        "relative_path": "00037_Vlad.jpg",
+        "sha256": "2569253777ed00785db44023ad31eca7549a7cb25303fca6c84bac5d86aa1d56",
+        "width": 3500
+      }
+    ],
+    "artifacts": {
+      "corpus": {
+        "path": "run-001/corpus.json",
+        "sha256": "2d4e52e15457557cfeea5ae3dc670bb01a8d0a9b560bf6dd881bf50fdb401f07"
+      },
+      "source_manifest": {
+        "path": "run-001/manifest.json",
+        "sha256": "f58de25f0fc44e4339dbc0c3522b3b788dc7f92fb96f128377090a5ebe8a32cb"
+      },
+      "ocr_configuration": {
+        "path": "run-001/config.json",
+        "sha256": "187df76e0088d77794184ab751e38540bab453740405b13de7ea49d886e15665"
+      },
+      "ocr_results": {
+        "path": "tile-full-001/predictions.json",
+        "sha256": "81630cf2a68d135fbe95d5920de20c152942c438722e10c8c553ef34d7ad07cc"
+      },
+      "visual_configuration": {
+        "path": "layered-001/recognition/settings.json",
+        "sha256": "0ddc81816d0b6435294a2dbc60c7e0073a02b043817a319e6e1d312b0a87e385"
+      },
+      "visual_results": {
+        "path": "layered-001/recognition/recognition.json",
+        "sha256": "396221d3be1b983d6029c7b9cf8aa1a7d2b50c000e4e871994e33b8f787345bc"
+      },
+      "candidates": {
+        "path": "layered-001/candidates.json",
+        "sha256": "11ab777c619301ffb69da26bfa803e79305223aea96a54109163d4797a13b442"
+      },
+      "validation": {
+        "path": "layered-001/validation/validation.json",
+        "sha256": "3d6ceca32b0e450d548fcfcc173ad4694a11882d23e09a5aa0828e04b4d1fd9f"
+      },
+      "reference": {
+        "path": "review-tile-full-002.json",
+        "sha256": "ec604e0e70799e238e701d640741d5231779436bd5ddb38790d12da556c05230"
+      },
+      "positive_reference": {
+        "path": "review-001.json",
+        "sha256": "3b585da18df219a63bb2ae4565ba90ca92a278f5a6a39e4c69d381f41ca41cc4"
+      },
+      "visual_assessments": {
+        "path": "layered-local/prior-visual-references.json",
+        "sha256": "37f110a336deea8301e5ae9bc61e00a615c03b6c578693bf301b0f9f8d2ce7a1"
+      },
+      "review_candidate_map": {
+        "path": "tile-full-001/review-candidate-map.json",
+        "sha256": "83abf958fe88dc6c7d1d1584195cb91abf9156d3884b0762e9343e08d73ec0e8"
+      }
+    },
+    "counts": {
+      "photos": 37,
+      "ocr_pairs": 67,
+      "accepted_pairs": 41,
+      "max_candidates_per_photo": 6,
+      "max_digit_length": 9,
+      "max_visual_numbers": 1,
+      "max_visual_response_bytes": 44
+    }
+  },
+  "confirmed": [
+    [
+      "00002_Vlad.jpg",
+      "7"
+    ],
+    [
+      "00003_Vlad.jpg",
+      "5"
+    ],
+    [
+      "00004_Vlad.jpg",
+      "7"
+    ],
+    [
+      "00006_Vlad.jpg",
+      "17"
+    ],
+    [
+      "00007_Vlad.jpg",
+      "50"
+    ],
+    [
+      "00016_Vlad.jpg",
+      "67"
+    ],
+    [
+      "00017_Vlad.jpg",
+      "259"
+    ],
+    [
+      "00025_Vlad.jpg",
+      "218"
+    ],
+    [
+      "00037_Vlad.jpg",
+      "174"
+    ]
+  ],
+  "rejected": [
+    [
+      "00001_Vlad.jpg",
+      "500"
+    ],
+    [
+      "00002_Vlad.jpg",
+      "0"
+    ],
+    [
+      "00003_Vlad.jpg",
+      "0"
+    ],
+    [
+      "00004_Vlad.jpg",
+      "0"
+    ],
+    [
+      "00007_Vlad.jpg",
+      "01666"
+    ],
+    [
+      "00007_Vlad.jpg",
+      "810166264"
+    ],
+    [
+      "00010_Vlad.jpg",
+      "0109626"
+    ],
+    [
+      "00011_Vlad.jpg",
+      "8002"
+    ],
+    [
+      "00014_Vlad.jpg",
+      "2"
+    ],
+    [
+      "00014_Vlad.jpg",
+      "9"
+    ],
+    [
+      "00016_Vlad.jpg",
+      "0"
+    ],
+    [
+      "00017_Vlad.jpg",
+      "016"
+    ],
+    [
+      "00020_Vlad.jpg",
+      "0"
+    ],
+    [
+      "00020_Vlad.jpg",
+      "401"
+    ],
+    [
+      "00021_Vlad.jpg",
+      "0"
+    ],
+    [
+      "00021_Vlad.jpg",
+      "1"
+    ],
+    [
+      "00021_Vlad.jpg",
+      "1016"
+    ],
+    [
+      "00021_Vlad.jpg",
+      "401"
+    ],
+    [
+      "00021_Vlad.jpg",
+      "40144"
+    ],
+    [
+      "00027_Vlad.jpg",
+      "0"
+    ],
+    [
+      "00028_Vlad.jpg",
+      "0"
+    ],
+    [
+      "00033_Vlad.jpg",
+      "016"
+    ],
+    [
+      "00033_Vlad.jpg",
+      "1"
+    ],
+    [
+      "00033_Vlad.jpg",
+      "401046"
+    ],
+    [
+      "00035_Vlad.jpg",
+      "4154"
+    ],
+    [
+      "00035_Vlad.jpg",
+      "9"
+    ]
+  ],
+  "excluded": [
+    {
+      "relative_path": "00011_Vlad.jpg",
+      "number": "67",
+      "reason": "user-excluded unreadable pair"
+    }
+  ],
+  "baseline_accepted": [
+    [
+      "00001_Vlad.jpg",
+      "500"
+    ],
+    [
+      "00002_Vlad.jpg",
+      "7"
+    ],
+    [
+      "00003_Vlad.jpg",
+      "5"
+    ],
+    [
+      "00004_Vlad.jpg",
+      "7"
+    ],
+    [
+      "00006_Vlad.jpg",
+      "17"
+    ],
+    [
+      "00006_Vlad.jpg",
+      "30"
+    ],
+    [
+      "00007_Vlad.jpg",
+      "37"
+    ],
+    [
+      "00007_Vlad.jpg",
+      "50"
+    ],
+    [
+      "00008_Vlad.jpg",
+      "45"
+    ],
+    [
+      "00009_Vlad.jpg",
+      "15"
+    ],
+    [
+      "00010_Vlad.jpg",
+      "61"
+    ],
+    [
+      "00010_Vlad.jpg",
+      "67"
+    ],
+    [
+      "00011_Vlad.jpg",
+      "61"
+    ],
+    [
+      "00011_Vlad.jpg",
+      "67"
+    ],
+    [
+      "00012_Vlad.jpg",
+      "259"
+    ],
+    [
+      "00013_Vlad.jpg",
+      "259"
+    ],
+    [
+      "00014_Vlad.jpg",
+      "60"
+    ],
+    [
+      "00014_Vlad.jpg",
+      "62"
+    ],
+    [
+      "00016_Vlad.jpg",
+      "67"
+    ],
+    [
+      "00017_Vlad.jpg",
+      "259"
+    ],
+    [
+      "00018_Vlad.jpg",
+      "70"
+    ],
+    [
+      "00019_Vlad.jpg",
+      "235"
+    ],
+    [
+      "00020_Vlad.jpg",
+      "204"
+    ],
+    [
+      "00021_Vlad.jpg",
+      "185"
+    ],
+    [
+      "00022_Vlad.jpg",
+      "246"
+    ],
+    [
+      "00023_Vlad.jpg",
+      "200"
+    ],
+    [
+      "00024_Vlad.jpg",
+      "218"
+    ],
+    [
+      "00025_Vlad.jpg",
+      "218"
+    ],
+    [
+      "00026_Vlad.jpg",
+      "207"
+    ],
+    [
+      "00027_Vlad.jpg",
+      "217"
+    ],
+    [
+      "00028_Vlad.jpg",
+      "74"
+    ],
+    [
+      "00029_Vlad.jpg",
+      "206"
+    ],
+    [
+      "00030_Vlad.jpg",
+      "237"
+    ],
+    [
+      "00031_Vlad.jpg",
+      "187"
+    ],
+    [
+      "00032_Vlad.jpg",
+      "198"
+    ],
+    [
+      "00033_Vlad.jpg",
+      "105"
+    ],
+    [
+      "00034_Vlad.jpg",
+      "83"
+    ],
+    [
+      "00035_Vlad.jpg",
+      "109"
+    ],
+    [
+      "00036_Vlad.jpg",
+      "124"
+    ],
+    [
+      "00037_Vlad.jpg",
+      "149"
+    ],
+    [
+      "00037_Vlad.jpg",
+      "174"
+    ]
+  ],
+  "provenance_commit": "4102ab0"
+}

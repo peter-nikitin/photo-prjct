@@ -1,9 +1,11 @@
 import hashlib
+import io
 import json
 from datetime import date
 from typing import cast
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
@@ -12,6 +14,7 @@ from picflow.models import Event, Photo
 
 from processing.contracts import ClaimedJob
 from processing.models import (
+    BibReading,
     EventProcessingRun,
     FaceEmbedding,
     FaceProcessingAttemptArtifact,
@@ -20,9 +23,11 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
+from processing.services.bibs import BIB_INFERENCE_CONFIGURATION_SHA256, complete_bib_attempt
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     capture_metadata_configuration,
+    request_bib_recognition,
     request_capture_metadata,
     request_generate_preview,
 )
@@ -669,3 +674,123 @@ class ProcessingRunReportTests(TestCase):
         self.assertEqual(len(closed.report["photos"]), configured_limit)
         self.assertLessEqual(report_upper_bound_bytes(closed.configuration), configured_bytes)
         self.assertLessEqual(len(serialized), configured_bytes)
+
+
+class EventBibProcessingReportTests(TestCase):
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="bib-report-owner")
+        self.event = Event.objects.create(
+            name="Bib report event",
+            slug="bib-report-event",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="Europe/Moscow",
+        )
+
+    def photo(self, suffix: str, *, enabled: bool = True) -> Photo:
+        return Photo.objects.create(
+            id=f"bib-report-{suffix}",
+            event=self.event,
+            src="",
+            uploaded_by=self.user,
+            original_key=f"originals/bib-report-{suffix}",
+            original_filename=f"{suffix}.jpg",
+            original_size=10,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+            bib_processing_policy=(
+                Photo.BibProcessingPolicy.ORIGINAL_V1
+                if enabled
+                else Photo.BibProcessingPolicy.DISABLED
+            ),
+        )
+
+    def result(self, *, number: str = "007", accepted: bool = True) -> dict[str, object]:
+        source_sha256 = "d" * 64
+        candidate_id = hashlib.sha256(f"{source_sha256}\0{number}".encode()).hexdigest()[:24]
+        visual_number = number if accepted else number + "0"
+        return {
+            "source_sha256": source_sha256,
+            "configuration_sha256": BIB_INFERENCE_CONFIGURATION_SHA256,
+            "width": 1000,
+            "height": 800,
+            "candidates": [
+                {
+                    "candidate_id": candidate_id,
+                    "number": number,
+                    "raw_text": number,
+                    "confidence": 0.9,
+                    "polygon": [[1.0, 2.0], [3.0, 2.0], [3.0, 4.0], [1.0, 4.0]],
+                    "supporting_region_count": 1,
+                    "crop": [0, 0, 384, 384],
+                    "visual": {
+                        "status": "complete",
+                        "raw_response": json.dumps({"numbers": [visual_number]}),
+                        "numbers": [visual_number],
+                        "error_code": None,
+                        "inference_ms": 4.0,
+                    },
+                }
+            ],
+            "tile_count": 1,
+            "ocr_preparation_ms": 1.0,
+            "ocr_inference_ms": 2.0,
+        }
+
+    def test_command_reports_one_event_with_bounded_aggregate_evidence(self) -> None:
+        accepted_photo = self.photo("accepted")
+        rejected_photo = self.photo("rejected")
+        self.photo("disabled", enabled=False)
+        for photo in (accepted_photo, rejected_photo):
+            request_bib_recognition(photo)
+
+        for photo, raw in (
+            (accepted_photo, self.result()),
+            (rejected_photo, self.result(number="42", accepted=False)),
+        ):
+            claimed = claim_job(
+                contract_version=1,
+                processor_type="bib_recognition",
+                processor_version=1,
+                worker_build="bib-report-worker",
+            )
+            assert isinstance(claimed, ClaimedJob)
+            self.assertEqual(claimed.job.photo_id, photo.pk)
+            complete_bib_attempt(
+                claimed.attempt.id,
+                result=raw,
+                download_duration_ms=10 if photo == accepted_photo else 12,
+                compute_duration_ms=20 if photo == accepted_photo else 22,
+                total_duration_ms=30 if photo == accepted_photo else 34,
+            )
+
+        output = io.StringIO()
+        call_command("report_event_bib_processing", event_slug=self.event.slug, stdout=output)
+        report = json.loads(output.getvalue())
+
+        self.assertEqual(
+            report["event"],
+            {
+                "id": self.event.id,
+                "slug": self.event.slug,
+                "photos": 3,
+                "applicable_photos": 2,
+                "non_applicable_photos": 1,
+            },
+        )
+        self.assertEqual(report["states"]["succeeded"], 2)
+        self.assertEqual(report["successes"]["with_accepted_numbers"], 1)
+        self.assertEqual(report["successes"]["with_zero_accepted_numbers"], 1)
+        self.assertEqual(report["candidates"], {"accepted": 1, "rejected": 1, "uncertain": 0})
+        self.assertEqual(report["attempts"]["total"], 2)
+        self.assertEqual(report["durations_ms"]["total"]["p50"], 32.0)
+        self.assertEqual(len(report["identities"]), 1)
+        self.assertEqual(BibReading.objects.filter(photo=accepted_photo).count(), 1)
+        serialized = json.dumps(report).lower()
+        self.assertNotIn("originals/", serialized)
+        self.assertNotIn("raw_response", serialized)
+
+    def test_command_requires_one_exact_existing_event_slug(self) -> None:
+        with self.assertRaisesMessage(Exception, "event"):
+            call_command("report_event_bib_processing", event_slug="missing-event")

@@ -3,6 +3,7 @@ from math import isfinite
 from uuid import uuid4
 
 from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.db import models
 from django.utils import timezone
 from picflow.models import Event, Photo
@@ -17,6 +18,7 @@ FACE_EMBEDDING_PROCESSOR = "face_embedding"
 FACE_EMBEDDING_BENCHMARK_PROCESSOR = "face_embedding_benchmark"
 GENERATE_PREVIEW_PROCESSOR = "generate_preview"
 GENERATE_WATERMARKED_PREVIEW_PROCESSOR = "generate_watermarked_preview"
+BIB_RECOGNITION_PROCESSOR = "bib_recognition"
 _TERMINAL_ATTEMPT_STATUSES = ("succeeded", "failed", "expired", "stale")
 
 
@@ -240,6 +242,61 @@ class ProcessingAttempt(models.Model):  # noqa: DJ008
             errors["job"] = "The attempt processor identity must match the job."
         if errors:
             raise ValidationError(errors)
+
+
+class BibReading(models.Model):  # noqa: DJ008
+    photo = models.ForeignKey(Photo, on_delete=models.PROTECT, related_name="bib_readings")
+    source_attempt = models.ForeignKey(
+        ProcessingAttempt,
+        on_delete=models.PROTECT,
+        related_name="bib_readings",
+    )
+    number = models.CharField(
+        max_length=16,
+        validators=[
+            RegexValidator(
+                regex=r"\A[0-9]{1,16}\Z",
+                message="Bib number must contain 1 to 16 ASCII digits.",
+            )
+        ],
+    )
+    evidence = models.JSONField(default=dict, validators=[validate_bounded_json])
+    published_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(number__regex=r"^[0-9]{1,16}$"),
+                name="proc_bib_reading_number_chk",
+            ),
+            models.UniqueConstraint(
+                fields=("photo", "number"),
+                name="proc_bib_photo_number_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("number", "photo"), name="proc_bib_number_photo_idx"),
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.source_attempt_id:
+            return
+        attempt = self.source_attempt
+        if (
+            attempt.photo_id != self.photo_id
+            or attempt.processor_type != BIB_RECOGNITION_PROCESSOR
+            or attempt.status != ProcessingAttempt.Status.SUCCEEDED
+            or not attempt.accepted
+        ):
+            raise ValidationError(
+                {
+                    "source_attempt": (
+                        "The source attempt must be an accepted successful bib-recognition "
+                        "attempt for this photo."
+                    )
+                }
+            )
 
 
 class PhotoDerivative(models.Model):  # noqa: DJ008

@@ -48,3 +48,6 @@ test-results/
 # === local staging database clone artifacts ===
 var/backups/
 var/adaface-critical-path/
+
+# Local immutable bib acceptance artifacts
+/var/bib-search/

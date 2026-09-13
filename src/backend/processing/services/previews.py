@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from processing.storage import ExactPreviewStorage, ObjectConflict, PreviewObjec
 _PREVIEW_WARNING_CODES = {"color_profile_missing"}
 _PREVIEW_PHOTO_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -303,6 +305,17 @@ def _publish_after_verification(
             sha256=publication.result["sha256"],
             accepted_attempt=attempt,
         )
+        if photo.bib_processing_policy == Photo.BibProcessingPolicy.ORIGINAL_V1:
+            from processing.services.enrollment import request_bib_recognition
+
+            try:
+                with transaction.atomic():
+                    request_bib_recognition(photo)
+            except Exception:
+                logger.exception(
+                    "bib enrollment failed after preview publication",
+                    extra={"photo_id": photo.pk},
+                )
         # The only automatic edge into preview-backed ML is this accepted, published transition.
         # Its rows were locked before the preview Attempt, so an enqueue failure rolls this whole
         # acceptance transaction back without a leftward lock acquisition.

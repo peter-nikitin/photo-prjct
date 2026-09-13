@@ -101,7 +101,15 @@ def _load_session(model_path: Path) -> _InferenceSession:
     try:
         import onnxruntime
 
-        return onnxruntime.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+        from photo_worker.runtime_threads import CPU_THREADS
+
+        options = onnxruntime.SessionOptions()
+        options.intra_op_num_threads = CPU_THREADS
+        options.inter_op_num_threads = 1
+        options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+        return onnxruntime.InferenceSession(
+            str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
+        )
     except Exception as error:
         raise SCRFDError("invalid_scrfd_model") from error
 

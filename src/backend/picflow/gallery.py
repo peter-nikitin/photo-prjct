@@ -177,6 +177,7 @@ def gallery_photo_queryset(
     capture_time_end=None,
     folder_ids: Collection[int] | None = None,
     include_unfiled: bool = False,
+    bib_number: str | None = None,
     paid_watermarked_previews_enabled: bool = False,
 ) -> QuerySet[Photo]:
     """Return event-surface media without probing object storage."""
@@ -208,6 +209,8 @@ def gallery_photo_queryset(
         queryset = queryset.filter(capture_time__gte=capture_time_start)
     if capture_time_end is not None:
         queryset = queryset.filter(capture_time__lte=capture_time_end)
+    if bib_number is not None:
+        queryset = queryset.filter(bib_readings__number=bib_number)
     return queryset
 
 
@@ -303,6 +306,7 @@ def gallery_page(
     capture_time_end=None,
     folder_ids: Collection[int] | None = None,
     include_unfiled: bool = False,
+    bib_number: str | None = None,
     paid_watermarked_previews_enabled: bool = False,
 ) -> Page[Photo]:
     return Paginator(
@@ -312,6 +316,7 @@ def gallery_page(
             capture_time_end=capture_time_end,
             folder_ids=folder_ids,
             include_unfiled=include_unfiled,
+            bib_number=bib_number,
             paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
         ),
         GALLERY_PAGE_SIZE,

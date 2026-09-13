@@ -79,6 +79,7 @@ class Event(models.Model):
         default=FaceSearchGeneration.ADAFACE_V5,
         db_default=FaceSearchGeneration.ADAFACE_V5,
     )
+    bib_search_enabled = models.BooleanField(default=False, db_default=False)
 
     objects = EventQuerySet.as_manager()
 
@@ -179,6 +180,10 @@ class Photo(models.Model):
             "Watermarked preview required",
         )
 
+    class BibProcessingPolicy(models.TextChoices):
+        DISABLED = "disabled", "Disabled"
+        ORIGINAL_V1 = "original_v1", "Original image v1"
+
     id = models.CharField(max_length=32, primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="photos")
     folder = models.ForeignKey(
@@ -219,6 +224,12 @@ class Photo(models.Model):
         db_default=GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
     )
     is_hidden = models.BooleanField(default=False, db_default=False)
+    bib_processing_policy = models.CharField(
+        max_length=16,
+        choices=BibProcessingPolicy,
+        default=BibProcessingPolicy.DISABLED,
+        db_default=BibProcessingPolicy.DISABLED,
+    )
     capture_time = models.DateTimeField(null=True, blank=True, editable=False)
     capture_time_source_attempt = models.ForeignKey(
         "processing.ProcessingAttempt",
@@ -277,6 +288,10 @@ class Photo(models.Model):
                 name="picflow_photo_processing_policy_pair_chk",
             ),
             models.CheckConstraint(
+                condition=models.Q(bib_processing_policy__in=("disabled", "original_v1")),
+                name="picflow_photo_bib_policy_chk",
+            ),
+            models.CheckConstraint(
                 condition=(
                     models.Q(capture_time__isnull=True, capture_time_source_attempt__isnull=True)
                     | models.Q(
@@ -292,7 +307,25 @@ class Photo(models.Model):
 
     def save(self, *args, **kwargs) -> None:
         self._require_paid_order_original_identity_unchanged()
+        self._require_bib_processing_policy_unchanged()
         super().save(*args, **kwargs)
+
+    def _require_bib_processing_policy_unchanged(self) -> None:
+        if self._state.adding:
+            return
+        persisted = (
+            self.__class__.objects.filter(pk=self.pk)
+            .values_list("bib_processing_policy", flat=True)
+            .first()
+        )
+        if persisted is not None and persisted != self.bib_processing_policy:
+            raise ValidationError(
+                {
+                    "bib_processing_policy": (
+                        "Bib processing policy cannot be changed after the photo has been created."
+                    )
+                }
+            )
 
     def _require_paid_order_original_identity_unchanged(self) -> None:
         if self._state.adding:
@@ -320,6 +353,7 @@ class Photo(models.Model):
     def clean(self) -> None:
         super().clean()
         self._require_paid_order_original_identity_unchanged()
+        self._require_bib_processing_policy_unchanged()
         valid_pairs = {
             (
                 self.ProcessingGeneration.LEGACY_ORIGINAL_V1,

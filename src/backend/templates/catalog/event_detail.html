@@ -5,13 +5,13 @@
 {% block extra_css %}
   <link rel="stylesheet" href="{% static 'ui/catalog.css' %}">
   <link rel="stylesheet" href="{% static 'ui/glightbox.min.css' %}">
-  {% if selfie_search_form or manual_time_filter_form %}<link rel="stylesheet" href="{% static 'ui/selfie-search.css' %}">{% endif %}
+  {% if selfie_search_form or bib_search_form or manual_time_filter_form %}<link rel="stylesheet" href="{% static 'ui/selfie-search.css' %}">{% endif %}
 {% endblock %}
 {% block content %}
   <article class="event-detail">
     {% include "ui/event_detail_header.html" with event=event %}
     {% if event.publication_status == "draft" %}<p class="event-draft-warning">Черновик — виден только администраторам</p>{% endif %}
-    {% if manual_time_filter_form %}
+    {% if manual_time_filter_form or bib_search_form %}
       <section id="gallery" class="event-discovery-wrap">
         <details class="event-discovery" data-event-discovery{% if not gallery_filters_active %} open{% endif %}>
           <summary>{% if gallery_filters_active %}Фильтры применены{% else %}Найти свои фото{% endif %}</summary>
@@ -46,10 +46,27 @@
                 </div>
               </section>
             {% endif %}
-            <section class="manual-time-filter event-discovery-column" aria-labelledby="manual-time-filter-title">
+            {% if bib_search_form %}
+              <section id="bib-search" class="bib-search event-discovery-column" aria-labelledby="bib-search-title">
+                <h2 id="bib-search-title">Поиск по номеру</h2>
+                <p>Введите номер участника, который виден на фотографии.</p>
+                <form class="bib-search-form" data-bib-search-form action="{% url 'event_detail' slug=event.slug %}#gallery" method="get">
+                  <label for="{{ bib_search_form.bib.id_for_label }}">Номер участника</label>
+                  {{ bib_search_form.bib }}
+                  {% if bib_search_form.bib.errors %}
+                    <div id="{{ bib_search_form.bib.id_for_label }}_error" class="bib-search-error" role="alert">
+                      {% for error in bib_search_form.bib.errors %}<p>{{ error }}</p>{% endfor %}
+                    </div>
+                  {% endif %}
+                  <button class="button" type="submit">Найти фотографии</button>
+                </form>
+              </section>
+            {% endif %}
+            {% if manual_time_filter_form %}<section class="manual-time-filter event-discovery-column" aria-labelledby="manual-time-filter-title">
               <h2 id="manual-time-filter-title">Ручной поиск</h2>
               <p class="manual-time-filter-guidance">Даты события: {{ event.start_date|date:"d.m.Y" }}{% if event.end_date != event.start_date %}–{{ event.end_date|date:"d.m.Y" }}{% endif %}. Время указано для города проведения.</p>
               <form class="manual-time-filter-form" data-manual-time-filter-form action="{% url 'event_detail' slug=event.slug %}" method="get">
+                {% if bib_number %}<input type="hidden" name="bib" value="{{ bib_number }}">{% endif %}
                 {% if gallery_folder_choices %}
                   <fieldset class="gallery-folder-filter">
                     <legend>Папки</legend>
@@ -67,13 +84,13 @@
                   <button class="button" type="submit">Показать фотографии</button>
                 </div>
               </form>
-            </section>
+            </section>{% endif %}
           </div>
         </details>
         {% if gallery_filters_active %}<a class="manual-time-filter-reset" href="{% url 'event_detail' slug=event.slug %}#gallery">Сбросить фильтр</a>{% endif %}
       </section>
     {% endif %}
-    {% if not manual_time_filter_invalid %}
+    {% if not manual_time_filter_invalid and not bib_search_invalid %}
     <section class="event-gallery" data-event-gallery aria-labelledby="gallery-title">
       <div class="event-gallery-heading">
         <h2 id="gallery-title">Фотографии</h2>

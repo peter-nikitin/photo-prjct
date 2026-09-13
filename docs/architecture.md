@@ -80,6 +80,24 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   locally verified, but tracked defaults leave preview activation false. A seven-day temporary-preview
   lifecycle rule, representative original-versus-preview ML comparison, and concurrency-one capacity
   measurement remain canonical-deployment activation blockers. No preview worker is enabled.
+- The repository implements disabled-default bib-number recognition for new uploads. An event's
+  `bib_search_enabled` value is copied at photo confirmation into an immutable per-photo policy;
+  later checkbox changes only show or hide the event's public bib form and affect photos confirmed
+  afterward. Applicable photos enroll `1/bib_recognition/1` only after their normal gallery-
+  publication transition. The Linux/CPU worker reads the private original through the existing
+  short-lived object grant, then a bounded per-photo child process performs RapidOCR tiling and
+  sequential Qwen3-VL reads through a loopback-only pinned `llama.cpp` server. The worker retains
+  total concurrency one, and the initial deployment permits only one replica when the bib identity
+  is configured. Django independently validates the bounded result and atomically projects only
+  accepted exact ASCII digit strings into indexed `BibReading` rows; attempts, rejected/uncertain
+  evidence, and sanitized failures remain durable. Empty success or terminal failure leaves the
+  already published photo in the gallery. The public `?bib=` form is separate from selfie search
+  and filters the ordinary eligible gallery by exact event-scoped equality, preserving leading
+  zeros. Local Istra evidence recovered every reviewed number and returned no reviewed junk across
+  37 photos, but the Docker Desktop host swapped during the cohort. The implementation is therefore
+  not ready for canonical activation until a production-equivalent Linux run passes every resource
+  gate in the [bib recognition runbook](runbooks/bib-number-recognition.md); no event is claimed
+  enabled in the canonical deployment.
 - The repository now also implements the dark-deployable preview-quality candidate
   `3/face_embedding/4`. It accepts only the already verified `preview-small-v1` input, and its
   fixed event-scoped replay command is dry-run by default and requires an explicit apply option.
@@ -386,8 +404,8 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
 | Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals, preview-first, and the gated paid-watermark repository slice; real watermark activation and purchased exports remain unimplemented |
-| Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed worker input/persistence plus the disabled-default offline face-cluster corpus path are implemented locally; canonical-deployment activation and customer outcomes are not evidenced |
-| Search | Event-scoped face/bib/time/location queries | Public direct face search and disabled-default direct-first face-cluster expansion are implemented locally; no canonical-deployment activation or customer-outcome validation is claimed, and remaining modes are proposed |
+| Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed face processing, disabled-default bib recognition, and the disabled-default offline face-cluster corpus path are implemented locally; bib activation is blocked on the Linux resource gate, and canonical-deployment activation and customer outcomes are not evidenced |
+| Search | Event-scoped face/bib/time/location queries | Public direct face search, disabled-default exact event bib search, and disabled-default direct-first face-cluster expansion are implemented locally; no bib/cluster canonical activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
 | Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, paid-original entitlement, and page-scoped archive delivery | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, Commerce worker deployment wiring, and ADR 0034's streaming page-scoped ZIP delivery are implemented behind runtime gates. The code-owned `bulk-photo-download` gate reconciles to `off`; public activation, maximum-page capacity acceptance, live customer evidence, a real bank adapter, fiscal/legal review, promotions, packages, and refunds remain later work |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
@@ -454,11 +472,17 @@ broker, vector engine, and ML implementations shown for later processing require
    only then enable the public gate. A broker remains later-stage design.
 6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
    embeddings. The implemented preview-first contract records preview coordinate space and source
-   dimensions for face results. The repository includes the approval-gated version-4 candidate for
-   one exact event and preserves its immutable evidence, but no canonical-deployment processing or activation
-   is claimed. Each result records model version, confidence, geometry, and processing status.
-7. Search indexes are updated only within the photo's event scope.
-8. Operators can correct or suppress candidates. Manual decisions outrank automated results.
+   dimensions for face results. Bib generation 1 instead reads the private original in a bounded
+   process tree, records OCR and visual evidence with model/configuration identity and geometry, and
+   lets Django accept, reject, or retain uncertainty independently. Bib and face are separate jobs,
+   while one worker replica and total concurrency one prevent their inference from overlapping. The
+   repository also includes the approval-gated face version-4 candidate for one exact event and
+   preserves its immutable evidence. No canonical bib or face-version-4 activation is claimed.
+7. Search indexes are updated only within the photo's event scope. Accepted current bib decisions
+   replace the photo's indexed `BibReading` projection atomically; rejected, uncertain, failed, and
+   historical attempts never enter public search.
+8. Operators can correct or suppress candidates where a moderation workflow exists. Bib correction
+   and suppression are outside the current release.
 9. Failures remain visible and retryable without re-uploading the original.
 
 ### Public event-gallery filtering
@@ -507,8 +531,11 @@ broker, vector engine, and ML implementations shown for later processing require
 ### Search
 
 1. The customer selects an event before searching.
-2. A bib query matches confirmed numbers first and automated candidates second. A face query uses
-   either an uploaded selfie, which creates a temporary query embedding through the existing
+2. A bib query is a separate GET request using `?bib=<1-16 ASCII digits>` and matches only current
+   accepted `BibReading` rows by exact string equality after the ordinary eligible event gallery is
+   built. Leading zeros are significant, and the event checkbox controls field visibility directly.
+   There is no manual bib correction or combined bib/selfie request in this release. A face query
+   uses either an uploaded selfie, which creates a temporary query embedding through the existing
    worker, or one explicitly selected current compatible accepted embedding from an eligible
    gallery photo. Django performs exact comparison and publishes an immutable probable-match
    snapshot; the selfie path deletes its temporary image before publication, while the gallery path

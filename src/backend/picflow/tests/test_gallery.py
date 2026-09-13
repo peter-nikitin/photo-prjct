@@ -11,9 +11,11 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, OpenedObject
 from processing.models import (
+    BIB_RECOGNITION_PROCESSOR,
     CAPTURE_METADATA_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+    BibReading,
     EventProcessingRun,
     PhotoDerivative,
     PhotoProcessingState,
@@ -21,6 +23,7 @@ from processing.models import (
     ProcessingJob,
 )
 
+from picflow import forms as picflow_forms
 from picflow.forms import EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from picflow.gallery import (
     CloseableMediaIterator,
@@ -570,6 +573,29 @@ class EventGalleryTimeFilterFormTests(SimpleTestCase):
                 self.assertIn(error_field, form.errors)
 
 
+class BibSearchFormTests(SimpleTestCase):
+    """The breaks caught here are altered bib identity and non-ASCII public queries."""
+
+    def test_trims_surrounding_whitespace_and_preserves_leading_zeroes(self) -> None:
+        self.assertTrue(hasattr(picflow_forms, "BibSearchForm"), "BibSearchForm is missing")
+        form = picflow_forms.BibSearchForm({"bib": "  00123  "})
+
+        self.assertTrue(form.is_valid())
+        self.assertEqual(form.cleaned_data["bib"], "00123")
+
+    def test_accepts_blank_and_rejects_non_ascii_or_out_of_bounds_values(self) -> None:
+        blank = picflow_forms.BibSearchForm({"bib": "   "})
+
+        self.assertTrue(blank.is_valid())
+        self.assertEqual(blank.cleaned_data["bib"], "")
+
+        for value in ("１２３", "12 3", "+123", "12345678901234567"):
+            with self.subTest(value=value):
+                form = picflow_forms.BibSearchForm({"bib": value})
+                self.assertFalse(form.is_valid())
+                self.assertIn("bib", form.errors)
+
+
 class FilteredGalleryQuerysetTests(TestCase):
     """The break caught here is treating convenient metadata JSON as accepted evidence."""
 
@@ -652,6 +678,77 @@ class FilteredGalleryQuerysetTests(TestCase):
         state.accepted_attempt = attempt
         state.save()
         return attempt
+
+    def bib_evidence(self, photo: Photo, *, number: str) -> BibReading:
+        configuration = {"bib_recognition": {"generation": 1}}
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=1,
+            processor_type=BIB_RECOGNITION_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=uuid4().hex + uuid4().hex,
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=1,
+            processor_type=BIB_RECOGNITION_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=ProcessingJob.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        attempt = ProcessingAttempt.objects.create(
+            event=photo.event,
+            run=run,
+            job=job,
+            photo=photo,
+            contract_version=1,
+            processor_type=BIB_RECOGNITION_PROCESSOR,
+            processor_version=1,
+            configuration=configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        return BibReading.objects.create(
+            photo=photo,
+            source_attempt=attempt,
+            number=number,
+            evidence={"source": "accepted"},
+        )
+
+    def test_bib_filter_uses_exact_projection_after_event_and_media_eligibility(self) -> None:
+        leading_zero = self.photo("leading-zero", filename="a.jpg")
+        plain = self.photo("plain", filename="b.jpg")
+        hidden = Photo.objects.create(id="hidden-bib", event=self.event, src="hidden.jpg")
+        other_event = Event.objects.create(
+            name="Other bib gallery",
+            slug="other-bib-gallery",
+            start_date=self.event.start_date,
+            end_date=self.event.end_date,
+            city="London",
+            timezone_name="Europe/London",
+        )
+        other = self.photo("other-bib", event=other_event)
+        self.bib_evidence(leading_zero, number="00123")
+        self.bib_evidence(plain, number="123")
+        self.bib_evidence(hidden, number="00123")
+        self.bib_evidence(other, number="00123")
+
+        self.assertEqual(
+            list(gallery_photo_queryset(event=self.event, bib_number="00123")),
+            [leading_zero],
+        )
+        self.assertEqual(
+            list(gallery_photo_queryset(event=self.event, bib_number="123")),
+            [plain],
+        )
 
     def queryset(self):
         return gallery_photo_queryset(

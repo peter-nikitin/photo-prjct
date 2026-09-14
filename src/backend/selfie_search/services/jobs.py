@@ -205,7 +205,8 @@ def complete_search_attempt(
     jitter: Callable[[int, int], int] | None = None,
 ) -> SearchAttemptCompletion:
     """Accept a transient query, prepare hidden rows, then publish only after exact deletion."""
-    now = now or timezone.now()
+    clock = (lambda: now) if now is not None else timezone.now
+    snapshot_time = clock()
     payload = _success_payload(
         result=result,
         download_duration_ms=download_duration_ms,
@@ -217,36 +218,99 @@ def complete_search_attempt(
     payload_hash = _canonical_hash(payload)
     needs_cleanup = False
     completion: SearchAttemptCompletion
+    snapshot_attempt = SelfieSearchAttempt.objects.select_related("job__search__event").get(
+        pk=attempt_id
+    )
+    snapshot_job = snapshot_attempt.job
+    snapshot_search = snapshot_job.search
+    prepared: (
+        tuple[
+            str,
+            int,
+            int,
+            int | None,
+            int | None,
+            RankedPhotoExpansion | None,
+        ]
+        | None
+    ) = None
+    if _owns_current_lease(snapshot_search, snapshot_job, snapshot_attempt, snapshot_time):
+        eligible_photo_count = 0
+        eligible_face_count = 0
+        try:
+            query = _query_from_result(snapshot_search, result)
+            cohort_started_at = perf_counter()
+            candidates = compatible_search_candidates(snapshot_search)
+            cohort_loaded_at = perf_counter()
+            eligible_photo_count = len({candidate.photo_id for candidate in candidates})
+            eligible_face_count = len(candidates)
+            ranked = rank_embeddings(snapshot_search, query, candidates)
+            ranked_at = perf_counter()
+            expansion = _expand_direct_ranking(
+                search=snapshot_search,
+                ranked=ranked,
+                query=query,
+            )
+            prepared = (
+                "succeeded",
+                eligible_photo_count,
+                eligible_face_count,
+                round((cohort_loaded_at - cohort_started_at) * 1_000),
+                round((ranked_at - cohort_loaded_at) * 1_000),
+                expansion,
+            )
+        except QueryVectorError:
+            raise
+        except RankingError:
+            prepared = (
+                "incompatible",
+                eligible_photo_count,
+                eligible_face_count,
+                None,
+                None,
+                None,
+            )
     with transaction.atomic():
         search, job, attempt = _locked_context(attempt_id)
+        publication_time = clock()
         if attempt.status != SelfieSearchAttempt.Status.IN_PROGRESS:
             completion, needs_cleanup = _existing_completion(search, attempt, payload_hash)
-        elif not _owns_current_lease(search, job, attempt, now):
+        elif not _owns_current_lease(search, job, attempt, publication_time):
             completion, needs_cleanup = _stale_or_expired(
-                search, job, attempt, payload_hash, now=now, jitter=jitter
+                search,
+                job,
+                attempt,
+                payload_hash,
+                now=publication_time,
+                jitter=jitter,
             )
         else:
-            try:
-                query = _query_from_result(search, result)
-                cohort_started_at = perf_counter()
-                candidates = compatible_search_candidates(search)
-                cohort_loaded_at = perf_counter()
-                ranked = rank_embeddings(search, query, candidates)
-                ranked_at = perf_counter()
-                has_eligible_candidates = bool(candidates)
-                eligible_photo_count = len({candidate.photo_id for candidate in candidates})
-                eligible_face_count = len(candidates)
-                load_ms = round((cohort_loaded_at - cohort_started_at) * 1_000)
-                rank_ms = round((ranked_at - cohort_loaded_at) * 1_000)
-            except QueryVectorError:
-                raise
-            except RankingError:
+            if prepared is None or not _completion_snapshot_matches(
+                snapshot_search=snapshot_search,
+                snapshot_job=snapshot_job,
+                snapshot_attempt=snapshot_attempt,
+                search=search,
+                job=job,
+                attempt=attempt,
+            ):
+                raise SearchCompletionConflict("selfie completion identity changed during ranking")
+            (
+                ranking_outcome,
+                eligible_photo_count,
+                eligible_face_count,
+                load_ms,
+                rank_ms,
+                prepared_expansion,
+            ) = prepared
+            search.eligible_photo_count = eligible_photo_count
+            search.eligible_face_count = eligible_face_count
+            if ranking_outcome == "incompatible":
                 _emit_ranking_finished(
                     search=search,
                     attempt=attempt,
                     outcome="incompatible",
-                    eligible_photo_count=search.eligible_photo_count,
-                    eligible_face_count=search.eligible_face_count,
+                    eligible_photo_count=eligible_photo_count,
+                    eligible_face_count=eligible_face_count,
                     matched_photo_count=0,
                     load_ms=None,
                     rank_ms=None,
@@ -258,7 +322,7 @@ def complete_search_attempt(
                     payload_hash=payload_hash,
                     error_code="ranking_incompatible",
                     error_detail="failed",
-                    now=now,
+                    now=publication_time,
                     download_duration_ms=download_duration_ms,
                     compute_duration_ms=compute_duration_ms,
                     total_duration_ms=total_duration_ms,
@@ -266,24 +330,25 @@ def complete_search_attempt(
                     worker_finished_at=worker_finished_at,
                 )
                 job.status = SelfieSearchJob.Status.FAILED
-                job.completed_at = now
+                job.completed_at = publication_time
                 job.save(update_fields=["status", "completed_at"])
                 _prepare_cleanup(
                     search,
                     intended_status=str(SelfieSearch.Status.FAILED),
                     failure_code="failed",
                     expansion=None,
-                    now=now,
+                    now=publication_time,
                 )
                 completion = SearchAttemptCompletion(attempt=attempt)
                 needs_cleanup = True
             else:
+                assert prepared_expansion is not None
+                expansion = prepared_expansion
                 intended_status = str(
                     SelfieSearch.Status.SEARCH_UNAVAILABLE
-                    if not has_eligible_candidates
+                    if eligible_face_count == 0
                     else SelfieSearch.Status.READY
                 )
-                expansion = _expand_direct_ranking(search=search, ranked=ranked, query=query)
                 _emit_ranking_finished(
                     search=search,
                     attempt=attempt,
@@ -300,7 +365,7 @@ def complete_search_attempt(
                     attempt,
                     status=str(SelfieSearchAttempt.Status.SUCCEEDED),
                     payload_hash=payload_hash,
-                    now=now,
+                    now=publication_time,
                     download_duration_ms=download_duration_ms,
                     compute_duration_ms=compute_duration_ms,
                     total_duration_ms=total_duration_ms,
@@ -308,20 +373,42 @@ def complete_search_attempt(
                     worker_finished_at=worker_finished_at,
                 )
                 job.status = SelfieSearchJob.Status.SUCCEEDED
-                job.completed_at = now
+                job.completed_at = publication_time
                 job.save(update_fields=["status", "completed_at"])
                 _prepare_cleanup(
                     search,
                     intended_status=intended_status,
                     failure_code="",
                     expansion=expansion,
-                    now=now,
+                    now=publication_time,
                 )
                 completion = SearchAttemptCompletion(attempt=attempt)
                 needs_cleanup = True
     if needs_cleanup:
-        _confirm_cleanup(attempt_id=attempt_id, storage=storage, now=now)
+        _confirm_cleanup(attempt_id=attempt_id, storage=storage, now=publication_time)
     return completion
+
+
+def _completion_snapshot_matches(
+    *,
+    snapshot_search: SelfieSearch,
+    snapshot_job: SelfieSearchJob,
+    snapshot_attempt: SelfieSearchAttempt,
+    search: SelfieSearch,
+    job: SelfieSearchJob,
+    attempt: SelfieSearchAttempt,
+) -> bool:
+    return bool(
+        search.id == snapshot_search.id
+        and search.event_id == snapshot_search.event_id
+        and search.configuration_hash == snapshot_search.configuration_hash
+        and search.configuration == snapshot_search.configuration
+        and job.id == snapshot_job.id
+        and job.search_id == snapshot_job.search_id
+        and job.configuration == snapshot_job.configuration
+        and attempt.id == snapshot_attempt.id
+        and attempt.job_id == snapshot_attempt.job_id
+    )
 
 
 def fail_search_attempt(
@@ -653,7 +740,7 @@ def _terminal_attempt(
 def _expand_direct_ranking(
     *, search: SelfieSearch, ranked: tuple, query: tuple[float, ...]
 ) -> RankedPhotoExpansion:
-    """Keep optional corpus reads inside the Django completion transaction."""
+    """Read optional immutable corpus evidence before the publication transaction."""
     if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
         return direct_only_ranked_photos(ranked, outcome="disabled")
     try:
@@ -779,6 +866,8 @@ def _prepare_cleanup(
             "intended_terminal_status",
             "failure_code",
             "state_changed_at",
+            "eligible_photo_count",
+            "eligible_face_count",
             "final_matched_photo_count",
             "direct_matched_photo_count",
             "cluster_expanded_photo_count",

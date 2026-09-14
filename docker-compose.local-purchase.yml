@@ -113,14 +113,25 @@ services:
       mailpit:
         condition: service_healthy
 
-  worker:
+  worker-bulk:
     environment:
       PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
       PHOTO_WORKER_TOKEN: local-photo-worker-token
       PHOTO_WORKER_BUILD: local-full-scenario
       PHOTO_WORKER_LEASE_SECONDS: "120"
-      PHOTO_WORKER_PROCESSOR_IDENTITIES: 1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2
-      PHOTO_WORKER_PROCESSOR_TYPES: selfie_query,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview
+      PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO: "true"
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+    depends_on:
+      web:
+        condition: service_healthy
+
+  worker-selfie:
+    environment:
+      PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
+      PHOTO_WORKER_TOKEN: local-photo-worker-token
+      PHOTO_WORKER_BUILD: local-full-scenario
+      PHOTO_WORKER_LEASE_SECONDS: "120"
       PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO: "true"
     extra_hosts:
       - "minio.localhost:host-gateway"

@@ -80,7 +80,13 @@ def rank_embeddings(
             cosine_distance=distance,
         )
         previous = best_by_photo.get(ranked.photo_id)
-        if previous is None or ranked.cosine_distance < previous.cosine_distance:
+        if previous is None or (
+            ranked.cosine_distance,
+            ranked.detection_id.int,
+        ) < (
+            previous.cosine_distance,
+            previous.detection_id.int,
+        ):
             best_by_photo[ranked.photo_id] = ranked
     return tuple(
         sorted(best_by_photo.values(), key=lambda row: (row.cosine_distance, row.photo_id))

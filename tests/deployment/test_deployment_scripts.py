@@ -697,7 +697,10 @@ case " $* " in
 esac
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
 if [ "$APPLY_SCENARIO" = worker-removal-failure ] && \
-   case " $* " in *" compose "*" --profile worker rm -sf worker "*) true ;; *) false ;; esac; then
+   case " $* " in
+     *" compose "*" --profile worker rm -sf worker-bulk worker-selfie "*) true ;;
+     *) false ;;
+   esac; then
   exit 1
 fi
 if [ "$APPLY_SCENARIO" = worker-recovery ] && \
@@ -717,7 +720,10 @@ if [ "$APPLY_SCENARIO" = worker-recovery ] && \
 fi
 if [ "$APPLY_SCENARIO" = worker-recovery-disabled ] && \
    [ "${APP_IMAGE-unset}" = unset ] && \
-   case " $* " in *" compose "*" --profile worker rm -sf worker "*) true ;; *) false ;; esac; then
+   case " $* " in
+     *" compose "*" --profile worker rm -sf worker-bulk worker-selfie "*) true ;;
+     *) false ;;
+   esac; then
   [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$compose_env_file")" = False ]
   printf 'recovery-removes-worker-from-restored-disabled-environment\n' >> "$COMMAND_LOG"
 fi
@@ -733,20 +739,24 @@ fi
 case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
   *" compose "*" ps -q web "*) printf 'web-id\n' ;;
-  *" compose "*" ps -q worker "*)
+  *" compose "*" ps -q worker-bulk "*)
     [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] || exit 0
     worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
     case "$APPLY_SCENARIO" in
       worker-second-missing)
-        printf 'worker-first\n'
+        printf 'worker-bulk-first\n'
         ;;
       *)
-        printf 'worker-first\n'
+        printf 'worker-bulk-first\n'
         if [ "$worker_replicas" = 2 ]; then
-          printf 'worker-second\n'
+          printf 'worker-bulk-second\n'
         fi
         ;;
     esac
+    ;;
+  *" compose "*" ps -q worker-selfie "*)
+    [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] || exit 0
+    printf 'worker-selfie\n'
     ;;
   *" compose "*" ps -q commerce-worker "*)
     [ "$(sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] || exit 0
@@ -754,7 +764,7 @@ case " $* " in
     ;;
   *" inspect "*" web-id "*) sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" ;;
   *" inspect "*" commerce-worker-id "*) printf 'true false false\n' ;;
-  *" inspect "*" worker-first "*)
+  *" inspect "*" worker-bulk-first "*|*" inspect "*" worker-selfie "*)
     if [ "$APPLY_SCENARIO" = worker-crash-loop ]; then
       case "$*" in
         *OOMKilled*) printf 'true true false 3\n' ;;
@@ -767,7 +777,7 @@ case " $* " in
       esac
     fi
     ;;
-  *" inspect "*" worker-second "*)
+  *" inspect "*" worker-bulk-second "*)
     if [ "$APPLY_SCENARIO" = worker-second-restarting ]; then
       case "$*" in
         *OOMKilled*) printf 'true true false 1\n' ;;
@@ -1546,8 +1556,14 @@ def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
     assert "PHOTO_WORKER_BUILD=capture-metadata-v2" in deployed_env
     assert "PHOTO_WORKER_LEASE_SECONDS=180" in deployed_env
     commands = _apply_log(tmp_path)
-    assert any("--profile worker pull" in command for command in commands)
-    assert any("--profile worker up -d --remove-orphans" in command for command in commands)
+    assert any(
+        "--profile worker pull web worker-bulk worker-selfie" in command for command in commands
+    )
+    assert any(
+        "--profile worker up -d --remove-orphans --scale worker-bulk=1 --scale worker-selfie=1"
+        in command
+        for command in commands
+    )
     assert "worker-token-must-not-be-logged" not in result.stdout
     assert "worker-token-must-not-be-logged" not in result.stderr
     assert "worker-token-must-not-be-logged" not in "\n".join(commands)
@@ -1556,7 +1572,7 @@ def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
 def test_enabled_processing_reconciles_two_requested_worker_replicas(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """A requested pair must be persisted and brought up as a pair."""
+    """Bulk replicas scale independently while the selfie role stays singular."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
@@ -1572,7 +1588,8 @@ def test_enabled_processing_reconciles_two_requested_worker_replicas(
     assert result.returncode == 0, result.stderr
     assert "PHOTO_WORKER_REPLICAS=2" in (tmp_path / ".env").read_text(encoding="utf-8")
     assert any(
-        "--profile worker up -d --remove-orphans --scale worker=2" in command
+        "--profile worker up -d --remove-orphans --scale worker-bulk=2 --scale worker-selfie=1"
+        in command
         for command in _apply_log(tmp_path)
     )
 
@@ -1611,12 +1628,10 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token-must-not-be-logged",
             "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
-            "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-                "1/selfie_query/2,1/capture_metadata/2,2/generate_preview/1,"
-                "2/face_embedding/3,3/face_embedding/5"
-            ),
-            "PHOTO_WORKER_PROCESSOR_TYPES": (
-                "selfie_query,face_embedding,capture_metadata,generate_preview"
+            "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES": (
+                "1/capture_metadata/2,2/generate_preview/1,"
+                "2/generate_watermarked_preview/1,2/face_embedding/3,"
+                "3/face_embedding/5,1/bib_recognition/1"
             ),
         }
     )
@@ -1628,19 +1643,17 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
     assert "PHOTO_PROCESSING_PREVIEW_ENABLED=True" in deployed_env
     assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/2,1/capture_metadata/2,"
-        "2/generate_preview/1,2/face_embedding/3,3/face_embedding/5" in deployed_env
+        "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,"
+        "2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,"
+        "3/face_embedding/5,1/bib_recognition/1" in deployed_env
     )
 
 
-def test_deployment_default_worker_identities_do_not_activate_watermarked_previews(
+def test_deployment_default_worker_identities_are_disjoint_and_complete(
     tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An empty configured value must not inherit an ambient worker identity."""
-    monkeypatch.setenv(
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES",
-        "2/generate_watermarked_preview/1",
-    )
+    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", "9/obsolete/9")
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
@@ -1651,24 +1664,24 @@ def test_deployment_default_worker_identities_do_not_activate_watermarked_previe
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
         }
     )
-    env["PHOTO_WORKER_PROCESSOR_IDENTITIES"] = ""
-
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 0, result.stderr
     deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     persisted_default = next(
-        line for line in deployed_env if line.startswith("PHOTO_WORKER_PROCESSOR_IDENTITIES=")
+        line for line in deployed_env if line.startswith("PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=")
     )
     default_identity_line = (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,"
-        "2/face_embedding/3,3/face_embedding/5,1/selfie_query/2"
+        "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,"
+        "2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,"
+        "3/face_embedding/5,1/bib_recognition/1"
     )
     assert persisted_default == default_identity_line
-    assert "2/generate_watermarked_preview/1" not in persisted_default
+    assert "selfie_query" not in persisted_default
+    assert "PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=1/selfie_query/2" in deployed_env
 
 
-def test_deployment_accepts_the_optional_watermarked_preview_worker_identity(
+def test_deployment_persists_the_fixed_watermarked_preview_bulk_identity(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     """The packaged worker may accept the future identity without activating its policy."""
@@ -1680,10 +1693,6 @@ def test_deployment_accepts_the_optional_watermarked_preview_worker_identity(
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
             "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
-            "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-                "1/selfie_query/2,1/capture_metadata/2,2/generate_preview/1,"
-                "2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5"
-            ),
         }
     )
 
@@ -1692,9 +1701,9 @@ def test_deployment_accepts_the_optional_watermarked_preview_worker_identity(
     assert result.returncode == 0, result.stderr
     deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     assert (
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/2,1/capture_metadata/2,"
+        "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,"
         "2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,"
-        "3/face_embedding/5" in deployed_env
+        "3/face_embedding/5,1/bib_recognition/1" in deployed_env
     )
 
 
@@ -1717,14 +1726,14 @@ def test_deployment_rejects_worker_identity_lists_the_worker_would_not_accept(
             "PHOTO_PROCESSING_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "PHOTO_WORKER_PROCESSOR_IDENTITIES": identities,
+            "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES": identities,
         }
     )
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 2
-    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list" in result.stderr
+    assert "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must be a unique ordered list" in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert not (tmp_path / "apply.log").exists()
 
@@ -1748,7 +1757,7 @@ def test_enabled_processing_rejects_a_worker_that_is_crash_looping_after_compose
     assert "worker runtime verification" in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert any(
-        "--profile worker" in command and "logs --tail=100 worker" in command
+        "--profile worker" in command and "logs --tail=100 worker-bulk worker-selfie" in command
         for command in _apply_log(tmp_path)
     )
 
@@ -1782,7 +1791,10 @@ def test_preview_first_activation_rejects_partial_or_implicit_configuration(
     (
         "1/capture_metadata/2",
         "2/generate_preview/1",
+        "2/generate_watermarked_preview/1",
         "2/face_embedding/3",
+        "3/face_embedding/5",
+        "1/bib_recognition/1",
     ),
 )
 def test_preview_activation_requires_every_approved_photo_identity_before_mutation(
@@ -1791,7 +1803,10 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
     required_identities = (
         "1/capture_metadata/2",
         "2/generate_preview/1",
+        "2/generate_watermarked_preview/1",
         "2/face_embedding/3",
+        "3/face_embedding/5",
+        "1/bib_recognition/1",
     )
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
@@ -1801,11 +1816,8 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
             "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
-            "PHOTO_WORKER_PROCESSOR_IDENTITIES": ",".join(
+            "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES": ",".join(
                 identity for identity in required_identities if identity != missing_identity
-            ),
-            "PHOTO_WORKER_PROCESSOR_TYPES": (
-                "selfie_query,face_embedding,capture_metadata,generate_preview"
             ),
         }
     )
@@ -1813,7 +1825,9 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 2
-    assert f"PHOTO_WORKER_PROCESSOR_IDENTITIES must include {missing_identity}" in result.stderr
+    assert (
+        f"PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must include {missing_identity}" in result.stderr
+    )
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert not (tmp_path / "apply.log").exists()
 
@@ -1828,10 +1842,10 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
             "PHOTO_PROCESSING_FACE_ENABLED must be True or False",
         ),
         (
-            {"PHOTO_WORKER_PROCESSOR_TYPES": "capture_metadata,selfie_query"},
+            {"PHOTO_WORKER_BULK_PROCESSOR_TYPES": "capture_metadata"},
             (
-                "PHOTO_WORKER_PROCESSOR_TYPES must be "
-                "selfie_query,face_embedding,capture_metadata,generate_preview"
+                "PHOTO_WORKER_BULK_PROCESSOR_TYPES must be bib_recognition,face_embedding,"
+                "capture_metadata,generate_preview,generate_watermarked_preview"
             ),
         ),
         (
@@ -1905,14 +1919,16 @@ def test_failed_worker_deployment_restores_the_complete_previous_environment_and
     commands = _apply_log(tmp_path)
     assert (
         sum(
-            "--profile worker up -d --remove-orphans --scale worker=1" in command
+            "--profile worker up -d --remove-orphans --scale worker-bulk=1 "
+            "--scale worker-selfie=1" in command
             for command in commands
         )
         == 1
     )
     assert (
         sum(
-            "--profile worker up -d --remove-orphans --scale worker=2" in command
+            "--profile worker up -d --remove-orphans --scale worker-bulk=2 "
+            "--scale worker-selfie=1" in command
             for command in commands
         )
         == 1
@@ -1921,6 +1937,108 @@ def test_failed_worker_deployment_restores_the_complete_previous_environment_and
     assert "worker-token-must-not-be-logged" not in result.stdout
     assert "worker-token-must-not-be-logged" not in result.stderr
     assert "worker-token-must-not-be-logged" not in "\n".join(commands)
+
+
+def test_failed_split_rollout_restores_previous_shared_worker_package_atomically(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """Rollback must pair the old env/image with its byte-exact shared-worker package."""
+    previous_env = PREVIOUS_ENV + (
+        b"WORKER_IMAGE=old-worker-image\n"
+        b"PHOTO_PROCESSING_ENABLED=True\n"
+        b"PHOTO_PROCESSING_WORKER_TOKEN=old-worker-token\n"
+        b"PHOTO_WORKER_BUILD=old-capture-metadata\n"
+        b"PHOTO_WORKER_LEASE_SECONDS=90\n"
+        b"PHOTO_WORKER_REPLICAS=2\n"
+        b"COMMERCE_WORKER_ENABLED=False\n"
+    )
+    env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery")
+    (tmp_path / ".env").write_bytes(previous_env)
+    (tmp_path / "previous-env.expected").write_bytes(previous_env)
+    previous_package = tmp_path / "previous-package"
+    previous_package.mkdir()
+    old_compose = b"services:\n  worker:\n    image: ${WORKER_IMAGE}\n"
+    old_overlay = b"services:\n  nginx:\n    image: nginx:old\n"
+    (previous_package / "docker-compose.deployment.yml").write_bytes(old_compose)
+    (previous_package / "docker-compose.https.yml").write_bytes(old_overlay)
+    shutil.copytree(tmp_path / "deploy", previous_package / "deploy")
+    (previous_package / "deploy" / "package-version").write_text(
+        "previous-shared-worker\n", encoding="utf-8"
+    )
+    env.update(
+        {
+            "PREVIOUS_DEPLOYMENT_PACKAGE_ROOT": str(previous_package),
+            "PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY": "shared",
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "candidate-worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "candidate-worker-token",
+            "PHOTO_WORKER_BUILD": "candidate-split-worker",
+            "PHOTO_WORKER_REPLICAS": "1",
+        }
+    )
+    env.update(_real_commerce_worker_settings())
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "DEPLOY_RESULT=failure phase=local-health rollback=succeeded" in result.stdout
+    assert (tmp_path / ".env").read_bytes() == previous_env
+    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
+    assert (tmp_path / "docker-compose.deployment.yml").read_bytes() == old_compose
+    assert (tmp_path / "docker-compose.https.yml").read_bytes() == old_overlay
+    assert (tmp_path / "deploy" / "package-version").read_text(encoding="utf-8") == (
+        "previous-shared-worker\n"
+    )
+    commands = _apply_log(tmp_path)
+    shared_recovery = "--profile worker up -d --remove-orphans --scale worker=2"
+    shared_recovery_index = next(
+        index for index, line in enumerate(commands) if shared_recovery in line
+    )
+    commerce_removal_index = next(
+        index
+        for index, line in enumerate(commands)
+        if "--profile commerce rm -sf commerce-worker" in line
+    )
+    assert commerce_removal_index < shared_recovery_index
+    assert sum("--scale worker-bulk=1 --scale worker-selfie=1" in line for line in commands) == 1
+
+
+def test_shared_rollback_removes_worker_when_previous_processing_is_disabled(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    previous_env = PREVIOUS_ENV + (
+        b"PHOTO_PROCESSING_ENABLED=False\nPHOTO_WORKER_REPLICAS=2\nCOMMERCE_WORKER_ENABLED=False\n"
+    )
+    env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery-disabled")
+    (tmp_path / ".env").write_bytes(previous_env)
+    (tmp_path / "previous-env.expected").write_bytes(previous_env)
+    previous_package = tmp_path / "previous-package"
+    previous_package.mkdir()
+    (previous_package / "docker-compose.deployment.yml").write_text(
+        "services:\n  worker:\n    image: ${WORKER_IMAGE}\n", encoding="utf-8"
+    )
+    (previous_package / "docker-compose.https.yml").write_text(
+        "services:\n  nginx:\n    image: nginx:old\n", encoding="utf-8"
+    )
+    shutil.copytree(tmp_path / "deploy", previous_package / "deploy")
+    env.update(
+        {
+            "PREVIOUS_DEPLOYMENT_PACKAGE_ROOT": str(previous_package),
+            "PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY": "shared",
+            "PHOTO_PROCESSING_ENABLED": "True",
+            "WORKER_IMAGE": "candidate-worker-image",
+            "PHOTO_PROCESSING_WORKER_TOKEN": "candidate-worker-token",
+            "PHOTO_WORKER_REPLICAS": "1",
+        }
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "DEPLOY_RESULT=failure phase=local-health rollback=succeeded" in result.stdout
+    commands = _apply_log(tmp_path)
+    assert any("--profile worker rm -sf worker" in line for line in commands)
+    assert any("--profile commerce rm -sf commerce-worker" in line for line in commands)
 
 
 def test_failed_worker_rollout_removes_the_candidate_worker_when_previous_deployment_is_disabled(
@@ -1944,7 +2062,9 @@ def test_failed_worker_rollout_removes_the_candidate_worker_when_previous_deploy
 
     assert result.returncode != 0
     commands = _apply_log(tmp_path)
-    assert any("--profile worker rm -sf worker" in command for command in commands)
+    assert any(
+        "--profile worker rm -sf worker-bulk worker-selfie" in command for command in commands
+    )
     assert "recovery-removes-worker-from-restored-disabled-environment" in commands
 
 
@@ -2776,7 +2896,7 @@ def test_feedback_workflow_forwards_web_credentials_and_keeps_them_out_of_worker
     assert "SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}" in workflow
     assert "--consumer deploy" in workflow
     assert "selfie-feedback-storage" in workflow
-    worker_section = compose.split("  worker:\n", maxsplit=1)[1]
+    worker_section = compose.split("  worker-bulk:\n", maxsplit=1)[1]
     assert "SELFIE_FEEDBACK_" not in worker_section
 
 

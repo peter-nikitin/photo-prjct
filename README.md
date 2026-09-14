@@ -71,12 +71,18 @@ available on `localhost:5432`, matching CI.
 
 Public selfie search is available for every published free event. Photo processing and face
 embeddings are mandatory deployment prerequisites; the application and deployment fail fast when
-either is unavailable. The approved worker contract uses these ordered values:
+either is unavailable. The host-process test below supplies this combined worker environment:
 
 ```dotenv
 PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,1/selfie_query/2,2/generate_preview/1,2/face_embedding/3
 PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview
 ```
+
+Compose uses separate `worker-bulk` and `worker-selfie` services. Configure their inputs with
+`PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES` / `PHOTO_WORKER_BULK_PROCESSOR_TYPES` and
+`PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES` / `PHOTO_WORKER_SELFIE_PROCESSOR_TYPES`; Compose maps
+these to the process variables above. `PHOTO_WORKER_REPLICAS` controls bulk replicas while the
+deployment runs one separate selfie worker.
 
 With a disposable local PostgreSQL database, locally available SCRFD/SFace files, and a
 true-JPEG file, run the host-process application/worker boundary without committing or printing the
@@ -153,7 +159,7 @@ The bootstrap copies all executable inputs to root-owned paths. Routine deployme
 only the fixed helper actions `install`, `verify`, `rollback`, `commit`, and the UUID-validated
 `verify-probe`; they never execute files
 from the deploy-owned checkout as root. The supported deployment entrypoint installs and verifies a persistent system journal capped by
-`MaxRetentionSec=14day` and `SystemMaxUse=1G`, stable `web`, `worker`, and `nginx` tags, and the
+`MaxRetentionSec=14day` and `SystemMaxUse=1G`, stable `web`, `worker-bulk`, `worker-selfie`, and `nginx` tags, and the
 `selfie-search-summary.timer`. The cap can shorten effective history under heavy log volume; the
 journal is operational evidence, not a backup.
 

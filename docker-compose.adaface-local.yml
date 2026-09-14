@@ -65,11 +65,15 @@ services:
       minio-init:
         condition: service_completed_successfully
 
-  worker:
+  worker-bulk:
     environment:
       PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO: "true"
-      PHOTO_WORKER_PROCESSOR_IDENTITIES: 3/face_embedding/5,1/selfie_query/2
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: 3/face_embedding/5
       PHOTO_WORKER_PROCESSOR_TYPES: !reset null
+
+  worker-selfie:
+    environment:
+      PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO: "true"
 
   seed-local-preview-corpus:
     build: .

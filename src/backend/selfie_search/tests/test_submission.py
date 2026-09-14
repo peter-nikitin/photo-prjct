@@ -3,7 +3,10 @@ import json
 from datetime import date
 from io import BytesIO
 from pathlib import Path
+from queue import Queue
 from struct import pack
+from threading import Event as ThreadEvent
+from threading import Thread
 from typing import cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
@@ -12,8 +15,8 @@ from zlib import crc32
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import IntegrityError, connection
-from django.test import TestCase, override_settings
+from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
@@ -66,7 +69,7 @@ from selfie_search.services.jobs import (
     claim_search_job,
     complete_search_attempt,
 )
-from selfie_search.services.ranking import RankingError
+from selfie_search.services.ranking import RankingError, rank_embeddings
 from selfie_search.services.submission import (
     GallerySearchFailed,
     GallerySearchUnavailable,
@@ -635,7 +638,9 @@ class SubmissionTests(TestCase):
             candidates = compatible_search_candidates(search)
 
         cohort_sql = next(
-            query["sql"] for query in queries if 'FROM "processing_faceembedding"' in query["sql"]
+            query["sql"]
+            for query in queries
+            if 'FROM "processing_photofaceembeddingprojection"' in query["sql"]
         )
         self.assertNotIn('"processing_faceembedding"."metadata"', cohort_sql)
         self.assertNotIn('"processing_photofacedetection"."geometry"', cohort_sql)
@@ -1351,6 +1356,29 @@ class GalleryPhotoSubmissionTests(TestCase):
         with self.assertRaises(ValidationError):
             rows[0].direct_evidence.save()
 
+    def test_gallery_completion_loads_projection_cohort_without_wide_sort(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="projection-source", vector=[1.0] + [0.0] * 127
+        )
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=embedding.detection.attempt.photo,
+            detection_id=embedding.detection_id,
+            user=self.user,
+        ).search
+        with CaptureQueriesContext(connection) as queries:
+            processed = process_gallery_photo_search(search=search)
+        cohort = next(
+            item["sql"]
+            for item in queries
+            if "processing_faceembedding" in item["sql"]
+            and '"vector"' in item["sql"].split(" FROM ")[0]
+            and "LIMIT 1" not in item["sql"]
+        )
+        self.assertEqual(processed.status, SelfieSearch.Status.READY)
+        self.assertIn('FROM "processing_photofaceembeddingprojection"', cohort)
+        self.assertNotIn("ORDER BY", cohort.upper())
+
     def test_each_selected_face_uses_its_own_query_embedding(self) -> None:
         first = self.make_eligible_embedding(
             event=self.event,
@@ -1496,3 +1524,115 @@ class GalleryPhotoSubmissionTests(TestCase):
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertGreater(search.results.count(), 0)
+
+
+class GalleryCompletionConcurrencyTests(TransactionTestCase):
+    """Gallery cohort work must release rows and revalidate before publication."""
+
+    setUp = GalleryPhotoSubmissionTests.setUp
+    make_event = SubmissionTests.make_event
+    make_eligible_embedding = SubmissionTests.make_eligible_embedding
+
+    def test_paused_gallery_cohort_and_ranking_leave_event_and_search_unlocked(self) -> None:
+        for phase in ("cohort", "ranking"):
+            with self.subTest(phase=phase):
+                self._complete_while_paused(phase=phase)
+
+    def test_gallery_source_hidden_during_ranking_is_not_published(self) -> None:
+        self._complete_while_paused(phase="ranking", change="hide_source")
+
+    def test_gallery_configuration_changed_during_ranking_is_not_published(self) -> None:
+        self._complete_while_paused(phase="ranking", change="configuration")
+
+    def test_gallery_terminal_result_wins_over_inflight_ranking(self) -> None:
+        self._complete_while_paused(phase="ranking", change="terminal")
+
+    def _complete_while_paused(self, *, phase: str, change: str = "") -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id=f"paused-{phase}-{change}", vector=[1.0] + [0.0] * 127
+        )
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=embedding.detection.attempt.photo,
+            detection_id=embedding.detection_id,
+            user=self.user,
+        ).search
+        started = ThreadEvent()
+        resume = ThreadEvent()
+        errors: Queue[BaseException] = Queue()
+
+        def pause():
+            started.set()
+            if not resume.wait(timeout=10):
+                raise TimeoutError("gallery test did not resume computation")
+
+        def query_wrapper(execute, sql, params, many, context):
+            if (
+                "processing_faceembedding" in sql
+                and '"vector"' in sql.split(" FROM ")[0]
+                and "LIMIT 1" not in sql
+            ):
+                pause()
+            return execute(sql, params, many, context)
+
+        def paused_rank(*args, **kwargs):
+            pause()
+            return rank_embeddings(*args, **kwargs)
+
+        def complete() -> None:
+            close_old_connections()
+            try:
+                if phase == "cohort":
+                    with connection.execute_wrapper(query_wrapper):
+                        process_gallery_photo_search(search=search)
+                else:
+                    with patch("selfie_search.services.submission.rank_embeddings", paused_rank):
+                        process_gallery_photo_search(search=search)
+            except BaseException as error:
+                errors.put(error)
+            finally:
+                close_old_connections()
+
+        thread = Thread(target=complete)
+        thread.start()
+        lock_errors = []
+        try:
+            self.assertTrue(started.wait(timeout=10))
+            for model, pk in ((Event, self.event.pk), (SelfieSearch, search.pk)):
+                try:
+                    with transaction.atomic():
+                        model.objects.select_for_update(nowait=True).get(pk=pk)
+                except DatabaseError as error:
+                    lock_errors.append(str(error))
+            if not lock_errors:
+                if change == "hide_source":
+                    Photo.objects.filter(pk=embedding.detection.attempt.photo_id).update(
+                        is_hidden=True
+                    )
+                elif change == "configuration":
+                    configuration = {**search.configuration, "cosine_distance_threshold": 0.1}
+                    SelfieSearch.objects.filter(pk=search.pk).update(configuration=configuration)
+                elif change == "terminal":
+                    SelfieSearch.objects.filter(pk=search.pk).update(
+                        status=SelfieSearch.Status.FAILED, failure_code="concurrent_failure"
+                    )
+        finally:
+            resume.set()
+            thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(lock_errors, [])
+        self.assertTrue(errors.empty(), list(errors.queue))
+        search.refresh_from_db()
+        if change:
+            expected = (
+                SelfieSearch.Status.FAILED
+                if change == "terminal"
+                else SelfieSearch.Status.SEARCH_UNAVAILABLE
+            )
+            self.assertEqual(search.status, expected)
+            self.assertEqual(search.results.count(), 0)
+            if change == "terminal":
+                self.assertEqual(search.failure_code, "concurrent_failure")
+        else:
+            self.assertEqual(search.status, SelfieSearch.Status.READY)
+            self.assertGreater(search.results.count(), 0)

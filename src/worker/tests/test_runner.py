@@ -1166,6 +1166,30 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
     assert singular.processor_types == (PROCESSOR_TYPE_FACE_EMBEDDING,)
 
 
+def test_worker_configuration_parses_positive_finite_http_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv("PHOTO_WORKER_HTTP_TIMEOUT_SECONDS", "900")
+
+    _configuration, client = WorkerConfig.from_env()
+
+    assert client._timeout_seconds == 900.0
+
+
+@pytest.mark.parametrize("value", ("0", "-1", "nan", "inf", "not-a-number"))
+def test_worker_configuration_rejects_invalid_http_timeout(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv("PHOTO_WORKER_HTTP_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(ValueError, match="timeout"):
+        WorkerConfig.from_env()
+
+
 @pytest.mark.parametrize(
     "identity",
     (
@@ -1860,6 +1884,41 @@ def test_transient_api_error_sleeps_then_repolls_before_fatal_stop(
 
     assert calls == 2
     assert sleeps == [2.0]
+
+
+def test_network_timeout_backoff_is_bounded_and_does_not_leak_or_stop_daemon(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    secret = "signed-url-secret-must-not-escape"
+    worker = Worker(
+        Client(Claim.empty(1)),
+        WorkerConfig(
+            worker_build="worker-test",
+            lease_seconds=60,
+            maximum_backoff_seconds=3.0,
+            log_secrets=(secret,),
+        ),
+    )
+    calls = 0
+
+    def run_once() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ApiError("network_interruption", retryable=True)
+        raise ApiError("worker_unauthorized", retryable=False)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(worker, "run_once", run_once)
+    monkeypatch.setattr("photo_worker.runner.time.sleep", sleeps.append)
+    monkeypatch.setattr(worker, "_backoff_delay", lambda _failures: 3.0)
+
+    with caplog.at_level("WARNING"):
+        worker.run_forever()
+
+    assert calls == 2
+    assert sleeps == [3.0]
+    assert secret not in caplog.text
 
 
 def test_backoff_stays_inside_configured_jitter_bounds(monkeypatch: pytest.MonkeyPatch) -> None:

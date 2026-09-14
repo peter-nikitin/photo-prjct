@@ -199,18 +199,21 @@ def test_local_stack_keeps_production_sequential_contract():
     from tests.deployment.test_deployment_scripts import ROOT
 
     stack = yaml.safe_load((ROOT / "docker-compose.bib-local.yml").read_text())
-    worker = stack["services"]["worker"]
-    assert worker["cpus"] == "2.0"
-    assert worker["mem_limit"] == "6g"
-    assert worker["pids_limit"] == 64
-    assert worker["restart"] == "no"
-    assert worker["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"].endswith(
-        "1/bib_recognition/1"
-    )
+    bulk = stack["services"]["worker-bulk"]
+    selfie = stack["services"]["worker-selfie"]
+    assert bulk["cpus"] == "2.0"
+    assert bulk["mem_limit"] == "6g"
+    assert bulk["pids_limit"] == 64
+    assert bulk["restart"] == "no"
+    assert bulk["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"].endswith("1/bib_recognition/1")
     assert (
-        worker["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"]
-        == "selfie_query,face_embedding,capture_metadata,generate_preview"
+        bulk["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"]
+        == "bib_recognition,face_embedding,capture_metadata,generate_preview,"
+        "generate_watermarked_preview"
     )
+    assert selfie["image"] == bulk["image"]
+    assert selfie["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == "1/selfie_query/2"
+    assert selfie["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"] == "selfie_query"
     assert stack["services"]["web"]["ports"] == ["127.0.0.1:18210:8000"]
 
 

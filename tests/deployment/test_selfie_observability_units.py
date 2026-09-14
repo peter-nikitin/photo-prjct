@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import yaml
@@ -123,7 +124,8 @@ def test_public_services_use_journald_stable_nonsecret_tags_only() -> None:
     https = yaml.safe_load((ROOT / "docker-compose.https.yml").read_text(encoding="utf-8"))
     services = {
         "web": product["services"]["web"],
-        "worker": product["services"]["worker"],
+        "worker-bulk": product["services"]["worker-bulk"],
+        "worker-selfie": product["services"]["worker-selfie"],
         "nginx": https["services"]["nginx"],
     }
 
@@ -138,7 +140,7 @@ def test_public_services_use_journald_stable_nonsecret_tags_only() -> None:
     assert "logging" not in product["services"]["db"]
 
 
-def test_deployment_workflow_uses_canonical_compose_tags() -> None:
+def test_deployment_workflow_uses_canonical_compose_tags(tmp_path: Path) -> None:
     deployment = yaml.safe_load(
         (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     )
@@ -158,7 +160,30 @@ def test_deployment_workflow_uses_canonical_compose_tags() -> None:
     assert "--identity github-oidc" in deploy_step["run"]
     assert "deploy/run-remote.sh deploy" in deploy_step["run"]
     assert "DEPLOYMENT_TARGET" not in projected_deployment_values
-    assert (
-        "'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct "
-        "exec sh /opt/photo-prjct/deploy/apply-deployment.sh'"
-    ) in helper
+    assert "'deploy': deployment_command" in helper
+    deploy_command = helper.partition("deployment_command = r'''")[2].partition("'''")[0]
+    candidate = tmp_path / "candidate"
+    (candidate / "deploy").mkdir(parents=True)
+    (candidate / "docker-compose.deployment.yml").write_text("candidate product\n")
+    (candidate / "docker-compose.https.yml").write_text("candidate https\n")
+    (candidate / "deploy" / "apply-deployment.sh").write_text(
+        "set -eu\n"
+        'test "$(cat "$DEPLOY_ROOT/docker-compose.deployment.yml")" = "candidate product"\n'
+        'test "$(cat "$DEPLOY_ROOT/docker-compose.https.yml")" = "candidate https"\n'
+        'printf "%s\\n%s\\n" "$DEPLOY_ROOT" "$COMPOSE_PROJECT_NAME"\n'
+    )
+    deployment_root = tmp_path / "deployment"
+    deployment_root.mkdir()
+    with tarfile.open(deployment_root / ".deployment-candidate.tar", "w") as archive:
+        for entry in candidate.iterdir():
+            archive.add(entry, arcname=entry.name)
+    result = subprocess.run(
+        ["sh", "-c", deploy_command.replace("/opt/photo-prjct", str(deployment_root))],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [str(deployment_root), "photo-prjct"]
+    assert (deployment_root / "deploy" / "apply-deployment.sh").is_file()
+    assert not list(deployment_root.glob(".deployment-*"))

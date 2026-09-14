@@ -80,7 +80,7 @@ def test_deployment_compose_projects_postbox_credentials_only_to_commerce_worker
     assert commerce_environment["COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS"] == "777"
     assert commerce_environment["COMMERCE_WORKER_ENABLED"] == "True"
 
-    for service_name in ("db", "worker"):
+    for service_name in ("db", "worker-bulk", "worker-selfie"):
         assert "COMMERCE_POSTBOX_API_KEY_ID" not in (
             compose["services"][service_name].get("environment") or {}
         )

@@ -288,19 +288,24 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   The upload entry page selects an event, while the fixed-event workspace owns one local queue and
   a separate Yandex Disk import controller. Folder selection and feature gates do not grant
   administrative or media authority.
-- Run the first Stage 3 photo processor as a separately runnable worker that polls a private Django
-  API backed by PostgreSQL jobs and leases. Give it no database or permanent Object Storage
-  credentials; issue only short-lived exact-object media grants, as defined by
+- Run Stage 3 photo processors as two independently runnable services from the same immutable
+  worker image. The configurable bulk service owns metadata, preview, watermark, face-embedding,
+  and bib jobs; one fixed selfie service owns only selfie-query jobs and uses the longer bounded
+  synchronous HTTP timeout. Both poll the same private Django API backed by PostgreSQL jobs and
+  leases. Give neither service database or permanent Object Storage credentials; issue only
+  short-lived exact-object media grants, as defined by
   [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md).
 - Use Yandex Monitoring and one unprivileged Unified Agent for basic VM and private
   low-cardinality Django HTTP metrics. Check the canonical public HTTPS health endpoint through a
   managed probe outside Yandex Cloud, as defined by
   [ADR 0018](adr/0018-use-managed-yandex-monitoring.md).
 - The `selfie_search` Django app implements two public event-scoped face-query sources. An uploaded
-  selfie immediately creates the queued bearer-link result page; the existing worker returns one
-  transient query embedding, Django loads and ranks the compatible event cohort once without
-  persisting per-face candidate rows, deletes the temporary selfie before terminal publication,
-  and serves a stable immutable result. An eligible gallery photo with one or more current
+  selfie immediately creates the queued bearer-link result page; the selfie-only worker returns one
+  transient query embedding. Django loads and exactly ranks the compatible event cohort outside
+  the final publication transaction, then locks and revalidates the lease and immutable search
+  identity before saving the result. It persists no per-face candidate rows, deletes the temporary
+  selfie before terminal publication, and serves a stable immutable result. An eligible gallery
+  photo with one or more current
   compatible accepted faces exposes a direct one-face action or an explicit multi-face choice;
   Django uses the selected existing embedding to create an immediately ready immutable result
   without a temporary image, persisted query vector, or worker job. Both sources retain event

@@ -54,8 +54,6 @@ services:
       PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}
       PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
       PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
-      PHOTO_WORKER_PROCESSOR_IDENTITIES: ${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}
-      PHOTO_WORKER_PROCESSOR_TYPES: ${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}
       PHOTO_WORKER_REPLICAS: ${PHOTO_WORKER_REPLICAS:-1}
       SELFIE_SEARCH_MAX_UPLOAD_BYTES: ${SELFIE_SEARCH_MAX_UPLOAD_BYTES:-20971520}
       SELFIE_SEARCH_MAX_PIXELS: ${SELFIE_SEARCH_MAX_PIXELS:-25000000}
@@ -103,7 +101,7 @@ services:
       options:
         tag: "findme.service=web"
 
-  worker:
+  worker-bulk:
     image: ${WORKER_IMAGE:-}
     profiles:
       - worker
@@ -112,8 +110,9 @@ services:
       PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
       PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
       PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
-      PHOTO_WORKER_PROCESSOR_IDENTITIES: ${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}
-      PHOTO_WORKER_PROCESSOR_TYPES: ${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}
+      PHOTO_WORKER_HTTP_TIMEOUT_SECONDS: ${PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS:-180}
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: ${PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1}
+      PHOTO_WORKER_PROCESSOR_TYPES: ${PHOTO_WORKER_BULK_PROCESSOR_TYPES:-bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview}
     depends_on:
       web:
         condition: service_healthy
@@ -124,7 +123,31 @@ services:
     logging:
       driver: journald
       options:
-        tag: "findme.service=worker"
+        tag: "findme.service=worker-bulk"
+
+  worker-selfie:
+    image: ${WORKER_IMAGE:-}
+    profiles:
+      - worker
+    environment:
+      PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
+      PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
+      PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
+      PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
+      PHOTO_WORKER_HTTP_TIMEOUT_SECONDS: ${PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS:-900}
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: ${PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES:-1/selfie_query/2}
+      PHOTO_WORKER_PROCESSOR_TYPES: ${PHOTO_WORKER_SELFIE_PROCESSOR_TYPES:-selfie_query}
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: "${PHOTO_WORKER_CPUS:-1.0}"
+    mem_limit: ${PHOTO_WORKER_MEMORY_LIMIT:-2g}
+    pids_limit: 64
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=worker-selfie"
 
   import-worker:
     image: ${IMPORT_WORKER_IMAGE:-}

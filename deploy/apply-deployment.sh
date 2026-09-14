@@ -60,7 +60,8 @@ esac
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
-requested_worker_processor_identities="${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}"
+requested_bulk_processor_identities="${PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1}"
+requested_selfie_processor_identities="${PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES:-1/selfie_query/2}"
 requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
 requested_worker_cpus="${PHOTO_WORKER_CPUS:-1.0}"
 requested_worker_memory_limit="${PHOTO_WORKER_MEMORY_LIMIT:-2g}"
@@ -72,16 +73,11 @@ case "$requested_worker_memory_limit" in
     2g|3g|4g|5g|6g|2048m|2560m|3072m|3584m|4096m|4608m|5120m|5632m|6144m) ;;
     *) echo "PHOTO_WORKER_MEMORY_LIMIT must be 2 to 6 GiB in 512 MiB increments" >&2; exit 2 ;;
 esac
-case ",$requested_worker_processor_identities," in
-    *,1/bib_recognition/1,*)
-        if [ "$requested_worker_replicas" != 1 ]; then
-            echo "bib_recognition requires PHOTO_WORKER_REPLICAS=1" >&2
-            exit 2
-        fi
-        ;;
-esac
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
-requested_processor_types="${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,generate_preview}"
+requested_bulk_processor_types="${PHOTO_WORKER_BULK_PROCESSOR_TYPES:-bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview}"
+requested_selfie_processor_types="${PHOTO_WORKER_SELFIE_PROCESSOR_TYPES:-selfie_query}"
+requested_bulk_http_timeout_seconds="${PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS:-180}"
+requested_selfie_http_timeout_seconds="${PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS:-900}"
 requested_commerce_worker_enabled="${COMMERCE_WORKER_ENABLED:-False}"
 requested_commerce_public_origin="${COMMERCE_PUBLIC_ORIGIN:-}"
 requested_commerce_payment_gateway_factory="${COMMERCE_PAYMENT_GATEWAY_FACTORY:-}"
@@ -221,7 +217,7 @@ case "$GUNICORN_WORKERS:$GUNICORN_THREADS:$GUNICORN_TIMEOUT:$GUNICORN_MAX_REQUES
         ;;
 esac
 
-remaining_identities="$requested_worker_processor_identities"
+remaining_identities="$requested_bulk_processor_identities"
 seen_identities=","
 while :; do
     case "$remaining_identities" in
@@ -237,16 +233,16 @@ while :; do
             ;;
     esac
     case "$processor_identity" in
-        1/selfie_query/2|1/capture_metadata/2|2/generate_preview/1|2/generate_watermarked_preview/1|2/face_embedding/3|3/face_embedding/5|1/bib_recognition/1)
+        1/capture_metadata/2|2/generate_preview/1|2/generate_watermarked_preview/1|2/face_embedding/3|3/face_embedding/5|1/bib_recognition/1)
             ;;
         *)
-            echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
+            echo "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
             exit 2
             ;;
     esac
     case "$seen_identities" in
         *",$processor_identity,"*)
-            echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
+            echo "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
             exit 2
             ;;
     esac
@@ -318,14 +314,15 @@ if [ "$requested_preview_enabled" = True ]; then
     for required_photo_identity in \
         1/capture_metadata/2 \
         2/generate_preview/1 \
+        2/generate_watermarked_preview/1 \
         2/face_embedding/3 \
         3/face_embedding/5 \
-        1/selfie_query/2; do
-        case ",$requested_worker_processor_identities," in
+        1/bib_recognition/1; do
+        case ",$requested_bulk_processor_identities," in
             *",$required_photo_identity,"*)
                 ;;
             *)
-                echo "PHOTO_WORKER_PROCESSOR_IDENTITIES must include $required_photo_identity" >&2
+                echo "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must include $required_photo_identity" >&2
                 exit 2
                 ;;
         esac
@@ -394,8 +391,18 @@ case "$requested_selfie_feedback_enabled" in
         ;;
 esac
 
-if [ "$requested_processor_types" != "selfie_query,face_embedding,capture_metadata,generate_preview" ]; then
-    echo "PHOTO_WORKER_PROCESSOR_TYPES must be selfie_query,face_embedding,capture_metadata,generate_preview" >&2
+if [ "$requested_bulk_processor_types" != "bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview" ]; then
+    echo "PHOTO_WORKER_BULK_PROCESSOR_TYPES must be bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview" >&2
+    exit 2
+fi
+if [ "$requested_selfie_processor_identities" != "1/selfie_query/2" ] || \
+    [ "$requested_selfie_processor_types" != "selfie_query" ]; then
+    echo "Selfie worker must own only 1/selfie_query/2" >&2
+    exit 2
+fi
+if [ "$requested_bulk_http_timeout_seconds" != 180 ] || \
+    [ "$requested_selfie_http_timeout_seconds" != 900 ]; then
+    echo "Worker HTTP timeouts must be bulk=180 and selfie=900" >&2
     exit 2
 fi
 
@@ -457,6 +464,39 @@ compose_reconcile_runtime_profiles() {
     worker_replicas="$4"
 
     if [ "$processing_enabled" = False ]; then
+        compose_with_env_file "$compose_env_file" --profile worker rm -sf worker-bulk worker-selfie || return 1
+    fi
+    if [ "$commerce_enabled" = False ]; then
+        compose_with_env_file "$compose_env_file" --profile commerce rm -sf commerce-worker || return 1
+    fi
+    if [ "$processing_enabled" = True ]; then
+        compose_with_runtime_profiles "$processing_enabled" "$commerce_enabled" "$compose_env_file" \
+            up -d --remove-orphans --scale worker-bulk="$worker_replicas" --scale worker-selfie=1
+    else
+        compose_with_runtime_profiles "$processing_enabled" "$commerce_enabled" "$compose_env_file" \
+            up -d --remove-orphans
+    fi
+}
+
+compose_reconcile_requested_runtime_profiles() {
+    compose_reconcile_runtime_profiles \
+        "$requested_processing_enabled" "$requested_commerce_worker_enabled" \
+        "$DEPLOY_ROOT/.env" "$requested_worker_replicas"
+}
+
+compose_reconcile_recovered_runtime_profiles() {
+    processing_enabled="$1"
+    commerce_enabled="$2"
+    compose_env_file="$3"
+    worker_replicas="$4"
+    worker_topology="$5"
+
+    if [ "$worker_topology" != shared ]; then
+        compose_reconcile_runtime_profiles \
+            "$processing_enabled" "$commerce_enabled" "$compose_env_file" "$worker_replicas"
+        return
+    fi
+    if [ "$processing_enabled" = False ]; then
         compose_with_env_file "$compose_env_file" --profile worker rm -sf worker || return 1
     fi
     if [ "$commerce_enabled" = False ]; then
@@ -471,12 +511,6 @@ compose_reconcile_runtime_profiles() {
     fi
 }
 
-compose_reconcile_requested_runtime_profiles() {
-    compose_reconcile_runtime_profiles \
-        "$requested_processing_enabled" "$requested_commerce_worker_enabled" \
-        "$DEPLOY_ROOT/.env" "$requested_worker_replicas"
-}
-
 diagnostics() {
     compose ps || true
     compose logs --tail=100 web nginx || true
@@ -486,7 +520,7 @@ worker_runtime_diagnostics() {
     echo "Worker runtime verification diagnostics:" >&2
     compose_with_requested_runtime_profiles ps || true
     if [ -n "${worker_containers:-}" ]; then
-        printf 'Expected worker containers (%s):\n%s\n' \
+        printf 'Expected bulk/selfie worker containers (%s+1):\n%s\n' \
             "$requested_worker_replicas" "$worker_containers" >&2
         for worker_container in $worker_containers; do
             docker inspect \
@@ -494,7 +528,7 @@ worker_runtime_diagnostics() {
                 "$worker_container" 2>&1 || true
         done
     fi
-    compose_with_requested_runtime_profiles logs --tail=100 worker || true
+    compose_with_requested_runtime_profiles logs --tail=100 worker-bulk worker-selfie || true
 }
 
 commerce_worker_runtime_diagnostics() {
@@ -599,11 +633,19 @@ clear_candidate_compose_interpolation() {
         PHOTO_PROCESSING_MAX_REQUEST_BYTES \
         PHOTO_WORKER_BUILD \
         PHOTO_WORKER_LEASE_SECONDS \
+        PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES \
+        PHOTO_WORKER_BULK_PROCESSOR_TYPES \
+        PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS \
+        PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES \
+        PHOTO_WORKER_SELFIE_PROCESSOR_TYPES \
+        PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS \
         PHOTO_WORKER_PROCESSOR_IDENTITIES \
         PHOTO_WORKER_PROCESSOR_TYPES \
         PHOTO_WORKER_REPLICAS \
         PHOTO_WORKER_CPUS \
         PHOTO_WORKER_MEMORY_LIMIT \
+        PREVIOUS_DEPLOYMENT_PACKAGE_ROOT \
+        PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY \
         SELFIE_SEARCH_MAX_UPLOAD_BYTES \
         SELFIE_SEARCH_MAX_PIXELS \
         SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS \
@@ -635,6 +677,31 @@ clear_candidate_compose_interpolation() {
         PHOTO_IMPORT_WORKER_TOKEN \
         PHOTO_IMPORT_BUILD \
         IMPORT_WORKER_IMAGE
+}
+
+restore_previous_deployment_package() {
+    previous_package_root="${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}"
+    [ -n "$previous_package_root" ] || return 0
+    case "$previous_package_root" in
+        "$DEPLOY_ROOT"/*) ;;
+        *) return 1 ;;
+    esac
+    if [ -n "${PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY:-}" ]; then
+        case "$PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY" in
+            shared|split) ;;
+            *) return 1 ;;
+        esac
+    fi
+    for package_entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
+        [ -e "$previous_package_root/$package_entry" ] || return 1
+    done
+    failed_package_root="$(mktemp -d "$DEPLOY_ROOT/.deployment-failed.XXXXXX")" || return 1
+    for package_entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
+        mv "$DEPLOY_ROOT/$package_entry" "$failed_package_root/$package_entry" || return 1
+        mv "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
+    done
+    rm -rf "$failed_package_root" "$previous_package_root" || return 1
+    unset PREVIOUS_DEPLOYMENT_PACKAGE_ROOT
 }
 
 stop_import_before_web_change() {
@@ -676,6 +743,7 @@ recover_previous_deployment() {
         if ! compose_with_env_file "$recovery_env_tmp" down --remove-orphans; then
             return 1
         fi
+        restore_previous_deployment_package || return 1
         rm -f "$DEPLOY_ROOT/.env"
         echo "No previous deployment environment was present; restored no-env state" >&2
         return 0
@@ -684,10 +752,12 @@ recover_previous_deployment() {
     [ -n "$previous_env_tmp" ] || return 1
     mv "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
     previous_env_tmp=""
+    recovered_worker_topology="${PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY:-split}"
+    restore_previous_deployment_package || return 1
     clear_candidate_compose_interpolation
-    compose_reconcile_runtime_profiles \
+    compose_reconcile_recovered_runtime_profiles \
         "$previous_processing_enabled" "$previous_commerce_worker_enabled" \
-        "$DEPLOY_ROOT/.env" "$previous_worker_replicas" || return 1
+        "$DEPLOY_ROOT/.env" "$previous_worker_replicas" "$recovered_worker_topology" || return 1
     if [ "$previous_import_enabled" = True ]; then
         compose_with_env_file "$DEPLOY_ROOT/.env" up -d --wait web || return 1
         start_import_after_web_ready "$DEPLOY_ROOT/.env" || return 1
@@ -908,8 +978,12 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}"
     printf 'PHOTO_WORKER_BUILD=%s\n' "${PHOTO_WORKER_BUILD:-capture-metadata-v1}"
     printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
-    printf 'PHOTO_WORKER_PROCESSOR_IDENTITIES=%s\n' "$requested_worker_processor_identities"
-    printf 'PHOTO_WORKER_PROCESSOR_TYPES=%s\n' "$requested_processor_types"
+    printf 'PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=%s\n' "$requested_bulk_processor_identities"
+    printf 'PHOTO_WORKER_BULK_PROCESSOR_TYPES=%s\n' "$requested_bulk_processor_types"
+    printf 'PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS=%s\n' "$requested_bulk_http_timeout_seconds"
+    printf 'PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=%s\n' "$requested_selfie_processor_identities"
+    printf 'PHOTO_WORKER_SELFIE_PROCESSOR_TYPES=%s\n' "$requested_selfie_processor_types"
+    printf 'PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS=%s\n' "$requested_selfie_http_timeout_seconds"
     printf 'PHOTO_WORKER_REPLICAS=%s\n' "$requested_worker_replicas"
     printf 'PHOTO_WORKER_CPUS=%s\n' "$requested_worker_cpus"
     printf 'PHOTO_WORKER_MEMORY_LIMIT=%s\n' "$requested_worker_memory_limit"
@@ -941,7 +1015,8 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
 fi
 
 if [ "$requested_processing_enabled" = True ]; then
-    if ! compose_with_env_file "$requested_env_tmp" --profile worker pull web worker; then
+    if ! compose_with_env_file "$requested_env_tmp" --profile worker pull \
+        web worker-bulk worker-selfie; then
         fail "Candidate application image pull failed"
     fi
 elif ! compose_with_env_file "$requested_env_tmp" pull web; then
@@ -1099,11 +1174,17 @@ fi
 
 phase worker-health
 if [ "$requested_processing_enabled" = True ]; then
-    worker_containers="$(compose_with_requested_runtime_profiles ps -q worker)"
-    worker_container_count="$(
-        printf '%s\n' "$worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
+    bulk_worker_containers="$(compose_with_requested_runtime_profiles ps -q worker-bulk)"
+    selfie_worker_containers="$(compose_with_requested_runtime_profiles ps -q worker-selfie)"
+    bulk_worker_container_count="$(
+        printf '%s\n' "$bulk_worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
     )"
-    if [ "$worker_container_count" -ne "$requested_worker_replicas" ]; then
+    selfie_worker_container_count="$(
+        printf '%s\n' "$selfie_worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
+    )"
+    worker_containers="$(printf '%s\n%s\n' "$bulk_worker_containers" "$selfie_worker_containers" | sed '/^$/d')"
+    if [ "$bulk_worker_container_count" -ne "$requested_worker_replicas" ] || \
+        [ "$selfie_worker_container_count" -ne 1 ]; then
         fail_worker_runtime_verification
     fi
     attempt=1

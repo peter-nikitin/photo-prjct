@@ -236,7 +236,7 @@ mode = sys.argv[1]
 benchmark_command = r'''set -eu
 cd /opt/photo-prjct
 
-worker_identity="$(sed -n 's/^PHOTO_WORKER_PROCESSOR_IDENTITIES=//p' .env | head -n 1)"
+worker_identity="$(sed -n 's/^PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=//p' .env | head -n 1)"
 test "$worker_identity" = '3/face_embedding_benchmark/1'
 worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' .env | head -n 1)"
 preview_enabled="$(sed -n 's/^PHOTO_PROCESSING_PREVIEW_ENABLED=//p' .env | head -n 1)"
@@ -384,8 +384,97 @@ print(json.dumps(output, sort_keys=True))
     exit 2
     ;;
 esac'''
+
+deployment_command = r'''set -eu
+deployment_root=/opt/photo-prjct
+candidate_archive="$deployment_root/.deployment-candidate.tar"
+candidate_package="$(mktemp -d "$deployment_root/.deployment-candidate.XXXXXX")"
+previous_package="$(mktemp -d "$deployment_root/.deployment-previous.XXXXXX")"
+package_mutation_started=0
+previous_package_exists=0
+
+restore_install_failure() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$status" -ne 0 ] && [ "$package_mutation_started" -eq 1 ] && \
+    [ -d "$previous_package" ]; then
+    for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
+      if [ "$previous_package_exists" -eq 1 ]; then
+        if [ -e "$previous_package/$entry" ]; then
+          rm -rf "$deployment_root/$entry"
+          mv "$previous_package/$entry" "$deployment_root/$entry"
+        fi
+      else
+        rm -rf "$deployment_root/$entry"
+      fi
+    done
+  fi
+  rm -rf "$candidate_package" "$previous_package" "$candidate_archive"
+  exit "$status"
+}
+trap restore_install_failure EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+tar -xf "$candidate_archive" -C "$candidate_package"
+for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
+  test -e "$candidate_package/$entry"
+done
+previous_entry_count=0
+for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
+  if [ -e "$deployment_root/$entry" ]; then
+    previous_entry_count=$((previous_entry_count + 1))
+  fi
+done
+case "$previous_entry_count" in
+  0) ;;
+  3) previous_package_exists=1 ;;
+  *) exit 1 ;;
+esac
+
+previous_worker_topology=''
+if [ -e "$deployment_root/.env" ]; then
+  [ "$previous_package_exists" -eq 1 ] || exit 1
+  previous_services="$(
+    APP_ENV_FILE="$deployment_root/.env" docker compose --project-name photo-prjct \
+      --env-file "$deployment_root/.env" \
+      -f "$deployment_root/docker-compose.deployment.yml" \
+      -f "$deployment_root/docker-compose.https.yml" \
+      --profile worker config --services
+  )"
+  if printf '%s\n' "$previous_services" | grep -qx worker && \
+     ! printf '%s\n' "$previous_services" | grep -Eq '^worker-(bulk|selfie)$'; then
+    previous_worker_topology=shared
+  elif ! printf '%s\n' "$previous_services" | grep -qx worker && \
+       printf '%s\n' "$previous_services" | grep -qx worker-bulk && \
+       printf '%s\n' "$previous_services" | grep -qx worker-selfie; then
+    previous_worker_topology=split
+  else
+    exit 1
+  fi
+fi
+
+package_mutation_started=1
+for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
+  if [ "$previous_package_exists" -eq 1 ]; then
+    mv "$deployment_root/$entry" "$previous_package/$entry"
+  fi
+  mv "$candidate_package/$entry" "$deployment_root/$entry"
+done
+if [ "$previous_package_exists" -eq 1 ]; then
+  PREVIOUS_DEPLOYMENT_PACKAGE_ROOT="$previous_package" \
+  PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY="$previous_worker_topology" \
+  DEPLOY_ROOT="$deployment_root" COMPOSE_PROJECT_NAME=photo-prjct \
+    sh "$deployment_root/deploy/apply-deployment.sh"
+else
+  DEPLOY_ROOT="$deployment_root" COMPOSE_PROJECT_NAME=photo-prjct \
+    sh "$deployment_root/deploy/apply-deployment.sh"
+fi
+package_mutation_started=0'''
+
 commands = {
-    'deploy': 'DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct exec sh /opt/photo-prjct/deploy/apply-deployment.sh',
+    'deploy': deployment_command,
     'cutover-compose-identity': r'''set -eu
 test "$COMPOSE_IDENTITY_CUTOVER_CONFIRMATION" = confirm-canonical-compose-identity-cutover
 cd /opt/photo-prjct
@@ -399,7 +488,8 @@ DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging \
     'configure-monitoring': 'exec sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"',
     'verify-deployed-image': r'''set -eu
 test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"
-test "$(sed -n 's/^PHOTO_WORKER_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_PROCESSOR_IDENTITIES"''',
+test "$(sed -n 's/^PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES"
+test "$(sed -n 's/^PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES"''',
     'verify-paused-observability-release': r'''set -eu
 case "$RELEASE_SHA" in
   ''|*[!0-9a-f]*) exit 2 ;;
@@ -459,8 +549,12 @@ PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS
 PHOTO_PROCESSING_MAX_REQUEST_BYTES
 PHOTO_WORKER_BUILD
 PHOTO_WORKER_LEASE_SECONDS
-PHOTO_WORKER_PROCESSOR_IDENTITIES
-PHOTO_WORKER_PROCESSOR_TYPES
+PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES
+PHOTO_WORKER_BULK_PROCESSOR_TYPES
+PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS
+PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES
+PHOTO_WORKER_SELFIE_PROCESSOR_TYPES
+PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS
 PHOTO_WORKER_REPLICAS
 PHOTO_WORKER_CPUS
 PHOTO_WORKER_MEMORY_LIMIT
@@ -609,7 +703,20 @@ if [ "$mode" = stage-paused-observability-release ]; then
 fi
 
 case "$mode" in
-    deploy|cutover-compose-identity)
+    deploy)
+        deployment_package=$temporary_root/deployment-package.tar
+        tar -cf "$deployment_package" \
+            docker-compose.deployment.yml docker-compose.https.yml deploy
+        run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" \
+            "$deployment_package" "$remote_target:/opt/photo-prjct/.deployment-candidate.tar"
+        remote_environment=$temporary_root/remote.env
+        # shellcheck disable=SC2086
+        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" $remote_deployment_values >"$command_output" 2>&1; then
+            fail environment materialization_failed
+        fi
+        ;;
+    cutover-compose-identity)
         run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" docker-compose.deployment.yml docker-compose.https.yml deploy "$remote_target:/opt/photo-prjct/"
         remote_environment=$temporary_root/remote.env
         # shellcheck disable=SC2086
@@ -643,7 +750,7 @@ case "$mode" in
         ;;
     verify-deployed-image)
         remote_environment=$temporary_root/remote.env
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" APP_IMAGE PHOTO_WORKER_PROCESSOR_IDENTITIES >"$command_output" 2>&1; then
+        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" APP_IMAGE PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES >"$command_output" 2>&1; then
             fail environment materialization_failed
         fi
         ;;

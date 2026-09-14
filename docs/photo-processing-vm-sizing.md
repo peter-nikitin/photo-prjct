@@ -25,8 +25,9 @@ headroom, sustainable throughput, or a capacity decision.
 | Measured second replica | Same verified deployed VM | Re-check free space and Docker image growth during the two-worker run. | Two independent workers, each `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64`. | Set `PHOTO_WORKER_REPLICAS=2` only after the gate below passes. |
 
 These are staged measurement configurations, not a capacity decision or a promise of performance.
-The deployment default is one worker; setting the repository variable to two is a deliberate follow-up
-operation, not an automatic consequence of a 32-GiB host.
+`PHOTO_WORKER_REPLICAS` counts bulk workers; one separate `worker-selfie` also runs in the
+deployment. Setting the bulk replica count to two is a deliberate follow-up operation, not an
+automatic consequence of a 32-GiB host. The local finite phases below start only `worker-bulk`.
 
 The limit values leave memory and CPU for the existing stack while containing a face-model OOM to
 one worker. The 50 MiB temporary input limit does not by itself set disk size: the disk must also
@@ -47,8 +48,8 @@ samples (five minutes) and stop early only when the PostgreSQL count of non-succ
 reaches zero:
 
 ```sh
-PHOTO_WORKER_PROCESSOR_IDENTITIES=2/generate_preview/1 docker compose --profile worker up --scale worker=1 --build -d worker
-worker_container="$(docker compose --profile worker ps -q worker)"
+PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=2/generate_preview/1 PHOTO_WORKER_BULK_PROCESSOR_TYPES=generate_preview docker compose --profile worker up --scale worker-bulk=1 --build -d worker-bulk
+worker_container="$(docker compose --profile worker ps -q worker-bulk)"
 [ -n "$worker_container" ] || exit 1
 for sample in $(seq 1 300); do
   date -u +%FT%TZ
@@ -58,19 +59,19 @@ for sample in $(seq 1 300); do
   [ "$remaining" = 0 ] && break
   sleep 1
 done | tee media/manual-processing/preview-worker-metrics.txt
-docker compose --profile worker stop worker
+docker compose --profile worker stop worker-bulk
 ```
 
 If the loop reaches sample 300, if any preview is not `succeeded`, or if the worker restarts, mark
 the preview phase failed and keep preview processing disabled. Inspect and record published
-derivatives and queued face `2/2` states before continuing, as required by the local runbook.
+derivatives and queued face `2/3` states before continuing, as required by the local runbook.
 
-Then start a new worker with only `2/face_embedding/2`. Stop it after the final face row succeeds;
+Then start a new worker with only `2/face_embedding/3`. Stop it after the final face row succeeds;
 do not allow the preview worker to keep polling during this phase:
 
 ```sh
-PHOTO_WORKER_PROCESSOR_IDENTITIES=2/face_embedding/2 docker compose --profile worker up --scale worker=1 --build -d worker
-worker_container="$(docker compose --profile worker ps -q worker)"
+PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=2/face_embedding/3 PHOTO_WORKER_BULK_PROCESSOR_TYPES=face_embedding docker compose --profile worker up --scale worker-bulk=1 --build -d worker-bulk
+worker_container="$(docker compose --profile worker ps -q worker-bulk)"
 [ -n "$worker_container" ] || exit 1
 for sample in $(seq 1 300); do
   date -u +%FT%TZ
@@ -80,7 +81,7 @@ for sample in $(seq 1 300); do
   [ "$remaining" = 0 ] && break
   sleep 1
 done | tee media/manual-processing/face-worker-metrics.txt
-docker compose --profile worker stop worker
+docker compose --profile worker stop worker-bulk
 ```
 
 Record each measure with its source:
@@ -164,6 +165,30 @@ activation; absence of this comparison means preview processing remains disabled
 No price is asserted here. Obtain an official Yandex Cloud calculator or console estimate for the
 chosen zone, platform, disk, public IP, snapshots/backups, and billing terms, then obtain explicit
 approval immediately before any resize or creation.
+
+## 2026-09-14 incident and temporary capacity state
+
+The canonical VM was temporarily resized from 4 vCPU/16 GiB to 8 vCPU/16 GiB after repeated
+photo-worker restarts and bulk-queue starvation. The static IP, boot disk, worker concurrency, and
+durable PostgreSQL queues were unchanged. Memory and disk headroom were healthy; the resize was CPU
+relief, not the root fix.
+
+The incident traced the shared-worker failure to one 45,239-face selfie search: cohort loading held
+search/job row locks for roughly eight minutes, worker HTTP calls exceeded their 180-second timeout,
+and the daemon exited on an unhandled socket timeout. After the blocking transaction committed,
+lock waiters cleared and Krylatskoye metadata and preview queues resumed progress.
+
+The application fix therefore separates one selfie-only worker from the configurable bulk workers,
+keeps both roles on the same immutable image, moves exact cohort load/rank outside the final locked
+publication transaction, and treats socket timeouts as recoverable interruptions. The selfie role
+uses a 900-second request timeout; bulk remains at 180 seconds. The 8-vCPU size is temporary and must
+be reassessed after post-deployment search and bulk-throughput observations.
+
+The planned local production-database clone was stopped on operator request because `pg_dump`
+materially loaded the live server. No clone-derived latency claim is made. Release acceptance instead
+requires the exact cohort/ranking regression suite before deployment and sanitized live timings,
+stable restart counters, no accumulating PostgreSQL lock waiters, and simultaneous Krylatskoye queue
+progress after deployment. Failure of any live gate requires rollback; selfie search is not disabled.
 
 ## Sources
 

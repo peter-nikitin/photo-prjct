@@ -29,7 +29,7 @@ from feature_flags.models import FeatureFlag
 from feature_flags.registry import PAID_EVENTS, PAID_PHOTO_CART, PAID_WATERMARKED_PREVIEWS
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
-from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError
+from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError, StorageUnavailable
 from processing.models import (
     BIB_RECOGNITION_PROCESSOR,
     CAPTURE_METADATA_PROCESSOR,
@@ -1014,7 +1014,8 @@ class GalleryPageTests(TestCase):
                 PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
             }
         ):
-            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+            with patch("config.views.PrivateUploadStorage"):
+                response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -1106,7 +1107,8 @@ class GalleryPageTests(TestCase):
                 PAID_PHOTO_CART: FEATURE_FLAG_ON,
             }
         ):
-            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+            with patch("config.views.PrivateUploadStorage"):
+                response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
         presentation = response.context["cart_presentation"]
         self.assertEqual(
@@ -1176,6 +1178,7 @@ class GalleryPageTests(TestCase):
                     PAID_PHOTO_CART: FEATURE_FLAG_ON,
                 }
             ),
+            patch("config.views.PrivateUploadStorage"),
             patch.object(Variable, "_resolve_lookup", new=force_template_exception),
         ):
             response = exception_client.get(reverse("event_detail", kwargs={"slug": event.slug}))
@@ -1215,9 +1218,10 @@ class GalleryPageTests(TestCase):
         self.assertNotEqual(response.headers.get("Cache-Control"), "private, no-store")
 
     @patch("config.views.PrivateUploadStorage")
-    def test_event_detail_keeps_legacy_and_requires_accepted_preview_for_new_photos(
+    def test_event_detail_uses_direct_accepted_preview_but_keeps_large_download_and_legacy_routes(
         self, storage_class
     ) -> None:
+        """The production break caught here is sending a derivative card back through Django."""
         event = self.make_event()
         legacy = self.make_private_photo(event, id="gallery-1")
         preview_states = (
@@ -1251,6 +1255,8 @@ class GalleryPageTests(TestCase):
             published,
             final_key="derivatives/previews/gallery-9/preview-small-v1/private-preview.jpg",
         )
+        direct_url = "https://storage.example.test/accepted-preview?signature=only-for-the-card"
+        storage_class.return_value.sign_accepted_preview.return_value = direct_url
 
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
@@ -1258,6 +1264,30 @@ class GalleryPageTests(TestCase):
         self.assertEqual(
             tuple(item.photo_id for item in response.context["gallery_photos"]),
             (legacy.id, published.id),
+        )
+        gallery_photos = response.context["gallery_photos"]
+        self.assertEqual(
+            gallery_photos[0].preview_media_small.url,
+            reverse(
+                "photo_media",
+                kwargs={"slug": event.slug, "photo_id": legacy.pk, "variant": "preview-small"},
+            ),
+        )
+        self.assertEqual(gallery_photos[1].preview_media_small.url, direct_url)
+        self.assertEqual(
+            gallery_photos[1].preview_media_large.url,
+            reverse(
+                "photo_media",
+                kwargs={"slug": event.slug, "photo_id": published.pk, "variant": "preview-large"},
+            ),
+        )
+        self.assertEqual(
+            gallery_photos[1].download_url,
+            reverse("photo_download", kwargs={"slug": event.slug, "photo_id": published.pk}),
+        )
+        storage_class.return_value.sign_accepted_preview.assert_called_once_with(
+            key=derivative.final_key,
+            expires_in=21_600,
         )
         markup = response.content.decode(response.charset)
         for secret in (
@@ -1267,7 +1297,30 @@ class GalleryPageTests(TestCase):
             derivative.sha256,
         ):
             self.assertNotIn(secret, markup)
-        storage_class.assert_not_called()
+
+    @patch("config.views.PrivateUploadStorage")
+    def test_event_detail_returns_sanitized_503_when_preview_signing_fails(
+        self, storage_class
+    ) -> None:
+        """The production break caught here is a sign failure that leaks or falls back."""
+        event = self.make_event()
+        photo = self.make_private_photo(
+            event,
+            id="signing-failure",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        derivative = self.publish_preview(
+            photo,
+            final_key="derivatives/previews/signing-failure/preview-small-v1/private-preview.jpg",
+        )
+        storage_class.return_value.sign_accepted_preview.side_effect = StorageUnavailable()
+
+        response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(derivative.final_key, response.content.decode(response.charset))
+        self.assertNotIn("signature", response.content.decode(response.charset).lower())
 
     def test_event_detail_gallery_markup_and_loading_policy(self) -> None:
         event = self.make_event(timezone_name="Europe/London")
@@ -1277,6 +1330,8 @@ class GalleryPageTests(TestCase):
             capture_time=datetime(2026, 6, 10, 10, 3, tzinfo=UTC),
             capture_time_source_attempt=capture_attempt,
         )
+        self.publish_current_compatible_faces(photos[0], count=1)
+        self.publish_current_compatible_faces(photos[1], count=4)
 
         response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
 
@@ -1329,6 +1384,10 @@ class GalleryPageTests(TestCase):
                 )
             else:
                 self.assertContains(response, f'src="{small_url}" loading="lazy"')
+            if index == 1:
+                self.assertContains(response, f'src="{small_url}" loading="lazy" alt=""', count=1)
+            elif index == 2:
+                self.assertContains(response, f'src="{small_url}" loading="lazy" alt=""', count=6)
         for photo in photos:
             self.assertContains(response, f'data-photo-id="{photo.pk}"')
 

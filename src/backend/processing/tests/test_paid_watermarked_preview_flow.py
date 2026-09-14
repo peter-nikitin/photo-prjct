@@ -390,16 +390,28 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
             [photo],
         )
 
-        gallery_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+        direct_preview_url = (
+            "https://storage.example.test/paid-watermarked?signature=page-capability"
+        )
+        with patch("config.views.PrivateUploadStorage") as preview_storage_class:
+            preview_storage_class.return_value.sign_accepted_preview.return_value = (
+                direct_preview_url
+            )
+            gallery_response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        preview_storage_class.return_value.sign_accepted_preview.assert_called_once_with(
+            key=watermarked.final_key,
+            expires_in=21_600,
+        )
         gallery_dto = gallery_response.context["gallery_photos"][0]
         self.assertEqual(gallery_dto.photo_id, photo.pk)
         self.assertIsNone(gallery_dto.download_url)
-        expected_gallery_media_urls = tuple(
+        expected_gallery_media_urls = (
+            direct_preview_url,
             reverse(
                 "photo_media",
-                kwargs={"slug": event.slug, "photo_id": photo.pk, "variant": variant},
-            )
-            for variant in ("preview-small", "preview-large")
+                kwargs={"slug": event.slug, "photo_id": photo.pk, "variant": "preview-large"},
+            ),
         )
         self.assertEqual(
             (
@@ -462,10 +474,7 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
 
         signing_storage = _SigningStorage()
         resolver = PublicMediaResolver(signing_storage)
-        gallery_media_urls = [
-            gallery_dto.preview_media_small.url,
-            gallery_dto.preview_media_large.url,
-        ]
+        gallery_media_urls = [gallery_dto.preview_media_large.url]
         result_media_urls = [
             result_dto.preview_media_small.url,
             result_dto.preview_media_large.url,
@@ -490,14 +499,14 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
                 self.client.get(result_download_url),
             ]
 
-        self.assertEqual([response.status_code for response in media_responses], [302] * 4)
+        self.assertEqual([response.status_code for response in media_responses], [302] * 3)
         self.assertTrue(
             all(watermarked.final_key in response["Location"] for response in media_responses)
         )
         self.assertEqual([response.status_code for response in download_responses], [404, 404])
         self.assertEqual(
             signing_storage.signed_requests,
-            [(watermarked.final_key, None)] * 4,
+            [(watermarked.final_key, None)] * 3,
         )
 
     def test_free_upload_keeps_original_download_and_existing_paid_photo_never_backfills(
@@ -562,7 +571,10 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
             [],
         )
 
-        free_response = self.client.get(reverse("event_detail", kwargs={"slug": free_event.slug}))
+        with patch("config.views.PrivateUploadStorage"):
+            free_response = self.client.get(
+                reverse("event_detail", kwargs={"slug": free_event.slug})
+            )
         existing_paid_response = self.client.get(
             reverse("event_detail", kwargs={"slug": existing_paid_event.slug})
         )

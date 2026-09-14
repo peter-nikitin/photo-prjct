@@ -59,6 +59,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | Delivered | 2026-08-21 |
 | EJ-026 | Maintainer | Keep paid purchase dark until external prerequisites are approved | In progress | 2026-08-22 |
 | EJ-027 | Maintainer | Gate bib-recognition activation | In progress | 2026-09-13 |
+| EJ-028 | Maintainer | Issue bounded direct gallery preview capabilities | In progress | 2026-09-15 |
 
 ## Job details
 
@@ -243,6 +244,30 @@ permission, bucket policy, or private object was validated or changed.
 - Status: Validated
 - Evidence: [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), [`tests/deployment/test_deployment_scripts.py::test_fresh_first_deployment_skips_orm_gate_and_completes_normal_flow`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliation`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_skips_when_no_eligible_photo`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_reads_when_photo_exists`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_candidate_private_media_preflight_runs_before_service_switch`](../tests/deployment/test_deployment_scripts.py), [`tests/deployment/test_deployment_scripts.py::test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched`](../tests/deployment/test_deployment_scripts.py), and [`tests/deployment/test_deployment_scripts.py::test_failed_env_promotion_removes_secret_bearing_requested_temp`](../tests/deployment/test_deployment_scripts.py)
 - Last updated: 2026-07-19
+
+### EJ-028 — Maintainer — Issue bounded direct gallery preview capabilities
+
+When I render a normal event-gallery page, I want its already authorized accepted small
+presentation derivatives to receive bounded exact-object URLs, so I can remove ordinary preview
+loads from Django request capacity without widening other media authority.
+
+- Status: In progress
+- Evidence: The repository implementation of accepted ADR 0036 adds the
+  [`gallery-preview issuer`](../src/backend/picflow/gallery_preview_grants.py), the local accepted
+  derivative signer in [`PrivateUploadStorage`](../src/backend/ingestion/storage.py), and the
+  normal-gallery projection in [`event_detail`](../src/backend/config/views.py). Focused tests cover
+  free `preview-small-v1` and paid `preview-watermarked-v1` selection, six-hour local signing with
+  no Object Storage metadata or body probe, no per-card evidence-query growth, the unchanged large
+  and download routes, failure without application-route fallback, and lazy face crops in
+  [`test_gallery_preview_grants.py`](../src/backend/picflow/tests/test_gallery_preview_grants.py),
+  [`test_storage.py`](../src/backend/ingestion/tests/test_storage.py),
+  [`test_views.py`](../src/backend/picflow/tests/test_views.py), and
+  [`test_paid_watermarked_preview_flow.py`](../src/backend/processing/tests/test_paid_watermarked_preview_flow.py).
+  Legacy-original small media, ready-result media, private media, downloads, archives, and
+  purchased media remain outside this issuer and retain their existing application authorization.
+  This is repository evidence only; CI, canonical deployment, direct Object Storage transfer, and
+  live capacity or customer outcomes are unrecorded.
+- Last updated: 2026-09-15
 
 ### EJ-012 — Maintainer — Gate temporary selfie storage activation
 
@@ -611,3 +636,4 @@ This log is append-only.
 | 2026-09-07 | EJ-023 | Validated | Validated | Local private-workspace evidence adds strict all-photo administrative filters and atomic mutations, permissioned media, current processing status, and mounted refresh behavior while preserving event-folder storage and upload authority boundaries. No CI, deployment, or live evidence is claimed. |
 | 2026-09-13 | EJ-027 | Not recorded | In progress | The pinned disabled-default bib path and 37-photo local quality/publication/search cycle are implemented. Docker Desktop swap leaves the production-equivalent Linux resource gate, canonical deployment, and first/second event observations incomplete. |
 | 2026-09-14 | EJ-019 | Delivered | Delivered | The automatic live all-events reconciliation and event-9 `EXPLAIN ANALYZE` benchmark are retired from deployment after they exhausted the sole VM during run 34833392359 and forced rollback. Both commands remain available for explicit offline evidence; deployment retains migration, health, worker, and rollback gates. |
+| 2026-09-15 | EJ-028 | Not recorded | In progress | Repository implementation of ADR 0036 issues six-hour exact-object URLs only for accepted derivative-backed small presentation on bounded normal-gallery pages. Legacy, large, download, result, private, archive, and purchased-media paths remain application-authorized; CI, canonical deployment, direct-transfer, and live-capacity evidence are unrecorded. |

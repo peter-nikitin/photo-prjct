@@ -131,7 +131,16 @@ event.
   order-page archives retain their separate authorization. The earlier unimplemented-entitlement
   statement describes only the 2026-08-20 checkpoint; current purchase status is tracked in
   PJ-010 and PJ-011. No CI, deployment, gate activation, or live customer evidence is claimed here.
-- Last updated: 2026-09-07
+  Local 2026-09-15 repository evidence implements accepted ADR 0036 for one bounded normal-gallery
+  page: accepted free `preview-small-v1` and enabled paid `preview-watermarked-v1` small
+  derivatives receive exact-object six-hour URLs during HTML authorization, while legacy-original
+  small media, large media, downloads, ready-result media, private media, archives, and purchased
+  media retain their existing application paths. Focused grant, storage, gallery-view, paid-media,
+  and markup tests cover accepted-derivative selection, local signing without an Object Storage
+  probe, unchanged large/download routes, and lazy face crops with only the first four main tiles
+  eager. This is repository evidence only: CI, deployment, direct Object Storage transfer, and
+  customer outcome are unrecorded.
+- Last updated: 2026-09-15
 
 ### PJ-006 — Operator — Review processing results
 
@@ -379,3 +388,4 @@ This log is append-only.
 | 2026-09-07 | PJ-004 | Validated | Validated | Local fixed-event workspace evidence covers the existing owned uploader, completed and unfinished history, server-confirmed close guidance, and queue preservation across filters and folder creation. Administrative saved-photo editing is a separate permission boundary. No CI, deployment, or live evidence is claimed. |
 | 2026-09-07 | PJ-005 | Validated | Validated | Local product-flow evidence adds reversible hiding across current public gallery, selfie, archive, cart, and checkout paths while preserving immutable paid-order media and archive authority. Historical delivery evidence remains unchanged; no current deployment or customer claim is added. |
 | 2026-09-13 | PJ-007 | Candidate | In progress | The disabled-default repository path and one 37-photo local full cycle pass recognition-quality, publication, exact-search, leading-zero, and event-isolation checks. Docker Desktop swap keeps the production-equivalent Linux resource gate, canonical activation, first/second event observations, and customer outcome incomplete. |
+| 2026-09-15 | PJ-005 | Validated | Validated | Repository implementation of ADR 0036 issues six-hour exact-object small-preview capabilities only for accepted normal-gallery derivatives. Legacy, large, download, result, private, archive, and purchased-media routes remain application-authorized; no CI, deployment, direct-transfer, or customer-outcome evidence is claimed. |

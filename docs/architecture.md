@@ -46,13 +46,21 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   enabled, a published paid event lists only `watermarked_preview_required` photos backed by an
   accepted watermark state, attempt, and `preview-watermarked-v1` derivative; older paid photos
   remain absent. The database-only factory converts rows to immutable `GalleryPhoto` presentation
-  values, including stable `photo_id`, semantic small- and large-preview application URLs, and a
-  nullable `download_url`, so templates neither inspect storage fields nor select media variants.
-- `PublicMediaResolver` is the sole server-side selector of public bytes. It retains legacy and
-  clean-preview behavior, selects `preview-watermarked-v1` for both presentation roles of the new
-  paid policy, and rejects that policy's original download before storage signing. It never falls
-  back to an original for missing required derivative evidence. Public routes recheck publication
-  and eligibility on every request and expose no permanent key or credential.
+  values, including stable `photo_id`, semantic small- and large-preview fields, and a nullable
+  `download_url`, so templates neither inspect storage fields nor select media variants. During one
+  bounded normal-gallery render, the already authorized page issues local exact-object signed GET
+  URLs for its accepted `preview-small-v1` or `preview-watermarked-v1` small derivatives. Those
+  URLs expire after six hours; legacy-original small presentation remains on the application route.
+  Every face crop reusing that small presentation is lazy, while only the first four main tiles keep
+  their eager, high-priority policy.
+- For request-time public media routes, `PublicMediaResolver` retains legacy and clean-preview
+  behavior, selects `preview-watermarked-v1` for both presentation roles of the new paid policy,
+  and rejects that policy's original download before storage signing. It never falls back to an
+  original for missing required derivative evidence. Those routes recheck publication and
+  eligibility on every request. A normal-gallery small-derivative capability instead relies on the
+  HTML-time eligibility snapshot: later hide or unpublish prevents the next page from issuing it
+  but cannot revoke an already issued URL before its six-hour expiry. Neither path exposes a
+  permanent key or credential.
 - Event galleries use locally packaged GLightbox 3.3.1 assets with normal anchor fallback.
   Task 6's browser run and inspected snapshots verified responsive populated and empty layouts,
   keyboard and pointer operation, mobile swipe, Escape/control close, focus restoration, and
@@ -626,15 +634,19 @@ explicitly incomplete.
 
 - Originals remain private storage objects. The implemented preview-first slice creates an
   unwatermarked, metadata-stripped reduced JPEG for a newly confirmed photo only after explicit
-  activation; the free-event tile route uses the published derivative while the large route retains
-  controlled inline original delivery under the policy now governed by ADR 0019. Until activation,
-  explicit legacy photos use the original for both variants. The normal paid gallery remains
-  unavailable; ADR 0019 permits only a valid ready face-search-result bearer link to deliver a saved
-  free- or paid-event member. The repository also implements ADR 0029's new paid generation: only
-  accepted watermarked derivatives reach its normal gallery and ready results, and original/download
-  routes deny those photos before storage signing. The cart consumes that presentation boundary and
-  cannot authorize bytes. Both paid-watermarked-preview and paid-cart runtime gates are absent or
-  off by default; no direct runtime activation or real-media smoke is claimed. The separate
+  activation. Under ADR 0036, a normal gallery page may embed a six-hour exact-object signed GET
+  only for an accepted `preview-small-v1` derivative; its large route retains controlled inline
+  original delivery, and legacy-original small presentation retains its application route. Until
+  activation, explicit legacy photos use the original for both variants. The normal paid gallery is
+  gated; ADR 0019 permits only a valid ready face-search-result bearer link to deliver a saved free-
+  or paid-event member. The repository also implements ADR 0029's new paid generation: only an
+  accepted watermarked derivative reaches its normal gallery and ready results, and ADR 0036 may
+  issue that normal-gallery small presentation derivative directly for six hours. Original/download
+  routes deny those photos before storage signing; ready-result, private, download, archive, and
+  purchased-media paths retain their existing application authorization. The cart consumes that
+  presentation boundary and cannot authorize bytes. Both paid-watermarked-preview and paid-cart
+  runtime gates are absent or off by default; no direct runtime activation or real-media smoke is
+  claimed. The separate
   paid-purchase route is implemented locally, disabled by default, and authorizes an exact paid
   OrderItem only after server payment evidence or trusted manual confirmation. Neither route
   exposes a permanent storage key, but original

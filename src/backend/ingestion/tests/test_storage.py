@@ -227,6 +227,35 @@ def test_sign_final_allows_a_content_addressed_watermarked_preview(
     ]
 
 
+def test_sign_accepted_preview_locally_signs_one_managed_preview_for_six_hours(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    """The break caught here would add an Object Storage probe to page rendering."""
+    url = storage.sign_accepted_preview(key=PREVIEW_FINAL_KEY, expires_in=21_600)
+
+    assert url == "https://download.example.test/private?signature=secret"
+    assert calls(client, "generate_presigned_url") == [
+        {
+            "ClientMethod": "get_object",
+            "Params": {"Bucket": BUCKET, "Key": PREVIEW_FINAL_KEY},
+            "ExpiresIn": 21_600,
+            "HttpMethod": "GET",
+        }
+    ]
+    assert calls(client, "head_object") == []
+    assert calls(client, "get_object") == []
+
+
+def test_sign_accepted_preview_rejects_an_original_before_calling_the_client(
+    storage: PrivateUploadStorage, client: FakeS3Client
+) -> None:
+    """The break caught here would let a page grant issue an original capability."""
+    with pytest.raises(ValueError):
+        storage.sign_accepted_preview(key=FINAL_KEY, expires_in=21_600)
+
+    assert client.calls == []
+
+
 def test_sign_final_adds_a_safe_attachment_disposition(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:

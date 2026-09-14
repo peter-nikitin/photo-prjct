@@ -55,6 +55,7 @@ place, and add the new record to this index.
 | 0033 | [Keep durable knowledge and test executable contracts](0033-keep-durable-knowledge-test-executable-contracts.md) | Accepted |
 | 0034 | [Stream page-scoped photo archives through Django](0034-stream-page-scoped-photo-archives-through-django.md) | Accepted |
 | 0035 | [Use Django-polled Yandex Disk import](0035-use-django-polled-yandex-disk-import.md) | Accepted |
+| 0036 | [Issue direct gallery small-preview capabilities](0036-issue-direct-gallery-small-preview-capabilities.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -80,6 +81,12 @@ backed only by an accepted watermarked derivative, uses that same derivative in 
 results, and denies original presentation and download for those photos. Existing rows retain their
 explicit current policy. [ADR 0031](0031-use-orders-and-adapters-for-paid-original-delivery.md)
 supersedes that denial only after a qualifying Order becomes paid.
+
+[ADR 0036](0036-issue-direct-gallery-small-preview-capabilities.md) supersedes ADR 0020 only for
+accepted small presentation derivatives in a rendered normal-gallery page. It issues a six-hour
+exact-object capability during bounded HTML authorization while leaving originals, downloads,
+result media, private media, legacy-original presentation, and ADR 0029's paid watermarked
+selection on their current paths.
 
 [ADR 0031](0031-use-orders-and-adapters-for-paid-original-delivery.md) accepts immutable
 single-event RUB Orders, normalized PaymentAttempts behind a narrow gateway adapter, trusted manual

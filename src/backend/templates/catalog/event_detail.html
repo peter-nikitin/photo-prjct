@@ -134,7 +134,7 @@
                           {% csrf_token %}
                           <button class="gallery-face-button gallery-face-button--direct" type="submit" aria-label="Найти похожие фото этого человека">
                             <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
-                              <img src="{{ photo.preview_media_small.url }}" alt="">
+                              <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="">
                             </span>
                           </button>
                         </form>
@@ -145,14 +145,14 @@
                           {% for face in photo.faces %}
                             {% if forloop.counter <= 2 %}
                               <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
-                                <img src="{{ photo.preview_media_small.url }}" alt="">
+                                <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="">
                               </span>
                             {% elif forloop.counter == 3 %}
                               {% if photo.faces|length > 3 %}
                                 <span class="gallery-face-more" aria-hidden="true">+ {{ photo.faces|length|add:"-2" }}</span>
                               {% else %}
                                 <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
-                                  <img src="{{ photo.preview_media_small.url }}" alt="">
+                                  <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="">
                                 </span>
                               {% endif %}
                             {% endif %}
@@ -165,7 +165,7 @@
                                 {% csrf_token %}
                                 <button class="gallery-face-button" type="submit" data-face-choice aria-label="Найти похожие фото человека {{ face.face_number }}">
                                   <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
-                                    <img src="{{ photo.preview_media_small.url }}" alt="">
+                                    <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="">
                                   </span>
                                 </button>
                               </form>

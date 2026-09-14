@@ -30,7 +30,12 @@ from commerce.models import Cart
 
 
 @override_settings(
-    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
+    PRIVATE_MEDIA_S3_BUCKET="test-private-media",
+    PRIVATE_MEDIA_S3_ACCESS_KEY_ID="test-access-key",
+    PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY="test-secret-key",
+    PRIVATE_MEDIA_S3_ENDPOINT_URL="https://storage.example.test",
+    PRIVATE_MEDIA_S3_REGION="ru-central1",
 )
 class PaidPhotoCartCriticalPathTests(TestCase):
     """Auditable staff path across catalog, saved results, cart, and protected media."""
@@ -123,7 +128,10 @@ class PaidPhotoCartCriticalPathTests(TestCase):
         PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
-            final_key=f"private/watermarked/{photo_id}.jpg",
+            final_key=(
+                f"derivatives/previews/{photo_id}/preview-watermarked-v1/"
+                f"{attempt.id}-{'a' * 64}.jpg"
+            ),
             byte_size=10,
             content_type="image/jpeg",
             width=10,

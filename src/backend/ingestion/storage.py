@@ -22,6 +22,7 @@ _PREVIEW_FINAL_KEY = re.compile(
 )
 _ETAG = re.compile(r'"([^"\r\n]+)"')
 _ATTACHMENT_FILENAME = re.compile(r"findme-photo-[A-Za-z0-9_-]{1,32}\.(?:jpg|png)")
+_ACCEPTED_PREVIEW_MAX_TTL_SECONDS = 21_600
 
 
 class _S3Client(Protocol):
@@ -169,6 +170,28 @@ class PrivateUploadStorage:
                 ClientMethod="get_object",
                 Params=params,
                 ExpiresIn=self._download_ttl_seconds,
+                HttpMethod="GET",
+            )
+            if not isinstance(url, str) or not url:
+                raise TypeError
+        except (BotoCoreError, ClientError, TypeError):
+            raise StorageUnavailable() from None
+        return url
+
+    def sign_accepted_preview(self, *, key: str, expires_in: int) -> str:
+        """Locally sign one page-authorized final preview derivative."""
+        _validate_accepted_preview_key(key)
+        if (
+            isinstance(expires_in, bool)
+            or not isinstance(expires_in, int)
+            or not 1 <= expires_in <= _ACCEPTED_PREVIEW_MAX_TTL_SECONDS
+        ):
+            raise ValueError("expires_in is outside the accepted preview limit")
+        try:
+            url = self._client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=expires_in,
                 HttpMethod="GET",
             )
             if not isinstance(url, str) or not url:
@@ -333,6 +356,11 @@ def _validate_public_final_key(key: str) -> None:
         _FINAL_KEY.fullmatch(key) is None and _PREVIEW_FINAL_KEY.fullmatch(key) is None
     ):
         raise ValueError("invalid final object key")
+
+
+def _validate_accepted_preview_key(key: str) -> None:
+    if not isinstance(key, str) or _PREVIEW_FINAL_KEY.fullmatch(key) is None:
+        raise ValueError("invalid accepted preview object key")
 
 
 def _validate_managed_key(key: str) -> None:

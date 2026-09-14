@@ -28,11 +28,13 @@ from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhoto,
     GalleryPhotoFactory,
+    MediaUrlBuilder,
     PublicMediaResolver,
     gallery_folder_choices,
     gallery_page,
     gallery_photo_queryset,
 )
+from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, EventFolder, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
 from selfie_search.forms import SelfieSearchUploadForm
@@ -141,6 +143,28 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             except InvalidPage:
                 return HttpResponse(status=404)
             gallery_page_photos = tuple(gallery_page_data.object_list)
+            media_url_builder: MediaUrlBuilder | None = None
+            if any(
+                photo.gallery_media_policy != Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
+                for photo in gallery_page_photos
+            ):
+                try:
+                    preview_urls = issue_gallery_preview_urls(
+                        photos=gallery_page_photos,
+                        signer=PrivateUploadStorage(),
+                    )
+                except (StorageError, ValueError):
+                    return HttpResponse(status=503)
+
+                def direct_preview_media_url(photo: Photo, variant: str) -> str:
+                    if variant == "preview-small" and photo.pk in preview_urls:
+                        return preview_urls[photo.pk]
+                    return reverse(
+                        "photo_media",
+                        kwargs={"slug": event.slug, "photo_id": photo.pk, "variant": variant},
+                    )
+
+                media_url_builder = direct_preview_media_url
             faces_by_photo = gallery_search_faces_by_photo(event=event, photos=gallery_page_photos)
 
             def faces(photo: Photo):
@@ -164,6 +188,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                     photo=photo,
                     event_slug=event.slug,
                     faces=faces(photo),
+                    media_url_builder=media_url_builder,
                 )
                 for photo in gallery_page_photos
             )

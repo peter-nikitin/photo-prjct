@@ -447,7 +447,7 @@ jobs:
             conclusion=failure
             phase="$(
               gh run view "$GITHUB_RUN_ID" --log-failed 2>/dev/null | awk '
-                /(^|[[:space:]])DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+$/ {
+                /(^|[[:space:]])DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+$/ {
                   phase = $0
                   sub(/^.*DEPLOY_PHASE=/, "", phase)
                   sub(/ elapsed_seconds=[0-9]+$/, "", phase)

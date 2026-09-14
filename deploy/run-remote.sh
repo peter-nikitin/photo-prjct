@@ -193,7 +193,7 @@ run_quietly_with_stdin() {
 
 relay_deployment_markers() {
     LC_ALL=C grep -Eo \
-        '(DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+|DEPLOY_RESULT=(success|failure) phase=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) rollback=(not-needed|succeeded|failed) elapsed_seconds=[0-9]+)$' \
+        '(DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+|DEPLOY_RESULT=(success|failure) phase=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit) rollback=(not-needed|succeeded|failed) elapsed_seconds=[0-9]+)$' \
         "$command_output" || true
 }
 

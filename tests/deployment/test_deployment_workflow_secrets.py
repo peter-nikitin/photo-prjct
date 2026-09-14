@@ -636,9 +636,9 @@ def test_failed_deploy_relays_only_safe_phase_markers_before_sanitized_error(
         SSH_FAIL_AFTER_OUTPUT="1",
         SSH_STDOUT=(
             '{"status":"ok"}'
-            "DEPLOY_PHASE=projection-preflight elapsed_seconds=45\n"
+            "DEPLOY_PHASE=local-health elapsed_seconds=45\n"
             f"unsafe diagnostic {sentinel}\n"
-            "DEPLOY_RESULT=failure phase=projection-preflight "
+            "DEPLOY_RESULT=failure phase=local-health "
             "rollback=succeeded elapsed_seconds=67"
         ),
     )
@@ -647,8 +647,8 @@ def test_failed_deploy_relays_only_safe_phase_markers_before_sanitized_error(
 
     assert result.returncode == 2
     assert result.stdout == (
-        "DEPLOY_PHASE=projection-preflight elapsed_seconds=45\n"
-        "DEPLOY_RESULT=failure phase=projection-preflight "
+        "DEPLOY_PHASE=local-health elapsed_seconds=45\n"
+        "DEPLOY_RESULT=failure phase=local-health "
         "rollback=succeeded elapsed_seconds=67\n"
     )
     assert result.stderr == "[remote] stage=remote status=error code=remote_failed\n"

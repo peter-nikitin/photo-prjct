@@ -615,22 +615,7 @@ validate_migration_preflight_env() {
   esac
   printf 'candidate-migration-env-mode-0600\n' >> "$COMMAND_LOG"
 }
-validate_active_candidate_env() {
-  [ "$compose_env_file" = "$DEPLOY_ROOT/.env" ]
-  [ "$APP_ENV_FILE" = "$compose_env_file" ]
-  [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = new-image ]
-}
 case " $* " in
-  *" manage.py report_photo_capture_time_projection --all-events --require-clean "*)
-    validate_active_candidate_env
-    printf 'candidate-projection-report\n' >> "$COMMAND_LOG"
-    [ "$APPLY_SCENARIO" != projection-report-failure ]
-    ;;
-  *" manage.py benchmark_event_gallery_time_filter --event-id 9 --pages 1,mid,last "*)
-    validate_active_candidate_env
-    printf 'candidate-projection-benchmark\n' >> "$COMMAND_LOG"
-    [ "$APPLY_SCENARIO" != projection-benchmark-failure ]
-    ;;
   *" run --rm --no-deps -T --entrypoint python web manage.py verify_migration_history "*)
     validate_migration_preflight_env
     case "$APPLY_SCENARIO" in
@@ -926,7 +911,6 @@ SUCCESS_PHASES = [
     "certificate",
     "compose-reconcile",
     "local-health",
-    "projection-preflight",
     "worker-health",
     "public-health",
     "observability-verify",
@@ -2159,7 +2143,7 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     assert not any(command.startswith("preflight-read") for command in commands)
 
 
-def test_release_b_runs_projection_gates_without_the_retired_release_a_image_gate(
+def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
     tmp_path: Path,
     fake_bin: Path,
 ) -> None:
@@ -2183,8 +2167,8 @@ def test_release_b_runs_projection_gates_without_the_retired_release_a_image_gat
     assert not any("candidate-migration-history" in command for command in commands)
     assert "candidate-migration-plan" not in commands
     assert "unexpected-fresh-migration-history" not in commands
-    assert "candidate-projection-report" in commands
-    assert "candidate-projection-benchmark" in commands
+    assert "candidate-projection-report" not in commands
+    assert "candidate-projection-benchmark" not in commands
     assert any(" stop nginx" in command for command in commands)
     assert any(" up -d --remove-orphans" in command for command in commands)
     _assert_no_env_temporary_files(tmp_path)
@@ -2339,65 +2323,6 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
         if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
     )
     assert candidate_pull < candidate_run < stop_nginx < candidate_up
-
-
-def test_candidate_projection_gates_run_after_migrated_service_is_healthy_without_backfill(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    result = _run(
-        "deploy/apply-deployment.sh",
-        env=_apply_env(tmp_path, fake_bin, scenario="private-media-success"),
-    )
-
-    assert result.returncode == 0, result.stderr
-    commands = _apply_log(tmp_path)
-    projection_report = commands.index("candidate-projection-report")
-    projection_benchmark = commands.index("candidate-projection-benchmark")
-    candidate_up = next(
-        index
-        for index, command in enumerate(commands)
-        if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
-    )
-    local_health = next(
-        index
-        for index, command in enumerate(commands)
-        if command.startswith("curl ") and "https://findme-photo.ru/health/" in command
-    )
-    assert candidate_up < local_health < projection_report < projection_benchmark
-    command_log = "\n".join(commands)
-    assert "report_photo_capture_time_projection --all-events --require-clean" in command_log
-    assert "benchmark_event_gallery_time_filter --event-id 9 --pages 1,mid,last" in command_log
-    assert "rebuild_photo_capture_time_projection" not in command_log
-    assert "reprocess_event_capture_times" not in command_log
-
-
-def test_failed_candidate_projection_gate_leaves_prior_deployment_active(
-    tmp_path: Path,
-    fake_bin: Path,
-) -> None:
-    scenario = "projection-report-failure"
-    expected_phase = "projection-preflight"
-    message = "projection reconciliation"
-    result = _run(
-        "deploy/apply-deployment.sh", env=_apply_env(tmp_path, fake_bin, scenario=scenario)
-    )
-
-    assert result.returncode != 0
-    assert message in result.stderr
-    assert _deployment_markers(result)[-1] == (
-        f"DEPLOY_RESULT=failure phase={expected_phase} rollback=succeeded"
-    )
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    commands = _apply_log(tmp_path)
-    assert any(
-        "APP_IMAGE=new-image" in command and " up -d --remove-orphans" in command
-        for command in commands
-    )
-    assert any(
-        "APP_IMAGE=unset" in command and " up -d --remove-orphans" in command
-        for command in commands
-    )
 
 
 @pytest.mark.parametrize(

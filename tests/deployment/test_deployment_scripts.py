@@ -3587,7 +3587,9 @@ def test_root_helper_reads_only_the_root_owned_package() -> None:
 def test_observability_verifier_checks_caps_timer_driver_tags_and_probe(
     tmp_path: Path, fake_bin: Path, scenario: str, expected_success: bool
 ) -> None:
-    (tmp_path / ".env").write_text("APP_IMAGE=test\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "APP_IMAGE=test\nPHOTO_PROCESSING_ENABLED=True\n", encoding="utf-8"
+    )
     (tmp_path / "docker-compose.deployment.yml").write_text("services: {}\n", encoding="utf-8")
     (tmp_path / "docker-compose.https.yml").write_text("services: {}\n", encoding="utf-8")
     (tmp_path / "journal").mkdir()
@@ -3610,12 +3612,20 @@ def test_observability_verifier_checks_caps_timer_driver_tags_and_probe(
 case "$*" in
   *" ps -q web") printf 'web-id\n' ;;
   *" ps -q nginx") printf 'nginx-id\n' ;;
+  *" ps -q worker-bulk") printf 'worker-bulk-id\n' ;;
+  *" ps -q worker-selfie") printf 'worker-selfie-id\n' ;;
   *"inspect "*web-id*)
     [ "$VERIFY_SCENARIO" = wrong-tag ] && printf 'json-file|wrong\n' || \
       printf 'journald|findme.service=web\n'
     ;;
   *"inspect "*nginx-id*)
     printf 'journald|findme.service=nginx\n'
+    ;;
+  *"inspect "*worker-bulk-id*)
+    printf 'journald|findme.service=worker-bulk\n'
+    ;;
+  *"inspect "*worker-selfie-id*)
+    printf 'journald|findme.service=worker-selfie\n'
     ;;
   *" exec -T web "*) printf '%s\n' "$*" > "$PROBE_COMMAND_LOG" ;;
 esac

@@ -184,4 +184,3 @@ contain vectors, selfies, bearer tokens, storage keys, signed grants, or fingerp
   caching cannot meet the measured target.
 - **`pgvector`:** is the intended later scaling direction after traffic falls, but requires a
   schema/index and rollout decision outside this urgent hotfix.
-

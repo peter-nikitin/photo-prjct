@@ -14,6 +14,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from ingestion.storage import StorageUnavailable
@@ -63,6 +64,7 @@ from selfie_search.services.jobs import (
     selfie_worker_configuration,
 )
 from selfie_search.services.submission import _configuration as submission_configuration
+from selfie_search.services.submission import compatible_search_candidates
 
 
 class RecordingStorage:
@@ -360,9 +362,9 @@ class SearchJobTests(TestCase):
         publication_time = claimed_at + timedelta(seconds=121)
         clock = [claimed_at]
 
-        def advance_past_expiry(_search: SelfieSearch) -> list[object]:
+        def advance_past_expiry(_search: SelfieSearch):
             clock[0] = publication_time
-            return []
+            return compatible_search_candidates(_search)
 
         with (
             patch("selfie_search.services.jobs.timezone.now", side_effect=lambda: clock[0]),
@@ -477,7 +479,7 @@ class SearchJobTests(TestCase):
         terminal_event = next(
             event for event in events if event["event"] == "selfie_search_terminal"
         )
-        self.assertEqual(ranking_event["schema_version"], 2)
+        self.assertEqual(ranking_event["schema_version"], 3)
         self.assertEqual(ranking_event["direct_matched_photo_count"], 1)
         self.assertEqual(ranking_event["cluster_expanded_photo_count"], 1)
         self.assertEqual(ranking_event["final_matched_photo_count"], 2)
@@ -807,7 +809,7 @@ class SearchJobTests(TestCase):
         events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
         ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
         terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
-        assert ranking["schema_version"] == 2
+        assert ranking["schema_version"] == 3
         assert ranking["direct_matched_photo_count"] == 1
         assert ranking["cluster_expanded_photo_count"] == 0
         assert ranking["final_matched_photo_count"] == 1
@@ -816,6 +818,49 @@ class SearchJobTests(TestCase):
         assert terminal["matched_photo_count"] == 1
         assert terminal["direct_matched_photo_count"] == 1
         assert terminal["cluster_expanded_photo_count"] == 0
+
+    def test_warm_selfie_completion_reads_no_gallery_vectors_and_persists_exact_same_scores(
+        self,
+    ) -> None:
+        first = self.make_search()
+        second = self.make_search(with_candidate=False)
+        complete_search_attempt(
+            self.claim(first).attempt.id, result=self.result(), storage=self.storage
+        )
+        claimed = self.claim(second)
+        with (
+            CaptureQueriesContext(connection) as queries,
+            self.assertLogs("selfie_search.services.jobs", level="INFO") as logs,
+        ):
+            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        selects = [
+            item["sql"]
+            for item in queries
+            if 'FROM "processing_photofaceembeddingprojection"' in item["sql"]
+        ]
+        self.assertTrue(selects)
+        self.assertFalse(any('"vector"' in sql.split(" FROM ")[0] for sql in selects))
+        self.assertEqual(
+            list(
+                first.results.values_list(
+                    "photo_id", "direct_evidence__detection_id", "direct_evidence__cosine_distance"
+                )
+            ),
+            list(
+                second.results.values_list(
+                    "photo_id", "direct_evidence__detection_id", "direct_evidence__cosine_distance"
+                )
+            ),
+        )
+        event = next(
+            json.loads(line.split(":", 2)[2])
+            for line in logs.output
+            if "selfie_ranking_finished" in line
+        )
+        self.assertEqual(event["cache_outcome"], "hit")
+        self.assertEqual(event["build_ms"], 0)
+        self.assertEqual(event["validated_face_count"], 1)
+        self.assertEqual(event["shortlist_count"], 1)
 
     def test_terminal_observability_query_failure_cannot_change_the_committed_result(self) -> None:
         search = self.make_search()
@@ -984,7 +1029,7 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
             cohort_started.set()
             if not allow_cohort.wait(timeout=10):
                 raise TimeoutError("test did not release cohort load")
-            return []
+            return compatible_search_candidates(_search)
 
         def complete_first() -> None:
             close_old_connections()

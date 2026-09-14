@@ -69,7 +69,7 @@ from selfie_search.services.jobs import (
     claim_search_job,
     complete_search_attempt,
 )
-from selfie_search.services.ranking import RankingError, rank_embeddings
+from selfie_search.services.ranking import RankingError, rank_cached_embeddings
 from selfie_search.services.submission import (
     GallerySearchFailed,
     GallerySearchUnavailable,
@@ -645,7 +645,43 @@ class SubmissionTests(TestCase):
         self.assertNotIn('"processing_faceembedding"."metadata"', cohort_sql)
         self.assertNotIn('"processing_photofacedetection"."geometry"', cohort_sql)
         self.assertNotIn('"processing_processingattempt"."input_fingerprint"', cohort_sql)
-        self.assertEqual(candidates[0].photo_id, "lightweight-candidate")
+        self.assertEqual(candidates.entry.faces[0].photo_id, "lightweight-candidate")
+
+    def test_warm_gallery_search_reads_identity_without_loading_gallery_vectors(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="warm-source", vector=[1.0] + [0.0] * 127
+        )
+        searches = [
+            submit_gallery_photo_search(
+                event=self.event,
+                photo=embedding.detection.attempt.photo,
+                detection_id=embedding.detection_id,
+                user=self.user,
+            ).search
+            for _ in range(2)
+        ]
+        process_gallery_photo_search(search=searches[0])
+        with CaptureQueriesContext(connection) as queries:
+            process_gallery_photo_search(search=searches[1])
+        selects = [
+            item["sql"]
+            for item in queries
+            if 'FROM "processing_photofaceembeddingprojection"' in item["sql"]
+        ]
+        self.assertTrue(selects)
+        self.assertFalse(any('"vector"' in sql.split(" FROM ")[0] for sql in selects))
+        self.assertEqual(
+            list(
+                searches[0].results.values_list(
+                    "photo_id", "direct_evidence__detection_id", "direct_evidence__cosine_distance"
+                )
+            ),
+            list(
+                searches[1].results.values_list(
+                    "photo_id", "direct_evidence__detection_id", "direct_evidence__cosine_distance"
+                )
+            ),
+        )
 
     def test_direct_cohort_uses_the_shared_processing_eligibility_loader(self) -> None:
         self.make_eligible_embedding(
@@ -672,7 +708,7 @@ class SubmissionTests(TestCase):
         candidates = compatible_search_candidates(search)
 
         self.assertEqual(
-            [candidate.detection_id for candidate in candidates],
+            [candidate.detection_id for candidate in candidates.entry.faces],
             [row.detection_id for row in expected],
         )
 
@@ -701,9 +737,11 @@ class SubmissionTests(TestCase):
         candidates = compatible_search_candidates(search)
 
         self.assertEqual(
-            [candidate.detection_id for candidate in candidates], [visible.detection_id]
+            [candidate.detection_id for candidate in candidates.entry.faces], [visible.detection_id]
         )
-        self.assertNotIn(hidden.detection_id, [candidate.detection_id for candidate in candidates])
+        self.assertNotIn(
+            hidden.detection_id, [candidate.detection_id for candidate in candidates.entry.faces]
+        )
 
     def test_draft_event_is_rejected_without_upload_or_search(self) -> None:
         storage = RecordingStorage()
@@ -1464,7 +1502,7 @@ class GalleryPhotoSubmissionTests(TestCase):
         source = source_embedding.detection.attempt.photo
 
         with patch(
-            "selfie_search.services.submission.rank_embeddings",
+            "selfie_search.services.submission.rank_cached_embeddings",
             side_effect=RankingError("broken ranking"),
         ):
             search = submit_gallery_photo_search(
@@ -1577,7 +1615,7 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
 
         def paused_rank(*args, **kwargs):
             pause()
-            return rank_embeddings(*args, **kwargs)
+            return rank_cached_embeddings(*args, **kwargs)
 
         def complete() -> None:
             close_old_connections()
@@ -1586,7 +1624,9 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
                     with connection.execute_wrapper(query_wrapper):
                         process_gallery_photo_search(search=search)
                 else:
-                    with patch("selfie_search.services.submission.rank_embeddings", paused_rank):
+                    with patch(
+                        "selfie_search.services.submission.rank_cached_embeddings", paused_rank
+                    ):
                         process_gallery_photo_search(search=search)
             except BaseException as error:
                 errors.put(error)

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from datetime import date
 from math import sqrt
+from unittest.mock import patch
 from uuid import uuid4
 
+import numpy as np
 from django.test import TestCase
 from picflow.models import Event
 from selfie_search.models import SelfieSearch
+from selfie_search.services import ranking
+from selfie_search.services.cohort_cache import CohortCacheEntry, CohortFace, _CohortKey
 from selfie_search.services.ranking import (
     CandidateEmbedding,
     QueryVectorError,
@@ -193,3 +197,148 @@ class RankingTests(TestCase):
 
         with self.assertRaises(RankingError):
             rank_embeddings(self.search, [1.0] + [0.0] * 127, self.candidates)
+
+    def test_cached_shortlist_matches_exact_baseline_for_both_models_and_threshold_edges(
+        self,
+    ) -> None:
+        for model, dimensions, threshold in (
+            ("sface", 128, 0.363),
+            ("adaface-ir18-webface4m", 512, 0.43),
+        ):
+            with self.subTest(model=model):
+                self.search.configuration = {
+                    "embedding_model": model,
+                    "embedding_dimensions": dimensions,
+                    "cosine_distance_threshold": threshold,
+                }
+                distances = [
+                    0.1,
+                    0.1,
+                    0.2,
+                    threshold - 5e-11,
+                    threshold,
+                    threshold + 5e-11,
+                    threshold + 2e-10,
+                    1.0,
+                ]
+                candidates = [
+                    CandidateEmbedding(
+                        vector=[1 - distance, sqrt(1 - (1 - distance) ** 2)]
+                        + [0.0] * (dimensions - 2),
+                        model_version=model,
+                        detection_id=uuid4(),
+                        photo_id="same" if index < 2 else str(index),
+                        photo_event_id=self.event.id,
+                        attempt_event_id=self.event.id,
+                        attempt_photo_id="same" if index < 2 else str(index),
+                    )
+                    for index, distance in enumerate(distances)
+                ]
+                matrix = np.asarray([row.vector for row in candidates], dtype=np.float64)
+                matrix.setflags(write=False)
+                entry = CohortCacheEntry(
+                    _CohortKey(self.event.id, model, dimensions, "[]"),
+                    (),
+                    tuple(CohortFace(row.detection_id, row.photo_id) for row in candidates),
+                    matrix,
+                )
+                query = [1.0] + [0.0] * (dimensions - 1)
+                expected = rank_embeddings(self.search, query, candidates)
+                result = ranking.rank_cached_embeddings(self.search, query, entry)
+                self.assertEqual(result.photos, expected)
+                self.assertEqual(result.shortlist_count, 6)
+                self.assertNotIn("5", [row.photo_id for row in result.photos])
+                with patch(
+                    "selfie_search.services.ranking.np.dot",
+                    return_value=1 - np.asarray(distances) - 2e-12,
+                ):
+                    perturbed = ranking.rank_cached_embeddings(self.search, query, entry)
+                self.assertEqual(perturbed.photos, expected)
+                for invalid in (
+                    [float("nan")] + query[1:],
+                    [True] + query[1:],
+                    [0.0] * dimensions,
+                    query[:-1],
+                ):
+                    with self.assertRaises(QueryVectorError):
+                        ranking.rank_cached_embeddings(self.search, invalid, entry)
+
+    def test_cached_shortlist_preserves_clamped_adaface_upper_threshold(self) -> None:
+        model = "adaface-ir18-webface4m"
+        self.search.configuration = {
+            "embedding_model": model,
+            "embedding_dimensions": 512,
+            "cosine_distance_threshold": 2.0,
+        }
+        query = [1.0000005] + [0.0] * 511
+        gallery = [-1.0000005] + [0.0] * 511
+        candidate = CandidateEmbedding(
+            vector=gallery,
+            model_version=model,
+            detection_id=uuid4(),
+            photo_id="antiparallel",
+            photo_event_id=self.event.id,
+            attempt_event_id=self.event.id,
+            attempt_photo_id="antiparallel",
+        )
+        entry = CohortCacheEntry(
+            _CohortKey(self.event.id, model, 512, "[]"),
+            (),
+            (CohortFace(candidate.detection_id, candidate.photo_id),),
+            np.asarray([gallery], dtype=np.float64),
+        )
+        expected = rank_embeddings(self.search, query, [candidate])
+        self.assertEqual(len(expected), 1)
+        self.assertEqual(expected[0].cosine_distance, 2.0)
+
+        result = ranking.rank_cached_embeddings(self.search, query, entry)
+
+        self.assertEqual(result.photos, expected)
+        self.assertEqual(result.shortlist_count, 1)
+
+    def test_dense_cached_distances_are_bit_exact_with_python_baseline(self) -> None:
+        rng = np.random.default_rng(17)
+        for model, dimensions, threshold in (
+            ("sface", 128, 0.363),
+            ("adaface-ir18-webface4m", 512, 0.43),
+        ):
+            with self.subTest(model=model):
+                self.search.configuration = {
+                    "embedding_model": model,
+                    "embedding_dimensions": dimensions,
+                    "cosine_distance_threshold": threshold,
+                }
+                query = rng.normal(size=dimensions)
+                query /= np.linalg.norm(query)
+                orthogonal = rng.normal(size=(60, dimensions))
+                orthogonal -= np.outer(np.einsum("ij,j->i", orthogonal, query), query)
+                orthogonal /= np.linalg.norm(orthogonal, axis=1)[:, None]
+                cosine = 1 - np.concatenate(
+                    (rng.uniform(0, 2, 30), threshold + np.linspace(-9e-11, 9e-11, 30))
+                )
+                matrix = cosine[:, None] * query + np.sqrt(1 - cosine**2)[:, None] * orthogonal
+                candidates = [
+                    CandidateEmbedding(
+                        vector=row.tolist(),
+                        model_version=model,
+                        detection_id=uuid4(),
+                        photo_id=str(index // 2),
+                        photo_event_id=self.event.id,
+                        attempt_event_id=self.event.id,
+                        attempt_photo_id=str(index // 2),
+                    )
+                    for index, row in enumerate(matrix)
+                ]
+                entry = CohortCacheEntry(
+                    _CohortKey(self.event.id, model, dimensions, "[]"),
+                    (),
+                    tuple(CohortFace(row.detection_id, row.photo_id) for row in candidates),
+                    matrix,
+                )
+                expected = rank_embeddings(self.search, query.tolist(), candidates)
+                actual = ranking.rank_cached_embeddings(self.search, query.tolist(), entry).photos
+                self.assertEqual(actual, expected)
+                self.assertEqual(
+                    [row.cosine_distance.hex() for row in actual],
+                    [row.cosine_distance.hex() for row in expected],
+                )

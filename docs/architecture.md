@@ -312,19 +312,27 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   [ADR 0018](adr/0018-use-managed-yandex-monitoring.md).
 - The `selfie_search` Django app implements two public event-scoped face-query sources. An uploaded
   selfie immediately creates the queued bearer-link result page; the selfie-only worker returns one
-  transient query embedding. Django loads and exactly ranks the compatible event cohort outside
-  the final publication transaction, then locks and revalidates the lease and immutable search
-  identity before saving the result. It persists no per-face candidate rows, deletes the temporary
+  transient query embedding. Before every direct ranking, Django reads the authoritative ordered
+  scalar identity of the complete compatible event cohort. Each Django/Gunicorn process retains at
+  most one immutable process-local cohort matrix and reuses it only when that fresh identity exactly
+  matches the cached fingerprint; a miss loads and validates the full authoritative cohort outside
+  the final publication transaction. NumPy then selects a conservative shortlist, while the exact
+  Python distance calculation alone decides inclusion, persisted distance, per-photo detection,
+  and result ordering. Django locks and revalidates the lease and immutable search identity before
+  saving the result. It persists no per-face candidate rows or cache artifact, deletes the temporary
   selfie before terminal publication, and serves a stable immutable result. An eligible gallery
   photo with one or more current
   compatible accepted faces exposes a direct one-face action or an explicit multi-face choice;
   Django uses the selected existing embedding to create an immediately ready immutable result
   without a temporary image, persisted query vector, or worker job. Both sources retain event
-  isolation, the existing bearer/result-media rules, and the direct path's
-  bounded field-only cohort reads; searches created before the direct-ranking change remain
-  compatible with their already-persisted candidate rows. The direct path selects only the six
-  identity/vector fields needed for ranking and does not hydrate the full embedding, detection,
-  attempt, and photo model graph.
+  isolation, the existing bearer/result-media rules, and fail-closed cohort validation; searches
+  created before the direct-ranking change remain compatible with their already-persisted candidate
+  rows. The cache adds no shared service, filesystem artifact, schema, query-vector persistence, or
+  new biometric authority. The repository's local example and canonical deployment workflow project
+  `GUNICORN_MAX_REQUESTS=0` and `GUNICORN_MAX_REQUESTS_JITTER=0` so request volume does not discard
+  warmed process caches. This cache and process-lifetime configuration are repository implementation
+  only: canonical rollout, restart stability, public health, lock-waiter, queue-progress, and warm
+  ranking-latency evidence remain pending.
   On 2026-07-31, the then-designated staging deployment activated the existing selfie-upload path after applying the one-day
   `selfie-search/` lifecycle rule, passing real-bucket preflight, and verifying a live published
   Unicode event search, original-size result media, and paid-result-only media access. The

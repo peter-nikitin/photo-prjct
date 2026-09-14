@@ -15,7 +15,7 @@ from enum import StrEnum
 from uuid import UUID
 
 SCHEMA_VERSION = 1
-RANKING_SCHEMA_VERSION = 2
+RANKING_SCHEMA_VERSION = 3
 TERMINAL_SCHEMA_VERSION = 2
 SERVICE = "web"
 MAX_BOUNDED_INTEGER = 2**31 - 1
@@ -110,6 +110,13 @@ _RANKING_FIELDS_V2 = _RANKING_FIELDS_V1 | {
     "cluster_expansion_ms",
     "cluster_expansion_outcome",
 }
+_RANKING_FIELDS_V3 = _RANKING_FIELDS_V2 | {
+    "cache_outcome",
+    "identity_ms",
+    "build_ms",
+    "validated_face_count",
+    "shortlist_count",
+}
 _TERMINAL_FIELDS_V1 = frozenset(
     {
         "event_id",
@@ -143,7 +150,7 @@ _EVENT_FIELDS: dict[SelfieEventName, frozenset[str]] = {
             "duration_ms",
         }
     ),
-    SelfieEventName.RANKING_FINISHED: _RANKING_FIELDS_V2,
+    SelfieEventName.RANKING_FINISHED: _RANKING_FIELDS_V3,
     SelfieEventName.SEARCH_TERMINAL: _TERMINAL_FIELDS_V2,
 }
 
@@ -258,7 +265,7 @@ def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dic
     elif event is SelfieEventName.SUBMISSION_FINISHED:
         normalized = _submission_fields(fields)
     elif event is SelfieEventName.RANKING_FINISHED:
-        normalized = _ranking_fields_v2(fields)
+        normalized = _ranking_fields_v3(fields)
     else:
         normalized = _terminal_fields_v2(fields)
     return {
@@ -390,6 +397,39 @@ def _ranking_fields_v2(fields: dict[str, object]) -> dict[str, object]:
         "cluster_configuration_hash": configuration_hash,
         "cluster_expansion_ms": expansion_ms,
         "cluster_expansion_outcome": expansion_outcome,
+    }
+
+
+def _ranking_fields_v3(fields: dict[str, object]) -> dict[str, object]:
+    normalized = _ranking_fields_v2(fields)
+    cache_outcome = _enum(
+        fields["cache_outcome"], frozenset({"hit", "miss", "unavailable"}), "cache outcome"
+    )
+    identity_ms = _bounded_int(fields["identity_ms"], nullable=True)
+    build_ms = _bounded_int(fields["build_ms"], nullable=True)
+    validated = _bounded_int(fields["validated_face_count"], nullable=False)
+    shortlist = _bounded_int(fields["shortlist_count"], nullable=False)
+    assert validated is not None and shortlist is not None
+    if shortlist > validated or validated != normalized["eligible_face_count"]:
+        raise SelfieEventContractError("cache counts do not reconcile")
+    if cache_outcome == "unavailable":
+        if (
+            normalized["outcome"] != "incompatible"
+            or identity_ms is not None
+            or build_ms is not None
+            or validated
+            or shortlist
+        ):
+            raise SelfieEventContractError("unavailable cache has ranking evidence")
+    elif identity_ms is None or build_ms is None or (cache_outcome == "hit" and build_ms != 0):
+        raise SelfieEventContractError("invalid cache duration")
+    return {
+        **normalized,
+        "cache_outcome": cache_outcome,
+        "identity_ms": identity_ms,
+        "build_ms": build_ms,
+        "validated_face_count": validated,
+        "shortlist_count": shortlist,
     }
 
 

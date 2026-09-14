@@ -5,9 +5,15 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import UUID
 
+import numpy as np
+
 from selfie_search.models import SelfieSearch
+
+if TYPE_CHECKING:
+    from selfie_search.services.cohort_cache import CohortCacheEntry
 
 _NORMALIZATION_TOLERANCE = 1e-6
 _SELFIE_QUERY_MODEL = "sface"
@@ -41,6 +47,41 @@ class CandidateEmbedding:
     photo_event_id: object
     attempt_event_id: object
     attempt_photo_id: object
+
+
+@dataclass(frozen=True)
+class CachedRanking:
+    photos: tuple[RankedPhoto, ...]
+    shortlist_count: int
+
+
+def rank_cached_embeddings(
+    search: SelfieSearch, query_vector: object, entry: CohortCacheEntry
+) -> CachedRanking:
+    """Shortlist conservatively; only the existing Python arithmetic supplies evidence."""
+    configuration = _configuration(search)
+    query = validate_query_vector(search, query_vector)
+    try:
+        distances = 1.0 - np.dot(entry.matrix, np.asarray(query, dtype=np.float64))
+        np.clip(distances, 0.0, 2.0, out=distances)
+        indices = np.flatnonzero(distances <= configuration.threshold + 1e-10)
+        candidates = (
+            CandidateEmbedding(
+                # tolist returns Python floats: NumPy scalar multiplication must never
+                # replace the exact baseline's float multiplication and math.fsum.
+                vector=entry.matrix[index].tolist(),
+                model_version=configuration.model,
+                detection_id=entry.faces[index].detection_id,
+                photo_id=entry.faces[index].photo_id,
+                photo_event_id=search.event_id,
+                attempt_event_id=search.event_id,
+                attempt_photo_id=entry.faces[index].photo_id,
+            )
+            for index in indices
+        )
+        return CachedRanking(rank_embeddings(search, query, candidates), len(indices))
+    except (MemoryError, ValueError) as error:
+        raise RankingError("cached ranking failed") from error
 
 
 def rank_embeddings(

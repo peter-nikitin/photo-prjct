@@ -877,8 +877,8 @@ esac
         "GUNICORN_WORKERS": "5",
         "GUNICORN_THREADS": "2",
         "GUNICORN_TIMEOUT": "180",
-        "GUNICORN_MAX_REQUESTS": "1000",
-        "GUNICORN_MAX_REQUESTS_JITTER": "100",
+        "GUNICORN_MAX_REQUESTS": "0",
+        "GUNICORN_MAX_REQUESTS_JITTER": "0",
         "DB_NAME": "app",
         "DB_USER": "app",
         "DB_PASSWORD": "password",
@@ -1032,7 +1032,7 @@ def test_apply_propagates_private_media_read_settings(tmp_path: Path, fake_bin: 
     assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=gallery-secret" in deployed_env
 
 
-def test_apply_persists_the_bounded_gunicorn_profile(tmp_path: Path, fake_bin: Path) -> None:
+def test_apply_persists_the_stable_gunicorn_profile(tmp_path: Path, fake_bin: Path) -> None:
     """The candidate environment must carry the web process bound into the container."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
@@ -1040,8 +1040,8 @@ def test_apply_persists_the_bounded_gunicorn_profile(tmp_path: Path, fake_bin: P
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
             "GUNICORN_TIMEOUT": "180",
-            "GUNICORN_MAX_REQUESTS": "1000",
-            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+            "GUNICORN_MAX_REQUESTS": "0",
+            "GUNICORN_MAX_REQUESTS_JITTER": "0",
         }
     )
 
@@ -1052,8 +1052,8 @@ def test_apply_persists_the_bounded_gunicorn_profile(tmp_path: Path, fake_bin: P
     assert "GUNICORN_WORKERS=5" in deployed_env
     assert "GUNICORN_THREADS=2" in deployed_env
     assert "GUNICORN_TIMEOUT=180" in deployed_env
-    assert "GUNICORN_MAX_REQUESTS=1000" in deployed_env
-    assert "GUNICORN_MAX_REQUESTS_JITTER=100" in deployed_env
+    assert "GUNICORN_MAX_REQUESTS=0" in deployed_env
+    assert "GUNICORN_MAX_REQUESTS_JITTER=0" in deployed_env
 
 
 @pytest.mark.parametrize(
@@ -1070,8 +1070,8 @@ def test_apply_rejects_an_unsafe_gunicorn_profile_before_mutation(
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
             "GUNICORN_TIMEOUT": "180",
-            "GUNICORN_MAX_REQUESTS": "1000",
-            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+            "GUNICORN_MAX_REQUESTS": "0",
+            "GUNICORN_MAX_REQUESTS_JITTER": "0",
             name: value,
         }
     )
@@ -1122,8 +1122,8 @@ def test_validate_failure_emits_one_sanitized_result_before_any_mutation(
     assert not (tmp_path / "apply.log").exists()
 
 
-def test_entrypoint_runs_gunicorn_with_the_bounded_profile(tmp_path: Path, fake_bin: Path) -> None:
-    """The running web process must receive finite concurrency and recycling arguments."""
+def test_entrypoint_runs_gunicorn_with_the_stable_profile(tmp_path: Path, fake_bin: Path) -> None:
+    """The running web process must keep workers warm without request-count recycling."""
     _write_executable(fake_bin / "python", "exit 0")
     _write_executable(fake_bin / "gunicorn", 'printf "%s\\n" "$*" > "$GUNICORN_LOG"')
 
@@ -1136,8 +1136,8 @@ def test_entrypoint_runs_gunicorn_with_the_bounded_profile(tmp_path: Path, fake_
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
             "GUNICORN_TIMEOUT": "180",
-            "GUNICORN_MAX_REQUESTS": "1000",
-            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+            "GUNICORN_MAX_REQUESTS": "0",
+            "GUNICORN_MAX_REQUESTS_JITTER": "0",
         },
         text=True,
         capture_output=True,
@@ -1148,7 +1148,7 @@ def test_entrypoint_runs_gunicorn_with_the_bounded_profile(tmp_path: Path, fake_
     assert (tmp_path / "gunicorn.log").read_text(encoding="utf-8") == (
         "config.wsgi:application --config python:config.gunicorn --bind 0.0.0.0:8000 "
         "--workers 5 --threads 2 "
-        "--timeout 180 --max-requests 1000 --max-requests-jitter 100\n"
+        "--timeout 180 --max-requests 0 --max-requests-jitter 0\n"
     )
 
 
@@ -1175,8 +1175,8 @@ esac
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
             "GUNICORN_TIMEOUT": "180",
-            "GUNICORN_MAX_REQUESTS": "1000",
-            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+            "GUNICORN_MAX_REQUESTS": "0",
+            "GUNICORN_MAX_REQUESTS_JITTER": "0",
         },
         text=True,
         capture_output=True,
@@ -1210,8 +1210,8 @@ def test_entrypoint_recreates_the_shared_multiprocess_directory_before_gunicorn(
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
             "GUNICORN_TIMEOUT": "180",
-            "GUNICORN_MAX_REQUESTS": "1000",
-            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+            "GUNICORN_MAX_REQUESTS": "0",
+            "GUNICORN_MAX_REQUESTS_JITTER": "0",
         },
         text=True,
         capture_output=True,
@@ -1225,7 +1225,7 @@ def test_entrypoint_recreates_the_shared_multiprocess_directory_before_gunicorn(
         (
             "multiproc=/tmp/prometheus_multiproc args=config.wsgi:application --config "
             "python:config.gunicorn --bind 0.0.0.0:8000 --workers 5 --threads 2 --timeout 180 "
-            "--max-requests 1000 --max-requests-jitter 100"
+            "--max-requests 0 --max-requests-jitter 0"
         ),
     ]
 
@@ -1249,8 +1249,8 @@ def test_entrypoint_starts_gunicorn_when_multiprocess_directory_cleanup_fails(
             "GUNICORN_WORKERS": "5",
             "GUNICORN_THREADS": "2",
             "GUNICORN_TIMEOUT": "180",
-            "GUNICORN_MAX_REQUESTS": "1000",
-            "GUNICORN_MAX_REQUESTS_JITTER": "100",
+            "GUNICORN_MAX_REQUESTS": "0",
+            "GUNICORN_MAX_REQUESTS_JITTER": "0",
         },
         text=True,
         capture_output=True,

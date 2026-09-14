@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -70,6 +70,11 @@ def _ranking_fields(**overrides: object) -> dict[str, Any]:
         "matched_photo_count": 3,
         "load_ms": 4,
         "rank_ms": 7,
+        "cache_outcome": "miss",
+        "identity_ms": 1,
+        "build_ms": 3,
+        "validated_face_count": overrides.get("eligible_face_count", 3),
+        "shortlist_count": min(2, cast(int, overrides.get("eligible_face_count", 3))),
         "configuration_hash": "a" * 64,
         "direct_matched_photo_count": 1,
         "cluster_expanded_photo_count": 2,
@@ -106,9 +111,7 @@ def _terminal_fields(**overrides: object) -> dict[str, Any]:
 
 
 def _ranking_v2_fields(**overrides: object) -> dict[str, Any]:
-    fields = _ranking_fields()
-    fields.update(overrides)
-    return fields
+    return _ranking_fields(**overrides)
 
 
 def _terminal_v2_fields(**overrides: object) -> dict[str, Any]:
@@ -127,7 +130,7 @@ def test_ranking_v2_emits_only_bounded_expansion_fields_and_reconciles_counts() 
     )
 
     payload = json.loads(logger.calls[0][1])
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["final_matched_photo_count"] == 3
     assert payload["cluster_expansion_outcome"] == "expanded"
     assert set(payload) == {
@@ -137,6 +140,32 @@ def test_ranking_v2_emits_only_bounded_expansion_fields_and_reconciles_counts() 
         "service",
         *(_ranking_v2_fields().keys()),
     }
+
+
+def test_ranking_cache_fields_are_bounded_and_redacted() -> None:
+    fields = _ranking_fields(
+        cache_outcome="hit", identity_ms=2, build_ms=0, validated_face_count=3, shortlist_count=2
+    )
+    logger = _CaptureLogger()
+    emit_selfie_event(logger, event=SelfieEventName.RANKING_FINISHED, **fields)
+    payload = json.loads(logger.calls[0][1])
+    assert payload["schema_version"] == 3
+    assert payload["cache_outcome"] == "hit"
+    assert payload["shortlist_count"] == 2
+    for overrides in (
+        {"cache_outcome": "fingerprint-secret"},
+        {"identity_ms": -1},
+        {"build_ms": 2**63},
+        {"validated_face_count": -1},
+        {"shortlist_count": 4},
+        {"fingerprint": "secret"},
+        {"query_vector": [1.0]},
+    ):
+        with pytest.raises(SelfieEventContractError):
+            emit_selfie_event(
+                logger, event=SelfieEventName.RANKING_FINISHED, **(fields | overrides)
+            )
+    assert len(logger.calls) == 1
 
 
 def test_terminal_v2_emits_source_counts_and_reconciles_final_count() -> None:
@@ -326,7 +355,7 @@ def test_terminal_v2_rejects_mismatched_or_non_ready_source_counts(
 def test_ranking_v2_accepts_each_bounded_expansion_outcome(fields: dict[str, Any]) -> None:
     logger = _CaptureLogger()
     emit_selfie_event(logger, event=SelfieEventName.RANKING_FINISHED, **fields)
-    assert json.loads(logger.calls[0][1])["schema_version"] == 2
+    assert json.loads(logger.calls[0][1])["schema_version"] == 3
 
 
 def test_probe_has_only_the_common_envelope_and_random_non_secret_id() -> None:
@@ -416,6 +445,11 @@ _BACKEND_PRIVACY_CASES = [
                 "matched_photo_count",
                 "load_ms",
                 "rank_ms",
+                "cache_outcome",
+                "identity_ms",
+                "build_ms",
+                "validated_face_count",
+                "shortlist_count",
                 "configuration_hash",
                 "direct_matched_photo_count",
                 "cluster_expanded_photo_count",
@@ -468,7 +502,13 @@ def test_backend_events_have_exact_compact_envelope_and_event_fields(
         "service",
         *expected_fields,
     }
-    assert payload["schema_version"] == (1 if event is SelfieEventName.SUBMISSION_FINISHED else 2)
+    assert payload["schema_version"] == (
+        1
+        if event is SelfieEventName.SUBMISSION_FINISHED
+        else 3
+        if event is SelfieEventName.RANKING_FINISHED
+        else 2
+    )
     assert payload["event"] == event.value
     assert payload["service"] == "web"
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", payload["occurred_at"])

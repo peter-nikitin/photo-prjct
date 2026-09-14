@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -34,6 +34,94 @@ class CompatibleFaceEmbedding:
         return self.photo_event_id
 
 
+@dataclass(frozen=True, slots=True)
+class FaceCohortIdentity:
+    """Scalar proof of one eligible, immutable accepted gallery embedding."""
+
+    projection_id: UUID
+    embedding_id: UUID
+    detection_id: UUID
+    photo_id: str
+    photo_event_id: Any
+    attempt_event_id: Any
+    attempt_photo_id: str
+    attempt_id: UUID
+    job_id: UUID
+    run_id: UUID
+    contract_version: int
+    processor_version: int
+    configuration_hash: str
+    model_version: str
+
+
+_IDENTITY_FIELDS = (
+    "id",
+    "accepted_attempt__face_detections__embedding__id",
+    "accepted_attempt__face_detections__id",
+    "photo_id",
+    "photo__event_id",
+    "accepted_attempt__event_id",
+    "accepted_attempt__photo_id",
+    "accepted_attempt_id",
+    "accepted_attempt__job_id",
+    "accepted_attempt__run_id",
+    "contract_version",
+    "processor_version",
+    "configuration_hash",
+    "accepted_attempt__face_detections__embedding__model_version",
+)
+
+
+def face_cohort_identity_order(identity: FaceCohortIdentity) -> tuple[UUID, UUID, UUID]:
+    """Order by immutable scalar IDs, never by vector or processing JSON."""
+    return identity.projection_id, identity.detection_id, identity.embedding_id
+
+
+def load_compatible_face_identities(
+    event: Event, generations: Sequence[Mapping[str, object]]
+) -> tuple[FaceCohortIdentity, ...]:
+    """Read the complete ordered cohort fingerprint without selecting JSON vectors."""
+    rows = _compatible_face_projections(event, generations).values_list(*_IDENTITY_FIELDS)
+    return tuple(
+        sorted(
+            (FaceCohortIdentity(*row) for row in rows.iterator(chunk_size=2_000)),
+            key=face_cohort_identity_order,
+        )
+    )
+
+
+def iter_compatible_face_cohort(
+    event: Event, generations: Sequence[Mapping[str, object]]
+) -> Iterator[tuple[FaceCohortIdentity, object]]:
+    """Stream all raw rows for fail-closed validation, without sorting wide JSON rows."""
+    rows = _compatible_face_projections(event, generations).values_list(
+        *_IDENTITY_FIELDS, "accepted_attempt__face_detections__embedding__vector"
+    )
+    for row in rows.iterator(chunk_size=2_000):
+        yield FaceCohortIdentity(*row[:-1]), row[-1]
+
+
+def _compatible_face_projections(
+    event: Event, generations: Sequence[Mapping[str, object]]
+) -> QuerySet[PhotoFaceEmbeddingProjection]:
+    if not generations:
+        raise ValueError("face-embedding generations are required")
+    return PhotoFaceEmbeddingProjection.objects.filter(
+        _projection_generation_predicate(generations),
+        photo__event=event,
+        photo__is_hidden=False,
+        photo__src="",
+        photo__original_key__isnull=False,
+        photo__original_key__gt="",
+        photo__original_size__isnull=False,
+        accepted_attempt__event=event,
+        accepted_attempt__photo_id=F("photo_id"),
+        accepted_attempt__status="succeeded",
+        accepted_attempt__accepted=True,
+        accepted_attempt__face_detections__status="kept",
+    )
+
+
 def load_compatible_face_embeddings(
     event: Event,
     generations: Sequence[Mapping[str, object]],
@@ -47,24 +135,7 @@ def load_compatible_face_embeddings(
     """
     if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions < 1:
         raise ValueError("embedding dimensions must be positive")
-    if not generations:
-        raise ValueError("face-embedding generations are required")
-
-    compatible_generation = _projection_generation_predicate(generations)
-    projections = PhotoFaceEmbeddingProjection.objects.filter(
-        compatible_generation,
-        photo__event=event,
-        photo__is_hidden=False,
-        photo__src="",
-        photo__original_key__isnull=False,
-        photo__original_key__gt="",
-        photo__original_size__isnull=False,
-        accepted_attempt__event=event,
-        accepted_attempt__photo_id=F("photo_id"),
-        accepted_attempt__status="succeeded",
-        accepted_attempt__accepted=True,
-        accepted_attempt__face_detections__status="kept",
-    )
+    projections = _compatible_face_projections(event, generations)
 
     rows: list[CompatibleFaceEmbedding] = []
     for (

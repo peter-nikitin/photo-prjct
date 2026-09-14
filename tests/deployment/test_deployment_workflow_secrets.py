@@ -72,6 +72,24 @@ def test_generic_workflows_use_only_the_canonical_secret_consumers() -> None:
     )
 
 
+def test_supported_gunicorn_profiles_disable_request_count_recycling() -> None:
+    expected = {
+        "GUNICORN_MAX_REQUESTS": "0",
+        "GUNICORN_MAX_REQUESTS_JITTER": "0",
+    }
+    local_values = dict(
+        line.split("=", maxsplit=1)
+        for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    )
+    deployment_environment = _step(_workflow("deploy.yml")["jobs"]["deploy"], "Run deployment")[
+        "env"
+    ]
+
+    assert {name: local_values[name] for name in expected} == expected
+    assert {name: deployment_environment[name] for name in expected} == expected
+
+
 def test_remote_helper_keeps_secret_material_out_of_transport_arguments() -> None:
     source = HELPER.read_text(encoding="utf-8")
 
@@ -143,8 +161,8 @@ def _deployment_values() -> dict[str, str]:
         "GUNICORN_WORKERS": "5",
         "GUNICORN_THREADS": "2",
         "GUNICORN_TIMEOUT": "180",
-        "GUNICORN_MAX_REQUESTS": "1000",
-        "GUNICORN_MAX_REQUESTS_JITTER": "100",
+        "GUNICORN_MAX_REQUESTS": "0",
+        "GUNICORN_MAX_REQUESTS_JITTER": "0",
         "DB_NAME": "photo",
         "DB_USER": "photo",
         "PUBLIC_DOMAIN": "findme-photo.ru",

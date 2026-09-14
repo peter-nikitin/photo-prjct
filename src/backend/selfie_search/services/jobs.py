@@ -28,6 +28,7 @@ from selfie_search.models import (
     SelfieSearchResult,
 )
 from selfie_search.observability import (
+    MAX_BOUNDED_INTEGER,
     SelfieEventName,
     emit_selfie_event,
     emit_selfie_observability_failure,
@@ -37,10 +38,11 @@ from selfie_search.services.cluster_expansion import (
     direct_only_ranked_photos,
     expand_ranked_photos,
 )
+from selfie_search.services.cohort_cache import CohortCacheLookup
 from selfie_search.services.ranking import (
     QueryVectorError,
     RankingError,
-    rank_embeddings,
+    rank_cached_embeddings,
     validate_query_vector,
 )
 from selfie_search.services.submission import compatible_search_candidates
@@ -218,6 +220,8 @@ def complete_search_attempt(
     payload_hash = _canonical_hash(payload)
     needs_cleanup = False
     completion: SearchAttemptCompletion
+    cohort_lookup: CohortCacheLookup | None = None
+    shortlist_count = 0
     snapshot_attempt = SelfieSearchAttempt.objects.select_related("job__search__event").get(
         pk=attempt_id
     )
@@ -240,15 +244,16 @@ def complete_search_attempt(
         try:
             query = _query_from_result(snapshot_search, result)
             cohort_started_at = perf_counter()
-            candidates = compatible_search_candidates(snapshot_search)
+            cohort_lookup = compatible_search_candidates(snapshot_search)
             cohort_loaded_at = perf_counter()
-            eligible_photo_count = len({candidate.photo_id for candidate in candidates})
-            eligible_face_count = len(candidates)
-            ranked = rank_embeddings(snapshot_search, query, candidates)
+            eligible_photo_count = len({face.photo_id for face in cohort_lookup.entry.faces})
+            eligible_face_count = len(cohort_lookup.entry.faces)
+            ranking = rank_cached_embeddings(snapshot_search, query, cohort_lookup.entry)
+            shortlist_count = ranking.shortlist_count
             ranked_at = perf_counter()
             expansion = _expand_direct_ranking(
                 search=snapshot_search,
-                ranked=ranked,
+                ranked=ranking.photos,
                 query=query,
             )
             prepared = (
@@ -315,6 +320,8 @@ def complete_search_attempt(
                     load_ms=None,
                     rank_ms=None,
                     expansion=None,
+                    cohort_lookup=cohort_lookup,
+                    shortlist_count=shortlist_count,
                 )
                 _terminal_attempt(
                     attempt,
@@ -359,6 +366,8 @@ def complete_search_attempt(
                     load_ms=load_ms,
                     rank_ms=rank_ms,
                     expansion=expansion,
+                    cohort_lookup=cohort_lookup,
+                    shortlist_count=shortlist_count,
                     retain_expansion_snapshot=intended_status == str(SelfieSearch.Status.READY),
                 )
                 _terminal_attempt(
@@ -940,6 +949,8 @@ def _emit_ranking_finished(
     load_ms: int | None,
     rank_ms: int | None,
     expansion: RankedPhotoExpansion | None,
+    cohort_lookup: CohortCacheLookup | None,
+    shortlist_count: int,
     retain_expansion_snapshot: bool = True,
 ) -> None:
     if expansion is None:
@@ -987,6 +998,21 @@ def _emit_ranking_finished(
         matched_photo_count=matched_photo_count,
         load_ms=load_ms,
         rank_ms=rank_ms,
+        cache_outcome=(
+            "unavailable" if cohort_lookup is None else "hit" if cohort_lookup.cache_hit else "miss"
+        ),
+        identity_ms=(
+            None
+            if cohort_lookup is None
+            else min(MAX_BOUNDED_INTEGER, max(0, round(cohort_lookup.identity_ms)))
+        ),
+        build_ms=(
+            None
+            if cohort_lookup is None
+            else min(MAX_BOUNDED_INTEGER, max(0, round(cohort_lookup.build_ms)))
+        ),
+        validated_face_count=(0 if cohort_lookup is None else len(cohort_lookup.entry.faces)),
+        shortlist_count=shortlist_count,
         direct_matched_photo_count=direct_matched_photo_count,
         cluster_expanded_photo_count=cluster_expanded_photo_count,
         final_matched_photo_count=final_matched_photo_count,

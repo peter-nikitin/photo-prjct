@@ -209,10 +209,10 @@ command -v flock >/dev/null 2>&1 || {
 }
 
 case "$GUNICORN_WORKERS:$GUNICORN_THREADS:$GUNICORN_TIMEOUT:$GUNICORN_MAX_REQUESTS:$GUNICORN_MAX_REQUESTS_JITTER" in
-    5:2:180:1000:100)
+    5:2:180:0:0)
         ;;
     *)
-        echo "GUNICORN_PROFILE must be 5 workers, 2 threads, timeout 180, max requests 1000, jitter 100" >&2
+        echo "GUNICORN_PROFILE must be 5 workers, 2 threads, timeout 180, max requests 0, jitter 0" >&2
         exit 2
         ;;
 esac

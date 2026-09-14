@@ -154,8 +154,11 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   and after the read-only candidate benchmark, and every first/midpoint/last database and rendered
   ratio passed the 2x gate; see the [sanitized aggregate report](performance/2026-08-08-event-gallery-time-filter-local-clone.json).
   That local Release B candidate evidence preceded the deployed Release B commit `d5b21e4`.
-  Future deployment candidates must pass the live all-events reconciliation and event-9 benchmark
-  before service switch; the exact Release A image precondition is retired.
+  The full-corpus reconciliation and event-9 `EXPLAIN ANALYZE` benchmark remain explicit offline
+  verification tools. They do not run against the customer-serving database during automatic
+  deployment because their measured resource contention can make the sole deployment unavailable.
+  Deployment retains migration-history validation, local and public health checks, worker health,
+  and prior-image rollback; the exact Release A image precondition remains retired.
 - Developers can stream a validated deployed-VM PostgreSQL logical dump through SSH and restore it only
   into the current checkout's isolated local Compose database when preparing a migration. The
   workflow rejects non-local Docker engines, serializes each Compose project/database, stops the

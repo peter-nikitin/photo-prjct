@@ -825,7 +825,7 @@ fail() {
 
 phase() {
     case "$1" in
-        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|projection-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
             deployment_phase="$1"
             printf 'DEPLOY_PHASE=%s elapsed_seconds=%s\n' "$1" "$(elapsed_seconds)"
             ;;
@@ -1158,18 +1158,6 @@ done
 
 if [ "$requested_import_enabled" = True ]; then
     start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
-fi
-
-phase projection-preflight
-if ! compose run --rm --no-deps -T \
-    --entrypoint python web manage.py report_photo_capture_time_projection \
-    --all-events --require-clean; then
-    fail "Candidate projection reconciliation failed"
-fi
-if ! compose run --rm --no-deps -T \
-    --entrypoint python web manage.py benchmark_event_gallery_time_filter \
-    --event-id 9 --pages 1,mid,last; then
-    fail "Candidate gallery time-filter benchmark failed"
 fi
 
 phase worker-health

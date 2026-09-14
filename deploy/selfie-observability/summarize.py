@@ -24,7 +24,7 @@ EVENT_NAMES = {
 EVENT_SCHEMA_VERSIONS = {
     "selfie_submission_finished": frozenset({1}),
     "selfie_worker_attempt_finished": frozenset({1}),
-    "selfie_ranking_finished": frozenset({1, 2}),
+    "selfie_ranking_finished": frozenset({1, 2, 3}),
     "selfie_search_terminal": frozenset({1, 2}),
 }
 PROBE_EVENT = "selfie_observability_probe"
@@ -126,6 +126,13 @@ _RANKING_FIELDS_V2 = _RANKING_FIELDS_V1 | {
     "cluster_expansion_ms",
     "cluster_expansion_outcome",
 }
+_RANKING_FIELDS_V3 = _RANKING_FIELDS_V2 | {
+    "cache_outcome",
+    "identity_ms",
+    "build_ms",
+    "validated_face_count",
+    "shortlist_count",
+}
 _TERMINAL_FIELDS_V1 = {
     "event_id",
     "search_id",
@@ -148,6 +155,7 @@ EVENT_FIELDS_BY_VERSION = {
     "selfie_ranking_finished": {
         1: COMMON_FIELDS | _RANKING_FIELDS_V1,
         2: COMMON_FIELDS | _RANKING_FIELDS_V2,
+        3: COMMON_FIELDS | _RANKING_FIELDS_V3,
     },
     "selfie_search_terminal": {
         1: COMMON_FIELDS | _TERMINAL_FIELDS_V1,
@@ -530,8 +538,10 @@ def _validate_event(value: dict[str, Any]) -> None:
             configuration_hash
         ):
             raise ValueError("invalid configuration hash")
-        if schema_version == 2:
+        if schema_version in {2, 3}:
             _validate_ranking_v2(value)
+        if schema_version == 3:
+            _validate_ranking_v3(value)
     else:
         _opaque_id(value.get("event_id"))
         if not _uuid_id(value.get("search_id")):
@@ -547,6 +557,34 @@ def _validate_event(value: dict[str, Any]) -> None:
             raise ValueError("invalid terminal event")
         if schema_version == 2:
             _validate_terminal_v2(value)
+
+
+def _validate_ranking_v3(value: dict[str, Any]) -> None:
+    _choice(value, "cache_outcome", ("hit", "miss", "unavailable"))
+    for name in ("identity_ms", "build_ms"):
+        _duration(value, name, nullable=True)
+    for name in ("validated_face_count", "shortlist_count"):
+        _duration(value, name)
+    if (
+        value["shortlist_count"] > value["validated_face_count"]
+        or value["validated_face_count"] != value["eligible_face_count"]
+    ):
+        raise ValueError("cache counts do not reconcile")
+    if value["cache_outcome"] == "unavailable":
+        if (
+            value["outcome"] != "incompatible"
+            or value["identity_ms"] is not None
+            or value["build_ms"] is not None
+            or value["validated_face_count"]
+            or value["shortlist_count"]
+        ):
+            raise ValueError("unavailable cache has ranking evidence")
+    elif (
+        value["identity_ms"] is None
+        or value["build_ms"] is None
+        or (value["cache_outcome"] == "hit" and value["build_ms"] != 0)
+    ):
+        raise ValueError("invalid cache duration")
 
 
 def _validate_ranking_v2(value: dict[str, Any]) -> None:

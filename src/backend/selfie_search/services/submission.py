@@ -21,7 +21,6 @@ from processing.models import (
 )
 from processing.services.face_cohort import (
     compatible_face_embedding_queryset,
-    load_compatible_face_embeddings,
 )
 from processing.services.face_quality import active_face_embedding_generations
 
@@ -38,10 +37,11 @@ from selfie_search.services.cluster_expansion import (
     direct_only_ranked_photos,
     expand_ranked_photos,
 )
+from selfie_search.services.cohort_cache import CohortCacheLookup, cohort_cache
 from selfie_search.services.ranking import (
     CandidateEmbedding,
     RankingError,
-    rank_embeddings,
+    rank_cached_embeddings,
     validate_query_vector,
 )
 
@@ -198,7 +198,7 @@ def process_gallery_photo_search(
             paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
         )
         candidates = compatible_search_candidates(snapshot)
-        ranked = rank_embeddings(snapshot, source_candidate.vector, candidates)
+        ranked = rank_cached_embeddings(snapshot, source_candidate.vector, candidates.entry).photos
         source = snapshot.configuration.get("query_source")
         if not isinstance(source, dict) or not any(
             row.photo_id == source.get("photo_id") for row in ranked
@@ -209,8 +209,8 @@ def process_gallery_photo_search(
             ranked=ranked,
             query=source_candidate.vector,
         )
-        eligible_photo_count = len({candidate.photo_id for candidate in candidates})
-        eligible_face_count = len(candidates)
+        eligible_photo_count = len({candidate.photo_id for candidate in candidates.entry.faces})
+        eligible_face_count = len(candidates.entry.faces)
         with transaction.atomic():
             locked_search = (
                 SelfieSearch.objects.select_for_update().select_related("event").get(pk=search.pk)
@@ -378,29 +378,26 @@ def _gallery_source_candidate(
     return candidate
 
 
-def compatible_search_candidates(search: SelfieSearch) -> list[CandidateEmbedding]:
-    """Load the compatible event cohort without persisting intermediate rows."""
+def compatible_search_candidates(search: SelfieSearch) -> CohortCacheLookup:
+    """Prove current cohort identity and reuse its validated immutable matrix."""
     configuration = search.configuration
     generations = configuration.get("gallery_face_embedding_generations")
     dimensions = configuration.get("embedding_dimensions")
     if not isinstance(generations, list) or not all(
         isinstance(generation, dict) for generation in generations
     ):
-        raise ValueError("invalid face-embedding generation")
+        raise RankingError("invalid face-embedding generation")
     if isinstance(dimensions, bool) or not isinstance(dimensions, int):
-        raise ValueError("invalid face-embedding dimensions")
-    return [
-        CandidateEmbedding(
-            vector=row.vector,
-            model_version=row.model_version,
-            detection_id=row.detection_id,
-            photo_id=row.photo_id,
-            photo_event_id=row.photo_event_id,
-            attempt_event_id=row.attempt_event_id,
-            attempt_photo_id=row.attempt_photo_id,
+        raise RankingError("invalid face-embedding dimensions")
+    model = configuration.get("embedding_model")
+    if not isinstance(model, str):
+        raise RankingError("invalid face-embedding model")
+    try:
+        return cohort_cache.get(
+            event=search.event, generations=generations, model=model, dimensions=dimensions
         )
-        for row in load_compatible_face_embeddings(search.event, generations, dimensions)
-    ]
+    except (MemoryError, ValueError) as error:
+        raise RankingError("compatible cohort could not be built") from error
 
 
 def resolve_public_search(event_slug: str, public_token: str) -> SelfieSearch:

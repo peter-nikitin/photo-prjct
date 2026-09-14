@@ -733,6 +733,37 @@ def test_historical_v1_ranking_and_terminal_metrics_are_not_available() -> None:
     assert expansion["searches_helped_rate"] == "not_available"
 
 
+def test_v3_cache_event_is_summarized_and_invalid_or_private_fields_are_rejected() -> None:
+    summarize = _load_module()
+    search_id = _search_id(350)
+    ranking = json.loads(_ranking_v2(search_id, direct=1, attempt_id=_search_id(351)))
+    ranking.update(
+        schema_version=3,
+        cache_outcome="hit",
+        identity_ms=2,
+        build_ms=0,
+        validated_face_count=ranking["eligible_face_count"],
+        shortlist_count=1,
+    )
+    lines = [_submission(search_id), json.dumps(ranking), _terminal_v2(search_id, direct=1)]
+    summary = summarize.summarize_jsonl(lines, report_date=date(2026, 8, 3))
+    assert summary.integrity["unknown_schema_or_event"] == 0
+    assert summary.integrity["malformed_events"] == 0
+    assert summary.integrity["ranking_terminal_mismatches"] == 0
+    for overrides in (
+        {"cache_outcome": "SECRET-SENTINEL"},
+        {"identity_ms": -1},
+        {"build_ms": 2**63},
+        {"shortlist_count": ranking["eligible_face_count"] + 1},
+        {"fingerprint": "SECRET-SENTINEL"},
+    ):
+        rejected = summarize.summarize_jsonl(
+            [json.dumps(ranking | overrides)], report_date=date(2026, 8, 3)
+        )
+        assert rejected.integrity["malformed_events"] == 1
+        assert "SECRET-SENTINEL" not in json.dumps(rejected.to_dict())
+
+
 def test_v2_reconciliation_mismatch_duplicate_and_malformed_event_make_summary_incomplete() -> None:
     summarize = _load_module()
     search_id = _search_id(401)

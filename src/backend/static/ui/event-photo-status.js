@@ -11,30 +11,9 @@
   const IMPORT_PROGRESS_EVENT = 'findme:event-photo-import-progress';
   const MANUAL_REFRESH_EVENT = 'findme:event-photo-status-refresh';
   const FILTER_COUNT_EVENT = 'findme:event-photo-filter-count';
-  const CATEGORY_LABELS = {
-    succeeded: 'Обработано',
-    processing: 'Обрабатывается',
-    queued: 'Ожидает обработки',
-    failed: 'Ошибки',
-    cancelled: 'Остановлена',
-    not_started: 'Не запущена',
-    not_required: 'Не требуется',
-  };
-
   function setText(root, selector, value) {
     const node = root.querySelector?.(selector);
     if (node) node.textContent = String(value);
-  }
-
-  function renderProcessingSummary(node, summary) {
-    const parts = [];
-    for (const [category, label] of Object.entries(CATEGORY_LABELS)) {
-      const value = summary?.categories?.[category] || 0;
-      if (['succeeded', 'processing', 'queued', 'failed'].includes(category) || value) {
-        parts.push(`${label}: ${value}`);
-      }
-    }
-    node.textContent = parts.join(' · ');
   }
 
   function batchState(row) {
@@ -224,11 +203,6 @@
     }
 
     renderAdmin(admin, renderResults) {
-      setText(this.root, '[data-event-photo-summary-total]', admin.summary?.total || 0);
-      for (const node of this.root.querySelectorAll?.('[data-event-photo-summary-category]') || []) {
-        const category = node.dataset.eventPhotoSummaryCategory;
-        node.textContent = String(admin.summary?.categories?.[category] || 0);
-      }
       if (!renderResults) return;
       if (Number.isSafeInteger(admin.filtered_result_count)) {
         setText(this.root, '[data-event-photo-filtered-count]', admin.filtered_result_count);
@@ -270,8 +244,6 @@
           '[data-batch-status-progress]',
           `${row.confirmed_count} из ${row.expected_count} загружено · осталось ${row.unresolved_count}`,
         );
-        const processing = node.querySelector?.('[data-batch-status-processing]');
-        if (processing) renderProcessingSummary(processing, row.processing);
         if (row.can_close) {
           node.removeAttribute?.('data-unfinished-upload');
           node.querySelector?.('[data-resume-batch]')?.remove?.();

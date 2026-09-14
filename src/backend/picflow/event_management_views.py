@@ -23,7 +23,6 @@ from ingestion.workspace_context import upload_workspace_context
 from processing.photo_status import (
     PhotoProcessingDetail,
     photo_processing_details,
-    summarize_photo_processing,
 )
 
 from picflow.event_management import (
@@ -137,7 +136,6 @@ def _admin_results_context(
         "page_form": page_form,
         "filters_valid": filters_valid,
         "photo_page": photo_page,
-        "processing_summary": summarize_photo_processing(Photo.objects.filter(event=event)),
         "capabilities": capabilities,
         "canonical_query": canonical_query,
         "canonical_url": canonical_url,

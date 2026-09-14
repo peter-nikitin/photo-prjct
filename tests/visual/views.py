@@ -94,7 +94,6 @@ class FixtureUploadBatch:
     failed_count: int
     unresolved_count: int
     can_close: bool
-    processing: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -223,20 +222,6 @@ DRAFT_EVENT = replace(
 )
 
 
-def _processing_summary(
-    *, succeeded: int = 0, processing: int = 0, queued: int = 0, failed: int = 0
-) -> dict[str, Any]:
-    return {
-        "total": succeeded + processing + queued + failed,
-        "categories": {
-            "succeeded": succeeded,
-            "processing": processing,
-            "queued": queued,
-            "failed": failed,
-        },
-    }
-
-
 UNFINISHED_UPLOADS = (
     FixtureUploadBatch(
         id="batch-resume-1",
@@ -249,7 +234,6 @@ UNFINISHED_UPLOADS = (
         failed_count=0,
         unresolved_count=1,
         can_close=False,
-        processing=_processing_summary(queued=1),
     ),
 )
 
@@ -265,7 +249,6 @@ ACTIVE_UPLOADS = (
         failed_count=0,
         unresolved_count=2,
         can_close=False,
-        processing=_processing_summary(queued=1),
     ),
 )
 
@@ -275,7 +258,6 @@ PARTIAL_UPLOADS = (
         confirmed_count=1,
         failed_count=2,
         unresolved_count=2,
-        processing=_processing_summary(succeeded=1),
     ),
 )
 
@@ -285,16 +267,10 @@ PROCESSING_UPLOADS = (
         confirmed_count=3,
         unresolved_count=0,
         can_close=True,
-        processing=_processing_summary(succeeded=1, processing=1, queued=1),
     ),
 )
 
-COMPLETE_UPLOADS = (
-    replace(
-        PROCESSING_UPLOADS[0],
-        processing=_processing_summary(succeeded=3),
-    ),
-)
+COMPLETE_UPLOADS = PROCESSING_UPLOADS
 
 PHOTOS = (
     FixturePhoto(
@@ -1622,10 +1598,6 @@ def _event_photo_context(
         "folder_delete_url": "/manage/events/42/photos/folders/delete/",
         "photo_action_url": "/manage/events/42/photos/actions/",
         "photo_page": photo_page,
-        "processing_summary": {
-            "total": 4,
-            "categories": {"processing": 1, "queued": 0, "failed": 1},
-        },
         "status_url": (
             "/__visual__/workspace/status-api/"
             f"?role={'both' if combined else 'admin'}&scenario={scenario}"
@@ -1676,10 +1648,6 @@ def event_photo_workspace(request: HttpRequest) -> HttpResponse:
                     [] if status_integration == "1" else list(ADMIN_PHOTOS),
                     100,
                 ).page(1),
-                "processing_summary": {
-                    "total": 0,
-                    "categories": {"processing": 0, "queued": 0, "failed": 0},
-                },
                 "batch_page": Paginator([], 20).page(1),
                 "resumable_batch_ids": (),
                 "upload_limits": UPLOAD_LIMITS,
@@ -1767,10 +1735,6 @@ def event_photo_status_api(request: HttpRequest) -> JsonResponse:
                 for photo in INTERACTION_PHOTOS
             )
         payload["admin"] = {
-            "summary": {
-                "total": 4,
-                "categories": {"processing": 1, "queued": 0, "failed": 1},
-            },
             "filtered_result_count": filtered_result_count,
             "result_list_changed": False,
             "photos": [],

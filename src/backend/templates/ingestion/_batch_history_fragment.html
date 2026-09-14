@@ -5,7 +5,6 @@
       <p data-batch-status-progress>{{ batch.confirmed_count }} из {{ batch.expected_count }} загружено · осталось {{ batch.unresolved_count }}</p>
       <p data-batch-status-state>{% if batch.can_close %}Все фотографии загружены. Можно закрыть страницу{% elif batch.failed_count %}Ошибок передачи: {{ batch.failed_count }}. Продолжите загрузку.{% else %}Загрузка не завершена.{% endif %}</p>
       {% if batch.can_close %}<p>Обработка продолжится в фоне.</p>{% endif %}
-      <p data-batch-status-processing>Обработано: {{ batch.processing.categories.succeeded|default:0 }} · Обрабатывается: {{ batch.processing.categories.processing|default:0 }} · Ожидает обработки: {{ batch.processing.categories.queued|default:0 }} · Ошибки: {{ batch.processing.categories.failed|default:0 }}</p>
       {% if batch.id in resumable_batch_ids %}<button type="button" data-resume-batch data-resume-batch-id="{{ batch.id }}">Продолжить загрузку</button>{% endif %}
     </article>
   {% empty %}<p data-batch-history-empty>Сохранённых загрузок пока нет.</p>{% endfor %}

@@ -136,10 +136,6 @@ function payload({ active = true, changed = false } = {}) {
     has_active_work: active,
     capabilities: { can_inspect: true, can_upload: true },
     admin: {
-      summary: {
-        total: 2,
-        categories: { processing: active ? 1 : 0, failed: active ? 0 : 1 },
-      },
       filtered_result_count: changed ? 1 : 2,
       result_list_changed: changed,
       photos: [
@@ -160,7 +156,6 @@ function payload({ active = true, changed = false } = {}) {
         unresolved_count: 1,
         can_close: false,
         has_active_work: active,
-        processing: { total: 1, categories: { processing: active ? 1 : 0 } },
       },
     ],
   };
@@ -210,10 +205,7 @@ function harness(fetch) {
   const updated = root.set('[data-event-photo-status-updated-at]', new FakeNode());
   const changed = root.set('[data-event-photo-result-list-changed]', new FakeNode());
   changed.hidden = true;
-  const total = root.set('[data-event-photo-summary-total]', new FakeNode());
   const found = root.set('[data-event-photo-filtered-count]', new FakeNode());
-  const processing = new FakeNode({ eventPhotoSummaryCategory: 'processing' });
-  root.setAll('[data-event-photo-summary-category]', [processing]);
 
   const photo = new FakeNode({ photoStatusId: 'photo-1' });
   const photoCategory = photo.set('[data-photo-status-category]', new FakeNode());
@@ -229,7 +221,6 @@ function harness(fetch) {
   const batch = new FakeNode({ batchStatusId: 'batch-1' });
   const batchState = batch.set('[data-batch-status-state]', new FakeNode());
   const batchProgress = batch.set('[data-batch-status-progress]', new FakeNode());
-  const batchProcessing = batch.set('[data-batch-status-processing]', new FakeNode());
   root.setAll('[data-batch-status-id]', [batch]);
   let historyFragment = new FakeNode({ batchPage: '1' });
   historyFragment.replaceWith = (replacement) => {
@@ -250,7 +241,6 @@ function harness(fetch) {
   const controller = bindEventPhotoStatus(root, { document, window });
   return {
     batch,
-    batchProcessing,
     batchProgress,
     batchState,
     adminRoot,
@@ -263,11 +253,9 @@ function harness(fetch) {
     photoCategory,
     photoStages,
     privateNodes,
-    processing,
     resumeInput,
     root,
     timers,
-    total,
     uploadQueue,
     uploadRoot,
     updated,
@@ -291,13 +279,11 @@ test('completed confirmation retires resume while an unresolved batch stays resu
     failed_count: 0,
     unresolved_count: 0,
     can_close: true,
-    processing: { categories: { failed: 1 } },
   }]);
 
   assert.equal(view.batch.dataset.unfinishedUpload, undefined);
   assert.equal(resume.removed, true);
   assert.equal(view.batchState.textContent, 'Все фотографии загружены. Можно закрыть страницу');
-  assert.match(view.batchProcessing.textContent, /Ошибки: 1/);
 });
 
 test('joined history pagination uses the latest canonical photo scope and only changes batch page', async () => {
@@ -357,17 +343,11 @@ test('bound controller sends displayed IDs, updates status nodes in place, and w
   assert.deepEqual(requestUrl.searchParams.getAll('photo_id'), ['photo-1']);
   assert.deepEqual(requestUrl.searchParams.getAll('batch_id'), ['batch-1']);
   assert.equal(calls[0].options.credentials, 'same-origin');
-  assert.equal(view.total.textContent, '2');
   assert.equal(view.found.textContent, '2');
-  assert.equal(view.processing.textContent, '1');
   assert.equal(view.photoCategory.textContent, 'Обрабатывается');
   assert.equal(view.photoStages.textContent, 'Метаданные: В очереди');
   assert.equal(view.batchState.textContent, 'Загрузка не завершена.');
   assert.equal(view.batchProgress.textContent, '1 из 2 загружено · осталось 1');
-  assert.equal(
-    view.batchProcessing.textContent,
-    'Обработано: 0 · Обрабатывается: 1 · Ожидает обработки: 0 · Ошибки: 0',
-  );
   assert.equal(view.updated.textContent, '2026-09-07T10:00:00.000Z');
   assert.equal(view.changed.hidden, true);
   assert.deepEqual(view.timers.pending().map((entry) => entry.delay), [5_000]);
@@ -510,7 +490,7 @@ test('result changes show a refresh indicator without moving or replacing cards'
   assert.equal(view.timers.pending().length, 0);
 });
 
-test('validated fragment query is authoritative and invalid filter UI requests summary only', async () => {
+test('validated fragment query is authoritative and invalid filter UI requests capabilities only', async () => {
   const calls = [];
   const view = harness(async (url) => {
     calls.push(url);
@@ -607,7 +587,6 @@ test('new local batch identity installs bounded history without replacing queue 
   const batch = new FakeNode({ batchStatusId: 'batch-2' });
   batch.set('[data-batch-status-state]', new FakeNode());
   batch.set('[data-batch-status-progress]', new FakeNode());
-  batch.set('[data-batch-status-processing]', new FakeNode());
   const replacement = new FakeNode({ batchPage: '1' });
   view.document.nextFragment = replacement;
   view.root.querySelector('[data-batch-history-fragment]').replaceWith = (node) => {
@@ -643,7 +622,6 @@ test('a transient history failure retains the new batch and retries on the statu
   const batch = new FakeNode({ batchStatusId: 'batch-retry' });
   batch.set('[data-batch-status-state]', new FakeNode());
   batch.set('[data-batch-status-progress]', new FakeNode());
-  batch.set('[data-batch-status-processing]', new FakeNode());
   view.document.nextFragment = new FakeNode({ batchPage: '1' });
   view.root.querySelector('[data-batch-history-fragment]').replaceWith = (node) => {
     view.root.set('[data-batch-history-fragment]', node);
@@ -746,7 +724,6 @@ test('an old status response cannot update the replacement canonical result scop
   await settle();
 
   assert.equal(calls, 2);
-  assert.equal(view.total.textContent, '2', 'event-wide summary can still update');
   assert.equal(view.found.textContent, '', 'old filtered count is ignored');
   assert.equal(view.photoCategory.textContent, '', 'old displayed photo state is ignored');
 

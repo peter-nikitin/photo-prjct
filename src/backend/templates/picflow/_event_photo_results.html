@@ -9,13 +9,7 @@
     <div>
       <p class="eyebrow">Управление</p>
       <h2>Фотографии</h2>
-      <p>Сохранено: <strong data-event-photo-summary-total>{{ processing_summary.total }}</strong></p>
     </div>
-    <nav aria-label="Быстрые фильтры обработки">
-      <a href="?processing=processing">В обработке <span data-event-photo-summary-category="processing">{{ processing_summary.categories.processing }}</span></a>
-      <a href="?processing=queued">Ожидают <span data-event-photo-summary-category="queued">{{ processing_summary.categories.queued }}</span></a>
-      <a href="?processing=failed">Ошибки <span data-event-photo-summary-category="failed">{{ processing_summary.categories.failed }}</span></a>
-    </nav>
   </div>
 
   <form class="event-photo-filters" method="get" action="{{ canonical_url|default:request.path }}" data-event-photo-filter-form>

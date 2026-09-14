@@ -14,7 +14,7 @@ from ingestion.services.batch_history import (
     OwnedBatchHistory,
     owned_event_batch_summaries,
 )
-from processing.photo_status import photo_processing_details, summarize_photo_processing
+from processing.photo_status import photo_processing_details
 
 from picflow.event_management import event_photo_page, event_photo_queryset
 from picflow.event_management_access import (
@@ -67,10 +67,7 @@ def _batch_payload(row: OwnedBatchHistory) -> dict[str, object]:
     payload = asdict(row)
     payload["id"] = str(row.id)
     payload["created_at"] = row.created_at.isoformat()
-    payload["has_active_work"] = bool(
-        (row.status in _ACTIVE_BATCH_STATUSES and not row.can_close)
-        or row.processing["has_active_work"]
-    )
+    payload["has_active_work"] = bool(row.status in _ACTIVE_BATCH_STATUSES and not row.can_close)
     return payload
 
 
@@ -108,9 +105,7 @@ def event_management_status(request: HttpRequest, event_id: int) -> HttpResponse
 
     if can_inspect:
         event_photos = Photo.objects.filter(event=event)
-        summary = summarize_photo_processing(event_photos)
-        has_active_work = summary["has_active_work"]
-        admin_payload: dict[str, object] = {"summary": summary}
+        admin_payload: dict[str, object] = {}
         if include_results:
             filter_form = EventPhotoFilterForm(event, request.GET)
             if not filter_form.is_valid():
@@ -124,6 +119,7 @@ def event_management_status(request: HttpRequest, event_id: int) -> HttpResponse
             current_page_ids = tuple(photo.pk for photo in current_page)
             detail_rows = photo_processing_details(event_photos.filter(pk__in=photo_ids))
             details_by_id = {row["photo_id"]: row for row in detail_rows}
+            has_active_work = any(row["has_active_work"] for row in detail_rows)
             admin_payload.update(
                 {
                     "filtered_result_count": filtered_photos.count(),

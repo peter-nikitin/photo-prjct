@@ -8,8 +8,7 @@ from uuid import UUID
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.core.paginator import Page, Paginator
 from django.db.models import Count, Q
-from picflow.models import Event, Photo
-from processing.photo_status import PhotoProcessingSummary, summarize_photo_processing
+from picflow.models import Event
 
 from ingestion.models import UploadBatch, UploadItem
 
@@ -26,7 +25,6 @@ class OwnedBatchHistory:
     failed_count: int
     unresolved_count: int
     can_close: bool
-    processing: PhotoProcessingSummary
 
 
 def _owned_event_batches(*, uploader: AbstractBaseUser, event: Event):
@@ -38,14 +36,9 @@ def _owned_event_batches(*, uploader: AbstractBaseUser, event: Event):
     )
 
 
-def _summarize_owned_batches(
-    batches: Iterable[UploadBatch], *, uploader: AbstractBaseUser, event: Event
-) -> list[OwnedBatchHistory]:
+def _project_owned_batches(batches: Iterable[UploadBatch]) -> list[OwnedBatchHistory]:
     summaries = []
     for batch in batches:
-        photos = Photo.objects.filter(
-            event=event, upload_item__batch=batch, upload_item__batch__uploader=uploader
-        )
         summaries.append(
             OwnedBatchHistory(
                 id=batch.pk,
@@ -56,7 +49,6 @@ def _summarize_owned_batches(
                 failed_count=batch.failed_count,
                 unresolved_count=batch.expected_item_count - batch.confirmed_count,
                 can_close=batch.confirmed_count == batch.expected_item_count,
-                processing=summarize_photo_processing(photos),
             )
         )
     return summaries
@@ -71,10 +63,8 @@ def owned_event_batch_summaries(
         raise ValueError(
             f"batch summary request must contain at most {BATCH_HISTORY_PAGE_SIZE} IDs"
         )
-    summaries = _summarize_owned_batches(
-        _owned_event_batches(uploader=uploader, event=event).filter(pk__in=requested_ids),
-        uploader=uploader,
-        event=event,
+    summaries = _project_owned_batches(
+        _owned_event_batches(uploader=uploader, event=event).filter(pk__in=requested_ids)
     )
     by_id = {row.id: row for row in summaries}
     return [by_id[batch_id] for batch_id in requested_ids if batch_id in by_id]
@@ -85,9 +75,5 @@ def owned_event_batch_history(
 ) -> Page[OwnedBatchHistory]:
     batches = _owned_event_batches(uploader=uploader, event=event).order_by("-created_at", "-id")
     batch_page = Paginator(batches, BATCH_HISTORY_PAGE_SIZE).get_page(page)
-    summaries = _summarize_owned_batches(
-        batch_page,
-        uploader=uploader,
-        event=event,
-    )
+    summaries = _project_owned_batches(batch_page)
     return Page(summaries, batch_page.number, batch_page.paginator)

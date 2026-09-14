@@ -11,7 +11,12 @@ from django.core.paginator import Page, Paginator
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q, QuerySet, Subquery
 from django.db.models.deletion import ProtectedError
-from processing.photo_status import annotate_photo_processing_status
+from processing.photo_status import (
+    CATEGORY_PROCESSING,
+    CATEGORY_QUEUED,
+    annotate_photo_processing_status,
+    filter_active_photo_processing_categories,
+)
 
 from picflow.event_management_access import can_inspect_event_photos
 from picflow.event_management_forms import (
@@ -125,9 +130,15 @@ def event_photo_queryset(event: Event, filters: EventPhotoFilters) -> QuerySet[P
     elif filters.visibility == VISIBILITY_HIDDEN:
         photos = photos.filter(is_hidden=True)
     if filters.processing_categories:
-        photos = annotate_photo_processing_status(photos).filter(
-            processing_category__in=filters.processing_categories
-        )
+        selected_processing_categories = frozenset(filters.processing_categories)
+        if selected_processing_categories <= {CATEGORY_PROCESSING, CATEGORY_QUEUED}:
+            photos = filter_active_photo_processing_categories(
+                photos, selected_processing_categories
+            )
+        else:
+            photos = annotate_photo_processing_status(photos).filter(
+                processing_category__in=filters.processing_categories
+            )
     return photos.order_by(F("capture_time").asc(nulls_last=True), "pk").distinct()
 
 

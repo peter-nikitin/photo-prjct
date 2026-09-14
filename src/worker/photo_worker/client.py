@@ -125,7 +125,7 @@ class HttpClient:
         except HTTPError as error:
             error.close()
             raise _api_error(error.code) from None
-        except (TimeoutError, URLError):
+        except (TimeoutError, URLError, ConnectionResetError):
             raise ApiError("network_interruption", retryable=True) from None
         try:
             value = json.loads(raw)

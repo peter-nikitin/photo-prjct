@@ -88,6 +88,25 @@ def test_raw_socket_timeout_is_a_sanitized_retryable_interruption() -> None:
     assert "secret" not in str(raised.value)
 
 
+def test_connection_reset_is_a_sanitized_retryable_interruption() -> None:
+    def reset(_request, *, timeout: float):
+        raise ConnectionResetError("signed-url-secret-must-not-escape")
+
+    with pytest.raises(ApiError) as raised:
+        HttpClient(
+            "https://worker.example.test/v1",
+            "worker-secret",
+            opener=reset,
+        ).post_json("claim", {})
+
+    assert (raised.value.code, raised.value.retryable, raised.value.diagnostic) == (
+        "network_interruption",
+        True,
+        None,
+    )
+    assert "secret" not in str(raised.value)
+
+
 def test_api_response_read_is_limited_to_configured_bound_plus_one() -> None:
     response = Response(b"x" * 7)
 

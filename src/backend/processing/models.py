@@ -558,6 +558,16 @@ class PhotoFaceEmbeddingProjection(models.Model):  # noqa: DJ008
         ]
         indexes = [
             models.Index(fields=["accepted_attempt"], name="proc_face_proj_attempt_idx"),
+            models.Index(
+                fields=[
+                    "contract_version",
+                    "processor_version",
+                    "configuration_hash",
+                    "photo",
+                    "accepted_attempt",
+                ],
+                name="proc_face_proj_gen_idx",
+            ),
         ]
 
     def save(self, *args, **kwargs) -> None:

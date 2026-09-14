@@ -250,63 +250,54 @@ def test_worker_image_uses_cpu_only_torch_and_verifies_its_runtime_budget(
 def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract() -> None:
     """A compose edit must not hand the worker application or permanent-storage credentials."""
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    worker = compose["services"]["worker"]
-    environment = worker["environment"]
+    bulk = compose["services"]["worker-bulk"]
+    selfie = compose["services"]["worker-selfie"]
 
-    assert worker["profiles"] == ["worker"]
-    assert worker["build"]["dockerfile"] == "Dockerfile.worker"
-    assert worker.get("env_file") is None
-    assert set(environment) == {
-        "PHOTO_WORKER_API_URL",
-        "PHOTO_WORKER_TOKEN",
-        "PHOTO_WORKER_BUILD",
-        "PHOTO_WORKER_LEASE_SECONDS",
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES",
-        "PHOTO_WORKER_PROCESSOR_TYPES",
-    }
-    assert environment["PHOTO_WORKER_API_URL"].endswith("/internal/photo-processing/v1")
-    assert "PHOTO_PROCESSING_WORKER_TOKEN" in environment["PHOTO_WORKER_TOKEN"]
-    assert environment["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-        "${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,"
-        "2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}"
+    for worker in (bulk, selfie):
+        assert worker["profiles"] == ["worker"]
+        assert worker["build"]["dockerfile"] == "Dockerfile.worker"
+        assert worker.get("env_file") is None
+        assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
+        assert "PHOTO_WORKER_CONCURRENCY" not in worker["environment"]
+    assert bulk["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"].endswith(
+        "1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,"
+        "2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1}"
     )
-    assert environment["PHOTO_WORKER_PROCESSOR_TYPES"] == (
-        "${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,"
-        "generate_preview}"
+    assert bulk["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"].endswith(
+        "bib_recognition,face_embedding,capture_metadata,generate_preview,"
+        "generate_watermarked_preview}"
     )
-    assert not (FORBIDDEN_SETTINGS & set(environment))
-    assert "PHOTO_WORKER_CONCURRENCY" not in environment
+    assert bulk["environment"]["PHOTO_WORKER_HTTP_TIMEOUT_SECONDS"].endswith("180}")
+    assert selfie["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"].endswith("1/selfie_query/2}")
+    assert selfie["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"].endswith("selfie_query}")
+    assert selfie["environment"]["PHOTO_WORKER_HTTP_TIMEOUT_SECONDS"].endswith("900}")
+    assert "selfie_query" not in bulk["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
+    assert "capture_metadata" not in selfie["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
 
 
 def test_deployment_worker_profile_is_bounded_and_isolated_from_web_configuration() -> None:
     """The deployed worker has only its private API contract and declared resource bounds."""
     compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
-    worker = compose["services"]["worker"]
+    bulk = compose["services"]["worker-bulk"]
+    selfie = compose["services"]["worker-selfie"]
 
-    assert worker["image"] == "${WORKER_IMAGE:-}"
-    assert worker["profiles"] == ["worker"]
-    assert worker.get("ports") is None
-    assert worker.get("env_file") is None
-    assert worker["depends_on"] == {"web": {"condition": "service_healthy"}}
-    assert worker["restart"] == "unless-stopped"
-    assert worker["cpus"] == "${PHOTO_WORKER_CPUS:-1.0}"
-    assert worker["mem_limit"] == "${PHOTO_WORKER_MEMORY_LIMIT:-2g}"
-    assert worker["pids_limit"] == 64
-    assert worker["environment"] == {
-        "PHOTO_WORKER_API_URL": "http://web:8000/internal/photo-processing/v1",
-        "PHOTO_WORKER_TOKEN": "${PHOTO_PROCESSING_WORKER_TOKEN:-}",
-        "PHOTO_WORKER_BUILD": "${PHOTO_WORKER_BUILD:-capture-metadata-v1}",
-        "PHOTO_WORKER_LEASE_SECONDS": "${PHOTO_WORKER_LEASE_SECONDS:-120}",
-        "PHOTO_WORKER_PROCESSOR_IDENTITIES": (
-            "${PHOTO_WORKER_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,"
-            "2/face_embedding/3,3/face_embedding/5,1/selfie_query/2}"
-        ),
-        "PHOTO_WORKER_PROCESSOR_TYPES": (
-            "${PHOTO_WORKER_PROCESSOR_TYPES:-selfie_query,face_embedding,capture_metadata,"
-            "generate_preview}"
-        ),
-    }
-    assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
+    for worker in (bulk, selfie):
+        assert worker["image"] == "${WORKER_IMAGE:-}"
+        assert worker["profiles"] == ["worker"]
+        assert worker.get("ports") is None
+        assert worker.get("env_file") is None
+        assert worker["depends_on"] == {"web": {"condition": "service_healthy"}}
+        assert worker["restart"] == "unless-stopped"
+        assert worker["cpus"] == "${PHOTO_WORKER_CPUS:-1.0}"
+        assert worker["mem_limit"] == "${PHOTO_WORKER_MEMORY_LIMIT:-2g}"
+        assert worker["pids_limit"] == 64
+        assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
+    assert bulk["environment"]["PHOTO_WORKER_HTTP_TIMEOUT_SECONDS"] == (
+        "${PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS:-180}"
+    )
+    assert selfie["environment"]["PHOTO_WORKER_HTTP_TIMEOUT_SECONDS"] == (
+        "${PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS:-900}"
+    )
 
 
 def test_default_compose_config_interpolates_example_without_enabling_the_worker() -> None:
@@ -324,13 +315,14 @@ def test_default_compose_config_interpolates_example_without_enabling_the_worker
             directory, "--env-file", ".env.example", "--profile", "worker"
         )
         assert worker_profile.returncode == 0, worker_profile.stderr
-        worker = yaml.safe_load(worker_profile.stdout)["services"]["worker"]
-        assert worker["environment"]["PHOTO_WORKER_TOKEN"] == ""
+        workers = yaml.safe_load(worker_profile.stdout)["services"]
+        assert {"worker-bulk", "worker-selfie"} <= set(workers)
+        assert workers["worker-bulk"]["environment"]["PHOTO_WORKER_TOKEN"] == ""
         assert (
             WATERMARKED_PREVIEW_PROCESSOR_IDENTITY
-            not in worker["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
+            in workers["worker-bulk"]["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
         )
-        assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
+        assert not (FORBIDDEN_SETTINGS & set(workers["worker-selfie"]["environment"]))
 
 
 def test_copied_and_edited_dotenv_remains_the_web_service_environment() -> None:

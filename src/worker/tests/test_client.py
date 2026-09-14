@@ -62,6 +62,32 @@ def test_json_requests_use_bearer_auth_and_do_not_put_token_in_url() -> None:
     assert timeouts == [180.0]
 
 
+@pytest.mark.parametrize("timeout", (0, -1, float("inf"), float("nan")))
+def test_http_client_rejects_non_positive_or_non_finite_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        HttpClient("https://worker.example.test/v1", "worker-secret", timeout_seconds=timeout)
+
+
+def test_raw_socket_timeout_is_a_sanitized_retryable_interruption() -> None:
+    def timeout(_request, *, timeout: float):
+        raise TimeoutError("signed-url-secret-must-not-escape")
+
+    with pytest.raises(ApiError) as raised:
+        HttpClient(
+            "https://worker.example.test/v1",
+            "worker-secret",
+            timeout_seconds=900,
+            opener=timeout,
+        ).post_json("claim", {})
+
+    assert (raised.value.code, raised.value.retryable, raised.value.diagnostic) == (
+        "network_interruption",
+        True,
+        None,
+    )
+    assert "secret" not in str(raised.value)
+
+
 def test_api_response_read_is_limited_to_configured_bound_plus_one() -> None:
     response = Response(b"x" * 7)
 

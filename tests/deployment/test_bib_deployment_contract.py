@@ -52,26 +52,23 @@ def test_invalid_resources_fail_before_mutation(
 
 
 @pytest.mark.parametrize("replicas", ["1", "2"])
-def test_bib_requires_one_replica(tmp_path: Path, fake_bin: Path, replicas: str):
+def test_bib_remains_in_the_bulk_identity_set_at_supported_scale(
+    tmp_path: Path, fake_bin: Path, replicas: str
+):
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env["PHOTO_WORKER_PROCESSOR_IDENTITIES"] = (
-        "1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2,1/bib_recognition/1"
-    )
     env["PHOTO_WORKER_REPLICAS"] = replicas
     result = _run("deploy/apply-deployment.sh", env=env)
-    assert result.returncode == (0 if replicas == "1" else 2), result.stderr
-    if replicas == "2":
-        assert "bib_recognition requires PHOTO_WORKER_REPLICAS=1" in result.stderr
-        assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert result.returncode == 0, result.stderr
+    assert "1/bib_recognition/1" in (tmp_path / ".env").read_text()
 
 
 def test_resource_defaults_forwarding_and_rollback():
-    worker = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())["services"][
-        "worker"
-    ]
+    services = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())["services"]
+    worker = services["worker-bulk"]
     assert worker["cpus"] == "${PHOTO_WORKER_CPUS:-1.0}"
     assert worker["mem_limit"] == "${PHOTO_WORKER_MEMORY_LIMIT:-2g}"
-    assert "bib_recognition" not in worker["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
+    assert "bib_recognition" in worker["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
+    assert services["worker-selfie"]["image"] == worker["image"]
     for variable in ("PHOTO_WORKER_CPUS", "PHOTO_WORKER_MEMORY_LIMIT"):
         assert (
             variable

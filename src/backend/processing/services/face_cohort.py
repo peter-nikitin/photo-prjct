@@ -10,7 +10,7 @@ from uuid import UUID
 from django.db.models import F, Q, QuerySet
 from picflow.models import Event
 
-from processing.models import FaceEmbedding
+from processing.models import FaceEmbedding, PhotoFaceEmbeddingProjection
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +50,21 @@ def load_compatible_face_embeddings(
     if not generations:
         raise ValueError("face-embedding generations are required")
 
-    embeddings = compatible_face_embedding_queryset(event, generations)
+    compatible_generation = _projection_generation_predicate(generations)
+    projections = PhotoFaceEmbeddingProjection.objects.filter(
+        compatible_generation,
+        photo__event=event,
+        photo__is_hidden=False,
+        photo__src="",
+        photo__original_key__isnull=False,
+        photo__original_key__gt="",
+        photo__original_size__isnull=False,
+        accepted_attempt__event=event,
+        accepted_attempt__photo_id=F("photo_id"),
+        accepted_attempt__status="succeeded",
+        accepted_attempt__accepted=True,
+        accepted_attempt__face_detections__status="kept",
+    )
 
     rows: list[CompatibleFaceEmbedding] = []
     for (
@@ -64,17 +78,17 @@ def load_compatible_face_embeddings(
         contract_version,
         processor_version,
         configuration_hash,
-    ) in embeddings.values_list(
-        "vector",
-        "model_version",
-        "detection_id",
-        "detection__attempt__photo_id",
-        "detection__attempt__photo__event_id",
-        "detection__attempt__event_id",
-        "detection__attempt_id",
-        "detection__attempt__contract_version",
-        "detection__attempt__processor_version",
-        "detection__attempt__run__configuration_hash",
+    ) in projections.values_list(
+        "accepted_attempt__face_detections__embedding__vector",
+        "accepted_attempt__face_detections__embedding__model_version",
+        "accepted_attempt__face_detections__id",
+        "photo_id",
+        "photo__event_id",
+        "accepted_attempt__event_id",
+        "accepted_attempt_id",
+        "contract_version",
+        "processor_version",
+        "configuration_hash",
     ).iterator(chunk_size=2_000):
         if not isinstance(vector, list) or len(vector) != dimensions:
             continue
@@ -111,36 +125,19 @@ def compatible_face_embedding_queryset(
         raise ValueError("face-embedding generations are required")
     compatible_generation = Q()
     for generation in generations:
-        if not isinstance(generation, Mapping):
-            raise ValueError("invalid face-embedding generation")
-        required = (
-            "model",
-            "contract_version",
-            "processor_type",
-            "processor_version",
-            "configuration",
-            "configuration_hash",
-        )
-        if any(key not in generation for key in required):
-            raise ValueError("invalid face-embedding generation")
-        configuration_hash = generation["configuration_hash"]
-        if not isinstance(configuration_hash, str):
-            raise ValueError("invalid face-embedding generation")
+        _validate_generation(generation)
         compatible_generation |= Q(
             model_version=generation["model"],
             detection__attempt__contract_version=generation["contract_version"],
             detection__attempt__processor_type=generation["processor_type"],
             detection__attempt__processor_version=generation["processor_version"],
-            detection__attempt__configuration=generation["configuration"],
             detection__attempt__job__contract_version=generation["contract_version"],
             detection__attempt__job__processor_type=generation["processor_type"],
             detection__attempt__job__processor_version=generation["processor_version"],
-            detection__attempt__job__configuration=generation["configuration"],
             detection__attempt__job__configuration_hash=generation["configuration_hash"],
             detection__attempt__run__contract_version=generation["contract_version"],
             detection__attempt__run__processor_type=generation["processor_type"],
             detection__attempt__run__processor_version=generation["processor_version"],
-            detection__attempt__run__configuration=generation["configuration"],
             detection__attempt__run__configuration_hash=generation["configuration_hash"],
             detection__attempt__face_embedding_projections__contract_version=generation[
                 "contract_version"
@@ -151,22 +148,62 @@ def compatible_face_embedding_queryset(
             detection__attempt__face_embedding_projections__configuration_hash=generation[
                 "configuration_hash"
             ],
-        )
-    return (
-        FaceEmbedding.objects.filter(
-            detection__status="kept",
-            detection__attempt__event=event,
-            detection__attempt__status="succeeded",
-            detection__attempt__accepted=True,
-            detection__attempt__face_embedding_projections__photo_id=F(
-                "detection__attempt__photo_id"
+            detection__attempt__face_embedding_projections__accepted_attempt_id=F(
+                "detection__attempt_id"
             ),
-            detection__attempt__photo__event=event,
-            detection__attempt__photo__src="",
-            detection__attempt__photo__original_key__isnull=False,
-            detection__attempt__photo__original_key__gt="",
-            detection__attempt__photo__original_size__isnull=False,
         )
-        .filter(compatible_generation)
-        .order_by("detection_id")
+    return FaceEmbedding.objects.filter(
+        detection__status="kept",
+        detection__attempt__event=event,
+        detection__attempt__status="succeeded",
+        detection__attempt__accepted=True,
+        detection__attempt__face_embedding_projections__photo_id=F("detection__attempt__photo_id"),
+        detection__attempt__photo__event=event,
+        detection__attempt__photo__src="",
+        detection__attempt__photo__original_key__isnull=False,
+        detection__attempt__photo__original_key__gt="",
+        detection__attempt__photo__original_size__isnull=False,
+    ).filter(compatible_generation)
+
+
+def _projection_generation_predicate(
+    generations: Sequence[Mapping[str, object]],
+) -> Q:
+    compatible_generation = Q()
+    for generation in generations:
+        _validate_generation(generation)
+        compatible_generation |= Q(
+            contract_version=generation["contract_version"],
+            processor_version=generation["processor_version"],
+            configuration_hash=generation["configuration_hash"],
+            accepted_attempt__contract_version=generation["contract_version"],
+            accepted_attempt__processor_type=generation["processor_type"],
+            accepted_attempt__processor_version=generation["processor_version"],
+            accepted_attempt__job__contract_version=generation["contract_version"],
+            accepted_attempt__job__processor_type=generation["processor_type"],
+            accepted_attempt__job__processor_version=generation["processor_version"],
+            accepted_attempt__job__configuration_hash=generation["configuration_hash"],
+            accepted_attempt__run__contract_version=generation["contract_version"],
+            accepted_attempt__run__processor_type=generation["processor_type"],
+            accepted_attempt__run__processor_version=generation["processor_version"],
+            accepted_attempt__run__configuration_hash=generation["configuration_hash"],
+            accepted_attempt__face_detections__embedding__model_version=generation["model"],
+        )
+    return compatible_generation
+
+
+def _validate_generation(generation: Mapping[str, object]) -> None:
+    if not isinstance(generation, Mapping):
+        raise ValueError("invalid face-embedding generation")
+    required = (
+        "model",
+        "contract_version",
+        "processor_type",
+        "processor_version",
+        "configuration",
+        "configuration_hash",
     )
+    if any(key not in generation for key in required) or not isinstance(
+        generation["configuration_hash"], str
+    ):
+        raise ValueError("invalid face-embedding generation")

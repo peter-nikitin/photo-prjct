@@ -32,8 +32,9 @@ worker configuration remains bib-free at 1 CPU and 2 GiB per worker.
   not unpublish the photo. Attempts and sanitized error codes remain available to the event report.
 - Public search is exact and event-scoped. `7` and `007` are different. The bib and selfie forms are
   separate requests.
-- Initial operation uses one worker replica and total worker concurrency one. Face, bib, preview,
-  and metadata work therefore do not overlap within this deployment.
+- Initial operation uses one `worker-bulk` replica. Face, bib, preview, and metadata work do not
+  overlap within that worker. One separate `worker-selfie` handles selfie queries concurrently;
+  `PHOTO_WORKER_REPLICAS` controls only the bulk replica count.
 - This runbook has no backfill, broad requeue, purge, reset, or manual-correction step. Preserve all
   policies, jobs, attempts, errors, projections, and published photos during stop or rollback.
 
@@ -115,27 +116,29 @@ Record the current non-secret repository variables and the current `/opt/photo-p
 rollback can restore the exact prior identity, type order, replica count, CPU, and memory:
 
 ```sh
-gh variable get PHOTO_WORKER_PROCESSOR_IDENTITIES
-gh variable get PHOTO_WORKER_PROCESSOR_TYPES
+gh variable get PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES
+gh variable get PHOTO_WORKER_BULK_PROCESSOR_TYPES
+gh variable get PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES
+gh variable get PHOTO_WORKER_SELFIE_PROCESSOR_TYPES
 gh variable get PHOTO_WORKER_REPLICAS
 gh variable get PHOTO_WORKER_CPUS
 gh variable get PHOTO_WORKER_MEMORY_LIMIT
 ssh -l petrnikitin 111.88.151.64 \
-  'cd /opt/photo-prjct && sed -n "/^PHOTO_WORKER_\(PROCESSOR_IDENTITIES\|PROCESSOR_TYPES\|REPLICAS\|CPUS\|MEMORY_LIMIT\)=/p" .env'
+  'cd /opt/photo-prjct && sed -n "/^PHOTO_WORKER_\(BULK_PROCESSOR_IDENTITIES\|BULK_PROCESSOR_TYPES\|SELFIE_PROCESSOR_IDENTITIES\|SELFIE_PROCESSOR_TYPES\|REPLICAS\|CPUS\|MEMORY_LIMIT\)=/p" .env'
 ```
 
-For the first rollout, the recorded non-bib identity list must be exactly
-`1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2`.
-The recorded processor type list must remain exactly
-`selfie_query,face_embedding,capture_metadata,generate_preview`; bib is polled through its explicit
-identity and must not be added to this priority type list. Preserve the complete identity list in
-the same order and append bib. If either recorded value differs, stop and reconcile the deployment
-contract rather than replacing it with the example below. With the verified current values, set
-the measured contract:
+For the first rollout, the non-bib bulk identity list is
+`1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5`,
+with bulk types `face_embedding,capture_metadata,generate_preview,generate_watermarked_preview`.
+The separate selfie identity/type are `1/selfie_query/2` and `selfie_query`. Record and reconcile
+the actual values before applying the measured contract below. Bib is included in both the bulk
+identity list and its type polling; the selfie role stays disjoint.
 
 ```sh
-gh variable set PHOTO_WORKER_PROCESSOR_IDENTITIES --body '1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2,1/bib_recognition/1'
-gh variable set PHOTO_WORKER_PROCESSOR_TYPES --body 'selfie_query,face_embedding,capture_metadata,generate_preview'
+gh variable set PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES --body '1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1'
+gh variable set PHOTO_WORKER_BULK_PROCESSOR_TYPES --body 'bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview'
+gh variable set PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES --body '1/selfie_query/2'
+gh variable set PHOTO_WORKER_SELFIE_PROCESSOR_TYPES --body 'selfie_query'
 gh variable set PHOTO_WORKER_REPLICAS --body '1'
 gh variable set PHOTO_WORKER_CPUS --body '2'
 gh variable set PHOTO_WORKER_MEMORY_LIMIT --body '5120m'
@@ -143,28 +146,32 @@ gh workflow run deploy.yml --ref main -f deployment_sha="$RELEASE_SHA"
 gh run watch "$DEPLOY_RUN_ID"
 ```
 
-Keep every event disabled during this deployment. Verify one worker, its exact configured image,
-resource limits, non-restarting/OOM state, processor identity, and pinned model files:
+Keep every event disabled during this deployment. Verify one bulk worker and one selfie worker,
+their exact configured image, resource limits, and non-restarting/OOM state. The CPU/memory
+variables apply to both roles, so include both in host headroom measurements. Verify the bulk
+processor identities and pinned bib model files:
 
 ```sh
 ssh -l petrnikitin 111.88.151.64 \
-  'cd /opt/photo-prjct && sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml ps worker'
+  'cd /opt/photo-prjct && sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml ps worker-bulk worker-selfie'
 ssh -l petrnikitin 111.88.151.64 \
-  'cd /opt/photo-prjct && c=$(sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml ps -q worker); sudo docker inspect --format "image={{.Config.Image}} id={{.Image}} running={{.State.Running}} restarting={{.State.Restarting}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} memory={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCpus}}" "$c"'
+  'cd /opt/photo-prjct && for role in worker-bulk worker-selfie; do c=$(sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml ps -q "$role"); sudo docker inspect --format "image={{.Config.Image}} id={{.Image}} running={{.State.Running}} restarting={{.State.Restarting}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} memory={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCpus}}" "$c"; done'
 ssh -l petrnikitin 111.88.151.64 \
-  'cd /opt/photo-prjct && sed -n "/^PHOTO_WORKER_\(PROCESSOR_IDENTITIES\|PROCESSOR_TYPES\|REPLICAS\|CPUS\|MEMORY_LIMIT\)=/p" .env'
+  'cd /opt/photo-prjct && sed -n "/^PHOTO_WORKER_\(BULK_PROCESSOR_IDENTITIES\|BULK_PROCESSOR_TYPES\|SELFIE_PROCESSOR_IDENTITIES\|SELFIE_PROCESSOR_TYPES\|REPLICAS\|CPUS\|MEMORY_LIMIT\)=/p" .env'
 ssh -l petrnikitin 111.88.151.64 \
-  'cd /opt/photo-prjct && sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T worker python -c "from photo_worker.contracts import BIB_INFERENCE_CONFIGURATION_SHA256; from photo_worker.bib_visual import LLAMA_CPP_REVISION,MODEL_REVISION; print(BIB_INFERENCE_CONFIGURATION_SHA256,LLAMA_CPP_REVISION,MODEL_REVISION)"'
+  'cd /opt/photo-prjct && sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T worker-bulk python -c "from photo_worker.contracts import BIB_INFERENCE_CONFIGURATION_SHA256; from photo_worker.bib_visual import LLAMA_CPP_REVISION,MODEL_REVISION; print(BIB_INFERENCE_CONFIGURATION_SHA256,LLAMA_CPP_REVISION,MODEL_REVISION)"'
 ssh -l petrnikitin 111.88.151.64 \
-  'cd /opt/photo-prjct && sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T worker sha256sum /worker/models/bib/Qwen3VL-2B-Instruct-Q4_K_M.gguf /worker/models/bib/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf /worker/models/bib/ch_PP-OCRv5_det_mobile.onnx /worker/models/bib/ch_PP-OCRv5_rec_mobile.onnx /worker/models/bib/ch_ppocr_mobile_v2.0_cls_mobile.onnx /worker/models/bib/dictionary.txt'
+  'cd /opt/photo-prjct && sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T worker-bulk sha256sum /worker/models/bib/Qwen3VL-2B-Instruct-Q4_K_M.gguf /worker/models/bib/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf /worker/models/bib/ch_PP-OCRv5_det_mobile.onnx /worker/models/bib/ch_PP-OCRv5_rec_mobile.onnx /worker/models/bib/ch_ppocr_mobile_v2.0_cls_mobile.onnx /worker/models/bib/dictionary.txt'
 ```
 
 The container must report 5,368,709,120 memory bytes and 2,000,000,000 nano-CPUs. The configured
 identity line must exactly equal
-`PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/selfie_query/2,1/bib_recognition/1`;
+`PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1`;
 this comparison verifies every preserved processor, including watermarked-preview generation, as
 well as the appended bib processor. The configured type line must exactly equal
-`PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview`.
+`PHOTO_WORKER_BULK_PROCESSOR_TYPES=bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview`.
+The selfie values must be `PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=1/selfie_query/2` and
+`PHOTO_WORKER_SELFIE_PROCESSOR_TYPES=selfie_query`.
 The configured image and image ID must match the workflow's amd64 worker artifact. The printed
 revisions and all six file hashes must exactly match this runbook; the workflow build log must also
 contain the network-disabled non-root runtime, face, preview, and bib model smoke successes. Re-run
@@ -236,17 +243,16 @@ First stop new uploads for the affected event and disable its bib checkbox in Ad
 public field and prevents bib enrollment only for photos confirmed afterward; it does not cancel
 already requested work. Preserve the event report and host/container observations.
 
-If the application is healthy and the issue is confined to bib recognition, remove only
-`1/bib_recognition/1` from the repository identity variable. Leave
-`PHOTO_WORKER_PROCESSOR_TYPES` at the unchanged exact four-type value
-`selfie_query,face_embedding,capture_metadata,generate_preview`; bib was never added to it. Restore
-the exact recorded pre-activation replica/CPU/memory values, and redeploy the exact reviewed SHA
-through **Deploy**. Restore two 1 CPU/2 GiB workers only after the bib identity is absent. Verify the
-prior preview/face identities, unchanged type list, worker state, event-disabled query, and public
-health.
+For a worker-level bib stop or rollback, deploy the exact previous successful release SHA through
+the supported canonical **Deploy** rollback path after all affected events are disabled. This also
+applies if the candidate application or shared worker image is unsafe. Use the recorded successful
+release and its deployment configuration; verify the restored image, worker roles and processor
+configuration, resource limits, event-disabled query, and public health.
 
-If the candidate application or shared worker image is unsafe, deploy the exact prior application
-SHA through the ordinary rollback path after all affected events are disabled. Keep the additive
+Do not remove bib manually from the bulk identity/type variables: the current canonical apply
+validation requires those entries and would reject the deployment before changing running workers.
+Event disablement remains the product control for future enrollment and public visibility; it does
+not stop already requested work. Keep the additive
 schema, immutable per-photo policies, jobs, attempts, errors, and `BibReading` rows. Do not reverse
 the migrations, purge data, reset state, issue a broad requeue, or edit recognized numbers.
 
@@ -254,7 +260,7 @@ the migrations, purge data, reset state, issue a broad requeue, or edit recogniz
 
 Enable and upload the explicitly selected second event only after the first event has a complete
 saved cohort, every stop condition is clear, and no quality, publication, privacy, capacity,
-latency, or identity finding remains unresolved. Keep one worker replica, 2 CPUs, 5120 MiB, and
-total concurrency one. Record the same denominator, interval, identities, report, resource/health
+latency, or identity finding remains unresolved. Keep one bulk worker replica, 2 CPUs, 5120 MiB,
+and bulk concurrency one, alongside the separate selfie worker. Record the same denominator, interval, identities, report, resource/health
 metrics, exact queries, and event-isolation evidence. A clean first event is a prerequisite, not a
 substitute for the second event's own evidence.

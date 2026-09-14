@@ -64,13 +64,14 @@ def test_local_adaface_compose_isolated_runtime_contract() -> None:
     )
     assert web_environment["ADAFACE_LOCAL_EXPERIMENT_ENABLED"] == "True"
     assert web_environment["ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD"] == "0.42"
-    worker_environment = compose["services"]["worker"]["environment"]
-    assert worker_environment["PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO"] == "true"
-    assert worker_environment["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == (
-        "3/face_embedding/5,1/selfie_query/2"
-    )
-    assert "PHOTO_WORKER_PROCESSOR_TYPE" not in worker_environment
-    assert "PHOTO_WORKER_PROCESSOR_TYPES" not in worker_environment
+    bulk_environment = compose["services"]["worker-bulk"]["environment"]
+    selfie_environment = compose["services"]["worker-selfie"]["environment"]
+    assert bulk_environment["PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO"] == "true"
+    assert bulk_environment["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == "3/face_embedding/5"
+    assert "PHOTO_WORKER_PROCESSOR_TYPE" not in bulk_environment
+    assert "PHOTO_WORKER_PROCESSOR_TYPES" not in bulk_environment
+    assert selfie_environment["PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO"] == "true"
+    assert selfie_environment["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == "1/selfie_query/2"
     assert (
         "PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO" not in (ROOT / "docker-compose.yml").read_text()
     )

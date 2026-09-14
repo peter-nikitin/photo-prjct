@@ -225,7 +225,10 @@ PHOTO_PROCESSING_WORKER_TOKEN=<new-random-shared-token>
 PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120
 PHOTO_WORKER_BUILD=capture-metadata-v1
 PHOTO_WORKER_LEASE_SECONDS=120
-PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3
+PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3
+PHOTO_WORKER_BULK_PROCESSOR_TYPES=face_embedding,capture_metadata,generate_preview
+PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=1/selfie_query/2
+PHOTO_WORKER_SELFIE_PROCESSOR_TYPES=selfie_query
 ```
 
 Start with `test -f .env || cp .env.example .env`, then edit it. Generate the worker token locally
@@ -235,7 +238,7 @@ and paste it into `.env`; do not use the placeholder, commit it, or echo it agai
 ../../.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-Keep the default `DB_*` values for Compose. `PRIVATE_MEDIA_*` values belong only to `web`; the Compose `worker` service is deliberately given only API URL, the shared worker token, build, and lease duration.
+Keep the default `DB_*` values for Compose. `PRIVATE_MEDIA_*` values belong only to `web`; `worker-bulk` and `worker-selfie` receive the narrow worker environment, including their disjoint identities/types and role timeouts. `PHOTO_WORKER_REPLICAS` counts bulk replicas; canonical deployment also runs one separate selfie worker.
 
 ## Проверка
 
@@ -263,8 +266,8 @@ docker compose exec -e CHECK_EVENT_SLUG=manual-processing web python manage.py s
 There should be two `queued` rows with the same `current_run_id`. Their `face_embedding` states must still be `not_requested`: do not infer that state from missing faces or objects. Start a **preview-only** worker for this finite first phase:
 
 ```bash
-PHOTO_WORKER_PROCESSOR_IDENTITIES=2/generate_preview/1 docker compose --profile worker up --build -d worker
-docker compose logs -f worker
+PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=2/generate_preview/1 PHOTO_WORKER_BULK_PROCESSOR_TYPES=generate_preview docker compose --profile worker up --build -d worker-bulk
+docker compose logs -f worker-bulk
 ```
 
 Expected worker log sequence is `claimed`, `started`, then `succeeded` for one preview at a time. It must contain opaque IDs, stable lifecycle names and durations only: a presigned URL, its query string, the worker token, and S3 credentials must not appear. Leave logs with `Ctrl+C` after both previews finish.
@@ -272,7 +275,7 @@ Expected worker log sequence is `claimed`, `started`, then `succeeded` for one p
 Stop the preview-only worker before inspecting the hand-off. This preserves the face jobs in their queued state for the next explicit phase:
 
 ```bash
-docker compose --profile worker stop worker
+docker compose --profile worker stop worker-bulk
 ```
 
 Run the preview-state query again. Expected terminal results are:
@@ -292,9 +295,9 @@ The command must report one derivative per confirmed photo and `queued`, `2`, `3
 Only after recording the queued hand-off, run a separate **face-only** phase and then stop it too:
 
 ```bash
-PHOTO_WORKER_PROCESSOR_IDENTITIES=2/face_embedding/3 docker compose --profile worker up --build -d worker
-docker compose logs -f worker
-docker compose --profile worker stop worker
+PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=2/face_embedding/3 PHOTO_WORKER_BULK_PROCESSOR_TYPES=face_embedding docker compose --profile worker up --build -d worker-bulk
+docker compose logs -f worker-bulk
+docker compose --profile worker stop worker-bulk
 ```
 
 Confirm that the same face rows have terminal `succeeded` state after this second phase. A failure,
@@ -306,21 +309,22 @@ docker compose exec -e CHECK_EVENT_SLUG=manual-processing web python manage.py s
 
 ## Небольшая проверка gallery/SCRFD и selfie v2
 
-После успешного gallery-пути запустите worker с обычным набором product identities и типом
-`selfie_query`, затем на публичной странице этого free event отправьте только своё тестовое селфи.
+После успешного gallery-пути запустите отдельный `worker-selfie` с identity `1/selfie_query/2` и
+типом `selfie_query`, затем на публичной странице этого free event отправьте только своё тестовое селфи.
 Не используйте customer media, не сохраняйте URL результата и не печатайте worker logs с query
 parameters.
 
 ```bash
-PHOTO_WORKER_PROCESSOR_IDENTITIES=1/capture_metadata/2,2/generate_preview/1,2/face_embedding/3 \
-PHOTO_WORKER_PROCESSOR_TYPES=selfie_query,face_embedding,capture_metadata,generate_preview \
-  docker compose --profile worker up --build -d worker
+PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=1/selfie_query/2 \
+PHOTO_WORKER_SELFIE_PROCESSOR_TYPES=selfie_query \
+  docker compose --profile worker up --build -d worker-selfie
 ```
 
 The gallery rows must retain contract `2` / face-embedding `3`; the resulting selfie job and claim
 must identify contract `1` / `selfie_query` `2`. A successful foreground-face search or the stable
 terminal `no_face_detected`/`multiple_faces_detected` outcome is acceptable. A model-load,
-result-contract, or worker-claim error fails the local check. Stop the worker after recording this
+result-contract, or worker-claim error fails the local check. Run
+`docker compose --profile worker stop worker-selfie` after recording this
 small acceptance result; it is not a staging or production deployment authorization.
 
 Read the event-scoped immutable evidence without changing it:
@@ -331,49 +335,18 @@ docker compose exec -e CHECK_EVENT_SLUG=manual-processing web python manage.py s
 
 The run must be `closed`, with one immutable report for this exact event cohort. Its report has `cohort_size: 2`, a denominator of 2, two successes, retry/stale counts, accepted output byte/dimension/download/compute/upload-duration summaries, bounded warnings and stable failures. It must not contain an original or derivative key, staging identity, signed grant, image bytes, EXIF value, checksum value, or face result. Treat the persisted durations as measurements; do not compare them to a fixed wall-clock threshold. Worker concurrency is one, so the two attempts are deliberately serial.
 
-## Локальный benchmark пропускной способности face embedding
+## Исторический benchmark пропускной способности face embedding
 
-Этот benchmark создаёт отдельный конечный cohort и не меняет обычные `face_embedding` jobs,
-состояния или векторы. Зафиксированный experiment — ровно 114 photos: baseline с одной replica,
-затем replay того же закрытого cohort с двумя replicas. Не печатайте логи worker для этой
-проверки: они не нужны для метрик и могут содержать operational identifiers.
+Зафиксированный experiment — ровно 114 photos: baseline с одной replica, затем replay того же
+закрытого cohort с двумя replicas. Его сохранённые результаты остаются историческим evidence.
 
-```bash
-# Baseline: ровно 114 photos, одна benchmark replica.
-docker compose exec web python manage.py run_face_embedding_benchmark \
-  --event <event-slug> --limit 114 --label baseline-one-replica
-PHOTO_WORKER_PROCESSOR_IDENTITIES=3/face_embedding_benchmark/1 \
-  docker compose --profile worker up --build -d --scale worker=1 worker
+Текущий worker/deployment contract не поддерживает отдельный режим `face_embedding_benchmark`:
+worker отклоняет и его processor type, и benchmark identity; canonical Deploy также отклоняет
+эту конфигурацию. Не запускайте этот benchmark через Compose или workflow **Face-embedding
+benchmark**, не меняйте для него worker variables и не создавайте новые baseline/replay jobs.
+Возобновление измерений требует отдельно согласованного изменения поддерживаемого контракта.
 
-# Дождитесь закрытия baseline run, остановите одну replica и сохраните его UUID локально.
-docker compose --profile worker stop worker
-
-# Replay: повторяет те же 114 photos с двумя replicas.
-docker compose exec web python manage.py run_face_embedding_benchmark \
-  --source-run <closed-baseline-run-uuid> --label replay-two-replicas
-PHOTO_WORKER_PROCESSOR_IDENTITIES=3/face_embedding_benchmark/1 \
-  docker compose --profile worker up --build -d --scale worker=2 worker
-```
-
-### Canonical deployment: ручной запуск через GitHub Actions
-
-Перед запуском сохраните текущие repository variables `PHOTO_WORKER_PROCESSOR_IDENTITIES`,
-`PHOTO_WORKER_REPLICAS` и `PHOTO_PROCESSING_PREVIEW_ENABLED`. Для baseline установите
-`3/face_embedding_benchmark/1`, `1` и `False` соответственно, выполните normal **Deploy**,
-затем вручную запустите workflow **Face-embedding benchmark** с `operation=baseline` и
-slug event. Он создаёт ровно 114 benchmark jobs и печатает `BENCHMARK_RUN_ID`; дождитесь закрытия
-этого run. Для replay установите replicas `2`, снова выполните normal **Deploy**, затем
-запустите тот же workflow с `operation=replay` и baseline UUID. `operation=report` печатает только
-агрегированные closed-run метрики для указанного UUID; UUID, event/configuration, source links,
-job/attempt/photo IDs и storage details в вывод не попадают.
-
-Workflow принимает только slug/UUID, проверяет single benchmark identity, ожидаемую replica count
-и `PHOTO_PROCESSING_PREVIEW_ENABLED=False` на VM, а в контейнере запускает только Django management
-commands. После измерений восстановите сохранённые `PHOTO_WORKER_PROCESSOR_IDENTITIES`,
-`PHOTO_WORKER_REPLICAS` и `PHOTO_PROCESSING_PREVIEW_ENABLED`, затем вручную запустите normal
-**Deploy** до возвращения обычной обработки фото.
-
-После закрытия выбранного run получите только aggregate-метрики через Django. Команда ниже
+Для уже существующего закрытого run получите только aggregate-метрики через Django. Команда ниже
 является read-only (`SELECT`), не выводит ID, object keys, tokens, URLs, embeddings или vectors;
 она включает sample/retry/expired/stale/lease/error-code counts, input-size buckets и все
 сохранённые timing percentiles. Benchmark contract намеренно не сохраняет исходные image
@@ -498,7 +471,7 @@ record that fact rather than installing tools during a benchmark.
 Stop the worker first. This preserves all jobs, attempts, reports, originals, and the local PostgreSQL volume for inspection:
 
 ```bash
-docker compose --profile worker stop worker
+docker compose --profile worker stop worker-bulk worker-selfie
 docker compose down
 ```
 
@@ -510,7 +483,7 @@ For a local functional rollback, set `PHOTO_PROCESSING_ENABLED=False` in the ign
 | --- | --- |
 | Upload page is 404 or access is denied | Confirm `PHOTO_UPLOAD_ENABLED=True`; log in as a superuser or add the user to `Photographer`. |
 | Browser upload fails before confirmation | `PRIVATE_MEDIA_ALLOWED_ORIGINS` and the bucket CORS rule must be exactly `http://localhost:8000`; confirm real private bucket credentials and retry the page flow. |
-| Worker logs `worker_unauthorized` | Confirm `PHOTO_PROCESSING_ENABLED=True` and a nonempty random `PHOTO_PROCESSING_WORKER_TOKEN` in the same root `.env`; recreate `web` and `worker` with `docker compose --profile worker up -d --force-recreate web worker`. Never print either token. |
+| Worker logs `worker_unauthorized` | Confirm `PHOTO_PROCESSING_ENABLED=True` and a nonempty random `PHOTO_PROCESSING_WORKER_TOKEN` in the same root `.env`; recreate `web`, `worker-bulk`, and `worker-selfie` with `docker compose --profile worker up -d --force-recreate web worker-bulk worker-selfie`. Never print either token. |
 | Worker logs `storage_unavailable` | The object was already confirmed, so first inspect web logs and the private bucket credentials/end point. Django, not worker, signs the GET; verify the final object still exists and that the service account can sign a GET for it. |
 | `Invalid HTTP_HOST header` | Include `localhost,127.0.0.1,web` in `ALLOWED_HOSTS`, then recreate `web`. |
 | A worker stops during a real job | After its 120-second lease expires, start a worker again. Its next `claim` recovers the expired attempt; the state becomes `retry_wait` for the configured 30–35 second backoff and is then claimed again, up to three total attempts. Query the state/attempt commands above rather than inferring recovery from logs. |
@@ -519,8 +492,8 @@ For a local functional rollback, set `PHOTO_PROCESSING_ENABLED=False` in the ign
 The expected isolated image check is also available when diagnosing a build/start problem:
 
 ```bash
-docker compose --env-file .env.example --profile worker build worker
-docker compose --env-file .env.example --profile worker run --rm --no-deps worker
+docker compose --env-file .env.example --profile worker build worker-bulk
+docker compose --env-file .env.example --profile worker run --rm --no-deps worker-bulk
 ```
 
 The first command builds the worker image. The second is intentionally expected to exit with `ValueError: worker API URL and token are required`: the example configuration has no token, proving the process fails before it can request work. It is not the real-S3 manual test above.

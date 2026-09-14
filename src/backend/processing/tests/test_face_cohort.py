@@ -5,7 +5,9 @@ import json
 from datetime import date
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -174,3 +176,24 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
             {baseline.detection_id, candidate.detection_id},
         )
         self.assertNotIn(mismatched.detection_id, [row.detection_id for row in rows])
+
+    def test_hot_cohort_query_starts_from_projection_scalar_identity_without_wide_sort(
+        self,
+    ) -> None:
+        """The hot path must not regress to JSON equality or globally sort embedding vectors."""
+        generation = self.generation("projection-first")
+        embedding = self.make_projected_embedding(generation, vector=[1.0, 0.0])
+
+        with CaptureQueriesContext(connection) as queries:
+            rows = load_compatible_face_embeddings(self.event, (generation,), 2)
+
+        cohort_sql = next(
+            query["sql"]
+            for query in queries
+            if 'FROM "processing_photofaceembeddingprojection"' in query["sql"]
+        )
+        self.assertEqual([row.detection_id for row in rows], [embedding.detection_id])
+        self.assertNotIn('"processing_processingattempt"."configuration"', cohort_sql)
+        self.assertNotIn('"processing_processingjob"."configuration"', cohort_sql)
+        self.assertNotIn('"processing_eventprocessingrun"."configuration"', cohort_sql)
+        self.assertNotIn("ORDER BY", cohort_sql.upper())

@@ -19,7 +19,10 @@ from processing.models import (
     EventFaceClusterActivation,
     FaceEmbedding,
 )
-from processing.services.face_cohort import compatible_face_embedding_queryset
+from processing.services.face_cohort import (
+    compatible_face_embedding_queryset,
+    load_compatible_face_embeddings,
+)
 from processing.services.face_quality import active_face_embedding_generations
 
 from selfie_search.images import PreparedSelfie
@@ -182,44 +185,56 @@ def process_gallery_photo_search(
     now: datetime | None = None,
     paid_watermarked_previews_enabled: bool = False,
 ) -> SelfieSearch:
-    """Publish a queued gallery-origin search once, under its row lock."""
-    now = now or timezone.now()
+    """Rank an immutable gallery snapshot before briefly locking to publish it."""
     try:
+        snapshot = SelfieSearch.objects.select_related("event").get(pk=search.pk)
+        if snapshot.status != SelfieSearch.Status.QUEUED:
+            return snapshot
+        if snapshot.configuration.get("processor") != "gallery_photo_query":
+            raise GallerySearchUnavailable()
+        source_candidate = _gallery_source_candidate(
+            event=snapshot.event,
+            configuration=snapshot.configuration,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
+        candidates = compatible_search_candidates(snapshot)
+        ranked = rank_embeddings(snapshot, source_candidate.vector, candidates)
+        source = snapshot.configuration.get("query_source")
+        if not isinstance(source, dict) or not any(
+            row.photo_id == source.get("photo_id") for row in ranked
+        ):
+            raise _MissingGallerySourceResult()
+        expansion = _expand_gallery_ranking(
+            search=snapshot,
+            ranked=ranked,
+            query=source_candidate.vector,
+        )
+        eligible_photo_count = len({candidate.photo_id for candidate in candidates})
+        eligible_face_count = len(candidates)
         with transaction.atomic():
             locked_search = (
                 SelfieSearch.objects.select_for_update().select_related("event").get(pk=search.pk)
             )
             if locked_search.status != SelfieSearch.Status.QUEUED:
                 return locked_search
-            if locked_search.configuration.get("processor") != "gallery_photo_query":
+            if (
+                locked_search.event_id != snapshot.event_id
+                or locked_search.configuration_hash != snapshot.configuration_hash
+                or locked_search.configuration != snapshot.configuration
+            ):
                 raise GallerySearchUnavailable()
-
-            source_candidate = _gallery_source_candidate(
+            current_source = _gallery_source_candidate(
                 event=locked_search.event,
                 configuration=locked_search.configuration,
                 paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             )
-            candidates = _compatible_candidates(
-                event=locked_search.event,
-                configuration=locked_search.configuration,
-            )
-            ranked = rank_embeddings(locked_search, source_candidate.vector, candidates)
-            source = locked_search.configuration.get("query_source")
-            if not isinstance(source, dict) or not any(
-                row.photo_id == source.get("photo_id") for row in ranked
-            ):
-                raise _MissingGallerySourceResult()
-            expansion = _expand_gallery_ranking(
-                search=locked_search,
-                ranked=ranked,
-                query=source_candidate.vector,
-            )
+            if current_source != source_candidate:
+                raise GallerySearchUnavailable()
+            now = now or timezone.now()
             _persist_gallery_results(search=locked_search, expansion=expansion)
             locked_search.status = SelfieSearch.Status.READY
-            locked_search.eligible_photo_count = len(
-                {candidate.photo_id for candidate in candidates}
-            )
-            locked_search.eligible_face_count = len(candidates)
+            locked_search.eligible_photo_count = eligible_photo_count
+            locked_search.eligible_face_count = eligible_face_count
             locked_search.matched_photo_count = expansion.final_matched_photo_count
             locked_search.final_matched_photo_count = expansion.final_matched_photo_count
             locked_search.direct_matched_photo_count = expansion.direct_matched_photo_count
@@ -254,9 +269,13 @@ def process_gallery_photo_search(
                 ]
             )
     except GallerySearchUnavailable:
-        return _terminal_gallery_failure(search_id=search.pk, status="search_unavailable", now=now)
+        return _terminal_gallery_failure(
+            search_id=search.pk, status="search_unavailable", now=now or timezone.now()
+        )
     except (RankingError, _MissingGallerySourceResult):
-        return _terminal_gallery_failure(search_id=search.pk, status="failed", now=now)
+        return _terminal_gallery_failure(
+            search_id=search.pk, status="failed", now=now or timezone.now()
+        )
     except DatabaseError as error:
         raise GallerySearchFailed() from error
     return locked_search
@@ -361,11 +380,27 @@ def _gallery_source_candidate(
 
 def compatible_search_candidates(search: SelfieSearch) -> list[CandidateEmbedding]:
     """Load the compatible event cohort without persisting intermediate rows."""
-    candidates = _compatible_candidates(event=search.event, configuration=search.configuration)
-    search.eligible_photo_count = len({candidate.photo_id for candidate in candidates})
-    search.eligible_face_count = len(candidates)
-    search.save(update_fields=["eligible_photo_count", "eligible_face_count"])
-    return candidates
+    configuration = search.configuration
+    generations = configuration.get("gallery_face_embedding_generations")
+    dimensions = configuration.get("embedding_dimensions")
+    if not isinstance(generations, list) or not all(
+        isinstance(generation, dict) for generation in generations
+    ):
+        raise ValueError("invalid face-embedding generation")
+    if isinstance(dimensions, bool) or not isinstance(dimensions, int):
+        raise ValueError("invalid face-embedding dimensions")
+    return [
+        CandidateEmbedding(
+            vector=row.vector,
+            model_version=row.model_version,
+            detection_id=row.detection_id,
+            photo_id=row.photo_id,
+            photo_event_id=row.photo_event_id,
+            attempt_event_id=row.attempt_event_id,
+            attempt_photo_id=row.attempt_photo_id,
+        )
+        for row in load_compatible_face_embeddings(search.event, generations, dimensions)
+    ]
 
 
 def resolve_public_search(event_slug: str, public_token: str) -> SelfieSearch:
@@ -424,44 +459,6 @@ def _search_parameters(model: str) -> tuple[int, float]:
     if model == "adaface-ir18-webface4m":
         return 512, 0.42
     raise ValueError("invalid face-embedding generation")
-
-
-def _compatible_candidates(
-    *,
-    event: Event,
-    configuration: dict[str, object],
-    photo_ids: Iterable[str] | None = None,
-):
-    embeddings = _compatible_embeddings(
-        event=event,
-        configuration=configuration,
-        photo_ids=photo_ids,
-    )
-    dimensions = configuration["embedding_dimensions"]
-    return [
-        CandidateEmbedding(
-            vector=vector,
-            model_version=model_version,
-            detection_id=detection_id,
-            photo_id=str(photo_id),
-            photo_event_id=photo_event_id,
-            attempt_event_id=attempt_event_id,
-            attempt_photo_id=photo_id,
-        )
-        for vector, model_version, detection_id, photo_id, photo_event_id, attempt_event_id in (
-            embeddings.order_by("detection_id")
-            .values_list(
-                "vector",
-                "model_version",
-                "detection_id",
-                "detection__attempt__photo_id",
-                "detection__attempt__photo__event_id",
-                "detection__attempt__event_id",
-            )
-            .iterator(chunk_size=2_000)
-        )
-        if isinstance(vector, list) and len(vector) == dimensions
-    ]
 
 
 def _compatible_gallery_embeddings(

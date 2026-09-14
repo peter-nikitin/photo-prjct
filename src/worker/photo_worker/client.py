@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,6 +92,8 @@ class HttpClient:
     ) -> None:
         if not api_url.startswith(("http://", "https://")) or not token:
             raise ValueError("worker API URL and token are required")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("worker HTTP timeout must be finite and positive")
         self._api_url = api_url.rstrip("/")
         self._token = token
         self._timeout_seconds = timeout_seconds
@@ -122,7 +125,7 @@ class HttpClient:
         except HTTPError as error:
             error.close()
             raise _api_error(error.code) from None
-        except URLError:
+        except (TimeoutError, URLError):
             raise ApiError("network_interruption", retryable=True) from None
         try:
             value = json.loads(raw)

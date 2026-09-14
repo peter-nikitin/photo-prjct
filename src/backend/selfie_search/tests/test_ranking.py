@@ -87,6 +87,30 @@ class RankingTests(TestCase):
         self.assertAlmostEqual(ranked[2].cosine_distance, 0.363)
         self.assertEqual(len({row.photo_id for row in ranked}), len(ranked))
 
+    def test_equal_distance_faces_use_detection_id_as_the_stable_tie_breaker(self) -> None:
+        """Reversing database row order must not change the accepted evidence detection."""
+        later_detection = uuid4()
+        earlier_detection = uuid4()
+        if earlier_detection.int > later_detection.int:
+            earlier_detection, later_detection = later_detection, earlier_detection
+        vector = [0.8, 0.6] + [0.0] * 126
+        candidates = [
+            CandidateEmbedding(
+                model_version="sface",
+                vector=vector,
+                detection_id=detection_id,
+                photo_id="same-photo",
+                photo_event_id=self.event.id,
+                attempt_event_id=self.event.id,
+                attempt_photo_id="same-photo",
+            )
+            for detection_id in (later_detection, earlier_detection)
+        ]
+
+        ranked = rank_embeddings(self.search, [1.0] + [0.0] * 127, candidates)
+
+        self.assertEqual(ranked[0].detection_id, earlier_detection)
+
     def test_rank_search_clamps_floating_point_distance_to_cosine_bounds(self) -> None:
         vector = [float((index % 17) - 8) for index in range(128)]
         norm = sqrt(sum(item * item for item in vector))

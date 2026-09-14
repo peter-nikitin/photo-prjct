@@ -4,17 +4,21 @@ import hashlib
 import json
 from datetime import date, timedelta
 from math import sqrt
+from queue import Queue
+from threading import Event as ThreadEvent
+from threading import Thread
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError, connection
-from django.test import TestCase, override_settings
+from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
+from processing.contracts import ClaimedJob
 from processing.models import (
     EventFaceClusterActivation,
     EventProcessingRun,
@@ -30,10 +34,13 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.enrollment import (
+    CAPTURE_METADATA_PROCESSOR_VERSION,
     CONTRACT_VERSION,
     FACE_EMBEDDING_CONFIGURATION,
     FACE_EMBEDDING_PROCESSOR_VERSION,
+    request_capture_metadata,
 )
+from processing.services.jobs import claim_job, complete_attempt
 from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAttempt,
@@ -43,6 +50,7 @@ from selfie_search.models import (
     SelfieSearchResult,
 )
 from selfie_search.services.jobs import (
+    ClaimedSearchJob,
     CleanupPending,
     SearchCompletionConflict,
     claim_search_job,
@@ -344,6 +352,43 @@ class SearchJobTests(TestCase):
         self.assertTrue(late.stale)
         self.assertTrue(repeated.stale)
         self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 0)
+
+    def test_lease_expiring_during_unlocked_ranking_cannot_publish(self) -> None:
+        search = self.make_search()
+        claimed_at = timezone.now()
+        claimed = self.claim(search, now=claimed_at)
+        publication_time = claimed_at + timedelta(seconds=121)
+        clock = [claimed_at]
+
+        def advance_past_expiry(_search: SelfieSearch) -> list[object]:
+            clock[0] = publication_time
+            return []
+
+        with (
+            patch("selfie_search.services.jobs.timezone.now", side_effect=lambda: clock[0]),
+            patch(
+                "selfie_search.services.jobs.compatible_search_candidates",
+                side_effect=advance_past_expiry,
+            ),
+        ):
+            completion = complete_search_attempt(
+                claimed.attempt.id,
+                result=self.result(),
+                storage=self.storage,
+                jitter=lambda _low, _high: 0,
+            )
+
+        search.refresh_from_db()
+        job = SelfieSearchJob.objects.get(search=search)
+        completion.attempt.refresh_from_db()
+        self.assertTrue(completion.stale)
+        self.assertEqual(completion.attempt.status, SelfieSearchAttempt.Status.EXPIRED)
+        self.assertEqual(completion.attempt.terminal_at, publication_time)
+        self.assertEqual(job.status, SelfieSearchJob.Status.RETRY_WAIT)
+        self.assertEqual(job.available_at, publication_time + timedelta(seconds=30))
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 0)
+        self.assertEqual(self.storage.deleted, [])
 
     @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
     def test_enabled_completion_persists_direct_and_cluster_provenance_before_cleanup(self) -> None:
@@ -877,3 +922,118 @@ class SearchJobTests(TestCase):
         self.assertEqual(ready.attempt.status, SelfieSearchAttempt.Status.SUCCEEDED)
         self.assertEqual(empty_search.status, SelfieSearch.Status.READY)
         self.assertEqual(empty_search.matched_photo_count, 1)
+
+
+class SearchCompletionConcurrencyTests(TransactionTestCase):
+    """Slow exact ranking must not retain the publication row locks."""
+
+    def setUp(self) -> None:
+        self.user = get_user_model().objects.create_user(username="unlocked-ranking-owner")
+        self.event = Event.objects.create(
+            name="Unlocked ranking event",
+            slug="unlocked-ranking-event",
+            start_date=date(2026, 9, 14),
+            end_date=date(2026, 9, 14),
+            city="Moscow",
+            timezone_name="Europe/Moscow",
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
+        )
+
+    def make_search(self, token: str) -> SelfieSearch:
+        search = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest=token * 64,
+            temporary_object_key=f"selfie-search/{token * 32}",
+            configuration=submission_configuration(
+                event=self.event,
+                content_type="image/jpeg",
+                content_size=1,
+            ),
+        )
+        SelfieSearchJob.objects.create(search=search, configuration=search.configuration)
+        return search
+
+    def test_paused_cohort_load_keeps_publication_rows_unlocked_and_another_claim_moving(
+        self,
+    ) -> None:
+        first = self.make_search("a")
+        second = self.make_search("b")
+        photo = Photo.objects.create(
+            id="unlocked-ranking-photo",
+            event=self.event,
+            uploaded_by=self.user,
+            original_key="originals/unlocked-ranking-photo.jpg",
+            original_filename="unlocked-ranking-photo.jpg",
+            original_size=1,
+            original_content_type="image/jpeg",
+            uploaded_at=timezone.now(),
+        )
+        request_capture_metadata(photo)
+        first_claim = claim_search_job(
+            contract_version=1,
+            processor_type="selfie_query",
+            processor_version=2,
+            worker_build="worker-test",
+        )
+        assert isinstance(first_claim, ClaimedSearchJob)
+        cohort_started = ThreadEvent()
+        allow_cohort = ThreadEvent()
+        errors: Queue[BaseException] = Queue()
+
+        def paused_candidates(_search: SelfieSearch):
+            cohort_started.set()
+            if not allow_cohort.wait(timeout=10):
+                raise TimeoutError("test did not release cohort load")
+            return []
+
+        def complete_first() -> None:
+            close_old_connections()
+            try:
+                complete_search_attempt(
+                    first_claim.attempt.id,
+                    result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
+                    storage=RecordingStorage(),
+                )
+            except BaseException as error:
+                errors.put(error)
+            finally:
+                close_old_connections()
+
+        with patch(
+            "selfie_search.services.jobs.compatible_search_candidates",
+            side_effect=paused_candidates,
+        ):
+            thread = Thread(target=complete_first)
+            thread.start()
+            self.assertTrue(cohort_started.wait(timeout=10))
+            lock_error = None
+            try:
+                with transaction.atomic():
+                    SelfieSearch.objects.select_for_update(nowait=True).get(pk=first.pk)
+            except DatabaseError as error:
+                lock_error = error
+                connection.close()
+            second_claim = claim_search_job(
+                contract_version=1,
+                processor_type="selfie_query",
+                processor_version=2,
+                worker_build="worker-test",
+            )
+            assert isinstance(second_claim, ClaimedSearchJob)
+            photo_claim = claim_job(
+                contract_version=CONTRACT_VERSION,
+                processor_type="capture_metadata",
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+                worker_build="bulk-worker-test",
+            )
+            assert isinstance(photo_claim, ClaimedJob)
+            complete_attempt(photo_claim.attempt.id, result={"capture_time": None})
+            allow_cohort.set()
+            thread.join(timeout=10)
+
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(lock_error)
+        self.assertTrue(errors.empty(), list(errors.queue))
+        self.assertEqual(second_claim.job.search_id, second.id)
+        photo_claim.job.refresh_from_db()
+        self.assertEqual(photo_claim.job.status, ProcessingJob.Status.SUCCEEDED)

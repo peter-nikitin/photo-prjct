@@ -184,6 +184,10 @@ class WorkerConfig:
         token = os.environ["PHOTO_WORKER_TOKEN"]
         build = os.environ.get("PHOTO_WORKER_BUILD", "capture-metadata-v1")
         lease = int(os.environ.get("PHOTO_WORKER_LEASE_SECONDS", "120"))
+        try:
+            http_timeout_seconds = float(os.environ.get("PHOTO_WORKER_HTTP_TIMEOUT_SECONDS", "180"))
+        except ValueError:
+            raise ValueError("worker HTTP timeout must be a number") from None
         raw_identities = os.environ.get("PHOTO_WORKER_PROCESSOR_IDENTITIES", "")
         singular = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPE", PROCESSOR_TYPE)
         plural = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPES")
@@ -203,7 +207,7 @@ class WorkerConfig:
                 processor_types=processor_types,
                 log_secrets=(token,),
             ),
-            HttpClient(api_url, token),
+            HttpClient(api_url, token, timeout_seconds=http_timeout_seconds),
         )
 
 

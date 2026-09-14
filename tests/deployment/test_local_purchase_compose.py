@@ -113,13 +113,16 @@ def test_local_purchase_compose_exposes_only_review_ports_and_all_workers() -> N
         compose["services"]["minio"]["environment"]["MINIO_API_CORS_ALLOW_ORIGIN"]
         == "http://127.0.0.1:8000,http://localhost:8000"
     )
-    worker = compose["services"]["worker"]
+    worker = compose["services"]["worker-bulk"]
     assert (
         "2/generate_watermarked_preview/1"
         in worker["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
     )
     assert worker["environment"]["PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO"] == "true"
     assert worker["depends_on"]["web"]["condition"] == "service_healthy"
+    selfie_worker = compose["services"]["worker-selfie"]
+    assert selfie_worker["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == ("1/selfie_query/2")
+    assert selfie_worker["environment"]["PHOTO_WORKER_ALLOW_INSECURE_LOCAL_MINIO"] == "true"
     commerce_worker = compose["services"]["commerce-worker"]
     assert commerce_worker["environment"]["COMMERCE_WORKER_FACTORY"] == (
         "commerce.runtime.commerce_worker_factory"

@@ -109,7 +109,7 @@ require_empty_destination() {
 }
 
 require_stopped_writers() {
-    for service in web worker; do
+    for service in web worker worker-bulk worker-selfie; do
         writer_containers="$(docker ps --format '{{.Names}}' | sed -n "/^$source_project[-_]$service[-_]/p")" || fail "could not inventory source writers"
         [ -z "$writer_containers" ] || fail "web or worker writers are still running"
     done
@@ -155,6 +155,9 @@ clear_candidate_compose_interpolation() {
         PHOTO_PROCESSING_ENABLED PHOTO_PROCESSING_PREVIEW_ENABLED PHOTO_PROCESSING_FACE_ENABLED \
         PHOTO_PROCESSING_WORKER_TOKEN PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS \
         PHOTO_PROCESSING_MAX_REQUEST_BYTES PHOTO_WORKER_BUILD PHOTO_WORKER_LEASE_SECONDS \
+        PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES PHOTO_WORKER_BULK_PROCESSOR_TYPES \
+        PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES \
+        PHOTO_WORKER_SELFIE_PROCESSOR_TYPES PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS \
         PHOTO_WORKER_PROCESSOR_IDENTITIES PHOTO_WORKER_PROCESSOR_TYPES PHOTO_WORKER_REPLICAS \
         PHOTO_WORKER_CPUS PHOTO_WORKER_MEMORY_LIMIT \
         SELFIE_SEARCH_MAX_UPLOAD_BYTES SELFIE_SEARCH_MAX_PIXELS SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS \

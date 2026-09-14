@@ -3,7 +3,9 @@ from typing import cast
 from uuid import uuid4
 
 from django.contrib.auth.models import Permission
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from ingestion.models import UploadBatch, UploadItem
 from processing.models import (
@@ -101,7 +103,7 @@ class EventManagementStatusTests(TestCase):
         self.assertIn("private", response["Cache-Control"])
         self.assertIn("no-store", response["Cache-Control"])
 
-    def test_admin_payload_includes_hidden_photo_and_event_wide_active_summary(self) -> None:
+    def test_admin_payload_includes_hidden_displayed_photo_statuses(self) -> None:
         hidden = private_photo(self.event, self.uploader, is_hidden=True)
         active = private_photo(self.event, self.uploader)
         self.set_capture_status(active, cast(str, PhotoProcessingState.Status.QUEUED))
@@ -119,8 +121,7 @@ class EventManagementStatusTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assert_private(response)
         payload = response.json()
-        self.assertEqual(payload["admin"]["summary"]["total"], 2)
-        self.assertTrue(payload["admin"]["summary"]["has_active_work"])
+        self.assertNotIn("summary", payload["admin"])
         self.assertEqual(payload["admin"]["filtered_result_count"], 1)
         self.assertTrue(payload["admin"]["result_list_changed"])
         self.assertEqual(
@@ -132,6 +133,31 @@ class EventManagementStatusTests(TestCase):
         self.assertNotIn("batches", payload)
         for secret in (hidden.original_key, "must-not-leak", other_event_photo.pk):
             self.assertNotIn(secret, response.content.decode())
+
+    def test_polling_projects_processing_only_for_displayed_photos(self) -> None:
+        displayed = private_photo(self.event, self.uploader)
+        undisplayed = private_photo(self.event, self.uploader)
+        self.set_capture_status(displayed, cast(str, PhotoProcessingState.Status.QUEUED))
+        self.set_capture_status(undisplayed, cast(str, PhotoProcessingState.Status.QUEUED))
+        batch = self.batch(self.uploader, status=UploadBatch.Status.COMPLETED)
+        self.confirmed_item(batch, undisplayed)
+        self.client.force_login(self.admin)
+
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(self.url, {"photo_id": displayed.pk})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertNotIn("summary", payload["admin"])
+        self.assertTrue(payload["has_active_work"])
+        processing_queries = [
+            query["sql"]
+            for query in queries.captured_queries
+            if "processing_photoprocessingstate" in query["sql"].lower()
+        ]
+        self.assertTrue(processing_queries)
+        self.assertTrue(all(displayed.pk in query for query in processing_queries))
+        self.assertTrue(all(undisplayed.pk not in query for query in processing_queries))
 
     def test_result_list_change_uses_strict_filters_page_and_displayed_order(self) -> None:
         first = private_photo(self.event, self.uploader)
@@ -190,10 +216,7 @@ class EventManagementStatusTests(TestCase):
             payload["capabilities"],
             {"can_inspect": True, "can_upload": False},
         )
-        self.assertEqual(payload["admin"]["summary"]["total"], 1)
-        self.assertNotIn("filtered_result_count", payload["admin"])
-        self.assertNotIn("result_list_changed", payload["admin"])
-        self.assertNotIn("photos", payload["admin"])
+        self.assertEqual(payload["admin"], {})
 
     def test_partial_role_changes_keep_remaining_scope_available(self) -> None:
         both = user_with_permissions(
@@ -229,7 +252,7 @@ class EventManagementStatusTests(TestCase):
         self.assertNotIn("admin", upload_only)
         self.assertEqual([row["id"] for row in upload_only["batches"]], [str(batch.pk)])
 
-    def test_uploader_receives_only_requested_owned_batch_summaries(self) -> None:
+    def test_uploader_receives_only_requested_owned_batch_transfer_statuses(self) -> None:
         active_photo = private_photo(self.event, self.uploader)
         self.set_capture_status(active_photo, cast(str, PhotoProcessingState.Status.RETRY_WAIT))
         own = self.batch(self.uploader, status=UploadBatch.Status.COMPLETED)
@@ -247,9 +270,9 @@ class EventManagementStatusTests(TestCase):
         payload = response.json()
         self.assertNotIn("admin", payload)
         self.assertEqual([row["id"] for row in payload["batches"]], [str(own.pk)])
-        self.assertEqual(payload["batches"][0]["processing"]["total"], 1)
-        self.assertTrue(payload["batches"][0]["has_active_work"])
-        self.assertTrue(payload["has_active_work"])
+        self.assertNotIn("processing", payload["batches"][0])
+        self.assertFalse(payload["batches"][0]["has_active_work"])
+        self.assertFalse(payload["has_active_work"])
         for secret in (str(foreign.pk), "must-not-leak", active_photo.pk):
             self.assertNotIn(secret, response.content.decode())
 
@@ -293,7 +316,7 @@ class EventManagementStatusTests(TestCase):
 
         payload = self.client.get(self.url, {"batch_id": str(batch.pk)}).json()
 
-        self.assertFalse(payload["batches"][0]["processing"]["has_active_work"])
+        self.assertNotIn("processing", payload["batches"][0])
         self.assertFalse(payload["batches"][0]["has_active_work"])
         self.assertFalse(payload["has_active_work"])
 

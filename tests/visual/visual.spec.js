@@ -200,9 +200,6 @@ async function capturePage(page, { path, snapshot, viewport, cookieAcknowledged 
       : path === '/__visual__/workspace/photos/'
         ? '4'
         : '1';
-    await expect(page.locator('[data-event-photo-summary-total]')).toHaveText('4');
-    await expect(page.locator('[data-event-photo-summary-category="processing"]')).toHaveText('1');
-    await expect(page.locator('[data-event-photo-summary-category="failed"]')).toHaveText('1');
     await expect(page.locator('[data-event-photo-filtered-count]')).toHaveText(expectedFiltered);
   }
   if (['/__visual__/upload/active/', '/__visual__/upload/folders/'].includes(path)) {
@@ -355,18 +352,12 @@ function workspaceStatus({
   photoAvailable = false,
   batchAvailable = false,
   batchCanClose = true,
-  processingFailed = false,
 } = {}) {
   return {
     server_timestamp: '2026-09-07T10:00:00+03:00',
     has_active_work: photoAvailable,
     capabilities: { can_inspect: true, can_upload: true },
     admin: {
-      summary: {
-        total: photoAvailable ? 1 : 0,
-        has_active_work: photoAvailable,
-        categories: { processing: photoAvailable ? 1 : 0, queued: 0, failed: 0 },
-      },
       filtered_result_count: photoAvailable ? 1 : 0,
       result_list_changed: photoAvailable,
       photos: [],
@@ -376,13 +367,6 @@ function workspaceStatus({
       confirmed_count: batchCanClose ? 1 : 0, expected_count: 1,
       failed_count: 0, unresolved_count: batchCanClose ? 0 : 1,
       can_close: batchCanClose, has_active_work: !batchCanClose,
-      processing: {
-        total: 1,
-        has_active_work: false,
-        categories: {
-          succeeded: 0, processing: 0, queued: 0, failed: processingFailed ? 1 : 0,
-        },
-      },
     }] : [],
   };
 }
@@ -396,7 +380,7 @@ test('new local upload joins empty owned history and keeps the bound queue and r
     const batchAvailable = url.searchParams.getAll('batch_id').includes('batch-1');
     statusRequests.push(url.toString());
     if (batchAvailable) await completedStatus;
-    await route.fulfill({ json: workspaceStatus({ batchAvailable, processingFailed: true }) });
+    await route.fulfill({ json: workspaceStatus({ batchAvailable }) });
   });
   await page.route('**/__visual__/workspace/batch-history-api/**', async (route) => {
     await route.fulfill({
@@ -406,7 +390,6 @@ test('new local upload joins empty owned history and keeps the bound queue and r
           <h3>Новая загрузка</h3>
           <p data-batch-status-progress>0 из 1 загружено · осталось 1</p>
           <p data-batch-status-state>Загрузка не завершена.</p>
-          <p data-batch-status-processing>Обработано: 0 · обрабатывается: 0 · ожидает: 0 · ошибок: 0</p>
           <button type="button" data-resume-batch data-resume-batch-id="batch-1">Продолжить загрузку</button>
         </article>
       </div>`,
@@ -434,9 +417,6 @@ test('new local upload joins empty owned history and keeps the bound queue and r
   await expect(card.locator('[data-batch-status-state]')).toHaveText(
     'Все фотографии загружены. Можно закрыть страницу',
   );
-  await expect(card.locator('[data-batch-status-processing]')).toContainText('Обработано: 0');
-  await expect(card.locator('[data-batch-status-processing]')).toContainText('Ожидает обработки: 0');
-  await expect(card.locator('[data-batch-status-processing]')).toContainText('Ошибки: 1');
   await expect(card).not.toHaveAttribute('data-unfinished-upload', '');
   await expect(card.locator('[data-resume-batch]')).toHaveCount(0);
   expect(await page.evaluate(() => {
@@ -462,7 +442,6 @@ test('joined history pagination keeps the latest canonical photo filters and pag
         <article data-batch-status-id="batch-1" data-unfinished-upload>
           <p data-batch-status-progress>0 из 1 загружено · осталось 1</p>
           <p data-batch-status-state>Загрузка не завершена.</p>
-          <p data-batch-status-processing></p>
           <button type="button" data-resume-batch data-resume-batch-id="batch-1">Продолжить загрузку</button>
         </article>
         <nav><a href="?batch_id=batch-1&amp;batch_page=2" data-batch-history-page="2">Далее</a></nav>
@@ -548,11 +527,11 @@ test('zero-photo import progress wakes management when the first photo appears w
     });
   });
   await page.goto('/__visual__/workspace/photos/?status_integration=1');
-  await expect(page.locator('[data-event-photo-summary-total]')).toHaveText('0');
+  await expect(page.locator('[data-event-photo-filtered-count]')).toHaveText('0');
   await page.evaluate(() => document.querySelector('[data-import-root]').importCoordinator.poll());
 
-  await expect(page.locator('[data-event-photo-summary-total]')).toHaveText('1');
-  await expect(page.locator('[data-event-photo-summary-category="processing"]')).toHaveText('1');
+  await expect(page.locator('[data-event-photo-filtered-count]')).toHaveText('1');
+  await expect(page.locator('[data-event-photo-result-list-changed]')).toBeVisible();
   expect(statusCalls).toBeGreaterThan(1);
   expect(await page.evaluate(() => ({
     localActive: document.querySelector('[data-event-photo-status-root]').eventPhotoStatusController.localUploadActive,
@@ -649,17 +628,14 @@ test('upload guidance stays above folder targets on mobile and desktop', async (
   }
 });
 
-test('canonical admin states keep status totals aligned with displayed results', async ({ page }) => {
-  for (const [path, total, processing, failed, filtered, cards] of [
-    ['/__visual__/workspace/photos/', '4', '1', '1', '4', 4],
-    ['/__visual__/workspace/photos/filtered-empty/', '4', '1', '1', '0', 0],
-    ['/__visual__/workspace/photos/hidden/', '4', '1', '1', '1', 1],
-    ['/__visual__/workspace/photos/error/', '4', '1', '1', '1', 1],
+test('canonical admin states keep filtered totals aligned with displayed results', async ({ page }) => {
+  for (const [path, filtered, cards] of [
+    ['/__visual__/workspace/photos/', '4', 4],
+    ['/__visual__/workspace/photos/filtered-empty/', '0', 0],
+    ['/__visual__/workspace/photos/hidden/', '1', 1],
+    ['/__visual__/workspace/photos/error/', '1', 1],
   ]) {
     await page.goto(path);
-    await expect(page.locator('[data-event-photo-summary-total]')).toHaveText(total);
-    await expect(page.locator('[data-event-photo-summary-category="processing"]')).toHaveText(processing);
-    await expect(page.locator('[data-event-photo-summary-category="failed"]')).toHaveText(failed);
     await expect(page.locator('[data-event-photo-filtered-count]')).toHaveText(filtered);
     await expect(page.locator('[data-photo-status-id]')).toHaveCount(cards);
   }

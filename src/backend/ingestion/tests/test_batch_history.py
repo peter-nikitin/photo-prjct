@@ -1,7 +1,9 @@
 from datetime import timedelta
 from uuid import uuid4
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from ingestion.models import UploadBatch, UploadItem
 from ingestion.services.batch_history import owned_event_batch_history
@@ -55,7 +57,7 @@ class BatchHistoryTests(TestCase):
         self.assertEqual([row.id for row in second], [own[0].id])
         self.assertEqual(first[0].status, UploadBatch.Status.COMPLETED)
 
-    def test_processing_uses_only_confirmed_batch_membership_and_hides_file_details(self):
+    def test_history_counts_confirmed_membership_and_hides_file_details(self):
         batch = self.batch(expected_item_count=3)
         confirmed = private_photo(self.event, self.owner, is_hidden=True)
         self.item(batch, photo=confirmed)
@@ -67,16 +69,31 @@ class BatchHistoryTests(TestCase):
         row = owned_event_batch_history(uploader=self.owner, event=self.event)[0]
         self.assertEqual((row.confirmed_count, row.failed_count, row.unresolved_count), (1, 1, 2))
         self.assertFalse(row.can_close)
-        self.assertEqual(row.processing["total"], 1)
-        self.assertEqual(row.processing["categories"]["not_started"], 1)
         for secret in ("secret-filename", "secret-error", "originals/", str(foreign.pk)):
             self.assertNotIn(secret, repr(row))
         self.assertNotIn(confirmed.pk, repr(row))
 
-    def test_all_confirmed_is_safe_to_close_even_with_processing_outstanding(self):
+    def test_all_confirmed_is_safe_to_close(self):
         batch = self.batch(expected_item_count=1, status=UploadBatch.Status.COMPLETED)
         self.item(batch, photo=private_photo(self.event, self.owner))
         row = owned_event_batch_history(uploader=self.owner, event=self.event)[0]
         self.assertTrue(row.can_close)
         self.assertEqual(row.unresolved_count, 0)
-        self.assertEqual(row.processing["categories"]["not_started"], 1)
+        self.assertFalse(hasattr(row, "processing"))
+
+    def test_history_does_not_project_photo_processing(self):
+        batches = [self.batch() for _ in range(3)]
+        for batch in batches:
+            self.item(batch, photo=private_photo(self.event, self.owner))
+
+        with CaptureQueriesContext(connection) as queries:
+            rows = list(owned_event_batch_history(uploader=self.owner, event=self.event))
+
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(not hasattr(row, "processing") for row in rows))
+        self.assertFalse(
+            any(
+                "processing_photoprocessingstate" in query["sql"].lower()
+                for query in queries.captured_queries
+            )
+        )

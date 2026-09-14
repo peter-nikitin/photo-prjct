@@ -69,7 +69,7 @@ class EventManagementViewTests(TestCase):
                 self.assertTrue(response.context_data["can_inspect"])
                 self.assertFalse(response.context_data["can_upload"])
                 self.assertNotIn("batch_page", response.context_data)
-                self.assertEqual(response.context_data["processing_summary"]["total"], 1)
+                self.assertNotIn("processing_summary", response.context_data)
                 self.assertEqual(response.context_data["photo_page"][0].id, hidden.pk)
                 self.assertIsNone(response.context_data["photo_page"][0].thumbnail_url)
                 self.assertContains(response, hidden.pk)
@@ -242,6 +242,30 @@ class EventManagementViewTests(TestCase):
         self.assertTrue(response.context_data["can_upload"])
         self.assertIn("batch_page", response.context_data)
         self.assertIn("photo_page", response.context_data)
+
+    def test_combined_workspace_get_only_projects_processing_for_current_photo_page(self):
+        user = user_with_permissions(
+            "bounded-both",
+            staff=True,
+            permissions=(*ADMIN_PERMISSIONS, "ingestion.upload_photos"),
+        )
+        photo = private_photo(self.event, user)
+        for _ in range(3):
+            UploadBatch.objects.create(event=self.event, uploader=user, expected_item_count=1)
+        self.client.force_login(user)
+
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        processing_queries = [
+            query["sql"]
+            for query in queries.captured_queries
+            if "processing_photoprocessingstate" in query["sql"].lower()
+        ]
+        self.assertEqual(len(processing_queries), 2)
+        self.assertTrue(all(photo.pk in query for query in processing_queries))
+        self.assertNotIn("processing_summary", response.context_data)
 
     def test_missing_event_and_non_get_are_private_errors(self):
         self.client.force_login(self.admin)

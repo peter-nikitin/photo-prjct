@@ -7,7 +7,13 @@ from django.http import QueryDict
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from ingestion.models import UploadBatch, UploadItem
-from processing.models import GENERATE_PREVIEW_PROCESSOR
+from processing.models import (
+    CAPTURE_METADATA_PROCESSOR,
+    GENERATE_PREVIEW_PROCESSOR,
+    EventProcessingRun,
+    PhotoProcessingState,
+    ProcessingJob,
+)
 
 from picflow.event_management import (
     EventManagementCapabilities,
@@ -161,6 +167,41 @@ class EventPhotoFilterFormTests(EventManagementTestCase):
 class EventPhotoQuerysetTests(EventManagementTestCase):
     """These tests catch OR/AND mistakes, time inference, duplicate rows, and unstable pages."""
 
+    def set_processing_state(
+        self,
+        photo: Photo,
+        status: object,
+        *,
+        processor_type: str = CAPTURE_METADATA_PROCESSOR,
+    ) -> None:
+        contract_version = 1 if processor_type == CAPTURE_METADATA_PROCESSOR else 2
+        processor_version = 2 if processor_type == CAPTURE_METADATA_PROCESSOR else 1
+        run = EventProcessingRun.objects.create(
+            event=self.event,
+            contract_version=contract_version,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            configuration={},
+            configuration_hash=uuid4().hex * 2,
+        )
+        job = ProcessingJob.objects.create(
+            event=self.event,
+            run=run,
+            photo=photo,
+            contract_version=contract_version,
+            processor_type=processor_type,
+            processor_version=processor_version,
+            configuration={},
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+            status=status,
+        )
+        PhotoProcessingState.objects.update_or_create(
+            photo=photo,
+            processor_type=processor_type,
+            defaults={"status": status, "current_run": run, "current_job": job},
+        )
+
     def test_combines_or_within_groups_and_and_across_groups(self) -> None:
         start = EventFolder.objects.create(event=self.event, name="Start")
         finish = EventFolder.objects.create(event=self.event, name="Finish")
@@ -215,6 +256,53 @@ class EventPhotoQuerysetTests(EventManagementTestCase):
         queryset = event_photo_queryset(self.event, form.filters)
         self.assertEqual(queryset.count(), 1)
         self.assertEqual(list(queryset.values_list("pk", flat=True)), [photo.pk])
+
+    def test_active_processing_filters_avoid_full_category_projection(self) -> None:
+        queued = private_photo(self.event, self.alice)
+        retry_wait = private_photo(self.event, self.alice)
+        processing = private_photo(self.event, self.alice)
+        queued_but_processing = private_photo(self.event, self.alice)
+        self.set_processing_state(queued, PhotoProcessingState.Status.QUEUED)
+        self.set_processing_state(retry_wait, PhotoProcessingState.Status.RETRY_WAIT)
+        self.set_processing_state(processing, PhotoProcessingState.Status.PROCESSING)
+        self.set_processing_state(queued_but_processing, PhotoProcessingState.Status.QUEUED)
+        self.set_processing_state(
+            queued_but_processing,
+            PhotoProcessingState.Status.PROCESSING,
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+        )
+
+        queued_form = self.form("processing=queued")
+        self.assertTrue(queued_form.is_valid(), queued_form.errors)
+        queued_photos = event_photo_queryset(self.event, queued_form.filters)
+
+        self.assertEqual(
+            list(queued_photos.values_list("pk", flat=True)),
+            sorted((queued.pk, retry_wait.pk)),
+        )
+        sql = str(queued_photos.values("pk").query).lower()
+        self.assertNotIn("case when", sql)
+        self.assertLessEqual(sql.count("select"), 3)
+
+        processing_form = self.form("processing=processing")
+        self.assertTrue(processing_form.is_valid(), processing_form.errors)
+        self.assertEqual(
+            list(
+                event_photo_queryset(self.event, processing_form.filters).values_list(
+                    "pk", flat=True
+                )
+            ),
+            sorted((processing.pk, queued_but_processing.pk)),
+        )
+
+        active_form = self.form("processing=queued&processing=processing")
+        self.assertTrue(active_form.is_valid(), active_form.errors)
+        active_photos = event_photo_queryset(self.event, active_form.filters)
+        self.assertEqual(
+            list(active_photos.values_list("pk", flat=True)),
+            sorted((queued.pk, retry_wait.pk, processing.pk, queued_but_processing.pk)),
+        )
+        self.assertNotIn("case when", str(active_photos.values("pk").query).lower())
 
     def test_processing_projection_is_only_added_for_a_processing_filter(self) -> None:
         photo = private_photo(self.event, self.alice)

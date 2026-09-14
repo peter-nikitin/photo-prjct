@@ -11,6 +11,7 @@ from django.db.models import (
     BooleanField,
     Case,
     Count,
+    Exists,
     F,
     OuterRef,
     Q,
@@ -229,7 +230,7 @@ def _successful_state_result() -> Q:
     )
 
 
-def _valid_current_states() -> QuerySet[PhotoProcessingState]:
+def _current_identity_states() -> QuerySet[PhotoProcessingState]:
     current_identity = reduce(
         or_,
         (
@@ -237,9 +238,50 @@ def _valid_current_states() -> QuerySet[PhotoProcessingState]:
             for processor_type in _PROCESSOR_TYPES
         ),
     )
-    return PhotoProcessingState.objects.filter(current_identity).filter(
+    return PhotoProcessingState.objects.filter(current_identity)
+
+
+def _valid_current_states() -> QuerySet[PhotoProcessingState]:
+    return _current_identity_states().filter(
         ~Q(status=_STATE_SUCCEEDED) | _successful_state_result()
     )
+
+
+def _required_active_states() -> QuerySet[PhotoProcessingState]:
+    private_photo = Q(photo__original_key__isnull=False) & ~Q(photo__original_key="")
+    required_processor = (
+        Q(processor_type__in=(CAPTURE_METADATA_PROCESSOR, FACE_EMBEDDING_PROCESSOR))
+        | Q(
+            processor_type=GENERATE_PREVIEW_PROCESSOR,
+            photo__processing_generation__in=_PREVIEW_GENERATIONS,
+        )
+        | Q(
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            photo__processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+        )
+    )
+    return _current_identity_states().filter(private_photo & required_processor)
+
+
+def filter_active_photo_processing_categories(
+    photos: QuerySet[Photo], categories: Iterable[str]
+) -> QuerySet[Photo]:
+    """Filter processing/queued photos without deriving every processing category."""
+    selected = frozenset(categories)
+    supported = {CATEGORY_PROCESSING, CATEGORY_QUEUED}
+    if not selected or not selected <= supported:
+        raise ValueError("Active processing filters support only processing and queued.")
+
+    current_states = _required_active_states().filter(photo_id=OuterRef("pk"))
+    selected_statuses = []
+    if CATEGORY_PROCESSING in selected:
+        selected_statuses.append(_STATE_PROCESSING)
+    if CATEGORY_QUEUED in selected:
+        selected_statuses.extend((_STATE_QUEUED, _STATE_RETRY_WAIT))
+    filtered = photos.filter(Exists(current_states.filter(status__in=selected_statuses)))
+    if selected == {CATEGORY_QUEUED}:
+        filtered = filtered.exclude(Exists(current_states.filter(status=_STATE_PROCESSING)))
+    return filtered
 
 
 def _current_states(processor_type: str) -> QuerySet[PhotoProcessingState]:

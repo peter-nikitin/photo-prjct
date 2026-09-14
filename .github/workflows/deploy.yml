@@ -312,8 +312,8 @@ jobs:
           GUNICORN_WORKERS: '5'
           GUNICORN_THREADS: '2'
           GUNICORN_TIMEOUT: '180'
-          GUNICORN_MAX_REQUESTS: '1000'
-          GUNICORN_MAX_REQUESTS_JITTER: '100'
+          GUNICORN_MAX_REQUESTS: '0'
+          GUNICORN_MAX_REQUESTS_JITTER: '0'
           DB_NAME: ${{ vars.DB_NAME }}
           DB_USER: ${{ vars.DB_USER }}
           PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}

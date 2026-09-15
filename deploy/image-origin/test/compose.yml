@@ -1,0 +1,47 @@
+name: findme-image-origin-contract
+include:
+  - path: [../compose.yml, ./overrides.yml]
+    env_file: ./fixtures/contract.env
+
+services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: contract-access
+      MINIO_ROOT_PASSWORD: contract-secret-0123456789
+    tmpfs: [/data:size=512m]
+    cpus: 0.125
+    mem_limit: 512m
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:9000/minio/health/live]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  seed:
+    build: .
+    command: [seed]
+    cpus: 0.0625
+    mem_limit: 192m
+    volumes: [certificates:/certificates]
+    depends_on:
+      minio: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "from pathlib import Path; assert Path('/tmp/ready').exists()"]
+      interval: 2s
+      timeout: 1s
+      retries: 60
+
+  acceptance:
+    build: .
+    command: [check]
+    cpus: 0.0625
+    mem_limit: 128m
+    depends_on:
+      nginx: {condition: service_healthy}
+      seed: {condition: service_healthy}
+
+volumes:
+  certificates:
+  acme_installation:

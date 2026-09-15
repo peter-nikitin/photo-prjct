@@ -1,0 +1,100 @@
+load_module /usr/lib/nginx/modules/ngx_http_js_module.so;
+worker_processes 1;
+pid /tmp/nginx.pid;
+# Nginx error records can include URI/header data, including on malformed input.
+error_log /dev/null crit;
+events { worker_connections 128; }
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    server_tokens off;
+    client_body_temp_path /tmp/client;
+    proxy_temp_path /tmp/proxy;
+    fastcgi_temp_path /tmp/fastcgi;
+    scgi_temp_path /tmp/scgi;
+    uwsgi_temp_path /tmp/uwsgi;
+    client_max_body_size 1k;
+    client_header_timeout 1s;
+    client_body_timeout 1s;
+    send_timeout 500ms;
+    keepalive_timeout 5s;
+    reset_timedout_connection on;
+
+    log_format aggregate escape=json
+        '{"request_id":"$request_id","status":$status,"bytes":$body_bytes_sent,'
+        '"seconds":$request_time,"upstream_seconds":"$upstream_response_time"}';
+    access_log /dev/stdout aggregate;
+
+    map $http_x_findme_origin_auth $origin_authenticated {
+        default 0;
+        "${IMAGE_ORIGIN_HEADER_SECRET}" 1;
+    }
+    map $status $image_cache_control {
+        default "";
+        200 "public, max-age=21600, s-maxage=2592000";
+    }
+    limit_conn_zone $server_name zone=origin_connections:32k;
+    limit_req_zone $server_name zone=origin_requests:32k rate=100r/s;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    js_import origin_metrics from /etc/nginx/metrics.js;
+    js_shared_dict_zone zone=origin_metrics:32k type=number;
+
+    upstream transformer { server imgproxy:8080; keepalive 4; }
+    server {
+        listen 8080;
+        server_name img-origin.findme-photo.ru;
+        location /.well-known/acme-challenge/ { root /var/www/acme; }
+        location / { return 308 https://img-origin.findme-photo.ru$request_uri; }
+    }
+    server {
+        listen 8443 ssl;
+        server_name img-origin.findme-photo.ru;
+        ssl_certificate /etc/letsencrypt/live/img-origin.findme-photo.ru/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/img-origin.findme-photo.ru/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_session_cache shared:TLS:1m;
+        location ~ "^/[A-Za-z0-9_-]{43}/gallery-v1/[A-Za-z0-9_-]{1,768}\\.jpg$" {
+            js_header_filter origin_metrics.count;
+            if ($origin_authenticated = 0) { return 403; }
+            if ($request_method != GET) { return 405; }
+            limit_conn origin_connections 24;
+            limit_req zone=origin_requests burst=20 nodelay;
+            proxy_http_version 1.1;
+            proxy_pass_request_headers off;
+            proxy_pass_request_body off;
+            proxy_set_header Host imgproxy;
+            proxy_set_header Connection "";
+            proxy_set_header Content-Length "";
+            proxy_set_header Accept image/jpeg;
+            proxy_connect_timeout 100ms;
+            proxy_send_timeout 100ms;
+            proxy_read_timeout 4s;
+            proxy_next_upstream off;
+            proxy_buffering off;
+            proxy_hide_header Cache-Control;
+            proxy_hide_header Expires;
+            proxy_hide_header Set-Cookie;
+            add_header Cache-Control $image_cache_control;
+            # Explicit $uri removes md5/expires and all untrusted query parameters.
+            proxy_pass http://transformer$uri;
+        }
+        location / {
+            js_header_filter origin_metrics.count;
+            return 404;
+        }
+    }
+    # Published on VM loopback only; never routed through the public TLS vhost.
+    server {
+        listen 8081;
+        access_log off;
+        location = /health { return 200 "ok\n"; }
+        location = /metrics { js_content origin_metrics.expose; }
+        location = /imgproxy-metrics {
+            proxy_pass http://imgproxy:8081/metrics;
+            proxy_pass_request_headers off;
+        }
+        location / { return 404; }
+    }
+}

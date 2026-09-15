@@ -1,0 +1,335 @@
+{
+  "name": "findme-gallery-image-delivery",
+  "folderId": "__YANDEX_CLOUD_FOLDER_ID__",
+  "title": "Gallery image delivery",
+  "labels": {
+    "managed-by": "repository"
+  },
+  "widgets": [
+    {
+      "position": {
+        "x": "0",
+        "y": "0",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "cdn-cache",
+        "title": "CDN hits and misses",
+        "queries": {
+          "targets": [
+            {
+              "query": "\"edge.requests_cache_status\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"yccdn\",resource=\"__CDN_RESOURCE_ID__\"}"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "18",
+        "y": "0",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "cdn-4xx",
+        "title": "CDN 4xx",
+        "queries": {
+          "targets": [
+            {
+              "query": "\"edge.requests_status\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"yccdn\",resource=\"__CDN_RESOURCE_ID__\",__CDN_STATUS_LABEL__=\"4xx\"}"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "8",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "cdn-5xx",
+        "title": "CDN 5xx",
+        "queries": {
+          "targets": [
+            {
+              "query": "\"edge.requests_status\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"yccdn\",resource=\"__CDN_RESOURCE_ID__\",__CDN_STATUS_LABEL__=\"5xx\"}"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "18",
+        "y": "8",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "origin-429",
+        "title": "Origin 429",
+        "queries": {
+          "targets": [
+            {
+              "query": "non_negative_derivative(\"origin.image_origin_limited_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"})"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "16",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "origin-5xx",
+        "title": "Origin 5xx",
+        "queries": {
+          "targets": [
+            {
+              "query": "non_negative_derivative(\"origin.image_origin_responses_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\",status_class=\"5xx\"})"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "18",
+        "y": "16",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "origin-auth",
+        "title": "Origin authentication rejections",
+        "queries": {
+          "targets": [
+            {
+              "query": "non_negative_derivative(\"origin.image_origin_auth_rejected_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"})"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "24",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "s3-errors",
+        "title": "S3 source failures (aggregate, not 403)",
+        "queries": {
+          "targets": [
+            {
+              "query": "non_negative_derivative(\"imgproxy.errors_total\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"})"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "18",
+        "y": "24",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "concurrency",
+        "title": "Transform concurrency",
+        "queries": {
+          "targets": [
+            {
+              "query": "\"imgproxy.workers\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"}"
+            },
+            {
+              "query": "\"imgproxy.images_in_progress\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"}"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "32",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "duration",
+        "title": "Transform duration",
+        "queries": {
+          "targets": [
+            {
+              "query": "histogram_percentile(95,\"imgproxy.request_duration_seconds_bucket\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"})"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "18",
+        "y": "32",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "cpu",
+        "title": "Origin CPU",
+        "queries": {
+          "targets": [
+            {
+              "query": "\"sys.system.UsefulTime\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"}"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "40",
+        "w": "18",
+        "h": "8"
+      },
+      "chart": {
+        "id": "memory",
+        "title": "Origin memory",
+        "queries": {
+          "targets": [
+            {
+              "query": "\"sys.memory.MemAvailable\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"}"
+            },
+            {
+              "query": "\"sys.memory.MemTotal\"{folderId=\"__YANDEX_CLOUD_FOLDER_ID__\",service=\"custom\",host=\"__IMAGE_ORIGIN_HOST__\"}"
+            }
+          ],
+          "downsampling": {}
+        },
+        "visualizationSettings": {
+          "interpolate": "INTERPOLATE_LINEAR",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {}
+        },
+        "seriesOverrides": [],
+        "nameHidingSettings": {}
+      }
+    }
+  ]
+}

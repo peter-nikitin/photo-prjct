@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
@@ -12,6 +13,7 @@ from config import views
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser, Permission
 from django.core.paginator import Paginator
+from django.db import connection
 from django.template.base import Variable
 from django.test import (
     Client,
@@ -22,11 +24,17 @@ from django.test import (
     modify_settings,
     override_settings,
 )
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
-from feature_flags.registry import PAID_EVENTS, PAID_PHOTO_CART, PAID_WATERMARKED_PREVIEWS
+from feature_flags.registry import (
+    GALLERY_CDN_IMAGES,
+    PAID_EVENTS,
+    PAID_PHOTO_CART,
+    PAID_WATERMARKED_PREVIEWS,
+)
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError, StorageUnavailable
@@ -58,6 +66,14 @@ from selfie_search.models import SelfieSearch
 
 from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, EventFolder, Photo
+
+GALLERY_CDN_TEST_SETTINGS = {
+    "GALLERY_CDN_ORIGIN": "https://img.example.test",
+    "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
+    "GALLERY_IMGPROXY_KEY": "736563726574",
+    "GALLERY_IMGPROXY_SALT": "68656c6c6f",
+    "PRIVATE_MEDIA_S3_BUCKET": "gallery-media",
+}
 
 
 class NavigationMarkupParser(HTMLParser):
@@ -112,6 +128,22 @@ class SearchFormMarkupParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag == "form":
             self.current_form = None
+
+
+class ImageMarkupParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sources: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "img" and (source := dict(attrs).get("src")):
+            self.sources.append(source)
+
+
+def cdn_source_uri(url: str) -> str:
+    encoded_source = urlsplit(url).path.rsplit("/", 1)[-1].removesuffix(".jpg")
+    padded_source = encoded_source + "=" * (-len(encoded_source) % 4)
+    return base64.urlsafe_b64decode(padded_source).decode("utf-8")
 
 
 @override_settings(
@@ -557,6 +589,9 @@ class GalleryPageTests(TestCase):
         values.update(overrides)
         return Photo.objects.create(**values)
 
+    def accepted_preview_key(self, *, photo: Photo, variant: str) -> str:
+        return f"derivatives/previews/{photo.pk}/{variant}/{uuid4()}-{'a' * 64}.jpg"
+
     def capture_evidence(self, photo: Photo, *, capture_time: str) -> ProcessingAttempt:
         configuration = {"capture_metadata": {"event_timezone": photo.event.timezone_name}}
         run = EventProcessingRun.objects.create(
@@ -849,15 +884,16 @@ class GalleryPageTests(TestCase):
             terminal_at=timezone.now(),
             accepted=True,
         )
-        PhotoProcessingState.objects.create(
+        state, _ = PhotoProcessingState.objects.get_or_create(
             photo=photo,
             processor_type=FACE_EMBEDDING_PROCESSOR,
-            status=PhotoProcessingState.Status.SUCCEEDED,
-            current_run=run,
-            current_job=job,
-            current_attempt=attempt,
-            accepted_attempt=attempt,
         )
+        state.status = PhotoProcessingState.Status.SUCCEEDED
+        state.current_run = run
+        state.current_job = job
+        state.current_attempt = attempt
+        state.accepted_attempt = attempt
+        state.save()
         artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
         for face_index in range(count):
             detection = PhotoFaceDetection.objects.create(
@@ -879,6 +915,282 @@ class GalleryPageTests(TestCase):
                 metadata={},
             )
         publish_face_embedding_projection(attempt)
+
+    @override_settings(
+        GALLERY_CDN_ORIGIN="",
+        GALLERY_CDN_TOKEN_SECRET="",
+        GALLERY_IMGPROXY_KEY="",
+        GALLERY_IMGPROXY_SALT="",
+    )
+    @patch("config.views.PrivateUploadStorage")
+    def test_gallery_cdn_gate_off_uses_direct_preview_without_validating_cdn_settings(
+        self, storage_class
+    ) -> None:
+        """The production break caught here is dark rollout requiring CDN configuration."""
+        event = self.make_event(slug="cdn-off")
+        photo = self.make_private_photo(
+            event,
+            id="cdn-off-photo",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        derivative = self.publish_preview(
+            photo,
+            final_key=self.accepted_preview_key(photo=photo, variant="preview-small-v1"),
+        )
+        direct_url = "https://storage.example.test/direct-preview?signed"
+        storage_class.return_value.sign_accepted_preview.return_value = direct_url
+
+        with override_feature_flags({GALLERY_CDN_IMAGES: FEATURE_FLAG_OFF}):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["gallery_photos"][0].preview_media_small.url, direct_url)
+        storage_class.return_value.sign_accepted_preview.assert_called_once_with(
+            key=derivative.final_key,
+            expires_in=21_600,
+        )
+
+    @override_settings(**GALLERY_CDN_TEST_SETTINGS)
+    @patch("config.views.PrivateUploadStorage")
+    def test_gallery_cdn_staff_mode_changes_only_active_staff_page(self, storage_class) -> None:
+        """The production break caught here is staff rehearsal leaking to other viewers."""
+        event = self.make_event(slug="cdn-staff")
+        photo = self.make_private_photo(
+            event,
+            id="cdn-staff-photo",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        derivative = self.publish_preview(
+            photo,
+            final_key=self.accepted_preview_key(photo=photo, variant="preview-small-v1"),
+        )
+        direct_url = "https://storage.example.test/staff-gate-direct?signed"
+        storage_class.return_value.sign_accepted_preview.return_value = direct_url
+        ordinary_user = get_user_model().objects.create_user(username="cdn-ordinary")
+        staff_user = get_user_model().objects.create_user(username="cdn-staff", is_staff=True)
+
+        with override_feature_flags({GALLERY_CDN_IMAGES: FEATURE_FLAG_STAFF}):
+            anonymous = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+            self.client.force_login(ordinary_user)
+            ordinary = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+            self.client.force_login(staff_user)
+            staff = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(anonymous.context["gallery_photos"][0].preview_media_small.url, direct_url)
+        self.assertEqual(ordinary.context["gallery_photos"][0].preview_media_small.url, direct_url)
+        staff_url = staff.context["gallery_photos"][0].preview_media_small.url
+        self.assertTrue(staff_url.startswith("https://img.example.test/"))
+        self.assertEqual(
+            cdn_source_uri(staff_url),
+            f"s3://gallery-media/{derivative.final_key}",
+        )
+
+    @override_settings(**GALLERY_CDN_TEST_SETTINGS)
+    @patch("config.views.PrivateUploadStorage")
+    def test_gallery_cdn_on_uses_one_policy_selected_url_per_free_card_and_its_faces(
+        self, storage_class
+    ) -> None:
+        """The production break caught here is signing extra or non-accepted grid sources."""
+        event = self.make_event(slug="cdn-public-page")
+        photos = []
+        expected_keys = set()
+        for number in range(100):
+            photo = self.make_private_photo(
+                event,
+                id=f"cdn-page-{number:03}",
+                original_filename=f"cdn-page-{number:03}.jpg",
+                processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+                gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+            )
+            key = self.accepted_preview_key(photo=photo, variant="preview-small-v1")
+            self.publish_preview(photo, final_key=key)
+            photos.append(photo)
+            expected_keys.add(key)
+        self.publish_current_compatible_faces(photos[0], count=2)
+        storage_class.return_value.sign_accepted_preview.side_effect = lambda *, key, expires_in: (
+            f"https://storage.example.test/{key}?expires={expires_in}"
+        )
+
+        with override_feature_flags({GALLERY_CDN_IMAGES: FEATURE_FLAG_ON}):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        presentations = response.context["gallery_photos"]
+        card_urls = [photo.preview_media_small.url for photo in presentations]
+        self.assertEqual(len(card_urls), 100)
+        self.assertEqual(len(set(card_urls)), 100)
+        self.assertLessEqual(len(set(card_urls)), 100)
+        self.assertTrue(all(url.startswith("https://img.example.test/") for url in card_urls))
+        self.assertEqual(
+            {cdn_source_uri(url) for url in card_urls},
+            {f"s3://gallery-media/{key}" for key in expected_keys},
+        )
+        image_markup = ImageMarkupParser()
+        image_markup.feed(response.content.decode(response.charset))
+        cdn_image_sources = [
+            source
+            for source in image_markup.sources
+            if source.startswith("https://img.example.test/")
+        ]
+        self.assertEqual(set(cdn_image_sources), set(card_urls))
+        first_card_url = presentations[0].preview_media_small.url
+        self.assertEqual(cdn_image_sources.count(first_card_url), 5)
+        storage_class.assert_not_called()
+
+    @override_settings(**GALLERY_CDN_TEST_SETTINGS)
+    @patch("config.views.PrivateUploadStorage")
+    def test_gallery_cdn_on_paid_page_signs_only_the_accepted_watermarked_preview(
+        self, storage_class
+    ) -> None:
+        """The production break caught here is sending a clean paid source to the CDN."""
+        event = self.make_event(
+            name="CDN paid",
+            slug="cdn-paid",
+            access_type=Event.AccessType.PAID,
+        )
+        photo = self.make_private_photo(
+            event,
+            id="cdn-paid-photo",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+        watermarked = self.publish_preview(
+            photo,
+            final_key=self.accepted_preview_key(photo=photo, variant="preview-watermarked-v1"),
+            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            variant="preview-watermarked-v1",
+        )
+        clean = self.publish_preview(
+            photo,
+            final_key=self.accepted_preview_key(photo=photo, variant="preview-small-v1"),
+        )
+        storage_class.return_value.sign_accepted_preview.return_value = (
+            "https://storage.example.test/paid-direct?signed"
+        )
+
+        with override_feature_flags(
+            {
+                PAID_EVENTS: FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
+                GALLERY_CDN_IMAGES: FEATURE_FLAG_ON,
+            }
+        ):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        presentation = response.context["gallery_photos"][0]
+        self.assertTrue(
+            presentation.preview_media_small.url.startswith("https://img.example.test/")
+        )
+        self.assertEqual(
+            cdn_source_uri(presentation.preview_media_small.url),
+            f"s3://gallery-media/{watermarked.final_key}",
+        )
+        self.assertNotIn(clean.final_key, response.content.decode(response.charset))
+        self.assertEqual(
+            presentation.preview_media_large.url,
+            reverse(
+                "photo_media",
+                kwargs={"slug": event.slug, "photo_id": photo.pk, "variant": "preview-large"},
+            ),
+        )
+        self.assertIsNone(presentation.download_url)
+        storage_class.assert_not_called()
+
+    def test_gallery_cdn_gate_is_read_once_per_event_detail_page(self) -> None:
+        """The production break caught here is evaluating the release gate per gallery card."""
+        event = self.make_event(slug="cdn-one-gate-read")
+        self.make_private_photo(event, id="cdn-one-gate-read-photo")
+        FeatureFlag.objects.create(
+            key=GALLERY_CDN_IMAGES.key,
+            description=GALLERY_CDN_IMAGES.description,
+            state=FEATURE_FLAG_ON,
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        gallery_gate_queries = [
+            query
+            for query in queries
+            if '"feature_flags_featureflag"' in query["sql"]
+            and GALLERY_CDN_IMAGES.key in query["sql"]
+        ]
+        self.assertEqual(len(gallery_gate_queries), 1)
+
+    @override_settings(
+        GALLERY_CDN_ORIGIN="",
+        GALLERY_CDN_TOKEN_SECRET="",
+        GALLERY_IMGPROXY_KEY="",
+        GALLERY_IMGPROXY_SALT="",
+    )
+    @patch("config.views.PrivateUploadStorage")
+    def test_enabled_gallery_cdn_configuration_failure_returns_sanitized_503(
+        self, storage_class
+    ) -> None:
+        """The production break caught here is fallback after enabled CDN setup fails."""
+        event = self.make_event(slug="cdn-invalid-config")
+        photo = self.make_private_photo(
+            event,
+            id="cdn-invalid-config-photo",
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        derivative = self.publish_preview(
+            photo,
+            final_key=self.accepted_preview_key(photo=photo, variant="preview-small-v1"),
+        )
+        storage_class.return_value.sign_accepted_preview.return_value = (
+            "https://storage.example.test/forbidden-fallback?signed"
+        )
+
+        with override_feature_flags({GALLERY_CDN_IMAGES: FEATURE_FLAG_ON}):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.content, b"")
+        self.assertNotIn(derivative.final_key, response.content.decode(response.charset))
+        storage_class.assert_not_called()
+
+    @override_settings(
+        GALLERY_CDN_ORIGIN="",
+        GALLERY_CDN_TOKEN_SECRET="",
+        GALLERY_IMGPROXY_KEY="",
+        GALLERY_IMGPROXY_SALT="",
+    )
+    def test_enabled_gallery_cdn_leaves_legacy_small_large_and_download_routes_unchanged(
+        self,
+    ) -> None:
+        """The production break caught here is pulling legacy or large media into CDN setup."""
+        event = self.make_event(slug="cdn-legacy")
+        photo = self.make_private_photo(event, id="cdn-legacy-photo")
+
+        with override_feature_flags({GALLERY_CDN_IMAGES: FEATURE_FLAG_ON}):
+            response = self.client.get(reverse("event_detail", kwargs={"slug": event.slug}))
+
+        self.assertEqual(response.status_code, 200)
+        presentation = response.context["gallery_photos"][0]
+        self.assertEqual(
+            presentation.preview_media_small.url,
+            reverse(
+                "photo_media",
+                kwargs={"slug": event.slug, "photo_id": photo.pk, "variant": "preview-small"},
+            ),
+        )
+        self.assertEqual(
+            presentation.preview_media_large.url,
+            reverse(
+                "photo_media",
+                kwargs={"slug": event.slug, "photo_id": photo.pk, "variant": "preview-large"},
+            ),
+        )
+        self.assertEqual(
+            presentation.download_url,
+            reverse("photo_download", kwargs={"slug": event.slug, "photo_id": photo.pk}),
+        )
 
     def test_event_detail_uses_numbered_pages_in_filename_order(self) -> None:
         event = self.make_event()

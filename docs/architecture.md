@@ -198,6 +198,11 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
 - The accepted topology uses the shared Nginx/Certbot HTTPS edge to terminate trusted TLS and proxy
   the internal Django service; the canonical apex and `www` names route to that edge, with HTTP and
   alias traffic redirected to canonical HTTPS. Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) succeeded, and the later [public-monitor run 32461320506](https://github.com/peter-nikitin/photo-prjct/actions/runs/32461320506) succeeded. This is not a direct host, DNS, certificate, or customer-path observation.
+- [ADR 0038](adr/0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) accepts a separate
+  Yandex Cloud CDN and isolated imgproxy origin for derivative-backed normal-gallery small images.
+  The application edge remains authoritative for Django traffic and every other media context. The
+  CDN/imgproxy path is accepted target architecture but has no implementation or deployment
+  evidence yet.
 - Retained old Compose resources, when present, are rollback artifacts only and are not routine
   operator targets. The **Deploy** workflow selects `docker-compose.deployment.yml` and
   `docker-compose.https.yml` with Compose project `photo-prjct`.
@@ -666,7 +671,8 @@ explicitly incomplete.
 
 - Originals remain private storage objects. The implemented preview-first slice creates an
   unwatermarked, metadata-stripped reduced JPEG for a newly confirmed photo only after explicit
-  activation. Under ADR 0036, a normal gallery page may embed a six-hour exact-object signed GET
+  activation. The current ADR 0036 implementation lets a normal gallery page embed a six-hour
+  exact-object signed GET
   only for an accepted `preview-small-v1` derivative; its large route retains controlled inline
   original delivery, and legacy-original small presentation retains its application route. Until
   activation, explicit legacy photos use the original for both variants. The normal paid gallery is
@@ -684,6 +690,11 @@ explicitly incomplete.
   exposes a permanent storage key, but original
   delivery still gives an eligible recipient complete unsanitized bytes that can be saved or
   redistributed.
+- Under accepted ADR 0038, derivative-backed normal-gallery small images will use six-hour CDN
+  capabilities and one fixed request-time representation from an isolated imgproxy origin. The
+  source remains the accepted clean preview for a free photo and the accepted watermarked preview
+  for a paid photo. imgproxy receives prefix-only read access to preview derivatives and no access
+  to originals, staging objects, listing, or mutation. This target path is not implemented yet.
 - Stage 2 browsers receive only exact-key, short-lived incoming-write grants. Restricted CORS and
   least-privilege credentials deny browser read, list, copy, delete, and final-key write access.
 - Event-folder identifiers are catalog selectors, not media authority. Upload registration and
@@ -786,7 +797,7 @@ Each item needs evidence and an ADR before implementation commits the architectu
   presentation-only boundary.
 - Monitoring retention; backup targets; retention; RPO/RTO; encryption-at-rest policy; media
   recovery; and disaster-recovery procedures.
-- CDN/WAF and static/media delivery topology beyond the Nginx edge.
+- WAF and static-media delivery topology beyond the accepted ADR 0038 gallery-image path.
 
 ## Change rules
 

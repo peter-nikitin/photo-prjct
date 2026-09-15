@@ -318,6 +318,7 @@ jobs:
           DB_USER: ${{ vars.DB_USER }}
           PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}
           PUBLIC_DOMAIN_ALIAS: ${{ vars.PUBLIC_DOMAIN_ALIAS }}
+          GALLERY_CDN_ORIGIN: ${{ vars.GALLERY_CDN_ORIGIN || 'https://img.findme-photo.ru' }}
           MEDIA_STORAGE_BACKEND: ${{ vars.MEDIA_STORAGE_BACKEND || 'filesystem' }}
           MEDIA_S3_ENDPOINT_URL: ${{ vars.MEDIA_S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
           MEDIA_S3_REGION: ${{ vars.MEDIA_S3_REGION || 'ru-central1' }}

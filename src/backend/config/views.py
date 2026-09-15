@@ -8,6 +8,7 @@ from commerce.views import (
     private_cart_response,
 )
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.core.paginator import InvalidPage
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -15,7 +16,7 @@ from django.urls import reverse
 from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET
 from feature_flags import services as feature_flag_services
-from feature_flags.registry import PAID_WATERMARKED_PREVIEWS
+from feature_flags.registry import GALLERY_CDN_IMAGES, PAID_WATERMARKED_PREVIEWS
 from ingestion.storage import (
     ObjectMissing,
     PrivateUploadStorage,
@@ -36,6 +37,7 @@ from picflow.gallery import (
     gallery_photo_queryset,
     public_gallery_photo,
 )
+from picflow.gallery_image_delivery import GalleryImageDeliverySettings, GalleryImageUrlSigner
 from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, EventFolder, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
@@ -91,6 +93,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     gallery_pagination_query_pairs: tuple[tuple[str, str], ...] = ()
     gallery_filters_active = False
     paid_watermarked_previews_enabled = _paid_watermarked_previews_enabled(request)
+    gallery_cdn_images_enabled = feature_flag_services.is_enabled(GALLERY_CDN_IMAGES, request.user)
     if event.access_type == Event.AccessType.FREE or paid_watermarked_previews_enabled:
         base_gallery_queryset = gallery_photo_queryset(
             event=event,
@@ -151,11 +154,16 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                 for photo in gallery_page_photos
             ):
                 try:
+                    signer = (
+                        GalleryImageUrlSigner(GalleryImageDeliverySettings.from_django_settings())
+                        if gallery_cdn_images_enabled
+                        else PrivateUploadStorage()
+                    )
                     preview_urls = issue_gallery_preview_urls(
                         photos=gallery_page_photos,
-                        signer=PrivateUploadStorage(),
+                        signer=signer,
                     )
-                except (StorageError, ValueError):
+                except (ImproperlyConfigured, StorageError, ValueError):
                     return HttpResponse(status=503)
 
                 def direct_preview_media_url(photo: Photo, variant: str) -> str:

@@ -1,0 +1,20 @@
+services:
+  imgproxy:
+    environment:
+      IMGPROXY_S3_ENDPOINT: http://minio:9000
+      IMGPROXY_S3_REGION: us-east-1
+    depends_on:
+      seed: {condition: service_healthy}
+  nginx:
+    ports: !reset []
+    volumes: !override
+      - certificates:/etc/letsencrypt:ro
+      - acme_installation:/var/www:ro
+    depends_on:
+      seed: {condition: service_healthy}
+  certbot:
+    volumes: !override
+      - certificates:/etc/letsencrypt
+      - acme_installation:/opt/photo-prjct-image-origin
+      - acme_installation:/var/www
+      - ./:/reviewed-package:ro

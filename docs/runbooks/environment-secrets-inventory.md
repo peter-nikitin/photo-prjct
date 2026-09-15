@@ -57,20 +57,29 @@ local-only. `VM_SSH_KEY` is binary and becomes only `VM_SSH_KEY_FILE`.
 | `VM_SSH_KEY` | `VM_SSH_KEY_FILE` | binary | no | `deploy`, `remote-check` |
 | `GHCR_READ_TOKEN` | `GHCR_READ_TOKEN` | text | no | `deploy` |
 | `YANDEX_MONITORING_API_KEY` | `YANDEX_MONITORING_API_KEY` | text | no | `public-monitor` |
+| `GALLERY_CDN_TOKEN_SECRET` | `GALLERY_CDN_TOKEN_SECRET` | text | no | `local-web`, `deploy`, `image-delivery-provision` |
+| `GALLERY_IMGPROXY_KEY` | `GALLERY_IMGPROXY_KEY` | text | no | `local-web`, `deploy`, `image-origin` |
+| `GALLERY_IMGPROXY_SALT` | `GALLERY_IMGPROXY_SALT` | text | no | `local-web`, `deploy`, `image-origin` |
+| `IMAGE_ORIGIN_HEADER_SECRET` | `IMAGE_ORIGIN_HEADER_SECRET` | text | no | `image-origin`, `image-delivery-provision` |
+| `IMAGE_ORIGIN_S3_ACCESS_KEY_ID` | `IMAGE_ORIGIN_S3_ACCESS_KEY_ID` | text | no | `image-origin` |
+| `IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY` | `IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY` | text | no | `image-origin` |
 
 The fixed resolver boundary is:
 
 ```text
 scripts/run-with-environment-secrets.py \
-  --consumer <local-web|deploy|remote-check|public-monitor> \
+  --consumer <local-web|deploy|remote-check|public-monitor|image-origin|image-delivery-provision> \
   --identity <yc|github-oidc> -- <child command>
 ```
 
 It reads the active metadata and one matching payload version, validates every required key plus
 any reviewed optional Commerce key that is present, and passes only the selected projection through
 a mode-0600 file named by `FINDME_ENV_FILE`. Callers cannot select a secret, version, or
-projection. The Commerce signing and Postbox keys may be absent only while the deployed Commerce
-worker remains disabled; an enabled deploy rejects their absence before mutation.
+projection. The six gallery delivery entries are optional at generic projection time so the
+application can dark-deploy with `gallery-cdn-images=off`; the image-origin runtime and provisioning
+action reject a missing required subset before their own mutation. The Commerce signing and Postbox
+keys may be absent only while the deployed Commerce worker remains disabled; an enabled deploy
+rejects their absence before mutation.
 
 ## Repository variables
 
@@ -104,6 +113,12 @@ not necessarily the only permitted reader.
 | `VM_SSH_KEY` | Deployment operations maintainer | SSH key rotation, lost runner access, VM replacement, or suspected disclosure |
 | `GHCR_READ_TOKEN` | Registry maintainer | Token expiry, scope change, suspected disclosure, or registry access removal |
 | `YANDEX_MONITORING_API_KEY` | Monitoring maintainer | Monitoring API-key rotation, scope change, or suspected disclosure |
+| `GALLERY_CDN_TOKEN_SECRET` | Gallery delivery maintainer | CDN token-key rotation, CDN replacement, or suspected disclosure |
+| `GALLERY_IMGPROXY_KEY` | Image-origin maintainer | imgproxy verifier rotation, origin replacement, or suspected disclosure |
+| `GALLERY_IMGPROXY_SALT` | Image-origin maintainer | imgproxy verifier rotation, origin replacement, or suspected disclosure |
+| `IMAGE_ORIGIN_HEADER_SECRET` | Image-origin maintainer | CDN-origin authentication rotation, origin replacement, or suspected disclosure |
+| `IMAGE_ORIGIN_S3_ACCESS_KEY_ID` | Private media maintainer | Image-origin credential rotation, policy scope change, or suspected disclosure |
+| `IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY` | Private media maintainer | Image-origin credential rotation, policy scope change, or suspected disclosure |
 
 ## Payload-version evidence ledger
 

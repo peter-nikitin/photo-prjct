@@ -2,7 +2,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase, override_settings
 
 from feature_flags.models import FeatureFlag
-from feature_flags.registry import FEATURE_DEFINITIONS, YANDEX_DISK_IMPORT
+from feature_flags.registry import FEATURE_DEFINITIONS, GALLERY_CDN_IMAGES, YANDEX_DISK_IMPORT
 
 
 class LocalPurchaseBootstrapTests(TestCase):
@@ -18,7 +18,7 @@ class LocalPurchaseBootstrapTests(TestCase):
                     definition.key,
                     definition.description,
                     FeatureFlag.State.OFF
-                    if definition == YANDEX_DISK_IMPORT
+                    if definition in {GALLERY_CDN_IMAGES, YANDEX_DISK_IMPORT}
                     else FeatureFlag.State.ON,
                 )
                 for definition in FEATURE_DEFINITIONS

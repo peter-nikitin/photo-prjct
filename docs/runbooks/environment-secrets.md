@@ -11,8 +11,13 @@ environment, make the runtime read Lockbox, or expose payload values.
 - The reviewed secret is `e6q85jjl76r45maigtfb` in folder `b1g2qttgfhb4gdunvlge`.
 - GitHub OIDC uses service account `ajeaekiue94ogksguh0h`, federation `ajeula3gd46omgf9jiko`,
   repository `peter-nikitin/photo-prjct`, and subject `repo:peter-nikitin/photo-prjct:ref:refs/heads/main`.
-- Only the manifest's `local-web`, `deploy`, `remote-check`, and `public-monitor` projections are
-  authorized. Repository variables provide reviewed non-secret configuration.
+- Only the manifest's `local-web`, `deploy`, `remote-check`, `public-monitor`, `image-origin`, and
+  `image-delivery-provision` projections are authorized. Repository variables provide reviewed
+  non-secret configuration.
+- Gallery delivery secrets remain optional to the generic resolver during the dark deploy.
+  `local-web` and `deploy` receive only the CDN token and imgproxy signing pair; `image-origin`
+  receives only the imgproxy pair, origin header, and dedicated S3 credential; provisioning receives
+  only the CDN token and origin header. The consuming runtime/action validates its own subset.
 - Commerce order-link signing and Postbox SMTP credentials are `deploy` projection entries only.
   The application workflow supplies Commerce factory paths, sender address, public origin, support
   contact, and worker-enable state as repository variables; do not add provider credentials there.
@@ -287,8 +292,8 @@ gh workflow run deploy.yml --ref main -f preflight=true
 ```
 
 The resolver enforces issuer, audience, repository, `refs/heads/main`, and exact `workflow_ref`
-allowlist before exchange. It validates all four consumers: `local-web`, `deploy`, `remote-check`,
-and `public-monitor`.
+allowlist before exchange. It validates all manifest consumers, including the independent
+`image-origin` and `image-delivery-provision` projections, without printing their values.
 
 ### Success evidence
 

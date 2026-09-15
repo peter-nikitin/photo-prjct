@@ -1,0 +1,125 @@
+name: findme-image-origin
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  restart: unless-stopped
+  logging:
+    driver: local
+    options: {max-size: 5m, max-file: "2"}
+
+services:
+  imgproxy:
+    <<: *hardened
+    image: ghcr.io/imgproxy/imgproxy:v4.0.12@sha256:3a6ee565a29a1b1e44079fe01fd931f72bf4057f4a7e18158f6497569450bd5e
+    user: "65534:65534"
+    cpus: 1.5
+    mem_limit: 3g
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    entrypoint: [/bin/sh, /etc/imgproxy/start.sh]
+    configs:
+      - {source: imgproxy_start, target: /etc/imgproxy/start.sh}
+      - {source: presets, target: /etc/imgproxy/presets.txt}
+    environment:
+      IMGPROXY_KEY: ${GALLERY_IMGPROXY_KEY:?Set GALLERY_IMGPROXY_KEY}
+      IMGPROXY_SALT: ${GALLERY_IMGPROXY_SALT:?Set GALLERY_IMGPROXY_SALT}
+      IMGPROXY_ONLY_PRESETS: "true"
+      IMGPROXY_PRESETS_PATH: /etc/imgproxy/presets.txt
+      IMGPROXY_WORKERS: "2"
+      IMGPROXY_REQUESTS_QUEUE_SIZE: "20"
+      IMGPROXY_MAX_CLIENTS: "32"
+      IMGPROXY_TIMEOUT: "3"
+      IMGPROXY_READ_REQUEST_TIMEOUT: "1"
+      IMGPROXY_WRITE_RESPONSE_TIMEOUT: "1"
+      IMGPROXY_DOWNLOAD_TIMEOUT: "2"
+      IMGPROXY_MAX_SRC_FILE_SIZE: "10485760"
+      IMGPROXY_MAX_SRC_RESOLUTION: "25"
+      IMGPROXY_MAX_RESULT_DIMENSION: "960"
+      IMGPROXY_MAX_REDIRECTS: "0"
+      IMGPROXY_USE_S3: "true"
+      IMGPROXY_S3_ENDPOINT: https://storage.yandexcloud.net
+      IMGPROXY_S3_REGION: ru-central1
+      IMGPROXY_S3_ENDPOINT_USE_PATH_STYLE: "true"
+      IMGPROXY_S3_ALLOWED_BUCKETS: ${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}
+      IMGPROXY_ALLOWED_SOURCES: s3://${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}/derivatives/previews/
+      AWS_ACCESS_KEY_ID: ${IMAGE_ORIGIN_S3_ACCESS_KEY_ID:?Set IMAGE_ORIGIN_S3_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY:?Set IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY}
+      AWS_EC2_METADATA_DISABLED: "true"
+      IMGPROXY_JPEG_PROGRESSIVE: "true"
+      IMGPROXY_AUTO_ROTATE: "true"
+      IMGPROXY_STRIP_METADATA: "true"
+      IMGPROXY_KEEP_COPYRIGHT: "false"
+      IMGPROXY_STRIP_COLOR_PROFILE: "true"
+      IMGPROXY_LOG_LEVEL: error
+      IMGPROXY_FAIL_ON_DEPRECATION: "true"
+      IMGPROXY_PROMETHEUS_BIND: :8081
+    healthcheck:
+      test: [CMD, imgproxy, health]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 10s
+
+  nginx:
+    <<: *hardened
+    image: nginx:1.28.2-alpine@sha256:5b4900b042ccfa8b0a73df622c3a60f2322faeb2be800cbee5aa7b44d241649e
+    cpus: 0.25
+    mem_limit: 128m
+    user: "101:101"
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    entrypoint: [/bin/sh, /etc/nginx/start.sh]
+    environment:
+      IMAGE_ORIGIN_HEADER_SECRET: ${IMAGE_ORIGIN_HEADER_SECRET:?Set IMAGE_ORIGIN_HEADER_SECRET}
+    configs:
+      - {source: nginx_template, target: /etc/nginx/nginx.conf.template}
+      - {source: nginx_start, target: /etc/nginx/start.sh}
+      - {source: nginx_metrics, target: /etc/nginx/metrics.js}
+    volumes:
+      - ${IMAGE_ORIGIN_CERTIFICATES:-/opt/photo-prjct-image-origin/certificates}:/etc/letsencrypt:ro
+      - ${IMAGE_ORIGIN_ACME:-/opt/photo-prjct-image-origin/acme}:/var/www/acme:ro
+    ports:
+      - ${IMAGE_ORIGIN_BIND:-0.0.0.0}:${IMAGE_ORIGIN_HTTP_PORT:-80}:8080
+      - ${IMAGE_ORIGIN_BIND:-0.0.0.0}:${IMAGE_ORIGIN_HTTPS_PORT:-443}:8443
+      - 127.0.0.1:${IMAGE_ORIGIN_METRICS_PORT:-18081}:8081
+    depends_on:
+      imgproxy: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:8081/health]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  certbot:
+    <<: *hardened
+    image: certbot/certbot:v5.3.0@sha256:63f918e44ae3b85c45549104d99b3121ad57435a67054030c3e829a3fbf36b34
+    profiles: [acme]
+    restart: "no"
+    user: "0:0"
+    group_add: ["101"]
+    entrypoint: [/bin/sh, /etc/certbot-start.sh]
+    cpus: 0.25
+    mem_limit: 256m
+    tmpfs: ["/tmp:size=32m,mode=1777", /var/lib/letsencrypt:size=32m, /var/log/letsencrypt:size=16m]
+    volumes:
+      - ${IMAGE_ORIGIN_CERTIFICATES:-/opt/photo-prjct-image-origin/certificates}:/etc/letsencrypt
+      - ${IMAGE_ORIGIN_ACME:-/opt/photo-prjct-image-origin/acme}:/var/www/acme
+    configs:
+      - {source: certbot_start, target: /etc/certbot-start.sh}
+      - {source: certificate_permissions, target: /etc/certificate-permissions.sh}
+    command: [renew, --webroot, -w, /var/www/acme, --non-interactive, --deploy-hook, "sh /etc/certificate-permissions.sh"]
+    healthcheck:
+      test: [CMD, certbot, --version]
+      interval: 60s
+      timeout: 5s
+      retries: 1
+
+configs:
+  presets: {file: ./presets.txt}
+  imgproxy_start: {file: ./imgproxy-start.sh}
+  nginx_template: {file: ./nginx.conf.template}
+  nginx_start: {file: ./nginx-start.sh}
+  nginx_metrics: {file: ./monitoring/metrics.js}
+  certificate_permissions: {file: ./certificate-permissions.sh}
+  certbot_start: {file: ./certbot-start.sh}

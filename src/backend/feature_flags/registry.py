@@ -46,6 +46,9 @@ BULK_PHOTO_DOWNLOAD: Final = FeatureDefinition(
 YANDEX_DISK_IMPORT: Final = FeatureDefinition(
     "yandex-disk-import", "Allow server-side photo import from Yandex Disk"
 )
+GALLERY_CDN_IMAGES: Final = FeatureDefinition(
+    "gallery-cdn-images", "Deliver gallery grid images through CDN"
+)
 
 FEATURE_DEFINITIONS: Final = (
     PAID_EVENTS,
@@ -55,6 +58,7 @@ FEATURE_DEFINITIONS: Final = (
     PAID_PHOTO_PAYMENT_SIMULATOR,
     BULK_PHOTO_DOWNLOAD,
     YANDEX_DISK_IMPORT,
+    GALLERY_CDN_IMAGES,
 )
 
 validate_feature_definitions(FEATURE_DEFINITIONS)

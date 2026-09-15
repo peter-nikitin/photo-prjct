@@ -714,6 +714,13 @@ case " $* " in
     printf 'requested-env-promoted-before-stop\n' >> "$COMMAND_LOG"
     ;;
 esac
+if [ -n "${RECOVERY_COMPOSE_CONFIG:-}" ] && \
+   [ "${APP_IMAGE-unset}" = unset ] && \
+   case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
+  "$REAL_DOCKER" compose --env-file "$compose_env_file" \
+    -f "$REAL_DEPLOYMENT_COMPOSE" config --environment \
+    > "$RECOVERY_COMPOSE_CONFIG" 2> "$RECOVERY_COMPOSE_STDERR"
+fi
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
 if [ "${1-}" = ps ] && [ "${2-}" = -q ]; then
   case " $* " in
@@ -935,6 +942,7 @@ esac
         "PRIVATE_MEDIA_S3_BUCKET": "requested-private-bucket",
         "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "requested-private-access",
         "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "requested-private-secret",
+        "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
         "PUBLIC_DOMAIN": "findme-photo.ru",
         "PUBLIC_DOMAIN_ALIAS": "",
         "LETSENCRYPT_EMAIL": "ops@example.com",
@@ -943,6 +951,29 @@ esac
 
 def _apply_log(tmp_path: Path) -> list[str]:
     return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
+
+
+def _render_gallery_environment(env_file: Path) -> tuple[dict[str, str], str]:
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(ROOT / "docker-compose.deployment.yml"),
+            "config",
+            "--environment",
+        ],
+        cwd=ROOT,
+        env={"PATH": os.environ["PATH"]},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    environment = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return environment, result.stderr
 
 
 SUCCESS_PHASES = [
@@ -1077,6 +1108,176 @@ def test_apply_propagates_private_media_read_settings(tmp_path: Path, fake_bin: 
     assert "PRIVATE_MEDIA_S3_BUCKET=private-gallery" in deployed_env
     assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID=gallery-access" in deployed_env
     assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=gallery-secret" in deployed_env
+
+
+def test_dark_deploy_persists_empty_gallery_signing_values_without_delivery_contact(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """The off-state package must apply before any CDN or image origin exists."""
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        GALLERY_CDN_ORIGIN="https://img.findme-photo.ru",
+        GALLERY_CDN_TOKEN_SECRET="",
+        GALLERY_IMGPROXY_KEY="",
+        GALLERY_IMGPROXY_SALT="",
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    rendered, render_stderr = _render_gallery_environment(tmp_path / ".env")
+    assert {
+        name: rendered[name]
+        for name in (
+            "GALLERY_CDN_ORIGIN",
+            "GALLERY_CDN_TOKEN_SECRET",
+            "GALLERY_IMGPROXY_KEY",
+            "GALLERY_IMGPROXY_SALT",
+        )
+    } == {
+        "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
+        "GALLERY_CDN_TOKEN_SECRET": "",
+        "GALLERY_IMGPROXY_KEY": "",
+        "GALLERY_IMGPROXY_SALT": "",
+    }
+    rendered_activity = "\n".join(
+        (result.stdout, result.stderr, render_stderr, *_apply_log(tmp_path))
+    )
+    assert "img.findme-photo.ru" not in rendered_activity
+    assert "imgproxy" not in rendered_activity.lower()
+
+
+@pytest.mark.parametrize(
+    ("cdn_token_secret", "imgproxy_key", "imgproxy_salt", "token_fragment"),
+    [
+        pytest.param("trailLEAK\\", "11" * 32, "22" * 32, "trailLEAK", id="trailing-backslash"),
+        pytest.param(
+            r"pairLEAK\\slashes",
+            "11" * 32,
+            "22" * 32,
+            "pairLEAK",
+            id="consecutive-backslashes",
+        ),
+        pytest.param(
+            r"quoteLEAK\'tail",
+            "11" * 32,
+            "22" * 32,
+            "quoteLEAK",
+            id="backslash-before-apostrophe",
+        ),
+        pytest.param(
+            'doubleLEAK"tail',
+            "11" * 32,
+            "22" * 32,
+            "doubleLEAK",
+            id="double-quote",
+        ),
+        pytest.param("dollarLEAK$TASK5", "11" * 32, "22" * 32, "TASK5", id="dollar-sign"),
+        pytest.param("hashLEAK#tail", "11" * 32, "22" * 32, "hashLEAK", id="hash-sign"),
+        pytest.param("", "", "", None, id="empty-optional-values"),
+    ],
+)
+def test_apply_and_recovery_preserve_literal_gallery_values_without_disclosure(
+    tmp_path: Path,
+    cdn_token_secret: str,
+    imgproxy_key: str,
+    imgproxy_salt: str,
+    token_fragment: str | None,
+) -> None:
+    gallery_values = {
+        "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
+        "GALLERY_CDN_TOKEN_SECRET": cdn_token_secret,
+        "GALLERY_IMGPROXY_KEY": imgproxy_key,
+        "GALLERY_IMGPROXY_SALT": imgproxy_salt,
+    }
+    candidate_root = tmp_path / "candidate"
+    candidate_root.mkdir()
+    candidate_bin = tmp_path / "candidate-bin"
+    candidate_bin.mkdir()
+    env = _apply_env(candidate_root, candidate_bin, scenario="private-media-no-photo")
+    env.update(gallery_values)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    rendered, render_stderr = _render_gallery_environment(candidate_root / ".env")
+    assert {name: rendered[name] for name in gallery_values} == gallery_values
+    if cdn_token_secret:
+        assert cdn_token_secret not in render_stderr
+        assert cdn_token_secret not in (
+            result.stdout + result.stderr + "\n".join(_apply_log(candidate_root))
+        )
+    if token_fragment:
+        assert token_fragment not in render_stderr
+        assert token_fragment not in result.stdout + result.stderr + "\n".join(
+            _apply_log(candidate_root)
+        )
+
+    rollback_root = tmp_path / "rollback"
+    rollback_root.mkdir()
+    rollback_bin = tmp_path / "rollback-bin"
+    rollback_bin.mkdir()
+    previous_env = (candidate_root / ".env").read_bytes()
+    rollback_env = _apply_env(rollback_root, rollback_bin, scenario="compose-failure")
+    (rollback_root / ".env").write_bytes(previous_env)
+    (rollback_root / "previous-env.expected").write_bytes(previous_env)
+    rollback_env.update(
+        {
+            "GALLERY_CDN_TOKEN_SECRET": "replacement-token",
+            "GALLERY_IMGPROXY_KEY": "33" * 32,
+            "GALLERY_IMGPROXY_SALT": "44" * 32,
+            "REAL_DOCKER": shutil.which("docker") or "docker",
+            "REAL_DEPLOYMENT_COMPOSE": str(ROOT / "docker-compose.deployment.yml"),
+            "RECOVERY_COMPOSE_CONFIG": str(rollback_root / "recovery-compose.environment"),
+            "RECOVERY_COMPOSE_STDERR": str(rollback_root / "recovery-compose.stderr"),
+        }
+    )
+
+    rollback = _run("deploy/apply-deployment.sh", env=rollback_env)
+
+    assert rollback.returncode != 0
+    assert "DEPLOY_RESULT=failure phase=compose-reconcile rollback=succeeded" in rollback.stdout
+    assert (rollback_root / ".env").read_bytes() == previous_env
+    recovery_environment = dict(
+        line.split("=", 1)
+        for line in (rollback_root / "recovery-compose.environment")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if "=" in line
+    )
+    assert {name: recovery_environment[name] for name in gallery_values} == gallery_values
+    recovery_stderr = (rollback_root / "recovery-compose.stderr").read_text(encoding="utf-8")
+    if cdn_token_secret:
+        assert cdn_token_secret not in recovery_stderr
+    if token_fragment:
+        assert token_fragment not in recovery_stderr
+    assert "replacement-token" not in recovery_stderr
+    assert "replacement-token" not in rollback.stdout + rollback.stderr + "\n".join(
+        _apply_log(rollback_root)
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "",
+        "http://img.findme-photo.ru",
+        "https://img.findme-photo.ru/",
+        "https://another.example",
+    ],
+)
+def test_apply_rejects_noncanonical_gallery_origin_before_mutation(
+    tmp_path: Path, fake_bin: Path, origin: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env["GALLERY_CDN_ORIGIN"] = origin
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 2
+    assert "GALLERY_CDN_ORIGIN must be https://img.findme-photo.ru" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / "apply.log").exists()
 
 
 def test_apply_persists_the_stable_gunicorn_profile(tmp_path: Path, fake_bin: Path) -> None:

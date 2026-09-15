@@ -167,6 +167,7 @@ def _deployment_values() -> dict[str, str]:
         "DB_USER": "photo",
         "PUBLIC_DOMAIN": "findme-photo.ru",
         "PUBLIC_DOMAIN_ALIAS": "www.findme-photo.ru",
+        "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
         "MEDIA_STORAGE_BACKEND": "filesystem",
         "MEDIA_S3_ENDPOINT_URL": "https://storage.yandexcloud.net",
         "MEDIA_S3_REGION": "ru-central1",
@@ -477,6 +478,14 @@ def test_deploy_helper_uses_private_files_and_ssh_stdin_without_disclosing_value
     tmp_path: Path, remote_boundary: Path
 ) -> None:
     environment, sentinel = _remote_environment(tmp_path, remote_boundary)
+    signing_values = {
+        "GALLERY_CDN_TOKEN_SECRET": "cdn-token-private-sentinel",
+        "GALLERY_IMGPROXY_KEY": "imgproxy-key-private-sentinel",
+        "GALLERY_IMGPROXY_SALT": "imgproxy-salt-private-sentinel",
+    }
+    with Path(environment["FINDME_ENV_FILE"]).open("a", encoding="utf-8") as stream:
+        for name, value in signing_values.items():
+            stream.write(f'{name}="{value}"\n')
 
     result = _run_helper(["deploy"], environment)
 
@@ -496,9 +505,14 @@ def test_deploy_helper_uses_private_files_and_ssh_stdin_without_disclosing_value
     assert "/dev/null" not in ssh_arguments
     assert str(tmp_path / "staging-key") in ssh_arguments
     assert sentinel in ssh_stdin
+    assert 'GALLERY_CDN_ORIGIN="https://img.findme-photo.ru"' in ssh_stdin
+    for name, value in signing_values.items():
+        assert f'{name}="{value}"' in ssh_stdin
     assert "VM_SSH_KEY_FILE" not in ssh_stdin
     for output in (result.stdout, result.stderr, scp_arguments, ssh_arguments):
         assert sentinel not in output
+        assert "img.findme-photo.ru" not in output
+        assert all(value not in output for value in signing_values.values())
     assert result.stdout == "[remote] stage=deploy status=ok\n"
     assert not list(tmp_path.glob("findme-remote.*"))
 
@@ -721,6 +735,22 @@ def test_deploy_workflow_supplies_commerce_runtime_without_provider_secrets() ->
     assert "COMMERCE_ORDER_ACCESS_SIGNING_SECRET" not in run_deployment["env"]
     assert "COMMERCE_POSTBOX_API_KEY_ID" not in run_deployment["env"]
     assert "COMMERCE_POSTBOX_API_KEY_SECRET" not in run_deployment["env"]
+
+
+def test_deploy_workflow_supplies_only_the_non_secret_gallery_origin() -> None:
+    run_deployment = _step(_workflow("deploy.yml")["jobs"]["deploy"], "Run deployment")
+
+    assert run_deployment["env"]["GALLERY_CDN_ORIGIN"] == (
+        "${{ vars.GALLERY_CDN_ORIGIN || 'https://img.findme-photo.ru' }}"
+    )
+    assert (
+        not {
+            "GALLERY_CDN_TOKEN_SECRET",
+            "GALLERY_IMGPROXY_KEY",
+            "GALLERY_IMGPROXY_SALT",
+        }
+        & run_deployment["env"].keys()
+    )
 
 
 def test_manual_compose_cutover_is_an_exact_secret_safe_remote_operation(

@@ -1,0 +1,1 @@
+gallery-v1=resizing_type:fit/width:960/height:960/enlarge:0/format:jpg/quality:78

@@ -9,14 +9,21 @@ from unittest.mock import patch
 from uuid import UUID
 
 from django.contrib.auth import get_user_model
-from django.db import close_old_connections, transaction
+from django.db import OperationalError, close_old_connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from picflow.gallery import gallery_photo_queryset
-from picflow.models import Event, Photo
+from picflow.gallery_media_projection import publish_gallery_media
+from picflow.models import Event, GalleryMediaProjection, Photo
 
-from processing.contracts import AttemptCompletion, ClaimedJob, CompletionConflict
+from processing.contracts import (
+    BIB_RECOGNITION_CONTRACT,
+    AttemptCompletion,
+    ClaimedJob,
+    CompletionConflict,
+)
 from processing.models import (
+    BIB_RECOGNITION_PROCESSOR,
     EventProcessingRun,
     PhotoDerivative,
     PhotoProcessingState,
@@ -25,6 +32,7 @@ from processing.models import (
     ProcessingLateReceipt,
 )
 from processing.services import jobs
+from processing.services.bibs import bib_configuration
 from processing.services.enrollment import (
     GENERATE_PREVIEW_CONFIGURATION,
     PREVIEW_CONTRACT_VERSION,
@@ -243,6 +251,37 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         )
         self.assertEqual(state.status, PhotoProcessingState.Status.SUCCEEDED)
         self.assertEqual(state.accepted_attempt_id, claimed.attempt.id)
+
+    def test_projection_failure_rolls_back_preview_acceptance_and_derivative(self) -> None:
+        """The break caught here would commit accepted media without its gallery projection."""
+        photo, claimed = self._claim("preview-projection-rollback")
+        object = self._stored_object()
+
+        with (
+            patch(
+                "processing.services.previews.publish_gallery_media",
+                create=True,
+                side_effect=RuntimeError("projection unavailable"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "projection unavailable"),
+        ):
+            complete_preview_attempt(
+                claimed.attempt.id,
+                result=self._result(object),
+                storage=FakePreviewStorage(object),
+            )
+
+        claimed.attempt.refresh_from_db()
+        state = PhotoProcessingState.objects.get(
+            photo=photo,
+            processor_type="generate_preview",
+        )
+        self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
+        self.assertFalse(claimed.attempt.accepted)
+        self.assertEqual(state.status, PhotoProcessingState.Status.PROCESSING)
+        self.assertIsNone(state.accepted_attempt_id)
+        self.assertFalse(PhotoDerivative.objects.filter(photo=photo).exists())
+        self.assertFalse(GalleryMediaProjection.objects.filter(photo=photo).exists())
 
     def test_accepted_preview_enrolls_applicable_bib_work_after_publication(self) -> None:
         photo, claimed = self._claim(
@@ -953,6 +992,79 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
 
 
 class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, TransactionTestCase):
+    def _existing_bib_enrollment_rows(
+        self,
+        photo: Photo,
+    ) -> tuple[EventProcessingRun, ProcessingJob, PhotoProcessingState]:
+        configuration = bib_configuration()
+        run = EventProcessingRun.objects.create(
+            event=photo.event,
+            contract_version=BIB_RECOGNITION_CONTRACT.contract_version,
+            processor_type=BIB_RECOGNITION_CONTRACT.processor_type,
+            processor_version=BIB_RECOGNITION_CONTRACT.processor_version,
+            configuration=configuration,
+            configuration_hash=_configuration_hash(configuration),
+        )
+        job = ProcessingJob.objects.create(
+            event=photo.event,
+            run=run,
+            photo=photo,
+            contract_version=BIB_RECOGNITION_CONTRACT.contract_version,
+            processor_type=BIB_RECOGNITION_CONTRACT.processor_type,
+            processor_version=BIB_RECOGNITION_CONTRACT.processor_version,
+            configuration=configuration,
+            configuration_hash=run.configuration_hash,
+            input_fingerprint={},
+        )
+        state, _ = PhotoProcessingState.objects.get_or_create(
+            photo=photo,
+            processor_type=BIB_RECOGNITION_PROCESSOR,
+            defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+        )
+        state.status = PhotoProcessingState.Status.QUEUED
+        state.current_run = run
+        state.current_job = job
+        state.save(update_fields=["status", "current_run", "current_job", "updated_at"])
+        return run, job, state
+
+    def _assert_rows_are_locked(
+        self,
+        rows: tuple[EventProcessingRun, ProcessingJob, PhotoProcessingState],
+    ) -> None:
+        results: Queue[tuple[str, bool]] = Queue()
+
+        def probe() -> None:
+            close_old_connections()
+            try:
+                for row in rows:
+                    try:
+                        with transaction.atomic():
+                            row.__class__.objects.select_for_update(nowait=True).get(pk=row.pk)
+                    except OperationalError as error:
+                        results.put(
+                            (
+                                row.__class__.__name__,
+                                getattr(error.__cause__, "sqlstate", None) == "55P03",
+                            )
+                        )
+                    else:
+                        results.put((row.__class__.__name__, False))
+            finally:
+                close_old_connections()
+
+        worker = Thread(target=probe)
+        worker.start()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            dict(results.queue),
+            {
+                "EventProcessingRun": True,
+                "ProcessingJob": True,
+                "PhotoProcessingState": True,
+            },
+        )
+
     def _complete_in_thread(
         self,
         attempt_id: UUID,
@@ -1022,6 +1134,127 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
                 )
             ],
         )
+
+    def test_clean_replay_and_watermark_publication_preserve_both_projection_slots(self) -> None:
+        """The break caught here would deadlock or lose a slot during concurrent publication."""
+        photo, clean_derivative, watermark_claim = self._claim_watermark("projection-slots")
+        content = b"concurrent-watermark"
+        object = PreviewObject(
+            etag_wire='"concurrent-watermark"',
+            etag_value="concurrent-watermark",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=clean_derivative.width,
+            height=clean_derivative.height,
+        )
+        start = Barrier(2)
+        failures: Queue[BaseException] = Queue()
+
+        def replay_clean() -> None:
+            close_old_connections()
+            try:
+                start.wait(timeout=5)
+                publish_gallery_media(clean_derivative)
+            except BaseException as error:  # noqa: BLE001
+                failures.put(error)
+            finally:
+                close_old_connections()
+
+        def complete_watermark() -> None:
+            close_old_connections()
+            try:
+                start.wait(timeout=5)
+                complete_preview_attempt(
+                    watermark_claim.attempt.id,
+                    result=self._watermark_result(object),
+                    storage=FakePreviewStorage(object),
+                )
+            except BaseException as error:  # noqa: BLE001
+                failures.put(error)
+            finally:
+                close_old_connections()
+
+        workers = [Thread(target=replay_clean), Thread(target=complete_watermark)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5)
+
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertTrue(failures.empty(), list(failures.queue))
+        projection = GalleryMediaProjection.objects.get(photo=photo)
+        self.assertEqual(projection.clean_preview_final_key, clean_derivative.final_key)
+        self.assertEqual(
+            projection.clean_preview_source_attempt_id,
+            clean_derivative.accepted_attempt_id,
+        )
+        watermark = PhotoDerivative.objects.get(
+            photo=photo,
+            variant="preview-watermarked-v1",
+        )
+        self.assertEqual(projection.watermarked_preview_final_key, watermark.final_key)
+        self.assertEqual(
+            projection.watermarked_preview_source_attempt_id,
+            watermark.accepted_attempt_id,
+        )
+
+    def test_bib_enrollment_rows_are_prelocked_before_clean_and_watermark_projection(self) -> None:
+        """The break caught here would acquire bib lifecycle locks after the projection lock."""
+        clean_photo, clean_claim = self._claim(
+            "bib-prelock-clean",
+            bib_policy="original_v1",
+        )
+        Photo.objects.filter(pk=clean_photo.pk).update(
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        clean_rows = self._existing_bib_enrollment_rows(clean_photo)
+        clean_object = self._stored_object()
+
+        def publish_clean(derivative: PhotoDerivative):
+            self._assert_rows_are_locked(clean_rows)
+            return publish_gallery_media(derivative)
+
+        with patch(
+            "processing.services.previews.publish_gallery_media",
+            side_effect=publish_clean,
+        ):
+            complete_preview_attempt(
+                clean_claim.attempt.id,
+                result=self._result(clean_object),
+                storage=FakePreviewStorage(clean_object),
+            )
+
+        watermark_photo, clean_derivative, watermark_claim = self._claim_watermark(
+            "bib-prelock-watermark",
+            bib_policy="original_v1",
+        )
+        watermark_rows = self._existing_bib_enrollment_rows(watermark_photo)
+        content = b"bib-prelock-watermark"
+        watermark_object = PreviewObject(
+            etag_wire='"bib-prelock-watermark"',
+            etag_value="bib-prelock-watermark",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=clean_derivative.width,
+            height=clean_derivative.height,
+        )
+
+        def publish_watermark(derivative: PhotoDerivative):
+            self._assert_rows_are_locked(watermark_rows)
+            return publish_gallery_media(derivative)
+
+        with patch(
+            "processing.services.previews.publish_gallery_media",
+            side_effect=publish_watermark,
+        ):
+            complete_preview_attempt(
+                watermark_claim.attempt.id,
+                result=self._watermark_result(watermark_object),
+                storage=FakePreviewStorage(watermark_object),
+            )
 
     def test_lock_wait_past_expiry_records_success_as_late_without_publishing(self) -> None:
         photo, claimed = self._claim("preview-success-lock-wait")

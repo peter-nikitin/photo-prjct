@@ -499,10 +499,6 @@ class PhotoModelTests(TestCase):
     def test_paid_watermarked_policy_migration_is_schema_only(self) -> None:
         loader = MigrationLoader(connection)
 
-        self.assertEqual(
-            loader.graph.leaf_nodes("picflow"),
-            [("picflow", "0015_bib_search_policy")],
-        )
         migration = loader.get_migration("picflow", "0012_paid_watermarked_photo_policy")
         self.assertEqual(
             [operation.__class__.__name__ for operation in migration.operations],

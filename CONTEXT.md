@@ -3,6 +3,13 @@
 FindMe Photo is an event-photo marketplace where customers discover photos and acquire access to
 private originals while operators and photographers manage publication.
 
+## Gallery publication language
+
+**Gallery Media Readiness**:
+The derived fact that a Photo has the exact accepted media required by its Gallery Media Policy.
+It is independent of Event publication, Photo visibility, search membership, and purchase rights.
+_Avoid_: Processing complete, gallery visibility, purchase eligibility
+
 ## Commerce language
 
 **Cart**:

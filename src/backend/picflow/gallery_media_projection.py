@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from django.db import transaction
+from django.db import connection, transaction
 from processing.models import (
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -18,6 +18,31 @@ from picflow.models import GalleryMediaProjection
 
 class GalleryMediaProjectionConflict(ValueError):
     """A gallery-media slot already contains different accepted evidence."""
+
+
+@dataclass(frozen=True)
+class ProjectionRebuildReport:
+    """Aggregate-only projection changes discovered before an optional rebuild."""
+
+    inserted: int
+    changed: int
+    removed: int
+
+
+@dataclass(frozen=True)
+class ProjectionVerificationReport:
+    """Aggregate-only result of the exact expected/actual comparison."""
+
+    clean: bool
+    expected_count: int
+    projected_count: int
+    mismatch_count: int
+
+
+@dataclass(frozen=True)
+class _SqlRelation:
+    query: str
+    params: tuple[object, ...]
 
 
 @dataclass(frozen=True)
@@ -39,6 +64,236 @@ _SLOTS = {
         processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     ),
 }
+
+
+def _expected_projection_relation() -> _SqlRelation:
+    """Return the one canonical PostgreSQL relation for derivable projection rows."""
+    quote = connection.ops.quote_name
+    derivative_table = quote(PhotoDerivative._meta.db_table)
+    attempt_table = quote(ProcessingAttempt._meta.db_table)
+    state_table = quote(PhotoProcessingState._meta.db_table)
+    return _SqlRelation(
+        query=f"""
+            SELECT
+                derivative.photo_id,
+                MAX(derivative.final_key)
+                    FILTER (WHERE derivative.variant = %s) AS clean_preview_final_key,
+                CAST(
+                    MAX(CAST(derivative.accepted_attempt_id AS text))
+                        FILTER (WHERE derivative.variant = %s)
+                    AS uuid
+                ) AS clean_preview_source_attempt_id,
+                MAX(derivative.final_key)
+                    FILTER (WHERE derivative.variant = %s) AS watermarked_preview_final_key,
+                CAST(
+                    MAX(CAST(derivative.accepted_attempt_id AS text))
+                        FILTER (WHERE derivative.variant = %s)
+                    AS uuid
+                ) AS watermarked_preview_source_attempt_id
+            FROM {derivative_table} AS derivative
+            INNER JOIN {attempt_table} AS attempt
+                ON attempt.id = derivative.accepted_attempt_id
+                AND attempt.photo_id = derivative.photo_id
+            INNER JOIN {state_table} AS state
+                ON state.photo_id = derivative.photo_id
+                AND state.processor_type = attempt.processor_type
+                AND state.status = %s
+                AND state.current_attempt_id = attempt.id
+                AND state.accepted_attempt_id = attempt.id
+            WHERE (
+                (derivative.variant = %s AND attempt.processor_type = %s)
+                OR
+                (derivative.variant = %s AND attempt.processor_type = %s)
+            )
+                AND attempt.status = %s
+                AND attempt.accepted
+            GROUP BY derivative.photo_id
+        """,
+        params=(
+            "preview-small-v1",
+            "preview-small-v1",
+            "preview-watermarked-v1",
+            "preview-watermarked-v1",
+            PhotoProcessingState.Status.SUCCEEDED,
+            "preview-small-v1",
+            GENERATE_PREVIEW_PROCESSOR,
+            "preview-watermarked-v1",
+            GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            ProcessingAttempt.Status.SUCCEEDED,
+        ),
+    )
+
+
+def _actual_projection_relation() -> str:
+    projection_table = connection.ops.quote_name(GalleryMediaProjection._meta.db_table)
+    return f"""
+        SELECT
+            projection.photo_id,
+            projection.clean_preview_final_key,
+            projection.clean_preview_source_attempt_id,
+            projection.watermarked_preview_final_key,
+            projection.watermarked_preview_source_attempt_id
+        FROM {projection_table} AS projection
+    """
+
+
+def _projection_rebuild_report() -> ProjectionRebuildReport:
+    expected = _expected_projection_relation()
+    actual = _actual_projection_relation()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+                WITH expected_projection AS ({expected.query}),
+                actual_projection AS ({actual})
+                SELECT
+                    (
+                        SELECT COUNT(*)
+                        FROM expected_projection AS expected
+                        LEFT JOIN actual_projection AS actual USING (photo_id)
+                        WHERE actual.photo_id IS NULL
+                    ) AS inserted,
+                    (
+                        SELECT COUNT(*)
+                        FROM expected_projection AS expected
+                        INNER JOIN actual_projection AS actual USING (photo_id)
+                        WHERE ROW(
+                            expected.clean_preview_final_key,
+                            expected.clean_preview_source_attempt_id,
+                            expected.watermarked_preview_final_key,
+                            expected.watermarked_preview_source_attempt_id
+                        ) IS DISTINCT FROM ROW(
+                            actual.clean_preview_final_key,
+                            actual.clean_preview_source_attempt_id,
+                            actual.watermarked_preview_final_key,
+                            actual.watermarked_preview_source_attempt_id
+                        )
+                    ) AS changed,
+                    (
+                        SELECT COUNT(*)
+                        FROM actual_projection AS actual
+                        LEFT JOIN expected_projection AS expected USING (photo_id)
+                        WHERE expected.photo_id IS NULL
+                    ) AS removed
+            """,
+            expected.params,
+        )
+        row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("gallery-media rebuild count query returned no result")
+    return ProjectionRebuildReport(
+        inserted=int(row[0]),
+        changed=int(row[1]),
+        removed=int(row[2]),
+    )
+
+
+def rebuild_gallery_media_projection(*, apply: bool) -> ProjectionRebuildReport:
+    """Report drift and, only when requested, replace it with expected projection rows."""
+    if not apply:
+        return _projection_rebuild_report()
+
+    expected = _expected_projection_relation()
+    projection_table = connection.ops.quote_name(GalleryMediaProjection._meta.db_table)
+    columns = (
+        "photo_id",
+        "clean_preview_final_key",
+        "clean_preview_source_attempt_id",
+        "watermarked_preview_final_key",
+        "watermarked_preview_source_attempt_id",
+    )
+    quoted_columns = ", ".join(connection.ops.quote_name(column) for column in columns)
+    with transaction.atomic():
+        report = _projection_rebuild_report()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                    WITH expected_projection AS ({expected.query})
+                    INSERT INTO {projection_table} AS actual (
+                        {quoted_columns}, updated_at
+                    )
+                    SELECT
+                        expected.photo_id,
+                        expected.clean_preview_final_key,
+                        expected.clean_preview_source_attempt_id,
+                        expected.watermarked_preview_final_key,
+                        expected.watermarked_preview_source_attempt_id,
+                        CURRENT_TIMESTAMP
+                    FROM expected_projection AS expected
+                    ON CONFLICT (photo_id) DO UPDATE SET
+                        clean_preview_final_key = EXCLUDED.clean_preview_final_key,
+                        clean_preview_source_attempt_id = EXCLUDED.clean_preview_source_attempt_id,
+                        watermarked_preview_final_key = EXCLUDED.watermarked_preview_final_key,
+                        watermarked_preview_source_attempt_id =
+                            EXCLUDED.watermarked_preview_source_attempt_id,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE ROW(
+                        actual.clean_preview_final_key,
+                        actual.clean_preview_source_attempt_id,
+                        actual.watermarked_preview_final_key,
+                        actual.watermarked_preview_source_attempt_id
+                    ) IS DISTINCT FROM ROW(
+                        EXCLUDED.clean_preview_final_key,
+                        EXCLUDED.clean_preview_source_attempt_id,
+                        EXCLUDED.watermarked_preview_final_key,
+                        EXCLUDED.watermarked_preview_source_attempt_id
+                    )
+                """,
+                expected.params,
+            )
+            cursor.execute(
+                f"""
+                    WITH expected_projection AS ({expected.query})
+                    DELETE FROM {projection_table} AS actual
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM expected_projection AS expected
+                        WHERE expected.photo_id = actual.photo_id
+                    )
+                """,
+                expected.params,
+            )
+    return report
+
+
+def verify_gallery_media_projection() -> ProjectionVerificationReport:
+    """Compare expected and actual projection tuples without returning row-level facts."""
+    expected = _expected_projection_relation()
+    actual = _actual_projection_relation()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+                WITH expected_projection AS ({expected.query}),
+                actual_projection AS ({actual}),
+                projection_difference AS (
+                    (
+                        SELECT * FROM expected_projection
+                        EXCEPT
+                        SELECT * FROM actual_projection
+                    )
+                    UNION ALL
+                    (
+                        SELECT * FROM actual_projection
+                        EXCEPT
+                        SELECT * FROM expected_projection
+                    )
+                )
+                SELECT
+                    (SELECT COUNT(*) FROM expected_projection) AS expected_count,
+                    (SELECT COUNT(*) FROM actual_projection) AS projected_count,
+                    (SELECT COUNT(*) FROM projection_difference) AS mismatch_count
+            """,
+            expected.params,
+        )
+        row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("gallery-media verification query returned no result")
+    mismatch_count = int(row[2])
+    return ProjectionVerificationReport(
+        clean=mismatch_count == 0,
+        expected_count=int(row[0]),
+        projected_count=int(row[1]),
+        mismatch_count=mismatch_count,
+    )
 
 
 def publish_gallery_media(derivative: PhotoDerivative) -> GalleryMediaProjection:

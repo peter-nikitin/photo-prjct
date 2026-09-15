@@ -16,7 +16,7 @@ class AcceptedPreviewSigner(Protocol):
 def issue_gallery_preview_urls(
     *, photos: Collection[Photo], signer: AcceptedPreviewSigner
 ) -> dict[str, str]:
-    """Issue direct small-preview URLs for an already authorized gallery page."""
+    """Issue small-preview URLs for an already authorized gallery page."""
     photo_list = list(photos)
     if len({photo.pk for photo in photo_list}) != len(photo_list):
         raise ValueError("gallery page contains duplicate photo identities")

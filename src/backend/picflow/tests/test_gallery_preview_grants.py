@@ -201,10 +201,12 @@ class GalleryPreviewGrantTests(TestCase):
                 variant="preview-small-v1",
             )
         with CaptureQueriesContext(connection) as many_queries:
-            issue_gallery_preview_urls(photos=many, signer=signer)
+            many_urls = issue_gallery_preview_urls(photos=many, signer=signer)
 
         assert len(one_queries) == 0
         assert len(many_queries) == 0
+        assert len(many_urls) == 100
+        assert len(set(many_urls.values())) == 100
 
     def test_rejects_duplicate_photo_identities_before_signing(self) -> None:
         legacy = self.photo(photo_id="duplicate-preview", policy=LEGACY_ORIGINAL_POLICY)

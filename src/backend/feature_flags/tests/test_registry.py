@@ -5,6 +5,7 @@ from django.test import SimpleTestCase
 from feature_flags.registry import (
     BULK_PHOTO_DOWNLOAD,
     FEATURE_DEFINITIONS,
+    GALLERY_CDN_IMAGES,
     PAID_EVENTS,
     PAID_PHOTO_CART,
     PAID_PHOTO_PAYMENT_SIMULATOR,
@@ -54,6 +55,7 @@ class FeatureDefinitionTests(SimpleTestCase):
                 PAID_PHOTO_PAYMENT_SIMULATOR,
                 BULK_PHOTO_DOWNLOAD,
                 YANDEX_DISK_IMPORT,
+                GALLERY_CDN_IMAGES,
             ),
         )
         self.assertEqual(
@@ -74,6 +76,10 @@ class FeatureDefinitionTests(SimpleTestCase):
                 (
                     "yandex-disk-import",
                     "Allow server-side photo import from Yandex Disk",
+                ),
+                (
+                    "gallery-cdn-images",
+                    "Deliver gallery grid images through CDN",
                 ),
             ),
         )

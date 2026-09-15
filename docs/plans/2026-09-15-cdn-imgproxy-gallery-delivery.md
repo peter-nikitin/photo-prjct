@@ -1,7 +1,7 @@
 # CDN and imgproxy gallery delivery implementation plan
 
 - Date: 2026-09-15
-- Status: Draft
+- Status: Approved
 - Owner: project maintainer
 - Related specification: [CDN and imgproxy delivery for gallery grid images](../superpowers/specs/2026-09-15-cdn-imgproxy-gallery-delivery-design.md)
 - Related architecture: [Architecture](../architecture.md)

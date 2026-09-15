@@ -22,6 +22,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPOSITORY_ROOT / "deploy/environment-secrets.json"
 RESOLVER_PATH = REPOSITORY_ROOT / "scripts/run-with-environment-secrets.py"
 VERIFIER_PATH = REPOSITORY_ROOT / "scripts/verify-environment-secret-projection.py"
+IMAGE_ORIGIN_PROVISION = REPOSITORY_ROOT / "deploy/image-origin/provision.sh"
 
 EXPECTED_SECRET_KEYS = {
     "SECRET_KEY",
@@ -41,15 +42,27 @@ EXPECTED_SECRET_KEYS = {
     "VM_SSH_KEY",
     "GHCR_READ_TOKEN",
     "YANDEX_MONITORING_API_KEY",
+    "GALLERY_CDN_TOKEN_SECRET",
+    "GALLERY_IMGPROXY_KEY",
+    "GALLERY_IMGPROXY_SALT",
+    "IMAGE_ORIGIN_HEADER_SECRET",
+    "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
+    "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
 }
-OPTIONAL_DARK_COMMERCE_SECRET_KEYS = {
+OPTIONAL_DARK_SECRET_KEYS = {
     "PHOTO_IMPORT_WORKER_TOKEN",
     "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
     "COMMERCE_POSTBOX_API_KEY_ID",
     "COMMERCE_POSTBOX_API_KEY_SECRET",
+    "GALLERY_CDN_TOKEN_SECRET",
+    "GALLERY_IMGPROXY_KEY",
+    "GALLERY_IMGPROXY_SALT",
+    "IMAGE_ORIGIN_HEADER_SECRET",
+    "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
+    "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
 }
-REQUIRED_SECRET_KEYS = EXPECTED_SECRET_KEYS - OPTIONAL_DARK_COMMERCE_SECRET_KEYS
-LOCAL_WEB_KEYS = {
+REQUIRED_SECRET_KEYS = EXPECTED_SECRET_KEYS - OPTIONAL_DARK_SECRET_KEYS
+LOCAL_MATERIALIZABLE_KEYS = {
     "SECRET_KEY",
     "MEDIA_S3_ACCESS_KEY_ID",
     "MEDIA_S3_SECRET_ACCESS_KEY",
@@ -60,7 +73,28 @@ LOCAL_WEB_KEYS = {
     "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
     "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
 }
-DEPLOY_KEYS = EXPECTED_SECRET_KEYS - {"YANDEX_MONITORING_API_KEY"}
+LOCAL_WEB_KEYS = LOCAL_MATERIALIZABLE_KEYS | {
+    "GALLERY_CDN_TOKEN_SECRET",
+    "GALLERY_IMGPROXY_KEY",
+    "GALLERY_IMGPROXY_SALT",
+}
+DEPLOY_KEYS = EXPECTED_SECRET_KEYS - {
+    "YANDEX_MONITORING_API_KEY",
+    "IMAGE_ORIGIN_HEADER_SECRET",
+    "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
+    "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
+}
+IMAGE_ORIGIN_KEYS = {
+    "GALLERY_IMGPROXY_KEY",
+    "GALLERY_IMGPROXY_SALT",
+    "IMAGE_ORIGIN_HEADER_SECRET",
+    "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
+    "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
+}
+IMAGE_DELIVERY_PROVISION_KEYS = {
+    "GALLERY_CDN_TOKEN_SECRET",
+    "IMAGE_ORIGIN_HEADER_SECRET",
+}
 
 
 @pytest.fixture(scope="module")
@@ -164,6 +198,15 @@ def _fake_yc(tmp_path: Path, *, token: str = "iam-test-token", exit_code: int = 
         f"exit {exit_code}\n"
     )
     executable.chmod(0o700)
+    curl = binary_dir / "curl"
+    curl.write_text(
+        "#!/bin/sh\n"
+        'count_file="$TEST_CURL_COUNT"\n'
+        'count=0; [ ! -f "$count_file" ] || count=$(cat "$count_file")\n'
+        'count=$((count + 1)); printf "%s" "$count" > "$count_file"\n'
+        '[ "$count" -eq 1 ] && printf 200 || printf 403\n'
+    )
+    curl.chmod(0o700)
     return binary_dir
 
 
@@ -175,8 +218,9 @@ def _run_main(
     *,
     consumer: str = "local-web",
     command: list[str] | None = None,
+    binary_dir: Path | None = None,
 ) -> int:
-    binary_dir = _fake_yc(tmp_path)
+    binary_dir = binary_dir or _fake_yc(tmp_path)
     monkeypatch.setenv("PATH", f"{binary_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(resolver, "urlopen", http)
     return resolver.main(
@@ -239,12 +283,14 @@ def test_manifest_declares_complete_schema_and_closed_projections(
             "required": False,
             "local": False,
         }
-    assert {key for key, entry in entries.items() if entry["local"]} == LOCAL_WEB_KEYS
+    assert {key for key, entry in entries.items() if entry["local"]} == LOCAL_MATERIALIZABLE_KEYS
     assert {name: set(keys) for name, keys in manifest["consumers"].items()} == {
         "local-web": LOCAL_WEB_KEYS,
         "deploy": DEPLOY_KEYS,
         "remote-check": {"VM_SSH_KEY"},
         "public-monitor": {"YANDEX_MONITORING_API_KEY"},
+        "image-origin": IMAGE_ORIGIN_KEYS,
+        "image-delivery-provision": IMAGE_DELIVERY_PROVISION_KEYS,
     }
 
 
@@ -381,7 +427,7 @@ def test_payload_is_fetched_once_by_the_exact_active_version(
     assert payload_request.get_header("Authorization") == "Bearer iam-test-token"
 
 
-def test_deploy_consumer_accepts_dark_payload_without_optional_commerce_entries(
+def test_deploy_consumer_accepts_dark_payload_without_optional_entries(
     resolver: ModuleType,
     manifest: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -390,7 +436,7 @@ def test_deploy_consumer_accepts_dark_payload_without_optional_commerce_entries(
     values = {
         key: value
         for key, value in _sentinel_values(manifest).items()
-        if key not in OPTIONAL_DARK_COMMERCE_SECRET_KEYS
+        if key not in OPTIONAL_DARK_SECRET_KEYS
     }
     result_path = tmp_path / "keys.json"
     checker = textwrap.dedent(
@@ -421,7 +467,7 @@ def test_deploy_consumer_accepts_dark_payload_without_optional_commerce_entries(
     )
 
     projected_keys = set(json.loads(result_path.read_text()))
-    assert OPTIONAL_DARK_COMMERCE_SECRET_KEYS.isdisjoint(projected_keys)
+    assert OPTIONAL_DARK_SECRET_KEYS.isdisjoint(projected_keys)
     assert {"SECRET_KEY", "DB_PASSWORD", "VM_SSH_KEY_FILE", "GHCR_READ_TOKEN"} <= projected_keys
 
 
@@ -684,6 +730,8 @@ def test_child_environment_cannot_bypass_projection_or_environment_files(
         ("deploy", (DEPLOY_KEYS - {"VM_SSH_KEY"}) | {"VM_SSH_KEY_FILE"}),
         ("remote-check", {"VM_SSH_KEY_FILE"}),
         ("public-monitor", {"YANDEX_MONITORING_API_KEY"}),
+        ("image-origin", IMAGE_ORIGIN_KEYS),
+        ("image-delivery-provision", IMAGE_DELIVERY_PROVISION_KEYS),
     ],
 )
 def test_each_consumer_receives_exactly_its_projection(
@@ -981,6 +1029,45 @@ def test_signal_is_forwarded_and_private_files_are_removed(
         assert sentinel not in stderr
         assert sentinel not in process_arguments
     assert "::" not in stdout + stderr
+
+
+def test_image_origin_resolver_projection_executes_reviewed_credential_probe(
+    resolver: ModuleType,
+    manifest: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    values = _sentinel_values(manifest)
+    ssh_key = tmp_path / "origin.pub"
+    ssh_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest reviewed@test\n")
+    counter = tmp_path / "curl-count"
+    for name, value in {
+        "CANONICAL_VM_ID": "canonical-vm-id",
+        "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
+        "IMAGE_ORIGIN_ZONE_ID": "ru-central1-a",
+        "IMAGE_ORIGIN_BOOT_IMAGE_ID": "immutable-image-id",
+        "IMAGE_ORIGIN_SSH_PUBLIC_KEY_FILE": str(ssh_key),
+        "IMAGE_ORIGIN_SSH_SOURCE_CIDR": "203.0.113.8/32",
+        "IMAGE_ORIGIN_ACCEPTED_PREVIEW_KEY": "derivatives/previews/accepted.jpg",
+        "IMAGE_ORIGIN_DENIED_ORIGINAL_KEY": "originals/existing.jpg",
+        "IMAGE_ORIGIN_DENIED_STAGING_KEY": "staging/existing.jpg",
+        "IMAGE_ORIGIN_PROBE_WRITE_KEY": "derivatives/previews/probe.jpg",
+        "TEST_CURL_COUNT": str(counter),
+    }.items():
+        monkeypatch.setenv(name, value)
+    http = _HttpBoundary([_metadata(), _payload(values)])
+    assert (
+        _run_main(
+            resolver,
+            monkeypatch,
+            tmp_path,
+            http,
+            consumer="image-origin",
+            command=["sh", str(IMAGE_ORIGIN_PROVISION), "--probe"],
+        )
+        == 0
+    )
+    assert counter.read_text() == "8"
 
 
 def test_signal_between_materialization_and_child_start_removes_private_files(

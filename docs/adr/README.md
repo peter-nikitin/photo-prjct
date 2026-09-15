@@ -57,6 +57,7 @@ place, and add the new record to this index.
 | 0035 | [Use Django-polled Yandex Disk import](0035-use-django-polled-yandex-disk-import.md) | Accepted |
 | 0036 | [Issue direct gallery small-preview capabilities](0036-issue-direct-gallery-small-preview-capabilities.md) | Accepted |
 | 0037 | [Use a gallery-media read projection](0037-use-gallery-media-read-projection.md) | Accepted |
+| 0038 | [Deliver gallery grid images through CDN and imgproxy](0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) | Proposed |
 
 ## Public selfie-search outcome
 

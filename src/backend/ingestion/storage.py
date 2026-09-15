@@ -180,7 +180,7 @@ class PrivateUploadStorage:
 
     def sign_accepted_preview(self, *, key: str, expires_in: int) -> str:
         """Locally sign one page-authorized final preview derivative."""
-        _validate_accepted_preview_key(key)
+        validate_accepted_preview_key(key)
         if (
             isinstance(expires_in, bool)
             or not isinstance(expires_in, int)
@@ -358,7 +358,7 @@ def _validate_public_final_key(key: str) -> None:
         raise ValueError("invalid final object key")
 
 
-def _validate_accepted_preview_key(key: str) -> None:
+def validate_accepted_preview_key(key: str) -> None:
     if not isinstance(key, str) or _PREVIEW_FINAL_KEY.fullmatch(key) is None:
         raise ValueError("invalid accepted preview object key")
 

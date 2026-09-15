@@ -1,11 +1,12 @@
 # 0036: Issue direct gallery small-preview capabilities
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-09-14
 - Deciders: project maintainers
 - Supersedes: [ADR 0020](0020-use-signed-direct-object-storage-media-delivery.md) only for
   normal-gallery small presentation derivatives
-- Superseded by: none
+- Superseded by: [ADR 0038](0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) only for
+  normal-gallery small presentation derivatives
 
 ## Context
 

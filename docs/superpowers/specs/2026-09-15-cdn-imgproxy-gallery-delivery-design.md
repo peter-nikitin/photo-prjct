@@ -1,10 +1,10 @@
 # CDN and imgproxy delivery for gallery grid images
 
-Status: Draft for maintainer review  
+Status: Approved
 Date: 2026-09-15  
 Related architecture: `docs/architecture.md` (gallery media delivery, Object Storage, production topology)  
-Related ADRs: `docs/adr/0003-docker-compose-yandex-cloud.md`, `docs/adr/0006-yandex-object-storage-media.md`, `docs/adr/0007-nginx-certbot-https-edge.md`, `docs/adr/0020-use-signed-direct-object-storage-media-delivery.md`, `docs/adr/0022-use-numbered-gallery-pages.md`, `docs/adr/0028-operate-one-canonical-deployment.md`, `docs/adr/0029-use-watermarked-previews-for-paid-photos.md`, `docs/adr/0036-issue-direct-gallery-small-preview-capabilities.md`  
-ADR impact: Requires a new ADR. It must supersede ADR 0036 for normal-gallery small-image delivery and amend the production topology from ADRs 0003 and 0007 by adding an isolated CDN/image origin while retaining the existing application edge.
+Related ADRs: `docs/adr/0003-docker-compose-yandex-cloud.md`, `docs/adr/0006-yandex-object-storage-media.md`, `docs/adr/0007-nginx-certbot-https-edge.md`, `docs/adr/0020-use-signed-direct-object-storage-media-delivery.md`, `docs/adr/0022-use-numbered-gallery-pages.md`, `docs/adr/0028-operate-one-canonical-deployment.md`, `docs/adr/0029-use-watermarked-previews-for-paid-photos.md`, `docs/adr/0036-issue-direct-gallery-small-preview-capabilities.md`, `docs/adr/0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md`
+ADR impact: Accepted by ADR 0038, which supersedes ADR 0036 for normal-gallery small-image delivery and amends the production topology from ADRs 0003 and 0007 by adding an isolated CDN/image origin while retaining the existing application edge.
 
 ## Summary
 
@@ -266,4 +266,4 @@ Every view would repeat source fetch and resize work. This removes stored deriva
 
 ## Approval gate
 
-Implementation planning may start only after the maintainer approves this written design and the required ADR is accepted. Approval of this specification does not itself accept or supersede an ADR.
+Implementation planning may proceed under accepted ADR 0038.

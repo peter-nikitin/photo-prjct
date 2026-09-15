@@ -1,10 +1,10 @@
 # 0038: Deliver gallery grid images through CDN and imgproxy
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-15
 - Deciders: project maintainers
 - Supersedes: [ADR 0036](0036-issue-direct-gallery-small-preview-capabilities.md) only for
-  normal-gallery small presentation derivatives, upon acceptance
+  normal-gallery small presentation derivatives
 - Superseded by: none
 
 ## Context

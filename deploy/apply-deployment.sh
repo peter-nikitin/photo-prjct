@@ -553,6 +553,7 @@ previous_env_tmp=""
 previous_deployed_image_tmp=""
 previous_cart_cleanup_tmp=""
 marker_tmp=""
+candidate_command_output_tmp=""
 mutation_started=0
 deployment_committed=0
 recovery_in_progress=0
@@ -565,7 +566,8 @@ cleanup() {
         ${previous_env_tmp:+"$previous_env_tmp"} \
         ${previous_deployed_image_tmp:+"$previous_deployed_image_tmp"} \
         ${previous_cart_cleanup_tmp:+"$previous_cart_cleanup_tmp"} \
-        ${marker_tmp:+"$marker_tmp"}
+        ${marker_tmp:+"$marker_tmp"} \
+        ${candidate_command_output_tmp:+"$candidate_command_output_tmp"}
 }
 
 previous_cart_cleanup_is_present() {
@@ -726,6 +728,33 @@ stop_import_before_web_change() {
     fi
 }
 
+stop_existing_processing_worker_topology() {
+    for processing_service in worker worker-bulk worker-selfie; do
+        processing_containers="$(
+            docker ps -q \
+                --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+                --filter "label=com.docker.compose.service=$processing_service" 2>/dev/null
+        )" || return 1
+        for processing_container in $processing_containers; do
+            docker stop "$processing_container" >/dev/null 2>&1 || return 1
+        done
+    done
+}
+
+run_private_candidate_command() {
+    candidate_command_output_tmp="$(
+        mktemp "$DEPLOY_ROOT/.candidate-command-output.XXXXXX"
+    )" || return 1
+    if "$@" >"$candidate_command_output_tmp" 2>&1; then
+        rm -f "$candidate_command_output_tmp"
+        candidate_command_output_tmp=""
+        return 0
+    fi
+    rm -f "$candidate_command_output_tmp"
+    candidate_command_output_tmp=""
+    return 1
+}
+
 start_import_after_web_ready() {
     import_env_file="$1"
     compose_with_env_file "$import_env_file" --profile import run --rm --no-deps -T \
@@ -735,20 +764,26 @@ start_import_after_web_ready() {
 
 recover_previous_deployment() {
     stop_import_before_web_change "$DEPLOY_ROOT/.env" "$requested_import_enabled" || return 1
-    restore_previous_deployment_markers || return 1
 
     if [ "$previous_env_exists" -eq 0 ]; then
         recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.recovery.XXXXXX")" || return 1
-        cp "$DEPLOY_ROOT/.env" "$recovery_env_tmp" || return 1
+        recovery_source_env="$DEPLOY_ROOT/.env"
+        if [ ! -f "$recovery_source_env" ]; then
+            [ -n "$requested_env_tmp" ] && [ -f "$requested_env_tmp" ] || return 1
+            recovery_source_env="$requested_env_tmp"
+        fi
+        cp "$recovery_source_env" "$recovery_env_tmp" || return 1
         if ! compose_with_env_file "$recovery_env_tmp" down --remove-orphans; then
             return 1
         fi
         restore_previous_deployment_package || return 1
         rm -f "$DEPLOY_ROOT/.env"
+        restore_previous_deployment_markers || return 1
         echo "No previous deployment environment was present; restored no-env state" >&2
         return 0
     fi
 
+    restore_previous_deployment_markers || return 1
     [ -n "$previous_env_tmp" ] || return 1
     mv "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
     previous_env_tmp=""
@@ -825,7 +860,7 @@ fail() {
 
 phase() {
     case "$1" in
-        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|certificate|compose-reconcile|local-health|worker-health|public-health|observability-verify|commit)
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit)
             deployment_phase="$1"
             printf 'DEPLOY_PHASE=%s elapsed_seconds=%s\n' "$1" "$(elapsed_seconds)"
             ;;
@@ -1085,6 +1120,29 @@ sudo -n "$observability_helper" install || fail "Selfie observability host recon
 if [ "$previous_env_exists" -eq 1 ]; then
     stop_import_before_web_change "$DEPLOY_ROOT/.env" "$previous_import_enabled" || fail "Import worker stop failed"
 fi
+
+phase projection-preflight
+stop_existing_processing_worker_topology || fail "Processing worker stop failed"
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm -T --entrypoint python web manage.py migrate --noinput; then
+    fail "Candidate migration failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py \
+    drain_gallery_media_publications --all-events; then
+    fail "Gallery media publication drain failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm -T --entrypoint python web manage.py \
+    rebuild_gallery_media_projection --all-events --apply; then
+    fail "Gallery media projection rebuild failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm -T --entrypoint python web manage.py \
+    verify_gallery_media_projection --all-events --require-clean; then
+    fail "Gallery media projection verification failed"
+fi
+
 mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
 requested_env_tmp=""
 
@@ -1155,6 +1213,12 @@ while [ "$attempt" -le "$max_attempts" ]; do
     attempt=$((attempt + 1))
     sleep 5
 done
+
+phase gallery-media-smoke
+if ! run_private_candidate_command compose exec -T web python manage.py \
+    smoke_gallery_media_projection; then
+    fail "Candidate gallery media smoke failed"
+fi
 
 if [ "$requested_import_enabled" = True ]; then
     start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"

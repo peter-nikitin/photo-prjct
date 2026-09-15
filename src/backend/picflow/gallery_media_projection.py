@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from django.db import connection, transaction
+from django.db.models import F
 from processing.models import (
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -40,6 +41,13 @@ class ProjectionVerificationReport:
 
 
 @dataclass(frozen=True)
+class GalleryMediaPublicationDrainReport:
+    """Aggregate-only result of fencing old preview publication leases."""
+
+    fenced_attempt_count: int
+
+
+@dataclass(frozen=True)
 class _SqlRelation:
     query: str
     params: tuple[object, ...]
@@ -64,6 +72,9 @@ _SLOTS = {
         processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     ),
 }
+
+PUBLICATION_DRAIN_LOCK_TIMEOUT_MS = 30_000
+PUBLICATION_DRAIN_STATEMENT_TIMEOUT_MS = 60_000
 
 
 def _expected_projection_relation() -> _SqlRelation:
@@ -294,6 +305,28 @@ def verify_gallery_media_projection() -> ProjectionVerificationReport:
         projected_count=int(row[1]),
         mismatch_count=mismatch_count,
     )
+
+
+def drain_gallery_media_publications() -> GalleryMediaPublicationDrainReport:
+    """Fence current preview publications before rebuilding the gallery projection."""
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('lock_timeout', %s, true)",
+                [f"{PUBLICATION_DRAIN_LOCK_TIMEOUT_MS}ms"],
+            )
+            cursor.execute(
+                "SELECT set_config('statement_timeout', %s, true)",
+                [f"{PUBLICATION_DRAIN_STATEMENT_TIMEOUT_MS}ms"],
+            )
+        fenced_attempt_count = ProcessingAttempt.objects.filter(
+            processor_type__in=(
+                GENERATE_PREVIEW_PROCESSOR,
+                GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            ),
+            status=ProcessingAttempt.Status.IN_PROGRESS,
+        ).update(lease_expires_at=F("created_at"))
+    return GalleryMediaPublicationDrainReport(fenced_attempt_count=fenced_attempt_count)
 
 
 def publish_gallery_media(derivative: PhotoDerivative) -> GalleryMediaProjection:

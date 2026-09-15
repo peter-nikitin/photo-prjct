@@ -3,4 +3,3 @@ RUN apk add --no-cache openssl && pip install --no-cache-dir Pillow==12.1.1 boto
 WORKDIR /contract
 COPY fixtures/ /contract/
 ENTRYPOINT ["python", "/contract/acceptance.py"]
-

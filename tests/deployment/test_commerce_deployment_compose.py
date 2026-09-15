@@ -7,6 +7,104 @@ import yaml
 
 from tests.deployment.test_deployment_scripts import ROOT
 
+GALLERY_DELIVERY_ENVIRONMENT = {
+    "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
+    "GALLERY_CDN_TOKEN_SECRET": "cdn-token-secret",
+    "GALLERY_IMGPROXY_KEY": "11" * 32,
+    "GALLERY_IMGPROXY_SALT": "22" * 32,
+}
+
+
+def _render_all_deployment_profiles(extra_environment: dict[str, str]) -> dict:
+    environment = {
+        **os.environ,
+        "APP_IMAGE": "review-app-image",
+        "WORKER_IMAGE": "review-worker-image",
+        "IMPORT_WORKER_IMAGE": "review-import-image",
+        "SECRET_KEY": "secret-key",
+        "DEBUG": "False",
+        "ALLOWED_HOSTS": "findme-photo.ru,web",
+        "DB_NAME": "app",
+        "DB_USER": "app",
+        "DB_PASSWORD": "db-password",
+        "PUBLIC_DOMAIN": "findme-photo.ru",
+        "COMMERCE_WORKER_ENABLED": "False",
+        **extra_environment,
+    }
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "-f",
+            "docker-compose.deployment.yml",
+            "-f",
+            "docker-compose.https.yml",
+            "--profile",
+            "worker",
+            "--profile",
+            "import",
+            "--profile",
+            "commerce",
+            "config",
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return yaml.safe_load(result.stdout)
+
+
+def test_gallery_delivery_configuration_changes_only_the_web_environment() -> None:
+    """A deployment setting must not alter worker topology or grant it signing material."""
+    configured = _render_all_deployment_profiles(GALLERY_DELIVERY_ENVIRONMENT)
+    dark = _render_all_deployment_profiles(
+        {
+            "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
+            "GALLERY_CDN_TOKEN_SECRET": "",
+            "GALLERY_IMGPROXY_KEY": "",
+            "GALLERY_IMGPROXY_SALT": "",
+        }
+    )
+
+    configured_web = configured["services"]["web"]["environment"]
+    assert {name: configured_web[name] for name in GALLERY_DELIVERY_ENVIRONMENT} == (
+        GALLERY_DELIVERY_ENVIRONMENT
+    )
+    assert {
+        name: dark["services"]["web"]["environment"][name] for name in GALLERY_DELIVERY_ENVIRONMENT
+    } == {
+        "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
+        "GALLERY_CDN_TOKEN_SECRET": "",
+        "GALLERY_IMGPROXY_KEY": "",
+        "GALLERY_IMGPROXY_SALT": "",
+    }
+
+    configured_without_gallery = configured.copy()
+    configured_without_gallery["services"] = configured["services"].copy()
+    configured_without_gallery["services"]["web"] = configured["services"]["web"].copy()
+    configured_without_gallery["services"]["web"]["environment"] = configured_web.copy()
+    dark_without_gallery = dark.copy()
+    dark_without_gallery["services"] = dark["services"].copy()
+    dark_without_gallery["services"]["web"] = dark["services"]["web"].copy()
+    dark_without_gallery["services"]["web"]["environment"] = dark["services"]["web"][
+        "environment"
+    ].copy()
+    for name in GALLERY_DELIVERY_ENVIRONMENT:
+        configured_without_gallery["services"]["web"]["environment"].pop(name)
+        dark_without_gallery["services"]["web"]["environment"].pop(name)
+    assert configured_without_gallery == dark_without_gallery
+
+    for service_name, service in configured["services"].items():
+        if service_name == "web":
+            continue
+        environment = service.get("environment") or {}
+        assert not GALLERY_DELIVERY_ENVIRONMENT.keys() & environment.keys(), service_name
+
 
 def test_deployment_compose_projects_postbox_credentials_only_to_commerce_worker() -> None:
     environment = {

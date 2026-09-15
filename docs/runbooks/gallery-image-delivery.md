@@ -8,9 +8,10 @@ Storage, Lockbox, DNS, certificate, CDN, or production mutation.
 
 ## Fixed order and stop conditions
 
-1. Deploy the application with `gallery-cdn-images=off` and no new resources. Confirm fresh gallery
-   pages still contain direct accepted-preview capabilities and that the deployment did not require
-   origin/CDN settings.
+1. Merge and deploy the application with `gallery-cdn-images=off`, the canonical non-secret
+   `GALLERY_CDN_ORIGIN=https://img.findme-photo.ru`, no signing secrets required, and no image
+   origin, DNS, certificate, or CDN resource. Complete the dark-deployment checks below and stop if
+   any existing path changes.
 2. **Provision the reviewed resources** only after refreshing the exact profile, cloud, folder,
    canonical VM, VPC/subnet, bucket policy, quotas, and official pricing. Present the machine plan,
    normalized policy diff, stable resource IDs, monthly price delta, exact command, validation, and
@@ -31,6 +32,41 @@ Storage, Lockbox, DNS, certificate, CDN, or production mutation.
 Any failed policy, credential, origin, CDN, visual, performance, or isolation gate is a no-go. Keep
 the feature `staff` or `off`; do not resize the VM or enable paid CDN options without a reviewed
 plan update and new cost approval.
+
+## Dark application deployment
+
+This boundary deploys application support only. It does not authorize provisioning, Lockbox
+mutation, DNS or certificate changes, origin/CDN contact, or feature activation. The deployment
+resolver may omit `GALLERY_CDN_TOKEN_SECRET`, `GALLERY_IMGPROXY_KEY`, and
+`GALLERY_IMGPROXY_SALT`; the web container receives empty values and every worker, importer,
+database, Nginx, and Certbot container remains outside that projection.
+
+Before the application workflow starts, confirm there is no delivery resource and that the
+code-owned `gallery-cdn-images` definition will reconcile to `off`. If an earlier partial rollout
+already created the row in another state, change it to `off` through Django Admin before deploying;
+the deployment itself must never activate a feature flag. Deploy the exact reviewed application
+commit through the canonical workflow without any image-origin workflow or provisioning command.
+
+After deployment, record one bounded, read-only evidence set:
+
+1. the requested commit SHA equals `/opt/photo-prjct/deployed-image` and the running web image;
+2. the canonical web, database, application Nginx, Certbot, bulk worker, selfie worker, Commerce
+   worker when enabled, and import worker when enabled retain their expected health and topology;
+3. the reconciled `gallery-cdn-images` row is exactly `off`;
+4. a fresh normal gallery page on the original public HTTPS route contains only the existing direct
+   accepted-preview capabilities and no `img.findme-photo.ru` URL;
+5. the processing queue advances across two fresh observations, and PostgreSQL activity shows no
+   new blocking or sustained gallery query;
+6. application and worker VM CPU, memory, disk, and container restart counts remain within their
+   pre-deploy bounds; and
+7. a fresh post-deploy error window contains no new gallery, signing, feature-flag, worker,
+   importer, database, or storage error.
+
+If any check differs from the pre-deploy baseline, set or keep the flag `off`, use the established
+prior-image rollback, and repeat the same evidence set. Do not provision around a failed dark
+deployment. Only after every check is green may the operator refresh discovery, inventory, quotas,
+and pricing, present the exact resource plan, and seek fresh approval for the separately bounded
+provisioning operation.
 
 ## Repository-only dry run
 

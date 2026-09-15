@@ -10,6 +10,14 @@ elapsed_seconds() {
     printf '%s' "$((now - deployment_started_at))"
 }
 
+write_literal_dotenv_value() {
+    dotenv_name="$1"
+    dotenv_value="$2"
+    printf '%s="' "$dotenv_name"
+    printf '%s' "$dotenv_value" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\$/\\$/g'
+    printf '"\n'
+}
+
 on_exit() {
     status=$?
     [ "$status" -ne 0 ] || status=2
@@ -42,6 +50,14 @@ printf 'DEPLOY_PHASE=validate elapsed_seconds=%s\n' "$(elapsed_seconds)"
 : "${GUNICORN_MAX_REQUESTS:?Set GUNICORN_MAX_REQUESTS}"
 : "${GUNICORN_MAX_REQUESTS_JITTER:?Set GUNICORN_MAX_REQUESTS_JITTER}"
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
+requested_gallery_cdn_origin="${GALLERY_CDN_ORIGIN:-}"
+if [ "$requested_gallery_cdn_origin" != https://img.findme-photo.ru ]; then
+    echo "GALLERY_CDN_ORIGIN must be https://img.findme-photo.ru" >&2
+    exit 2
+fi
+requested_gallery_cdn_token_secret="${GALLERY_CDN_TOKEN_SECRET:-}"
+requested_gallery_imgproxy_key="${GALLERY_IMGPROXY_KEY:-}"
+requested_gallery_imgproxy_salt="${GALLERY_IMGPROXY_SALT:-}"
 requested_image="$APP_IMAGE"
 requested_import_enabled="${PHOTO_IMPORT_ENABLED:-False}"
 case "$requested_import_enabled" in
@@ -614,6 +630,10 @@ clear_candidate_compose_interpolation() {
         DB_PORT \
         PUBLIC_DOMAIN \
         PUBLIC_DOMAIN_ALIAS \
+        GALLERY_CDN_ORIGIN \
+        GALLERY_CDN_TOKEN_SECRET \
+        GALLERY_IMGPROXY_KEY \
+        GALLERY_IMGPROXY_SALT \
         LETSENCRYPT_EMAIL \
         MEDIA_STORAGE_BACKEND \
         MEDIA_S3_ENDPOINT_URL \
@@ -982,6 +1002,10 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'GUNICORN_MAX_REQUESTS_JITTER=%s\n' "$GUNICORN_MAX_REQUESTS_JITTER"
     printf 'PUBLIC_DOMAIN=%s\n' "$PUBLIC_DOMAIN"
     printf 'PUBLIC_DOMAIN_ALIAS=%s\n' "$PUBLIC_DOMAIN_ALIAS"
+    write_literal_dotenv_value GALLERY_CDN_ORIGIN "$requested_gallery_cdn_origin"
+    write_literal_dotenv_value GALLERY_CDN_TOKEN_SECRET "$requested_gallery_cdn_token_secret"
+    write_literal_dotenv_value GALLERY_IMGPROXY_KEY "$requested_gallery_imgproxy_key"
+    write_literal_dotenv_value GALLERY_IMGPROXY_SALT "$requested_gallery_imgproxy_salt"
     printf 'MEDIA_STORAGE_BACKEND=%s\n' "${MEDIA_STORAGE_BACKEND:-filesystem}"
     printf 'MEDIA_S3_ENDPOINT_URL=%s\n' "${MEDIA_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}"
     printf 'MEDIA_S3_REGION=%s\n' "${MEDIA_S3_REGION:-ru-central1}"

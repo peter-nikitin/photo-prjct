@@ -11,6 +11,7 @@ from django.db import DatabaseError, IntegrityError, close_old_connections, conn
 from django.test import RequestFactory, TransactionTestCase, override_settings
 from django.utils import timezone
 from django.views.debug import technical_500_response
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -314,7 +315,7 @@ class CheckoutServiceTests(TransactionTestCase):
             accepted_attempt=attempt,
             succeeded_at=self.now,
         )
-        PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
             final_key="derivatives/previews/hidden-checkout-photo/preview-watermarked-v1/accepted.jpg",
@@ -327,6 +328,7 @@ class CheckoutServiceTests(TransactionTestCase):
             sha256="b" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
         return photo
 
     def test_originating_cart_digest_is_validated_immutable_indexed_and_pending_unique(

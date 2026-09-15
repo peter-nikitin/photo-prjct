@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.test import TestCase
 from django.utils import timezone
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -171,7 +172,7 @@ class SavedReadyResultPageTests(TestCase):
         state.accepted_attempt = attempt
         state.succeeded_at = timezone.now()
         state.save()
-        PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
             final_key=f"derivatives/previews/{photo.pk}/preview-watermarked-v1/{uuid4().hex}.jpg",
@@ -184,6 +185,7 @@ class SavedReadyResultPageTests(TestCase):
             sha256="b" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
 
     def test_page_preserves_saved_rank_after_current_eligibility_filtering(self) -> None:
         first = self.add_result(photo_id="rank-one", rank=1)

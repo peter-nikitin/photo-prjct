@@ -14,6 +14,7 @@ from feature_flags.registry import (
 )
 from feature_flags.states import FEATURE_FLAG_STAFF, FeatureFlagState
 from feature_flags.testing import override_feature_flags
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -125,7 +126,7 @@ class PaidPhotoCartCriticalPathTests(TestCase):
             accepted_attempt=attempt,
             succeeded_at=timezone.now(),
         )
-        PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
             final_key=(
@@ -141,6 +142,7 @@ class PaidPhotoCartCriticalPathTests(TestCase):
             sha256="a" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
         return photo
 
     def enable_staff_gates(self) -> None:

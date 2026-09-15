@@ -24,6 +24,7 @@ from feature_flags.registry import PAID_EVENTS
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 from PIL import Image
 from processing.models import (
@@ -455,6 +456,7 @@ class SubmissionTests(TestCase):
                 "updated_at",
             ]
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
         expected_candidate_fingerprint = {
             "object_key": derivative.final_key,
             "object_size": derivative.byte_size,
@@ -1013,7 +1015,7 @@ class GalleryPhotoSubmissionTests(TestCase):
             accepted_attempt=attempt,
             succeeded_at=timezone.now(),
         )
-        PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
             final_key=f"derivatives/previews/{photo.pk}/preview-watermarked-v1/accepted.jpg",
@@ -1025,6 +1027,7 @@ class GalleryPhotoSubmissionTests(TestCase):
             oriented_source_height=10,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
 
     def test_gallery_presentation_returns_all_current_compatible_faces_for_page_photos(
         self,

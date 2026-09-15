@@ -38,6 +38,7 @@ from picflow.gallery import (
     gallery_photo_queryset,
     purchasable_paid_photo_queryset,
 )
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, EventFolder, Photo
 
 LEGACY_ORIGINAL_POLICY: str = cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
@@ -1139,9 +1140,16 @@ class PaidWatermarkedGalleryTests(TestCase):
         state.save()
         return attempt
 
-    def publish(self, photo: Photo, *, processor_type: str, variant: str) -> PhotoDerivative:
+    def publish(
+        self,
+        photo: Photo,
+        *,
+        processor_type: str,
+        variant: str,
+        publish_projection: bool = True,
+    ) -> PhotoDerivative:
         attempt = self.accept(photo, processor_type=processor_type, variant=variant)
-        return PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant=variant,
             final_key=f"derivatives/previews/{photo.pk}/{variant}/{uuid4().hex}.jpg",
@@ -1154,6 +1162,9 @@ class PaidWatermarkedGalleryTests(TestCase):
             sha256="a" * 64,
             accepted_attempt=attempt,
         )
+        if publish_projection:
+            photo.gallery_media_projection = publish_gallery_media(derivative)
+        return derivative
 
     def test_purchasable_query_returns_only_consistent_watermarked_photo(self) -> None:
         ready = self.photo(
@@ -1186,6 +1197,7 @@ class PaidWatermarkedGalleryTests(TestCase):
             failed,
             processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
             variant="preview-watermarked-v1",
+            publish_projection=False,
         )
         failed_state = PhotoProcessingState.objects.get(
             photo=failed,
@@ -1210,6 +1222,7 @@ class PaidWatermarkedGalleryTests(TestCase):
             inconsistent,
             processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
             variant="preview-watermarked-v1",
+            publish_projection=False,
         )
         inconsistent_state = PhotoProcessingState.objects.get(
             photo=inconsistent,
@@ -1403,6 +1416,7 @@ class PaidWatermarkedGalleryTests(TestCase):
             inconsistent,
             processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
             variant="preview-watermarked-v1",
+            publish_projection=False,
         )
         inconsistent_state = PhotoProcessingState.objects.get(
             photo=inconsistent,
@@ -1530,7 +1544,7 @@ class PreviewRequiredPublicGalleryMediaTests(TestCase):
         state.accepted_attempt = attempt
         state.succeeded_at = timezone.now()
         state.save()
-        return PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-small-v1",
             final_key=f"derivatives/previews/{photo.id}/preview-small-v1/{uuid4().hex}.jpg",
@@ -1543,6 +1557,8 @@ class PreviewRequiredPublicGalleryMediaTests(TestCase):
             sha256="a" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
+        return derivative
 
     def test_resolver_reads_new_small_from_derivative_and_large_from_original(self) -> None:
         photo = self.make_preview_required_photo(photo_id="preview-photo")

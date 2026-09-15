@@ -26,6 +26,7 @@ from picflow.access import mark_event_staff_preview
 from picflow.forms import BibSearchForm, EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from picflow.gallery import (
     GALLERY_VARIANTS,
+    GalleryMediaPurpose,
     GalleryPhoto,
     GalleryPhotoFactory,
     MediaUrlBuilder,
@@ -33,6 +34,7 @@ from picflow.gallery import (
     gallery_folder_choices,
     gallery_page,
     gallery_photo_queryset,
+    public_gallery_photo,
 )
 from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, EventFolder, Photo
@@ -249,13 +251,15 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
         Event.objects.site_visible_to(request.user),
         slug=slug,
     )
-    photo = get_object_or_404(
-        gallery_photo_queryset(
-            event=event,
+    try:
+        photo = public_gallery_photo(
+            event_id=event.pk,
+            photo_id=photo_id,
+            purpose=GalleryMediaPurpose.PRESENTATION,
             paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
-        ),
-        pk=photo_id,
-    )
+        )
+    except Photo.DoesNotExist:
+        return HttpResponse(status=404)
     try:
         signed_url = _public_media_resolver().resolve_signed(photo=photo, variant=variant)
     except ObjectMissing:
@@ -271,14 +275,14 @@ def photo_download(request, slug: str, photo_id: str) -> HttpResponse:
         Event.objects.site_visible_to(request.user),
         slug=slug,
     )
-    photo = get_object_or_404(
-        gallery_photo_queryset(
-            event=event,
+    try:
+        photo = public_gallery_photo(
+            event_id=event.pk,
+            photo_id=photo_id,
+            purpose=GalleryMediaPurpose.ORIGINAL_DOWNLOAD,
             paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
-        ),
-        pk=photo_id,
-    )
-    if photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED:
+        )
+    except Photo.DoesNotExist:
         return HttpResponse(status=404)
     try:
         signed_url = _public_media_resolver().resolve_download(photo=photo)

@@ -2,23 +2,17 @@ import logging
 import math
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol, Self, cast
+from enum import StrEnum
+from typing import Final, Literal, Protocol, Self
 from zoneinfo import ZoneInfo
 
 from django.core.paginator import Page, Paginator
-from django.db.models import F, Q, QuerySet
+from django.db.models import Q, QuerySet
 from django.db.models.functions import Lower
 from django.urls import reverse
 from ingestion.storage import ObjectMismatch, ObjectMissing, OpenedObject, ReadableBody
-from processing.models import (
-    GENERATE_PREVIEW_PROCESSOR,
-    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
-    PhotoDerivative,
-    PhotoProcessingState,
-    ProcessingAttempt,
-)
 
-from picflow.models import Event, EventFolder, Photo
+from picflow.models import Event, EventFolder, GalleryMediaProjection, Photo
 
 GalleryVariant = Literal["preview-small", "preview-large"]
 GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "preview-large"})
@@ -27,6 +21,12 @@ DownloadUrlBuilder = Callable[[Photo], str]
 GALLERY_PAGE_SIZE: Final = 100
 
 logger = logging.getLogger(__name__)
+
+
+class GalleryMediaPurpose(StrEnum):
+    PRESENTATION = "presentation"
+    ORIGINAL_DOWNLOAD = "original_download"
+    PURCHASE = "purchase"
 
 
 class FinalObjectStorage(Protocol):
@@ -181,22 +181,15 @@ def gallery_photo_queryset(
     paid_watermarked_previews_enabled: bool = False,
 ) -> QuerySet[Photo]:
     """Return event-surface media without probing object storage."""
-    if event.access_type == Event.AccessType.FREE:
-        eligibility = _legacy_or_clean_preview_ready()
-    elif paid_watermarked_previews_enabled:
-        eligibility = _accepted_derivative_ready(
-            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
-            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
-            variant="preview-watermarked-v1",
-        )
-    else:
-        eligibility = Q(pk__in=())
     queryset = (
         _public_photo_queryset(event=event)
-        .filter(eligibility)
-        .select_related("event")
+        .filter(
+            _gallery_media_eligibility(
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+            )
+        )
+        .select_related("event", "gallery_media_projection")
         .order_by("original_filename", "id")
-        .distinct()
     )
     if folder_ids or include_unfiled:
         folder_filter = Q()
@@ -212,6 +205,43 @@ def gallery_photo_queryset(
     if bib_number is not None:
         queryset = queryset.filter(bib_readings__number=bib_number)
     return queryset
+
+
+def public_gallery_photo(
+    *,
+    event_id: int,
+    photo_id: str,
+    purpose: GalleryMediaPurpose,
+    paid_watermarked_previews_enabled: bool = False,
+) -> Photo:
+    """Return one event-scoped photo authorized for the requested public purpose."""
+    if not isinstance(purpose, GalleryMediaPurpose):
+        raise Photo.DoesNotExist
+    eligibility = _gallery_media_eligibility(
+        paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+    )
+    if purpose == GalleryMediaPurpose.ORIGINAL_DOWNLOAD:
+        eligibility &= Q(
+            original_content_type__in=("image/jpeg", "image/png"),
+        ) & ~Q(gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED)
+    elif purpose == GalleryMediaPurpose.PURCHASE:
+        eligibility &= Q(
+            event__publication_status=Event.PublicationStatus.PUBLISHED,
+            event__access_type=Event.AccessType.PAID,
+            event__price_per_photo_kopecks__gt=0,
+            gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        )
+    return (
+        Photo.objects.select_related("event", "gallery_media_projection")
+        .filter(
+            pk=photo_id,
+            event_id=event_id,
+            is_hidden=False,
+            src="",
+            original_key__isnull=False,
+        )
+        .get(eligibility)
+    )
 
 
 def purchasable_paid_photo_queryset(
@@ -244,14 +274,12 @@ def saved_result_photo_queryset(
     paid_watermarked_previews_enabled: bool,
 ) -> QuerySet[Photo]:
     """Return saved-result presentation media under its compatibility contract."""
-    eligibility = _legacy_or_clean_preview_ready()
-    if paid_watermarked_previews_enabled:
-        eligibility |= _accepted_derivative_ready(
-            policy=cast(str, Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED),
-            processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
-            variant="preview-watermarked-v1",
+    return _public_photo_queryset(event=event).filter(
+        _gallery_media_eligibility(
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+            keep_legacy_saved_members=True,
         )
-    return _public_photo_queryset(event=event).filter(eligibility).distinct()
+    )
 
 
 def _public_photo_queryset(*, event: Event) -> QuerySet[Photo]:
@@ -265,24 +293,29 @@ def _public_photo_queryset(*, event: Event) -> QuerySet[Photo]:
 
 def _legacy_or_clean_preview_ready() -> Q:
     return Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED) | (
-        _accepted_derivative_ready(
-            policy=cast(str, Photo.GalleryMediaPolicy.PREVIEW_REQUIRED),
-            processor_type=GENERATE_PREVIEW_PROCESSOR,
-            variant="preview-small-v1",
+        Q(
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+            gallery_media_projection__clean_preview_final_key__isnull=False,
         )
     )
 
 
-def _accepted_derivative_ready(*, policy: str, processor_type: str, variant: str) -> Q:
-    return Q(
-        gallery_media_policy=policy,
-        derivatives__variant=variant,
-        processing_states__processor_type=processor_type,
-        processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
-        processing_states__accepted_attempt=F("derivatives__accepted_attempt"),
-        processing_states__accepted_attempt__accepted=True,
-        processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
+def _gallery_media_eligibility(
+    *,
+    paid_watermarked_previews_enabled: bool,
+    keep_legacy_saved_members: bool = False,
+) -> Q:
+    legacy_or_clean = _legacy_or_clean_preview_ready()
+    watermarked = Q(
+        event__access_type=Event.AccessType.PAID,
+        gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        gallery_media_projection__watermarked_preview_final_key__isnull=False,
     )
+    if keep_legacy_saved_members:
+        gated_watermarked = watermarked if paid_watermarked_previews_enabled else Q(pk__in=())
+        return legacy_or_clean | gated_watermarked
+    free = Q(event__access_type=Event.AccessType.FREE) & legacy_or_clean
+    return free | (watermarked if paid_watermarked_previews_enabled else Q(pk__in=()))
 
 
 def gallery_folder_choices(
@@ -382,22 +415,32 @@ class PublicMediaResolver:
     def _selected_key(*, photo: Photo, variant: GalleryVariant) -> str:
         if variant not in GALLERY_VARIANTS or not photo.original_key:
             raise ValueError("ineligible gallery media")
-        derivative_variant = None
+        if variant == "preview-small":
+            return gallery_preview_final_key(photo) or photo.original_key
         if photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED:
-            derivative_variant = "preview-watermarked-v1"
-        elif (
-            photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
-            and variant == "preview-small"
-        ):
-            derivative_variant = "preview-small-v1"
-        if derivative_variant is not None:
-            try:
-                return PhotoDerivative.objects.get(
-                    photo=photo, variant=derivative_variant
-                ).final_key
-            except PhotoDerivative.DoesNotExist:
-                raise ObjectMissing() from None
+            projection_key = gallery_preview_final_key(photo)
+            if projection_key is None:
+                raise ObjectMissing()
+            return projection_key
         return photo.original_key
+
+
+def gallery_preview_final_key(photo: Photo) -> str | None:
+    """Return the cached public small-preview key for one authorized photo."""
+    if photo.gallery_media_policy == Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED:
+        return None
+    projection = photo._state.fields_cache.get("gallery_media_projection")
+    if not isinstance(projection, GalleryMediaProjection):
+        raise ObjectMissing()
+    if photo.gallery_media_policy == Photo.GalleryMediaPolicy.PREVIEW_REQUIRED:
+        key = projection.clean_preview_final_key
+    elif photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED:
+        key = projection.watermarked_preview_final_key
+    else:
+        raise ValueError("gallery preview policy is invalid")
+    if not key:
+        raise ObjectMissing()
+    return key
 
 
 class CloseableMediaIterator(Iterator[bytes]):

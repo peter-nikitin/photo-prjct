@@ -723,17 +723,13 @@ class PaidPhotoPurchaseFlowTests(TestCase):
         )
         resolver = Mock()
         resolver.resolve_download.return_value = "https://storage.test.invalid/free-original"
-        with patch(
-            "config.views.gallery_photo_queryset",
-            return_value=Photo.objects.filter(pk=free_photo.pk),
-        ):
-            with patch("config.views._public_media_resolver", return_value=resolver):
-                free_download = self.client.get(
-                    reverse(
-                        "photo_download",
-                        kwargs={"slug": free_event.slug, "photo_id": free_photo.pk},
-                    )
+        with patch("config.views._public_media_resolver", return_value=resolver):
+            free_download = self.client.get(
+                reverse(
+                    "photo_download",
+                    kwargs={"slug": free_event.slug, "photo_id": free_photo.pk},
                 )
+            )
         self.assertEqual(free_download.status_code, 302)
         self.assertEqual(free_download["Location"], "https://storage.test.invalid/free-original")
 
@@ -775,17 +771,13 @@ class PaidPhotoPurchaseFlowTests(TestCase):
 
         self.client.logout()
         paid_resolver = Mock()
-        with patch(
-            "config.views.gallery_photo_queryset",
-            return_value=Photo.objects.filter(pk=self.photo.pk),
-        ):
-            with patch("config.views._public_media_resolver", return_value=paid_resolver):
-                public_paid_download = self.client.get(
-                    reverse(
-                        "photo_download",
-                        kwargs={"slug": self.event.slug, "photo_id": self.photo.pk},
-                    )
+        with patch("config.views._public_media_resolver", return_value=paid_resolver):
+            public_paid_download = self.client.get(
+                reverse(
+                    "photo_download",
+                    kwargs={"slug": self.event.slug, "photo_id": self.photo.pk},
                 )
+            )
         self.assertEqual(public_paid_download.status_code, 404)
         paid_resolver.resolve_download.assert_not_called()
 

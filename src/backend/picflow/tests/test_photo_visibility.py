@@ -20,6 +20,7 @@ from picflow.gallery import (
     purchasable_paid_photo_queryset,
     saved_result_photo_queryset,
 )
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 
 type ChoiceValue = str | tuple[str, str]
@@ -114,7 +115,7 @@ class PhotoVisibilityTests(TestCase):
             accepted_attempt=attempt,
             succeeded_at=timezone.now(),
         )
-        PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
             final_key=f"derivatives/previews/{photo.pk}/preview-watermarked-v1/{uuid4().hex}.jpg",
@@ -127,6 +128,7 @@ class PhotoVisibilityTests(TestCase):
             sha256="b" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
 
     def test_hide_and_show_suppresses_free_public_access_without_mutating_media_or_worker_state(
         self,

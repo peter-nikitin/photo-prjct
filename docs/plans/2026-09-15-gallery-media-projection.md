@@ -196,7 +196,10 @@ last Task 1 file change. After independent approval, the root controller commits
 - Modify: `src/backend/commerce/checkout.py`
 - Create: `src/backend/picflow/tests/test_gallery_media_projection_queries.py`
 - Modify: `src/backend/picflow/tests/test_gallery.py`
+- Modify: `src/backend/picflow/tests/test_gallery_preview_grants.py`
+- Modify: `src/backend/picflow/tests/test_photo_visibility.py`
 - Modify: `src/backend/picflow/tests/test_views.py`
+- Modify: `src/backend/processing/tests/test_paid_watermarked_preview_flow.py`
 - Modify: `src/backend/selfie_search/tests/test_results.py`
 - Modify: `src/backend/selfie_search/tests/test_submission.py`
 - Modify: `src/backend/selfie_search/tests/test_views.py`
@@ -302,7 +305,7 @@ convenience.
 Run:
 
 ```bash
-make test TESTS="src/backend/picflow/tests/test_gallery_media_projection_queries.py src/backend/picflow/tests/test_gallery.py src/backend/picflow/tests/test_views.py src/backend/selfie_search/tests/test_results.py src/backend/selfie_search/tests/test_submission.py src/backend/selfie_search/tests/test_views.py src/backend/commerce/tests/test_checkout.py src/backend/commerce/tests/test_checkout_views.py src/backend/commerce/tests/test_services.py src/backend/commerce/tests/test_views.py src/backend/commerce/tests/test_paid_photo_cart_flow.py src/backend/commerce/tests/test_paid_photo_purchase_flow.py"
+make test TESTS="src/backend/picflow/tests/test_gallery_media_projection_queries.py src/backend/picflow/tests/test_gallery.py src/backend/picflow/tests/test_gallery_preview_grants.py src/backend/picflow/tests/test_photo_visibility.py src/backend/picflow/tests/test_views.py src/backend/processing/tests/test_paid_watermarked_preview_flow.py src/backend/selfie_search/tests/test_results.py src/backend/selfie_search/tests/test_submission.py src/backend/selfie_search/tests/test_views.py src/backend/commerce/tests/test_checkout.py src/backend/commerce/tests/test_checkout_views.py src/backend/commerce/tests/test_services.py src/backend/commerce/tests/test_views.py src/backend/commerce/tests/test_paid_photo_cart_flow.py src/backend/commerce/tests/test_paid_photo_purchase_flow.py"
 ```
 
 Then run `.venv/bin/pre-commit run --files` with every Python file changed by Task 2. Record the

@@ -105,7 +105,7 @@ def _eligible_saved_result_rows(
                 paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             ),
         )
-        .select_related("photo__event")
+        .select_related("photo__event", "photo__gallery_media_projection")
         .order_by("rank", "photo_id")
     )
 

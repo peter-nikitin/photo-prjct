@@ -376,3 +376,67 @@ class Photo(models.Model):
                     )
                 }
             )
+
+
+class GalleryMediaProjection(models.Model):  # noqa: DJ008
+    photo = models.OneToOneField(
+        Photo,
+        on_delete=models.PROTECT,
+        primary_key=True,
+        related_name="gallery_media_projection",
+    )
+    clean_preview_final_key = models.CharField(  # noqa: DJ001
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+    clean_preview_source_attempt = models.ForeignKey(
+        "processing.ProcessingAttempt",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    watermarked_preview_final_key = models.CharField(  # noqa: DJ001
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+    watermarked_preview_source_attempt = models.ForeignKey(
+        "processing.ProcessingAttempt",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        clean_preview_final_key__isnull=True,
+                        clean_preview_source_attempt__isnull=True,
+                    )
+                    | models.Q(
+                        clean_preview_final_key__isnull=False,
+                        clean_preview_source_attempt__isnull=False,
+                    )
+                ),
+                name="picflow_gallery_media_clean_pair_chk",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        watermarked_preview_final_key__isnull=True,
+                        watermarked_preview_source_attempt__isnull=True,
+                    )
+                    | models.Q(
+                        watermarked_preview_final_key__isnull=False,
+                        watermarked_preview_source_attempt__isnull=False,
+                    )
+                ),
+                name="picflow_gallery_media_watermarked_pair_chk",
+            ),
+        ]

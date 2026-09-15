@@ -14,6 +14,7 @@ from feature_flags.registry import PAID_EVENTS, PAID_WATERMARKED_PREVIEWS
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 from PIL import Image
 from processing.models import (
@@ -194,7 +195,7 @@ class FeedbackSubmissionTests(TestCase):
             accepted_attempt=attempt,
             succeeded_at=timezone.now(),
         )
-        PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
             final_key=f"derivatives/previews/{photo.pk}/preview-watermarked-v1/accepted.jpg",
@@ -206,6 +207,7 @@ class FeedbackSubmissionTests(TestCase):
             oriented_source_height=10,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
         return result
 
     def feedback_url(self, *, token: str) -> str:

@@ -21,6 +21,7 @@ from feature_flags.states import (
     FeatureFlagState,
 )
 from feature_flags.testing import override_feature_flags
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -130,7 +131,7 @@ class CartViewTests(TestCase):
         state.accepted_attempt = attempt
         state.succeeded_at = timezone.now()
         state.save()
-        PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
             final_key=f"private/watermarked/{photo_id}.jpg",
@@ -143,6 +144,7 @@ class CartViewTests(TestCase):
             sha256="a" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
         return photo
 
     def enable(

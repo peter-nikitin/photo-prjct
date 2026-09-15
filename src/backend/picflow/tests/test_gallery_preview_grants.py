@@ -9,6 +9,7 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
+from ingestion.storage import ObjectMissing
 from processing.models import (
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -19,6 +20,7 @@ from processing.models import (
     ProcessingJob,
 )
 
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, Photo
 
@@ -117,7 +119,7 @@ class GalleryPreviewGrantTests(TestCase):
         state.accepted_attempt = attempt
         state.succeeded_at = timezone.now()
         state.save()
-        return PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant=variant,
             final_key=(f"derivatives/previews/{photo.pk}/{variant}/{uuid4()}-{'a' * 64}.jpg"),
@@ -130,6 +132,8 @@ class GalleryPreviewGrantTests(TestCase):
             sha256="a" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
+        return derivative
 
     def test_issues_only_policy_selected_accepted_derivative_urls(self) -> None:
         """The break caught here would sign a legacy original or the wrong preview variant."""
@@ -168,8 +172,8 @@ class GalleryPreviewGrantTests(TestCase):
             (paid_derivative.final_key, 21_600),
         ]
 
-    def test_uses_one_derivative_evidence_query_for_one_or_one_hundred_photos(self) -> None:
-        """The break caught here would add a derivative/evidence query per gallery card."""
+    def test_uses_no_database_query_for_one_or_one_hundred_projected_photos(self) -> None:
+        """The break caught here would reconstruct published evidence during a page read."""
         one = self.photo(
             photo_id="one-preview",
             policy=PREVIEW_REQUIRED_POLICY,
@@ -199,5 +203,23 @@ class GalleryPreviewGrantTests(TestCase):
         with CaptureQueriesContext(connection) as many_queries:
             issue_gallery_preview_urls(photos=many, signer=signer)
 
-        assert len(one_queries) == 1
-        assert len(many_queries) == 1
+        assert len(one_queries) == 0
+        assert len(many_queries) == 0
+
+    def test_rejects_duplicate_photo_identities_before_signing(self) -> None:
+        legacy = self.photo(photo_id="duplicate-preview", policy=LEGACY_ORIGINAL_POLICY)
+        signer = _Signer()
+
+        with self.assertRaisesMessage(ValueError, "duplicate photo identities"):
+            issue_gallery_preview_urls(photos=[legacy, legacy], signer=signer)
+
+        assert signer.calls == []
+
+    def test_fails_closed_when_required_projection_slot_is_missing(self) -> None:
+        missing = self.photo(photo_id="missing-preview", policy=PREVIEW_REQUIRED_POLICY)
+        signer = _Signer()
+
+        with self.assertRaises(ObjectMissing):
+            issue_gallery_preview_urls(photos=[missing], signer=signer)
+
+        assert signer.calls == []

@@ -924,7 +924,7 @@ def _order_media(
         return _purchase_not_found()
     order_instance, _access_grant = authorized
     item = (
-        OrderItem.objects.select_related("photo")
+        OrderItem.objects.select_related("photo", "photo__gallery_media_projection")
         .filter(order=order_instance, photo_id=photo_id)
         .first()
     )

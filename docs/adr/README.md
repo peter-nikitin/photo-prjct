@@ -56,6 +56,7 @@ place, and add the new record to this index.
 | 0034 | [Stream page-scoped photo archives through Django](0034-stream-page-scoped-photo-archives-through-django.md) | Accepted |
 | 0035 | [Use Django-polled Yandex Disk import](0035-use-django-polled-yandex-disk-import.md) | Accepted |
 | 0036 | [Issue direct gallery small-preview capabilities](0036-issue-direct-gallery-small-preview-capabilities.md) | Accepted |
+| 0037 | [Use a gallery-media read projection](0037-use-gallery-media-read-projection.md) | Accepted |
 
 ## Public selfie-search outcome
 

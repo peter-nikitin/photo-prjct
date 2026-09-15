@@ -13,9 +13,10 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from ingestion.storage import ObjectChanged, ObjectMismatch, ObjectMissing
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 
-from processing.contracts import AttemptCompletion, CompletionConflict
+from processing.contracts import BIB_RECOGNITION_CONTRACT, AttemptCompletion, CompletionConflict
 from processing.models import (
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -251,8 +252,7 @@ def _publish_after_verification(
     with transaction.atomic():
         identity = ProcessingAttempt.objects.only("processor_type").get(pk=attempt_id)
         profile = _profile_for(identity.processor_type)
-        if profile.enroll_from_clean_publication:
-            _prelock_preview_face_enrollment(attempt_id)
+        _prelock_preview_face_enrollment(attempt_id)
         _, run, job, photo, state, attempt = jobs._locked_context(attempt_id)
         now = clock()
         _require_preview_attempt(job, attempt)
@@ -292,7 +292,7 @@ def _publish_after_verification(
             succeeded_at=now,
             next_attempt_at=None,
         )
-        PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo_id=attempt.photo_id,
             variant=publication.result["variant"],
             final_key=publication.final_key,
@@ -305,6 +305,7 @@ def _publish_after_verification(
             sha256=publication.result["sha256"],
             accepted_attempt=attempt,
         )
+        publish_gallery_media(derivative)
         if photo.bib_processing_policy == Photo.BibProcessingPolicy.ORIGINAL_V1:
             from processing.services.enrollment import request_bib_recognition
 
@@ -341,12 +342,33 @@ def _publish_after_verification(
 
 
 def _prelock_preview_face_enrollment(attempt_id: UUID) -> None:
-    """Lock the optional preview-backed face enrollment path before the preview Attempt."""
+    """Lock downstream enrollment rows before the preview Attempt and projection."""
     identity = ProcessingAttempt.objects.only("event_id", "photo_id").get(pk=attempt_id)
     event = Event.objects.select_for_update().get(pk=identity.event_id)
-    generation = Photo.objects.values_list("processing_generation", flat=True).get(
-        pk=identity.photo_id
-    )
+    generation, bib_processing_policy = Photo.objects.values_list(
+        "processing_generation",
+        "bib_processing_policy",
+    ).get(pk=identity.photo_id)
+    if bib_processing_policy == Photo.BibProcessingPolicy.ORIGINAL_V1:
+        from processing.services.bibs import bib_configuration
+        from processing.services.enrollment import _configuration_hash
+
+        configuration = bib_configuration()
+        configuration_hash = _configuration_hash(configuration)
+        runs = EventProcessingRun.objects.select_for_update().filter(
+            event=event,
+            contract_version=BIB_RECOGNITION_CONTRACT.contract_version,
+            processor_type=BIB_RECOGNITION_CONTRACT.processor_type,
+            processor_version=BIB_RECOGNITION_CONTRACT.processor_version,
+            configuration_hash=configuration_hash,
+            status=EventProcessingRun.Status.COLLECTING,
+        )
+        for run in runs:
+            list(
+                ProcessingJob.objects.select_for_update()
+                .filter(run=run, photo_id=identity.photo_id)
+                .order_by("id")
+            )
     if generation in {
         Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
         Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
@@ -417,6 +439,12 @@ def _prelock_preview_face_enrollment(attempt_id: UUID) -> None:
         PhotoProcessingState.objects.select_for_update().get_or_create(
             photo=photo,
             processor_type=GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+            defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
+        )
+    if bib_processing_policy == Photo.BibProcessingPolicy.ORIGINAL_V1:
+        PhotoProcessingState.objects.select_for_update().get_or_create(
+            photo=photo,
+            processor_type=BIB_RECOGNITION_CONTRACT.processor_type,
             defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
         )
 

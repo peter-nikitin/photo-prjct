@@ -53,6 +53,14 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   URLs expire after six hours; legacy-original small presentation remains on the application route.
   Every face crop reusing that small presentation is lazy, while only the first four main tiles keep
   their eager, high-priority policy.
+- Gallery, exact-media, saved selfie-result, and commerce eligibility select presentation media from
+  the sparse one-to-one `GalleryMediaProjection` accepted by
+  [ADR 0037](adr/0037-use-gallery-media-read-projection.md). Accepted processing attempts, current
+  state, and derivatives remain authoritative evidence, while their synchronous projection stores
+  only clean and watermarked keys plus source attempts. Publication is atomic; explicit all-events
+  rebuild and symmetric-difference commands repair and verify existing rows. Customer-facing
+  gallery-media and signing SQL no longer reads the three processing-history relations; unrelated
+  face-crop lookup retains its independent processing boundary.
 - For request-time public media routes, `PublicMediaResolver` retains legacy and clean-preview
   behavior, selects `preview-watermarked-v1` for both presentation roles of the new paid policy,
   and rejects that policy's original download before storage signing. It never falls back to an
@@ -230,6 +238,22 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   fails closed before deployment. Automated tests validate these paths and failure cleanup, but no
   canonical deployment, IAM state, cloud policy, or private object was changed or validated by this
   delivery.
+- The gallery-media reader cutover pulls the candidate before mutation, leaves the previous web and
+  edge serving during preparation, marks mutation before stopping only processing worker
+  containers, and runs candidate migration. The bounded all-events drain then updates every
+  in-progress clean/watermarked attempt regardless of lease deadline, waiting behind any publication
+  transaction that already owns its row lock and fencing every remaining lease at the attempt's
+  immutable creation time. That bound precedes every possible heartbeat timestamp, so waiting
+  heartbeats and storage-blocked completions cannot regain publication ownership. Transaction-local
+  lock and statement timeouts roll back the whole drain on delay. Required-clean verification
+  precedes candidate Compose reconciliation. After local health, a bounded smoke renders page one of
+  the largest published site-visible event with face lookup isolated and resolves one exact eligible
+  photo. Its output contains aggregate timing, query counts, and executed-plan node names from
+  `EXPLAIN ANALYZE` only. Every preparation or smoke failure uses the existing prior-package,
+  environment, marker, and worker-topology recovery path; before first environment promotion,
+  recovery uses the private requested environment for candidate Compose cleanup and then restores
+  the no-environment state. This is repository implementation evidence only; CI, merge, canonical
+  deployment, and live outcome are not yet recorded.
 - Unfinished screen concepts live only in the test-only Django visual-reference gallery under
   `tests/visual`. Playwright renders it through isolated settings and `/__visual__/` routes; neither
   the production URLconf nor the production Docker image includes the gallery. Visual regression

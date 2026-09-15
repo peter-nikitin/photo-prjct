@@ -584,6 +584,33 @@ gallery reads safe until a separately accepted projection-reader release.
   authoritative and is never rewritten by rebuild or reconciliation.
 - Last updated: 2026-08-21
 
+### EJ-029 — Maintainer — Cut gallery media reads over to a verified projection
+
+When customer gallery and media requests grow with an event, I want their eligibility and media
+selection to read one current projection instead of processing history, so the evidence ledger can
+grow without becoming the customer request path.
+
+- Status: In progress
+- Evidence: [ADR 0037](adr/0037-use-gallery-media-read-projection.md),
+  [`GalleryMediaProjection`](../src/backend/picflow/models.py), the atomic publication and canonical
+  rebuild relation in
+  [`gallery_media_projection.py`](../src/backend/picflow/gallery_media_projection.py), projection-
+  backed collection and exact reads in [`gallery.py`](../src/backend/picflow/gallery.py), the
+  worker-paused clean-gated cutover in
+  [`apply-deployment.sh`](../deploy/apply-deployment.sh), and focused query, rebuild, smoke, and
+  deployment-contract tests.
+- Boundary: Repository code synchronously projects accepted clean and watermarked media, rebuilds
+  and verifies all events before candidate reconciliation, drains old-web publication with a bounded
+  all-in-progress PostgreSQL fence at immutable attempt creation time, isolates unrelated face
+  lookup in the bounded `EXPLAIN ANALYZE` read smoke, and recovers the previous package, environment,
+  and worker topology on failure. Real PostgreSQL concurrency tests cover expired publishing locks,
+  storage-blocked completion, a pre-drain heartbeat, timeout rollback, and normal retry recovery.
+  Fresh-deployment recovery cleans candidate Compose with the unpromoted requested environment and
+  restores the no-environment state. Pull-request CI, merge, canonical deployment, live projection
+  cleanliness, public-path response, latency, and natural-traffic processing-table counters remain
+  separately unrecorded.
+- Last updated: 2026-09-15
+
 ## Status log
 
 This log is append-only.
@@ -637,3 +664,4 @@ This log is append-only.
 | 2026-09-13 | EJ-027 | Not recorded | In progress | The pinned disabled-default bib path and 37-photo local quality/publication/search cycle are implemented. Docker Desktop swap leaves the production-equivalent Linux resource gate, canonical deployment, and first/second event observations incomplete. |
 | 2026-09-14 | EJ-019 | Delivered | Delivered | The automatic live all-events reconciliation and event-9 `EXPLAIN ANALYZE` benchmark are retired from deployment after they exhausted the sole VM during run 34833392359 and forced rollback. Both commands remain available for explicit offline evidence; deployment retains migration, health, worker, and rollback gates. |
 | 2026-09-15 | EJ-028 | Not recorded | In progress | Repository implementation of ADR 0036 issues six-hour exact-object URLs only for accepted derivative-backed small presentation on bounded normal-gallery pages. Legacy, large, download, result, private, archive, and purchased-media paths remain application-authorized; CI, canonical deployment, direct-transfer, and live-capacity evidence are unrecorded. |
+| 2026-09-15 | EJ-029 | Not recorded | In progress | Repository implementation of ADR 0037 adds atomic gallery-media projection publication, projection-backed customer reads, a bounded all-in-progress old-publication drain with immutable creation-time fencing, all-events rebuild and clean verification, worker-paused candidate cutover, privacy-safe `EXPLAIN ANALYZE` smoke, and fresh/established prior-state recovery. CI, merge, canonical deployment, and live outcome remain unrecorded. |

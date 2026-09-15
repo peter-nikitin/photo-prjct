@@ -56,6 +56,7 @@ from processing.services.enrollment import (
 from processing.services.face_quality import publish_face_embedding_projection
 from selfie_search.models import SelfieSearch
 
+from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, EventFolder, Photo
 
 
@@ -795,7 +796,7 @@ class GalleryPageTests(TestCase):
         state.accepted_attempt = attempt
         state.succeeded_at = timezone.now()
         state.save()
-        return PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant=variant,
             final_key=final_key,
@@ -808,6 +809,8 @@ class GalleryPageTests(TestCase):
             sha256="a" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
+        return derivative
 
     def publish_current_compatible_faces(self, photo: Photo, *, count: int) -> None:
         configuration_hash = sha256(
@@ -2143,7 +2146,7 @@ class GalleryMediaViewTests(TransactionTestCase):
         state.accepted_attempt = attempt
         state.succeeded_at = timezone.now()
         state.save()
-        return PhotoDerivative.objects.create(
+        derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant=variant,
             final_key=final_key,
@@ -2156,6 +2159,8 @@ class GalleryMediaViewTests(TransactionTestCase):
             sha256="a" * 64,
             accepted_attempt=attempt,
         )
+        photo.gallery_media_projection = publish_gallery_media(derivative)
+        return derivative
 
     def media_url(self, *, event: Event, photo: Photo, variant: str = "preview-small") -> str:
         return reverse(

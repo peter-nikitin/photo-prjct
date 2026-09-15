@@ -616,6 +616,39 @@ validate_migration_preflight_env() {
   printf 'candidate-migration-env-mode-0600\n' >> "$COMMAND_LOG"
 }
 case " $* " in
+  *" run --rm -T --entrypoint python web manage.py migrate --noinput "*)
+    validate_candidate_env
+    printf 'candidate-migrate\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != gallery-projection-migration-failure ]
+    ;;
+  *" drain_gallery_media_publications --all-events "*)
+    validate_candidate_env
+    printf 'candidate-gallery-publication-drain\n' >> "$COMMAND_LOG"
+    if [ "$APPLY_SCENARIO" = gallery-projection-publication-drain-failure ]; then
+      printf 'private-key-must-not-reach-output photo-id-must-not-reach-output\n' >&2
+      exit 1
+    fi
+    ;;
+  *" rebuild_gallery_media_projection --all-events --apply "*)
+    validate_candidate_env
+    printf 'candidate-gallery-projection-rebuild\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != gallery-projection-rebuild-failure ]
+    ;;
+  *" verify_gallery_media_projection --all-events --require-clean "*)
+    validate_candidate_env
+    printf 'candidate-gallery-projection-verify\n' >> "$COMMAND_LOG"
+    if [ "$APPLY_SCENARIO" = gallery-projection-verification-failure ]; then
+      printf 'private-key-must-not-reach-output photo-id-must-not-reach-output\n' >&2
+      exit 1
+    fi
+    ;;
+  *" exec -T web python manage.py smoke_gallery_media_projection "*)
+    printf 'candidate-gallery-projection-smoke\n' >> "$COMMAND_LOG"
+    if [ "$APPLY_SCENARIO" = gallery-projection-smoke-failure ]; then
+      printf 'private-key-must-not-reach-output photo-id-must-not-reach-output\n' >&2
+      exit 1
+    fi
+    ;;
   *" run --rm --no-deps -T --entrypoint python web manage.py verify_migration_history "*)
     validate_migration_preflight_env
     case "$APPLY_SCENARIO" in
@@ -646,7 +679,8 @@ case " $* " in
     ;;
   *" run --rm --no-deps -T --entrypoint python web manage.py shell"*)
     validate_candidate_env
-    for gallery_preflight do :; done
+    for candidate_shell_program do :; done
+    gallery_preflight="$candidate_shell_program"
     {
       printf 'APP_IMAGE=%s docker' "${APP_IMAGE-unset}"
       argument_number=1
@@ -681,6 +715,17 @@ case " $* " in
     ;;
 esac
 printf 'APP_IMAGE=%s docker %s\n' "${APP_IMAGE-unset}" "$*" >> "$COMMAND_LOG"
+if [ "${1-}" = ps ] && [ "${2-}" = -q ]; then
+  case " $* " in
+    *"com.docker.compose.service=worker-bulk"*) printf 'previous-worker-bulk\n' ;;
+    *"com.docker.compose.service=worker-selfie"*) printf 'previous-worker-selfie\n' ;;
+    *"com.docker.compose.service=worker"*) : ;;
+  esac
+  exit 0
+fi
+if [ "${1-}" = stop ] && [ "$APPLY_SCENARIO" = gallery-projection-worker-stop-failure ]; then
+  exit 1
+fi
 if [ "$APPLY_SCENARIO" = worker-removal-failure ] && \
    case " $* " in
      *" compose "*" --profile worker rm -sf worker-bulk worker-selfie "*) true ;;
@@ -908,9 +953,11 @@ SUCCESS_PHASES = [
     "migration-preflight",
     "observability-preflight",
     "observability-reconcile",
+    "projection-preflight",
     "certificate",
     "compose-reconcile",
     "local-health",
+    "gallery-media-smoke",
     "worker-health",
     "public-health",
     "observability-verify",
@@ -2174,6 +2221,225 @@ def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
     _assert_no_env_temporary_files(tmp_path)
 
 
+def _projection_cutover_env(tmp_path: Path, fake_bin: Path, *, scenario: str) -> dict[str, str]:
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    previous_env = PREVIOUS_ENV + (
+        b"PHOTO_PROCESSING_ENABLED=True\nPHOTO_WORKER_REPLICAS=1\nCOMMERCE_WORKER_ENABLED=False\n"
+    )
+    (tmp_path / ".env").write_bytes(previous_env)
+    (tmp_path / "previous-env.expected").write_bytes(previous_env)
+    return env
+
+
+def test_gallery_projection_cutover_preserves_old_web_until_clean_candidate_reconciliation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """A candidate reader must not start before its projection is rebuilt and clean."""
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_projection_cutover_env(tmp_path, fake_bin, scenario="gallery-projection-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    candidate_pull = next(
+        index
+        for index, command in enumerate(commands)
+        if " pull web" in command and "APP_IMAGE=new-image" in command
+    )
+    worker_stop = next(
+        index
+        for index, command in enumerate(commands)
+        if command.endswith("docker stop previous-worker-bulk")
+    )
+    migrate = commands.index("candidate-migrate")
+    drain = commands.index("candidate-gallery-publication-drain")
+    rebuild = commands.index("candidate-gallery-projection-rebuild")
+    verify = commands.index("candidate-gallery-projection-verify")
+    candidate_up = next(
+        index
+        for index, command in enumerate(commands)
+        if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+    )
+    smoke = commands.index("candidate-gallery-projection-smoke")
+    worker_health = next(
+        index for index, command in enumerate(commands) if " ps -q worker-bulk" in command
+    )
+
+    assert candidate_pull < worker_stop < migrate < drain < rebuild < verify < candidate_up < smoke
+    assert smoke < worker_health
+    assert not any(
+        " stop web" in command or " stop nginx" in command for command in commands[: verify + 1]
+    )
+    assert not any(
+        " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+        for command in commands[: verify + 1]
+    )
+    assert not any("commerce-worker" in command and " stop " in command for command in commands)
+    assert not any("import-worker" in command and " stop " in command for command in commands)
+
+
+def test_gallery_projection_preparation_runs_candidate_drain_before_rebuild(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    """The deploy must invoke the real drain command in the worker-paused preparation window."""
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_projection_cutover_env(tmp_path, fake_bin, scenario="gallery-projection-success"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    worker_stop = next(
+        index
+        for index, command in enumerate(commands)
+        if command.endswith("docker stop previous-worker-bulk")
+    )
+    migrate = commands.index("candidate-migrate")
+    drain = commands.index("candidate-gallery-publication-drain")
+    rebuild = commands.index("candidate-gallery-projection-rebuild")
+
+    assert worker_stop < migrate < drain < rebuild
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_phase", "last_pre_failure_command"),
+    [
+        ("gallery-projection-worker-stop-failure", "projection-preflight", None),
+        (
+            "gallery-projection-publication-drain-failure",
+            "projection-preflight",
+            "candidate-gallery-publication-drain",
+        ),
+        ("gallery-projection-migration-failure", "projection-preflight", "candidate-migrate"),
+        (
+            "gallery-projection-rebuild-failure",
+            "projection-preflight",
+            "candidate-gallery-projection-rebuild",
+        ),
+        (
+            "gallery-projection-verification-failure",
+            "projection-preflight",
+            "candidate-gallery-projection-verify",
+        ),
+        (
+            "gallery-projection-smoke-failure",
+            "gallery-media-smoke",
+            "candidate-gallery-projection-smoke",
+        ),
+    ],
+)
+def test_gallery_projection_cutover_failures_recover_previous_worker_topology_without_leaks(
+    tmp_path: Path,
+    fake_bin: Path,
+    scenario: str,
+    expected_phase: str,
+    last_pre_failure_command: str | None,
+) -> None:
+    """Every mutated cutover failure must use one redacted prior-package recovery path."""
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_projection_cutover_env(tmp_path, fake_bin, scenario=scenario),
+    )
+
+    assert result.returncode != 0
+    assert f"DEPLOY_RESULT=failure phase={expected_phase} rollback=succeeded" in result.stdout
+    commands = _apply_log(tmp_path)
+    if last_pre_failure_command is not None:
+        assert last_pre_failure_command in commands
+    assert any(
+        "--profile worker up -d --remove-orphans --scale worker-bulk=1 --scale worker-selfie=1"
+        in command
+        and "APP_IMAGE=unset" in command
+        for command in commands
+    )
+    if scenario == "gallery-projection-verification-failure":
+        assert not any(
+            " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+            for command in commands
+        )
+    combined_output = result.stdout + result.stderr
+    assert "private-key-must-not-reach-output" not in combined_output
+    assert "photo-id-must-not-reach-output" not in combined_output
+
+
+def _fresh_projection_failure_env(
+    tmp_path: Path, fake_bin: Path, *, scenario: str
+) -> dict[str, str]:
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    for name in (".env", "deployed-image"):
+        (tmp_path / name).unlink()
+    env["EXPECT_CANONICAL_ENV"] = "absent"
+    previous_package = tmp_path / "previous-package"
+    previous_package.mkdir()
+    (previous_package / "docker-compose.deployment.yml").write_text(
+        "services:\n  web:\n    image: previous-package\n", encoding="utf-8"
+    )
+    (previous_package / "docker-compose.https.yml").write_text(
+        "services:\n  nginx:\n    image: nginx:previous\n", encoding="utf-8"
+    )
+    shutil.copytree(tmp_path / "deploy", previous_package / "deploy")
+    (previous_package / "deploy" / "package-version").write_text(
+        "previous-package\n", encoding="utf-8"
+    )
+    env["PREVIOUS_DEPLOYMENT_PACKAGE_ROOT"] = str(previous_package)
+    return env
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "gallery-projection-worker-stop-failure",
+        "gallery-projection-migration-failure",
+        "gallery-projection-publication-drain-failure",
+        "gallery-projection-rebuild-failure",
+        "gallery-projection-verification-failure",
+    ],
+)
+def test_fresh_projection_preparation_failure_uses_requested_env_to_restore_no_env_state(
+    tmp_path: Path, fake_bin: Path, scenario: str
+) -> None:
+    """Pre-promotion rollback must clean candidate Compose before restoring the staged package."""
+    result = _run(
+        "deploy/apply-deployment.sh",
+        env=_fresh_projection_failure_env(tmp_path, fake_bin, scenario=scenario),
+    )
+
+    assert result.returncode != 0
+    assert "DEPLOY_RESULT=failure phase=projection-preflight rollback=succeeded" in result.stdout
+    commands = _apply_log(tmp_path)
+    cleanup_index = next(
+        index
+        for index, command in enumerate(commands)
+        if " down --remove-orphans" in command
+        and f"--env-file {tmp_path}/.env.recovery." in command
+    )
+    package_restore_index = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("mv ")
+        and f"{tmp_path}/previous-package/docker-compose.deployment.yml" in command
+    )
+    assert cleanup_index < package_restore_index
+    assert (tmp_path / "docker-compose.deployment.yml").read_text(encoding="utf-8") == (
+        "services:\n  web:\n    image: previous-package\n"
+    )
+    assert (tmp_path / "docker-compose.https.yml").read_text(encoding="utf-8") == (
+        "services:\n  nginx:\n    image: nginx:previous\n"
+    )
+    assert (tmp_path / "deploy" / "package-version").read_text(encoding="utf-8") == (
+        "previous-package\n"
+    )
+    for name in (".env", "deployed-image"):
+        assert not (tmp_path / name).exists()
+    assert list(tmp_path.glob(".candidate-command-output.*")) == []
+    combined_output = result.stdout + result.stderr
+    assert "private-key-must-not-reach-output" not in combined_output
+    assert "photo-id-must-not-reach-output" not in combined_output
+    assert "requested-private-secret" not in combined_output
+    _assert_no_env_temporary_files(tmp_path)
+
+
 def test_retained_postgres_volume_alone_forces_migration_preflight(
     tmp_path: Path, fake_bin: Path
 ) -> None:
@@ -2664,7 +2930,7 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
     commands = _apply_log(tmp_path)
-    assert commands.count("candidate-requested-env-with-canonical-untouched") == 4
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 8
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
     assert sum(" up -d --remove-orphans" in command for command in commands) == 1

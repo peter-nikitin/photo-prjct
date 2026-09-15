@@ -1,8 +1,8 @@
 # CDN and imgproxy delivery for gallery grid images
 
 Status: Approved
-Date: 2026-09-15  
-Related architecture: `docs/architecture.md` (gallery media delivery, Object Storage, production topology)  
+Date: 2026-09-15
+Related architecture: `docs/architecture.md` (gallery media delivery, Object Storage, production topology)
 Related ADRs: `docs/adr/0003-docker-compose-yandex-cloud.md`, `docs/adr/0006-yandex-object-storage-media.md`, `docs/adr/0007-nginx-certbot-https-edge.md`, `docs/adr/0020-use-signed-direct-object-storage-media-delivery.md`, `docs/adr/0022-use-numbered-gallery-pages.md`, `docs/adr/0028-operate-one-canonical-deployment.md`, `docs/adr/0029-use-watermarked-previews-for-paid-photos.md`, `docs/adr/0036-issue-direct-gallery-small-preview-capabilities.md`, `docs/adr/0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md`
 ADR impact: Accepted by ADR 0038, which supersedes ADR 0036 for normal-gallery small-image delivery and amends the production topology from ADRs 0003 and 0007 by adding an isolated CDN/image origin while retaining the existing application edge.
 
@@ -116,7 +116,7 @@ There is no unsigned image-origin route and no redirect to a raw Object Storage 
 - apply orientation already represented by the accepted source;
 - fit within a 960-pixel long edge while preserving aspect ratio;
 - never upscale;
-- encode JPEG at quality 78 using progressive/optimized output;
+- encode JPEG at quality 78 using progressive output;
 - remove metadata;
 - return a deterministic content type and cache policy.
 
@@ -130,7 +130,7 @@ Source keys are immutable and transform versions are explicit, so transformed re
 
 Browser responses use a six-hour cache lifetime. CDN authentication is evaluated for every network request, but a browser may reuse its own previously authorized local copy without a network request after the URL itself expires. In the worst case, a copy fetched immediately before URL expiry can remain in that browser for another six hours. This bounded revocation delay is accepted: it helps every image already placed into the rendered grid finish and does not let a different viewer fetch the object. No application purge is required for hiding a photo.
 
-Origin shielding or equivalent request coalescing is enabled so concurrent first requests for one object do not cause duplicate transforms. Errors, authorization failures, and placeholder responses are not cached as successful images.
+The first release does not enable paid origin shielding or add a local result cache. Origin Nginx and imgproxy bound concurrent cold transformations, and the cold-load acceptance test proves that this remains sufficient for the selected VM. If duplicate cold requests prevent the performance or isolation criteria from passing, public activation stops and origin shielding returns for an explicit cost and architecture decision. Errors, authorization failures, and placeholder responses are not cached as successful images.
 
 ## Infrastructure isolation
 

@@ -9,7 +9,7 @@ from django.db import DatabaseError
 from django.test import TestCase
 from django.utils import timezone
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
-from picflow.models import Event, Photo
+from picflow.models import Event, GalleryMediaProjection, Photo
 from processing.models import (
     EventFaceClusterActivation,
     EventProcessingRun,
@@ -194,6 +194,56 @@ class ClusterExpansionTests(TestCase):
         self.assertEqual(expansion.strong_anchor_count, 1)
         self.assertEqual(expansion.expanded_cluster_count, 1)
         self.assertEqual(expansion.outcome, "expanded")
+        self.assertEqual(len(expansion.results[0].cluster_evidence), 1)
+        self.assertEqual(len(expansion.results[1].cluster_evidence), 1)
+
+    def test_strong_anchor_uses_projected_clean_readiness_and_fails_closed_without_it(
+        self,
+    ) -> None:
+        anchor = self.detection("projection-anchor")
+        projected = self.detection("projection-ready-member")
+        missing = self.detection("projection-missing-member")
+        Photo.objects.filter(pk__in=(projected.attempt.photo_id, missing.attempt.photo_id)).update(
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        GalleryMediaProjection.objects.create(
+            photo_id=projected.attempt.photo_id,
+            clean_preview_final_key="derivatives/previews/projection-ready-member/accepted.jpg",
+            clean_preview_source_attempt=projected.attempt,
+        )
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=self.corpus,
+            cluster_key="projection-readiness",
+            representative_detection=anchor,
+            member_count=3,
+        )
+        for index, detection in enumerate((anchor, projected, missing)):
+            FaceClusterMember.objects.create(
+                event=self.event,
+                corpus=self.corpus,
+                cluster=cluster,
+                detection=detection,
+                member_index=index,
+                distance_to_representative=index / 10,
+            )
+        self.publish()
+
+        expansion = expand_ranked_photos(
+            self.search,
+            (RankedPhoto("projection-anchor", anchor.id, 0.1),),
+            (1.0,) + (0.0,) * 127,
+            self.activation,
+        )
+
+        self.assertEqual(
+            [row.photo_id for row in expansion.results],
+            ["projection-anchor", "projection-ready-member"],
+        )
+        self.assertEqual(expansion.outcome, "expanded")
+        self.assertEqual(expansion.cluster_expanded_photo_count, 1)
+        self.assertEqual(expansion.strong_anchor_count, 1)
         self.assertEqual(len(expansion.results[0].cluster_evidence), 1)
         self.assertEqual(len(expansion.results[1].cluster_evidence), 1)
 

@@ -282,6 +282,14 @@ def saved_result_photo_queryset(
     )
 
 
+def retrieval_gallery_photo_queryset(*, event: Event) -> QuerySet[Photo]:
+    """Return face-retrieval members before presentation-time watermarked gating."""
+    return _public_photo_queryset(event=event).filter(
+        _legacy_or_clean_preview_ready()
+        | Q(gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED)
+    )
+
+
 def _public_photo_queryset(*, event: Event) -> QuerySet[Photo]:
     return Photo.objects.filter(
         event=event,

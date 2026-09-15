@@ -8,14 +8,12 @@ from time import perf_counter
 from uuid import UUID
 
 from django.db import DatabaseError
-from django.db.models import F, Q
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
-from picflow.models import Event, Photo
+from picflow.gallery import retrieval_gallery_photo_queryset
+from picflow.models import Event
 from processing.models import (
-    GENERATE_PREVIEW_PROCESSOR,
     EventFaceClusterActivation,
     FaceClusterMember,
-    PhotoProcessingState,
     ProcessingAttempt,
 )
 
@@ -213,29 +211,7 @@ def expand_ranked_photos(
 
 def _accepted_face_photo_queryset(event: Event):
     """Return retrieval members without applying request-time presentation gates."""
-    accepted_clean_preview = Q(
-        gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
-        derivatives__variant="preview-small-v1",
-        processing_states__processor_type=GENERATE_PREVIEW_PROCESSOR,
-        processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
-        processing_states__accepted_attempt=F("derivatives__accepted_attempt"),
-        processing_states__accepted_attempt__accepted=True,
-        processing_states__accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
-    )
-    return (
-        Photo.objects.filter(
-            event=event,
-            is_hidden=False,
-            src="",
-            original_key__isnull=False,
-        )
-        .filter(
-            Q(gallery_media_policy=Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
-            | accepted_clean_preview
-            | Q(gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED)
-        )
-        .distinct()
-    )
+    return retrieval_gallery_photo_queryset(event=event)
 
 
 def direct_only_ranked_photos(

@@ -26,6 +26,7 @@ from processing.models import (
     ProcessingJob,
 )
 from selfie_search.models import SelfieSearch, SelfieSearchResult
+from selfie_search.services.cluster_expansion import _accepted_face_photo_queryset
 from selfie_search.services.results import saved_ready_result_photos
 from selfie_search.services.submission import submit_gallery_photo_search
 
@@ -409,6 +410,17 @@ class GalleryMediaProjectionQueryTests(TestCase):
 
         self.assertEqual(created.search.event, self.event)
         self.assert_no_processing_relations(queries)
+
+    def test_cluster_media_readiness_subquery_uses_projection_without_processing_joins(
+        self,
+    ) -> None:
+        sql = str(_accepted_face_photo_queryset(self.event).query).casefold()
+
+        self.assertIn("picflow_gallerymediaprojection", sql)
+        self.assertNotIn("select distinct", sql)
+        for relation in FORBIDDEN_RELATIONS:
+            with self.subTest(relation=relation):
+                self.assertNotIn(relation, sql)
 
     def test_cart_validation_uses_projection_eligibility_without_processing_relations(self) -> None:
         photo = self.projected_photo(

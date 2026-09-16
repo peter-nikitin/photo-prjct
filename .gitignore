@@ -42,6 +42,7 @@ src/backend/staticfiles/
 .coverage
 .pytest_cache/
 node_modules/
+/.pnpm-store/
 playwright-report/
 test-results/
 

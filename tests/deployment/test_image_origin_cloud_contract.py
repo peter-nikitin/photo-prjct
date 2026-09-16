@@ -18,6 +18,8 @@ from tests.deployment import test_environment_secrets as resolver_contract
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "deploy/image-origin"
 PROVISION = PACKAGE / "provision.sh"
+PUBLIC_KEY = PACKAGE / "workflow-ssh-key.pub"
+CLOUD_INIT = PACKAGE / "cloud-init.sh"
 MANIFEST = ROOT / "deploy/environment-secrets.json"
 RESOURCE_NAME = "findme-gallery-image-origin"
 NEW_SECRET_KEYS = {
@@ -63,8 +65,6 @@ def cloud_environment(tmp_path: Path) -> dict[str, str]:
         ),
         encoding="utf-8",
     )
-    ssh_key = tmp_path / "origin.pub"
-    ssh_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest reviewed@test\n")
     projection = tmp_path / "projection.env"
     projection.write_text(
         'GALLERY_CDN_TOKEN_SECRET="cdn-token-private-sentinel"\n'
@@ -77,7 +77,6 @@ def cloud_environment(tmp_path: Path) -> dict[str, str]:
         "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
         "IMAGE_ORIGIN_ZONE_ID": "ru-central1-a",
         "IMAGE_ORIGIN_BOOT_IMAGE_ID": "immutable-image-id",
-        "IMAGE_ORIGIN_SSH_PUBLIC_KEY_FILE": str(ssh_key),
         "IMAGE_ORIGIN_SSH_SOURCE_CIDR": "203.0.113.8/32",
         "IMAGE_ORIGIN_ACCEPTED_PREVIEW_KEY": (
             "derivatives/previews/photo-1/preview-small-v1/accepted.jpg"
@@ -125,22 +124,37 @@ elif args[:2] == ["iam", "create-token"]:
     print("iam-test-token")
     raise SystemExit(0)
 elif args[:3] == ["compute", "instance", "get"] and "canonical-vm-id" in args:
+    group_ids = ["canonical-security-group-id"]
+    if os.environ.get("FAKE_CANONICAL_SG_COUNT") == "0": group_ids = []
+    if os.environ.get("FAKE_CANONICAL_SG_COUNT") == "2": group_ids.append("other-security-group-id")
     value = {
         "id": "canonical-vm-id",
         "folder_id": "folder-contract-id",
-        "network_interfaces": [{"subnet_id": "subnet-contract-id"}],
+        "network_interfaces": [{"subnet_id": "subnet-contract-id", "security_group_ids": group_ids}],
     }
 elif args[:3] == ["iam", "service-account", "get"]:
     value = {"id": "created-service-account-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id"}
 elif args[:3] == ["vpc", "security-group", "get"]:
-    value = {"id": "created-security-group-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id", "network_id": "network-contract-id", "rules": list(reversed([
-        {"id": f"generated-rule-{index}", "direction": d, "protocol_name": p, "ports": {"from_port": port, "to_port": port}, "cidr_blocks": {"v4_cidr_blocks": [cidr], "v6_cidr_blocks": []}}
-        for index, (d, p, port, cidr) in enumerate([("INGRESS", "TCP", "22", "203.0.113.8/32"), ("INGRESS", "TCP", "80", "0.0.0.0/0"), ("INGRESS", "TCP", "443", "0.0.0.0/0"), ("EGRESS", "TCP", "443", "0.0.0.0/0"), ("EGRESS", "TCP", "53", "0.0.0.0/0"), ("EGRESS", "UDP", "53", "0.0.0.0/0")])
-    ]))}
+    requested = args[args.index("--id") + 1]
+    if requested == "canonical-security-group-id":
+        value = {"id": requested, "folder_id": "folder-contract-id", "network_id": ("other-network-id" if os.environ.get("FAKE_CANONICAL_SG_NETWORK_DRIFT") == "1" else "network-contract-id"), "rules": []}
+    else:
+        rules = [
+            {"id": f"generated-rule-{index}", "direction": d, "protocol_name": p, "ports": {"from_port": port, "to_port": port}, "cidr_blocks": {"v4_cidr_blocks": [cidr], "v6_cidr_blocks": []}}
+            for index, (d, p, port, cidr) in enumerate([("INGRESS", "TCP", "22", "203.0.113.8/32"), ("INGRESS", "TCP", "80", "0.0.0.0/0"), ("INGRESS", "TCP", "443", "0.0.0.0/0"), ("EGRESS", "TCP", "443", "0.0.0.0/0"), ("EGRESS", "TCP", "53", "0.0.0.0/0"), ("EGRESS", "UDP", "53", "0.0.0.0/0")])
+        ]
+        marker = pathlib.Path(os.environ["FAKE_BASTION_MARKER"])
+        if marker.exists() or os.environ.get("FAKE_BASTION_RULE") == "1":
+            rules.append({"id": "generated-bastion-rule", "direction": "INGRESS", "protocol_name": "TCP", "ports": {"from_port": "22", "to_port": "22"}, "security_group_id": "canonical-security-group-id"})
+        if os.environ.get("FAKE_SECURITY_GROUP_DRIFT") == "1":
+            rules.append({"id": "unrelated-rule", "direction": "INGRESS", "protocol_name": "TCP", "ports": {"from_port": "25", "to_port": "25"}, "cidr_blocks": {"v4_cidr_blocks": ["0.0.0.0/0"], "v6_cidr_blocks": []}})
+        value = {"id": "created-security-group-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id", "network_id": "network-contract-id", "rules": list(reversed(rules))}
 elif args[:3] == ["vpc", "address", "get"]:
     value = {"id": "created-address-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id", "reserved": True, "external_ipv4_address": {"address": "198.51.100.44", "zone_id": "ru-central1-a"}}
 elif args[:3] == ["compute", "instance", "get"] and "created-vm-id" in args:
-    value = {"id": "created-vm-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id", "zone_id": "ru-central1-a", "platform_id": "standard-v3", "resources": {"cores": "2", "core_fraction": "100", "memory": "4294967296", "gpus": "0"}, "service_account_id": "created-service-account-id", "metadata": {"user-data": "vm-metadata-private-sentinel"}, "network_interfaces": [{"index": "0", "subnet_id": "subnet-contract-id", "security_group_ids": ["created-security-group-id"], "primary_v4_address": {"address": "10.0.0.4", "one_to_one_nat": {"address": "198.51.100.44", "ip_version": "IPV4"}}}], "boot_disk": {"disk_id": "created-boot-disk-id", "auto_delete": True}, "secondary_disks": []}
+    user_data = pathlib.Path(os.environ["EXPECTED_CLOUD_INIT_FILE"]).read_text()
+    if os.environ.get("FAKE_VM_USER_DATA_MISMATCH") == "1": user_data = "mismatched-user-data"
+    value = {"id": "created-vm-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id", "zone_id": "ru-central1-a", "platform_id": "standard-v3", "resources": {"cores": "2", "core_fraction": "100", "memory": "4294967296", "gpus": "0"}, "service_account_id": "created-service-account-id", "metadata": {"user-data": user_data}, "network_interfaces": [{"index": "0", "subnet_id": "subnet-contract-id", "security_group_ids": ["created-security-group-id"], "primary_v4_address": {"address": "10.0.0.4", "one_to_one_nat": {"address": "198.51.100.44", "ip_version": "IPV4"}}}], "boot_disk": {"disk_id": "created-boot-disk-id", "auto_delete": True}, "secondary_disks": []}
     if os.environ.get("FAKE_EXTRA_INTERFACE") == "1": value["network_interfaces"].append({"index": "1"})
     if os.environ.get("FAKE_EXTRA_DISK") == "1": value["secondary_disks"].append({"disk_id": "extra-disk-id"})
 elif args[:3] == ["compute", "disk", "get"]:
@@ -184,7 +198,9 @@ elif args[:3] == ["vpc", "address", "create"]:
 elif args[:3] == ["compute", "instance", "create"]:
     interface = args[args.index("--network-interface") + 1]
     boot = args[args.index("--create-boot-disk") + 1]
-    if "address-id=" in interface or "nat-ip-version=ipv4" not in interface or "nat-address=198.51.100.44" not in interface or "image-id=immutable-image-id" not in boot or "--ssh-key" not in args:
+    metadata = args[args.index("--metadata-from-file") + 1] if "--metadata-from-file" in args else ""
+    ssh_key = args[args.index("--ssh-key") + 1] if "--ssh-key" in args else ""
+    if "address-id=" in interface or "nat-ip-version=ipv4" not in interface or "nat-address=198.51.100.44" not in interface or "image-id=immutable-image-id" not in boot or ssh_key != os.environ["EXPECTED_PUBLIC_KEY_FILE"] or metadata != f'user-data={os.environ["EXPECTED_CLOUD_INIT_FILE"]}':
         raise SystemExit(9)
     if os.environ.get("FAKE_FAIL_VM") == "1": raise SystemExit(8)
     value = {"id": "created-vm-id", "name": os.environ["EXPECTED_RESOURCE_NAME"]}
@@ -193,6 +209,9 @@ elif args[:3] == ["iam", "access-key", "create"]:
         "access_key": {"id": "created-access-key-resource-id", "key_id": "created-access-key-id"},
         "secret": "generated-secret-private-sentinel",
     }
+elif args[:3] == ["vpc", "security-group", "update-rules"]:
+    pathlib.Path(os.environ["FAKE_BASTION_MARKER"]).write_text("applied")
+    value = {"status": "done"}
 elif args[:4] == ["lockbox", "secret", "get", "--id"]:
     initialized = bootstrap_seeded = False
     state_path = pathlib.Path(os.environ.get("IMAGE_ORIGIN_CONTRACT_STATE", "/nonexistent"))
@@ -262,6 +281,9 @@ def _run_provision(
         "FAKE_CURL_LOG": str(tmp_path / "curl.log"),
         "FAKE_LOCKBOX_STDIN": str(tmp_path / "lockbox-stdin.json"),
         "FAKE_LOCKBOX_RESULT": str(tmp_path / "lockbox-result.json"),
+        "FAKE_BASTION_MARKER": str(tmp_path / "bastion-rule-applied"),
+        "EXPECTED_PUBLIC_KEY_FILE": str(PUBLIC_KEY),
+        "EXPECTED_CLOUD_INIT_FILE": str(CLOUD_INIT),
     }
     result = subprocess.run(
         ["sh", str(PROVISION), *arguments],
@@ -283,6 +305,15 @@ def _plan(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
 
 def _apply_identity_phase(tmp_path: Path, environment: dict[str, str]) -> dict[str, Any]:
     dry, _ = _run_provision(tmp_path, environment)
+    result, _ = _run_provision(
+        tmp_path, environment, "--apply", "--approval-nonce", _plan(dry)["approval_nonce"]
+    )
+    return _plan(result)
+
+
+def _apply_origin_access_phase(tmp_path: Path, environment: dict[str, str]) -> dict[str, Any]:
+    dry, _ = _run_provision(tmp_path, environment)
+    assert _plan(dry)["phase"] == "origin-access"
     result, _ = _run_provision(
         tmp_path, environment, "--apply", "--approval-nonce", _plan(dry)["approval_nonce"]
     )
@@ -342,6 +373,7 @@ def test_default_is_read_only_discovery_and_machine_readable_plan(
         "subnet_id": "subnet-contract-id",
         "bucket_id": "canonical-media",
         "boot_image_id": "immutable-image-id",
+        "canonical_security_group_id": "canonical-security-group-id",
         "service_account_id": None,
         "reserved_address_id": None,
         "security_group_id": None,
@@ -360,8 +392,9 @@ def test_default_is_read_only_discovery_and_machine_readable_plan(
         "subnet_id": "subnet-contract-id",
         "reserved_ipv4": True,
         "ssh_key_sha256": plan["desired"]["vm"]["ssh_key_sha256"],
+        "cloud_init_sha256": plan["desired"]["vm"]["cloud_init_sha256"],
     }
-    assert len(plan["desired"]["security_group_rules"]) == 6
+    assert len(plan["desired"]["security_group_rules"]) == 7
     serialized_commands = json.dumps(commands)
     assert " create " not in f" {serialized_commands} "
     assert " update " not in f" {serialized_commands} "
@@ -442,6 +475,311 @@ def test_plan_contains_provider_validated_immutable_vm_contract(
     assert plan["phase"] == "resource-identities"
     assert plan["resolved"]["boot_image_id"] == "immutable-image-id"
     assert plan["desired"]["vm"]["ssh_key_sha256"]
+
+
+def test_repository_owned_bootstrap_artifacts_bind_the_reviewed_vm_plan(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    expected_key = (
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ1h18E0nI6hijk2Ua9fG7hHcWfReZCn3fg8TeiQOVCJ "
+        "findme-staging-lockbox-2026-08-08\n"
+    )
+    assert PUBLIC_KEY.read_text(encoding="utf-8") == expected_key
+    expected_key_hash = hashlib.sha256(expected_key.encode()).hexdigest()
+    expected_cloud_init_hash = hashlib.sha256(CLOUD_INIT.read_bytes()).hexdigest()
+
+    obsolete = tmp_path / "obsolete.pub"
+    obsolete.write_text("ssh-ed25519 obsolete operator-laptop-key\n", encoding="utf-8")
+    environment = {
+        **cloud_environment,
+        "IMAGE_ORIGIN_SSH_PUBLIC_KEY_FILE": str(obsolete),
+        "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json"),
+    }
+    _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
+    dry, _ = _run_provision(tmp_path, environment)
+    plan = _plan(dry)
+    command = next(
+        item for item in plan["proposed_commands"] if item[1:3] == ["compute", "instance"]
+    )
+
+    assert plan["phase"] == "origin-and-policy"
+    assert plan["desired"]["vm"]["ssh_key_sha256"] == expected_key_hash
+    assert plan["desired"]["vm"]["cloud_init_sha256"] == expected_cloud_init_hash
+    assert command[command.index("--ssh-key") + 1] == str(PUBLIC_KEY)
+    assert command[command.index("--metadata-from-file") + 1] == f"user-data={CLOUD_INIT}"
+    assert str(obsolete) not in dry.stdout
+
+
+def test_origin_access_is_one_reviewed_rule_only_and_requires_a_fresh_plan(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    state_path = tmp_path / "state.json"
+    environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(state_path)}
+    _apply_identity_phase(tmp_path, environment)
+    before_state = state_path.read_text(encoding="utf-8")
+
+    dry, _ = _run_provision(tmp_path, environment)
+    plan = _plan(dry)
+    assert plan["phase"] == "origin-access"
+    assert plan["resolved"]["canonical_security_group_id"] == "canonical-security-group-id"
+    assert plan["proposed_commands"] == [
+        [
+            "yc",
+            "vpc",
+            "security-group",
+            "update-rules",
+            "--id",
+            "created-security-group-id",
+            "--add-rule",
+            "direction=ingress,protocol=tcp,port=22,security-group-id=canonical-security-group-id",
+            "--format",
+            "json",
+        ]
+    ]
+
+    applied, commands = _run_provision(
+        tmp_path,
+        {**environment, "FINDME_ENV_FILE": str(tmp_path / "must-not-be-read.env")},
+        "--apply",
+        "--approval-nonce",
+        plan["approval_nonce"],
+    )
+    output = _plan(applied)
+    mutations = [command for command in commands if "update-rules" in command]
+    assert mutations == [plan["proposed_commands"][0][1:]]
+    assert output["next_review_required"] is True
+    assert state_path.read_text(encoding="utf-8") == before_state
+    fresh, _ = _run_provision(tmp_path, environment)
+    assert _plan(fresh)["phase"] == "origin-and-policy"
+
+
+@pytest.mark.parametrize("count", ["0", "2"])
+def test_canonical_vm_requires_exactly_one_attached_security_group(
+    tmp_path: Path, cloud_environment: dict[str, str], count: str
+) -> None:
+    result, commands = _run_provision(
+        tmp_path, {**cloud_environment, "FAKE_CANONICAL_SG_COUNT": count}
+    )
+
+    assert result.returncode == 2
+    assert "canonical_security_group_invalid" in result.stderr
+    assert all("create" not in command and "update" not in command for command in commands)
+
+
+def test_canonical_security_group_must_belong_to_the_resolved_network(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    result, _ = _run_provision(
+        tmp_path, {**cloud_environment, "FAKE_CANONICAL_SG_NETWORK_DRIFT": "1"}
+    )
+
+    assert result.returncode == 2
+    assert "canonical_security_group_invalid" in result.stderr
+
+
+def test_origin_security_group_rejects_any_rules_outside_pre_or_post_bastion_states(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json")}
+    _apply_identity_phase(tmp_path, environment)
+    result, commands = _run_provision(tmp_path, {**environment, "FAKE_SECURITY_GROUP_DRIFT": "1"})
+
+    assert result.returncode == 2
+    assert "security_group_drift" in result.stderr
+    assert all("create" not in command and "update" not in command for command in commands)
+
+
+def test_reused_vm_rejects_mismatched_user_data_without_rendering_metadata(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    state_path = tmp_path / "state.json"
+    environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(state_path)}
+    _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
+    dry, _ = _run_provision(tmp_path, environment)
+    applied, _ = _run_provision(
+        tmp_path, environment, "--apply", "--approval-nonce", _plan(dry)["approval_nonce"]
+    )
+    assert applied.returncode == 0, applied.stderr
+
+    mismatch, _ = _run_provision(tmp_path, {**environment, "FAKE_VM_USER_DATA_MISMATCH": "1"})
+    assert mismatch.returncode == 2
+    assert "vm_drift" in mismatch.stderr
+    assert "mismatched-user-data" not in mismatch.stdout + mismatch.stderr
+
+
+def _bootstrap_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    fake_bin = tmp_path / "bootstrap-bin"
+    fake_bin.mkdir()
+
+    def executable(name: str, body: str) -> None:
+        path = fake_bin / name
+        path.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    executable(
+        "apt-get",
+        'case "$*" in update|"update --error-on=any") '
+        ': >"$FAKE_APT_SOURCES_AT_UPDATE"; '
+        '[ ! -f "$IMAGE_ORIGIN_APT_SOURCES_LIST_PATH" ] || '
+        'cat "$IMAGE_ORIGIN_APT_SOURCES_LIST_PATH" >>"$FAKE_APT_SOURCES_AT_UPDATE"; '
+        'find "$IMAGE_ORIGIN_APT_SOURCES_DIR" -maxdepth 1 -type f '
+        '\\( -name "*.list" -o -name "*.sources" \\) -exec cat {} + '
+        '>>"$FAKE_APT_SOURCES_AT_UPDATE"; '
+        '! grep -q "http://" "$FAKE_APT_SOURCES_AT_UPDATE"; '
+        'grep -q "https://archive.ubuntu.com/ubuntu" "$FAKE_APT_SOURCES_AT_UPDATE"; '
+        'grep -q "https://security.ubuntu.com/ubuntu" "$FAKE_APT_SOURCES_AT_UPDATE"; '
+        '[ "${FAKE_APT_UPDATE_FAIL:-0}" = 0 ] || '
+        '[ "$*" = update ];; '
+        '"install -y ca-certificates curl docker.io docker-compose-v2") '
+        ': >"$FAKE_APT_MARKER";; *) exit 1;; esac',
+    )
+    executable(
+        "curl",
+        'previous=""; output=""; for argument in "$@"; do '
+        '[ "$previous" = --output ] && output=$argument; previous=$argument; done; '
+        '[ "${argument:-}" = "https://storage.yandexcloud.net/yc-unified-agent/releases/26.09.01/deb/ubuntu-24.04-noble/yandex-unified-agent_26.09.01_amd64.deb" ]; '
+        'printf package >"$output"',
+    )
+    executable(
+        "sha256sum",
+        "read -r expected path; "
+        '[ "$expected" = "08a79e7ce2a06d5b51e368025fd1efb2ccd3e7e91de550730063256b162ddc00" ]; '
+        '[ -f "$path" ]; [ "${FAKE_CHECKSUM_FAIL:-0}" = 0 ]; : >"$FAKE_CHECKSUM_MARKER"',
+    )
+    executable(
+        "dpkg",
+        'if [ "${1:-}" = --compare-versions ]; then '
+        '[ "${FAKE_COMPOSE_OLD:-0}" = 0 ]; else '
+        '[ "$1" = -i ] && [ -f "$FAKE_CHECKSUM_MARKER" ]; : >"$FAKE_AGENT_MARKER"; fi',
+    )
+    executable(
+        "docker",
+        '[ -f "$FAKE_APT_MARKER" ]; [ "$1 $2 $3" = "compose version --short" ]; '
+        'printf "%s\\n" "${FAKE_COMPOSE_VERSION:-2.24.4}"',
+    )
+    executable(
+        "systemctl",
+        'case "$1" in cat) [ -f "$FAKE_AGENT_MARKER" ] && [ "${FAKE_AGENT_MISSING:-0}" = 0 ];; '
+        'is-active) [ "${FAKE_AGENT_INACTIVE:-0}" = 0 ];; *) :;; esac',
+    )
+    executable("unified_agent", '[ -f "$FAKE_AGENT_MARKER" ]')
+    marker = tmp_path / "bootstrap-ready"
+    os_release = tmp_path / "os-release"
+    os_release.write_text("ID=ubuntu\nVERSION_ID=24.04\n", encoding="utf-8")
+    apt_sources_list = tmp_path / "sources.list"
+    apt_sources_list.write_text(
+        "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse\n",
+        encoding="utf-8",
+    )
+    apt_sources_dir = tmp_path / "sources.list.d"
+    apt_sources_dir.mkdir()
+    (apt_sources_dir / "ubuntu.sources").write_text(
+        "Types: deb\n"
+        "URIs: http://archive.ubuntu.com/ubuntu http://security.ubuntu.com/ubuntu\n"
+        "Suites: noble noble-updates noble-security\n"
+        "Components: main restricted universe multiverse\n"
+        "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n",
+        encoding="utf-8",
+    )
+    return {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "IMAGE_ORIGIN_BOOTSTRAP_READY_PATH": str(marker),
+        "IMAGE_ORIGIN_OS_RELEASE_PATH": str(os_release),
+        "IMAGE_ORIGIN_APT_SOURCES_LIST_PATH": str(apt_sources_list),
+        "IMAGE_ORIGIN_APT_SOURCES_DIR": str(apt_sources_dir),
+        "FAKE_APT_MARKER": str(tmp_path / "apt-installed"),
+        "FAKE_APT_SOURCES_AT_UPDATE": str(tmp_path / "apt-sources-at-update"),
+        "FAKE_CHECKSUM_MARKER": str(tmp_path / "checksum-verified"),
+        "FAKE_AGENT_MARKER": str(tmp_path / "agent-installed"),
+    }, marker
+
+
+@pytest.mark.parametrize(
+    ("failure", "value"),
+    [
+        ("FAKE_CHECKSUM_FAIL", "1"),
+        ("FAKE_COMPOSE_OLD", "1"),
+        ("FAKE_AGENT_MISSING", "1"),
+        ("FAKE_AGENT_INACTIVE", "1"),
+    ],
+)
+def test_cloud_init_failures_leave_no_readiness_marker(
+    tmp_path: Path, failure: str, value: str
+) -> None:
+    environment, marker = _bootstrap_environment(tmp_path)
+    marker.write_text("stale", encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh", str(CLOUD_INIT)],
+        env={**environment, failure: value},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not marker.exists()
+
+
+def test_cloud_init_installs_pinned_runtime_before_marking_ready(tmp_path: Path) -> None:
+    environment, marker = _bootstrap_environment(tmp_path)
+    result = subprocess.run(
+        ["sh", str(CLOUD_INIT)], env=environment, capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.is_file()
+
+
+def test_cloud_init_replaces_http_ubuntu_sources_before_apt(tmp_path: Path) -> None:
+    environment, marker = _bootstrap_environment(tmp_path)
+
+    result = subprocess.run(
+        ["sh", str(CLOUD_INIT)], env=environment, capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    sources_at_update = Path(environment["FAKE_APT_SOURCES_AT_UPDATE"]).read_text(encoding="utf-8")
+    assert "http://" not in sources_at_update
+    assert "URIs: https://archive.ubuntu.com/ubuntu" in sources_at_update
+    assert "URIs: https://security.ubuntu.com/ubuntu" in sources_at_update
+    assert marker.is_file()
+
+
+def test_cloud_init_apt_update_failure_stops_before_install_and_leaves_no_marker(
+    tmp_path: Path,
+) -> None:
+    environment, marker = _bootstrap_environment(tmp_path)
+    marker.write_text("stale", encoding="utf-8")
+    Path(environment["IMAGE_ORIGIN_APT_SOURCES_LIST_PATH"]).write_text("", encoding="utf-8")
+    Path(environment["IMAGE_ORIGIN_APT_SOURCES_DIR"], "ubuntu.sources").write_text(
+        "Types: deb\n"
+        "URIs: https://archive.ubuntu.com/ubuntu\n"
+        "Suites: noble noble-updates noble-backports\n"
+        "Components: main restricted universe multiverse\n"
+        "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n\n"
+        "Types: deb\n"
+        "URIs: https://security.ubuntu.com/ubuntu\n"
+        "Suites: noble-security\n"
+        "Components: main restricted universe multiverse\n"
+        "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["sh", str(CLOUD_INIT)],
+        env={**environment, "FAKE_APT_UPDATE_FAIL": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not Path(environment["FAKE_APT_MARKER"]).exists()
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(
@@ -584,16 +922,27 @@ def test_approved_apply_uses_returned_ids_and_never_exposes_secret_values(
     assert applied["next_review_required"] is True
     second_dry, _ = _run_provision(apply_tmp, apply_environment)
     second_plan = _plan(second_dry)
-    assert second_plan["phase"] == "origin-and-policy"
+    assert second_plan["phase"] == "origin-access"
+    access, _ = _run_provision(
+        apply_tmp,
+        apply_environment,
+        "--apply",
+        "--approval-nonce",
+        second_plan["approval_nonce"],
+    )
+    assert _plan(access)["next_review_required"] is True
+    origin_dry, _ = _run_provision(apply_tmp, apply_environment)
+    origin_plan = _plan(origin_dry)
+    assert origin_plan["phase"] == "origin-and-policy"
     vm_command = next(
         command
-        for command in second_plan["proposed_commands"]
+        for command in origin_plan["proposed_commands"]
         if command[1:3] == ["compute", "instance"]
     )
     assert "address-id=" not in " ".join(vm_command)
     assert "nat-address=198.51.100.44" in " ".join(vm_command)
     result, commands = _run_provision(
-        apply_tmp, apply_environment, "--apply", "--approval-nonce", second_plan["approval_nonce"]
+        apply_tmp, apply_environment, "--apply", "--approval-nonce", origin_plan["approval_nonce"]
     )
     applied = _plan(result)
     command_text = json.dumps(commands)
@@ -616,10 +965,16 @@ def test_approved_apply_uses_returned_ids_and_never_exposes_secret_values(
 def test_apply_validates_its_secret_projection_before_mutation(
     tmp_path: Path, cloud_environment: dict[str, str]
 ) -> None:
-    dry_result, _ = _run_provision(tmp_path, cloud_environment)
-    approval_nonce = _plan(dry_result)["approval_nonce"]
     apply_tmp = tmp_path / "missing-secret"
     apply_tmp.mkdir()
+    good_environment = {
+        **cloud_environment,
+        "IMAGE_ORIGIN_CONTRACT_STATE": str(apply_tmp / "contract-state.json"),
+    }
+    _apply_identity_phase(apply_tmp, good_environment)
+    _apply_origin_access_phase(apply_tmp, good_environment)
+    dry_result, _ = _run_provision(apply_tmp, good_environment)
+    approval_nonce = _plan(dry_result)["approval_nonce"]
     bad_projection = apply_tmp / "projection.env"
     bad_projection.write_text(
         'GALLERY_CDN_TOKEN_SECRET="x"\nIMAGE_ORIGIN_HEADER_SECRET="origin-header-private-sentinel"\n'
@@ -644,6 +999,7 @@ def test_policy_is_provider_sourced_and_refetched_before_mutation(
 ) -> None:
     environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json")}
     _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
     counter = tmp_path / "policy-count"
     reviewed, _ = _run_provision(tmp_path, {**environment, "FAKE_POLICY_COUNTER": str(counter)})
     plan = _plan(reviewed)
@@ -675,6 +1031,7 @@ def test_partial_failure_keeps_all_returned_and_preexisting_ids_for_resume(
     state.chmod(0o600)
     environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(state)}
     _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
     reviewed, _ = _run_provision(tmp_path, environment)
     result, _ = _run_provision(
         tmp_path,
@@ -697,6 +1054,7 @@ def test_repeat_apply_does_not_rotate_or_create_another_access_key(
 ) -> None:
     environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json")}
     _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
     reviewed, _ = _run_provision(tmp_path, environment)
     first, _ = _run_provision(
         tmp_path, environment, "--apply", "--approval-nonce", _plan(reviewed)["approval_nonce"]
@@ -826,6 +1184,7 @@ def test_lockbox_failure_preserves_access_key_and_retry_has_zero_mutations(
     state = tmp_path / "state.json"
     environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(state)}
     _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
     reviewed, _ = _run_provision(tmp_path, environment)
     failed, _ = _run_provision(
         tmp_path,
@@ -901,6 +1260,7 @@ def test_origin_service_account_gets_only_monitoring_editor_for_custom_metrics(
 ) -> None:
     environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json")}
     _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
 
     dry, commands = _run_provision(tmp_path, environment)
     plan = _plan(dry)
@@ -938,6 +1298,7 @@ def test_existing_monitoring_editor_binding_is_reused_without_broader_role(
         "FAKE_MONITORING_BINDING": "1",
     }
     _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
 
     dry, _ = _run_provision(tmp_path, environment)
     plan = _plan(dry)
@@ -966,8 +1327,11 @@ def test_real_resolver_bootstrap_projection_applies_both_provisioning_phases(
     monkeypatch.setenv("FAKE_YC_LOG", str(log))
     monkeypatch.setenv("EXPECTED_RESOURCE_NAME", RESOURCE_NAME)
     monkeypatch.setenv("FAKE_CURL_LOG", str(tmp_path / "curl.log"))
+    monkeypatch.setenv("FAKE_BASTION_MARKER", str(tmp_path / "bastion-rule-applied"))
+    monkeypatch.setenv("EXPECTED_PUBLIC_KEY_FILE", str(PUBLIC_KEY))
+    monkeypatch.setenv("EXPECTED_CLOUD_INIT_FILE", str(CLOUD_INIT))
 
-    for expected_phase in ("resource-identities", "origin-and-policy"):
+    for expected_phase in ("resource-identities", "origin-access", "origin-and-policy"):
         dry, _ = _run_provision(tmp_path, environment)
         reviewed = _plan(dry)
         assert reviewed["phase"] == expected_phase

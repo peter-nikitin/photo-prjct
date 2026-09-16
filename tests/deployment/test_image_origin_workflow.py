@@ -9,6 +9,7 @@ import tarfile
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +56,23 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     }
     deploy = _step(job, "Deploy isolated image origin")
     command = deploy["run"]
+    assert deploy["env"] | {
+        "IMAGE_ORIGIN_RELEASE": "${{ inputs.deployment_sha }}",
+        "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
+        "IMAGE_ORIGIN_PROBE_PATH": "${{ vars.IMAGE_ORIGIN_PROBE_PATH }}",
+        "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
+    } == {
+        "IMAGE_ORIGIN_RELEASE": "${{ inputs.deployment_sha }}",
+        "VM_HOST": "${{ vars.VM_HOST }}",
+        "VM_USER": "${{ vars.VM_USER }}",
+        "VM_SSH_KNOWN_HOSTS": "${{ vars.VM_SSH_KNOWN_HOSTS }}",
+        "IMAGE_ORIGIN_VM_HOST": "${{ vars.IMAGE_ORIGIN_VM_HOST }}",
+        "IMAGE_ORIGIN_VM_USER": "${{ vars.IMAGE_ORIGIN_VM_USER }}",
+        "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}",
+        "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
+        "IMAGE_ORIGIN_PROBE_PATH": "${{ vars.IMAGE_ORIGIN_PROBE_PATH }}",
+        "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
+    }
     assert "--consumer image-origin" in command
     assert "--identity github-oidc" in command
     assert "deploy/image-origin/run-remote.sh" in command
@@ -111,6 +129,26 @@ def _fake_transport(tmp_path: Path) -> tuple[Path, Path]:
         "body = sys.stdin.read()\n"
         "log = pathlib.Path(os.environ['TRANSPORT_LOG'])\n"
         "log.open('a').write('ssh ' + ' '.join(args) + '\\n')\n"
+        "counter = pathlib.Path(os.environ['CAPTURE_ROOT'], 'ssh-count')\n"
+        "count = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+        "counter.write_text(str(count))\n"
+        "config = pathlib.Path(args[args.index('-F') + 1])\n"
+        "if count == 1:\n"
+        "    capture_root = pathlib.Path(os.environ['CAPTURE_ROOT'])\n"
+        "    config_text = config.read_text()\n"
+        "    (capture_root / 'ssh-config').write_text(config_text)\n"
+        "    known_hosts = next(\n"
+        "        line.split(maxsplit=1)[1]\n"
+        "        for line in config_text.splitlines()\n"
+        "        if line.strip().startswith('UserKnownHostsFile ')\n"
+        "    )\n"
+        "    (capture_root / 'known-hosts').write_text(pathlib.Path(known_hosts).read_text())\n"
+        "    (capture_root / 'preflight-program').write_text(body)\n"
+        "    status = int(os.environ.get('PREFLIGHT_STATUS', '0'))\n"
+        "    if status:\n"
+        "        print('raw-ssh-secret-sentinel', file=sys.stderr)\n"
+        "        raise SystemExit(status)\n"
+        "    raise SystemExit(0)\n"
         "pathlib.Path(os.environ['CAPTURE_ROOT'], 'remote-program').write_text(body)\n"
         "sha = os.environ['RELEASE_SHA']\n"
         "print(f'IMAGE_ORIGIN_DEPLOYED_SHA={sha}')\n"
@@ -141,6 +179,9 @@ def test_remote_transport_verifies_host_key_keeps_secrets_out_of_arguments_and_p
             "IMAGE_ORIGIN_VM_HOST": "198.51.100.44",
             "IMAGE_ORIGIN_VM_USER": "origin-deploy",
             "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "198.51.100.44 ssh-ed25519 host-key",
+            "VM_HOST": "203.0.113.10",
+            "VM_USER": "deployer",
+            "VM_SSH_KNOWN_HOSTS": "203.0.113.10 ssh-ed25519 bastion-host-key",
             "IMAGE_ORIGIN_RELEASE": release,
             "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
             "IMAGE_ORIGIN_PROBE_PATH": "/" + "A" * 43 + "/gallery-v1/czM6Ly9h.jpg",
@@ -160,9 +201,23 @@ def test_remote_transport_verifies_host_key_keeps_secrets_out_of_arguments_and_p
         "IMAGE_ORIGIN_MONITORING=green\n"
     )
     transport = log.read_text(encoding="utf-8")
-    assert "StrictHostKeyChecking=yes" in transport
-    assert "UserKnownHostsFile=" in transport
-    assert "IdentitiesOnly=yes" in transport
+    assert transport.splitlines()[0].startswith("ssh ")
+    assert transport.index("ssh ") < transport.index("scp ")
+    config = (capture / "ssh-config").read_text(encoding="utf-8")
+    assert "HostName 203.0.113.10" in config
+    assert "User deployer" in config
+    assert "HostName 198.51.100.44" in config
+    assert "User origin-deploy" in config
+    assert "ProxyJump findme-image-origin-bastion" in config
+    assert config.count("BatchMode yes") == 2
+    assert config.count("StrictHostKeyChecking yes") == 2
+    assert config.count("IdentitiesOnly yes") == 2
+    assert config.count(f"IdentityFile {values['VM_SSH_KEY_FILE']}") == 2
+    known_hosts = capture / "known-hosts"
+    assert known_hosts.read_text(encoding="utf-8").splitlines() == [
+        "203.0.113.10 ssh-ed25519 bastion-host-key",
+        "198.51.100.44 ssh-ed25519 host-key",
+    ]
     for secret in values.values():
         if secret != values["VM_SSH_KEY_FILE"]:
             assert secret not in result.stdout + result.stderr + transport
@@ -180,6 +235,64 @@ def test_remote_transport_verifies_host_key_keeps_secrets_out_of_arguments_and_p
     assert "unified-agent.yml.template" in remote_program
     assert "docker-compose.deployment.yml" not in remote_program
     assert "apply-deployment.sh" not in remote_program
+    preflight = (capture / "preflight-program").read_text(encoding="utf-8")
+    assert "cloud-init status --wait" in preflight
+    assert "/var/lib/findme-image-origin/bootstrap-ready" in preflight
+    assert "docker compose version --short" in preflight
+    assert "dpkg --compare-versions" in preflight
+    assert "systemctl is-active --quiet unified-agent" in preflight
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (30, "cloud_init_failed"),
+        (31, "bootstrap_marker_missing"),
+        (32, "docker_compose_unsupported"),
+        (33, "unified_agent_unsupported"),
+    ],
+)
+def test_remote_preflight_failures_are_sanitized_and_stop_before_transport(
+    tmp_path: Path, status: int, code: str
+) -> None:
+    projection, _ = _private_projection(tmp_path)
+    fake_bin, capture = _fake_transport(tmp_path)
+    release = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    log = tmp_path / "transport.log"
+    result = subprocess.run(
+        ["sh", str(REMOTE)],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "FINDME_ENV_FILE": str(projection),
+            "VM_HOST": "203.0.113.10",
+            "VM_USER": "deployer",
+            "VM_SSH_KNOWN_HOSTS": "203.0.113.10 ssh-ed25519 bastion-host-key",
+            "IMAGE_ORIGIN_VM_HOST": "10.0.0.4",
+            "IMAGE_ORIGIN_VM_USER": "origin-deploy",
+            "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "10.0.0.4 ssh-ed25519 origin-host-key",
+            "IMAGE_ORIGIN_RELEASE": release,
+            "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
+            "IMAGE_ORIGIN_PROBE_PATH": "/" + "A" * 43 + "/gallery-v1/czM6Ly9h.jpg",
+            "YANDEX_CLOUD_FOLDER_ID": "folder-contract-id",
+            "TRANSPORT_LOG": str(log),
+            "CAPTURE_ROOT": str(capture),
+            "RELEASE_SHA": release,
+            "PREFLIGHT_STATUS": str(status),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"IMAGE_ORIGIN_DEPLOY=error code={code}\n"
+    assert "raw-ssh-secret-sentinel" not in result.stdout + result.stderr
+    assert not any(line.startswith("scp ") for line in log.read_text().splitlines())
 
 
 def test_remote_transport_rejects_unpinned_release_before_network(tmp_path: Path) -> None:
@@ -227,6 +340,9 @@ def test_remote_transport_mode_check_does_not_use_ambiguous_gnu_stat_fallback(
             "IMAGE_ORIGIN_VM_HOST": "198.51.100.44",
             "IMAGE_ORIGIN_VM_USER": "origin-deploy",
             "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "198.51.100.44 ssh-ed25519 host-key",
+            "VM_HOST": "203.0.113.10",
+            "VM_USER": "deployer",
+            "VM_SSH_KNOWN_HOSTS": "203.0.113.10 ssh-ed25519 bastion-host-key",
             "IMAGE_ORIGIN_RELEASE": release,
             "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
             "IMAGE_ORIGIN_PROBE_PATH": "/" + "A" * 43 + "/gallery-v1/czM6Ly9h.jpg",

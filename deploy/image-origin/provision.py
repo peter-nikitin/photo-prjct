@@ -419,7 +419,7 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         fail("profile_invalid")
     cloud, folder = yc("config", "get", "cloud-id"), yc("config", "get", "folder-id")
     zone, image = (
-        yc("compute", "zone", "get", "--id", cfg["zone"], "--format", "json"),
+        yc("compute", "zone", "get", cfg["zone"], "--format", "json"),
         yc("compute", "image", "get", "--id", cfg["image"], "--format", "json"),
     )
     if ident(zone) != cfg["zone"]:

@@ -392,6 +392,17 @@ def test_discovery_fails_closed_when_plain_text_has_no_active_profile(
     assert commands == [["config", "profile", "list", "--format", "json"]]
 
 
+def test_discovery_uses_yc_1_21_positional_zone_get_contract(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    result, commands = _run_provision(tmp_path, cloud_environment)
+
+    _plan(result)
+    assert [command for command in commands if command[:3] == ["compute", "zone", "get"]] == [
+        ["compute", "zone", "get", "ru-central1-a", "--format", "json"]
+    ]
+
+
 def test_plan_preserves_policy_and_declares_independent_credential_denials(
     tmp_path: Path, cloud_environment: dict[str, str]
 ) -> None:

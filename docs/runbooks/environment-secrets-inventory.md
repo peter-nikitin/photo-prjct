@@ -54,7 +54,7 @@ local-only. `VM_SSH_KEY` is binary and becomes only `VM_SSH_KEY_FILE`.
 | `PHOTO_PROCESSING_WORKER_TOKEN` | `PHOTO_PROCESSING_WORKER_TOKEN` | text | yes | `local-web`, `deploy` |
 | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `deploy` |
 | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `deploy` |
-| `VM_SSH_KEY` | `VM_SSH_KEY_FILE` | binary | no | `deploy`, `remote-check` |
+| `VM_SSH_KEY` | `VM_SSH_KEY_FILE` | binary | no | `deploy`, `remote-check`, `image-origin` (transport only) |
 | `GHCR_READ_TOKEN` | `GHCR_READ_TOKEN` | text | no | `deploy` |
 | `YANDEX_MONITORING_API_KEY` | `YANDEX_MONITORING_API_KEY` | text | no | `public-monitor` |
 | `GALLERY_CDN_TOKEN_SECRET` | `GALLERY_CDN_TOKEN_SECRET` | text | no | `local-web`, `deploy`, `image-delivery-provision` |

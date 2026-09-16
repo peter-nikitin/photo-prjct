@@ -90,11 +90,13 @@ IMAGE_ORIGIN_KEYS = {
     "IMAGE_ORIGIN_HEADER_SECRET",
     "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
     "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
+    "VM_SSH_KEY",
 }
 IMAGE_DELIVERY_PROVISION_KEYS = {
     "GALLERY_CDN_TOKEN_SECRET",
     "IMAGE_ORIGIN_HEADER_SECRET",
 }
+IMAGE_ORIGIN_PROJECTED_KEYS = (IMAGE_ORIGIN_KEYS - {"VM_SSH_KEY"}) | {"VM_SSH_KEY_FILE"}
 
 
 @pytest.fixture(scope="module")
@@ -252,6 +254,7 @@ def test_manifest_pins_the_reviewed_deployment_identity(manifest: dict[str, Any]
             "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/face-embedding-benchmark.yml@refs/heads/main",
+            "peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main",
         ],
     }
 
@@ -730,7 +733,7 @@ def test_child_environment_cannot_bypass_projection_or_environment_files(
         ("deploy", (DEPLOY_KEYS - {"VM_SSH_KEY"}) | {"VM_SSH_KEY_FILE"}),
         ("remote-check", {"VM_SSH_KEY_FILE"}),
         ("public-monitor", {"YANDEX_MONITORING_API_KEY"}),
-        ("image-origin", IMAGE_ORIGIN_KEYS),
+        ("image-origin", IMAGE_ORIGIN_PROJECTED_KEYS),
         ("image-delivery-provision", IMAGE_DELIVERY_PROVISION_KEYS),
     ],
 )

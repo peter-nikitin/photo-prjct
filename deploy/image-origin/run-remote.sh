@@ -26,6 +26,9 @@ repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 [ "$(git -C "$repository_root" rev-parse HEAD 2>/dev/null)" = "$release" ] || fail checkout_sha_mismatch
 
 : "${FINDME_ENV_FILE:?}"
+: "${VM_HOST:?}"
+: "${VM_USER:?}"
+: "${VM_SSH_KNOWN_HOSTS:?}"
 : "${IMAGE_ORIGIN_VM_HOST:?}"
 : "${IMAGE_ORIGIN_VM_USER:?}"
 : "${IMAGE_ORIGIN_SSH_KNOWN_HOSTS:?}"
@@ -34,6 +37,8 @@ repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 : "${YANDEX_CLOUD_FOLDER_ID:?}"
 [ -f "$FINDME_ENV_FILE" ] && [ "$(file_mode "$FINDME_ENV_FILE")" = 600 ] || \
     fail invalid_environment_file
+case "$VM_HOST" in ''|*[!A-Za-z0-9.:-]*) fail invalid_bastion_host ;; esac
+case "$VM_USER" in ''|*[!A-Za-z0-9_-]*) fail invalid_bastion_user ;; esac
 case "$IMAGE_ORIGIN_VM_HOST" in ''|*[!A-Za-z0-9.:-]*) fail invalid_host ;; esac
 case "$IMAGE_ORIGIN_VM_USER" in ''|*[!A-Za-z0-9_-]*) fail invalid_user ;; esac
 case "$YANDEX_CLOUD_FOLDER_ID" in ''|*[!A-Za-z0-9-]*) fail invalid_folder ;; esac
@@ -42,11 +47,12 @@ scratch=$(mktemp -d)
 archive="$scratch/findme-image-origin-$release.tar"
 remote_environment="$scratch/findme-image-origin-$release.env"
 known_hosts="$scratch/known_hosts"
+ssh_config="$scratch/ssh_config"
 output="$scratch/output"
 cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
-    rm -f "$archive" "$remote_environment" "$known_hosts" "$output"
+    rm -f "$archive" "$remote_environment" "$known_hosts" "$ssh_config" "$output"
     rmdir "$scratch"
     exit "$status"
 }
@@ -121,24 +127,63 @@ Path(sys.argv[2]).write_text('\n'.join(source) + '\n', encoding='utf-8')
 os.chmod(sys.argv[2], 0o600)
 PY
 
-printf '%s\n' "$IMAGE_ORIGIN_SSH_KNOWN_HOSTS" >"$known_hosts"
+printf '%s\n%s\n' "$VM_SSH_KNOWN_HOSTS" "$IMAGE_ORIGIN_SSH_KNOWN_HOSTS" >"$known_hosts"
+cat >"$ssh_config" <<EOF
+Host findme-image-origin-bastion
+    HostName $VM_HOST
+    User $VM_USER
+    IdentityFile $key_file
+    BatchMode yes
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile $known_hosts
+
+Host findme-image-origin-target
+    HostName $IMAGE_ORIGIN_VM_HOST
+    User $IMAGE_ORIGIN_VM_USER
+    IdentityFile $key_file
+    BatchMode yes
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile $known_hosts
+    ProxyJump findme-image-origin-bastion
+EOF
 COPYFILE_DISABLE=1
 export COPYFILE_DISABLE
 tar -C "$repository_root/deploy" -cf "$archive" image-origin
 
-ssh_options="-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts -i $key_file"
-target="$IMAGE_ORIGIN_VM_USER@$IMAGE_ORIGIN_VM_HOST"
-# shellcheck disable=SC2086
-scp $ssh_options "$archive" "$target:/tmp/findme-image-origin-$release.tar" >"$output" 2>&1 || \
+target=findme-image-origin-target
+set +e
+ssh -F "$ssh_config" "$target" sudo sh -s >"$output" 2>&1 <<'PREFLIGHT'
+set -eu
+cloud-init status --wait >/dev/null 2>&1 || exit 30
+[ -f /var/lib/findme-image-origin/bootstrap-ready ] || exit 31
+compose_version=$(docker compose version --short 2>/dev/null) || exit 32
+compose_version=${compose_version#v}
+dpkg --compare-versions "$compose_version" ge 2.24.4 || exit 32
+command -v unified_agent >/dev/null 2>&1 || exit 33
+systemctl cat unified-agent >/dev/null 2>&1 || exit 33
+systemctl is-active --quiet unified-agent || exit 33
+PREFLIGHT
+preflight_status=$?
+set -e
+case "$preflight_status" in
+    0) ;;
+    30) fail cloud_init_failed ;;
+    31) fail bootstrap_marker_missing ;;
+    32) fail docker_compose_unsupported ;;
+    33) fail unified_agent_unsupported ;;
+    *) fail bootstrap_preflight_transport_failed ;;
+esac
+
+scp -F "$ssh_config" "$archive" "$target:/tmp/findme-image-origin-$release.tar" >"$output" 2>&1 || \
     fail archive_transport_failed
-# shellcheck disable=SC2086
-scp $ssh_options "$remote_environment" "$target:/tmp/findme-image-origin-$release.env" >"$output" 2>&1 || \
+scp -F "$ssh_config" "$remote_environment" "$target:/tmp/findme-image-origin-$release.env" >"$output" 2>&1 || \
     fail environment_transport_failed
 
 # The remote program receives only the non-secret SHA and folder ID as arguments. Runtime secrets
 # stay in the mode-0600 environment file and are removed after apply.sh persists its own projection.
-# shellcheck disable=SC2086
-ssh $ssh_options "$target" sudo sh -s -- "$release" "$YANDEX_CLOUD_FOLDER_ID" >"$output" 2>&1 <<'REMOTE'
+ssh -F "$ssh_config" "$target" sudo sh -s -- "$release" "$YANDEX_CLOUD_FOLDER_ID" >"$output" 2>&1 <<'REMOTE'
 set -eu
 release=$1
 folder=$2

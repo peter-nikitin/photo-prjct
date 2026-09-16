@@ -132,9 +132,31 @@ Either argument alone or a stale nonce fails before mutation. Creation responses
 their IDs feed dependent commands and the root-private state file; later runs use ID-based reads.
 Provisioning is intentionally staged when provider-returned identifiers are dependencies: apply the
 reviewed identity phase, generate and review a new plan containing the returned IPv4 and immutable
-boot-image ID, then apply that second nonce. Reapplying initialized state does not rotate keys.
+boot-image ID, then stop again at the separate `origin-access` phase. That phase may add only one
+TCP/22 ingress rule sourced from the canonical VM's single attached security group. It preserves
+the operator TCP/22 `/32`, accepts only the exact pre-bastion or post-bastion rule set, persists no
+secret, returns `next_review_required=true`, and requires a fresh dry run and approval nonce before
+the `origin-and-policy` phase may touch VM, folder IAM, bucket policy, or credentials. Reapplying
+initialized state does not rotate keys.
 Policy and Lockbox payloads use mode-0600 temporary files or standard input, are removed on exit,
 and are never rendered in the plan or command arguments.
+
+There is no operator-supplied SSH public-key path. VM authorization always uses the reviewed public
+half of the existing workflow key at `deploy/image-origin/workflow-ssh-key.pub` (SHA-256
+`5cb142386c744da7cc7783a90b499bd79ab5c65ef8ddb10b2e3a70f04f4650de`). VM creation also binds
+`deploy/image-origin/cloud-init.sh` through `--metadata-from-file user-data=...`; its reviewed
+SHA-256 is `da2a712df2f57a7e979ea2dc6cd34bf303a2a34a8bfb7f13f60a444d3eda35a9` and both hashes are part of
+the desired state and approval nonce. Existing VMs are accepted only when returned user-data
+exactly matches the reviewed artifact; reports expose its hash, never the metadata body.
+
+The secret-free Ubuntu 24.04 bootstrap replaces the image's active package sources with the
+reviewed Ubuntu archive and security repositories over HTTPS before its first APT request. It
+runs update in fail-on-any-error mode, installs Ubuntu `docker.io` and `docker-compose-v2`, enables
+Docker, downloads official Unified Agent `26.09.01`, verifies SHA-256
+`08a79e7ce2a06d5b51e368025fd1efb2ccd3e7e91de550730063256b162ddc00`, installs and enables the
+supported `unified-agent` service, and requires Docker Compose 2.24.4 or newer. Its root-owned
+readiness marker is written only after every download, checksum, package, version, and service
+check succeeds.
 
 Run the credential probe only as a separate Task 6 gate through the `image-origin` projection:
 
@@ -152,15 +174,23 @@ output is aggregate counts only; default dry-run and approved apply never execut
 SHA. It checks out that commit, authenticates with the existing GitHub OIDC federation, and
 materializes only the `image-origin` projection. That projection includes `VM_SSH_KEY` solely as
 the transport file `VM_SSH_KEY_FILE`; `run-remote.sh` removes it before building the remote runtime
-environment, and Compose/apply never receive it. Configure these non-secret repository variables
-from the reviewed resource record: `IMAGE_ORIGIN_VM_HOST`, `IMAGE_ORIGIN_VM_USER`,
-`IMAGE_ORIGIN_SSH_KNOWN_HOSTS`, `PRIVATE_MEDIA_S3_BUCKET`, `IMAGE_ORIGIN_PROBE_PATH`, and
-`YANDEX_CLOUD_FOLDER_ID`.
+environment, and Compose/apply never receive it. Configure `VM_HOST`, `VM_USER`, and
+`VM_SSH_KNOWN_HOSTS` from the canonical deployment as the bastion contract. Configure
+`IMAGE_ORIGIN_VM_HOST` as the origin's private IPv4, plus `IMAGE_ORIGIN_VM_USER` and
+`IMAGE_ORIGIN_SSH_KNOWN_HOSTS`, from the reviewed origin record. Also configure
+`PRIVATE_MEDIA_S3_BUCKET`, `IMAGE_ORIGIN_PROBE_PATH`, and `YANDEX_CLOUD_FOLDER_ID`.
 
-The reviewed immutable boot image must already provide Docker Compose 2.24.4 or newer and one of
-the supported official Unified Agent service layouts (`unified-agent` or `unified_agent`). The
-workflow configures and restarts that agent but does not install host packages; it fails closed
-before reporting green when either runtime is absent.
+The workflow uses the one projected `VM_SSH_KEY_FILE` for both SSH hops. It requires `BatchMode`,
+`IdentitiesOnly`, strict host-key checking, and the reviewed known-host line independently for the
+canonical bastion and private origin, then reaches the origin through SSH `ProxyJump`. The
+canonical VM is a deploy-time dependency only: image requests, CDN origin traffic, health checks,
+and the running origin do not traverse or depend on it.
+
+Before transporting either archive or environment, the workflow waits for cloud-init, requires the
+reviewed readiness marker, Docker Compose 2.24.4 or newer, and an active supported `unified-agent`
+service. Failures emit only stable sanitized codes; raw SSH output and secret values are never
+relayed. The workflow then configures and restarts that agent and fails closed before reporting
+green when the runtime contract changes.
 
 Create the `img-origin.findme-photo.ru` A record and complete initial ACME issuance before invoking
 the workflow: deployment is intentionally fail-closed unless the trusted certificate and signed

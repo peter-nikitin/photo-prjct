@@ -22,6 +22,10 @@ from urllib.parse import quote
 NAME = "findme-gallery-image-origin"
 CNAME = "img.findme-photo.ru"
 LOCKBOX = "e6q85jjl76r45maigtfb"
+PACKAGE = Path(__file__).resolve().parent
+PUBLIC_KEY = PACKAGE / "workflow-ssh-key.pub"
+CLOUD_INIT = PACKAGE / "cloud-init.sh"
+PUBLIC_KEY_VALUE = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ1h18E0nI6hijk2Ua9fG7hHcWfReZCn3fg8TeiQOVCJ findme-staging-lockbox-2026-08-08\n"
 SECRET_KEYS = [
     "GALLERY_CDN_TOKEN_SECRET",
     "GALLERY_IMGPROXY_KEY",
@@ -255,20 +259,38 @@ def rules(cidr: str) -> list[dict[str, Any]]:
     ]
 
 
+def bastion_rule(security_group_id: str) -> dict[str, Any]:
+    return {
+        "direction": "INGRESS",
+        "protocol_name": "TCP",
+        "port": "22",
+        "security_group_id": security_group_id,
+    }
+
+
+def desired_rules(cidr: str, security_group_id: str) -> list[dict[str, Any]]:
+    return rules(cidr) + [bastion_rule(security_group_id)]
+
+
 def normalized_rules(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         fail("security_group_drift")
     normalized = []
     for item in value:
+        if not isinstance(item, dict):
+            fail("security_group_drift")
         ports = item.get("ports", {}) if isinstance(item, dict) else {}
         cidrs = item.get("cidr_blocks", {}) if isinstance(item, dict) else {}
         from_port, to_port = ports.get("from_port"), ports.get("to_port")
         blocks = cidrs.get("v4_cidr_blocks", [])
+        security_group_id = item.get("security_group_id")
         if (
             not isinstance(from_port, str)
             or from_port != to_port
             or not isinstance(blocks, list)
-            or len(blocks) != 1
+            or (len(blocks) != 1) == (not isinstance(security_group_id, str))
+            or isinstance(security_group_id, str)
+            and not ID.fullmatch(security_group_id)
         ):
             fail("security_group_drift")
         normalized.append(
@@ -276,7 +298,11 @@ def normalized_rules(value: Any) -> list[dict[str, Any]]:
                 "direction": item.get("direction"),
                 "protocol_name": item.get("protocol_name"),
                 "port": from_port,
-                "v4_cidr_blocks": blocks,
+                **(
+                    {"security_group_id": security_group_id}
+                    if security_group_id
+                    else {"v4_cidr_blocks": blocks}
+                ),
             }
         )
     return sorted(normalized, key=lambda item: canon(item))
@@ -325,6 +351,7 @@ def safe_actual(found: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "interface_count": len(found["vm"].get("network_interfaces", [])),
                 "secondary_disk_count": len(found["vm"].get("secondary_disks", [])),
+                "user_data_sha256": found["vm_user_data_sha256"],
             }
             if found["vm"]
             else None
@@ -440,8 +467,20 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     if canonical_vm.get("folder_id") != folder:
         fail("canonical_network_invalid")
     try:
-        subnet_id = canonical_vm["network_interfaces"][0]["subnet_id"]
-    except (KeyError, IndexError, TypeError):
+        interfaces = canonical_vm["network_interfaces"]
+        if len(interfaces) != 1:
+            raise ValueError
+        subnet_id = interfaces[0]["subnet_id"]
+        security_group_ids = interfaces[0]["security_group_ids"]
+        if (
+            not isinstance(security_group_ids, list)
+            or len(security_group_ids) != 1
+            or not isinstance(security_group_ids[0], str)
+            or not ID.fullmatch(security_group_ids[0])
+        ):
+            fail("canonical_security_group_invalid")
+        canonical_security_group_id = security_group_ids[0]
+    except (KeyError, IndexError, TypeError, ValueError):
         fail("canonical_network_invalid")
     subnet = yc(
         "vpc", "subnet", "get", "--id", subnet_id, "--folder-id", folder, "--format", "json"
@@ -454,6 +493,24 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     )
     if network.get("folder_id") != folder:
         fail("canonical_network_invalid")
+    canonical_security_group = yc(
+        "vpc",
+        "security-group",
+        "get",
+        "--id",
+        canonical_security_group_id,
+        "--folder-id",
+        folder,
+        "--format",
+        "json",
+    )
+    if (
+        ident(canonical_security_group, "canonical_security_group_invalid")
+        != canonical_security_group_id
+        or canonical_security_group.get("folder_id") != folder
+        or canonical_security_group.get("network_id") != network_id
+    ):
+        fail("canonical_security_group_invalid")
     bucket = yc(
         "storage",
         "bucket",
@@ -513,12 +570,20 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         fail("service_account_role_drift")
     if resources["sa"] and resources["sa"].get("folder_id") != folder:
         fail("service_account_drift")
-    if resources["sg"] and (
-        resources["sg"].get("folder_id"),
-        resources["sg"].get("network_id"),
-        normalized_rules(resources["sg"].get("rules")),
-    ) != (folder, network_id, sorted(rules(cfg["cidr"]), key=lambda item: canon(item))):
-        fail("security_group_drift")
+    origin_access_configured = False
+    if resources["sg"]:
+        actual_rules = normalized_rules(resources["sg"].get("rules"))
+        pre_bastion = sorted(rules(cfg["cidr"]), key=lambda item: canon(item))
+        post_bastion = sorted(
+            desired_rules(cfg["cidr"], canonical_security_group_id), key=lambda item: canon(item)
+        )
+        if (
+            resources["sg"].get("folder_id") != folder
+            or resources["sg"].get("network_id") != network_id
+            or actual_rules not in (pre_bastion, post_bastion)
+        ):
+            fail("security_group_drift")
+        origin_access_configured = actual_rules == post_bastion
     ipv4 = None
     if resources["address"]:
         external = resources["address"].get("external_ipv4_address", {})
@@ -543,6 +608,11 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
             vm.get("service_account_id"),
         ) != (folder, cfg["zone"], "standard-v3", ident(sa) if sa else None):
             fail("vm_drift")
+        metadata = vm.get("metadata", {})
+        user_data = metadata.get("user-data") if isinstance(metadata, dict) else None
+        if not isinstance(user_data, str) or user_data.encode() != cfg["cloud_init"]:
+            fail("vm_drift")
+        vm_user_data_sha256 = hashlib.sha256(user_data.encode()).hexdigest()
         resources_value = vm.get("resources", {})
         if (
             resources_value.get("cores") != "2"
@@ -612,6 +682,9 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         "initialized": initialized,
         "ipv4": ipv4,
         "boot_disk": boot_disk,
+        "canonical_sg": canonical_security_group,
+        "origin_access_configured": origin_access_configured,
+        "vm_user_data_sha256": vm_user_data_sha256 if resources["vm"] else None,
         "service_account_roles": service_account_roles,
         "secret_keys_present": present,
         **resources,
@@ -636,6 +709,8 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         phase = "secret-bootstrap"
     elif not all(found[item] for item in ("sa", "sg", "address")):
         phase = "resource-identities"
+    elif not found["origin_access_configured"]:
+        phase = "origin-access"
     else:
         phase = "origin-and-policy"
     if phase == "secret-bootstrap":
@@ -707,6 +782,22 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
                     "json",
                 ]
             )
+    elif phase == "origin-access":
+        commands.append(
+            [
+                "yc",
+                "vpc",
+                "security-group",
+                "update-rules",
+                "--id",
+                ident(found["sg"]),
+                "--add-rule",
+                "direction=ingress,protocol=tcp,port=22,"
+                f"security-group-id={ident(found['canonical_sg'])}",
+                "--format",
+                "json",
+            ]
+        )
     else:
         if "monitoring.editor" not in found["service_account_roles"]:
             commands.append(
@@ -750,6 +841,8 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
                     ident(found["sa"]),
                     "--ssh-key",
                     cfg["ssh_key"],
+                    "--metadata-from-file",
+                    f"user-data={cfg['cloud_init_path']}",
                     "--folder-id",
                     found["folder"],
                     "--format",
@@ -813,6 +906,7 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
             "bucket_id": found["bucket"].get("id"),
             "boot_image_id": found["image"],
             "reserved_address_ipv4": found["ipv4"],
+            "canonical_security_group_id": ident(found["canonical_sg"]),
             **ids,
         },
         "actual": safe_actual(found),
@@ -826,8 +920,9 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
                 "subnet_id": found["subnet"],
                 "reserved_ipv4": found["ipv4"],
                 "ssh_key_sha256": cfg["ssh_hash"],
+                "cloud_init_sha256": cfg["cloud_init_hash"],
             },
-            "security_group_rules": rules(cfg["cidr"]),
+            "security_group_rules": desired_rules(cfg["cidr"], ident(found["canonical_sg"])),
             "cdn_cname": CNAME,
             "service_account_roles": ["monitoring.editor"],
         },
@@ -942,6 +1037,13 @@ def apply(
             if key == "reserved_address_id":
                 state["reserved_address_ipv4"] = result["external_ipv4_address"]["address"]
                 persist(state_path, state)
+        output = dict(reviewed)
+        output.update(mode="applied", next_review_required=True, state_keys=sorted(state))
+        return output
+    if reviewed["phase"] == "origin-access":
+        if len(reviewed["proposed_commands"]) != 1:
+            fail("origin_access_plan_invalid")
+        yc(*reviewed["proposed_commands"][0][1:])
         output = dict(reviewed)
         output.update(mode="applied", next_review_required=True, state_keys=sorted(state))
         return output
@@ -1071,30 +1173,36 @@ def probe(cfg: dict[str, str]) -> int:
     return 0
 
 
-def config() -> dict[str, str]:
+def config() -> dict[str, Any]:
     try:
         cidr = str(ipaddress.IPv4Network(env("IMAGE_ORIGIN_SSH_SOURCE_CIDR"), strict=True))
     except ValueError:
         fail("invalid_image_origin_ssh_source_cidr")
-    key = Path(env("IMAGE_ORIGIN_SSH_PUBLIC_KEY_FILE"))
     try:
-        info, data = key.lstat(), key.read_bytes()
+        key_info, key_data = PUBLIC_KEY.lstat(), PUBLIC_KEY.read_bytes()
+        cloud_init_info, cloud_init_data = CLOUD_INIT.lstat(), CLOUD_INIT.read_bytes()
     except OSError:
-        fail("invalid_image_origin_ssh_public_key_file")
+        fail("reviewed_bootstrap_artifact_invalid")
     if (
-        stat.S_ISLNK(info.st_mode)
-        or not stat.S_ISREG(info.st_mode)
-        or not data.startswith((b"ssh-ed25519 ", b"ssh-rsa "))
+        stat.S_ISLNK(key_info.st_mode)
+        or not stat.S_ISREG(key_info.st_mode)
+        or key_data.decode(errors="replace") != PUBLIC_KEY_VALUE
+        or stat.S_ISLNK(cloud_init_info.st_mode)
+        or not stat.S_ISREG(cloud_init_info.st_mode)
+        or not cloud_init_data.startswith(b"#!/bin/sh\n")
     ):
-        fail("invalid_image_origin_ssh_public_key_file")
+        fail("reviewed_bootstrap_artifact_invalid")
     return {
         "canonical_vm": env("CANONICAL_VM_ID", ID),
         "bucket": env("PRIVATE_MEDIA_S3_BUCKET", BUCKET),
         "zone": env("IMAGE_ORIGIN_ZONE_ID", ID),
         "image": env("IMAGE_ORIGIN_BOOT_IMAGE_ID", ID),
         "cidr": cidr,
-        "ssh_key": str(key),
-        "ssh_hash": hashlib.sha256(data).hexdigest(),
+        "ssh_key": str(PUBLIC_KEY),
+        "ssh_hash": hashlib.sha256(key_data).hexdigest(),
+        "cloud_init_path": str(CLOUD_INIT),
+        "cloud_init": cloud_init_data,
+        "cloud_init_hash": hashlib.sha256(cloud_init_data).hexdigest(),
         "preview": env("IMAGE_ORIGIN_ACCEPTED_PREVIEW_KEY", KEY),
         "original": env("IMAGE_ORIGIN_DENIED_ORIGINAL_KEY", KEY),
         "staging": env("IMAGE_ORIGIN_DENIED_STAGING_KEY", KEY),
@@ -1138,7 +1246,7 @@ def main() -> int:
         fail("approval_nonce_mismatch")
     if state_path is None:
         fail("state_path_required")
-    values = {} if reviewed["phase"] == "secret-bootstrap" else provisioning_values()
+    values = provisioning_values() if reviewed["phase"] == "origin-and-policy" else {}
     print(
         json.dumps(
             apply(reviewed, found, cfg, state_path, state, values),

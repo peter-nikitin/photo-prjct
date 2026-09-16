@@ -39,6 +39,7 @@ ORIGIN_KEYS = {
     "IMAGE_ORIGIN_HEADER_SECRET",
     "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
     "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
+    "VM_SSH_KEY",
 }
 
 
@@ -147,6 +148,10 @@ elif args[:3] == ["cdn", "resource", "get"]:
     value = {"id": "existing-cdn-id", "cname": "img.findme-photo.ru", "folder_id": "folder-contract-id", "origin_group_id": "existing-origin-id", "options": {"secure_key": {"key": "cdn-secure-private-sentinel"}, "static_request_headers": {"X-Origin-Secret": "origin-header-private-sentinel"}}}
 elif args[:3] == ["certificate-manager", "certificate", "get"]:
     value = {"id": "existing-cert-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id", "domains": ["img.findme-photo.ru"]}
+elif args[:4] == ["resource-manager", "folder", "list-access-bindings", "--id"]:
+    value = ([{"role_id": "monitoring.editor", "subject": {"id": "created-service-account-id", "type": "serviceAccount"}}] if os.environ.get("FAKE_MONITORING_BINDING") == "1" else [])
+elif args[:4] == ["resource-manager", "folder", "add-access-binding", "--id"]:
+    value = {"status": "done"}
 elif args[:3] == ["compute", "zone", "get"]:
     value = {"id": "ru-central1-a"}
 elif args[:3] == ["compute", "image", "get"]:
@@ -186,15 +191,35 @@ elif args[:3] == ["iam", "access-key", "create"]:
         "secret": "generated-secret-private-sentinel",
     }
 elif args[:4] == ["lockbox", "secret", "get", "--id"]:
-    initialized = False
+    initialized = bootstrap_seeded = False
     state_path = pathlib.Path(os.environ.get("IMAGE_ORIGIN_CONTRACT_STATE", "/nonexistent"))
     if state_path.exists():
-        initialized = json.loads(state_path.read_text()).get("secrets_initialized") is True
-    keys = ["GALLERY_CDN_TOKEN_SECRET", "GALLERY_IMGPROXY_KEY", "GALLERY_IMGPROXY_SALT", "IMAGE_ORIGIN_HEADER_SECRET", "IMAGE_ORIGIN_S3_ACCESS_KEY_ID", "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY"] if initialized else ["GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET"]
+        state = json.loads(state_path.read_text())
+        initialized = state.get("secrets_initialized") is True
+        bootstrap_seeded = state.get("bootstrap_seeded") is True
+    keys = (["GALLERY_CDN_TOKEN_SECRET", "GALLERY_IMGPROXY_KEY", "GALLERY_IMGPROXY_SALT", "IMAGE_ORIGIN_HEADER_SECRET", "IMAGE_ORIGIN_S3_ACCESS_KEY_ID", "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY"] if initialized else (["GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET"] if bootstrap_seeded else ["GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET"]))
     if "FAKE_LOCKBOX_KEYS" in os.environ: keys = json.loads(os.environ["FAKE_LOCKBOX_KEYS"])
-    value = {"current_version": {"id": "created-lockbox-version-id" if initialized else "current-lockbox-version-id", "payload_entry_keys": keys}}
+    version_id = "created-lockbox-version-id" if initialized else "current-lockbox-version-id"
+    if "FAKE_LOCKBOX_METADATA_COUNTER" in os.environ:
+        counter = pathlib.Path(os.environ["FAKE_LOCKBOX_METADATA_COUNTER"])
+        count = int(counter.read_text()) + 1 if counter.exists() else 1
+        counter.write_text(str(count))
+        if count >= int(os.environ.get("FAKE_LOCKBOX_DRIFT_AT", "999")):
+            version_id = "concurrent-lockbox-version-id"
+    value = {"current_version": {"id": version_id, "payload_entry_keys": keys}}
 elif args[:3] == ["lockbox", "secret", "add-version"]:
     if os.environ.get("FAKE_FAIL_LOCKBOX") == "1": raise SystemExit(7)
+    changes = json.loads(sys.stdin.read())
+    if "FAKE_LOCKBOX_STDIN" in os.environ:
+        pathlib.Path(os.environ["FAKE_LOCKBOX_STDIN"]).write_text(json.dumps(changes))
+    inherited = [
+        {"key": "EXISTING_APPLICATION_SECRET", "text_value": "existing-private-sentinel"},
+        {"key": "EXISTING_BINARY_SECRET", "binary_value": "AAEC-private-sentinel"},
+    ]
+    if "FAKE_LOCKBOX_RESULT" in os.environ:
+        merged = {entry["key"]: entry for entry in inherited}
+        merged.update({entry["key"]: entry for entry in changes})
+        pathlib.Path(os.environ["FAKE_LOCKBOX_RESULT"]).write_text(json.dumps(list(merged.values())))
     value = {"id": "created-lockbox-version-id"}
 else:
     value = {"status": "ok"}
@@ -232,6 +257,8 @@ def _run_provision(
         "FAKE_YC_LOG": str(log),
         "EXPECTED_RESOURCE_NAME": RESOURCE_NAME,
         "FAKE_CURL_LOG": str(tmp_path / "curl.log"),
+        "FAKE_LOCKBOX_STDIN": str(tmp_path / "lockbox-stdin.json"),
+        "FAKE_LOCKBOX_RESULT": str(tmp_path / "lockbox-result.json"),
     }
     result = subprocess.run(
         ["sh", str(PROVISION), *arguments],
@@ -395,6 +422,97 @@ def test_mutation_refuses_unless_apply_and_exact_plan_nonce_are_both_present(
     assert result.returncode == 2
     assert "approval" in result.stderr.lower()
     assert all("create" not in command and "update" not in command for command in commands)
+
+
+def test_empty_lockbox_requires_approved_two_key_bootstrap_and_fresh_review(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    environment = {
+        **cloud_environment,
+        "FAKE_LOCKBOX_KEYS": "[]",
+        "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json"),
+    }
+    dry, commands = _run_provision(tmp_path, environment)
+    plan = _plan(dry)
+    assert plan["phase"] == "secret-bootstrap"
+    assert plan["lockbox"] == {
+        "secret_id": "e6q85jjl76r45maigtfb",
+        "base_version_id": "current-lockbox-version-id",
+        "initialized": False,
+        "state": "empty-bootstrap-required",
+        "operation": "initialize-two",
+        "keys": ["GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET"],
+        "rotation": "not-authorized",
+    }
+    assert all("create" not in command and "add-version" not in command for command in commands)
+    assert "private-sentinel" not in dry.stdout + dry.stderr
+
+    applied, apply_commands = _run_provision(
+        tmp_path,
+        environment,
+        "--apply",
+        "--approval-nonce",
+        plan["approval_nonce"],
+    )
+    result = _plan(applied)
+    assert result["mode"] == "applied"
+    assert result["next_review_required"] is True
+    mutations = [
+        command
+        for command in apply_commands
+        if "create" in command or "update" in command or "add-version" in command
+    ]
+    assert len(mutations) == 1
+    assert mutations[0][:3] == ["lockbox", "secret", "add-version"]
+    assert "--base-version-id" in mutations[0]
+    assert "current-lockbox-version-id" in mutations[0]
+    assert "private-sentinel" not in applied.stdout + applied.stderr + json.dumps(apply_commands)
+    patch = json.loads((tmp_path / "lockbox-stdin.json").read_text())
+    assert {entry["key"] for entry in patch} == {
+        "GALLERY_CDN_TOKEN_SECRET",
+        "IMAGE_ORIGIN_HEADER_SECRET",
+    }
+    assert len(patch) == 2
+    inherited = json.loads((tmp_path / "lockbox-result.json").read_text())
+    assert inherited[:2] == [
+        {"key": "EXISTING_APPLICATION_SECRET", "text_value": "existing-private-sentinel"},
+        {"key": "EXISTING_BINARY_SECRET", "binary_value": "AAEC-private-sentinel"},
+    ]
+    assert {entry["key"] for entry in inherited[2:]} == {
+        "GALLERY_CDN_TOKEN_SECRET",
+        "IMAGE_ORIGIN_HEADER_SECRET",
+    }
+    assert not any(command[:3] == ["lockbox", "payload", "get"] for command in apply_commands)
+    assert sum(command[:3] == ["lockbox", "secret", "get"] for command in apply_commands) == 2
+    state = json.loads(Path(environment["IMAGE_ORIGIN_CONTRACT_STATE"]).read_text())
+    assert state["bootstrap_seeded"] is True
+    assert state["lockbox_version_id"] == "created-lockbox-version-id"
+
+
+def test_empty_lockbox_bootstrap_rechecks_current_version_before_patch(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    environment = {
+        **cloud_environment,
+        "FAKE_LOCKBOX_KEYS": "[]",
+        "FAKE_LOCKBOX_METADATA_COUNTER": str(tmp_path / "lockbox-metadata-count"),
+        "FAKE_LOCKBOX_DRIFT_AT": "3",
+        "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json"),
+    }
+    dry, _ = _run_provision(tmp_path, environment)
+    plan = _plan(dry)
+
+    applied, commands = _run_provision(
+        tmp_path,
+        environment,
+        "--apply",
+        "--approval-nonce",
+        plan["approval_nonce"],
+    )
+
+    assert applied.returncode == 2
+    assert "lockbox_version_drift" in applied.stderr
+    assert not any(command[:3] == ["lockbox", "secret", "add-version"] for command in commands)
 
 
 def test_approved_apply_uses_returned_ids_and_never_exposes_secret_values(
@@ -708,6 +826,28 @@ def test_plan_restores_task6_inventory_quota_and_exact_pricing_refresh(
             "quota-limit list",
         )
     )
+    quota_commands = [
+        command
+        for command in refresh["commands"]
+        if command[1:4] == ["quota-manager", "quota-limit", "list"]
+    ]
+    assert quota_commands == [
+        [
+            "yc",
+            "quota-manager",
+            "quota-limit",
+            "list",
+            "--resource-type",
+            "resource-manager.cloud",
+            "--resource-id",
+            "cloud-contract-id",
+            "--service",
+            service,
+            "--format",
+            "json",
+        ]
+        for service in ("compute", "vpc", "cdn")
+    ]
     assert refresh["pricing"]["items"] == [
         "vm_standard_v3_2vcpu_4gib",
         "network_hdd_20gib",
@@ -716,6 +856,58 @@ def test_plan_restores_task6_inventory_quota_and_exact_pricing_refresh(
         "expected_egress",
     ]
     assert refresh["read_only"] is True
+
+
+def test_origin_service_account_gets_only_monitoring_editor_for_custom_metrics(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json")}
+    _apply_identity_phase(tmp_path, environment)
+
+    dry, commands = _run_provision(tmp_path, environment)
+    plan = _plan(dry)
+    assert plan["desired"]["service_account_roles"] == ["monitoring.editor"]
+    assert plan["actual"]["service_account_roles"] == []
+    binding = next(
+        command
+        for command in plan["proposed_commands"]
+        if command[1:4] == ["resource-manager", "folder", "add-access-binding"]
+    )
+    assert binding == [
+        "yc",
+        "resource-manager",
+        "folder",
+        "add-access-binding",
+        "--id",
+        "folder-contract-id",
+        "--role",
+        "monitoring.editor",
+        "--service-account-id",
+        "created-service-account-id",
+    ]
+    assert any(
+        command[:3] == ["resource-manager", "folder", "list-access-bindings"]
+        for command in commands
+    )
+
+
+def test_existing_monitoring_editor_binding_is_reused_without_broader_role(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    environment = {
+        **cloud_environment,
+        "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json"),
+        "FAKE_MONITORING_BINDING": "1",
+    }
+    _apply_identity_phase(tmp_path, environment)
+
+    dry, _ = _run_provision(tmp_path, environment)
+    plan = _plan(dry)
+    assert plan["actual"]["service_account_roles"] == ["monitoring.editor"]
+    assert not any(
+        command[1:4] == ["resource-manager", "folder", "add-access-binding"]
+        for command in plan["proposed_commands"]
+    )
 
 
 def test_real_resolver_bootstrap_projection_applies_both_provisioning_phases(
@@ -770,7 +962,6 @@ def test_real_resolver_bootstrap_projection_applies_both_provisioning_phases(
 @pytest.mark.parametrize(
     "keys",
     [
-        [],
         ["GALLERY_CDN_TOKEN_SECRET"],
         ["GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET", "GALLERY_IMGPROXY_KEY"],
     ],

@@ -70,14 +70,23 @@ provisioning operation.
 
 ## Repository-only dry run
 
-Before any resource creation, seed exactly `GALLERY_CDN_TOKEN_SECRET` and
-`IMAGE_ORIGIN_HEADER_SECRET` into the current Lockbox secret version through the established
-protected, separately approved secret-update procedure. Do not pass either value in shell
-arguments, the non-secret contract file, or process environment. The CDN token must be 6-32
-characters and the origin header 16-128 characters from `[A-Za-z0-9_-]`. Read-only metadata must
-then show exactly these two gallery keys: zero, one, three-to-five, or any different partial set is
-a stop. The provisioner adds only the remaining imgproxy key/salt and S3 credential pair; a complete
-six-key set is initialized and must not be rotated by provisioning.
+The first read-only plan accepts only three complete Lockbox states: none of the six gallery keys,
+exactly the two bootstrap keys, or all six. One key or any three-to-five-key partial state is a
+stop. For an empty gallery-key set, the plan contains only a `secret-bootstrap` phase. After fresh
+approval, that phase generates and patches exactly `GALLERY_CDN_TOKEN_SECRET` and
+`IMAGE_ORIGIN_HEADER_SECRET` into a new version. It refetches secret metadata immediately before
+the mutation and stops if the current version differs from the reviewed version, then submits only
+those two payload-entry changes with the reviewed base-version ID. Lockbox inherits unchanged text
+and binary entries; the provisioner never reads or rewrites their values. This metadata recheck is
+a best-effort drift guard, not a provider compare-and-swap guarantee. Stop and obtain a new dry run
+and approval nonce before resource identities. The later initialization adds only the imgproxy
+key/salt and S3 credential pair. Reapplying an initialized state never rotates keys.
+
+The CDN token is 6-32 URL-safe characters and the origin header is 16-128 characters from
+`[A-Za-z0-9_-]`. Neither belongs in the non-secret contract file, dry-run plan, command output, or
+GitHub logs. The current CDN CLI accepts these settings only as create/update flags, so approved
+CDN apply must run on the isolated trusted operator host through the protected projection; never
+copy the rendered command or inspect another process's arguments during that bounded operation.
 
 Run every approved apply through the real protected projection, never by creating a private dotenv
 file manually:
@@ -103,6 +112,12 @@ The JSON resolves the cloud, folder, canonical network/subnet/bucket, existing n
 policy before/after diff, credential probe matrix, exact proposed commands, Task 6 inventory/quota
 refresh, and pricing items. The `approval_nonce` is the SHA-256 digest of the canonical plan without
 the nonce field. Dry-run performs only read-only discovery.
+
+Quota refresh is cloud-scoped and service-specific. Use `resource-manager.cloud` with the resolved
+cloud ID and run one `quota-limit list` for each of `compute`, `vpc`, and `cdn`; the older
+folder-scoped command without `--service` is invalid in the current CLI. The dedicated service
+account has exactly one folder role, `monitoring.editor`, so Unified Agent can publish aggregate
+custom metrics. Any broader existing folder role is drift and blocks the plan.
 
 Immediately before an approved apply, repeat the dry run and compare it to the reviewed plan. The
 operator must approve the exact cloud/folder, returned IDs, VM shape (non-preemptible `standard-v3`,
@@ -130,6 +145,62 @@ sh deploy/image-origin/provision.sh --probe
 It fails closed unless the existing accepted preview returns 200 and every list, original/staging
 read, write, multipart, ACL, and delete attempt returns the exact authorization-denial 403. Its
 output is aggregate counts only; default dry-run and approved apply never execute the probe.
+
+## Origin workflow and inactive CDN resource
+
+`deploy-image-origin.yml` is manual-only and accepts one exact lowercase 40-character repository
+SHA. It checks out that commit, authenticates with the existing GitHub OIDC federation, and
+materializes only the `image-origin` projection. That projection includes `VM_SSH_KEY` solely as
+the transport file `VM_SSH_KEY_FILE`; `run-remote.sh` removes it before building the remote runtime
+environment, and Compose/apply never receive it. Configure these non-secret repository variables
+from the reviewed resource record: `IMAGE_ORIGIN_VM_HOST`, `IMAGE_ORIGIN_VM_USER`,
+`IMAGE_ORIGIN_SSH_KNOWN_HOSTS`, `PRIVATE_MEDIA_S3_BUCKET`, `IMAGE_ORIGIN_PROBE_PATH`, and
+`YANDEX_CLOUD_FOLDER_ID`.
+
+The reviewed immutable boot image must already provide Docker Compose 2.24.4 or newer and one of
+the supported official Unified Agent service layouts (`unified-agent` or `unified_agent`). The
+workflow configures and restarts that agent but does not install host packages; it fails closed
+before reporting green when either runtime is absent.
+
+Create the `img-origin.findme-photo.ru` A record and complete initial ACME issuance before invoking
+the workflow: deployment is intentionally fail-closed unless the trusted certificate and signed
+local image probe already pass. The workflow transports only `deploy/image-origin`, applies the
+candidate, retains the previous package for rollback, rechecks the active signed JPEG, installs the
+origin-specific Unified Agent template, and reports the deployed SHA. It never invokes the
+application deployment, Django, PostgreSQL, application Nginx, or any worker operation.
+
+CDN reconciliation is separately dry-run-first:
+
+```sh
+.venv/bin/python scripts/run-with-environment-secrets.py \
+  --consumer image-delivery-provision --identity yc -- \
+  sh deploy/image-origin/configure-cdn.sh > image-origin-cdn-plan.json
+```
+
+The plan contains one HTTPS origin group for `img-origin.findme-photo.ru` and one initially inactive
+resource for `img.findme-photo.ru`. It fixes `ignore-query-string`, ignored cookies, a 30-day edge
+TTL, six-hour browser TTL, secure-key validation, and `X-FindMe-Origin-Auth`; shielding, CDN logs,
+dedicated IP, slicing, compression transforms, and cache warming remain absent. After reviewing the
+fresh plan and cost boundary, apply only its exact nonce through the same protected projection:
+
+```sh
+.venv/bin/python scripts/run-with-environment-secrets.py \
+  --consumer image-delivery-provision --identity yc -- \
+  sh deploy/image-origin/configure-cdn.sh \
+    --apply --approval-nonce '<reviewed-cdn-plan-nonce>'
+```
+
+An existing named origin group is accepted only when it contains exactly one enabled, non-backup
+`img-origin.findme-photo.ru` source; its sanitized configuration is part of the reviewed plan and
+nonce. An adopted group ID is persisted before any resource mutation so recovery dry-runs use the
+same identity. `--dont-use-ssl-cert` is used only for initial inactive resource creation. Later
+reconciliation records and preserves an attached Certificate Manager certificate; unsupported
+certificate state fails closed instead of detaching it.
+
+This step keeps the resource inactive and does not change DNS, attach or remove a certificate,
+activate CDN, or change the application feature flag. Record returned IDs without secret values.
+Activation, token/warm-cache proof, staff mode, and rollback rehearsal remain separate reviewed
+live steps. The unresolved exact native S3 403 signal remains a hard staff-activation blocker.
 
 ## Validation and rollback
 

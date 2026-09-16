@@ -47,6 +47,7 @@ STATE_KEYS = {
     "certificate_id",
     "access_key_resource_id",
     "lockbox_version_id",
+    "bootstrap_seeded",
     "secrets_initialized",
 }
 
@@ -184,7 +185,7 @@ def persist(path: Path, value: dict[str, Any]) -> None:
         temp.unlink(missing_ok=True)
 
 
-def projected(expected: set[str]) -> dict[str, str]:
+def projected(expected: set[str], optional: set[str] | None = None) -> dict[str, str]:
     path = Path(os.environ.get("FINDME_ENV_FILE", ""))
     try:
         info, text = path.lstat(), path.read_text()
@@ -222,9 +223,10 @@ def projected(expected: set[str]) -> dict[str, str]:
             out.append(escapes[raw[index]])
             index += 1
         values[key] = "".join(out)
-    if set(values) != expected:
+    optional = optional or set()
+    if not expected <= set(values) <= expected | optional:
         fail("projection_scope_invalid")
-    return values
+    return {key: values[key] for key in expected}
 
 
 def rules(cidr: str) -> list[dict[str, Any]]:
@@ -330,10 +332,11 @@ def safe_actual(found: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "certificate": fields(found["cert"], ("id", "name", "folder_id", "domains")),
+        "service_account_roles": found["service_account_roles"],
     }
 
 
-def task6_refresh(folder: str) -> dict[str, Any]:
+def task6_refresh(cloud: str, folder: str) -> dict[str, Any]:
     return {
         "read_only": True,
         "live_execution": "not-performed-by-task-4",
@@ -348,17 +351,22 @@ def task6_refresh(folder: str) -> dict[str, Any]:
             ["yc", "vpc", "security-group", "list", "--folder-id", folder, "--format", "json"],
             ["yc", "vpc", "address", "list", "--folder-id", folder, "--format", "json"],
             ["yc", "iam", "service-account", "list", "--folder-id", folder, "--format", "json"],
-            [
-                "yc",
-                "quota-manager",
-                "quota-limit",
-                "list",
-                "--resource-type",
-                "resource-manager.folder",
-                "--resource-id",
-                folder,
-                "--format",
-                "json",
+            *[
+                [
+                    "yc",
+                    "quota-manager",
+                    "quota-limit",
+                    "list",
+                    "--resource-type",
+                    "resource-manager.cloud",
+                    "--resource-id",
+                    cloud,
+                    "--service",
+                    service,
+                    "--format",
+                    "json",
+                ]
+                for service in ("compute", "vpc", "cdn")
             ],
         ],
         "pricing": {
@@ -468,6 +476,31 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
             state, "certificate_id", ("certificate-manager", "certificate"), folder, "name", NAME
         ),
     }
+    bindings = yc(
+        "resource-manager",
+        "folder",
+        "list-access-bindings",
+        "--id",
+        folder,
+        "--format",
+        "json",
+    )
+    if not isinstance(bindings, list):
+        fail("service_account_role_inventory_invalid")
+    service_account_roles = sorted(
+        {
+            item.get("role_id")
+            for item in bindings
+            if isinstance(item, dict)
+            and isinstance(item.get("subject"), dict)
+            and item["subject"].get("type") == "serviceAccount"
+            and resources["sa"]
+            and item["subject"].get("id") == ident(resources["sa"])
+            and isinstance(item.get("role_id"), str)
+        }
+    )
+    if set(service_account_roles) - {"monitoring.editor"}:
+        fail("service_account_role_drift")
     if resources["sa"] and resources["sa"].get("folder_id") != folder:
         fail("service_account_drift")
     if resources["sg"] and (
@@ -550,7 +583,7 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     lockbox = yc("lockbox", "secret", "get", "--id", LOCKBOX, "--format", "json")
     version = lockbox.get("current_version", {})
     present = set(version.get("payload_entry_keys", [])) & set(SECRET_KEYS)
-    if present not in (BOOTSTRAP_KEYS, set(SECRET_KEYS)):
+    if present not in (set(), BOOTSTRAP_KEYS, set(SECRET_KEYS)):
         fail("lockbox_secret_set_partial")
     initialized = present == set(SECRET_KEYS)
     if state.get("access_key_resource_id") and not initialized:
@@ -569,6 +602,8 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         "initialized": initialized,
         "ipv4": ipv4,
         "boot_disk": boot_disk,
+        "service_account_roles": service_account_roles,
+        "secret_keys_present": present,
         **resources,
     }
 
@@ -587,12 +622,30 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         ]
     }
     commands: list[list[str]] = []
-    phase = (
-        "resource-identities"
-        if not all(found[item] for item in ("sa", "sg", "address"))
-        else "origin-and-policy"
-    )
-    if phase == "resource-identities":
+    if not found["secret_keys_present"]:
+        phase = "secret-bootstrap"
+    elif not all(found[item] for item in ("sa", "sg", "address")):
+        phase = "resource-identities"
+    else:
+        phase = "origin-and-policy"
+    if phase == "secret-bootstrap":
+        commands.append(
+            [
+                "yc",
+                "lockbox",
+                "secret",
+                "add-version",
+                "--id",
+                LOCKBOX,
+                "--base-version-id",
+                found["version"],
+                "--payload",
+                "-",
+                "--format",
+                "json",
+            ]
+        )
+    elif phase == "resource-identities":
         if not found["sa"]:
             commands.append(
                 [
@@ -645,6 +698,21 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
                 ]
             )
     else:
+        if "monitoring.editor" not in found["service_account_roles"]:
+            commands.append(
+                [
+                    "yc",
+                    "resource-manager",
+                    "folder",
+                    "add-access-binding",
+                    "--id",
+                    found["folder"],
+                    "--role",
+                    "monitoring.editor",
+                    "--service-account-id",
+                    ident(found["sa"]),
+                ]
+            )
         if not found["vm"]:
             commands.append(
                 [
@@ -751,15 +819,34 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
             },
             "security_group_rules": rules(cfg["cidr"]),
             "cdn_cname": CNAME,
+            "service_account_roles": ["monitoring.editor"],
         },
         "bucket_policy": patch,
         "lockbox": {
             "secret_id": LOCKBOX,
             "base_version_id": found["version"],
             "initialized": found["initialized"],
-            "state": "initialized" if found["initialized"] else "bootstrap-seeded",
-            "operation": "none" if found["initialized"] else "initialize-four",
-            "keys": [] if found["initialized"] else INITIALIZATION_KEYS,
+            "state": (
+                "initialized"
+                if found["initialized"]
+                else "bootstrap-seeded"
+                if found["secret_keys_present"] == BOOTSTRAP_KEYS
+                else "empty-bootstrap-required"
+            ),
+            "operation": (
+                "none"
+                if found["initialized"]
+                else "initialize-four"
+                if found["secret_keys_present"] == BOOTSTRAP_KEYS
+                else "initialize-two"
+            ),
+            "keys": (
+                []
+                if found["initialized"]
+                else INITIALIZATION_KEYS
+                if found["secret_keys_present"] == BOOTSTRAP_KEYS
+                else sorted(BOOTSTRAP_KEYS)
+            ),
             "rotation": "not-authorized",
         },
         "credential_probe": {
@@ -769,7 +856,7 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
             "matrix": {"allowed": 1, "denied": 7},
         },
         "proposed_commands": commands,
-        "task6_refresh": task6_refresh(found["folder"]),
+        "task6_refresh": task6_refresh(found["cloud"], found["folder"]),
     }
     result["approval_nonce"] = hashlib.sha256(canon(result)).hexdigest()
     return result
@@ -792,6 +879,45 @@ def apply(
     values: dict[str, str],
 ) -> dict[str, Any]:
     persist(state_path, state)
+    if reviewed["phase"] == "secret-bootstrap":
+        current = yc("lockbox", "secret", "get", "--id", LOCKBOX, "--format", "json")
+        current_version = current.get("current_version") if isinstance(current, dict) else None
+        if (
+            not isinstance(current_version, dict)
+            or ident(current_version, "lockbox_metadata_invalid") != found["version"]
+            or set(current_version.get("payload_entry_keys", [])) & set(SECRET_KEYS)
+        ):
+            fail("lockbox_version_drift")
+        payload = [
+            {"key": "GALLERY_CDN_TOKEN_SECRET", "text_value": secrets.token_urlsafe(18)},
+            {"key": "IMAGE_ORIGIN_HEADER_SECRET", "text_value": secrets.token_urlsafe(32)},
+        ]
+        path = protected(payload)
+        try:
+            version = yc(
+                "lockbox",
+                "secret",
+                "add-version",
+                "--id",
+                LOCKBOX,
+                "--base-version-id",
+                found["version"],
+                "--payload",
+                "-",
+                "--format",
+                "json",
+                stdin=path.read_bytes(),
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        state.update(
+            lockbox_version_id=ident(version),
+            bootstrap_seeded=True,
+        )
+        persist(state_path, state)
+        output = dict(reviewed)
+        output.update(mode="applied", next_review_required=True, state_keys=sorted(state))
+        return output
     if reviewed["phase"] == "resource-identities":
         for command in reviewed["proposed_commands"]:
             result = yc(*command[1:])
@@ -830,6 +956,8 @@ def apply(
         if command[1:3] == ["compute", "instance"]:
             state["vm_id"] = ident(yc(*command[1:]))
             persist(state_path, state)
+        elif command[1:4] == ["resource-manager", "folder", "add-access-binding"]:
+            yc(*command[1:])
     check_policy()
     if reviewed["bucket_policy"]["before"] != reviewed["bucket_policy"]["after"]:
         path = protected(reviewed["bucket_policy"]["after"])
@@ -899,7 +1027,8 @@ def probe(cfg: dict[str, str]) -> int:
             "IMAGE_ORIGIN_HEADER_SECRET",
             "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
             "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
-        }
+        },
+        {"VM_SSH_KEY_FILE"},
     )
     operations = [
         ("GET", cfg["preview"], "", "200"),
@@ -999,7 +1128,7 @@ def main() -> int:
         fail("approval_nonce_mismatch")
     if state_path is None:
         fail("state_path_required")
-    values = provisioning_values()
+    values = {} if reviewed["phase"] == "secret-bootstrap" else provisioning_values()
     print(
         json.dumps(
             apply(reviewed, found, cfg, state_path, state, values),

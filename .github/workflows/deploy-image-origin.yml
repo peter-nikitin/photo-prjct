@@ -1,0 +1,56 @@
+name: Deploy isolated image origin
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_sha:
+        description: Exact 40-character repository commit to deploy
+        required: true
+        type: string
+
+jobs:
+  deploy-image-origin:
+    name: Deploy isolated image origin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-image-origin
+      cancel-in-progress: false
+    steps:
+      - name: Check out reviewed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.deployment_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Bind checkout to exact commit
+        env:
+          IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
+        run: |
+          set -eu
+          case "$IMAGE_ORIGIN_RELEASE" in
+            *[!0-9a-f]*|'') echo 'deployment_sha must be a lowercase 40-character SHA' >&2; exit 2 ;;
+          esac
+          test "${#IMAGE_ORIGIN_RELEASE}" -eq 40
+          test "$(git rev-parse HEAD)" = "$IMAGE_ORIGIN_RELEASE"
+      - name: Deploy isolated image origin
+        env:
+          IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
+          IMAGE_ORIGIN_VM_HOST: ${{ vars.IMAGE_ORIGIN_VM_HOST }}
+          IMAGE_ORIGIN_VM_USER: ${{ vars.IMAGE_ORIGIN_VM_USER }}
+          IMAGE_ORIGIN_SSH_KNOWN_HOSTS: ${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}
+          PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}
+          IMAGE_ORIGIN_PROBE_PATH: ${{ vars.IMAGE_ORIGIN_PROBE_PATH }}
+          YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --consumer image-origin \
+            --identity github-oidc \
+            -- deploy/image-origin/run-remote.sh
+      - name: Record deployed commit
+        env:
+          IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
+        run: |
+          printf 'Deployed image-origin repository SHA: `%s`\n' "$IMAGE_ORIGIN_RELEASE" >> "$GITHUB_STEP_SUMMARY"

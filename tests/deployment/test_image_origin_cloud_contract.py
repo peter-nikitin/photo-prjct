@@ -111,6 +111,9 @@ with pathlib.Path(os.environ["FAKE_YC_LOG"]).open("a", encoding="utf-8") as targ
 key = " ".join(args)
 policy = {"Version": "2012-10-17", "Statement": [{"Sid": "KeepUnrelatedCoverRead", "Effect": "Allow", "Principal": "*", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::canonical-media/covers/*"}]}
 if args[:3] == ["config", "profile", "list"]:
+    if "FAKE_PROFILE_LIST_OUTPUT" in os.environ:
+        print(os.environ["FAKE_PROFILE_LIST_OUTPUT"])
+        raise SystemExit(0)
     value = [{"name": "contract-profile", "is_active": True}]
 elif args[:3] == ["config", "get", "cloud-id"]:
     print("cloud-contract-id")
@@ -363,6 +366,30 @@ def test_default_is_read_only_discovery_and_machine_readable_plan(
     assert " create " not in f" {serialized_commands} "
     assert " update " not in f" {serialized_commands} "
     assert " delete " not in f" {serialized_commands} "
+
+
+def test_discovery_accepts_yc_1_21_plain_text_active_profile(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    result, _ = _run_provision(
+        tmp_path,
+        {**cloud_environment, "FAKE_PROFILE_LIST_OUTPUT": "default ACTIVE"},
+    )
+
+    assert _plan(result)["mode"] == "dry-run"
+
+
+def test_discovery_fails_closed_when_plain_text_has_no_active_profile(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    result, commands = _run_provision(
+        tmp_path,
+        {**cloud_environment, "FAKE_PROFILE_LIST_OUTPUT": "default"},
+    )
+
+    assert result.returncode == 2
+    assert "profile_invalid" in result.stderr
+    assert commands == [["config", "profile", "list", "--format", "json"]]
 
 
 def test_plan_preserves_policy_and_declares_independent_credential_denials(

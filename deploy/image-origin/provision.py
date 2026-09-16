@@ -94,6 +94,18 @@ def one(values: Any, key: str, value: str) -> dict[str, Any] | None:
     return matches[0] if matches else None
 
 
+def has_active_profile(profiles: Any) -> bool:
+    if isinstance(profiles, list):
+        return any(item.get("is_active") is True for item in profiles if isinstance(item, dict))
+    if isinstance(profiles, str):
+        return any(
+            len(fields) == 2 and fields[1] == "ACTIVE"
+            for line in profiles.splitlines()
+            if (fields := line.split())
+        )
+    return False
+
+
 def canon(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
@@ -403,9 +415,7 @@ def get_or_list(
 
 def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     profiles = yc("config", "profile", "list", "--format", "json")
-    if not isinstance(profiles, list) or not any(
-        item.get("is_active") is True for item in profiles if isinstance(item, dict)
-    ):
+    if not has_active_profile(profiles):
         fail("profile_invalid")
     cloud, folder = yc("config", "get", "cloud-id"), yc("config", "get", "folder-id")
     zone, image = (

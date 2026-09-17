@@ -973,6 +973,14 @@ def protected(value: Any) -> Path:
     return Path(raw)
 
 
+def protected_user_data(value: bytes) -> Path:
+    fd, raw = tempfile.mkstemp(prefix="findme-image-origin-user-data-", suffix=".sh")
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "wb") as target:
+        target.write(value.replace(b"$", b"$$"))
+    return Path(raw)
+
+
 def apply(
     reviewed: dict[str, Any],
     found: dict[str, Any],
@@ -1064,8 +1072,15 @@ def apply(
     check_policy()
     for command in reviewed["proposed_commands"]:
         if command[1:3] == ["compute", "instance"]:
-            state["vm_id"] = ident(yc(*command[1:]))
-            persist(state_path, state)
+            actual = list(command[1:])
+            metadata = actual.index("--metadata-from-file") + 1
+            path = protected_user_data(cfg["cloud_init"])
+            actual[metadata] = f"user-data={path}"
+            try:
+                state["vm_id"] = ident(yc(*actual))
+                persist(state_path, state)
+            finally:
+                path.unlink(missing_ok=True)
         elif command[1:4] == ["resource-manager", "folder", "add-access-binding"]:
             yc(*command[1:])
     check_policy()

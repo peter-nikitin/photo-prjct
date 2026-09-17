@@ -199,8 +199,7 @@ elif args[:3] == ["compute", "instance", "create"]:
     interface = args[args.index("--network-interface") + 1]
     boot = args[args.index("--create-boot-disk") + 1]
     metadata = args[args.index("--metadata-from-file") + 1] if "--metadata-from-file" in args else ""
-    ssh_key = args[args.index("--ssh-key") + 1] if "--ssh-key" in args else ""
-    if "address-id=" in interface or "nat-ip-version=ipv4" not in interface or "nat-address=198.51.100.44" not in interface or "image-id=immutable-image-id" not in boot or ssh_key != os.environ["EXPECTED_PUBLIC_KEY_FILE"] or metadata != f'user-data={os.environ["EXPECTED_CLOUD_INIT_FILE"]}':
+    if "address-id=" in interface or "nat-ip-version=ipv4" not in interface or "nat-address=198.51.100.44" not in interface or "image-id=immutable-image-id" not in boot or "--ssh-key" in args or metadata != f'user-data={os.environ["EXPECTED_CLOUD_INIT_FILE"]}':
         raise SystemExit(9)
     if os.environ.get("FAKE_FAIL_VM") == "1": raise SystemExit(8)
     value = {"id": "created-vm-id", "name": os.environ["EXPECTED_RESOURCE_NAME"]}
@@ -506,8 +505,12 @@ def test_repository_owned_bootstrap_artifacts_bind_the_reviewed_vm_plan(
     assert plan["phase"] == "origin-and-policy"
     assert plan["desired"]["vm"]["ssh_key_sha256"] == expected_key_hash
     assert plan["desired"]["vm"]["cloud_init_sha256"] == expected_cloud_init_hash
-    assert command[command.index("--ssh-key") + 1] == str(PUBLIC_KEY)
+    assert "--ssh-key" not in command
     assert command[command.index("--metadata-from-file") + 1] == f"user-data={CLOUD_INIT}"
+    cloud_init = CLOUD_INIT.read_text(encoding="utf-8")
+    assert "useradd --create-home --shell /bin/bash yc-user" in cloud_init
+    assert expected_key.strip() in cloud_init
+    assert "yc-user ALL=(ALL) NOPASSWD:ALL" in cloud_init
     assert str(obsolete) not in dry.stdout
 
 
@@ -636,6 +639,22 @@ def _bootstrap_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
         ': >"$FAKE_APT_MARKER";; *) exit 1;; esac',
     )
     executable(
+        "id",
+        'case "$1" in -u) [ -f "$FAKE_USER_MARKER" ];; -gn) printf "yc-user\\n";; *) exit 1;; esac',
+    )
+    executable(
+        "useradd",
+        '[ "$*" = "--create-home --shell /bin/bash yc-user" ]; : >"$FAKE_USER_MARKER"',
+    )
+    executable("chown", ":")
+    executable(
+        "install",
+        'directory=0; target=""; for argument in "$@"; do '
+        '[ "$argument" = -d ] && directory=1; target=$argument; done; '
+        'if [ "$directory" = 1 ]; then mkdir -p "$target"; '
+        'else mkdir -p "$(dirname "$target")"; : >"$target"; fi',
+    )
+    executable(
         "curl",
         'previous=""; output=""; for argument in "$@"; do '
         '[ "$previous" = --output ] && output=$argument; previous=$argument; done; '
@@ -690,6 +709,9 @@ def _bootstrap_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
         "IMAGE_ORIGIN_OS_RELEASE_PATH": str(os_release),
         "IMAGE_ORIGIN_APT_SOURCES_LIST_PATH": str(apt_sources_list),
         "IMAGE_ORIGIN_APT_SOURCES_DIR": str(apt_sources_dir),
+        "IMAGE_ORIGIN_USER_HOME": str(tmp_path / "yc-user"),
+        "IMAGE_ORIGIN_SUDOERS_PATH": str(tmp_path / "sudoers.d" / "90-yc-user"),
+        "FAKE_USER_MARKER": str(tmp_path / "user-created"),
         "FAKE_APT_MARKER": str(tmp_path / "apt-installed"),
         "FAKE_APT_SOURCES_AT_UPDATE": str(tmp_path / "apt-sources-at-update"),
         "FAKE_CHECKSUM_MARKER": str(tmp_path / "checksum-verified"),
@@ -732,6 +754,13 @@ def test_cloud_init_installs_pinned_runtime_before_marking_ready(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr
     assert marker.is_file()
+    assert Path(environment["FAKE_USER_MARKER"]).is_file()
+    assert Path(environment["IMAGE_ORIGIN_USER_HOME"], ".ssh", "authorized_keys").read_text(
+        encoding="utf-8"
+    ) == PUBLIC_KEY.read_text(encoding="utf-8")
+    assert Path(environment["IMAGE_ORIGIN_SUDOERS_PATH"]).read_text(encoding="utf-8") == (
+        "yc-user ALL=(ALL) NOPASSWD:ALL\n"
+    )
 
 
 def test_cloud_init_replaces_http_ubuntu_sources_before_apt(tmp_path: Path) -> None:

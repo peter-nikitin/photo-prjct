@@ -4,6 +4,10 @@ set -eu
 agent_version=26.09.01
 agent_sha256=08a79e7ce2a06d5b51e368025fd1efb2ccd3e7e91de550730063256b162ddc00
 agent_url="https://storage.yandexcloud.net/yc-unified-agent/releases/$agent_version/deb/ubuntu-24.04-noble/yandex-unified-agent_${agent_version}_amd64.deb"
+origin_user=yc-user
+origin_public_key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ1h18E0nI6hijk2Ua9fG7hHcWfReZCn3fg8TeiQOVCJ findme-staging-lockbox-2026-08-08'
+origin_home=${IMAGE_ORIGIN_USER_HOME:-/home/$origin_user}
+origin_sudoers=${IMAGE_ORIGIN_SUDOERS_PATH:-/etc/sudoers.d/90-$origin_user}
 ready_marker=${IMAGE_ORIGIN_BOOTSTRAP_READY_PATH:-/var/lib/findme-image-origin/bootstrap-ready}
 os_release=${IMAGE_ORIGIN_OS_RELEASE_PATH:-/etc/os-release}
 apt_sources_list=${IMAGE_ORIGIN_APT_SOURCES_LIST_PATH:-/etc/apt/sources.list}
@@ -22,6 +26,20 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 rm -f "$ready_marker"
+
+if ! id -u "$origin_user" >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash yc-user
+fi
+origin_group=$(id -gn "$origin_user")
+install -d -o "$origin_user" -g "$origin_group" -m 0700 "$origin_home/.ssh"
+printf '%s\n' "$origin_public_key" >"$origin_home/.ssh/authorized_keys"
+chown "$origin_user:$origin_group" "$origin_home/.ssh/authorized_keys"
+chmod 0600 "$origin_home/.ssh/authorized_keys"
+install -d -m 0755 "$(dirname "$origin_sudoers")"
+install -m 0440 /dev/null "$origin_sudoers"
+cat >"$origin_sudoers" <<'SUDOERS'
+yc-user ALL=(ALL) NOPASSWD:ALL
+SUDOERS
 
 [ -r "$os_release" ]
 . "$os_release"

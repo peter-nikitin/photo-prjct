@@ -145,7 +145,7 @@ There is no operator-supplied SSH public-key path. VM authorization always uses 
 half of the existing workflow key at `deploy/image-origin/workflow-ssh-key.pub` (SHA-256
 `5cb142386c744da7cc7783a90b499bd79ab5c65ef8ddb10b2e3a70f04f4650de`). VM creation also binds
 `deploy/image-origin/cloud-init.sh` through `--metadata-from-file user-data=...`; its reviewed
-SHA-256 is `da2a712df2f57a7e979ea2dc6cd34bf303a2a34a8bfb7f13f60a444d3eda35a9` and both hashes are part of
+SHA-256 is `0e34f70db848ceb9afa577d9cc75f845cb5786851835fb46d4546930a6876aeb` and both hashes are part of
 the desired state and approval nonce. Existing VMs are accepted only when returned user-data
 exactly matches the reviewed artifact; reports expose its hash, never the metadata body.
 

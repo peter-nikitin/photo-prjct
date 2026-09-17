@@ -148,6 +148,9 @@ half of the existing workflow key at `deploy/image-origin/workflow-ssh-key.pub` 
 SHA-256 is `0e34f70db848ceb9afa577d9cc75f845cb5786851835fb46d4546930a6876aeb` and both hashes are part of
 the desired state and approval nonce. Existing VMs are accepted only when returned user-data
 exactly matches the reviewed artifact; reports expose its hash, never the metadata body.
+At apply time provisioning writes a mode-0600 temporary copy with every `$` doubled so the Yandex
+Cloud CLI passes shell variables through instead of substituting its local environment. The provider
+stores the original reviewed bytes, and the temporary copy is removed after VM creation.
 
 The secret-free Ubuntu 24.04 bootstrap replaces the image's active package sources with the
 reviewed Ubuntu archive and security repositories over HTTPS before its first APT request. It

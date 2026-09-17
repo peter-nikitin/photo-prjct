@@ -152,7 +152,8 @@ elif args[:3] == ["vpc", "security-group", "get"]:
 elif args[:3] == ["vpc", "address", "get"]:
     value = {"id": "created-address-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id", "reserved": True, "external_ipv4_address": {"address": "198.51.100.44", "zone_id": "ru-central1-a"}}
 elif args[:3] == ["compute", "instance", "get"] and "created-vm-id" in args:
-    user_data = pathlib.Path(os.environ["EXPECTED_CLOUD_INIT_FILE"]).read_text()
+    delivered = pathlib.Path(os.environ["FAKE_CREATED_USER_DATA"])
+    user_data = delivered.read_text() if delivered.exists() else pathlib.Path(os.environ["EXPECTED_CLOUD_INIT_FILE"]).read_text()
     if os.environ.get("FAKE_VM_USER_DATA_MISMATCH") == "1": user_data = "mismatched-user-data"
     value = {"id": "created-vm-id", "name": os.environ["EXPECTED_RESOURCE_NAME"], "folder_id": "folder-contract-id", "zone_id": "ru-central1-a", "platform_id": "standard-v3", "resources": {"cores": "2", "core_fraction": "100", "memory": "4294967296", "gpus": "0"}, "service_account_id": "created-service-account-id", "metadata": {"user-data": user_data}, "network_interfaces": [{"index": "0", "subnet_id": "subnet-contract-id", "security_group_ids": ["created-security-group-id"], "primary_v4_address": {"address": "10.0.0.4", "one_to_one_nat": {"address": "198.51.100.44", "ip_version": "IPV4"}}}], "boot_disk": {"disk_id": "created-boot-disk-id", "auto_delete": True}, "secondary_disks": []}
     if os.environ.get("FAKE_EXTRA_INTERFACE") == "1": value["network_interfaces"].append({"index": "1"})
@@ -199,8 +200,11 @@ elif args[:3] == ["compute", "instance", "create"]:
     interface = args[args.index("--network-interface") + 1]
     boot = args[args.index("--create-boot-disk") + 1]
     metadata = args[args.index("--metadata-from-file") + 1] if "--metadata-from-file" in args else ""
-    if "address-id=" in interface or "nat-ip-version=ipv4" not in interface or "nat-address=198.51.100.44" not in interface or "image-id=immutable-image-id" not in boot or "--ssh-key" in args or metadata != f'user-data={os.environ["EXPECTED_CLOUD_INIT_FILE"]}':
+    metadata_path = pathlib.Path(metadata.removeprefix("user-data="))
+    escaped_user_data = metadata_path.read_text()
+    if "address-id=" in interface or "nat-ip-version=ipv4" not in interface or "nat-address=198.51.100.44" not in interface or "image-id=immutable-image-id" not in boot or "--ssh-key" in args or "$" in escaped_user_data.replace("$$", ""):
         raise SystemExit(9)
+    pathlib.Path(os.environ["FAKE_CREATED_USER_DATA"]).write_text(escaped_user_data.replace("$$", "$"))
     if os.environ.get("FAKE_FAIL_VM") == "1": raise SystemExit(8)
     value = {"id": "created-vm-id", "name": os.environ["EXPECTED_RESOURCE_NAME"]}
 elif args[:3] == ["iam", "access-key", "create"]:
@@ -283,6 +287,7 @@ def _run_provision(
         "FAKE_BASTION_MARKER": str(tmp_path / "bastion-rule-applied"),
         "EXPECTED_PUBLIC_KEY_FILE": str(PUBLIC_KEY),
         "EXPECTED_CLOUD_INIT_FILE": str(CLOUD_INIT),
+        "FAKE_CREATED_USER_DATA": str(tmp_path / "created-user-data.sh"),
     }
     result = subprocess.run(
         ["sh", str(PROVISION), *arguments],
@@ -1359,6 +1364,7 @@ def test_real_resolver_bootstrap_projection_applies_both_provisioning_phases(
     monkeypatch.setenv("FAKE_BASTION_MARKER", str(tmp_path / "bastion-rule-applied"))
     monkeypatch.setenv("EXPECTED_PUBLIC_KEY_FILE", str(PUBLIC_KEY))
     monkeypatch.setenv("EXPECTED_CLOUD_INIT_FILE", str(CLOUD_INIT))
+    monkeypatch.setenv("FAKE_CREATED_USER_DATA", str(tmp_path / "created-user-data.sh"))
 
     for expected_phase in ("resource-identities", "origin-access", "origin-and-policy"):
         dry, _ = _run_provision(tmp_path, environment)

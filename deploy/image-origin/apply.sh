@@ -104,6 +104,12 @@ IMAGE_ORIGIN_PROBE_PATH'
     fi
 fi
 
+for config_source in \
+    imgproxy-start.sh presets.txt nginx.conf.template nginx-start.sh monitoring/metrics.js
+do
+    chmod go+r "$candidate/$config_source"
+done
+
 # docker config can contain secrets: validate without rendering it to logs.
 candidate_compose config --quiet
 # Prepare root-owned ACME directories through the restricted Certbot identity, without issuance.

@@ -442,7 +442,8 @@ def _run_cdn(
     projection = tmp_path / "cdn.env"
     projection.write_text(
         'GALLERY_CDN_TOKEN_SECRET="cdn-private-sentinel"\n'
-        'IMAGE_ORIGIN_HEADER_SECRET="origin-private-sentinel"\n',
+        'IMAGE_ORIGIN_HEADER_SECRET="origin-private-sentinel"\n'
+        'PRIVATE_MEDIA_S3_ACCESS_KEY_ID="application-static-key-id"\n',
         encoding="utf-8",
     )
     projection.chmod(0o600)

@@ -180,14 +180,21 @@ def projection() -> dict[str, str]:
         name, separator, encoded = line.partition("=")
         if separator:
             values[name] = decode(encoded)
-    expected = {"GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET"}
+    expected = {
+        "GALLERY_CDN_TOKEN_SECRET",
+        "IMAGE_ORIGIN_HEADER_SECRET",
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
+    }
     if set(values) != expected:
         fail("projection_scope_invalid")
     if not 6 <= len(values["GALLERY_CDN_TOKEN_SECRET"]) <= 32:
         fail("cdn_secret_invalid")
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", values["IMAGE_ORIGIN_HEADER_SECRET"]):
         fail("origin_header_invalid")
-    return values
+    return {
+        "GALLERY_CDN_TOKEN_SECRET": values["GALLERY_CDN_TOKEN_SECRET"],
+        "IMAGE_ORIGIN_HEADER_SECRET": values["IMAGE_ORIGIN_HEADER_SECRET"],
+    }
 
 
 def discover(state: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None, dict[str, Any] | None]:

@@ -54,6 +54,20 @@ STATE_KEYS = {
     "bootstrap_seeded",
     "secrets_initialized",
 }
+ORIGIN_POLICY_SID = "AllowFindMeGalleryImageOriginPreviewReads"
+APPLICATION_POLICY_SID = "AllowFindMeApplicationPrivateMediaAccess"
+MANAGED_POLICY_SIDS = {ORIGIN_POLICY_SID, APPLICATION_POLICY_SID}
+APPLICATION_GET_PROBE_TIMEOUT_SECONDS = 60
+APPLICATION_GET_PROBE_CODE = (
+    "from django.conf import settings; import boto3; from botocore.client import Config; "
+    "client=boto3.client('s3',aws_access_key_id=settings.PRIVATE_MEDIA_S3_ACCESS_KEY_ID,"
+    "aws_secret_access_key=settings.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY,"
+    "endpoint_url=settings.PRIVATE_MEDIA_S3_ENDPOINT_URL,"
+    "region_name=settings.PRIVATE_MEDIA_S3_REGION,config=Config(signature_version='s3v4')); "
+    "response=client.get_object(Bucket=settings.PRIVATE_MEDIA_S3_BUCKET,"
+    "Key=__import__('os').environ['IMAGE_ORIGIN_APPLICATION_PROBE_KEY']); "
+    "body=response['Body']; body.read(1); body.close()"
+)
 
 
 def fail(code: str) -> None:
@@ -129,26 +143,44 @@ def normalize_policy(value: Any) -> dict[str, Any]:
     }
 
 
-def policy(value: Any, bucket: str, principal: str | None) -> dict[str, Any]:
+def policy(
+    value: Any,
+    bucket: str,
+    principal: str | None,
+    application_access_key_id: str | None,
+) -> dict[str, Any]:
     before = normalize_policy(value)
     statements = [
-        item
-        for item in before["Statement"]
-        if item.get("Sid") != "AllowFindMeGalleryImageOriginPreviewReads"
+        item for item in before["Statement"] if item.get("Sid") not in MANAGED_POLICY_SIDS
     ]
     if principal:
         statements.append(
             {
-                "Sid": "AllowFindMeGalleryImageOriginPreviewReads",
+                "Sid": ORIGIN_POLICY_SID,
                 "Effect": "Allow",
                 "Principal": {"CanonicalUser": principal},
                 "Action": "s3:GetObject",
                 "Resource": f"arn:aws:s3:::{bucket}/derivatives/previews/*",
             }
         )
+    if application_access_key_id:
+        statements.append(
+            {
+                "Sid": APPLICATION_POLICY_SID,
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:*",
+                "Resource": [
+                    f"arn:aws:s3:::{bucket}",
+                    f"arn:aws:s3:::{bucket}/*",
+                ],
+                "Condition": {"StringEquals": {"yc:access-key-id": application_access_key_id}},
+            }
+        )
     after = normalize_policy({**before, "Statement": statements})
     return {
         "before": before,
+        "before_present": value is not None,
         "after": after,
         "before_sha256": hashlib.sha256(canon(before)).hexdigest(),
         "after_sha256": hashlib.sha256(canon(after)).hexdigest(),
@@ -676,7 +708,7 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         "network": network_id,
         "subnet": subnet_id,
         "bucket": bucket,
-        "policy": normalize_policy(bucket.get("policy")),
+        "policy": bucket.get("policy"),
         "image": cfg["image"],
         "version": version.get("id"),
         "initialized": initialized,
@@ -691,7 +723,21 @@ def discover(state: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
+def provisioning_phase(found: dict[str, Any]) -> str:
+    if not found["secret_keys_present"]:
+        return "secret-bootstrap"
+    if not all(found[item] for item in ("sa", "sg", "address")):
+        return "resource-identities"
+    if not found["origin_access_configured"]:
+        return "origin-access"
+    return "origin-and-policy"
+
+
+def plan(
+    found: dict[str, Any],
+    cfg: dict[str, str],
+    application_access_key_id: str | None,
+) -> dict[str, Any]:
     ids = {
         f"{key}_id": ident(found[short]) if found[short] else None
         for key, short in [
@@ -705,14 +751,9 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         ]
     }
     commands: list[list[str]] = []
-    if not found["secret_keys_present"]:
-        phase = "secret-bootstrap"
-    elif not all(found[item] for item in ("sa", "sg", "address")):
-        phase = "resource-identities"
-    elif not found["origin_access_configured"]:
-        phase = "origin-access"
-    else:
-        phase = "origin-and-policy"
+    phase = provisioning_phase(found)
+    if phase == "origin-and-policy" and application_access_key_id is None:
+        fail("application_access_key_id_required")
     if phase == "secret-bootstrap":
         commands.append(
             [
@@ -847,7 +888,12 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
                     "json",
                 ]
             )
-        patch = policy(found["policy"], cfg["bucket"], ident(found["sa"]))
+        patch = policy(
+            found["policy"],
+            cfg["bucket"],
+            ident(found["sa"]),
+            application_access_key_id,
+        )
         if patch["before"] != patch["after"]:
             commands.append(
                 [
@@ -891,7 +937,12 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
                     "json",
                 ],
             ]
-    patch = policy(found["policy"], cfg["bucket"], ident(found["sa"]) if found["sa"] else None)
+    patch = policy(
+        found["policy"],
+        cfg["bucket"],
+        ident(found["sa"]) if phase == "origin-and-policy" else None,
+        application_access_key_id if phase == "origin-and-policy" else None,
+    )
     result = {
         "mode": "dry-run",
         "phase": phase,
@@ -958,6 +1009,12 @@ def plan(found: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
             "default_apply_execution": False,
             "matrix": {"allowed": 1, "denied": 7},
         },
+        "application_get_probe": {
+            "execution": "immediately-after-policy-update",
+            "credential_source": "canonical-application-runtime",
+            "object_key_sha256": hashlib.sha256(cfg["original"].encode()).hexdigest(),
+            "failure": "restore-exact-previous-policy-and-stop",
+        },
         "proposed_commands": commands,
         "task6_refresh": task6_refresh(found["cloud"], found["folder"]),
     }
@@ -979,6 +1036,114 @@ def protected_user_data(value: bytes) -> Path:
     with os.fdopen(fd, "wb") as target:
         target.write(value.replace(b"$", b"$$"))
     return Path(raw)
+
+
+def application_get_probe(found: dict[str, Any], cfg: dict[str, str]) -> bool:
+    remote_command = (
+        "cd /opt/photo-prjct && "
+        "docker compose --project-name photo-prjct --env-file .env "
+        "-f docker-compose.deployment.yml -f docker-compose.https.yml "
+        "exec -T "
+        f"-e IMAGE_ORIGIN_APPLICATION_PROBE_KEY={cfg['original']} "
+        "web python manage.py shell -c "
+        f'"{APPLICATION_GET_PROBE_CODE}"'
+    )
+    try:
+        result = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-l",
+                cfg["application_vm_user"],
+                cfg["application_vm_host"],
+                remote_command,
+            ],
+            capture_output=True,
+            check=False,
+            timeout=APPLICATION_GET_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def validate_application_probe_config(cfg: dict[str, str]) -> None:
+    if not BUCKET.fullmatch(cfg["application_vm_host"]):
+        fail("invalid_vm_host")
+    if not ID.fullmatch(cfg["application_vm_user"]):
+        fail("invalid_vm_user")
+
+
+def clear_bucket_policy(found: dict[str, Any], cfg: dict[str, str]) -> None:
+    token = yc("iam", "create-token")
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", token):
+        fail("bucket_policy_restore_failed")
+    curl_config = (
+        f'url = "https://storage.api.cloud.yandex.net/storage/v1/buckets/{cfg["bucket"]}"\n'
+        'request = "PATCH"\n'
+        f'header = "Authorization: Bearer {token}"\n'
+        'header = "Content-Type: application/json"\n'
+        'data = "{\\"updateMask\\":\\"policy\\"}"\n'
+        'write-out = "\\n%{http_code}"\n'
+        "silent\n"
+        "show-error\n"
+    )
+    try:
+        result = subprocess.run(
+            ["curl", "--config", "-"],
+            input=curl_config.encode(),
+            capture_output=True,
+            check=False,
+        )
+        body, separator, status = result.stdout.rpartition(b"\n")
+        operation = json.loads(body) if separator else None
+    except (OSError, json.JSONDecodeError):
+        fail("bucket_policy_restore_failed")
+    if result.returncode or status != b"200" or not isinstance(operation, dict):
+        fail("bucket_policy_restore_failed")
+    operation_id = ident(operation, "bucket_policy_restore_failed")
+    yc("operation", "wait", operation_id, "--format", "json")
+
+
+def restore_bucket_policy(
+    reviewed: dict[str, Any], found: dict[str, Any], cfg: dict[str, str]
+) -> None:
+    patch = reviewed["bucket_policy"]
+    if patch["before_present"]:
+        path = protected(patch["before"])
+        try:
+            yc(
+                "storage",
+                "bucket",
+                "update",
+                cfg["bucket"],
+                "--policy-from-file",
+                str(path),
+                "--folder-id",
+                found["folder"],
+                "--format",
+                "json",
+            )
+        finally:
+            path.unlink(missing_ok=True)
+    else:
+        clear_bucket_policy(found, cfg)
+    current = yc(
+        "storage",
+        "bucket",
+        "get",
+        cfg["bucket"],
+        "--full",
+        "--folder-id",
+        found["folder"],
+        "--format",
+        "json",
+    )
+    if (current.get("policy") is not None) != patch["before_present"] or normalize_policy(
+        current.get("policy")
+    ) != patch["before"]:
+        fail("bucket_policy_restore_failed")
 
 
 def apply(
@@ -1066,7 +1231,9 @@ def apply(
             "--format",
             "json",
         )
-        if normalize_policy(current.get("policy")) != reviewed["bucket_policy"]["before"]:
+        if (current.get("policy") is not None) != reviewed["bucket_policy"][
+            "before_present"
+        ] or normalize_policy(current.get("policy")) != reviewed["bucket_policy"]["before"]:
             fail("bucket_policy_drift")
 
     check_policy()
@@ -1101,6 +1268,9 @@ def apply(
             )
         finally:
             path.unlink(missing_ok=True)
+        if not application_get_probe(found, cfg):
+            restore_bucket_policy(reviewed, found, cfg)
+            fail("application_get_probe_failed_policy_restored")
     if not found["initialized"]:
         access = yc(
             "iam",
@@ -1207,6 +1377,8 @@ def config() -> dict[str, Any]:
         fail("reviewed_bootstrap_artifact_invalid")
     return {
         "canonical_vm": env("CANONICAL_VM_ID", ID),
+        "application_vm_host": os.environ.get("VM_HOST", ""),
+        "application_vm_user": os.environ.get("VM_USER", ""),
         "bucket": env("PRIVATE_MEDIA_S3_BUCKET", BUCKET),
         "zone": env("IMAGE_ORIGIN_ZONE_ID", ID),
         "image": env("IMAGE_ORIGIN_BOOT_IMAGE_ID", ID),
@@ -1223,12 +1395,31 @@ def config() -> dict[str, Any]:
 
 
 def provisioning_values() -> dict[str, str]:
-    values = projected({"GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET"})
+    values = projected(
+        {
+            "GALLERY_CDN_TOKEN_SECRET",
+            "IMAGE_ORIGIN_HEADER_SECRET",
+            "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
+        }
+    )
     if not 6 <= len(values["GALLERY_CDN_TOKEN_SECRET"]) <= 32:
         fail("invalid_gallery_cdn_token_secret")
     if not HEADER.fullmatch(values["IMAGE_ORIGIN_HEADER_SECRET"]):
         fail("invalid_image_origin_header_secret")
+    if not ID.fullmatch(values["PRIVATE_MEDIA_S3_ACCESS_KEY_ID"]):
+        fail("invalid_private_media_s3_access_key_id")
     return values
+
+
+def application_access_key_id() -> str:
+    values = projected(
+        {"PRIVATE_MEDIA_S3_ACCESS_KEY_ID"},
+        {"GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET"},
+    )
+    access_key_id = values["PRIVATE_MEDIA_S3_ACCESS_KEY_ID"]
+    if not ID.fullmatch(access_key_id):
+        fail("invalid_private_media_s3_access_key_id")
+    return access_key_id
 
 
 def main() -> int:
@@ -1248,7 +1439,12 @@ def main() -> int:
     )
     state = load_state(state_path)
     found = discover(state, cfg)
-    reviewed = plan(found, cfg)
+    if provisioning_phase(found) == "origin-and-policy":
+        validate_application_probe_config(cfg)
+    access_key_id = (
+        application_access_key_id() if provisioning_phase(found) == "origin-and-policy" else None
+    )
+    reviewed = plan(found, cfg, access_key_id)
     if not args.apply:
         if args.approval_nonce:
             fail("approval_requires_apply")

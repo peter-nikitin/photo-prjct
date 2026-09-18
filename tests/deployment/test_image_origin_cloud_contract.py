@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -43,6 +44,11 @@ ORIGIN_KEYS = {
     "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
     "VM_SSH_KEY",
 }
+IMAGE_DELIVERY_PROVISION_KEYS = {
+    "GALLERY_CDN_TOKEN_SECRET",
+    "IMAGE_ORIGIN_HEADER_SECRET",
+    "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
+}
 
 
 @pytest.fixture
@@ -69,11 +75,14 @@ def cloud_environment(tmp_path: Path) -> dict[str, str]:
     projection.write_text(
         'GALLERY_CDN_TOKEN_SECRET="cdn-token-private-sentinel"\n'
         'IMAGE_ORIGIN_HEADER_SECRET="origin-header-private-sentinel"\n'
+        'PRIVATE_MEDIA_S3_ACCESS_KEY_ID="application-static-access-key-id"\n'
     )
     projection.chmod(0o600)
     return {
         **os.environ,
         "CANONICAL_VM_ID": "canonical-vm-id",
+        "VM_HOST": "198.51.100.10",
+        "VM_USER": "application-operator",
         "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
         "IMAGE_ORIGIN_ZONE_ID": "ru-central1-a",
         "IMAGE_ORIGIN_BOOT_IMAGE_ID": "immutable-image-id",
@@ -108,7 +117,13 @@ with pathlib.Path(os.environ["FAKE_YC_LOG"]).open("a", encoding="utf-8") as targ
     target.write(json.dumps(args) + "\\n")
 
 key = " ".join(args)
-policy = {"Version": "2012-10-17", "Statement": [{"Sid": "KeepUnrelatedCoverRead", "Effect": "Allow", "Principal": "*", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::canonical-media/covers/*"}]}
+policy = None if os.environ.get("FAKE_POLICY_ABSENT") == "1" else {"Version": "2012-10-17", "Statement": [{"Sid": "KeepUnrelatedCoverRead", "Effect": "Allow", "Principal": "*", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::canonical-media/covers/*"}]}
+if os.environ.get("FAKE_STALE_MANAGED_POLICY") == "1":
+    assert policy is not None
+    policy["Statement"] += [
+        {"Sid": "AllowFindMeGalleryImageOriginPreviewReads", "Effect": "Allow", "Principal": {"CanonicalUser": "obsolete-origin"}, "Action": "s3:GetObject", "Resource": "arn:aws:s3:::canonical-media/obsolete/*"},
+        {"Sid": "AllowFindMeApplicationPrivateMediaAccess", "Effect": "Allow", "Principal": "*", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::canonical-media/obsolete/*", "Condition": {"StringEquals": {"yc:access-key-id": "obsolete-application-key"}}},
+    ]
 if args[:3] == ["config", "profile", "list"]:
     if "FAKE_PROFILE_LIST_OUTPUT" in os.environ:
         print(os.environ["FAKE_PROFILE_LIST_OUTPUT"])
@@ -183,7 +198,7 @@ elif args[:4] == ["storage", "bucket", "get", "canonical-media"]:
     if str(counter) != "/nonexistent":
         count = int(counter.read_text()) + 1 if counter.exists() else 1
         counter.write_text(str(count))
-        if count >= int(os.environ.get("FAKE_POLICY_DRIFT_AT", "999")):
+        if policy is not None and count >= int(os.environ.get("FAKE_POLICY_DRIFT_AT", "999")):
             policy["Statement"].append({"Sid": "ConcurrentChange", "Effect": "Allow", "Principal": "*", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::canonical-media/new/*"})
     value = {"name": "canonical-media", "id": "canonical-media", "folder_id": "folder-contract-id", "policy": policy}
 elif args[:3] == ["cdn", "resource", "list"] and os.environ.get("FAKE_CDN_EXISTING") == "1":
@@ -207,6 +222,16 @@ elif args[:3] == ["compute", "instance", "create"]:
     pathlib.Path(os.environ["FAKE_CREATED_USER_DATA"]).write_text(escaped_user_data.replace("$$", "$"))
     if os.environ.get("FAKE_FAIL_VM") == "1": raise SystemExit(8)
     value = {"id": "created-vm-id", "name": os.environ["EXPECTED_RESOURCE_NAME"]}
+elif args[:2] == ["compute", "ssh"]:
+    if os.environ.get("FAKE_APPLICATION_GET_FAILURE") == "1": raise SystemExit(8)
+    value = {"status": "application-get-green"}
+elif args[:3] == ["storage", "bucket", "update"]:
+    policy_path = pathlib.Path(args[args.index("--policy-from-file") + 1])
+    with pathlib.Path(os.environ["FAKE_POLICY_UPDATE_LOG"]).open("a") as target:
+        target.write(json.dumps(json.loads(policy_path.read_text())) + "\\n")
+    value = {"status": "done"}
+elif args[:2] == ["operation", "wait"]:
+    value = {"id": args[2], "done": True}
 elif args[:3] == ["iam", "access-key", "create"]:
     value = {
         "access_key": {"id": "created-access-key-resource-id", "key_id": "created-access-key-id"},
@@ -262,11 +287,26 @@ config = sys.stdin.read()
 method = next(line for line in config.splitlines() if line.startswith("request = "))
 url = next(line for line in config.splitlines() if line.startswith("url = "))
 with pathlib.Path(os.environ["FAKE_CURL_LOG"]).open("a") as target: target.write(method + "\\n")
+if "storage.api.cloud.yandex.net" in url:
+    sys.stdout.write('{"id":"clear-policy-operation"}\\n200')
+    raise SystemExit(0)
 allowed = "derivatives/previews/photo-1/preview-small-v1/accepted.jpg" in url and '"GET"' in method
 sys.stdout.write("200" if allowed else "403")
 """
     )
     curl.chmod(0o755)
+    ssh = fake_bin / "ssh"
+    ssh.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import json, os, pathlib, sys
+with pathlib.Path(os.environ["FAKE_YC_LOG"]).open("a", encoding="utf-8") as target:
+    target.write(json.dumps(["ssh", *sys.argv[1:]]) + "\\n")
+if os.environ.get("FAKE_APPLICATION_GET_FAILURE") == "1": raise SystemExit(8)
+""",
+        encoding="utf-8",
+    )
+    ssh.chmod(0o755)
     return fake_bin, log
 
 
@@ -282,6 +322,7 @@ def _run_provision(
         "FAKE_YC_LOG": str(log),
         "EXPECTED_RESOURCE_NAME": RESOURCE_NAME,
         "FAKE_CURL_LOG": str(tmp_path / "curl.log"),
+        "FAKE_POLICY_UPDATE_LOG": str(tmp_path / "policy-updates.jsonl"),
         "FAKE_LOCKBOX_STDIN": str(tmp_path / "lockbox-stdin.json"),
         "FAKE_LOCKBOX_RESULT": str(tmp_path / "lockbox-result.json"),
         "FAKE_BASTION_MARKER": str(tmp_path / "bastion-rule-applied"),
@@ -356,10 +397,7 @@ def test_manifest_adds_exactly_six_optional_secrets_with_closed_consumers() -> N
     assert consumers["local-web"] & NEW_SECRET_KEYS == DJANGO_SIGNING_KEYS
     assert consumers["deploy"] & NEW_SECRET_KEYS == DJANGO_SIGNING_KEYS
     assert consumers["image-origin"] == ORIGIN_KEYS
-    assert consumers["image-delivery-provision"] == {
-        "GALLERY_CDN_TOKEN_SECRET",
-        "IMAGE_ORIGIN_HEADER_SECRET",
-    }
+    assert consumers["image-delivery-provision"] == IMAGE_DELIVERY_PROVISION_KEYS
 
 
 def test_default_is_read_only_discovery_and_machine_readable_plan(
@@ -469,6 +507,76 @@ def test_plan_preserves_policy_and_declares_independent_credential_denials(
         "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
         "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
     }
+
+
+def test_origin_policy_reconciliation_preserves_unmanaged_statements_and_binds_both_managed_rules(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    environment = {
+        **cloud_environment,
+        "FAKE_STALE_MANAGED_POLICY": "1",
+        "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json"),
+    }
+    _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
+
+    first, _ = _run_provision(tmp_path, environment)
+    first_plan = _plan(first)
+    assert first_plan["phase"] == "origin-and-policy"
+    statements = {
+        statement["Sid"]: statement
+        for statement in first_plan["bucket_policy"]["after"]["Statement"]
+    }
+    assert statements == {
+        "KeepUnrelatedCoverRead": {
+            "Sid": "KeepUnrelatedCoverRead",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::canonical-media/covers/*",
+        },
+        "AllowFindMeGalleryImageOriginPreviewReads": {
+            "Sid": "AllowFindMeGalleryImageOriginPreviewReads",
+            "Effect": "Allow",
+            "Principal": {"CanonicalUser": "created-service-account-id"},
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::canonical-media/derivatives/previews/*",
+        },
+        "AllowFindMeApplicationPrivateMediaAccess": {
+            "Sid": "AllowFindMeApplicationPrivateMediaAccess",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": [
+                "arn:aws:s3:::canonical-media",
+                "arn:aws:s3:::canonical-media/*",
+            ],
+            "Condition": {
+                "StringEquals": {
+                    "yc:access-key-id": "application-static-access-key-id",
+                }
+            },
+        },
+    }
+    assert first_plan["bucket_policy"]["before"] != first_plan["bucket_policy"]["after"]
+
+    projection = Path(environment["FINDME_ENV_FILE"])
+    projection.write_text(
+        'GALLERY_CDN_TOKEN_SECRET="cdn-token-private-sentinel"\n'
+        'IMAGE_ORIGIN_HEADER_SECRET="origin-header-private-sentinel"\n'
+        'PRIVATE_MEDIA_S3_ACCESS_KEY_ID="rotated-application-static-key-id"\n'
+    )
+    second, _ = _run_provision(tmp_path, environment)
+    second_plan = _plan(second)
+    application_statement = next(
+        statement
+        for statement in second_plan["bucket_policy"]["after"]["Statement"]
+        if statement["Sid"] == "AllowFindMeApplicationPrivateMediaAccess"
+    )
+    assert application_statement["Condition"]["StringEquals"] == {
+        "yc:access-key-id": "rotated-application-static-key-id"
+    }
+    assert second_plan["approval_nonce"] != first_plan["approval_nonce"]
 
 
 def test_plan_contains_provider_validated_immutable_vm_contract(
@@ -981,6 +1089,20 @@ def test_approved_apply_uses_returned_ids_and_never_exposes_secret_values(
     applied = _plan(result)
     command_text = json.dumps(commands)
     assert "created-service-account-id" in command_text
+    policy_update_index = next(
+        index
+        for index, command in enumerate(commands)
+        if command[:3] == ["storage", "bucket", "update"]
+    )
+    application_probe_index = next(
+        index for index, command in enumerate(commands) if command[:1] == ["ssh"]
+    )
+    access_key_index = next(
+        index
+        for index, command in enumerate(commands)
+        if command[:3] == ["iam", "access-key", "create"]
+    )
+    assert policy_update_index < application_probe_index < access_key_index
     for secret in (
         "cdn-token-private-sentinel",
         "origin-header-private-sentinel",
@@ -1011,7 +1133,9 @@ def test_apply_validates_its_secret_projection_before_mutation(
     approval_nonce = _plan(dry_result)["approval_nonce"]
     bad_projection = apply_tmp / "projection.env"
     bad_projection.write_text(
-        'GALLERY_CDN_TOKEN_SECRET="x"\nIMAGE_ORIGIN_HEADER_SECRET="origin-header-private-sentinel"\n'
+        'GALLERY_CDN_TOKEN_SECRET="x"\n'
+        'IMAGE_ORIGIN_HEADER_SECRET="origin-header-private-sentinel"\n'
+        'PRIVATE_MEDIA_S3_ACCESS_KEY_ID="application-static-access-key-id"\n'
     )
     bad_projection.chmod(0o600)
     missing_secret_environment = {
@@ -1047,6 +1171,145 @@ def test_policy_is_provider_sourced_and_refetched_before_mutation(
     assert result.returncode == 2
     assert "bucket_policy_drift" in result.stderr
     assert all("update" not in command and "access-key" not in command for command in commands)
+
+
+def test_application_read_failure_restores_previous_policy_before_failing(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json")}
+    _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
+    reviewed, _ = _run_provision(tmp_path, environment)
+    plan = _plan(reviewed)
+
+    result, commands = _run_provision(
+        tmp_path,
+        {**environment, "FAKE_APPLICATION_GET_FAILURE": "1"},
+        "--apply",
+        "--approval-nonce",
+        plan["approval_nonce"],
+    )
+
+    assert result.returncode == 2
+    assert "application_get_probe_failed_policy_restored" in result.stderr
+    policy_updates = [
+        json.loads(line) for line in (tmp_path / "policy-updates.jsonl").read_text().splitlines()
+    ]
+    assert policy_updates == [
+        plan["bucket_policy"]["after"],
+        plan["bucket_policy"]["before"],
+    ]
+    probe = next(command for command in commands if command[:1] == ["ssh"])
+    assert probe[:6] == [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-l",
+        "application-operator",
+        "198.51.100.10",
+    ]
+    assert "client.get_object" in probe[6]
+    assert "settings.PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in probe[6]
+    assert "settings.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in probe[6]
+    assert "application-static-access-key-id" not in probe[6]
+    assert not any(command[:3] == ["iam", "access-key", "create"] for command in commands)
+
+
+def test_application_read_timeout_restores_previous_policy_before_origin_key_creation(
+    tmp_path: Path,
+    cloud_environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json")}
+    _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
+
+    fake_bin, log = _install_fake_yc(tmp_path)
+    runtime_environment = {
+        **environment,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_YC_LOG": str(log),
+        "EXPECTED_RESOURCE_NAME": RESOURCE_NAME,
+        "FAKE_CURL_LOG": str(tmp_path / "curl.log"),
+        "FAKE_POLICY_UPDATE_LOG": str(tmp_path / "policy-updates.jsonl"),
+        "FAKE_LOCKBOX_STDIN": str(tmp_path / "lockbox-stdin.json"),
+        "FAKE_LOCKBOX_RESULT": str(tmp_path / "lockbox-result.json"),
+        "FAKE_BASTION_MARKER": str(tmp_path / "bastion-rule-applied"),
+        "EXPECTED_PUBLIC_KEY_FILE": str(PUBLIC_KEY),
+        "EXPECTED_CLOUD_INIT_FILE": str(CLOUD_INIT),
+        "FAKE_CREATED_USER_DATA": str(tmp_path / "created-user-data.sh"),
+    }
+    for name, value in runtime_environment.items():
+        monkeypatch.setenv(name, value)
+
+    spec = importlib.util.spec_from_file_location(
+        "image_origin_timeout_contract", PACKAGE / "provision.py"
+    )
+    assert spec is not None and spec.loader is not None
+    provision = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(provision)
+    cfg = provision.config()
+    state_path = Path(environment["IMAGE_ORIGIN_CONTRACT_STATE"])
+    state = provision.load_state(state_path)
+    found = provision.discover(state, cfg)
+    reviewed = provision.plan(found, cfg, provision.application_access_key_id())
+    real_run = subprocess.run
+
+    def timeout_application_probe(
+        command: list[str], *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        if command[0] == "ssh":
+            timeout = kwargs.get("timeout")
+            assert isinstance(timeout, int) and 0 < timeout <= 120
+            raise subprocess.TimeoutExpired(command, timeout)
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", timeout_application_probe)
+
+    with pytest.raises(SystemExit) as raised:
+        provision.apply(reviewed, found, cfg, state_path, state, {})
+
+    assert raised.value.code == 2
+    assert "application_get_probe_failed_policy_restored" in capsys.readouterr().err
+    policy_updates = [
+        json.loads(line) for line in (tmp_path / "policy-updates.jsonl").read_text().splitlines()
+    ]
+    assert policy_updates == [
+        reviewed["bucket_policy"]["after"],
+        reviewed["bucket_policy"]["before"],
+    ]
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    assert not any(command[:3] == ["iam", "access-key", "create"] for command in commands)
+
+
+def test_application_read_failure_removes_new_policy_when_none_previously_existed(
+    tmp_path: Path, cloud_environment: dict[str, str]
+) -> None:
+    environment = {
+        **cloud_environment,
+        "FAKE_POLICY_ABSENT": "1",
+        "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "state.json"),
+    }
+    _apply_identity_phase(tmp_path, environment)
+    _apply_origin_access_phase(tmp_path, environment)
+    reviewed, _ = _run_provision(tmp_path, environment)
+    plan = _plan(reviewed)
+    assert plan["bucket_policy"]["before_present"] is False
+
+    result, commands = _run_provision(
+        tmp_path,
+        {**environment, "FAKE_APPLICATION_GET_FAILURE": "1"},
+        "--apply",
+        "--approval-nonce",
+        plan["approval_nonce"],
+    )
+
+    assert result.returncode == 2
+    assert "application_get_probe_failed_policy_restored" in result.stderr
+    assert 'request = "PATCH"' in (tmp_path / "curl.log").read_text()
+    assert any(command[:2] == ["operation", "wait"] for command in commands)
+    assert not any(command[:3] == ["iam", "access-key", "create"] for command in commands)
 
 
 def test_partial_failure_keeps_all_returned_and_preexisting_ids_for_resume(
@@ -1353,6 +1616,7 @@ def test_real_resolver_bootstrap_projection_applies_both_provisioning_phases(
     values = resolver_contract._sentinel_values(manifest)
     values["GALLERY_CDN_TOKEN_SECRET"] = "seed-token"
     values["IMAGE_ORIGIN_HEADER_SECRET"] = "seed-origin-header"
+    values["PRIVATE_MEDIA_S3_ACCESS_KEY_ID"] = "application-static-access-key-id"
     state = tmp_path / "state.json"
     environment = {**cloud_environment, "IMAGE_ORIGIN_CONTRACT_STATE": str(state)}
     fake_bin, log = _install_fake_yc(tmp_path)
@@ -1361,6 +1625,7 @@ def test_real_resolver_bootstrap_projection_applies_both_provisioning_phases(
     monkeypatch.setenv("FAKE_YC_LOG", str(log))
     monkeypatch.setenv("EXPECTED_RESOURCE_NAME", RESOURCE_NAME)
     monkeypatch.setenv("FAKE_CURL_LOG", str(tmp_path / "curl.log"))
+    monkeypatch.setenv("FAKE_POLICY_UPDATE_LOG", str(tmp_path / "policy-updates.jsonl"))
     monkeypatch.setenv("FAKE_BASTION_MARKER", str(tmp_path / "bastion-rule-applied"))
     monkeypatch.setenv("EXPECTED_PUBLIC_KEY_FILE", str(PUBLIC_KEY))
     monkeypatch.setenv("EXPECTED_CLOUD_INIT_FILE", str(CLOUD_INIT))

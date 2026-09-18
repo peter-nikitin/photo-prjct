@@ -99,19 +99,36 @@ file manually:
 
 Populate only the non-secret values described by
 `deploy/image-origin/cloud-contract.env.example`. The provisioner obtains the current bucket policy
-from Object Storage, binds its normalized before/after forms to the plan nonce, and refetches it
-immediately before mutation. Secret inputs come from the narrowly scoped resolver projections.
+from Object Storage, replaces the managed prefix-only origin rule and managed canonical-application
+rule, preserves unrelated statements, binds the normalized before/after forms and
+`PRIVATE_MEDIA_S3_ACCESS_KEY_ID` to the plan nonce, and refetches the policy immediately before
+mutation. It never reads `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY`. Secret inputs come from the narrowly
+scoped resolver projections.
 
-Run:
+When the policy changes, the provisioner writes both managed rules together and immediately uses
+the configured canonical `VM_HOST`/`VM_USER` SSH path to run a real `GetObject` inside the
+canonical application web container against
+the configured existing-original probe key. That runtime uses the application credential already
+present in its environment; neither credential value is transported to or printed by the
+provisioner. A failed read restores the normalized pre-change policy. If the bucket previously had
+no policy, rollback clears the new policy through the Object Storage control-plane API. The
+provisioner verifies the restored state, reports a sanitized failure, and does not create the
+image-origin access key.
+
+Run the dry run through the same projection so the final `origin-and-policy` plan can bind the
+existing application access-key ID:
 
 ```sh
-sh deploy/image-origin/provision.sh > image-origin-plan.json
+.venv/bin/python scripts/run-with-environment-secrets.py \
+  --consumer image-delivery-provision --identity yc -- \
+  sh deploy/image-origin/provision.sh > image-origin-plan.json
 ```
 
 The JSON resolves the cloud, folder, canonical network/subnet/bucket, existing named resource IDs,
-policy before/after diff, credential probe matrix, exact proposed commands, Task 6 inventory/quota
-refresh, and pricing items. The `approval_nonce` is the SHA-256 digest of the canonical plan without
-the nonce field. Dry-run performs only read-only discovery.
+policy before/after diff, post-write application-read/rollback contract, credential probe matrix,
+exact proposed commands, Task 6 inventory/quota refresh, and pricing items. The `approval_nonce` is
+the SHA-256 digest of the canonical plan without the nonce field. Dry-run performs only read-only
+discovery.
 
 Quota refresh is cloud-scoped and service-specific. Use `resource-manager.cloud` with the resolved
 cloud ID and run one `quota-limit list` for each of `compute`, `vpc`, and `cdn`; the older
@@ -125,7 +142,9 @@ operator must approve the exact cloud/folder, returned IDs, VM shape (non-preemp
 keys, price delta, command, validation, and rollback. Then, and only then:
 
 ```sh
-sh deploy/image-origin/provision.sh --apply --approval-nonce '<reviewed-plan-nonce>'
+.venv/bin/python scripts/run-with-environment-secrets.py \
+  --consumer image-delivery-provision --identity yc -- \
+  sh deploy/image-origin/provision.sh --apply --approval-nonce '<reviewed-plan-nonce>'
 ```
 
 Either argument alone or a stale nonce fails before mutation. Creation responses are captured and
@@ -139,7 +158,8 @@ secret, returns `next_review_required=true`, and requires a fresh dry run and ap
 the `origin-and-policy` phase may touch VM, folder IAM, bucket policy, or credentials. Reapplying
 initialized state does not rotate keys.
 Policy and Lockbox payloads use mode-0600 temporary files or standard input, are removed on exit,
-and are never rendered in the plan or command arguments.
+and are never rendered in command arguments. The policy diff intentionally displays the non-secret
+application access-key ID so it and both managed rules are reviewable and nonce-bound.
 
 There is no operator-supplied SSH public-key path. VM authorization always uses the reviewed public
 half of the existing workflow key at `deploy/image-origin/workflow-ssh-key.pub` (SHA-256

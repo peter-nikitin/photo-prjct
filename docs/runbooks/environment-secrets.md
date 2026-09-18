@@ -17,9 +17,11 @@ environment, make the runtime read Lockbox, or expose payload values.
 - Gallery delivery secrets remain optional to the generic resolver during the dark deploy.
   `local-web` and `deploy` receive only the CDN token and imgproxy signing pair; `image-origin`
   receives the imgproxy pair, origin header, dedicated S3 credential, and transport-only
-  `VM_SSH_KEY_FILE`; provisioning receives only the CDN token and origin header. The origin helper
-  removes the transport key before constructing runtime configuration. The consuming runtime/action
-  validates its own subset.
+  `VM_SSH_KEY_FILE`; provisioning receives only the CDN token, origin header, and existing
+  `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` needed to reconcile the canonical application bucket-policy
+  rule. It never receives `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY`. The origin helper removes the
+  transport key before constructing runtime configuration. The consuming runtime/action validates
+  its own subset.
 - Commerce order-link signing and Postbox SMTP credentials are `deploy` projection entries only.
   The application workflow supplies Commerce factory paths, sender address, public origin, support
   contact, and worker-enable state as repository variables; do not add provider credentials there.

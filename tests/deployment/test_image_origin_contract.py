@@ -93,6 +93,72 @@ def test_apply_rejects_an_invalid_release_before_installation(tmp_path):
     assert not (tmp_path / "origin").exists()
 
 
+def test_apply_keeps_non_root_compose_configs_readable_in_installed_release(tmp_path):
+    root = tmp_path / "origin"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    image = tmp_path / "image.jpg"
+    Image.new("RGB", (960, 640)).save(image, format="JPEG", progressive=True)
+    driver = (
+        f"#!{sys.executable}\n"
+        + """
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if pathlib.Path(sys.argv[0]).name == "curl":
+    pathlib.Path(args[args.index("--output") + 1]).write_bytes(
+        pathlib.Path(os.environ["TEST_IMAGE"]).read_bytes()
+    )
+    pathlib.Path(args[args.index("--dump-header") + 1]).write_text(
+        "HTTP/1.1 200 OK\\nContent-Type: image/jpeg\\n"
+        "Cache-Control: public, max-age=21600, s-maxage=2592000\\n"
+    )
+"""
+    )
+    for name in ["docker", "curl"]:
+        executable = fake_bin / name
+        executable.write_text(driver)
+        executable.chmod(0o755)
+
+    probe = "/" + "A" * 43 + "/gallery-v1/czM6Ly9h.jpg"
+    env = {
+        **os.environ,
+        **TEST_ENV,
+        "PATH": f"{fake_bin}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+        "IMAGE_ORIGIN_ROOT": str(root),
+        "IMAGE_ORIGIN_RELEASE": "b" * 40,
+        "IMAGE_ORIGIN_PROBE_PATH": probe,
+        "TEST_IMAGE": str(image),
+    }
+    result = subprocess.run(
+        ["sh", str(PACKAGE / "apply.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    release = root / "current"
+    for service, relative_path in (
+        ("imgproxy", "imgproxy-start.sh"),
+        ("imgproxy", "presets.txt"),
+        ("nginx", "nginx.conf.template"),
+        ("nginx", "nginx-start.sh"),
+        ("nginx", "monitoring/metrics.js"),
+    ):
+        config_path = release / relative_path
+        mode = config_path.stat().st_mode & 0o777
+        assert mode & 0o004, (
+            f"{service} config source {relative_path} has mode {mode:04o}; "
+            "its non-root container user cannot read it"
+        )
+
+    assert release.stat().st_mode & 0o077 == 0
+    assert (release / ".env").stat().st_mode & 0o077 == 0
+
+
 @pytest.mark.parametrize("failure", ["none", "candidate", "public"])
 def test_candidate_must_pass_image_check_before_replacing_active_release(tmp_path, failure):
     root = tmp_path / "origin"

@@ -150,6 +150,19 @@ arn:aws:s3:::<media-bucket>/derivatives/previews/*
 
 It grants no `ListBucket`, write, delete, multipart, ACL, bucket-management, original-object, or staging-prefix access. Yandex Object Storage supports policies scoped to an object-key prefix and a specific service-account principal. imgproxy's allowed-bucket configuration is additional defense, not a replacement for the prefix policy.
 
+Because Yandex Object Storage treats a configured bucket policy as an additional allowlist, that
+origin rule is not the whole bucket policy. A second managed statement preserves the canonical
+application static key's existing access with `Principal: "*"`, `Action: "s3:*"`, resources for
+both the bucket and `bucket/*`, and `StringEquals` on `yc:access-key-id`. Reconciliation replaces
+both managed statements and preserves every unrelated statement. The application access-key ID,
+but never its secret, is part of the reviewed policy diff and approval nonce.
+
+Immediately after writing a changed policy, provisioning performs a real `GetObject` from the
+canonical application web runtime against the configured existing original. The runtime uses its
+already deployed application credential; provisioning never reads that credential's secret. A
+failed read restores the exact previous policy, or removes the new policy when none existed, and
+stops before creating the image-origin access key.
+
 The imgproxy source loader accepts only the configured S3-compatible endpoint and bucket. Arbitrary HTTP/HTTPS/file sources and redirects to untrusted origins are disabled. The service enforces maximum source bytes, source dimensions, decoded pixels, processing time, output dimensions, and concurrent work. Requests outside `gallery-v1` fail closed.
 
 The CDN secure-token secret, origin-header secret, imgproxy signing key/salt, and Object Storage credentials are separate Lockbox secrets projected only to the components that need them. They must not appear in URLs, images, Compose files, GitHub logs, application logs, or metrics labels. Rotation must support overlapping old/new verification long enough to avoid an outage.

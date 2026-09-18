@@ -1341,7 +1341,25 @@ def probe(cfg: dict[str, str]) -> int:
             + ("/" + quote(key, safe="/") if key else "")
             + ("?" + query if query else "")
         )
-        config = f'url = "{url}"\nrequest = "{method}"\nuser = "{values["IMAGE_ORIGIN_S3_ACCESS_KEY_ID"]}:{values["IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY"]}"\naws-sigv4 = "aws:amz:ru-central1:s3"\noutput = "/dev/null"\nwrite-out = "%{{http_code}}"\nsilent\nshow-error\n'
+        headers = []
+        if method != "GET":
+            headers.append('header = "Content-Length: 0"')
+        if query == "acl":
+            headers.append('header = "x-amz-acl: private"')
+        config = "\n".join(
+            [
+                f'url = "{url}"',
+                f'request = "{method}"',
+                f'user = "{values["IMAGE_ORIGIN_S3_ACCESS_KEY_ID"]}:{values["IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY"]}"',
+                'aws-sigv4 = "aws:amz:ru-central1:s3"',
+                *headers,
+                'output = "/dev/null"',
+                'write-out = "%{http_code}"',
+                "silent",
+                "show-error",
+                "",
+            ]
+        )
         result = subprocess.run(
             ["curl", "--config", "-"], input=config.encode(), capture_output=True
         )

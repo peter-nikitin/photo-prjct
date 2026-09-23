@@ -7,12 +7,14 @@ Only a merchant-approved, full-payment receipt without a closing obligation is s
 import hashlib
 import hmac
 import json
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from http.client import HTTPException
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -64,8 +66,15 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
+# T-Bank serves a Russian Trusted CA chain. Add the official root and intermediate
+# only to the bank opener, retaining default CA trust and hostname verification.
+# Source: https://www.gosuslugi.ru/crt (gu-st.ru certificate downloads).
+_tls_context = ssl.create_default_context()
+_tls_context.load_verify_locations(
+    cafile=str(Path(__file__).resolve().parent / "certs" / "russian-trusted-ca.pem")
+)
 # Redirects must not forward terminal credentials to another endpoint.
-urlopen = build_opener(_NoRedirect()).open
+urlopen = build_opener(_NoRedirect(), HTTPSHandler(context=_tls_context)).open
 
 
 def _https_url(value: str) -> bool:

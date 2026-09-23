@@ -1,9 +1,12 @@
+import hashlib
 import json
+import ssl
 from dataclasses import replace
 from email.message import Message
 from http.client import IncompleteRead
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
+from urllib.request import HTTPSHandler
 
 import pytest
 from django.test import SimpleTestCase
@@ -89,6 +92,31 @@ class Response:
 
     def __exit__(self, *args):
         pass
+
+
+class TBankTLSContextTests(SimpleTestCase):
+    def test_bank_opener_trusts_russian_ca_and_verifies_host(self):
+        module = gateway_module()
+        opener = module.urlopen.__self__
+        handler = next(item for item in opener.handlers if isinstance(item, HTTPSHandler))
+        context = vars(handler).get("_context")
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        fingerprints = {
+            hashlib.sha256(certificate).hexdigest()
+            for certificate in context.get_ca_certs(binary_form=True)
+        }
+        self.assertIn(
+            "d26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31",
+            fingerprints,
+        )
+        self.assertIn(
+            "bbbde2103e790b999ec62bd03cf625a5a2e7c316e10afe6a490eedead8b3fd9b",
+            fingerprints,
+        )
 
 
 class TBankSigningTests(SimpleTestCase):

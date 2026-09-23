@@ -1,3 +1,8 @@
+import json
+import os
+import subprocess
+import sys
+
 from django.conf import settings
 from django.core.checks import run_checks
 from django.test import SimpleTestCase, override_settings
@@ -6,6 +11,111 @@ from commerce.checks import COMMERCE_RUNTIME_CHECK_TAG
 
 
 class CommerceRuntimeSettingsTests(SimpleTestCase):
+    def test_malformed_closing_receipt_setting_fails_from_real_environment(self) -> None:
+        merchant_env = {
+            "DEBUG": "False",
+            "PUBLIC_DOMAIN": "findme-photo.ru",
+            "COMMERCE_PUBLIC_ORIGIN": "https://findme-photo.ru",
+            "COMMERCE_PAYMENT_GATEWAY_FACTORY": "commerce.tbank_gateway.tbank_gateway_factory",
+            "TBANK_TERMINAL_KEY": "test-terminal",
+            "TBANK_TERMINAL_PASSWORD": "test-password",
+            "TBANK_API_ORIGIN": "https://rest-api-test.tinkoff.ru",
+            "TBANK_RUB_ONLY": "True",
+            "TBANK_PAY_TYPE": "O",
+            "TBANK_RECEIPT_FFD": "1.2",
+            "TBANK_RECEIPT_TAXATION": "osn",
+            "TBANK_RECEIPT_TAX": "none",
+            "TBANK_RECEIPT_PAYMENT_METHOD": "full_payment",
+            "TBANK_RECEIPT_PAYMENT_OBJECT": "service",
+            "TBANK_RECEIPT_MEASUREMENT_UNIT": "шт",
+            "TBANK_RECEIPT_CLOSING_REQUIRED": "unapproved",
+        }
+        program = """
+import json
+import django
+django.setup()
+from django.conf import settings
+from django.core.checks import run_checks
+from commerce.tbank_gateway import tbank_gateway_factory
+try:
+    tbank_gateway_factory()
+    adapter_rejected = False
+except ValueError:
+    adapter_rejected = True
+print(json.dumps({
+    "closing_required": settings.TBANK_RECEIPT_CLOSING_REQUIRED,
+    "errors": [error.id for error in run_checks(tags=["commerce_runtime"])],
+    "adapter_rejected": adapter_rejected,
+}))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            cwd=settings.BASE_DIR,
+            env={**os.environ, **merchant_env, "DJANGO_SETTINGS_MODULE": "config.settings"},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        observation = json.loads(result.stdout)
+        self.assertIsNone(observation["closing_required"])
+        self.assertIn("commerce.E008", observation["errors"])
+        self.assertTrue(observation["adapter_rejected"])
+
+    def test_tbank_settings_default_to_unconfigured(self) -> None:
+        for name in (
+            "TERMINAL_KEY",
+            "TERMINAL_PASSWORD",
+            "API_ORIGIN",
+            "PAY_TYPE",
+            "RECEIPT_FFD",
+            "RECEIPT_TAXATION",
+            "RECEIPT_TAX",
+            "RECEIPT_PAYMENT_METHOD",
+            "RECEIPT_PAYMENT_OBJECT",
+            "RECEIPT_MEASUREMENT_UNIT",
+        ):
+            self.assertEqual(getattr(settings, f"TBANK_{name}"), "")
+        self.assertIsNone(settings.TBANK_RUB_ONLY)
+        self.assertIsNone(settings.TBANK_RECEIPT_CLOSING_REQUIRED)
+
+    @override_settings(
+        DEBUG=False,
+        COMMERCE_PAYMENT_GATEWAY_FACTORY="commerce.tbank_gateway.tbank_gateway_factory",
+    )
+    def test_deployed_tbank_selection_rejects_missing_merchant_configuration(self) -> None:
+        self.assertIn(
+            "commerce.E008", [error.id for error in run_checks(tags=[COMMERCE_RUNTIME_CHECK_TAG])]
+        )
+
+    @override_settings(
+        DEBUG=False,
+        PUBLIC_DOMAIN="findme-photo.ru",
+        COMMERCE_PUBLIC_ORIGIN="https://findme-photo.ru",
+        COMMERCE_PAYMENT_GATEWAY_FACTORY="commerce.tbank_gateway.tbank_gateway_factory",
+        TBANK_TERMINAL_KEY="test-terminal",
+        TBANK_TERMINAL_PASSWORD="test-password",
+        TBANK_API_ORIGIN="https://rest-api-test.tinkoff.ru",
+        TBANK_RUB_ONLY=True,
+        TBANK_PAY_TYPE="O",
+        TBANK_RECEIPT_FFD="1.2",
+        TBANK_RECEIPT_TAXATION="osn",
+        TBANK_RECEIPT_TAX="none",
+        TBANK_RECEIPT_PAYMENT_METHOD="full_payment",
+        TBANK_RECEIPT_PAYMENT_OBJECT="service",
+        TBANK_RECEIPT_MEASUREMENT_UNIT="шт",
+        TBANK_RECEIPT_CLOSING_REQUIRED=False,
+    )
+    def test_deployed_tbank_selection_accepts_complete_merchant_configuration(self) -> None:
+        self.assertEqual(run_checks(tags=[COMMERCE_RUNTIME_CHECK_TAG]), [])
+
+    @override_settings(
+        DEBUG=False,
+        COMMERCE_PAYMENT_GATEWAY_FACTORY="commerce.payment_simulator.payment_simulator_gateway_factory",
+        TBANK_TERMINAL_KEY="",
+    )
+    def test_deployed_simulator_remains_valid_without_tbank_configuration(self) -> None:
+        self.assertEqual(run_checks(tags=[COMMERCE_RUNTIME_CHECK_TAG]), [])
+
     def test_dark_defaults_keep_every_real_adapter_and_secret_blank(self) -> None:
         self.assertEqual(settings.COMMERCE_PAYMENT_GATEWAY_FACTORY, "")
         self.assertEqual(settings.COMMERCE_EMAIL_SENDER_FACTORY, "")

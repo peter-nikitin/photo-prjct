@@ -484,15 +484,16 @@ remain usable or accumulate indefinitely.
 
 When I prepare paid checkout and original delivery, I want Orders, payment transitions, delivery
 work, and recovery controls to be locally executable behind fail-closed gates, so I can integrate
-real bank and email adapters only after their operational and legal contracts are approved.
+  bank and email adapters under explicit operational and legal approval.
 
 - Status: In progress
 - Evidence: The Order, PaymentAttempt, OrderItem, access-grant, delivery, attention, worker, and
-  Admin boundaries are implemented locally, disabled by default. Deterministic adapters and the
-  assembled repository flow cover no-network payment and email behavior only. No real provider,
-  fiscal/legal approval, worker activation, deployment, feature mutation, or live customer evidence
-  is claimed.
-- Last updated: 2026-08-22
+  Admin boundaries are implemented locally, disabled by default. The repository also contains the
+  T-Bank eacq adapter, signed notification and reconciliation paths, Postbox sender, and dark
+  deployment configuration. The deployed payment choice remains the staff simulator. No bank
+  sandbox acceptance, merchant-approved fiscal profile, real credential configuration, public
+  feature mutation, or live customer evidence is claimed.
+- Last updated: 2026-09-23
 
 ### EJ-027 — Maintainer — Gate bib-recognition activation
 

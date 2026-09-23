@@ -239,11 +239,12 @@ entitlement.
 
 - Status: In progress
 - Evidence: [Purchase and download](architecture.md#purchase-and-download). Checkout, immutable
-  Orders, deterministic local payment evidence, trusted manual payment, durable email work, and
-  protected original delivery are implemented locally, disabled by default. The repository does
-  not claim a real bank or email adapter, fiscal/legal approval, deployment, activation, or customer
-  evidence.
-- Last updated: 2026-08-22
+  Orders, trusted manual payment, durable email work, protected original delivery, Postbox email,
+  and a T-Bank eacq gateway with signed callback and reconciliation are implemented locally behind
+  the existing gates. The deployed staff simulator remains selected by default. Bank sandbox
+  acceptance, approved fiscal values, live configuration, legal approval, public activation, and
+  customer evidence are not claimed.
+- Last updated: 2026-09-23
 
 ### PJ-011 — Customer — Download purchased photos
 
@@ -253,8 +254,8 @@ purchased securely.
 - Status: In progress
 - Evidence: [Purchase and download](architecture.md#purchase-and-download). A paid OrderItem can
   authorize only its exact original through a purchase-browser bearer or individually revocable
-  signed Order grant. This is implemented locally, disabled by default; real storage, email,
-  payment, legal approval, activation, and customer evidence are not claimed.
+  signed Order grant. This is implemented locally, disabled by default; real bank acceptance,
+  legal approval, public activation, and customer evidence are not claimed.
 - Last updated: 2026-08-22
 
 ### PJ-016 — Customer — Select paid event photos

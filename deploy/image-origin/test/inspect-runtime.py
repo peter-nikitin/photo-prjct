@@ -17,16 +17,19 @@ def inspect() -> None:
     memory = 0
     for container in containers:
         host = container["HostConfig"]
-        cpus += host["NanoCpus"] / 1e9
-        memory += host["Memory"]
+        service = container["Config"]["Labels"]["com.docker.compose.service"]
         assert not container["State"]["OOMKilled"], "A fixture service exceeded its memory quota"
-        if container["Config"]["Labels"]["com.docker.compose.service"] == "nginx":
+        if service in {"nginx", "imgproxy"}:
+            cpus += host["NanoCpus"] / 1e9
+            memory += host["Memory"]
+        if service == "nginx":
             assert container["Config"]["User"] == "101:101"
             assert host["ReadonlyRootfs"] is True
             assert any(
                 mount["Destination"] == "/var/www" and not mount["RW"]
                 for mount in container["Mounts"]
             ), "Nginx must not be able to modify the ACME webroot"
+    # Fixture clients do not run on the deployed two-core image-origin VM.
     assert cpus <= 2, cpus
     assert memory <= 4 * 1024**3, memory
     for service in ["nginx", "imgproxy"]:

@@ -36,7 +36,7 @@ services:
   acceptance:
     build: .
     command: [check]
-    cpus: 0.0625
+    cpus: 1
     mem_limit: 128m
     depends_on:
       nginx: {condition: service_healthy}

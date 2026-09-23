@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 from django.contrib.admin.models import CHANGE, LogEntry
@@ -23,7 +24,13 @@ from commerce.payment_gateway import (
     NormalizedPaymentStatus,
     PaymentGateway,
     PaymentGatewayError,
+    PaymentGatewayErrorCategory,
     PaymentObservation,
+)
+from commerce.tbank_gateway import (
+    TBANK_ADAPTER_KEY,
+    TBankAuthenticatedNotificationError,
+    TBankGateway,
 )
 
 
@@ -42,7 +49,27 @@ def apply_authenticated_notification(
     now: datetime | None = None,
 ) -> Order:
     """Authenticate provider input outside the transaction, then apply its normalized evidence."""
-    observation = gateway.authenticate_notification(notification)
+    try:
+        observation = gateway.authenticate_notification(notification)
+    except TBankAuthenticatedNotificationError as error:
+        event_id, cart_digest, order_id = _payment_identity_for_attempt(attempt_id=error.attempt_id)
+        with transaction.atomic():
+            _cart, order, attempt = _lock_payment_transition(
+                event_id=event_id,
+                cart_digest=cart_digest,
+                order_id=order_id,
+                attempt_id=error.attempt_id,
+            )
+            open_attention(
+                kind="manual_payment_conflict"
+                if order.status == Order.Status.PAID
+                else "payment_mismatch",
+                subject=f"payment-attempt:{error.attempt_id}",
+                order=order,
+                payment_attempt=attempt,
+                now=_current_time(now),
+            )
+        raise
     attempt = _matching_attempt_for_gateway(gateway=gateway, observation=observation)
     return apply_payment_observation(
         attempt_id=attempt.pk,
@@ -63,7 +90,9 @@ def reconcile_payment_attempt(
     """Fetch one due payment outside the transaction before serializing its state transition."""
     started_at = _current_time(now)
     attempt = PaymentAttempt.objects.get(pk=attempt_id)
-    if not attempt.provider_payment_id or attempt.adapter_key != _gateway_adapter_key(gateway):
+    if attempt.adapter_key != _gateway_adapter_key(gateway) or (
+        not attempt.provider_payment_id and attempt.adapter_key != TBANK_ADAPTER_KEY
+    ):
         raise PaymentTransitionRejected("Payment attempt cannot be reconciled by this gateway.")
     if expected_reconciliation_lease_id is not None and not _reconciliation_lease_is_current(
         attempt=attempt,
@@ -71,8 +100,14 @@ def reconcile_payment_attempt(
         now=started_at,
     ):
         raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
+    observation: PaymentObservation | None
     try:
-        observation = gateway.fetch_payment(attempt.provider_payment_id)
+        if attempt.provider_payment_id:
+            observation = gateway.fetch_payment(attempt.provider_payment_id)
+        else:
+            observation = cast(TBankGateway, gateway).recover_payment(attempt.idempotency_key)
+            if observation is None:
+                raise PaymentGatewayError(PaymentGatewayErrorCategory.UNAVAILABLE)
     except PaymentGatewayError as error:
         unavailable_at = _current_time(now)
         open_attention(
@@ -138,6 +173,15 @@ def apply_payment_observation(
             now=current_time,
         ):
             raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
+        if (
+            adapter_key == TBANK_ADAPTER_KEY
+            and attempt.adapter_key == adapter_key
+            and not attempt.provider_payment_id
+            and attempt.idempotency_key == observation.idempotency_key
+            and not _payment_facts_mismatch(attempt=attempt, order=order, observation=observation)
+        ):
+            attempt.provider_payment_id = observation.provider_payment_id
+            attempt.save(update_fields=["provider_payment_id", "updated_at"])
         _require_matching_provider_evidence(
             attempt=attempt,
             adapter_key=adapter_key,
@@ -300,7 +344,6 @@ def _matching_attempt_for_gateway(
     attempt = (
         PaymentAttempt.objects.filter(
             adapter_key=_gateway_adapter_key(gateway),
-            provider_payment_id=observation.provider_payment_id,
             idempotency_key=observation.idempotency_key,
         )
         .order_by("pk")
@@ -558,6 +601,21 @@ def _expire_after_current_fetch(
             now=now,
         ):
             raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
+        if attempt.adapter_key == TBANK_ADAPTER_KEY:
+            attempt.reconciliation_state = PaymentAttempt.ReconciliationState.PENDING
+            attempt.reconciliation_lease_id = None
+            attempt.reconciliation_lease_expires_at = None
+            attempt.reconciliation_next_attempt_at = now + timedelta(minutes=5)
+            attempt.save(
+                update_fields=[
+                    "reconciliation_state",
+                    "reconciliation_lease_id",
+                    "reconciliation_lease_expires_at",
+                    "reconciliation_next_attempt_at",
+                    "updated_at",
+                ]
+            )
+            return
         due_at = attempt.expires_at or attempt.created_at + timedelta(hours=24)
         if now < due_at:
             return

@@ -391,6 +391,7 @@ class PaymentAttemptAdmin(admin.ModelAdmin):
         "currency",
         "adapter_key",
         "idempotency_key",
+        "initiation_started_at",
         "provider_payment_id",
         "confirmation_url",
         "expires_at",

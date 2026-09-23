@@ -359,6 +359,16 @@ jobs:
           COMMERCE_WORKER_ENABLED: ${{ vars.COMMERCE_WORKER_ENABLED || 'False' }}
           COMMERCE_PUBLIC_ORIGIN: ${{ vars.COMMERCE_PUBLIC_ORIGIN || 'https://findme-photo.ru' }}
           COMMERCE_PAYMENT_GATEWAY_FACTORY: ${{ vars.COMMERCE_PAYMENT_GATEWAY_FACTORY || 'commerce.payment_simulator.payment_simulator_gateway_factory' }}
+          TBANK_API_ORIGIN: ${{ vars.TBANK_API_ORIGIN || '' }}
+          TBANK_RUB_ONLY: ${{ vars.TBANK_RUB_ONLY || '' }}
+          TBANK_PAY_TYPE: ${{ vars.TBANK_PAY_TYPE || '' }}
+          TBANK_RECEIPT_FFD: ${{ vars.TBANK_RECEIPT_FFD || '' }}
+          TBANK_RECEIPT_TAXATION: ${{ vars.TBANK_RECEIPT_TAXATION || '' }}
+          TBANK_RECEIPT_TAX: ${{ vars.TBANK_RECEIPT_TAX || '' }}
+          TBANK_RECEIPT_PAYMENT_METHOD: ${{ vars.TBANK_RECEIPT_PAYMENT_METHOD || '' }}
+          TBANK_RECEIPT_PAYMENT_OBJECT: ${{ vars.TBANK_RECEIPT_PAYMENT_OBJECT || '' }}
+          TBANK_RECEIPT_MEASUREMENT_UNIT: ${{ vars.TBANK_RECEIPT_MEASUREMENT_UNIT || '' }}
+          TBANK_RECEIPT_CLOSING_REQUIRED: ${{ vars.TBANK_RECEIPT_CLOSING_REQUIRED || '' }}
           COMMERCE_EMAIL_SENDER_FACTORY: ${{ vars.COMMERCE_EMAIL_SENDER_FACTORY || 'commerce.postbox_email_sender.postbox_email_sender_factory' }}
           COMMERCE_WORKER_FACTORY: ${{ vars.COMMERCE_WORKER_FACTORY || 'commerce.runtime.commerce_worker_factory' }}
           COMMERCE_EMAIL_FROM_ADDRESS: ${{ vars.COMMERCE_EMAIL_FROM_ADDRESS || 'orders@findme-photo.ru' }}

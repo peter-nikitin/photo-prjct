@@ -27,6 +27,8 @@ from commerce.payment_gateway import (
     PaymentReceiptLine,
     PaymentRequest,
 )
+from commerce.payments import PaymentTransitionRejected, reconcile_payment_attempt
+from commerce.tbank_gateway import TBANK_ADAPTER_KEY
 
 
 class CheckoutError(Exception):
@@ -121,8 +123,39 @@ def create_checkout(
     if persisted_attempt.provider_payment_id and persisted_attempt.confirmation_url:
         return _checkout_result(prepared=prepared, attempt=persisted_attempt)
 
+    if adapter_key == TBANK_ADAPTER_KEY:
+        # Commit the claim before network I/O. A crash at any later point requires CheckOrder.
+        claimed = PaymentAttempt.objects.filter(
+            pk=prepared.attempt_id,
+            status=PaymentAttempt.Status.PENDING,
+            initiation_started_at__isnull=True,
+        ).update(
+            initiation_started_at=current_time,
+            reconciliation_next_attempt_at=current_time + timedelta(minutes=5),
+        )
+        if not claimed:
+            try:
+                reconcile_payment_attempt(attempt_id=prepared.attempt_id, gateway=gateway)
+            except PaymentTransitionRejected:
+                pass
+            raise _payment_unavailable(prepared)
     try:
         created = gateway.create_payment(prepared.request)
+    except ValueError:
+        if adapter_key == TBANK_ADAPTER_KEY:
+            # The bank adapter uses ValueError only for validation before any network request.
+            PaymentAttempt.objects.filter(
+                pk=prepared.attempt_id,
+                status=PaymentAttempt.Status.PENDING,
+            ).update(
+                status=PaymentAttempt.Status.FAILED,
+                terminal_at=timezone.now(),
+                reconciliation_state=PaymentAttempt.ReconciliationState.PENDING,
+                reconciliation_lease_id=None,
+                reconciliation_lease_expires_at=None,
+                reconciliation_next_attempt_at=None,
+            )
+        raise _payment_unavailable(prepared) from None
     except PaymentGatewayError:
         raise _payment_unavailable(prepared) from None
     if not isinstance(created, CreatedPayment):
@@ -480,15 +513,23 @@ def _reconcile_created_payment(
             or attempt.confirmation_url
             or attempt.expires_at is not None
         ):
-            if persisted_values != provider_values:
+            if persisted_values == provider_values:
+                return attempt
+            if not (
+                attempt.adapter_key == TBANK_ADAPTER_KEY
+                and attempt.provider_payment_id == created.provider_payment_id
+                and not attempt.confirmation_url
+                and attempt.expires_at is None
+            ):
                 raise CheckoutPaymentUnavailable()
-            return attempt
 
         attempt.provider_payment_id = created.provider_payment_id
         attempt.confirmation_url = created.confirmation_url
         attempt.expires_at = created.expires_at
         attempt.reconciliation_next_attempt_at = (
-            created.expires_at or attempt.created_at + timedelta(hours=24)
+            timezone.now() + timedelta(minutes=5)
+            if attempt.adapter_key == TBANK_ADAPTER_KEY
+            else created.expires_at or attempt.created_at + timedelta(hours=24)
         )
         attempt.save(
             update_fields=[

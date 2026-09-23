@@ -16,6 +16,7 @@ _TEST_ADAPTERS = {
     "COMMERCE_EMAIL_SENDER_FACTORY": "commerce.test_email_sender.",
 }
 _POSTBOX_EMAIL_SENDER_FACTORY = "commerce.postbox_email_sender.postbox_email_sender_factory"
+_TBANK_GATEWAY_FACTORY = "commerce.tbank_gateway.tbank_gateway_factory"
 
 
 @register(COMMERCE_RUNTIME_CHECK_TAG)
@@ -27,6 +28,22 @@ def check_commerce_runtime_settings(
     del app_configs, kwargs
     errors: list[Error] = []
     if settings.DEBUG is not True:
+        if getattr(settings, "COMMERCE_PAYMENT_GATEWAY_FACTORY", "") == _TBANK_GATEWAY_FACTORY:
+            from commerce.tbank_gateway import tbank_gateway_factory
+
+            try:
+                tbank_gateway_factory()
+                origin = getattr(settings, "COMMERCE_PUBLIC_ORIGIN", "")
+                if origin != f"https://{settings.PUBLIC_DOMAIN}":
+                    raise ValueError
+            except ValueError:
+                errors.append(
+                    Error(
+                        "T-Bank requires complete credentials, canonical HTTPS origin, "
+                        "one-stage RUB terminal and approved receipt settings.",
+                        id="commerce.E008",
+                    )
+                )
         for setting_name, test_module in _TEST_ADAPTERS.items():
             configured = getattr(settings, setting_name, "")
             if isinstance(configured, str) and configured.startswith(test_module):

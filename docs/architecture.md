@@ -460,7 +460,7 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed face processing, disabled-default bib recognition, and the disabled-default offline face-cluster corpus path are implemented locally; bib activation is blocked on the Linux resource gate, and canonical-deployment activation and customer outcomes are not evidenced |
 | Search | Event-scoped face/bib/time/location queries | Public direct face search, disabled-default exact event bib search, and disabled-default direct-first face-cluster expansion are implemented locally; no bib/cluster canonical activation or customer-outcome validation is claimed, and remaining modes are proposed |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
-| Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, paid-original entitlement, and page-scoped archive delivery | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, Commerce worker deployment wiring, and ADR 0034's streaming page-scoped ZIP delivery are implemented behind runtime gates. The code-owned `bulk-photo-download` gate reconciles to `off`; public activation, maximum-page capacity acceptance, live customer evidence, a real bank adapter, fiscal/legal review, promotions, packages, and refunds remain later work |
+| Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, paid-original entitlement, and page-scoped archive delivery | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, Commerce worker deployment wiring, local T-Bank eacq adapter, and ADR 0034's streaming page-scoped ZIP delivery are implemented behind runtime gates. The deployed adapter remains the staff simulator. Bank sandbox acceptance, approved fiscal values, public activation, maximum-page capacity acceptance, and live customer evidence remain outstanding |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
@@ -659,8 +659,10 @@ notification, and a separate PostgreSQL-polling Commerce worker owns delivery an
 reconciliation with durable operator attention. This accepted purchase boundary is implemented
 behind staff-controlled runtime gates. The repository includes a Yandex Postbox SMTPS sender
 adapter and canonical deployment wiring that projects Postbox credentials only to the Commerce
-worker. A real bank adapter, fiscal and legal contracts, public activation, and refunds remain later
-work; the deployed acceptance payment path is the staff-only simulator. ADR 0034's repository
+worker. A T-Bank eacq adapter, uncertain-initiation recovery, signed callback handling, and
+disabled-default deployment wiring are implemented locally. Bank sandbox acceptance, merchant
+fiscal settings, legal review, and public activation remain separate; the deployed acceptance
+payment path is the staff-only simulator. Refunds remain later work. ADR 0034's repository
 implementation adds a page-scoped streaming ZIP only for an authorized free ready-result page or
 paid Order page. It stores no archive, streams one private original at a time through Django, and
 is hidden and denied by the reconciled default-off `bulk-photo-download` gate. Deployment, gate
@@ -771,8 +773,10 @@ Checkout snapshots the cart's selected photo IDs and current event price into im
 Payment, entitlement, access grants, email delivery, and original signing are separate Commerce
 services; a cart bearer remains selection-only. `PublicMediaResolver` remains the sole owner of
 public-media selection. The paid purchase implementation remains staff-gated by default. It has a
-real Postbox email sender and deployable Commerce worker, while real bank payment, public
-activation, and live-customer evidence are separate release gates.
+real Postbox email sender, deployable Commerce worker, and locally implemented T-Bank eacq
+gateway. The deployed staff simulator remains selected by default. Bank sandbox validation,
+merchant fiscal approval, live configuration, public activation, and customer evidence remain
+separate release gates.
 
 ## Deferred beyond MVP
 
@@ -792,7 +796,7 @@ Each item needs evidence and an ADR before implementation commits the architectu
 - `pgvector` versus a dedicated vector database and migration thresholds.
 - Broader biometric governance beyond ADR 0019's event-scoped public bearer-link MVP.
 - Bib-region detection/OCR implementation and model licensing.
-- Payment provider, callback contract, refunds, and download entitlement policy.
+- Refund workflow and its operator contract.
 - Purchase entitlement and protected original delivery beyond ADR 0029's watermarked
   presentation-only boundary.
 - Monitoring retention; backup targets; retention; RPO/RTO; encryption-at-rest policy; media

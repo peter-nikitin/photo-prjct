@@ -287,6 +287,7 @@ class PaymentAttempt(models.Model):
     currency = models.CharField(max_length=3, default="RUB")
     adapter_key = models.CharField(max_length=64)
     idempotency_key = models.CharField(max_length=128)
+    initiation_started_at = models.DateTimeField(null=True, blank=True)
     provider_payment_id = models.CharField(max_length=255, blank=True)
     confirmation_url = models.URLField(max_length=2000, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)

@@ -97,6 +97,18 @@ requested_selfie_http_timeout_seconds="${PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECOND
 requested_commerce_worker_enabled="${COMMERCE_WORKER_ENABLED:-False}"
 requested_commerce_public_origin="${COMMERCE_PUBLIC_ORIGIN:-}"
 requested_commerce_payment_gateway_factory="${COMMERCE_PAYMENT_GATEWAY_FACTORY:-}"
+requested_tbank_terminal_key="${TBANK_TERMINAL_KEY:-}"
+requested_tbank_terminal_password="${TBANK_TERMINAL_PASSWORD:-}"
+requested_tbank_api_origin="${TBANK_API_ORIGIN:-}"
+requested_tbank_rub_only="${TBANK_RUB_ONLY:-}"
+requested_tbank_pay_type="${TBANK_PAY_TYPE:-}"
+requested_tbank_receipt_ffd="${TBANK_RECEIPT_FFD:-}"
+requested_tbank_receipt_taxation="${TBANK_RECEIPT_TAXATION:-}"
+requested_tbank_receipt_tax="${TBANK_RECEIPT_TAX:-}"
+requested_tbank_receipt_payment_method="${TBANK_RECEIPT_PAYMENT_METHOD:-}"
+requested_tbank_receipt_payment_object="${TBANK_RECEIPT_PAYMENT_OBJECT:-}"
+requested_tbank_receipt_measurement_unit="${TBANK_RECEIPT_MEASUREMENT_UNIT:-}"
+requested_tbank_receipt_closing_required="${TBANK_RECEIPT_CLOSING_REQUIRED:-}"
 requested_commerce_email_sender_factory="${COMMERCE_EMAIL_SENDER_FACTORY:-}"
 requested_commerce_worker_factory="${COMMERCE_WORKER_FACTORY:-}"
 requested_commerce_email_from_address="${COMMERCE_EMAIL_FROM_ADDRESS:-}"
@@ -147,6 +159,85 @@ if [ "$requested_commerce_worker_health_max_ready_age_seconds" -lt 1 ] || \
     exit 2
 fi
 
+if [ "$requested_commerce_payment_gateway_factory" = commerce.tbank_gateway.tbank_gateway_factory ]; then
+    [ "$requested_commerce_public_origin" = "https://$PUBLIC_DOMAIN" ] || {
+        echo "COMMERCE_PUBLIC_ORIGIN must be https://$PUBLIC_DOMAIN for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_terminal_key" ] || {
+        echo "TBANK_TERMINAL_KEY is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_terminal_password" ] || {
+        echo "TBANK_TERMINAL_PASSWORD is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_api_origin" ] || {
+        echo "TBANK_API_ORIGIN is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_rub_only" ] || {
+        echo "TBANK_RUB_ONLY is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_pay_type" ] || {
+        echo "TBANK_PAY_TYPE is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_ffd" ] || {
+        echo "TBANK_RECEIPT_FFD is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_taxation" ] || {
+        echo "TBANK_RECEIPT_TAXATION is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_tax" ] || {
+        echo "TBANK_RECEIPT_TAX is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_payment_method" ] || {
+        echo "TBANK_RECEIPT_PAYMENT_METHOD is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_payment_object" ] || {
+        echo "TBANK_RECEIPT_PAYMENT_OBJECT is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_measurement_unit" ] || {
+        echo "TBANK_RECEIPT_MEASUREMENT_UNIT is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_closing_required" ] || {
+        echo "TBANK_RECEIPT_CLOSING_REQUIRED is required for T-Bank" >&2
+        exit 2
+    }
+    case "$requested_tbank_api_origin" in
+        https://rest-api-test.tinkoff.ru|https://securepay.tinkoff.ru) ;;
+        *) echo "TBANK_API_ORIGIN has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_rub_only" in
+        True) ;;
+        *) echo "TBANK_RUB_ONLY has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_pay_type" in
+        O) ;;
+        *) echo "TBANK_PAY_TYPE has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_receipt_closing_required" in
+        False) ;;
+        *) echo "TBANK_RECEIPT_CLOSING_REQUIRED has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_receipt_ffd" in
+        1.05|1.2) ;;
+        *) echo "TBANK_RECEIPT_FFD has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_receipt_payment_method" in
+        full_payment) ;;
+        *) echo "TBANK_RECEIPT_PAYMENT_METHOD has an unsupported value" >&2; exit 2 ;;
+    esac
+fi
+
 if [ "$requested_commerce_worker_enabled" = True ]; then
     [ -n "$requested_commerce_public_origin" ] || {
         echo "Set COMMERCE_PUBLIC_ORIGIN before enabling the Commerce worker" >&2
@@ -161,10 +252,10 @@ if [ "$requested_commerce_worker_enabled" = True ]; then
         echo "Set COMMERCE_PAYMENT_GATEWAY_FACTORY before enabling the Commerce worker" >&2
         exit 2
     }
-    if [ "$requested_commerce_payment_gateway_factory" != commerce.payment_simulator.payment_simulator_gateway_factory ]; then
-        echo "COMMERCE_PAYMENT_GATEWAY_FACTORY must use the staff-only simulator adapter for this release" >&2
-        exit 2
-    fi
+    case "$requested_commerce_payment_gateway_factory" in
+        commerce.payment_simulator.payment_simulator_gateway_factory|commerce.tbank_gateway.tbank_gateway_factory) ;;
+        *) echo "COMMERCE_PAYMENT_GATEWAY_FACTORY must use a reviewed deployed adapter" >&2; exit 2 ;;
+    esac
     [ -n "$requested_commerce_email_sender_factory" ] || {
         echo "Set COMMERCE_EMAIL_SENDER_FACTORY before enabling the Commerce worker" >&2
         exit 2
@@ -686,6 +777,18 @@ clear_candidate_compose_interpolation() {
         SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED \
         COMMERCE_PUBLIC_ORIGIN \
         COMMERCE_PAYMENT_GATEWAY_FACTORY \
+        TBANK_TERMINAL_KEY \
+        TBANK_TERMINAL_PASSWORD \
+        TBANK_API_ORIGIN \
+        TBANK_RUB_ONLY \
+        TBANK_PAY_TYPE \
+        TBANK_RECEIPT_FFD \
+        TBANK_RECEIPT_TAXATION \
+        TBANK_RECEIPT_TAX \
+        TBANK_RECEIPT_PAYMENT_METHOD \
+        TBANK_RECEIPT_PAYMENT_OBJECT \
+        TBANK_RECEIPT_MEASUREMENT_UNIT \
+        TBANK_RECEIPT_CLOSING_REQUIRED \
         COMMERCE_EMAIL_SENDER_FACTORY \
         COMMERCE_WORKER_FACTORY \
         COMMERCE_EMAIL_FROM_ADDRESS \
@@ -1019,6 +1122,18 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
     printf 'COMMERCE_PUBLIC_ORIGIN=%s\n' "$requested_commerce_public_origin"
     printf 'COMMERCE_PAYMENT_GATEWAY_FACTORY=%s\n' "$requested_commerce_payment_gateway_factory"
+    write_literal_dotenv_value TBANK_TERMINAL_KEY "$requested_tbank_terminal_key"
+    write_literal_dotenv_value TBANK_TERMINAL_PASSWORD "$requested_tbank_terminal_password"
+    printf 'TBANK_API_ORIGIN=%s\n' "$requested_tbank_api_origin"
+    printf 'TBANK_RUB_ONLY=%s\n' "$requested_tbank_rub_only"
+    printf 'TBANK_PAY_TYPE=%s\n' "$requested_tbank_pay_type"
+    printf 'TBANK_RECEIPT_FFD=%s\n' "$requested_tbank_receipt_ffd"
+    printf 'TBANK_RECEIPT_TAXATION=%s\n' "$requested_tbank_receipt_taxation"
+    printf 'TBANK_RECEIPT_TAX=%s\n' "$requested_tbank_receipt_tax"
+    printf 'TBANK_RECEIPT_PAYMENT_METHOD=%s\n' "$requested_tbank_receipt_payment_method"
+    printf 'TBANK_RECEIPT_PAYMENT_OBJECT=%s\n' "$requested_tbank_receipt_payment_object"
+    printf 'TBANK_RECEIPT_MEASUREMENT_UNIT=%s\n' "$requested_tbank_receipt_measurement_unit"
+    printf 'TBANK_RECEIPT_CLOSING_REQUIRED=%s\n' "$requested_tbank_receipt_closing_required"
     printf 'COMMERCE_EMAIL_SENDER_FACTORY=%s\n' "$requested_commerce_email_sender_factory"
     printf 'COMMERCE_WORKER_FACTORY=%s\n' "$requested_commerce_worker_factory"
     printf 'COMMERCE_EMAIL_FROM_ADDRESS=%s\n' "$requested_commerce_email_from_address"

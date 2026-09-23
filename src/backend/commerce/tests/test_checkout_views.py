@@ -360,10 +360,10 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
 
-    def test_off_purchase_gate_rejects_provider_input_before_adapter_authentication(self) -> None:
+    def test_unconfigured_callback_rejects_provider_input(self) -> None:
         self.enable(purchase=FEATURE_FLAG_OFF)
 
-        with patch("commerce.views._payment_gateway") as gateway:
+        with patch("commerce.views._configured_adapter", side_effect=ValueError) as gateway:
             response = Client(enforce_csrf_checks=True).post(
                 self.notification_url(),
                 b"untrusted",
@@ -371,16 +371,21 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
             )
 
         self.assertEqual(response.status_code, 404)
-        gateway.assert_not_called()
+        gateway.assert_called_once_with("COMMERCE_PAYMENT_GATEWAY_FACTORY")
 
     def test_staff_callback_accepts_authenticated_provider_evidence_without_django_session(
         self,
     ) -> None:
         self.enable(purchase=FEATURE_FLAG_STAFF)
         gateway = self.gateway()
+        gateway.adapter_key = "tbank-eacq-v1"
         staff = get_user_model().objects.create_user(username="callback-staff", is_staff=True)
         self.client.force_login(staff)
-        with self.purchasable(), patch("commerce.views._payment_gateway", return_value=gateway):
+        with (
+            self.purchasable(),
+            patch("commerce.views._payment_gateway", return_value=gateway),
+            patch("commerce.views._configured_adapter", return_value=gateway),
+        ):
             checkout = self.client.post(
                 self.checkout_url(),
                 {"email": "buyer@example.test"},
@@ -404,14 +409,19 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
             )
 
         self.assertEqual(checkout.status_code, 302)
-        self.assertEqual(callback.status_code, 204)
+        self.assertEqual(callback.status_code, 200)
 
     def test_authenticated_provider_notification_is_csrf_exempt_and_rejects_unverified_input(
         self,
     ) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
         gateway = self.gateway()
-        with self.purchasable(), patch("commerce.views._payment_gateway", return_value=gateway):
+        gateway.adapter_key = "tbank-eacq-v1"
+        with (
+            self.purchasable(),
+            patch("commerce.views._payment_gateway", return_value=gateway),
+            patch("commerce.views._configured_adapter", return_value=gateway),
+        ):
             checkout = self.client.post(
                 self.checkout_url(),
                 {"email": "buyer@example.test"},
@@ -444,7 +454,7 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
         order.refresh_from_db()
         self.assertEqual(checkout.status_code, 302)
         self.assertEqual(invalid.status_code, 404)
-        self.assertEqual(accepted.status_code, 204)
+        self.assertEqual(accepted.status_code, 200)
         self.assertEqual(order.status, Order.Status.PENDING)
         self.assertEqual(accepted["Cache-Control"], "private, no-store")
         self.assertEqual(accepted["Referrer-Policy"], "no-referrer")
@@ -455,9 +465,14 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
         self.enable(purchase=FEATURE_FLAG_ON)
         gateway = DeterministicPaymentGateway(
             outcome=TestPaymentOutcome.SUCCESS,
+            adapter_key="tbank-eacq-v1",
             notification_secret=b"checkout-view-test-secret",
         )
-        with self.purchasable(), patch("commerce.views._payment_gateway", return_value=gateway):
+        with (
+            self.purchasable(),
+            patch("commerce.views._payment_gateway", return_value=gateway),
+            patch("commerce.views._configured_adapter", return_value=gateway),
+        ):
             checkout = self.client.post(
                 self.checkout_url(),
                 {"email": "buyer@example.test"},
@@ -485,7 +500,7 @@ class PaymentNotificationViewTests(CheckoutViewTestCase):
 
         order.refresh_from_db()
         self.assertEqual(checkout.status_code, 302)
-        self.assertEqual(callback.status_code, 204)
+        self.assertEqual(callback.status_code, 200)
         self.assertEqual(order.status, Order.Status.PAID)
         self.assertEqual(
             list(OrderItem.objects.filter(order=order).values_list("photo_id", flat=True)),

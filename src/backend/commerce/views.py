@@ -76,9 +76,11 @@ from commerce.payments import (
     PaymentTransitionRejected,
     apply_authenticated_notification,
     apply_payment_observation,
+    reconcile_payment_attempt,
 )
 from commerce.presentation import CartPresentation, cart_presentation_for_photos, order_presentation
 from commerce.pricing import format_rub
+from commerce.runtime import _configured_adapter
 from commerce.services import (
     CartMutationResult,
     CartSnapshot,
@@ -86,6 +88,7 @@ from commerce.services import (
     read_cart,
     set_photo_selected,
 )
+from commerce.tbank_gateway import TBANK_ADAPTER_KEY
 
 CART_COOKIE_NAME = "findme_cart"
 CART_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
@@ -401,7 +404,16 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
 
 
 def _payment_gateway(request: HttpRequest) -> PaymentGateway:
-    """Select the feature-gated simulator until a real adapter is configured."""
+    """Select the configured bank, retaining feature-gated simulator acceptance."""
+    if getattr(settings, "COMMERCE_PAYMENT_GATEWAY_FACTORY", ""):
+        try:
+            gateway = _configured_adapter("COMMERCE_PAYMENT_GATEWAY_FACTORY")
+        except (ValueError, ImportError):
+            raise CheckoutPaymentUnavailable() from None
+        if gateway.adapter_key == TBANK_ADAPTER_KEY:
+            return gateway
+        if gateway.adapter_key != PAYMENT_SIMULATOR_ADAPTER_KEY:
+            raise CheckoutPaymentUnavailable()
     if not feature_flag_services.is_enabled(PAID_PHOTO_PAYMENT_SIMULATOR, request.user):
         raise CheckoutPaymentUnavailable()
     return PaymentSimulatorGateway(
@@ -468,6 +480,22 @@ def payment_simulator(request: HttpRequest, provider_payment_id: str) -> HttpRes
 
 @require_GET
 def order_return(request: HttpRequest, public_number: str) -> HttpResponse:
+    authorized = _authorized_order(request, public_number=public_number)
+    if authorized is None:
+        return _purchase_not_found()
+    order_instance, _grant = authorized
+    attempt = order_instance.payment_attempts.filter(
+        adapter_key=TBANK_ADAPTER_KEY,
+        status=PaymentAttempt.Status.PENDING,
+    ).first()
+    if attempt is not None:
+        try:
+            reconcile_payment_attempt(
+                attempt_id=attempt.pk,
+                gateway=_configured_adapter("COMMERCE_PAYMENT_GATEWAY_FACTORY"),
+            )
+        except (PaymentTransitionRejected, ValueError, ImportError):
+            pass
     return _render_order(request, public_number=public_number)
 
 
@@ -517,11 +545,12 @@ def grant_order_status(
 @sensitive_variables()
 def payment_notification(request: HttpRequest) -> HttpResponse:
     """Apply only adapter-authenticated provider evidence; browser CSRF is irrelevant here."""
-    if not feature_flag_services.is_server_enabled(PAID_PHOTO_PURCHASE):
-        return _purchase_not_found()
     try:
+        gateway = _configured_adapter("COMMERCE_PAYMENT_GATEWAY_FACTORY")
+        if gateway.adapter_key != TBANK_ADAPTER_KEY:
+            return _purchase_not_found()
         apply_authenticated_notification(
-            gateway=_payment_gateway(request),
+            gateway=gateway,
             notification=IncomingPaymentNotification(
                 headers=request.headers,
                 body=request.body,
@@ -531,9 +560,11 @@ def payment_notification(request: HttpRequest) -> HttpResponse:
         CheckoutPaymentUnavailable,
         PaymentGatewayError,
         PaymentTransitionRejected,
+        ValueError,
+        ImportError,
     ):
         return _purchase_not_found()
-    return private_purchase_response(HttpResponse(status=204))
+    return private_purchase_response(HttpResponse("OK", content_type="text/plain"))
 
 
 @require_GET

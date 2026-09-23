@@ -539,3 +539,42 @@ def test_callback_rejects_lone_unicode_surrogate_before_database_access():
     assert caught.value.category == PaymentGatewayErrorCategory.INVALID_RESPONSE
     assert str(caught.value) == "invalid_response"
     assert caught.value.__suppress_context__ is True
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"PaymentId": "67890"},
+        {"Amount": 1501},
+        {"Status": "REFUNDED"},
+        {"Status": "REVERSED"},
+        {"Status": "UNKNOWN"},
+    ],
+)
+def test_authenticated_callback_conflict_carries_only_safe_attempt_context(attempt, changes):
+    module = gateway_module()
+    with pytest.raises(PaymentGatewayError) as caught:
+        module.TBankGateway(config()).authenticate_notification(signed_notification(**changes))
+    assert isinstance(caught.value, module.TBankAuthenticatedNotificationError)
+    assert caught.value.attempt_id == attempt.pk
+    assert vars(caught.value) == {
+        "category": PaymentGatewayErrorCategory.INVALID_RESPONSE,
+        "attempt_id": attempt.pk,
+    }
+    assert str(caught.value) == "invalid_response"
+    assert caught.value.__suppress_context__ is True
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"TerminalKey": "other"}, {"OrderId": "fm-unknown"}, {"Token": "0" * 64}],
+)
+def test_untrusted_callback_does_not_carry_attempt_context(attempt, changes):
+    notification = signed_notification(**{k: v for k, v in changes.items() if k != "Token"})
+    if "Token" in changes:
+        body = json.loads(notification.body)
+        body["Token"] = changes["Token"]
+        notification = IncomingPaymentNotification(headers={}, body=json.dumps(body).encode())
+    with pytest.raises(PaymentGatewayError) as caught:
+        gateway_module().TBankGateway(config()).authenticate_notification(notification)
+    assert not hasattr(caught.value, "attempt_id")

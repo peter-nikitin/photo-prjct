@@ -51,6 +51,14 @@ _OBJECTS_12 = (_OBJECTS_105 - {"composite"}) | frozenset(
 )
 
 
+class TBankAuthenticatedNotificationError(PaymentGatewayError):
+    """Authenticated bank evidence conflicts with a known attempt; safe for attention."""
+
+    def __init__(self, attempt_id: int) -> None:
+        super().__init__(PaymentGatewayErrorCategory.INVALID_RESPONSE)
+        self.attempt_id = attempt_id
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -392,6 +400,8 @@ class TBankGateway:
             or not hmac.compare_digest(token, sign_payload(data, self.config.terminal_password))
         ):
             raise PaymentGatewayError(PaymentGatewayErrorCategory.AUTHENTICATION_FAILED)
+        if data.get("TerminalKey") != self.config.terminal_key:
+            raise PaymentGatewayError(PaymentGatewayErrorCategory.AUTHENTICATION_FAILED)
         order_id = data.get("OrderId")
         if not isinstance(order_id, str) or not order_id.startswith("fm-") or len(order_id) > 50:
             raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
@@ -400,7 +410,10 @@ class TBankGateway:
         ).first()
         if attempt is None:
             raise PaymentGatewayError(PaymentGatewayErrorCategory.NOT_FOUND)
-        return self._observation(data, attempt)
+        try:
+            return self._observation(data, attempt)
+        except PaymentGatewayError:
+            raise TBankAuthenticatedNotificationError(attempt.pk) from None
 
 
 def tbank_gateway_factory() -> TBankGateway:

@@ -359,6 +359,7 @@ class PaidPhotoPurchaseFlowTests(TestCase):
     def test_checkout_to_authenticated_payment_to_email_grant_and_exact_original(self) -> None:
         """Removing any checkout, callback, grant, or item check could expose an unpaid original."""
         gateway = DeterministicPaymentGateway(
+            adapter_key="tbank-eacq-v1",
             outcome=TestPaymentOutcome.SUCCESS,
             notification_secret=self.notification_secret,
         )
@@ -367,7 +368,8 @@ class PaidPhotoPurchaseFlowTests(TestCase):
             patch("commerce.services.purchasable_paid_photo_queryset", return_value=queryset),
             patch("commerce.views.purchasable_paid_photo_queryset", return_value=queryset),
             patch("commerce.checkout.purchasable_paid_photo_queryset", return_value=queryset),
-            patch("commerce.views._payment_gateway", return_value=gateway),
+            override_settings(COMMERCE_PAYMENT_GATEWAY_FACTORY="test-bank-factory"),
+            patch("commerce.views._configured_adapter", return_value=gateway),
         ):
             checkout = self.client.post(
                 self.checkout_url(),
@@ -395,10 +397,10 @@ class PaidPhotoPurchaseFlowTests(TestCase):
         self.assertEqual(returned.status_code, 200)
         self.assertEqual(order.status, Order.Status.PENDING)
 
-        with patch("commerce.views._payment_gateway", return_value=gateway):
+        with patch("commerce.views._configured_adapter", return_value=gateway):
             callback = self.payment_notification(order=order, gateway=gateway)
         order.refresh_from_db()
-        self.assertEqual(callback.status_code, 204)
+        self.assertEqual(callback.status_code, 200)
         self.assertEqual(order.status, Order.Status.PAID)
         self.assertEqual(EmailDelivery.objects.filter(order=order).count(), 1)
 

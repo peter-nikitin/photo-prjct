@@ -18,6 +18,7 @@ from commerce.payments import (
     PaymentTransitionRejected,
     reconcile_payment_attempt,
 )
+from commerce.tbank_gateway import TBANK_ADAPTER_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -376,7 +377,11 @@ def _release_payment_reconciliation_claim(
         attempt.reconciliation_lease_id = None
         attempt.reconciliation_lease_expires_at = None
         attempt.reconciliation_next_attempt_at = (
-            None if already_retried else now + _PAYMENT_RECONCILIATION_RETRY_DELAY
+            now + timedelta(minutes=5)
+            if attempt.adapter_key == TBANK_ADAPTER_KEY
+            else None
+            if already_retried
+            else now + _PAYMENT_RECONCILIATION_RETRY_DELAY
         )
         attempt.save(
             update_fields=[

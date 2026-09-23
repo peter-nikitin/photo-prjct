@@ -1,7 +1,7 @@
 # Приём оплаты через интернет-эквайринг Т-Банка
 
 - Date: 2026-09-23
-- Status: Proposed for maintainer review. This specification does not authorize public payment activation.
+- Status: Approved by maintainer on 2026-09-23 for implementation. Public payment activation remains separate.
 - Related architecture: [Purchase and download](../../architecture.md#purchase-and-download),
   [Checkout, payment, entitlement, and original-delivery seam](../../architecture.md#checkout-payment-entitlement-and-original-delivery-seam).
 - Related ADRs: [0002](../../adr/0002-postgresql-system-of-record.md),

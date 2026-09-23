@@ -830,13 +830,7 @@ restore_previous_deployment_package() {
 }
 
 stop_import_before_web_change() {
-    import_env_file="$1"
-    import_enabled="$2"
-    if [ "$import_enabled" = True ]; then
-        # A failed candidate can be unhealthy: worker stop is authoritative even if gate close fails.
-        compose_with_env_file "$import_env_file" exec -T web python manage.py shell --no-imports -c \
-            'from feature_flags.models import FeatureFlag; FeatureFlag.objects.filter(key="yandex-disk-import").update(state="off")' || true
-    fi
+    import_enabled="$1"
     # Container identity remains available even when disabled configuration has no image.
     # Do not activate the import profile merely to remove an existing worker.
     import_containers="$(docker ps -aq \
@@ -886,7 +880,7 @@ start_import_after_web_ready() {
 }
 
 recover_previous_deployment() {
-    stop_import_before_web_change "$DEPLOY_ROOT/.env" "$requested_import_enabled" || return 1
+    stop_import_before_web_change "$requested_import_enabled" || return 1
 
     if [ "$previous_env_exists" -eq 0 ]; then
         recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.recovery.XXXXXX")" || return 1
@@ -1257,7 +1251,7 @@ observability_installed=1
 mutation_started=1
 sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
 if [ "$previous_env_exists" -eq 1 ]; then
-    stop_import_before_web_change "$DEPLOY_ROOT/.env" "$previous_import_enabled" || fail "Import worker stop failed"
+    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker stop failed"
 fi
 
 phase projection-preflight

@@ -170,3 +170,22 @@ def test_previous_enabled_import_container_is_removed_and_drained_before_web_cha
         < commands.index("sleep 300")
         < commands.index("up -d --remove-orphans")
     )
+    assert "yandex-disk-import" not in commands
+
+
+def test_failed_import_deploy_does_not_override_operator_gate(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="public-failure")
+    with (tmp_path / ".env").open("a") as stream:
+        stream.write("PHOTO_IMPORT_ENABLED=True\nIMPORT_WORKER_IMAGE=import:old-release\n")
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    env.update(
+        PHOTO_IMPORT_ENABLED="True",
+        IMPORT_WORKER_IMAGE="import:new-image",
+        PHOTO_IMPORT_BUILD="release",
+        PHOTO_IMPORT_WORKER_TOKEN="import-secret",
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "yandex-disk-import" not in "\n".join(_apply_log(tmp_path))

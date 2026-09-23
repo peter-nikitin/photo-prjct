@@ -12,6 +12,7 @@ import re
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -233,6 +234,25 @@ def check():
     # It does not independently exercise transport redirects for an allowed source.
     print("HTTP_REDIRECT_SOURCE_ALLOWLIST_PASS fixture_status=302 origin_target_fetches=0")
 
+    # A cold numbered page can present many distinct resources to the CDN at once.
+    # Every request here has a valid path and origin credential; admission control
+    # must not turn ordinary gallery loading into intermittent 429 responses.
+    start_together = threading.Barrier(32)
+
+    def cold_page_request(index):
+        start_together.wait(timeout=5)
+        try:
+            status, _, _, _ = request(signed(f"s3://{BUCKET}/{key(index)}"))
+            return status
+        except (OSError, TimeoutError) as error:
+            return type(error).__name__
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+        cold_statuses = list(executor.map(cold_page_request, range(32)))
+    observed = {status: cold_statuses.count(status) for status in set(cold_statuses)}
+    assert all(status == 200 for status in cold_statuses), f"Cold gallery burst failed: {observed}"
+    print("COLD_GALLERY_BURST_PASS images=32")
+
     def transform(index):
         status, _, body, seconds = request(signed(f"s3://{BUCKET}/{key(index)}"))
         assert status == 200, f"Cold transform failed status={status}"
@@ -242,7 +262,7 @@ def check():
 
     # A separate source key for every card; no transformed-result cache exists.
     started = time.monotonic()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
         results = list(executor.map(transform, range(100)))
     print(
         json.dumps(
@@ -260,7 +280,7 @@ def check():
     assert b"image_origin_auth_rejected_total 1" in body
     status, _, image_metrics, _ = request("/imgproxy-metrics", host="http://nginx:8081")
     assert status == 200
-    assert b"workers 2" in image_metrics
+    assert b"workers 4" in image_metrics
     memory = float(re.search(rb"process_resident_memory_bytes ([\d.e+]+)", image_metrics)[1])
     assert memory < 3 * 1024**3
     print(json.dumps({"imgproxy_resident_bytes": int(memory)}))

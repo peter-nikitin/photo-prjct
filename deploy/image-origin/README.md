@@ -20,11 +20,14 @@ docker compose -f deploy/image-origin/test/compose.yml up --build --abort-on-con
 Use the wrapper for the complete gate: the image phase requires its ACME fixture preparation.
 It also checks Docker's effective CPU/memory quotas and private-data absence in Nginx/imgproxy logs.
 
-The five test services collectively have 2 vCPU and 4032 MiB of hard memory limits. The transformer
-has 1.5 vCPU, 3 GiB, two workers and a 20-request queue. Nginx admits at most 24 concurrent requests
-and 100 requests/second with a burst of 20. The rate bound protects ingress; the worker count bounds
-transform CPU/memory. Processing/download/write budgets are 3/2/1 seconds and the origin HTTP
-budget is four seconds. There is no result cache or media host mount.
+The deployed Nginx and imgproxy services have 1.75 vCPU and 3200 MiB of hard limits; fixture
+services, including the one-vCPU burst-test client, are not deployed on the origin VM. The
+transformer has 1.5 vCPU, 3 GiB, four workers and a 20-request queue. Nginx retains a 24-request
+concurrency bound, but paces a shared cold-page burst of up to 100 requests at 25 requests/second
+instead of rejecting requests beyond the first 20 immediately. Requests beyond that bounded
+burst can still receive 429. The worker count bounds transform CPU/memory. Processing/download/write
+budgets are 3/2/1 seconds and the origin HTTP budget is four seconds. There is no result cache or
+media host mount.
 
 The fixture uses one generated 1600×1067 JPEG under 100 distinct immutable preview keys. This
 checks the minimum compute envelope and complete cold transforms; it is not a real-corpus visual

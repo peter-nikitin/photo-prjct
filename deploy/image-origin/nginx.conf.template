@@ -34,7 +34,9 @@ http {
         200 "public, max-age=21600, s-maxage=2592000";
     }
     limit_conn_zone $server_name zone=origin_connections:32k;
-    limit_req_zone $server_name zone=origin_requests:32k rate=100r/s;
+    # A cold numbered page can request 100 distinct images; pace the burst
+    # instead of rejecting it while keeping the in-flight connection bound.
+    limit_req_zone $server_name zone=origin_requests:32k rate=25r/s;
     limit_req_status 429;
     limit_conn_status 429;
 
@@ -60,7 +62,7 @@ http {
             if ($origin_authenticated = 0) { return 403; }
             if ($request_method != GET) { return 405; }
             limit_conn origin_connections 24;
-            limit_req zone=origin_requests burst=20 nodelay;
+            limit_req zone=origin_requests burst=100;
             proxy_http_version 1.1;
             proxy_pass_request_headers off;
             proxy_pass_request_body off;

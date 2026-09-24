@@ -34,8 +34,8 @@ http {
         200 "public, max-age=21600, s-maxage=2592000";
     }
     limit_conn_zone $server_name zone=origin_connections:32k;
-    # A cold numbered page can request 100 distinct images; pace the burst
-    # instead of rejecting it while keeping the in-flight connection bound.
+    # Allow a full cold gallery page plus overlapping viewers through admission;
+    # pace excess requests instead of rejecting normal page loads.
     limit_req_zone $server_name zone=origin_requests:32k rate=25r/s;
     limit_req_status 429;
     limit_conn_status 429;
@@ -61,8 +61,8 @@ http {
             js_header_filter origin_metrics.count;
             if ($origin_authenticated = 0) { return 403; }
             if ($request_method != GET) { return 405; }
-            limit_conn origin_connections 24;
-            limit_req zone=origin_requests burst=100;
+            limit_conn origin_connections 128;
+            limit_req zone=origin_requests burst=128;
             proxy_http_version 1.1;
             proxy_pass_request_headers off;
             proxy_pass_request_body off;

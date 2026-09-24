@@ -22,9 +22,9 @@ It also checks Docker's effective CPU/memory quotas and private-data absence in 
 
 The deployed Nginx and imgproxy services have 1.75 vCPU and 3200 MiB of hard limits; fixture
 services, including the one-vCPU burst-test client, are not deployed on the origin VM. The
-transformer has 1.5 vCPU, 3 GiB, four workers and a 20-request queue. Nginx retains a 24-request
-concurrency bound, but paces a shared cold-page burst of up to 100 requests at 25 requests/second
-instead of rejecting requests beyond the first 20 immediately. Requests beyond that bounded
+transformer has 1.5 vCPU, 3 GiB, four workers and a 20-request queue. Nginx allows up to 128
+concurrent image requests and paces a shared burst of up to 128 requests at 25 requests/second
+instead of rejecting an ordinary 100-image page. Requests beyond that bounded
 burst can still receive 429. The worker count bounds transform CPU/memory. Processing/download/write
 budgets are 3/2/1 seconds and the origin HTTP budget is four seconds. There is no result cache or
 media host mount.

@@ -36,7 +36,7 @@ http {
     limit_conn_zone $server_name zone=origin_connections:32k;
     # Allow a full cold gallery page plus overlapping viewers through admission;
     # pace excess requests instead of rejecting normal page loads.
-    limit_req_zone $server_name zone=origin_requests:32k rate=25r/s;
+    limit_req_zone $server_name zone=origin_requests:32k rate=100r/s;
     limit_req_status 429;
     limit_conn_status 429;
 
@@ -62,7 +62,7 @@ http {
             if ($origin_authenticated = 0) { return 403; }
             if ($request_method != GET) { return 405; }
             limit_conn origin_connections 128;
-            limit_req zone=origin_requests burst=128;
+            limit_req zone=origin_requests burst=256;
             proxy_http_version 1.1;
             proxy_pass_request_headers off;
             proxy_pass_request_body off;

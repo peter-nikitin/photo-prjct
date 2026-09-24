@@ -46,7 +46,7 @@ cleanup() {
         candidate_compose down --remove-orphans >/dev/null 2>&1 || true
     fi
     if [ "$status" -ne 0 ] && [ "$replacing" -eq 1 ] && [ -n "$active" ]; then
-        if compose "$active" findme-image-origin up -d --wait --wait-timeout 45 nginx; then
+        if compose "$active" findme-image-origin up -d --force-recreate --wait --wait-timeout 45 nginx; then
             sh "$active/check.sh" "$active/.env" || true
             echo 'IMAGE_ORIGIN_ROLLBACK=restored_previous_package' >&2
         else
@@ -122,7 +122,7 @@ candidate_compose down --remove-orphans
 
 # The old package stays active until the candidate's real signed JPEG gate is green.
 replacing=1
-compose "$candidate" findme-image-origin up -d --wait --wait-timeout 45 nginx
+compose "$candidate" findme-image-origin up -d --force-recreate --wait --wait-timeout 45 nginx
 sh "$candidate/check.sh" "$candidate/.env"
 if [ -n "$active" ] && [ "$active" != "$candidate" ]; then
     ln -sfn "$active" "$root/previous"

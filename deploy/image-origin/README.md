@@ -67,6 +67,10 @@ sh /opt/photo-prjct-image-origin/current/apply.sh rollback
 JPEG, and dimensions. The signed URI/header travel through curl stdin, never process arguments.
 No key, path, URI or query is emitted by the check.
 
+`apply.sh` force-recreates the public Nginx container on both apply and rollback. Compose's
+service hash does not include the contents of the mounted `nginx.conf.template`, so an ordinary
+`up` can otherwise leave the previous runtime limits active after a successful package deploy.
+
 ## Certificate and monitoring ownership
 
 Provisioning/issuance is external to `apply.sh`; no script here changes DNS or requests a live

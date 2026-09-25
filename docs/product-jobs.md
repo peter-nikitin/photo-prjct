@@ -36,7 +36,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-004 | Photographer | Upload an event batch | Validated | 2026-09-07 |
 | PJ-005 | Visitor | Browse an event gallery | Validated | 2026-09-07 |
 | PJ-006 | Operator | Review processing results | Candidate | 2026-07-17 |
-| PJ-007 | Customer | Find photos by bib | In progress | 2026-09-13 |
+| PJ-007 | Customer | Find photos by bib | Validated | 2026-09-25 |
 | PJ-008 | Customer | Find photos by face | In progress | 2026-08-20 |
 | PJ-009 | Visitor | Receive a free-event original | Delivered | 2026-08-21 |
 | PJ-010 | Customer | Purchase selected photos | In progress | 2026-08-22 |
@@ -156,20 +156,20 @@ result, so I can keep published search data reliable.
 When I know a participant bib number, I want to search within one event, so I can find likely photos
 quickly.
 
-- Status: In progress
-- Evidence: The repository now implements a disabled-default event checkbox, immutable new-photo
-  enrollment policy, pinned Linux/CPU `1/bib_recognition/1` processing, accepted-only indexed
-  projections, and a separate exact event-scoped `?bib=` form. The saved local Istra full-cycle
-  artifact processed and kept published all 37 photos, completed 37/37 bib jobs without retry or
-  failure, recovered all user-confirmed numbers, returned no user-rejected junk, and passed exact
-  search, leading-zero, and event-isolation checks. The same run recorded 40 accepted, 24 rejected,
-  and zero uncertain candidates. The product job remains in progress because its Docker Desktop
-  host recorded swap activity; the required production-equivalent Linux resource gate, canonical
-  deployment with all events disabled, first-event observation, and customer-outcome evidence are
-  incomplete. See the [approved design](superpowers/specs/2026-09-12-bib-number-production-search-design.md),
+- Status: Validated
+- Evidence: The product provides an event-level checkbox with immutable new-photo enrollment,
+  versioned Linux/CPU processing, accepted-only indexed projections, and a separate exact
+  event-scoped `?bib=` form. Canonical production observations completed 37/37 Istra and 28/28
+  Gagarin/Metelsky bib jobs, alongside successful metadata, preview, and face jobs, with no bib
+  failure or retry. The operator exercised the public search successfully. The Gagarin/Metelsky
+  comparison retained all 42 saved Linux-worker pairs and exposed an accepted first-version
+  limitation: `65` printed in event-shirt artwork is searchable on three photos. This adds extra
+  results without hiding exact race-bib matches; improvement hypotheses and revisit triggers are
+  recorded in [future work](future-work/2026-09-25-bib-apparel-number-filtering.md). See also the
+  [approved design](superpowers/specs/2026-09-12-bib-number-production-search-design.md),
   [local acceptance contract](../experiments/bib_search/README.md), and
   [activation runbook](runbooks/bib-number-recognition.md).
-- Last updated: 2026-09-13
+- Last updated: 2026-09-25
 
 ### PJ-008 — Customer — Find photos by face
 
@@ -389,4 +389,5 @@ This log is append-only.
 | 2026-09-07 | PJ-004 | Validated | Validated | Local fixed-event workspace evidence covers the existing owned uploader, completed and unfinished history, server-confirmed close guidance, and queue preservation across filters and folder creation. Administrative saved-photo editing is a separate permission boundary. No CI, deployment, or live evidence is claimed. |
 | 2026-09-07 | PJ-005 | Validated | Validated | Local product-flow evidence adds reversible hiding across current public gallery, selfie, archive, cart, and checkout paths while preserving immutable paid-order media and archive authority. Historical delivery evidence remains unchanged; no current deployment or customer claim is added. |
 | 2026-09-13 | PJ-007 | Candidate | In progress | The disabled-default repository path and one 37-photo local full cycle pass recognition-quality, publication, exact-search, leading-zero, and event-isolation checks. Docker Desktop swap keeps the production-equivalent Linux resource gate, canonical activation, first/second event observations, and customer outcome incomplete. |
+| 2026-09-25 | PJ-007 | In progress | Validated | Canonical production completed 37/37 Istra and 28/28 Gagarin/Metelsky bib jobs without error or retry, and the operator verified public exact-number search. Three apparel `65` false positives are accepted for the opt-in first version and recorded with concrete revisit triggers in future work. |
 | 2026-09-15 | PJ-005 | Validated | Validated | Repository implementation of ADR 0036 issues six-hour exact-object small-preview capabilities only for accepted normal-gallery derivatives. Legacy, large, download, result, private, archive, and purchased-media routes remain application-authorized; no CI, deployment, direct-transfer, or customer-outcome evidence is claimed. |

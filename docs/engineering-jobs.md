@@ -58,7 +58,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-024 | Maintainer | Prepare paid watermarked-preview activation | In progress | 2026-08-21 |
 | EJ-025 | Operator | Retain anonymous cart data within its bounded lifecycle | Delivered | 2026-08-21 |
 | EJ-026 | Maintainer | Keep paid purchase dark until external prerequisites are approved | In progress | 2026-08-22 |
-| EJ-027 | Maintainer | Gate bib-recognition activation | In progress | 2026-09-13 |
+| EJ-027 | Maintainer | Gate bib-recognition activation | Validated | 2026-09-25 |
 | EJ-028 | Maintainer | Issue bounded direct gallery preview capabilities | In progress | 2026-09-15 |
 
 ## Job details
@@ -501,21 +501,18 @@ When I prepare bib-number search for an event, I want one pinned sequential work
 event cohort with explicit stop conditions, so I can activate recognition without putting photo
 publication or the canonical VM at risk.
 
-- Status: In progress
-- Evidence: The repository implements immutable per-photo applicability, versioned attempts and
-  accepted-only projections, the pinned Linux/CPU `1/bib_recognition/1` worker, exact event reports,
-  deployment validation for one worker replica and bounded CPU/memory values, and the isolated
-  [one-event acceptance harness](../experiments/bib_search/README.md). The saved Istra run processed
-  37/37 applicable photos successfully with zero retries, failures, lease expiry, restarts, OOM, or
-  public-health failures. It retained 40 accepted, 24 rejected, and zero uncertain candidates,
-  recovered every user-confirmed number, returned no reviewed junk, and passed exact search plus
-  event isolation. Peak cgroup memory was 3,607,793,664 bytes, selecting 5120 MiB with 2 CPUs;
-  bib total time was about 31.7 seconds p50, 58.5 seconds p95, and 70.9 seconds maximum. Docker
-  Desktop recorded 12,351 swap-in and 18,913 swap-out pages during the cohort, so this remains a
-  candidate sizing result rather than an activation setting. A production-equivalent Linux resource
-  run, disabled canonical deployment, first-event observation, and second-event confirmation remain
-  incomplete; follow the [bib recognition runbook](runbooks/bib-number-recognition.md).
-- Last updated: 2026-09-13
+- Status: Validated
+- Evidence: The canonical deployment runs the versioned `1/bib_recognition/1` identity in the
+  bounded bulk-worker pool, separate from selfie-query work. Istra completed 37/37 bib jobs with no
+  error or retry; Gagarin/Metelsky completed 28/28 bib, face, metadata, and preview jobs with no
+  error or retry. During the observed runs the bulk and selfie containers remained running without
+  restart or OOM. Exact event reports remained available, public search worked, and failures would
+  remain durable without cancelling ordinary photo publication. The accepted quality boundary is
+  three extra `65` results from event-shirt artwork; the non-blocking gap, hypotheses, and triggers
+  are recorded in [future work](future-work/2026-09-25-bib-apparel-number-filtering.md). Follow the
+  [bib recognition runbook](runbooks/bib-number-recognition.md) for later event observations and
+  rollback.
+- Last updated: 2026-09-25
 
 ### EJ-017 — Developer — Read canonical secret projections consistently
 
@@ -663,6 +660,7 @@ This log is append-only.
 | 2026-08-22 | EJ-026 | Not recorded | In progress | Local, disabled-default purchase capability now has order/payment/delivery/recovery evidence; real adapters, legal/fiscal approval, worker activation, deployment, and customer evidence remain external prerequisites. |
 | 2026-09-07 | EJ-023 | Validated | Validated | Local private-workspace evidence adds strict all-photo administrative filters and atomic mutations, permissioned media, current processing status, and mounted refresh behavior while preserving event-folder storage and upload authority boundaries. No CI, deployment, or live evidence is claimed. |
 | 2026-09-13 | EJ-027 | Not recorded | In progress | The pinned disabled-default bib path and 37-photo local quality/publication/search cycle are implemented. Docker Desktop swap leaves the production-equivalent Linux resource gate, canonical deployment, and first/second event observations incomplete. |
+| 2026-09-25 | EJ-027 | In progress | Validated | Canonical production completed the 37-photo Istra and 28-photo Gagarin/Metelsky cohorts without processing errors, retries, worker restarts, or OOM. Exact search was exercised; the accepted apparel-number precision limitation is tracked separately. |
 | 2026-09-14 | EJ-019 | Delivered | Delivered | The automatic live all-events reconciliation and event-9 `EXPLAIN ANALYZE` benchmark are retired from deployment after they exhausted the sole VM during run 34833392359 and forced rollback. Both commands remain available for explicit offline evidence; deployment retains migration, health, worker, and rollback gates. |
 | 2026-09-15 | EJ-028 | Not recorded | In progress | Repository implementation of ADR 0036 issues six-hour exact-object URLs only for accepted derivative-backed small presentation on bounded normal-gallery pages. Legacy, large, download, result, private, archive, and purchased-media paths remain application-authorized; CI, canonical deployment, direct-transfer, and live-capacity evidence are unrecorded. |
 | 2026-09-15 | EJ-029 | Not recorded | In progress | Repository implementation of ADR 0037 adds atomic gallery-media projection publication, projection-backed customer reads, a bounded all-in-progress old-publication drain with immutable creation-time fencing, all-events rebuild and clean verification, worker-paused candidate cutover, privacy-safe `EXPLAIN ANALYZE` smoke, and fresh/established prior-state recovery. CI, merge, canonical deployment, and live outcome remain unrecorded. |

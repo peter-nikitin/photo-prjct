@@ -182,9 +182,14 @@ def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() ->
         runbook.split("## Activation evidence", 1)[1].split("###", 1)[0].split()
     )
     assert (
-        "The dashboard, alerts, notification channel, and five-minute image-origin VM public probe "
-        "have not been activated"
+        "The dashboard, alerts, and notification channel have not been activated"
     ) in activation_evidence
+    assert (
+        "separate image-origin VM sends five-minute public HTTPS probe metrics"
+        in activation_evidence
+    )
+    assert "06:57:00Z" in runbook
+    assert "07:02:02Z" in runbook
     assert "systemctl is-active unified-agent" not in runbook
     assert "/etc/yandex/unified_agent/config.yml" not in runbook
 

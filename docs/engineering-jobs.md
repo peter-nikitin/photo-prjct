@@ -187,8 +187,9 @@ activated and observed, so I can serve trusted canonical traffic and renew certi
 When a product or processing component becomes unhealthy, I want monitoring and actionable alerts,
 so I can respond before failures persist unnoticed.
 
-The approved minimum is limited to the current public critical path. An external managed checker
-observes canonical HTTPS availability, TLS validity, and latency independently from Yandex Cloud.
+The approved minimum is limited to the current public critical path. A five-minute probe on the
+separate image-origin VM observes canonical public HTTPS availability, TLS validity, and latency.
+Both VMs share one Yandex Cloud zone, so a zone-wide outage is outside this increment.
 Yandex Monitoring receives simple Linux VM metrics from Unified Agent and private low-cardinality
 Django HTTP request, 5xx, and latency metrics. One dashboard and one operator email channel cover
 sustained public failure, missing VM telemetry, imminent disk or memory exhaustion, sustained CPU
@@ -196,9 +197,10 @@ pressure, application 5xx degradation, and recovery. Logs, tracing, business met
 internals, privileged container collection, and the disabled worker remain outside this increment.
 
 - Status: Planned
-- Evidence: [Minimal service monitoring design](superpowers/specs/2026-07-30-minimal-service-monitoring-design.md)
-  and [approved implementation plan](plans/2026-07-30-minimal-service-monitoring.md)
-- Last updated: 2026-07-30
+- Evidence: [Minimal service monitoring design](superpowers/specs/2026-07-30-minimal-service-monitoring-design.md),
+  [image-origin probe decision](adr/0039-run-public-probe-on-image-origin-vm.md), and
+  [activation runbook](runbooks/minimal-monitoring.md).
+- Last updated: 2026-09-25
 
 ### EJ-010 — Operator — Restore service data
 

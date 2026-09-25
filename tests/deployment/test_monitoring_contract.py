@@ -100,7 +100,7 @@ def test_alert_manifest_has_the_baseline_and_disabled_commerce_alert_contracts()
     expected_alerts = {
         "Public service unavailable": (
             "findme_probe_success",
-            "two failed or missing five-minute probe datapoints",
+            "maximum over the 10-minute window",
             "10 minutes",
         ),
         "TLS certificate expiring": (
@@ -129,18 +129,29 @@ def test_alert_manifest_has_the_baseline_and_disabled_commerce_alert_contracts()
             "Evaluation window:",
             "No data:",
             "Notification channel:",
-            "Firing notification:",
             "Recovery notification:",
         ):
             assert field in section
-        assert 'folderId="__YANDEX_CLOUD_FOLDER_ID__"' in section
     public = manifest.split("## Public service unavailable\n", 1)[1].split("\n## ", 1)[0]
-    assert "probe_success = 0" in public
-    assert "missing external observation" in public
-    assert "not a confirmed application response" in public
+    assert "Firing annotation:" in public
+    assert "{{#isAlarm}}" in public
+    assert "{{#isNoData}}" in public
+    assert "No points in evaluation window** to `No data`" in public
+    assert "site availability is unconfirmed" in public
+    for section in manifest.split("\n## ")[2:8]:
+        assert "Firing notification:" in section
     assert "email" in manifest.lower()
     for invalid in ("sys.storage.", "sys.network.", "sys.system.Load1", "sys.system.Uptime"):
         assert invalid not in manifest
+
+
+def test_alert_selectors_use_folder_as_request_context_not_metric_label() -> None:
+    manifest = (ROOT / "deploy/monitoring/alerts.md").read_text(encoding="utf-8")
+
+    assert "__YANDEX_CLOUD_FOLDER_ID__" in manifest.split("## ", 1)[0]
+    selectors = [line for line in manifest.splitlines() if line.startswith("- Selector:")]
+    assert len(selectors) == 9
+    assert all("folderId=" not in selector for selector in selectors)
 
 
 def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() -> None:
@@ -171,7 +182,7 @@ def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() ->
         runbook.split("## Activation evidence", 1)[1].split("###", 1)[0].split()
     )
     assert (
-        "The dashboard, alerts, notification channel, and independent scheduled public probe "
+        "The dashboard, alerts, notification channel, and five-minute image-origin VM public probe "
         "have not been activated"
     ) in activation_evidence
     assert "systemctl is-active unified-agent" not in runbook

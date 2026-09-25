@@ -15,6 +15,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 MONITORING_WRITE_URL = "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/write"
+METADATA_TOKEN_URL = (
+    "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token"
+)
 EXPECTED_HEALTH_BODY = {"status": "ok"}
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
@@ -24,8 +27,9 @@ class ProbeConfig:
     target: str
     folder_id: str
     check_name: str
-    api_key: str
+    api_key: str | None = None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    metadata_iam_token: bool = False
 
 
 @dataclass(frozen=True)
@@ -120,13 +124,35 @@ def build_metrics(
     return metrics
 
 
+def fetch_metadata_iam_token(timeout_seconds: float) -> str:
+    request = urllib.request.Request(METADATA_TOKEN_URL, headers={"Metadata-Flavor": "Google"})
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        body = response.read()
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid metadata token response") from error
+    if not isinstance(payload, dict):
+        raise ValueError("invalid metadata token response")
+    token = payload.get("access_token")
+    if not isinstance(token, str) or not token or any(character.isspace() for character in token):
+        raise ValueError("invalid metadata token response")
+    return token
+
+
 def write_metrics(config: ProbeConfig, metrics: list[Metric]) -> None:
+    if config.metadata_iam_token:
+        authorization = f"Bearer {fetch_metadata_iam_token(config.timeout_seconds)}"
+    elif config.api_key:
+        authorization = f"Api-Key {config.api_key}"
+    else:
+        raise ValueError("missing metric writer authentication")
     parameters = urllib.parse.urlencode({"folderId": config.folder_id, "service": "custom"})
     request = urllib.request.Request(
         f"{MONITORING_WRITE_URL}?{parameters}",
         data=json.dumps({"metrics": metrics}, separators=(",", ":")).encode("utf-8"),
         headers={
-            "Authorization": f"Api-Key {config.api_key}",
+            "Authorization": authorization,
             "Content-Type": "application/json",
         },
         method="POST",
@@ -207,7 +233,9 @@ def parse_arguments(arguments: Sequence[str] | None = None) -> ProbeConfig:
     parser.add_argument("--target", required=True)
     parser.add_argument("--folder-id", required=True)
     parser.add_argument("--check", required=True)
-    parser.add_argument("--api-key", required=True)
+    authentication = parser.add_mutually_exclusive_group(required=True)
+    authentication.add_argument("--api-key")
+    authentication.add_argument("--auth", choices=["vm-metadata"])
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     args = parser.parse_args(arguments)
 
@@ -230,6 +258,7 @@ def parse_arguments(arguments: Sequence[str] | None = None) -> ProbeConfig:
         check_name=args.check,
         api_key=args.api_key,
         timeout_seconds=args.timeout_seconds,
+        metadata_iam_token=args.auth == "vm-metadata",
     )
 
 

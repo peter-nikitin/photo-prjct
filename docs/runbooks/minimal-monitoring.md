@@ -13,13 +13,14 @@ an image, run migrations, or perform rollback automatically.
   `findme-photo-deployment-cpu-pressure`, and
   `findme-photo-deployment-application-5xx-degradation`.
 - GitHub Actions keeps `YANDEX_MONITORING_API_KEY` as an environment secret and
-  `YANDEX_CLOUD_FOLDER_ID` as configuration. Do not print either value, put it in a command line,
-  or copy it into tickets.
+  `YANDEX_CLOUD_FOLDER_ID` as configuration until the GitHub cron is retired. The planned VM probe
+  uses its attached service account's short-lived metadata token. Do not print credentials or copy
+  them into tickets.
 
 ## Activation evidence
 
 **Partially activated.** The VM agent now sends host and Django HTTP metrics. The dashboard,
-alerts, notification channel, and independent scheduled public probe have not been activated;
+alerts, notification channel, and five-minute image-origin VM public probe have not been activated;
 there is no firing/recovery or email-delivery evidence. EJ-009 remains planned.
 
 ### 2026-09-25 VM metric collection
@@ -53,7 +54,7 @@ there is no firing/recovery or email-delivery evidence. EJ-009 remains planned.
 
 ## First response
 
-1. Open the external GitHub Actions health-check result and dashboard
+1. Open the image-origin VM probe timer result and dashboard
    `findme-photo-deployment-overview`. Classify the alert before taking any recovery action:
    public endpoint failure; VM/host telemetry loss; application 5xx degradation; resource pressure;
    or agent-only failure.
@@ -77,22 +78,24 @@ there is no firing/recovery or email-delivery evidence. EJ-009 remains planned.
 
 ## Controlled validation after activation
 
-Use the manual workflow's **controlled failing target** with its `environment=validation` label to
-prove one probe failure and one recovery email without touching the deployment alert selector. Separately
-stop or isolate only Unified Agent long enough to prove missing telemetry while a successful public
-probe remains evidence that the service is up; restore the agent immediately. Do not fill disks,
+Use a controlled failing target with `check=validation-health` and a temporary alert scoped to
+that check to prove one failure and one recovery email without touching the canonical selector.
+Remove the temporary alert afterward. Separately stop or isolate only Unified Agent long enough to
+prove missing telemetry while a successful public probe remains evidence that the service is up;
+restore the agent immediately. Do not fill disks,
 consume all CPU or memory, expire the real certificate, stop the application, or expose `/metrics/`
 publicly.
 
 ## Disable and rollback
 
-1. Disable the scheduled public-health workflow, then disable alerts and the email notification
-   channel. Keep the dashboard until incident evidence is exported.
-2. Stop and disable Unified Agent; restore its prior configuration if one existed; remove only the
+1. Disable the image-origin probe timer and any remaining GitHub schedule, then disable alerts and
+   the email notification channel. Keep the dashboard until incident evidence is exported.
+2. Stop and disable Unified Agent on the application VM; restore its prior configuration if one existed; remove only the
    monitoring package and monitoring configuration installed by this work.
 3. If metrics instrumentation must be removed, use the existing immutable-image and Compose/Nginx
    rollback procedure. Never remove application or data volumes. In particular, do not run
    `docker compose down --volumes`.
-4. After metric writers have stopped, remove the dedicated probe API key, detach the dedicated
-   service account, and remove only its `monitoring.editor` binding. Delete alert/dashboard
-   resources only after required incident evidence is retained.
+4. After metric writers have stopped, remove the dedicated GitHub probe API key if one remains.
+   Keep the image-origin VM's attached service account and its existing `monitoring.editor`
+   binding because image-origin telemetry also uses them. Delete alert/dashboard resources only
+   after required incident evidence is retained.

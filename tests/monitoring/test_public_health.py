@@ -2,6 +2,7 @@ import importlib.util
 import json
 import ssl
 import sys
+import urllib.error
 from pathlib import Path
 from types import ModuleType
 
@@ -267,3 +268,214 @@ def test_probe_captures_only_agreed_metrics_for_local_deterministic_boundaries(
             },
         ]
     }
+
+
+def test_metadata_iam_token_authorizes_metric_write(
+    probe: ModuleType, config: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = probe.ProbeConfig(
+        target=config.target,
+        folder_id=config.folder_id,
+        check_name=config.check_name,
+        metadata_iam_token=True,
+    )
+    requests: list[tuple[str, str | None, str | None, float]] = []
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request: object, timeout: float):
+        requests.append(
+            (
+                request.full_url,
+                request.get_header("Metadata-flavor"),
+                request.get_header("Authorization"),
+                timeout,
+            )
+        )
+        if len(requests) == 1:
+            return FakeResponse(
+                b'{"access_token":"secret-token","expires_in":3600,"token_type":"Bearer"}'
+            )
+        return FakeResponse(b"")
+
+    monkeypatch.setattr(probe.urllib.request, "urlopen", fake_urlopen)
+    probe.write_metrics(config, [{"name": "findme_probe_success", "value": 1.0}])
+
+    assert requests == [
+        (
+            "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+            "Google",
+            None,
+            10.0,
+        ),
+        (
+            "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/write?folderId=folder-id&service=custom",
+            None,
+            "Bearer secret-token",
+            10.0,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not json",
+        b"[]",
+        b"{}",
+        b'{"access_token":null}',
+        b'{"access_token":""}',
+        b'{"access_token":"secret-token\\nheader: injected"}',
+    ],
+)
+def test_bad_metadata_response_prevents_write_without_leaking_token(
+    probe: ModuleType, config: object, monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    config = probe.ProbeConfig(
+        target=config.target,
+        folder_id=config.folder_id,
+        check_name=config.check_name,
+        metadata_iam_token=True,
+    )
+    requests: list[str] = []
+    output: list[str] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self) -> bytes:
+            return body
+
+    def fake_urlopen(request: object, timeout: float):
+        requests.append(request.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr(probe.urllib.request, "urlopen", fake_urlopen)
+    result = probe.run_probe(
+        config,
+        fetch_health=lambda target, timeout: _ok_response(probe),
+        certificate_not_after=lambda target, timeout: _expires_in_two_days(),
+        monotonic_clock=iter((1.0, 1.1)).__next__,
+        wall_clock=lambda: 1_767_225_600.0,
+        emit=output.append,
+    )
+
+    assert result == 1
+    assert requests == [
+        "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token"
+    ]
+    assert output == ["metrics write failed"]
+
+
+def test_metadata_transport_error_prevents_write_and_keeps_diagnostics_safe(
+    probe: ModuleType, config: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = probe.ProbeConfig(
+        target=config.target,
+        folder_id=config.folder_id,
+        check_name=config.check_name,
+        metadata_iam_token=True,
+    )
+    output: list[str] = []
+
+    def fail_urlopen(request: object, timeout: float):
+        raise urllib.error.URLError("secret-token")
+
+    monkeypatch.setattr(probe.urllib.request, "urlopen", fail_urlopen)
+    result = probe.run_probe(
+        config,
+        fetch_health=lambda target, timeout: _ok_response(probe),
+        certificate_not_after=lambda target, timeout: _expires_in_two_days(),
+        monotonic_clock=iter((1.0, 1.1)).__next__,
+        wall_clock=lambda: 1_767_225_600.0,
+        emit=output.append,
+    )
+
+    assert result == 1
+    assert output == ["metrics write failed"]
+
+
+def test_failed_public_check_writes_zero_using_metadata_token(
+    probe: ModuleType, config: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = probe.ProbeConfig(
+        target=config.target,
+        folder_id=config.folder_id,
+        check_name=config.check_name,
+        metadata_iam_token=True,
+    )
+    writes: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request: object, timeout: float):
+        if request.full_url == probe.METADATA_TOKEN_URL:
+            return FakeResponse(
+                b'{"access_token":"secret-token","expires_in":3600,"token_type":"Bearer"}'
+            )
+        writes.append(
+            {
+                "authorization": request.get_header("Authorization"),
+                "payload": json.loads(request.data),
+            }
+        )
+        return FakeResponse(b"")
+
+    monkeypatch.setattr(probe.urllib.request, "urlopen", fake_urlopen)
+    result = probe.run_probe(
+        config,
+        fetch_health=lambda target, timeout: probe.HealthResponse(status=503, body=b""),
+        certificate_not_after=lambda target, timeout: _expires_in_two_days(),
+        monotonic_clock=iter((1.0, 1.1)).__next__,
+        wall_clock=lambda: 1_767_225_600.0,
+        emit=lambda message: None,
+    )
+
+    assert result == 1
+    assert len(writes) == 1
+    assert writes[0]["authorization"] == "Bearer secret-token"
+    assert writes[0]["payload"]["metrics"][0]["value"] == 0.0
+
+
+def test_cli_accepts_exactly_one_authentication_mode(probe: ModuleType) -> None:
+    base = [
+        "--target",
+        "https://findme-photo.ru/health/",
+        "--folder-id",
+        "folder-id",
+        "--check",
+        "canonical-health",
+    ]
+
+    assert probe.parse_arguments([*base, "--auth", "vm-metadata"]).metadata_iam_token is True
+    assert probe.parse_arguments([*base, "--api-key", "secret"]).api_key == "secret"
+    with pytest.raises(SystemExit):
+        probe.parse_arguments(base)
+    with pytest.raises(SystemExit):
+        probe.parse_arguments([*base, "--auth", "vm-metadata", "--api-key", "secret"])

@@ -337,9 +337,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   short-lived exact-object media grants, as defined by
   [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md).
 - Use Yandex Monitoring and one unprivileged Unified Agent for basic VM and private
-  low-cardinality Django HTTP metrics. Check the canonical public HTTPS health endpoint through a
-  managed probe outside Yandex Cloud, as defined by
-  [ADR 0018](adr/0018-use-managed-yandex-monitoring.md).
+  low-cardinality Django HTTP metrics. The planned public HTTPS probe runs on the separate
+  image-origin VM in the same Yandex Cloud zone, as defined by
+  [ADR 0018](adr/0018-use-managed-yandex-monitoring.md) and
+  [ADR 0039](adr/0039-run-public-probe-on-image-origin-vm.md).
 - The `selfie_search` Django app implements two public event-scoped face-query sources. An uploaded
   selfie immediately creates the queued bearer-link result page; the selfie-only worker returns one
   transient query embedding. Before every direct ranking, Django reads the authoritative ordered

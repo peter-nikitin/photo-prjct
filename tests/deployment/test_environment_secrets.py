@@ -260,6 +260,7 @@ def test_manifest_pins_the_reviewed_deployment_identity(manifest: dict[str, Any]
             "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/face-embedding-benchmark.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main",
+            "peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main",
         ],
     }
 
@@ -299,6 +300,7 @@ def test_manifest_declares_complete_schema_and_closed_projections(
         "deploy": DEPLOY_KEYS,
         "remote-check": {"VM_SSH_KEY"},
         "public-monitor": {"YANDEX_MONITORING_API_KEY"},
+        "public-probe-deploy": {"VM_SSH_KEY"},
         "image-origin": IMAGE_ORIGIN_KEYS,
         "image-delivery-provision": IMAGE_DELIVERY_PROVISION_KEYS,
     }

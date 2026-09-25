@@ -103,17 +103,18 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   publication transition. The Linux/CPU worker reads the private original through the existing
   short-lived object grant, then a bounded per-photo child process performs RapidOCR tiling and
   sequential Qwen3-VL reads through a loopback-only pinned `llama.cpp` server. The worker retains
-  total concurrency one, and the initial deployment permits only one replica when the bib identity
-  is configured. Django independently validates the bounded result and atomically projects only
-  accepted exact ASCII digit strings into indexed `BibReading` rows; attempts, rejected/uncertain
+  one photo at a time inside each worker process; the independently scalable bulk-worker service
+  owns bib jobs while the fixed selfie service remains separate. Django independently validates
+  the bounded result and atomically projects only accepted exact ASCII digit strings into indexed
+  `BibReading` rows; attempts, rejected/uncertain
   evidence, and sanitized failures remain durable. Empty success or terminal failure leaves the
   already published photo in the gallery. The public `?bib=` form is separate from selfie search
   and filters the ordinary eligible gallery by exact event-scoped equality, preserving leading
-  zeros. Local Istra evidence recovered every reviewed number and returned no reviewed junk across
-  37 photos, but the Docker Desktop host swapped during the cohort. The implementation is therefore
-  not ready for canonical activation until a production-equivalent Linux run passes every resource
-  gate in the [bib recognition runbook](runbooks/bib-number-recognition.md); no event is claimed
-  enabled in the canonical deployment.
+  zeros. The canonical deployment completed opt-in 37-photo Istra and 28-photo Gagarin/Metelsky
+  cohorts without processing error or retry, and the public search was exercised. Generation 1 has
+  an accepted precision limitation: prominent apparel digits can pass exact OCR/visual validation;
+  the observed `65` examples and revisit triggers are recorded in
+  [future work](future-work/2026-09-25-bib-apparel-number-filtering.md).
 - The repository now also implements the dark-deployable preview-quality candidate
   `3/face_embedding/4`. It accepts only the already verified `preview-small-v1` input, and its
   fixed event-scoped replay command is dry-run by default and requires an explicit apply option.
@@ -457,8 +458,8 @@ The MVP remains one product with modules that have explicit responsibilities:
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
 | Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals, preview-first, and the gated paid-watermark repository slice; real watermark activation and purchased exports remain unimplemented |
-| Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed face processing, disabled-default bib recognition, and the disabled-default offline face-cluster corpus path are implemented locally; bib activation is blocked on the Linux resource gate, and canonical-deployment activation and customer outcomes are not evidenced |
-| Search | Event-scoped face/bib/time/location queries | Public direct face search, disabled-default exact event bib search, and disabled-default direct-first face-cluster expansion are implemented locally; no bib/cluster canonical activation or customer-outcome validation is claimed, and remaining modes are proposed |
+| Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed face processing and opt-in bib recognition are active in the canonical deployment; the offline face-cluster corpus path remains disabled by default. Bib generation 1 has the recorded apparel-number precision limitation. |
+| Search | Event-scoped face/bib/time/location queries | Public direct face search and opt-in exact event bib search are active; direct-first face-cluster expansion remains disabled by default, and remaining modes are proposed. |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
 | Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, paid-original entitlement, and page-scoped archive delivery | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, Commerce worker deployment wiring, local T-Bank eacq adapter, and ADR 0034's streaming page-scoped ZIP delivery are implemented behind runtime gates. The deployed adapter remains the staff simulator. Bank sandbox acceptance, approved fiscal values, public activation, maximum-page capacity acceptance, and live customer evidence remain outstanding |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
@@ -527,10 +528,11 @@ broker, vector engine, and ML implementations shown for later processing require
    embeddings. The implemented preview-first contract records preview coordinate space and source
    dimensions for face results. Bib generation 1 instead reads the private original in a bounded
    process tree, records OCR and visual evidence with model/configuration identity and geometry, and
-   lets Django accept, reject, or retain uncertainty independently. Bib and face are separate jobs,
-   while one worker replica and total concurrency one prevent their inference from overlapping. The
+   lets Django accept, reject, or retain uncertainty independently. Bib and face are separate jobs
+   handled by the bulk-worker pool; each worker process keeps inference concurrency one. The
    repository also includes the approval-gated face version-4 candidate for one exact event and
-   preserves its immutable evidence. No canonical bib or face-version-4 activation is claimed.
+   preserves its immutable evidence. Canonical bib activation is opt-in per event; no
+   face-version-4 activation is claimed.
 7. Search indexes are updated only within the photo's event scope. Accepted current bib decisions
    replace the photo's indexed `BibReading` projection atomically; rejected, uncertain, failed, and
    historical attempts never enter public search.

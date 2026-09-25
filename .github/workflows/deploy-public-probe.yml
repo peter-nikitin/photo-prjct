@@ -1,0 +1,69 @@
+name: Deploy public health probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Install, disable, or restore the previous public probe package
+        required: true
+        type: choice
+        default: install
+        options:
+          - install
+          - disable
+          - rollback
+      deployment_sha:
+        description: Exact reviewed 40-character commit containing the probe management tools
+        required: true
+        type: string
+
+jobs:
+  deploy-public-probe:
+    name: Deploy public health probe
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-public-probe
+      cancel-in-progress: false
+    steps:
+      - name: Check out reviewed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.deployment_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Bind checkout to exact commit
+        env:
+          PUBLIC_PROBE_RELEASE: ${{ inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: ${{ inputs.action }}
+        run: |
+          set -eu
+          case "$PUBLIC_PROBE_RELEASE" in
+            *[!0-9a-f]*|'') echo 'deployment_sha must be a lowercase 40-character SHA' >&2; exit 2 ;;
+          esac
+          test "${#PUBLIC_PROBE_RELEASE}" -eq 40
+          test "$(git rev-parse HEAD)" = "$PUBLIC_PROBE_RELEASE"
+      - name: Deploy public health probe
+        env:
+          PUBLIC_PROBE_RELEASE: ${{ inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: ${{ inputs.action }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+          IMAGE_ORIGIN_VM_HOST: ${{ vars.IMAGE_ORIGIN_VM_HOST }}
+          IMAGE_ORIGIN_VM_USER: ${{ vars.IMAGE_ORIGIN_VM_USER }}
+          IMAGE_ORIGIN_SSH_KNOWN_HOSTS: ${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --consumer public-probe-deploy \
+            --identity github-oidc \
+            -- sh deploy/monitoring/probe-vm/run-remote.sh
+      - name: Record completed action
+        env:
+          PUBLIC_PROBE_RELEASE: ${{ inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: ${{ inputs.action }}
+        run: |
+          printf 'Completed public probe action `%s` using tools from repository SHA `%s`\n' "$PUBLIC_PROBE_ACTION" "$PUBLIC_PROBE_RELEASE" >> "$GITHUB_STEP_SUMMARY"

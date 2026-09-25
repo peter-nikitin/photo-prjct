@@ -115,6 +115,7 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
         "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
         "peter-nikitin/photo-prjct/.github/workflows/face-embedding-benchmark.yml@refs/heads/main",
         "peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main",
+        "peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main",
     ]
 
     cutover_jobs = (

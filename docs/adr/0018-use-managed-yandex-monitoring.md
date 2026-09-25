@@ -4,7 +4,7 @@
 - Date: 2026-07-30
 - Deciders: project maintainer
 - Supersedes: none
-- Superseded by: none
+- Superseded by: ADR 0039, public-probe placement only
 
 ## Context
 

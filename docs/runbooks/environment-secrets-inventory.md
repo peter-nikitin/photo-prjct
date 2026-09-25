@@ -28,6 +28,8 @@ The resolver permits only these exact main-branch workflow identities:
 - `peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main`
 - `peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main`
 - `peter-nikitin/photo-prjct/.github/workflows/face-embedding-benchmark.yml@refs/heads/main`
+- `peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main`
+- `peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main`
 
 It validates the full `workflow_ref` claim before exchange. A matching path from another repository
 or ref is not authorized. Every reader needs both exact-secret roles: `lockbox.viewer` for metadata
@@ -54,7 +56,7 @@ local-only. `VM_SSH_KEY` is binary and becomes only `VM_SSH_KEY_FILE`.
 | `PHOTO_PROCESSING_WORKER_TOKEN` | `PHOTO_PROCESSING_WORKER_TOKEN` | text | yes | `local-web`, `deploy` |
 | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `deploy` |
 | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `deploy` |
-| `VM_SSH_KEY` | `VM_SSH_KEY_FILE` | binary | no | `deploy`, `remote-check`, `image-origin` (transport only) |
+| `VM_SSH_KEY` | `VM_SSH_KEY_FILE` | binary | no | `deploy`, `remote-check`, `image-origin`, `public-probe-deploy` (transport only) |
 | `GHCR_READ_TOKEN` | `GHCR_READ_TOKEN` | text | no | `deploy` |
 | `YANDEX_MONITORING_API_KEY` | `YANDEX_MONITORING_API_KEY` | text | no | `public-monitor` |
 | `GALLERY_CDN_TOKEN_SECRET` | `GALLERY_CDN_TOKEN_SECRET` | text | no | `local-web`, `deploy`, `image-delivery-provision` |
@@ -68,7 +70,7 @@ The fixed resolver boundary is:
 
 ```text
 scripts/run-with-environment-secrets.py \
-  --consumer <local-web|deploy|remote-check|public-monitor|image-origin|image-delivery-provision> \
+  --consumer <local-web|deploy|remote-check|public-monitor|image-origin|image-delivery-provision|public-probe-deploy> \
   --identity <yc|github-oidc> -- <child command>
 ```
 
@@ -125,3 +127,6 @@ not necessarily the only permitted reader.
 After an approved operation, protected evidence may contain only secret ID, non-secret version ID,
 key names, timestamps, operator identity, consumer, and sanitized stage code. It must never contain
 a payload value, token, key material, response body, or temporary-file path.
+
+The manual public-probe deployment projects only `VM_SSH_KEY`. Its probe runtime uses the
+existing VM metadata identity; no Lockbox payload or API key is copied to the host package.

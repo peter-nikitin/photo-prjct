@@ -1,0 +1,11 @@
+[Unit]
+Description=Check FindMe public health every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=5s
+Unit=findme-public-probe.service
+
+[Install]
+WantedBy=timers.target

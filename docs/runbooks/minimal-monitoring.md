@@ -18,10 +18,24 @@ an image, run migrations, or perform rollback automatically.
 
 ## Activation evidence
 
-**Not activated.** Task 6 records the dashboard URL, alert IDs, notification-channel identity,
-Unified Agent version, fresh `sys`, `ua`, and `app` datapoints, and controlled firing/recovery
-evidence here. Until then, this file is a reviewed configuration contract, not evidence that an
-email, dashboard, agent, or scheduled probe is live.
+**Partially activated.** The VM agent now sends host and Django HTTP metrics. The dashboard,
+alerts, notification channel, and independent scheduled public probe have not been activated;
+there is no firing/recovery or email-delivery evidence. EJ-009 remains planned.
+
+### 2026-09-25 VM metric collection
+
+- VM `dev-photo-prjct` (`epdr5g3p24tdns9890nr`) in folder `b1g2qttgfhb4gdunvlge` runs
+  Unified Agent `26.09.10`. Its prior configuration is backed up at
+  `/etc/yc/unified_agent/config.yml.pre-findme-20260925`.
+- Applied `deploy/configure-monitoring-agent.sh --folder-id b1g2qttgfhb4gdunvlge` on the VM.
+  The active configuration pulls `http://127.0.0.1:8080/metrics/` every 60 seconds into the
+  `app` namespace. `check-config` passed and `unified_agent` was active after restart.
+- Monitoring API returned fresh `sys.system.UpTime`, `ua.backlog`,
+  `app.findme_http_requests_total`, and `app.findme_http_request_duration_seconds` series.
+  The dashboard's request-rate derivative and p95 histogram queries returned fresh points for
+  `route="health"`. Public `/health/` returned 200 and public `/metrics/` returned 404.
+- This verifies metric ingestion and query compatibility, not an imported dashboard or a live
+  alert. Restore the backup and restart `unified_agent` if the new scrape must be rolled back.
 
 ### 2026-07-30 activation attempt and rollback evidence
 

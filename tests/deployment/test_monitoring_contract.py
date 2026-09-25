@@ -43,11 +43,16 @@ def test_dashboard_is_importable_and_covers_only_configured_monitoring_streams()
     assert 'environment="staging"' not in rendered_queries
     assert 'check="canonical-health"' in rendered_queries
     assert 'service="custom"' in rendered_queries
-    assert all(
-        'folderId="__YANDEX_CLOUD_FOLDER_ID__"' in target["query"]
-        for chart in charts.values()
-        for target in chart["queries"]["targets"]
-    )
+    assert "folderId=" not in rendered_queries
+    assert [
+        target["query"]
+        for target in charts["Django request latency (p50 / p95)"]["queries"]["targets"]
+    ] == [
+        'histogram_percentile(50, "bin", '
+        '"app.findme_http_request_duration_seconds"{service="custom"})',
+        'histogram_percentile(95, "bin", '
+        '"app.findme_http_request_duration_seconds"{service="custom"})',
+    ]
     for metric in (
         "sys.proc.LoadAverage1min",
         "sys.filesystem.FreeB",
@@ -146,7 +151,7 @@ def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() ->
         "findme-photo-deployment-public-service-unavailable",
         "YANDEX_MONITORING_API_KEY",
         "YANDEX_CLOUD_FOLDER_ID",
-        "Not activated",
+        "Partially activated.",
         "public endpoint failure",
         "VM/host telemetry loss",
         "application 5xx degradation",
@@ -162,6 +167,13 @@ def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() ->
         "Never remove application or data volumes",
     ):
         assert required in runbook
+    activation_evidence = " ".join(
+        runbook.split("## Activation evidence", 1)[1].split("###", 1)[0].split()
+    )
+    assert (
+        "The dashboard, alerts, notification channel, and independent scheduled public probe "
+        "have not been activated"
+    ) in activation_evidence
     assert "systemctl is-active unified-agent" not in runbook
     assert "/etc/yandex/unified_agent/config.yml" not in runbook
 

@@ -67,6 +67,12 @@ def test_generic_workflows_use_only_the_canonical_secret_consumers() -> None:
     _resolver_step(
         monitor["jobs"]["probe"], "Probe public health and write metrics", "public-monitor"
     )
+    assert set(monitor[True]) == {"workflow_dispatch"}
+    probe_environment = _step(monitor["jobs"]["probe"], "Probe public health and write metrics")[
+        "env"
+    ]
+    assert probe_environment["MONITOR_TARGET"] == "${{ inputs.target }}"
+    assert probe_environment["MONITOR_CHECK"] == "validation-health"
     _resolver_step(
         benchmark["jobs"]["benchmark"], "Run bounded benchmark operation", "remote-check"
     )

@@ -1,8 +1,6 @@
 name: Monitor public health
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -28,8 +26,8 @@ jobs:
           persist-credentials: false
       - name: Probe public health and write metrics
         env:
-          MONITOR_TARGET: ${{ github.event_name == 'schedule' && 'https://findme-photo.ru/health/' || inputs.target }}
-          MONITOR_CHECK: ${{ github.event_name == 'schedule' && 'canonical-health' || 'validation-health' }}
+          MONITOR_TARGET: ${{ inputs.target }}
+          MONITOR_CHECK: validation-health
           YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
         run: |
           python scripts/run-with-environment-secrets.py \

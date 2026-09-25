@@ -13,15 +13,33 @@ an image, run migrations, or perform rollback automatically.
   `findme-photo-deployment-cpu-pressure`, and
   `findme-photo-deployment-application-5xx-degradation`.
 - GitHub Actions keeps `YANDEX_MONITORING_API_KEY` as an environment secret and
-  `YANDEX_CLOUD_FOLDER_ID` as configuration until the GitHub cron is retired. The planned VM probe
-  uses its attached service account's short-lived metadata token. Do not print credentials or copy
-  them into tickets.
+  `YANDEX_CLOUD_FOLDER_ID` for manual validation checks. The image-origin VM probe uses its
+  attached service account's short-lived metadata token. Do not print credentials or copy them
+  into tickets.
 
 ## Activation evidence
 
-**Partially activated.** The VM agent now sends host and Django HTTP metrics. The dashboard,
-alerts, notification channel, and five-minute image-origin VM public probe have not been activated;
-there is no firing/recovery or email-delivery evidence. EJ-009 remains planned.
+**Partially activated.** The application VM agent sends host and Django HTTP metrics, and the
+separate image-origin VM sends five-minute public HTTPS probe metrics. The dashboard, alerts, and
+notification channel have not been activated; there is no firing/recovery or email-delivery
+evidence. EJ-009 remains planned.
+
+### 2026-09-25 public probe activation
+
+- [PR #212](https://github.com/peter-nikitin/photo-prjct/pull/212) merged the independent host
+  timer package. Manual [installation run 36105191624](https://github.com/peter-nikitin/photo-prjct/actions/runs/36105191624)
+  installed repository SHA `633a3bbb4c4417655ba21727438c622060f2004a` on
+  `findme-gallery-image-origin` (`epdf6696opq3ock91pih`) and reported
+  `PUBLIC_PROBE_TIMER=active`. The installer did not run image-origin Compose.
+- Monitoring API returned `findme_probe_success=1` and fresh TLS-lifetime points at
+  `06:57:00Z` and `07:02:02Z`, roughly five minutes apart. Public `/health/` returned
+  `{"status":"ok"}`; `img-origin.findme-photo.ru` passed TLS verification and returned its
+  expected 404 on `/`. Image-origin host telemetry remained fresh.
+- The VM probe and application VM both run in `ru-central1-b`, so a shared zone failure is not
+  observed. The separate GitHub cron is retired by the follow-up cutover change; the manual
+  validation workflow remains available under `check=validation-health`.
+- To stop the first installation without access to the host SSH key, dispatch
+  `gh workflow run deploy-public-probe.yml --ref main -f action=disable -f deployment_sha=633a3bbb4c4417655ba21727438c622060f2004a`.
 
 ### 2026-09-25 VM metric collection
 

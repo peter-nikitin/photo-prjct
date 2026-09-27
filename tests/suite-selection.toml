@@ -22,6 +22,7 @@ patterns = [
   "scripts/copy-object-storage-bucket.py",
   "scripts/local-web.sh",
   "scripts/monitor_public_health.py",
+  "scripts/monitor_commerce.py",
   "scripts/reconcile_deploy_issue.py",
   "scripts/run-with-environment-secrets.py",
   "scripts/verify-environment-secret-projection.py",

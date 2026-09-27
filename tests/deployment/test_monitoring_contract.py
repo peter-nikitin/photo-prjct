@@ -27,7 +27,8 @@ def test_dashboard_is_importable_and_covers_only_configured_monitoring_streams()
         "Django request rate",
         "Django 5xx responses",
         "Django request latency (p50 / p95)",
-        "Commerce worker health (activation prerequisite)",
+        "Commerce worker alive (requires host collector activation)",
+        "Commerce oldest ready work age, seconds",
     }
     rendered_queries = "\n".join(
         target["query"] for chart in charts.values() for target in chart["queries"]["targets"]
@@ -85,7 +86,14 @@ def test_commerce_worker_monitoring_records_only_safe_liveness_and_ready_work_si
     manifest = (ROOT / "deploy/monitoring/alerts.md").read_text(encoding="utf-8")
     rendered = json.dumps(dashboard)
 
-    assert "Commerce worker health" in rendered
+    assert "Commerce worker alive" in rendered
+    assert "Commerce oldest ready work age, seconds" in rendered
+    assert 'check="canonical-commerce"' in "\n".join(
+        target["query"]
+        for widget in dashboard["widgets"]
+        if "chart" in widget
+        for target in widget["chart"]["queries"]["targets"]
+    )
     assert "commerce_worker_alive" in rendered
     assert "commerce_oldest_ready_age_seconds" in rendered
     assert "Commerce worker unavailable" in manifest
@@ -150,7 +158,13 @@ def test_alert_selectors_use_folder_as_request_context_not_metric_label() -> Non
 
     assert "__YANDEX_CLOUD_FOLDER_ID__" in manifest.split("## ", 1)[0]
     selectors = [line for line in manifest.splitlines() if line.startswith("- Selector:")]
-    assert len(selectors) == 9
+    assert len(selectors) == 7
+    console_selectors = [
+        line for line in manifest.splitlines() if line.startswith("- Console selector:")
+    ]
+    assert len(console_selectors) == 2
+    assert all('folderId="__YANDEX_CLOUD_FOLDER_ID__"' in line for line in console_selectors)
+    assert all('check="canonical-commerce"' in line for line in console_selectors)
     assert all("folderId=" not in selector for selector in selectors)
 
 
@@ -162,7 +176,7 @@ def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() ->
         "findme-photo-deployment-public-service-unavailable",
         "YANDEX_MONITORING_API_KEY",
         "YANDEX_CLOUD_FOLDER_ID",
-        "Partially activated.",
+        "Baseline activated.",
         "public endpoint failure",
         "VM/host telemetry loss",
         "application 5xx degradation",
@@ -182,12 +196,17 @@ def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() ->
         runbook.split("## Activation evidence", 1)[1].split("###", 1)[0].split()
     )
     assert (
-        "The dashboard, alerts, and notification channel have not been activated"
+        "activated the dashboard, baseline alerts and single email channel"
     ) in activation_evidence
     assert (
         "separate image-origin VM sends five-minute public HTTPS probe metrics"
         in activation_evidence
     )
+    assert (
+        "Commerce metric collection and its two alerts remain a separate activation step."
+        in activation_evidence
+    )
+    assert "A read-only Monitoring API query confirmed fresh" in runbook
     assert "06:57:00Z" in runbook
     assert "07:02:02Z" in runbook
     assert "systemctl is-active unified-agent" not in runbook

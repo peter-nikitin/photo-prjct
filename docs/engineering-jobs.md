@@ -40,7 +40,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-006 | Maintainer | Retire the image-promotion path | Superseded | 2026-08-20 |
 | EJ-007 | Operator | Retire the separate-environment proposal | Superseded | 2026-08-20 |
 | EJ-008 | Operator | Activate trusted HTTPS | Delivered | 2026-07-17 |
-| EJ-009 | Operator | Detect service degradation | Planned | 2026-07-30 |
+| EJ-009 | Operator | Detect service degradation | Validated | 2026-09-27 |
 | EJ-010 | Operator | Restore service data | Candidate | 2026-07-25 |
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 | EJ-012 | Maintainer | Gate temporary selfie storage activation | Validated | 2026-07-31 |
@@ -194,13 +194,16 @@ Yandex Monitoring receives simple Linux VM metrics from Unified Agent and privat
 Django HTTP request, 5xx, and latency metrics. One dashboard and one operator email channel cover
 sustained public failure, missing VM telemetry, imminent disk or memory exhaustion, sustained CPU
 pressure, application 5xx degradation, and recovery. Logs, tracing, business metrics, database
-internals, privileged container collection, and the disabled worker remain outside this increment.
+internals, privileged container collection, and disabled-worker metrics remain outside this increment.
+The baseline is active. The operator verified the console dashboard and baseline alert settings;
+the isolated public probe failure/recovery drill confirmed Alarm and OK email delivery. Commerce
+collection is a separate extension and is not implied by this baseline validation.
 
-- Status: Planned
+- Status: Validated
 - Evidence: [Minimal service monitoring design](superpowers/specs/2026-07-30-minimal-service-monitoring-design.md),
   [image-origin probe decision](adr/0039-run-public-probe-on-image-origin-vm.md), and
   [activation runbook](runbooks/minimal-monitoring.md).
-- Last updated: 2026-09-25
+- Last updated: 2026-09-27
 
 ### EJ-010 — Operator — Restore service data
 
@@ -666,3 +669,4 @@ This log is append-only.
 | 2026-09-14 | EJ-019 | Delivered | Delivered | The automatic live all-events reconciliation and event-9 `EXPLAIN ANALYZE` benchmark are retired from deployment after they exhausted the sole VM during run 34833392359 and forced rollback. Both commands remain available for explicit offline evidence; deployment retains migration, health, worker, and rollback gates. |
 | 2026-09-15 | EJ-028 | Not recorded | In progress | Repository implementation of ADR 0036 issues six-hour exact-object URLs only for accepted derivative-backed small presentation on bounded normal-gallery pages. Legacy, large, download, result, private, archive, and purchased-media paths remain application-authorized; CI, canonical deployment, direct-transfer, and live-capacity evidence are unrecorded. |
 | 2026-09-15 | EJ-029 | Not recorded | In progress | Repository implementation of ADR 0037 adds atomic gallery-media projection publication, projection-backed customer reads, a bounded all-in-progress old-publication drain with immutable creation-time fencing, all-events rebuild and clean verification, worker-paused candidate cutover, privacy-safe `EXPLAIN ANALYZE` smoke, and fresh/established prior-state recovery. CI, merge, canonical deployment, and live outcome remain unrecorded. |
+| 2026-09-27 | EJ-009 | Planned | Validated | Baseline VM/public-probe ingestion is live; the operator verified the console dashboard and baseline alert settings and received Alarm/OK emails from the [isolated failure/recovery drill](runbooks/minimal-monitoring.md#activation-evidence-2026-09-27). Commerce worker metric collection remains a separate extension. |

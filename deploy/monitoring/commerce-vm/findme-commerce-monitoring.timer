@@ -1,0 +1,11 @@
+[Unit]
+Description=Observe FindMe Commerce every minute
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=1s
+Unit=findme-commerce-monitoring.service
+
+[Install]
+WantedBy=timers.target

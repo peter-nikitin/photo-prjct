@@ -1,6 +1,6 @@
 # FindMe Photo deployment monitoring alert manifest
 
-Create the seven baseline alerts below after the dashboard and email notification channel
+Create the baseline alerts below after the dashboard and email notification channel
 exist. Create the resources in folder `__YANDEX_CLOUD_FOLDER_ID__` and pass that folder ID
 as Monitoring request context, not as a metric label. Every selector is restricted to
 `service=custom` and the canonical probe selector uses `check="canonical-health"`.
@@ -94,27 +94,33 @@ No alert performs automated remediation. The alert resource names below are the 
 
 ## Commerce worker unavailable
 
-- **Not activated.** This is an activation placeholder only. An approved external scheduler or
-  collector must run the packaged `run-commerce-worker-health.sh` outside the Commerce worker and
-  publish the safe `commerce_worker_alive` numeric signal first.
+- Activate only after the independent host collector described in
+  `docs/runbooks/commerce-monitoring.md` publishes fresh observations. It runs once per minute
+  outside the Commerce worker. A valid observation publishes `1` for live or `0` for unavailable;
+  a failed collection publishes neither liveness nor queue age.
 - Resource name: `findme-photo-commerce-worker-unavailable`.
-- Selector: `commerce_worker_alive{service="custom"}`.
-- Aggregation: latest value; actionable when zero or absent for two five-minute points.
-- Evaluation window: 10 minutes.
-- No data: actionable as a missing independent worker observation, not as a payment failure.
+- Console selector: `"commerce_worker_alive"{folderId="__YANDEX_CLOUD_FOLDER_ID__", service="custom", check="canonical-commerce"}`.
+- Aggregation: maximum; Alarm when below `0.5` throughout a five-minute window. Clear Warning.
+- Evaluation window: 5 minutes; evaluation delay 0 seconds.
+- No data: set both policies to `No data`. Missing observation is a collector/web/database
+  observation failure, not a confirmed worker death or payment failure.
 - Notification channel: deployment operator email.
-- Firing notification: `FindMe Commerce worker is unavailable; inspect the independent probe and Commerce Admin.`
+- Notification states: `Alarm`, `No data`, and `OK`.
+- Firing annotation: `{{#isAlarm}}FindMe Commerce worker liveness observations are zero throughout the five-minute window.{{/isAlarm}}{{#isNoData}}FindMe Commerce worker observations are missing; inspect the collector, web and database.{{/isNoData}}`
 - Recovery notification: `FindMe Commerce worker liveness has recovered.`
 
 ## Commerce ready work overdue
 
-- **Not activated.** This is an activation placeholder only. It becomes valid only after the same
-  approved external collector publishes the safe numeric `commerce_oldest_ready_age_seconds` signal.
+- Activate only after the same independent collector publishes fresh
+  `commerce_oldest_ready_age_seconds` observations. An observed empty ready queue publishes zero;
+  a failed observation never publishes zero.
 - Resource name: `findme-photo-commerce-ready-work-overdue`.
-- Selector: `commerce_oldest_ready_age_seconds{service="custom"}`.
+- Console selector: `"commerce_oldest_ready_age_seconds"{folderId="__YANDEX_CLOUD_FOLDER_ID__", service="custom", check="canonical-commerce"}`.
 - Aggregation: maximum ready-work age.
 - Evaluation window: 5 minutes; above 300 seconds.
-- No data: the worker-unavailable rule handles missing independent observation.
+- Clear Warning; evaluation delay 0 seconds. Set both no-data policies to `OK`;
+  the worker-unavailable rule handles missing independent observation.
 - Notification channel: deployment operator email.
+- Notification states: `Alarm` and `OK`.
 - Firing notification: `FindMe Commerce ready work is overdue; inspect Commerce Admin and worker health.`
 - Recovery notification: `FindMe Commerce ready work is within the configured threshold.`

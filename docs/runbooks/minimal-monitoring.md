@@ -9,7 +9,8 @@ an image, run migrations, or perform rollback automatically.
 - Alert resource names: `findme-photo-deployment-public-service-unavailable`,
   `findme-photo-deployment-tls-certificate-expiring`,
   `findme-photo-deployment-vm-telemetry-missing`,
-  `findme-photo-deployment-disk-space-critical`, `findme-photo-deployment-memory-pressure`,
+  `findme-photo-deployment-disk-space-critical`,
+  `findme-photo-deployment-disk-free-bytes-critical`, `findme-photo-deployment-memory-pressure`,
   `findme-photo-deployment-cpu-pressure`, and
   `findme-photo-deployment-application-5xx-degradation`.
 - GitHub Actions keeps `YANDEX_MONITORING_API_KEY` as an environment secret and
@@ -19,10 +20,11 @@ an image, run migrations, or perform rollback automatically.
 
 ## Activation evidence
 
-**Partially activated.** The application VM agent sends host and Django HTTP metrics, and the
-separate image-origin VM sends five-minute public HTTPS probe metrics. The dashboard, alerts, and
-notification channel have not been activated; there is no firing/recovery or email-delivery
-evidence. EJ-009 remains planned.
+**Baseline activated.** The application VM agent sends host and Django HTTP metrics, and the
+separate image-origin VM sends five-minute public HTTPS probe metrics. On 2026-09-27 the operator
+activated the dashboard, baseline alerts and single email channel, checked their console settings,
+and confirmed an isolated public-probe Alarm/OK email drill. EJ-009's baseline is validated.
+Commerce metric collection and its two alerts remain a separate activation step.
 
 ### 2026-09-25 public probe activation
 
@@ -95,6 +97,28 @@ evidence. EJ-009 remains planned.
    returns to normal. Confirm the corresponding recovery email arrives once.
 
 ## Controlled validation after activation
+
+### Activation evidence, 2026-09-27
+
+- The operator created the single email channel `fbefs2ubu6sq0k0jvlch`, configured the baseline
+  alerts in the console, and confirmed their queries and settings. The imported console dashboard
+  contains 12 charts for the public probe, HTTP metrics and canonical VM. Alert/channel settings
+  were operator-checked; the public API does not expose their configuration for independent readback.
+- A read-only Monitoring API query confirmed fresh `canonical-health=1` points at approximately
+  five-minute intervals. The Commerce read-only health command returned `worker_alive=True` and
+  no ready work. This does not prove Commerce metric ingestion or alerts.
+- The first validation run wrote `validation-health=0` at `19:42:17Z`, followed by `1` at
+  `19:44:01Z`. The console initially showed no data; adding folder context and rerunning the query
+  exposed the two points. This attempt did not establish Alarm/OK notification delivery.
+- The repeated [failing-target run 36345889522](https://github.com/peter-nikitin/photo-prjct/actions/runs/36345889522)
+  wrote `validation-health=0` at `19:51:47Z`, independently confirmed through the metrics API.
+  The operator received Alarm before the recovery run was dispatched.
+- The [recovery run 36346107258](https://github.com/peter-nikitin/photo-prjct/actions/runs/36346107258)
+  succeeded and wrote `validation-health=1` at `19:55:38Z`, independently confirmed through the
+  metrics API. The operator confirmed the OK email and deleted `findme-photo-probe-validation`.
+- The drill proves failed/successful probe observations, metric writes and the temporary alert's
+  Alarm/OK email delivery. It does not simulate a canonical VM outage or independently audit every
+  baseline alert's thresholds. Full cloud/zone outage coverage remains outside this deployment.
 
 Use a controlled failing target with `check=validation-health` and a temporary alert scoped to
 that check to prove one failure and one recovery email without touching the canonical selector.

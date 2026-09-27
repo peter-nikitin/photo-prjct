@@ -1,0 +1,13 @@
+[Unit]
+Description=FindMe Commerce monitoring observation
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/findme-commerce-monitoring/monitor_commerce.py --config /usr/local/lib/findme-commerce-monitoring/config.json
+TimeoutStartSec=55s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict

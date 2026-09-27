@@ -86,10 +86,15 @@
       ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
     },
     {
-      "position": {"x": "0", "y": "44", "w": "36", "h": "4"},
-      "chart": {"id": "commerce-worker-health", "title": "Commerce worker health (activation prerequisite)", "queries": {"targets": [
-        {"query": "\"commerce_worker_alive\"{service=\"custom\"}"},
-        {"query": "\"commerce_oldest_ready_age_seconds\"{service=\"custom\"}"}
+      "position": {"x": "0", "y": "44", "w": "18", "h": "8"},
+      "chart": {"id": "commerce-worker-health", "title": "Commerce worker alive (requires host collector activation)", "queries": {"targets": [
+        {"query": "\"commerce_worker_alive\"{service=\"custom\", check=\"canonical-commerce\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "18", "y": "44", "w": "18", "h": "8"},
+      "chart": {"id": "commerce-ready-work-age", "title": "Commerce oldest ready work age, seconds", "queries": {"targets": [
+        {"query": "\"commerce_oldest_ready_age_seconds\"{service=\"custom\", check=\"canonical-commerce\"}"}
       ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
     }
   ]

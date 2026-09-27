@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
@@ -10,6 +11,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser) -> None:
         parser.add_argument("--max-ready-age-seconds", type=int, required=True)
+        parser.add_argument("--format", choices=["text", "json"], default="text")
 
     def handle(self, *args, **options) -> None:
         threshold_seconds = options["max_ready_age_seconds"]
@@ -24,6 +26,16 @@ class Command(BaseCommand):
             if health.oldest_ready_age is not None
             else None
         )
+        if options["format"] == "json":
+            self.stdout.write(
+                json.dumps(
+                    {
+                        "worker_alive": health.worker_alive,
+                        "oldest_ready_age_seconds": max(0, age_seconds or 0),
+                    }
+                )
+            )
+            return
         self.stdout.write(
             "commerce worker health: "
             f"worker_alive={health.worker_alive} "

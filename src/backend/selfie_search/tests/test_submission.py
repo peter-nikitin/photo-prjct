@@ -20,7 +20,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.registry import PAID_EVENTS
+from feature_flags.registry import PAID_EVENTS, PGVECTOR_FACE_SEARCH_READ
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
@@ -32,6 +32,7 @@ from processing.models import (
     EventFaceEmbeddingActivation,
     EventProcessingRun,
     FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
@@ -144,6 +145,48 @@ class SubmissionTests(TestCase):
         self.event = self.make_event("main", "free")
         self.paid_event = self.make_event("paid", "paid")
         self.draft = self.make_event("draft", "free", published=False)
+
+    def test_comparison_optin_is_authorized_and_separate_from_frozen_worker_configuration(
+        self,
+    ) -> None:
+        for staff, active, expected in (
+            (False, True, False),
+            (True, False, False),
+            (True, True, True),
+        ):
+            self.user.is_staff, self.user.is_active = staff, active
+            created = submit_selfie_search(
+                event=self.event,
+                selfie=valid_selfie(),
+                storage=RecordingStorage(),
+                user=self.user,
+                compare_readers=True,
+            )
+            self.assertEqual(created.search.reader_comparison_requested, expected)
+            self.assertNotIn("compare_readers", created.search.configuration)
+            self.assertEqual(created.search.configuration, created.search.job.configuration)
+
+    def test_explicit_comparison_post_is_staff_only_and_csrf_protected(self) -> None:
+        from django.test import Client
+
+        url = reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})
+        csrf_response = Client(enforce_csrf_checks=True).post(
+            url, {"compare_readers": "1", "selfie": valid_upload()}
+        )
+        self.assertEqual(csrf_response.status_code, 403)
+        self.assertEqual(SelfieSearch.objects.count(), 0)
+        for staff in (False, True):
+            self.user.is_staff = staff
+            self.user.save(update_fields=["is_staff"])
+            self.client.force_login(self.user)
+            with patch(
+                "selfie_search.views.TemporarySelfieStorage", return_value=RecordingStorage()
+            ):
+                response = self.client.post(url, {"compare_readers": "1", "selfie": valid_upload()})
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(
+                SelfieSearch.objects.latest("created_at").reader_comparison_requested, staff
+            )
 
     def make_event(self, suffix: str, access_type: str, *, published: bool = True) -> Event:
         values: dict[str, object] = {
@@ -273,6 +316,143 @@ class SubmissionTests(TestCase):
                 accepted_attempt=attempt,
             )
         return embedding
+
+    def test_staff_context_is_server_only_frozen_and_callback_uses_current_gate(self) -> None:
+        self.user.is_staff = True
+        selfie = PreparedSelfie(
+            content=b"prepared", content_type="image/jpeg", source_size=8, source_format="jpeg"
+        )
+        search = submit_selfie_search(
+            event=self.event, selfie=selfie, storage=RecordingStorage(), user=self.user
+        ).search
+        self.assertTrue(search.reader_staff_eligible)
+        self.assertNotIn("reader_staff_eligible", search.configuration)
+        self.assertEqual(search.job.configuration, search.configuration)
+        self.assertEqual(
+            search.configuration_hash,
+            hashlib.sha256(
+                json.dumps(search.configuration, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        )
+        search.reader_staff_eligible = False
+        with self.assertRaises(ValidationError):
+            search.save()
+        search.refresh_from_db()
+        claimed = claim_search_job(
+            contract_version=1,
+            processor_type="selfie_query",
+            processor_version=2,
+            worker_build="test",
+        )
+        assert isinstance(claimed, ClaimedSearchJob)
+        with (
+            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "off"}),
+            patch("selfie_search.services.read_selection.rank_vector_direct") as native,
+        ):
+            complete_search_attempt(
+                claimed.attempt.id,
+                result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
+                storage=RecordingStorage(),
+            )
+        native.assert_not_called()
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+
+    def test_active_staff_submission_routes_callback_without_worker_review_context(self) -> None:
+        from selfie_search.services.vector_ranking import rank_vector_direct
+
+        self.user.is_staff = True
+        search = submit_selfie_search(
+            event=self.event,
+            selfie=PreparedSelfie(
+                content=b"prepared", content_type="image/jpeg", source_size=8, source_format="jpeg"
+            ),
+            storage=RecordingStorage(),
+            user=self.user,
+        ).search
+        claimed = claim_search_job(
+            contract_version=1,
+            processor_type="selfie_query",
+            processor_version=2,
+            worker_build="test",
+        )
+        assert isinstance(claimed, ClaimedSearchJob)
+        with (
+            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "staff"}),
+            patch(
+                "selfie_search.services.read_selection.rank_vector_direct", wraps=rank_vector_direct
+            ) as native,
+        ):
+            complete_search_attempt(
+                claimed.attempt.id,
+                result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
+                storage=RecordingStorage(),
+            )
+        native.assert_called_once()
+        self.assertNotIn("reader_staff_eligible", claimed.job.configuration)
+        self.assertNotIn("reader_comparison_requested", claimed.job.configuration)
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+
+    def test_native_gallery_source_uses_native_vector_without_legacy_hydration(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="source", vector=[1.0] + [0.0] * 127
+        )
+        FaceEmbeddingVector.objects.create(
+            detection=embedding.detection, model_version="sface", vector=embedding.vector
+        )
+        with (
+            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "on"}),
+            patch("selfie_search.services.read_selection.rank_legacy_direct") as legacy,
+            CaptureQueriesContext(connection) as queries,
+        ):
+            search = submit_gallery_photo_search(
+                event=self.event,
+                photo=embedding.detection.attempt.photo,
+                detection_id=embedding.detection_id,
+                user=self.user,
+            ).search
+            process_gallery_photo_search(search=search)
+        legacy.assert_not_called()
+        self.assertFalse(
+            any(
+                '"processing_faceembedding"."vector"' in row["sql"].split(" FROM ")[0]
+                for row in queries
+            )
+        )
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.results.get().photo_id, "source")
+        with patch(
+            "selfie_search.services.submission.rank_selected_direct", side_effect=AssertionError
+        ):
+            process_gallery_photo_search(search=search)
+
+    def test_native_gallery_database_failure_preserves_queued_atomic_retry(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="source", vector=[1.0] + [0.0] * 127
+        )
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=embedding.detection.attempt.photo,
+            detection_id=embedding.detection_id,
+            user=self.user,
+        ).search
+        FaceEmbeddingVector.objects.create(
+            detection=embedding.detection, model_version="sface", vector=embedding.vector
+        )
+        with (
+            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "on"}),
+            patch(
+                "selfie_search.services.read_selection.rank_vector_direct",
+                side_effect=DatabaseError,
+            ),
+            self.assertRaises(GallerySearchFailed),
+        ):
+            process_gallery_photo_search(search=search)
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(search.results.count(), 0)
 
     def test_published_free_and_paid_events_queue_without_freezing_face_candidates(self) -> None:
         self.make_eligible_embedding(event=self.event, photo_id="legacy")
@@ -1505,7 +1685,7 @@ class GalleryPhotoSubmissionTests(TestCase):
         source = source_embedding.detection.attempt.photo
 
         with patch(
-            "selfie_search.services.submission.rank_cached_embeddings",
+            "selfie_search.services.direct_ranking.rank_cached_embeddings",
             side_effect=RankingError("broken ranking"),
         ):
             search = submit_gallery_photo_search(
@@ -1628,7 +1808,7 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
                         process_gallery_photo_search(search=search)
                 else:
                     with patch(
-                        "selfie_search.services.submission.rank_cached_embeddings", paused_rank
+                        "selfie_search.services.direct_ranking.rank_cached_embeddings", paused_rank
                     ):
                         process_gallery_photo_search(search=search)
             except BaseException as error:

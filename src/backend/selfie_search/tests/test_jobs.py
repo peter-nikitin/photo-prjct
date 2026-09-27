@@ -17,6 +17,8 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
+from feature_flags.registry import PGVECTOR_FACE_SEARCH_READ
+from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from processing.contracts import ClaimedJob
@@ -27,6 +29,7 @@ from processing.models import (
     FaceClusterCorpus,
     FaceClusterMember,
     FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
     PhotoFaceEmbeddingProjection,
@@ -50,6 +53,7 @@ from selfie_search.models import (
     SelfieSearchJob,
     SelfieSearchResult,
 )
+from selfie_search.services.direct_ranking import rank_legacy_direct
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
     CleanupPending,
@@ -64,7 +68,6 @@ from selfie_search.services.jobs import (
     selfie_worker_configuration,
 )
 from selfie_search.services.submission import _configuration as submission_configuration
-from selfie_search.services.submission import compatible_search_candidates
 
 
 class RecordingStorage:
@@ -92,6 +95,46 @@ class SearchJobTests(TestCase):
             face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.storage = RecordingStorage()
+
+    def test_native_callback_publishes_after_cleanup_and_never_uses_legacy(self) -> None:
+        search = self.make_search()
+        for embedding in FaceEmbedding.objects.all():
+            FaceEmbeddingVector.objects.create(
+                detection=embedding.detection,
+                model_version=embedding.model_version,
+                vector=embedding.vector,
+            )
+        claimed = self.claim(search)
+        with (
+            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "on"}),
+            patch("selfie_search.services.read_selection.rank_legacy_direct") as legacy,
+        ):
+            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        legacy.assert_not_called()
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertIsNotNone(search.cleanup_confirmed_at)
+        self.assertEqual(search.results.count(), 1)
+
+    def test_native_database_error_fails_closed_after_private_cleanup(self) -> None:
+        search = self.make_search()
+        claimed = self.claim(search)
+        with (
+            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "on"}),
+            patch(
+                "selfie_search.services.read_selection.rank_vector_direct",
+                side_effect=DatabaseError("secret query"),
+            ),
+            patch("selfie_search.services.read_selection.rank_legacy_direct") as legacy,
+        ):
+            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        legacy.assert_not_called()
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.FAILED)
+        self.assertEqual(search.results.count(), 0)
+        self.assertEqual(search.temporary_object_key, "")
+        self.assertIsNotNone(search.cleanup_confirmed_at)
+        self.assertNotIn("secret", claimed.attempt.error_detail)
 
     def test_local_adaface_selfie_claim_pins_scrfd_and_recognizer(self) -> None:
         """Changing either artifact must make the transient worker claim incompatible."""
@@ -362,14 +405,14 @@ class SearchJobTests(TestCase):
         publication_time = claimed_at + timedelta(seconds=121)
         clock = [claimed_at]
 
-        def advance_past_expiry(_search: SelfieSearch):
+        def advance_past_expiry(_search: SelfieSearch, query, *, reader):
             clock[0] = publication_time
-            return compatible_search_candidates(_search)
+            return rank_legacy_direct(_search, query)
 
         with (
             patch("selfie_search.services.jobs.timezone.now", side_effect=lambda: clock[0]),
             patch(
-                "selfie_search.services.jobs.compatible_search_candidates",
+                "selfie_search.services.jobs.rank_selected_direct",
                 side_effect=advance_past_expiry,
             ),
         ):
@@ -479,7 +522,7 @@ class SearchJobTests(TestCase):
         terminal_event = next(
             event for event in events if event["event"] == "selfie_search_terminal"
         )
-        self.assertEqual(ranking_event["schema_version"], 3)
+        self.assertEqual(ranking_event["schema_version"], 4)
         self.assertEqual(ranking_event["direct_matched_photo_count"], 1)
         self.assertEqual(ranking_event["cluster_expanded_photo_count"], 1)
         self.assertEqual(ranking_event["final_matched_photo_count"], 2)
@@ -809,7 +852,7 @@ class SearchJobTests(TestCase):
         events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
         ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
         terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
-        assert ranking["schema_version"] == 3
+        assert ranking["schema_version"] == 4
         assert ranking["direct_matched_photo_count"] == 1
         assert ranking["cluster_expanded_photo_count"] == 0
         assert ranking["final_matched_photo_count"] == 1
@@ -1025,11 +1068,11 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
         allow_cohort = ThreadEvent()
         errors: Queue[BaseException] = Queue()
 
-        def paused_candidates(_search: SelfieSearch):
+        def paused_candidates(_search: SelfieSearch, query, *, reader):
             cohort_started.set()
             if not allow_cohort.wait(timeout=10):
                 raise TimeoutError("test did not release cohort load")
-            return compatible_search_candidates(_search)
+            return rank_legacy_direct(_search, query)
 
         def complete_first() -> None:
             close_old_connections()
@@ -1045,7 +1088,7 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
                 close_old_connections()
 
         with patch(
-            "selfie_search.services.jobs.compatible_search_candidates",
+            "selfie_search.services.jobs.rank_selected_direct",
             side_effect=paused_candidates,
         ):
             thread = Thread(target=complete_first)

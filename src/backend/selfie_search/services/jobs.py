@@ -9,7 +9,6 @@ import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from time import perf_counter
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -38,14 +37,14 @@ from selfie_search.services.cluster_expansion import (
     direct_only_ranked_photos,
     expand_ranked_photos,
 )
-from selfie_search.services.cohort_cache import CohortCacheLookup
+from selfie_search.services.direct_ranking import DirectRankingOutcome
 from selfie_search.services.ranking import (
     QueryVectorError,
     RankingError,
-    rank_cached_embeddings,
     validate_query_vector,
 )
-from selfie_search.services.submission import compatible_search_candidates
+from selfie_search.services.read_selection import Reader, rank_selected_direct, select_reader
+from selfie_search.services.reader_comparison import comparison_snapshot, review_other_reader
 
 logger = logging.getLogger(__name__)
 
@@ -220,13 +219,14 @@ def complete_search_attempt(
     payload_hash = _canonical_hash(payload)
     needs_cleanup = False
     completion: SearchAttemptCompletion
-    cohort_lookup: CohortCacheLookup | None = None
+    cohort_lookup: DirectRankingOutcome | None = None
     shortlist_count = 0
     snapshot_attempt = SelfieSearchAttempt.objects.select_related("job__search__event").get(
         pk=attempt_id
     )
     snapshot_job = snapshot_attempt.job
     snapshot_search = snapshot_job.search
+    reader: Reader = "legacy"
     prepared: (
         tuple[
             str,
@@ -243,30 +243,44 @@ def complete_search_attempt(
         eligible_face_count = 0
         try:
             query = _query_from_result(snapshot_search, result)
-            cohort_started_at = perf_counter()
-            cohort_lookup = compatible_search_candidates(snapshot_search)
-            cohort_loaded_at = perf_counter()
-            eligible_photo_count = len({face.photo_id for face in cohort_lookup.entry.faces})
-            eligible_face_count = len(cohort_lookup.entry.faces)
-            ranking = rank_cached_embeddings(snapshot_search, query, cohort_lookup.entry)
-            shortlist_count = ranking.shortlist_count
-            ranked_at = perf_counter()
-            expansion = _expand_direct_ranking(
-                search=snapshot_search,
-                ranked=ranking.photos,
-                query=query,
-            )
+            reader = select_reader(snapshot_search)
+            with comparison_snapshot(snapshot_search) as comparing:
+                cohort_lookup = rank_selected_direct(
+                    snapshot_search,
+                    query,
+                    reader=reader,
+                    **({"comparison_evidence": True} if comparing else {}),
+                )
+                eligible_photo_count = cohort_lookup.eligible_photo_count
+                eligible_face_count = cohort_lookup.eligible_face_count
+                shortlist_count = cohort_lookup.shortlist_count
+                expansion = _expand_direct_ranking(
+                    search=snapshot_search,
+                    ranked=cohort_lookup.photos,
+                    query=query,
+                )
+                if comparing:
+                    review_other_reader(
+                        search=snapshot_search,
+                        query=query,
+                        reader=reader,
+                        selected=cohort_lookup,
+                        expansion=expansion,
+                        expand=lambda rows: _expand_direct_ranking(
+                            search=snapshot_search, ranked=rows, query=query
+                        ),
+                    )
             prepared = (
                 "succeeded",
                 eligible_photo_count,
                 eligible_face_count,
-                round((cohort_loaded_at - cohort_started_at) * 1_000),
-                round((ranked_at - cohort_loaded_at) * 1_000),
+                round(cohort_lookup.identity_ms + cohort_lookup.build_ms),
+                round(cohort_lookup.ranking_ms),
                 expansion,
             )
         except QueryVectorError:
             raise
-        except RankingError:
+        except (RankingError, DatabaseError):
             prepared = (
                 "incompatible",
                 eligible_photo_count,
@@ -321,6 +335,7 @@ def complete_search_attempt(
                     rank_ms=None,
                     expansion=None,
                     cohort_lookup=cohort_lookup,
+                    reader=reader,
                     shortlist_count=shortlist_count,
                 )
                 _terminal_attempt(
@@ -367,6 +382,7 @@ def complete_search_attempt(
                     rank_ms=rank_ms,
                     expansion=expansion,
                     cohort_lookup=cohort_lookup,
+                    reader=reader,
                     shortlist_count=shortlist_count,
                     retain_expansion_snapshot=intended_status == str(SelfieSearch.Status.READY),
                 )
@@ -412,6 +428,8 @@ def _completion_snapshot_matches(
         and search.event_id == snapshot_search.event_id
         and search.configuration_hash == snapshot_search.configuration_hash
         and search.configuration == snapshot_search.configuration
+        and search.reader_staff_eligible == snapshot_search.reader_staff_eligible
+        and search.reader_comparison_requested == snapshot_search.reader_comparison_requested
         and job.id == snapshot_job.id
         and job.search_id == snapshot_job.search_id
         and job.configuration == snapshot_job.configuration
@@ -949,7 +967,8 @@ def _emit_ranking_finished(
     load_ms: int | None,
     rank_ms: int | None,
     expansion: RankedPhotoExpansion | None,
-    cohort_lookup: CohortCacheLookup | None,
+    cohort_lookup: DirectRankingOutcome | None,
+    reader: str,
     shortlist_count: int,
     retain_expansion_snapshot: bool = True,
 ) -> None:
@@ -998,8 +1017,16 @@ def _emit_ranking_finished(
         matched_photo_count=matched_photo_count,
         load_ms=load_ms,
         rank_ms=rank_ms,
+        reader=reader,
+        native_sql_ms=(rank_ms if reader == "pgvector" else None),
         cache_outcome=(
-            "unavailable" if cohort_lookup is None else "hit" if cohort_lookup.cache_hit else "miss"
+            "unavailable"
+            if cohort_lookup is None
+            else "native"
+            if reader == "pgvector"
+            else "hit"
+            if cohort_lookup.cache_hit
+            else "miss"
         ),
         identity_ms=(
             None
@@ -1011,7 +1038,7 @@ def _emit_ranking_finished(
             if cohort_lookup is None
             else min(MAX_BOUNDED_INTEGER, max(0, round(cohort_lookup.build_ms)))
         ),
-        validated_face_count=(0 if cohort_lookup is None else len(cohort_lookup.entry.faces)),
+        validated_face_count=(0 if cohort_lookup is None else cohort_lookup.eligible_face_count),
         shortlist_count=shortlist_count,
         direct_matched_photo_count=direct_matched_photo_count,
         cluster_expanded_photo_count=cluster_expanded_photo_count,

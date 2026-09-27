@@ -41,8 +41,18 @@ from selfie_search.services.cohort_cache import CohortCacheLookup, cohort_cache
 from selfie_search.services.ranking import (
     CandidateEmbedding,
     RankingError,
-    rank_cached_embeddings,
     validate_query_vector,
+)
+from selfie_search.services.read_selection import (
+    Reader,
+    rank_selected_direct,
+    select_reader,
+    staff_eligible,
+)
+from selfie_search.services.reader_comparison import (
+    comparison_snapshot,
+    review_other_reader,
+    verify_source_representations,
 )
 
 
@@ -64,7 +74,9 @@ class _MissingGallerySourceResult(RuntimeError):
     pass
 
 
-def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user) -> CreatedSearch:
+def submit_selfie_search(
+    *, event: Event, selfie: PreparedSelfie, storage, user, compare_readers: bool = False
+) -> CreatedSearch:
     """Persist one validated selfie submission and its immutable current event cohort."""
     try:
         event = Event.objects.site_visible_to(user).get(pk=event.pk)
@@ -87,6 +99,8 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user)
                 temporary_object_key=stored.key,
                 configuration=configuration,
                 configuration_hash=_configuration_hash(configuration),
+                reader_staff_eligible=staff_eligible(user),
+                reader_comparison_requested=compare_readers and staff_eligible(user),
             )
             SelfieSearchJob.objects.create(search=search, configuration=configuration)
     except Exception:
@@ -134,6 +148,7 @@ def submit_gallery_photo_search(
     user,
     now: datetime | None = None,
     paid_watermarked_previews_enabled: bool = False,
+    compare_readers: bool = False,
 ) -> CreatedSearch:
     """Validate one selected gallery face and create its queued bearer result."""
     now = now or timezone.now()
@@ -161,6 +176,7 @@ def submit_gallery_photo_search(
                 event=event,
                 configuration=configuration,
                 paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+                reader=select_reader(SelfieSearch(reader_staff_eligible=staff_eligible(user))),
             )
 
             public_token = secrets.token_urlsafe(32)
@@ -170,6 +186,8 @@ def submit_gallery_photo_search(
                 temporary_object_key="",
                 configuration=configuration,
                 configuration_hash=_configuration_hash(configuration),
+                reader_staff_eligible=staff_eligible(user),
+                reader_comparison_requested=compare_readers and staff_eligible(user),
                 state_changed_at=now,
             )
     except GallerySearchUnavailable:
@@ -192,25 +210,55 @@ def process_gallery_photo_search(
             return snapshot
         if snapshot.configuration.get("processor") != "gallery_photo_query":
             raise GallerySearchUnavailable()
-        source_candidate = _gallery_source_candidate(
-            event=snapshot.event,
-            configuration=snapshot.configuration,
-            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-        )
-        candidates = compatible_search_candidates(snapshot)
-        ranked = rank_cached_embeddings(snapshot, source_candidate.vector, candidates.entry).photos
-        source = snapshot.configuration.get("query_source")
-        if not isinstance(source, dict) or not any(
-            row.photo_id == source.get("photo_id") for row in ranked
-        ):
-            raise _MissingGallerySourceResult()
-        expansion = _expand_gallery_ranking(
-            search=snapshot,
-            ranked=ranked,
-            query=source_candidate.vector,
-        )
-        eligible_photo_count = len({candidate.photo_id for candidate in candidates.entry.faces})
-        eligible_face_count = len(candidates.entry.faces)
+        reader = select_reader(snapshot)
+        with comparison_snapshot(snapshot) as comparing:
+            source_candidate = _gallery_source_candidate(
+                event=snapshot.event,
+                configuration=snapshot.configuration,
+                reader=reader,
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+            )
+            ranking = rank_selected_direct(
+                snapshot,
+                source_candidate.vector,
+                reader=reader,
+                **({"comparison_evidence": True} if comparing else {}),
+            )
+            ranked = ranking.photos
+            source = snapshot.configuration.get("query_source")
+            if not isinstance(source, dict) or not any(
+                row.photo_id == source.get("photo_id") for row in ranked
+            ):
+                raise _MissingGallerySourceResult()
+            expansion = _expand_gallery_ranking(
+                search=snapshot,
+                ranked=ranked,
+                query=source_candidate.vector,
+            )
+            if comparing:
+
+                def verify_source() -> None:
+                    other_source = _gallery_source_candidate(
+                        event=snapshot.event,
+                        configuration=snapshot.configuration,
+                        reader="legacy" if reader == "pgvector" else "pgvector",
+                        paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+                    )
+                    verify_source_representations(source_candidate, other_source)
+
+                review_other_reader(
+                    search=snapshot,
+                    query=source_candidate.vector,
+                    reader=reader,
+                    selected=ranking,
+                    expansion=expansion,
+                    expand=lambda rows: _expand_gallery_ranking(
+                        search=snapshot, ranked=rows, query=source_candidate.vector
+                    ),
+                    source_verifier=verify_source,
+                )
+        eligible_photo_count = ranking.eligible_photo_count
+        eligible_face_count = ranking.eligible_face_count
         with transaction.atomic():
             locked_search = (
                 SelfieSearch.objects.select_for_update().select_related("event").get(pk=search.pk)
@@ -221,11 +269,14 @@ def process_gallery_photo_search(
                 locked_search.event_id != snapshot.event_id
                 or locked_search.configuration_hash != snapshot.configuration_hash
                 or locked_search.configuration != snapshot.configuration
+                or locked_search.reader_staff_eligible != snapshot.reader_staff_eligible
+                or locked_search.reader_comparison_requested != snapshot.reader_comparison_requested
             ):
                 raise GallerySearchUnavailable()
             current_source = _gallery_source_candidate(
                 event=locked_search.event,
                 configuration=locked_search.configuration,
+                reader=reader,
                 paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             )
             if current_source != source_candidate:
@@ -308,6 +359,7 @@ def _gallery_source_candidate(
     event: Event,
     configuration: dict[str, object],
     paid_watermarked_previews_enabled: bool = False,
+    reader: Reader = "legacy",
 ) -> CandidateEmbedding:
     source = configuration.get("query_source")
     if (
@@ -332,11 +384,14 @@ def _gallery_source_candidate(
             event=event,
             configuration=configuration,
             photo_ids=(str(photo.pk),),
+            validate_legacy_vector=reader == "legacy",
         )
         .filter(detection_id=source["detection_id"])
         .values_list(
-            "vector",
-            "model_version",
+            "detection__embedding_vector__vector" if reader == "pgvector" else "vector",
+            "detection__embedding_vector__model_version"
+            if reader == "pgvector"
+            else "model_version",
             "detection_id",
             "detection__attempt__photo_id",
             "detection__attempt__photo__event_id",
@@ -358,13 +413,17 @@ def _gallery_source_candidate(
         face_index,
         geometry,
     ) = row
+    if model_version != configuration.get("embedding_model"):
+        raise GallerySearchUnavailable()
     if (
         gallery_face_crop(detection_id=str(detection_id), face_index=face_index, geometry=geometry)
         is None
     ):
         raise GallerySearchUnavailable()
     candidate = CandidateEmbedding(
-        vector=vector,
+        vector=[float(value) for value in vector]
+        if reader == "pgvector" and vector is not None
+        else vector,
         model_version=model_version,
         detection_id=detection_id,
         photo_id=str(photo_id),
@@ -463,13 +522,16 @@ def _compatible_gallery_embeddings(
     event: Event,
     configuration: dict[str, object],
     photo_ids: Iterable[str] | None = None,
+    validate_legacy_vector: bool = True,
 ) -> QuerySet[FaceEmbedding]:
-    return _compatible_embeddings(
+    queryset = _compatible_embeddings(
         event=event,
         configuration=configuration,
         photo_ids=photo_ids,
-    ).filter(
-        _usable_vector_predicate(configuration),
+    )
+    if validate_legacy_vector:
+        queryset = queryset.filter(_usable_vector_predicate(configuration))
+    return queryset.filter(
         detection__geometry__coordinate_space="preview-small-v1",
         detection__geometry__pixel_width__gt=0,
         detection__geometry__pixel_height__gt=0,

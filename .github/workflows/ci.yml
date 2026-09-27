@@ -41,7 +41,7 @@ jobs:
       packages: read
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
         env:
           POSTGRES_DB: app
           POSTGRES_USER: app
@@ -180,7 +180,7 @@ jobs:
         if: needs.select-test-suites.outputs.migrations == 'true'
         run: |
           docker run --detach --rm --name migration-postgres --publish 5432:5432 \
-            --env POSTGRES_DB=app --env POSTGRES_USER=app --env POSTGRES_PASSWORD=app postgres:16
+            --env POSTGRES_DB=app --env POSTGRES_USER=app --env POSTGRES_PASSWORD=app pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
           for attempt in $(seq 1 15); do
             if docker exec migration-postgres pg_isready -U app -d app; then exit 0; fi
             sleep 1

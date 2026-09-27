@@ -223,7 +223,7 @@ case "$database_name" in ''|*[!A-Za-z0-9_]*) fail "source database name is inval
 compose "$source_project" exec -T db pg_dump --format=custom --username "$database_user" --dbname "$database_name" \
     > "$backup_dir/postgresql.dump" || fail "PostgreSQL dump failed"
 [ -s "$backup_dir/postgresql.dump" ] || fail "PostgreSQL dump is empty"
-docker run --rm -v "$backup_dir:/backup:ro" postgres:16 \
+docker run --rm -v "$backup_dir:/backup:ro" pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b \
     pg_restore -l /backup/postgresql.dump >/dev/null || fail "PostgreSQL dump verification failed"
 
 docker run --rm \

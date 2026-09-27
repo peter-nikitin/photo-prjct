@@ -616,7 +616,22 @@ validate_migration_preflight_env() {
   printf 'candidate-migration-env-mode-0600\n' >> "$COMMAND_LOG"
 }
 case " $* " in
-  *" run --rm -T --entrypoint python web manage.py migrate --noinput "*)
+  *"pg_database_collation_actual_version"*)
+    validate_candidate_env
+    printf 'candidate-vector-collation-check\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != vector-collation-mismatch ]
+    ;;
+  *"CREATE EXTENSION IF NOT EXISTS vector"*)
+    validate_candidate_env
+    printf 'candidate-vector-capability\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != vector-capability-failure ]
+    ;;
+  *" up -d --wait --no-deps db "*)
+    validate_candidate_env
+    printf 'candidate-vector-database-start\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != vector-database-start-failure ]
+    ;;
+  *" run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput "*)
     validate_candidate_env
     printf 'candidate-migrate\n' >> "$COMMAND_LOG"
     [ "$APPLY_SCENARIO" != gallery-projection-migration-failure ]
@@ -984,6 +999,7 @@ SUCCESS_PHASES = [
     "migration-preflight",
     "observability-preflight",
     "observability-reconcile",
+    "vector-database-preflight",
     "projection-preflight",
     "certificate",
     "compose-reconcile",
@@ -2189,7 +2205,9 @@ def test_failed_split_rollout_restores_previous_shared_worker_package_atomically
     (tmp_path / "previous-env.expected").write_bytes(previous_env)
     previous_package = tmp_path / "previous-package"
     previous_package.mkdir()
-    old_compose = b"services:\n  worker:\n    image: ${WORKER_IMAGE}\n"
+    old_compose = (
+        b"services:\n  db:\n    image: postgres:16\n  worker:\n    image: ${WORKER_IMAGE}\n"
+    )
     old_overlay = b"services:\n  nginx:\n    image: nginx:old\n"
     (previous_package / "docker-compose.deployment.yml").write_bytes(old_compose)
     (previous_package / "docker-compose.https.yml").write_bytes(old_overlay)
@@ -2216,7 +2234,10 @@ def test_failed_split_rollout_restores_previous_shared_worker_package_atomically
     assert "DEPLOY_RESULT=failure phase=local-health rollback=succeeded" in result.stdout
     assert (tmp_path / ".env").read_bytes() == previous_env
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
-    assert (tmp_path / "docker-compose.deployment.yml").read_bytes() == old_compose
+    assert (tmp_path / "docker-compose.deployment.yml").read_bytes() == old_compose.replace(
+        b"postgres:16",
+        b"pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b",
+    )
     assert (tmp_path / "docker-compose.https.yml").read_bytes() == old_overlay
     assert (tmp_path / "deploy" / "package-version").read_text(encoding="utf-8") == (
         "previous-shared-worker\n"
@@ -2247,7 +2268,8 @@ def test_shared_rollback_removes_worker_when_previous_processing_is_disabled(
     previous_package = tmp_path / "previous-package"
     previous_package.mkdir()
     (previous_package / "docker-compose.deployment.yml").write_text(
-        "services:\n  worker:\n    image: ${WORKER_IMAGE}\n", encoding="utf-8"
+        "services:\n  db:\n    image: postgres:16\n  worker:\n    image: ${WORKER_IMAGE}\n",
+        encoding="utf-8",
     )
     (previous_package / "docker-compose.https.yml").write_text(
         "services:\n  nginx:\n    image: nginx:old\n", encoding="utf-8"
@@ -2506,7 +2528,7 @@ def test_gallery_projection_preparation_runs_candidate_drain_before_rebuild(
 @pytest.mark.parametrize(
     ("scenario", "expected_phase", "last_pre_failure_command"),
     [
-        ("gallery-projection-worker-stop-failure", "projection-preflight", None),
+        ("gallery-projection-worker-stop-failure", "vector-database-preflight", None),
         (
             "gallery-projection-publication-drain-failure",
             "projection-preflight",
@@ -2574,7 +2596,8 @@ def _fresh_projection_failure_env(
     previous_package = tmp_path / "previous-package"
     previous_package.mkdir()
     (previous_package / "docker-compose.deployment.yml").write_text(
-        "services:\n  web:\n    image: previous-package\n", encoding="utf-8"
+        "services:\n  db:\n    image: postgres:16\n  web:\n    image: previous-package\n",
+        encoding="utf-8",
     )
     (previous_package / "docker-compose.https.yml").write_text(
         "services:\n  nginx:\n    image: nginx:previous\n", encoding="utf-8"
@@ -2607,7 +2630,12 @@ def test_fresh_projection_preparation_failure_uses_requested_env_to_restore_no_e
     )
 
     assert result.returncode != 0
-    assert "DEPLOY_RESULT=failure phase=projection-preflight rollback=succeeded" in result.stdout
+    expected_phase = (
+        "vector-database-preflight"
+        if scenario == "gallery-projection-worker-stop-failure"
+        else "projection-preflight"
+    )
+    assert f"DEPLOY_RESULT=failure phase={expected_phase} rollback=succeeded" in result.stdout
     commands = _apply_log(tmp_path)
     cleanup_index = next(
         index
@@ -2622,8 +2650,15 @@ def test_fresh_projection_preparation_failure_uses_requested_env_to_restore_no_e
         and f"{tmp_path}/previous-package/docker-compose.deployment.yml" in command
     )
     assert cleanup_index < package_restore_index
+    expected_database_image = (
+        "postgres:16"
+        if scenario == "gallery-projection-worker-stop-failure"
+        else "pgvector/pgvector:0.8.6-pg16-trixie@sha256:"
+        "c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b"
+    )
     assert (tmp_path / "docker-compose.deployment.yml").read_text(encoding="utf-8") == (
-        "services:\n  web:\n    image: previous-package\n"
+        f"services:\n  db:\n    image: {expected_database_image}\n"
+        "  web:\n    image: previous-package\n"
     )
     assert (tmp_path / "docker-compose.https.yml").read_text(encoding="utf-8") == (
         "services:\n  nginx:\n    image: nginx:previous\n"
@@ -3131,7 +3166,7 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
     commands = _apply_log(tmp_path)
-    assert commands.count("candidate-requested-env-with-canonical-untouched") == 8
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 11
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
     assert sum(" up -d --remove-orphans" in command for command in commands) == 1
@@ -4187,3 +4222,47 @@ def test_nginx_validation_covers_submission_and_bearer_redaction_contract() -> N
         "^-",
     ):
         assert assertion in validator
+
+
+@pytest.mark.parametrize("scenario", ["vector-capability-failure", "vector-database-start-failure"])
+def test_vector_capability_failure_rolls_back_before_candidate_migration(
+    tmp_path, fake_bin, scenario
+):
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    result = _run("deploy/apply-deployment.sh", env=env)
+    commands = Path(env["COMMAND_LOG"]).read_text()
+    assert result.returncode != 0
+    assert (
+        "DEPLOY_RESULT=failure phase=vector-database-preflight rollback=succeeded" in result.stdout
+    )
+    assert "candidate-migrate" not in commands
+
+
+def test_vector_database_is_reconciled_and_verified_before_candidate_migration(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stderr
+    commands = Path(env["COMMAND_LOG"]).read_text()
+    assert (
+        commands.index("candidate-vector-database-start")
+        < commands.index("candidate-vector-collation-check")
+        < commands.index("candidate-vector-capability")
+        < commands.index("candidate-migrate")
+    )
+
+
+def test_database_collation_mismatch_refuses_extension_and_retains_previous_database_image(
+    tmp_path, fake_bin
+):
+    env = _fresh_projection_failure_env(tmp_path, fake_bin, scenario="vector-collation-mismatch")
+    result = _run("deploy/apply-deployment.sh", env=env)
+    commands = Path(env["COMMAND_LOG"]).read_text()
+    assert result.returncode != 0
+    assert (
+        "DEPLOY_RESULT=failure phase=vector-database-preflight rollback=succeeded" in result.stdout
+    )
+    assert "candidate-vector-collation-check" in commands
+    assert "candidate-vector-capability" not in commands
+    assert "candidate-migrate" not in commands
+    assert "image: postgres:16" in (tmp_path / "docker-compose.deployment.yml").read_text()
+    assert "pgvector/pgvector" not in (tmp_path / "docker-compose.deployment.yml").read_text()

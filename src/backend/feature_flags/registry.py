@@ -50,6 +50,10 @@ GALLERY_CDN_IMAGES: Final = FeatureDefinition(
     "gallery-cdn-images", "Deliver gallery grid images through CDN"
 )
 
+PGVECTOR_FACE_SEARCH_READ: Final = FeatureDefinition(
+    "pgvector-face-search-read", "Use native exact face search"
+)
+
 FEATURE_DEFINITIONS: Final = (
     PAID_EVENTS,
     PAID_WATERMARKED_PREVIEWS,
@@ -59,6 +63,7 @@ FEATURE_DEFINITIONS: Final = (
     BULK_PHOTO_DOWNLOAD,
     YANDEX_DISK_IMPORT,
     GALLERY_CDN_IMAGES,
+    PGVECTOR_FACE_SEARCH_READ,
 )
 
 validate_feature_definitions(FEATURE_DEFINITIONS)

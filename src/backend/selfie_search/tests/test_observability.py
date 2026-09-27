@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from selfie_search.observability import (
@@ -70,6 +70,8 @@ def _ranking_fields(**overrides: object) -> dict[str, Any]:
         "matched_photo_count": 3,
         "load_ms": 4,
         "rank_ms": 7,
+        "reader": "legacy",
+        "native_sql_ms": None,
         "cache_outcome": "miss",
         "identity_ms": 1,
         "build_ms": 3,
@@ -130,7 +132,7 @@ def test_ranking_v2_emits_only_bounded_expansion_fields_and_reconciles_counts() 
     )
 
     payload = json.loads(logger.calls[0][1])
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["final_matched_photo_count"] == 3
     assert payload["cluster_expansion_outcome"] == "expanded"
     assert set(payload) == {
@@ -149,7 +151,7 @@ def test_ranking_cache_fields_are_bounded_and_redacted() -> None:
     logger = _CaptureLogger()
     emit_selfie_event(logger, event=SelfieEventName.RANKING_FINISHED, **fields)
     payload = json.loads(logger.calls[0][1])
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["cache_outcome"] == "hit"
     assert payload["shortlist_count"] == 2
     for overrides in (
@@ -355,7 +357,7 @@ def test_terminal_v2_rejects_mismatched_or_non_ready_source_counts(
 def test_ranking_v2_accepts_each_bounded_expansion_outcome(fields: dict[str, Any]) -> None:
     logger = _CaptureLogger()
     emit_selfie_event(logger, event=SelfieEventName.RANKING_FINISHED, **fields)
-    assert json.loads(logger.calls[0][1])["schema_version"] == 3
+    assert json.loads(logger.calls[0][1])["schema_version"] == 4
 
 
 def test_probe_has_only_the_common_envelope_and_random_non_secret_id() -> None:
@@ -445,6 +447,8 @@ _BACKEND_PRIVACY_CASES = [
                 "matched_photo_count",
                 "load_ms",
                 "rank_ms",
+                "reader",
+                "native_sql_ms",
                 "cache_outcome",
                 "identity_ms",
                 "build_ms",
@@ -505,7 +509,7 @@ def test_backend_events_have_exact_compact_envelope_and_event_fields(
     assert payload["schema_version"] == (
         1
         if event is SelfieEventName.SUBMISSION_FINISHED
-        else 3
+        else 4
         if event is SelfieEventName.RANKING_FINISHED
         else 2
     )
@@ -697,3 +701,35 @@ def test_backend_serialization_failure_emits_fixed_marker_without_propagating(
     emit_selfie_event(logger, event=SelfieEventName.SUBMISSION_FINISHED, **_submission_fields())
 
     assert logger.calls == [(logging.ERROR, OBSERVABILITY_FAILURE_MARKER)]
+
+
+@pytest.mark.parametrize("reader", ["legacy", "pgvector"])
+def test_direct_reader_event_is_bounded_and_vector_free(reader):
+    logger = _CaptureLogger()
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.DIRECT_READER_FINISHED,
+        event_id=1,
+        search_id=UUID("00000000-0000-0000-0000-000000000001"),
+        reader=reader,
+        eligible_face_count=3,
+        eligible_photo_count=2,
+        matched_photo_count=1,
+        ranking_ms=10,
+    )
+    payload = json.loads(logger.calls[0][1])
+    assert payload["reader"] == reader
+    assert payload["ranking_ms"] == 10
+    assert "vector" not in set(payload)
+    with pytest.raises(SelfieEventContractError):
+        emit_selfie_event(
+            logger,
+            event=SelfieEventName.DIRECT_READER_FINISHED,
+            event_id=1,
+            search_id=UUID("00000000-0000-0000-0000-000000000001"),
+            reader="unknown-reader",
+            eligible_face_count=3,
+            eligible_photo_count=2,
+            matched_photo_count=1,
+            ranking_ms=10,
+        )

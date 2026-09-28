@@ -6,8 +6,8 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("processing", "0010_face_projection_generation_index"),
-        ("selfie_search", "0005_optional_feedback_contact"),
+        ("processing", "0011_pgvector_face_embeddings"),
+        ("selfie_search", "0006_reader_review_context"),
     ]
 
     operations = [

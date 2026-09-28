@@ -11,14 +11,15 @@
 - Related ADRs: [0018](../../adr/0018-use-managed-yandex-monitoring.md),
   [0017](../../adr/0017-use-django-polled-photo-processing-jobs.md),
   [0028](../../adr/0028-operate-one-canonical-deployment.md),
-  [0041](../../adr/0041-isolate-autoscaled-photo-worker-pools.md).
+  [0042](../../adr/0042-isolate-autoscaled-photo-worker-pools.md),
+  proposed [0043](../../adr/0043-observe-isolated-workers-with-git-managed-alerts.md).
 - Related specification: [Autoscaled pools](2026-09-23-autoscaled-photo-worker-pools-design.md).
 - ADR impact: Requires a new ADR narrowly superseding ADR 0018's prohibition on Docker
   inspection for monitoring: a fixed-command, host-owned read-only worker probe only.
   Git-managed alerting and any Managed Prometheus ingestion/evaluator transition require
   reconciliation with ADR 0018 before implementation; this specification does not accept
   that transition or claim Terraform resource support is already established.
-  Conforms to ADR 0041's private transport, credential and scaling boundaries. No accepted
+  Conforms to ADR 0042's private transport, credential and scaling boundaries. No accepted
   ADR is amended or implicitly accepted by approving this specification.
 
 ## Intent and scope
@@ -35,7 +36,8 @@ limits or the durable ownership protocol. It is not a benchmark or sizing workst
 Exclude pgvector schema, reader, gate and release; historical backfill; legacy deletion;
 database relocation or internal database metrics; import/commerce; main-VM downsizing;
 logs/traces export; automatic remediation; paid provisioning and live activation.
-The in-progress pgvector deployment must not be interrupted, reverted or raced by this work.
+The deployed pgvector baseline `866a894` and enabled reader gate (2026-09-28 inventory)
+must be preserved; telemetry preparation neither reverts it nor races canonical Deploy.
 
 ## Selected approach and alternatives
 
@@ -157,13 +159,13 @@ objects in the cloud UI is not the delivery mechanism; the UI may be used for ob
 Application must be reproducible and automated, with verification of deployed configuration
 and a rollback to a reviewed version. Credentials remain outside tracked definitions.
 
-Terraform is the target application mechanism. Before implementation, confirm supported resources
-for the selected evaluator, rules, notification routing and required workspace/channel lifecycle,
-including read-back and drift detection. Do not assume the Yandex provider supports native alerts
-or that an imperative Terraform provisioner provides managed-resource semantics. If supported
-Terraform resources do not cover the required contract, obtain explicit approval for the documented
-Managed Prometheus API application path; neither a silent API substitution nor manual UI setup
-is an acceptable fallback. The precise application mechanism remains an implementation gate.
+Terraform was the initial target application mechanism. After checking the published Yandex
+provider resource surface, the maintainer explicitly approved Managed Prometheus API application
+for rules and routing on 2026-09-28. Do not substitute an imperative Terraform provisioner for
+managed-resource semantics. Supported workspace/channel lifecycle, configuration read-back,
+ownership, drift detection and rollback remain implementation prerequisites; unsupported API
+operations must not be guessed, and manual UI setup is not an acceptable fallback. Proposed
+ADR 0043 records the architectural reconciliation and still requires explicit acceptance.
 
 Managed Prometheus YAML/PromQL rules and Alertmanager configuration are the documented API path,
 not proof that existing native Monitoring points are queryable in its workspace. If that path

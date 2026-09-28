@@ -331,6 +331,13 @@ esac
 local_version="$(docker run --rm --network none "$local_db_image" postgres --version)" || \
     fail "Could not determine local PostgreSQL version"
 require_postgres_16 "Local" "$local_version"
+# Dumps contain vector types; reject incompatible restore images before stopping local services.
+if ! docker run --rm --network none "$local_db_image" sh -ec '
+    test -r "$(pg_config --sharedir)/extension/vector.control"
+    grep -Eq "default_version[[:space:]]*=[[:space:]]*'\''0\.8\.6'\''" "$(pg_config --sharedir)/extension/vector.control"
+'; then
+    fail "Local restore image requires pgvector 0.8.6 support"
+fi
 
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ')" || fail "Could not create backup timestamp"
 if [ "$dump_source" = retained ]; then
@@ -495,6 +502,20 @@ start_and_wait_for_local_db() {
     done
 }
 
+verify_local_collation_compatibility() {
+    local_collation_mismatches="$(docker compose exec -T db psql -At -v ON_ERROR_STOP=1 \
+        --username="$local_user" --dbname="$local_database" -c "SELECT count(*) FROM (
+            SELECT 1 FROM pg_database
+            WHERE datname = current_database()
+              AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
+            UNION ALL
+            SELECT 1 FROM pg_collation
+            WHERE collversion IS NOT NULL
+              AND collversion IS DISTINCT FROM pg_collation_actual_version(oid)
+        ) AS collation_mismatches ")" || return 1
+    [ "$local_collation_mismatches" = 0 ]
+}
+
 recreate_local_database() {
     target_identifier="$(sql_identifier "$local_database")" || return 1
     owner_identifier="$(sql_identifier "$local_user")" || return 1
@@ -595,6 +616,7 @@ if applied_migrations - set(loader.disk_migrations):
 }
 
 start_and_wait_for_local_db
+verify_local_collation_compatibility || fail "Local database collation versions are incompatible; restore the previous database image"
 
 if web_running_services="$(docker compose ps --status running --services web 2>/dev/null)"; then
     :
@@ -644,6 +666,10 @@ if ! restore_local_dump "$dump_path"; then
     exit 1
 fi
 
+if ! verify_local_collation_compatibility; then
+    attempt_safety_recovery "Restored database collation versions are incompatible" || true
+    exit 1
+fi
 replacement_committed=1
 validate_restored_database
 

@@ -762,7 +762,9 @@ class SelfieSubmissionFeedbackTests(TestCase):
         self.assertContains(response, ">Найти мои фото</button>", status_code=422)
         self.assertNotContains(response, 'type="submit" disabled', status_code=422)
         self.assertEqual(response.content.count(b'role="alert"'), 1)
-        captured = repr(record.__dict__) + "\n".join(logs.output)
+        captured = repr(
+            {key: value for key, value in record.__dict__.items() if key != "pathname"}
+        ) + "\n".join(logs.output)
         for forbidden in (
             "selfie.jpg",
             "selfie.bin",
@@ -904,6 +906,24 @@ class SelfieSubmissionFeedbackTests(TestCase):
         )
         self.assertContains(response, 'role="alert"', status_code=503)
         self.assertContains(response, ">Найти мои фото</button>", status_code=503)
+
+    def test_untrusted_post_cannot_set_server_reader_context(self) -> None:
+        created = SimpleNamespace(search=SimpleNamespace(pk=uuid4()), public_token="opaque-token")
+        with patch(
+            "selfie_search.views.submit_selfie_search", return_value=created
+        ) as submit_search:
+            response = self.client.post(
+                reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug}),
+                {
+                    "selfie": _view_jpeg_upload(),
+                    "reader_staff_eligible": "true",
+                    "reader_comparison_requested": "true",
+                },
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("reader_staff_eligible", submit_search.call_args.kwargs)
+        self.assertNotIn("reader_comparison_requested", submit_search.call_args.kwargs)
+        self.assertFalse(submit_search.call_args.kwargs["user"].is_staff)
 
     def test_accepted_submission_emits_after_success_with_created_search_id(self) -> None:
         logger = _CaptureLogger()

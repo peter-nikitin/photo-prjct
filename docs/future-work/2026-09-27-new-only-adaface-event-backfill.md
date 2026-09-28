@@ -4,14 +4,16 @@
 - Status: Blocked dependent task; not approved for execution
 - Owner: project maintainer
 - Depends on: [worker isolation](../plans/2026-09-27-autoscaled-worker-isolation.md) and
-  the neighboring pgvector rollout (not included in this package)
-- Governing recovery boundary: neighboring task's ADR 0040; reconcile its delivered contract before unblocking
+  the deployed pgvector baseline under ADRs 0040/0041
+- Governing recovery boundary: ADR 0040's reader/storage transition and ADR 0041's accepted numerical policy
 
 ## Observed gap
 
 Historical SFace events retain old-generation evidence and legacy-dependent readers. Isolation
 alone does not migrate them or make the old implementation removable. The new pgvector table and
-reader are being introduced in the neighboring task; they are not assumed deployed or active.
+reader are deployed at `866a894adf6b5ac1bba5bda2a4920cf88b661bbf`, with
+`pgvector-face-search-read=on` in the 2026-09-28 integration inventory. Worker isolation remains
+unactivated; this dated pgvector evidence does not authorize model backfill or legacy deletion.
 
 ## Why this is non-blocking now
 

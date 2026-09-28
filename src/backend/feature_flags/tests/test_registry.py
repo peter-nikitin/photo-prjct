@@ -11,6 +11,7 @@ from feature_flags.registry import (
     PAID_PHOTO_PAYMENT_SIMULATOR,
     PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
+    PGVECTOR_FACE_SEARCH_READ,
     YANDEX_DISK_IMPORT,
     FeatureDefinition,
     validate_feature_definitions,
@@ -56,6 +57,7 @@ class FeatureDefinitionTests(SimpleTestCase):
                 BULK_PHOTO_DOWNLOAD,
                 YANDEX_DISK_IMPORT,
                 GALLERY_CDN_IMAGES,
+                PGVECTOR_FACE_SEARCH_READ,
             ),
         )
         self.assertEqual(
@@ -81,5 +83,6 @@ class FeatureDefinitionTests(SimpleTestCase):
                     "gallery-cdn-images",
                     "Deliver gallery grid images through CDN",
                 ),
+                ("pgvector-face-search-read", "Use native exact face search"),
             ),
         )

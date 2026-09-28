@@ -22,7 +22,6 @@ from processing.models import (
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
-    FaceEmbedding,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
@@ -39,6 +38,7 @@ from processing.services.face_quality import (
     quality_face_result_geometry,
     validate_quality_face_result,
 )
+from processing.services.vector_embeddings import persist_parallel_embedding
 
 DEFAULT_LEASE_SECONDS = 120
 DEFAULT_RECOVERY_LIMIT = 25
@@ -662,7 +662,7 @@ def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str,
         )
         embedding = record.get("embedding")
         if embedding is not None:
-            FaceEmbedding.objects.create(
+            persist_parallel_embedding(
                 detection=detection,
                 model_version=model,
                 vector=embedding,
@@ -722,7 +722,7 @@ def _persist_quality_face_result(
             features=features,
         )
         if face.embedding is not None:
-            FaceEmbedding.objects.create(
+            persist_parallel_embedding(
                 detection=detection,
                 model_version=result.model,
                 vector=face.embedding,

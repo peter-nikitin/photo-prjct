@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tarfile
 from dataclasses import replace
 from io import StringIO
@@ -762,7 +763,7 @@ def test_canonical_archive_runs_exact_cloud_helper_without_source_checkout(tmp_p
     )
     result = subprocess.run(
         [
-            str(ROOT / ".venv/bin/python"),
+            sys.executable,
             "-c",
             "import provision; print(provision.digest(provision.cloud_init({"
             "'bootstrap_secret_id':'secret','bootstrap_version_id':'version','worker_build':'a'*40,"

@@ -5,9 +5,9 @@
 - Owner: project maintainer
 - Related specification: [Worker pools](../superpowers/specs/2026-09-23-autoscaled-photo-worker-pools-design.md)
 - Related architecture: [Current deployment](../architecture.md#current-architecture--implemented), [Accepted constraints](../architecture.md#accepted-constraints)
-- Related ADRs: [0041](../adr/0041-isolate-autoscaled-photo-worker-pools.md), [0017](../adr/0017-use-django-polled-photo-processing-jobs.md), [0018](../adr/0018-use-managed-yandex-monitoring.md), [0028](../adr/0028-operate-one-canonical-deployment.md)
-- External dependency: neighboring pgvector task and its ADR 0040, not included in this package
-- ADR impact: Conforms to accepted ADR 0041; record only delivered topology as implemented
+- Related ADRs: [0042](../adr/0042-isolate-autoscaled-photo-worker-pools.md), [0017](../adr/0017-use-django-polled-photo-processing-jobs.md), [0018](../adr/0018-use-managed-yandex-monitoring.md), [0028](../adr/0028-operate-one-canonical-deployment.md)
+- Integrated baseline: deployed `866a894adf6b5ac1bba5bda2a4920cf88b661bbf` on 2026-09-28, accepted pgvector ADRs 0040/0041 and enabled `pgvector-face-search-read`; preserve deployed schema and reader/gate semantics
+- ADR impact: Conforms to accepted ADR 0042; record only delivered topology as implemented
 
 ## Goal
 
@@ -20,9 +20,11 @@ No separate benchmark, sizing experiment, database move, main-VM downsize, recog
 activation, historical replay or legacy cleanup. Do not change pgvector schema, reader or gate.
 Keep import/commerce where they are. Prepare the [blocked backfill task](../future-work/2026-09-27-new-only-adaface-event-backfill.md), but do not run it.
 
-Implementation code can be prepared independently of pgvector. Serialize actual deployment with
-the pgvector task: use one current-main image and the existing canonical Deploy workflow; never
-deploy an older checkout over its schema changes. No second deployment pipeline may race Deploy.
+The package integrates the deployed pgvector baseline: `processing/0011_pgvector_face_embeddings`
+and `selfie_search/0006_reader_review_context` stay unchanged; the unpublished worker coordination
+migration is `processing/0012` and depends on both. Preserve the enabled reader gate through
+`sync_feature_flags`. Use one current-main image and the existing canonical Deploy workflow;
+never deploy an older checkout over its schema changes. No second pipeline may race Deploy.
 
 ## Acceptance criteria
 
@@ -184,7 +186,7 @@ modify `deploy/monitoring/alerts.md`, `deploy/monitoring/dashboard.json`,
 **Files:** `docs/architecture.md`, `docs/engineering-jobs.md`, worker-pool runbook and cloud inventory
 in `.agents/skills/manage-yandex-cloud/references/inventory.md` when actual deployment changes.
 
-- [ ] Compare exact delivered package with the specification and ADR 0041.
+- [ ] Compare exact delivered package with the specification and ADR 0042.
 - [ ] Keep proposed/pending status until live proof exists; record deployed multi-VM facts only then.
 - [ ] Confirm import/commerce, primary VM size, pgvector gate/schema and existing feature exposure
   are unchanged by relocation. Record conformance and any unresolved operational evidence.
@@ -199,9 +201,10 @@ Use [Testing](../testing.md) and `$select-verification-suites`; selector/manifes
 - Focused RED/GREEN commands are listed per task; add newly created tests to executable discovery.
 - Run `.venv/bin/pre-commit run --files <exact changed Python paths>` after final Python edits.
 - Run `make static` after integration, then root-controller `make check` on the final package.
-- Preparation used `b28d8b7` and review base `9b2409e`. The delivery worktree is based on
-  refreshed `origin/main` at `7e3212d780dac346f0b73e2ff92d1034b1c5989a`; neighboring pgvector
-  preparation commits are preserved separately and are not part of this package. For an unstaged package run
+- Historical preparation used `b28d8b7`, review base `9b2409e`, and later base `7e3212d`.
+  Final integration uses refreshed `origin/main` at deployed `866a894adf6b5ac1bba5bda2a4920cf88b661bbf`;
+  pgvector is now part of the baseline, with its reader gate already `on` (2026-09-28 inventory).
+  For an unstaged package run
   `.venv/bin/python scripts/select_test_suites.py select --changed-file <path> ... --format json`
   with every final changed path, including untracked task files; a base without a head does not
   select an unstaged package. For committed comparisons supply both `--base` and `--head`.
@@ -242,5 +245,6 @@ the specification. Remaining live gates (not permission to create resources) are
    especially scale-from-zero, simultaneous selfie retirement and permissions for self-stop.
 4. Complete current-state inventory and evidence for unchecked release-safeguard slots.
 
-The pgvector task does not block repository preparation of isolation. It does block later
-new-only model backfill and requires serialized canonical deployment coordination.
+The deployed pgvector baseline is integrated; its schema, reader and enabled gate remain intact.
+Later new-only model backfill still requires isolated-worker live acceptance and a separately
+approved model transition. Canonical deployments remain serialized.

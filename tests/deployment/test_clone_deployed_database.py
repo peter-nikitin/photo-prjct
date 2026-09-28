@@ -14,6 +14,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/clone-deployed-db.sh"
+VECTOR_DATABASE_IMAGE = (
+    "pgvector/pgvector:0.8.6-pg16-trixie@sha256:"
+    "c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b"
+)
 INTERACTIVE_HARNESS_TIMEOUT_SECONDS = 10
 
 
@@ -124,6 +128,11 @@ case "$*" in
     ;;
   'compose version') exit 0 ;;
   'compose config --format json') cat "$COMPOSE_CONFIG" ;;
+  *'vector.control'*)
+    if [ "${LOCAL_VECTOR_CAPABILITY:-available}" = missing ]; then
+      exit 1
+    fi
+    ;;
   *'postgres --version'*) printf 'postgres (PostgreSQL) %s\\n' "${LOCAL_POSTGRES_VERSION:-16.6}" ;;
   *'pg_restore --list /dump'*)
     case "$*" in
@@ -203,6 +212,10 @@ case "$*" in
     case "${DJANGO_DATABASE_STATE:-ready}" in
       model-drift|makemigrations-failure) exit 1 ;;
     esac
+    ;;
+  *'pg_database_collation_actual_version'*)
+    printf 'local-vector-collation-check\\n' >> "$COMMAND_LOG"
+    printf '%s\\n' "${LOCAL_COLLATION_MISMATCHES:-0}"
     ;;
   *'psql '*)
     count=0
@@ -1316,9 +1329,9 @@ def test_restore_postgres_16_integration_uses_only_an_isolated_local_compose_pro
     project = f"clone_staging_restore_{os.getpid()}"
     compose_file = tmp_path / "compose.integration.yml"
     compose_file.write_text(
-        """services:
+        f"""services:
   db:
-    image: postgres:16
+    image: {VECTOR_DATABASE_IMAGE}
     environment:
       POSTGRES_DB: local_app
       POSTGRES_USER: local_user
@@ -1446,6 +1459,11 @@ exec "$REAL_DOCKER" "$@"
             fake_bin / "ssh",
             """
 case "$*" in
+  *'vector.control'*)
+    if [ "${LOCAL_VECTOR_CAPABILITY:-available}" = missing ]; then
+      exit 1
+    fi
+    ;;
   *'postgres --version'*) printf 'postgres (PostgreSQL) 16.6\\n' ;;
   *'printenv POSTGRES_DB'*) printf 'staging_app\\n' ;;
   *'printenv POSTGRES_USER'*) printf 'staging_user\\n' ;;
@@ -1527,7 +1545,7 @@ def test_restore_real_django_postgres_16_integration_validates_migration_readine
     compose_file.write_text(
         f"""services:
   db:
-    image: postgres:16
+    image: {VECTOR_DATABASE_IMAGE}
     environment:
       POSTGRES_DB: local_app
       POSTGRES_USER: local_user
@@ -1688,6 +1706,11 @@ exec "$REAL_DOCKER" "$@"
             """
 printf '%s\n' "$*" >> "$CLONE_SSH_LOG"
 case "$*" in
+  *'vector.control'*)
+    if [ "${LOCAL_VECTOR_CAPABILITY:-available}" = missing ]; then
+      exit 1
+    fi
+    ;;
   *'postgres --version'*) printf 'postgres (PostgreSQL) 16.6\\n' ;;
   *'printenv POSTGRES_DB'*) printf 'staging_app\\n' ;;
   *'printenv POSTGRES_USER'*) printf 'staging_user\\n' ;;
@@ -1920,3 +1943,43 @@ def test_dump_rejects_remote_coordinate_control_characters_before_dump(
     assert "pg_dump" not in _commands(clone_env)
     assert not _published_backup_artifacts(backup_dir)
     _assert_local_database_was_not_touched(clone_env)
+
+
+def test_restore_rejects_non_vector_image_before_stopping_local_services(clone_env):
+    result = _run(
+        env={**clone_env, "LOCAL_VECTOR_CAPABILITY": "missing", "CONFIRM_REPLACE_LOCAL_DB": "yes"}
+    )
+    assert result.returncode != 0
+    assert "Local restore image requires pgvector 0.8.6 support" in result.stderr
+    _assert_local_database_was_not_touched(clone_env)
+    assert "pg_dump" not in _commands(clone_env)
+
+
+def test_clone_collation_mismatch_refuses_replacement_before_stopping_web(clone_env):
+    result = _run(
+        env={**clone_env, "CONFIRM_REPLACE_LOCAL_DB": "yes", "LOCAL_COLLATION_MISMATCHES": "1"}
+    )
+    assert result.returncode != 0
+    assert "Local database collation versions are incompatible" in result.stderr
+    commands = _commands(clone_env)
+    assert "local-vector-collation-check" in commands
+    assert "compose stop web" not in commands
+    assert "DROP DATABASE" not in commands
+    assert "REFRESH COLLATION" not in commands
+
+
+def test_clone_checks_matching_collations_before_stop_and_after_fresh_restore(clone_env, tmp_path):
+    result = _run(
+        env={
+            **clone_env,
+            "CONFIRM_REPLACE_LOCAL_DB": "yes",
+            "BACKUP_DIR": str(tmp_path / "backups"),
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    commands = _commands(clone_env)
+    assert commands.count("local-vector-collation-check") == 2
+    assert commands.index("local-vector-collation-check") < commands.index("compose stop web")
+    assert commands.rindex("local-vector-collation-check") > commands.index(
+        "pg_restore --exit-on-error"
+    )

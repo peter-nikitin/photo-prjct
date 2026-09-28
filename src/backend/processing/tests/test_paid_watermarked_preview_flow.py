@@ -289,7 +289,7 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
                         "bbox": [8, 6, 20, 20],
                         "confidence": 0.95,
                         "landmarks": [[10, 10], [20, 10], [15, 15], [11, 22], [19, 22]],
-                        "embedding": [0.6, 0.8],
+                        "embedding": [0.6, 0.8] + [0.0] * 126,
                     }
                 ],
                 "warnings": [],

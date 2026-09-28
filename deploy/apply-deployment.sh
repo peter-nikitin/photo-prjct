@@ -534,6 +534,8 @@ fi
 
 : "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL}"
 overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
+vector_database_reconciled=0
+vector_database_image="pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b"
 health_port=443
 health_url="https://$PUBLIC_DOMAIN/health/"
 observability_helper=/usr/local/sbin/findme-selfie-observability
@@ -855,6 +857,22 @@ clear_candidate_compose_interpolation() {
         IMPORT_WORKER_IMAGE
 }
 
+retain_vector_database_image() {
+    # Application rollback keeps the new PG16 capability for vector-bearing data.
+    database_compose_tmp="$(mktemp "$DEPLOY_ROOT/.database-compose.XXXXXX")" || return 1
+    if ! awk -v image="$vector_database_image" '
+        /^  db:/ { db = 1 }
+        /^  [a-zA-Z0-9_-]+:/ && !/^  db:/ { db = 0 }
+        db && /^    image:/ { $0 = "    image: " image; replaced = 1 }
+        { print }
+        END { if (!replaced) exit 1 }
+    ' "$DEPLOY_ROOT/docker-compose.deployment.yml" > "$database_compose_tmp"; then
+        rm -f "$database_compose_tmp"
+        return 1
+    fi
+    mv "$database_compose_tmp" "$DEPLOY_ROOT/docker-compose.deployment.yml"
+}
+
 restore_previous_deployment_package() {
     previous_package_root="${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}"
     [ -n "$previous_package_root" ] || return 0
@@ -876,6 +894,9 @@ restore_previous_deployment_package() {
         mv "$DEPLOY_ROOT/$package_entry" "$failed_package_root/$package_entry" || return 1
         mv "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
     done
+    if [ "$vector_database_reconciled" -eq 1 ]; then
+        retain_vector_database_image || return 1
+    fi
     rm -rf "$failed_package_root" "$previous_package_root" || return 1
     unset PREVIOUS_DEPLOYMENT_PACKAGE_ROOT
 }
@@ -1052,7 +1073,7 @@ fail() {
 
 phase() {
     case "$1" in
-        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit)
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit)
             deployment_phase="$1"
             printf 'DEPLOY_PHASE=%s elapsed_seconds=%s\n' "$1" "$(elapsed_seconds)"
             ;;
@@ -1374,12 +1395,38 @@ if [ "$previous_env_exists" -eq 1 ]; then
     stop_import_before_web_change "$previous_import_enabled" || fail "Import worker stop failed"
 fi
 
-phase projection-preflight
+phase vector-database-preflight
 if [ "$requested_worker_placement" = local ]; then
     stop_existing_processing_worker_topology || fail "Processing worker stop failed"
 fi
+compose_with_env_file "$requested_env_tmp" pull db || fail "Vector database image pull failed"
+compose_with_env_file "$requested_env_tmp" up -d --wait --no-deps db || fail "Vector database start failed"
+if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
+    collation_mismatches=$(psql -At -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "SELECT count(*) FROM (
+            SELECT 1 FROM pg_database
+            WHERE datname = current_database()
+              AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
+            UNION ALL
+            SELECT 1 FROM pg_collation
+            WHERE collversion IS NOT NULL
+              AND collversion IS DISTINCT FROM pg_collation_actual_version(oid)
+        ) AS collation_mismatches ")
+    [ "$collation_mismatches" = 0 ]
+'; then
+    fail "Vector database collation versions are incompatible; restore the previous database image"
+fi
+vector_database_reconciled=1
+if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
+    psql -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "CREATE EXTENSION IF NOT EXISTS vector"
+    installed_version=$(psql -At --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "SELECT extversion FROM pg_extension WHERE extname = '\''vector'\''")
+    [ "$installed_version" = 0.8.6 ]
+'; then
+    fail "Vector database capability preflight failed (requires pgvector 0.8.6)"
+fi
+
+phase projection-preflight
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
-    run --rm -T --entrypoint python web manage.py migrate --noinput; then
+    run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput; then
     fail "Candidate migration failed"
 fi
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \

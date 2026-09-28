@@ -14,7 +14,10 @@ from urllib.request import HTTPSHandler, ProxyHandler, build_opener
 from uuid import uuid4
 
 import pytest
+from django.core.management import call_command
 from django.utils import timezone
+from feature_flags.models import FeatureFlag
+from feature_flags.registry import PGVECTOR_FACE_SEARCH_READ
 from photo_worker.client import ApiError, HttpClient, _RejectApiRedirects
 from photo_worker.contracts import FaceEmbeddingFace, FaceEmbeddingResult, SelfieEmbeddingResult
 from photo_worker.face_quality import FaceQualityEvidence
@@ -22,6 +25,7 @@ from photo_worker.transport import REMOTE_API_URL
 from processing.management.commands.control_worker_pools import execute as control
 from processing.models import (
     FaceEmbedding,
+    FaceEmbeddingVector,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -204,6 +208,10 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
     settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "fixture-local-only"
     settings.PHOTO_PROCESSING_FLEET_TOKEN = "fixture-fleet-only"
+    flag = FeatureFlag.objects.create(key=PGVECTOR_FACE_SEARCH_READ.key, state="on")
+    call_command("sync_feature_flags")
+    flag.refresh_from_db()
+    assert flag.state == "on"
     fixture = api_fixtures.WorkerApiTests()
     fixture.setUp()
     fixture.event.face_search_generation = "adaface_v5"
@@ -274,9 +282,15 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
     assert 300_000 < len(json.dumps(payload, separators=(",", ":")).encode()) < 393_216
     assert client.complete(claim.job.attempt_id, payload).status == "succeeded"
     assert FaceEmbedding.objects.filter(detection__attempt_id=claim.job.attempt_id).count() == 32
+    assert (
+        FaceEmbeddingVector.objects.filter(detection__attempt_id=claim.job.attempt_id).count() == 32
+    )
     preview.refresh_from_db()
     assert (preview.pk, preview.final_key, preview.accepted_attempt_id) == before_preview
     assert client.complete(claim.job.attempt_id, payload).idempotent
+    assert (
+        FaceEmbeddingVector.objects.filter(detection__attempt_id=claim.job.attempt_id).count() == 32
+    )
 
     search_config = _configuration(
         event=fixture.event, content_type="image/jpeg", content_size=1024
@@ -294,7 +308,13 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
     storage.inspect.return_value = StoredTemporarySelfie(
         key=search.temporary_object_key, size=1024, content_type="image/jpeg"
     )
-    with patch("processing.views.TemporarySelfieStorage", return_value=storage):
+    with (
+        patch("processing.views.TemporarySelfieStorage", return_value=storage),
+        patch(
+            "selfie_search.services.read_selection.rank_legacy_direct",
+            side_effect=AssertionError("enabled vector reader must not call legacy"),
+        ),
+    ):
         selfie_claim = selfie.claim_job(
             worker_build=BUILD,
             lease_seconds=120,
@@ -312,9 +332,18 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
         body = terminal(selfie_claim, selfie_result)
         assert len(json.dumps(body, separators=(",", ":")).encode()) < 16_384
         assert selfie.complete(selfie_claim.job.attempt_id, body).status == "succeeded"
+        search.refresh_from_db()
+        assert search.status == "ready" and search.results.count() == 1
+        saved_results = list(search.results.values())
+        assert saved_results[0]["photo_id"] == photo.pk
+        assert search.temporary_object_key == ""
+        assert selfie.complete(selfie_claim.job.attempt_id, body).idempotent
+        assert list(search.results.values()) == saved_results
     search.refresh_from_db()
     assert search.status == "ready"
     assert ProcessingAttempt.objects.get(pk=claim.job.attempt_id).accepted
+    flag.refresh_from_db()
+    assert flag.state == "on"
 
     for opener in (tls_proxy(trusted=False), tls_proxy(hostname="wrong.invalid")):
         invalid = HttpClient(

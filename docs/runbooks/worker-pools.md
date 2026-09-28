@@ -12,6 +12,14 @@ The read-only inventory on 2026-09-27 found deployed revision
 `7bfb0598dbfe81e715aeb608150d61b936a26e79`. This is evidence about that observation,
 not a claim that subsequent deployments still run this revision.
 
+The refreshed integration inventory on 2026-09-28 records deployed revision
+`866a894adf6b5ac1bba5bda2a4920cf88b661bbf`, the deployed `processing/0011` pgvector
+schema and `selfie_search/0006` reader context, and `pgvector-face-search-read=on`.
+This worker package preserves that baseline, its pinned pgvector 0.8.6 database image,
+accepted numerical policy (ADR 0041) and operator gate state. Worker coordination adds
+`processing/0012`; no vector backfill, reader change or gate activation is part of relocation.
+Live worker placement remains local; remote activation and telemetry delivery remain pending.
+
 The main VM retains Django, PostgreSQL, media services, Yandex Disk imports and commerce.
 Only photo processing and selfie query workers move into their own pools. The import worker
 and commerce worker remain unchanged. Bulk backfill remains dependent on the accepted
@@ -323,6 +331,11 @@ initial remote claims paused, observes/warm-verifies pools, pauses local claims 
 authoritative current ownership to empty. Drain failure aborts local container stop. Only then
 are the exact canonical photo-worker containers stopped and remote claims opened. PostgreSQL is
 not restarted by the remote reconciliation; no Compose down or data reset is part of cutover.
+The shared deployment's vector preflight retains capability/collation checks and reconciles
+the same pinned DB image with `up --wait --no-deps`; an already matching service is unchanged.
+Worker rollout itself neither reconciles PostgreSQL nor pauses compatible remote workers for
+database work. Application-package rollback retains the vector-capable DB image after successful
+capability reconciliation, including fleet recovery; it never downgrades vector-bearing data.
 
 Staged releases temporarily hold a warm spare within the hard maximum two. At one selfie node,
 the candidate warms alongside the old node. At two, the existing template is changed
@@ -388,4 +401,4 @@ Running `acceptance.py` without the flag prints the outstanding live checklist a
 cloud actions. Fixture success does not prove native autoscaling, private networking/IAM,
 billable hard ceilings, real-model memory/startup, guest shutdown, or production cutover/recovery.
 Those checks require the explicit charged/live approval. No backfill, second selfie claim slot,
-or neighboring pgvector activation is authorized by these results.
+or changes to the already enabled pgvector gate are authorized by these results.

@@ -81,7 +81,7 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - The repository prepares the isolated photo-worker boundary accepted by
-  [ADR 0041](adr/0041-isolate-autoscaled-photo-worker-pools.md): private verified TLS and separate
+  [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md): private verified TLS and separate
   fleet authorization, additive pool/member admission and boot-fenced retirement, aggregate
   queue metrics, and dry-run-first bounded fleet templates. Existing processing attempts and
   artifacts remain authoritative. These code paths do not establish deployed multi-VM topology;
@@ -287,7 +287,7 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 
 ## Accepted constraints
 
-- [ADR 0041](adr/0041-isolate-autoscaled-photo-worker-pools.md) accepts independently autoscaled
+- [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md) accepts independently autoscaled
   bulk/selfie worker pools over a private authenticated HTTPS API, preserving one canonical release
   and database authority. It excludes a separate capacity-benchmark workstream. Multi-VM delivery,
   functional acceptance and charged provisioning remain pending; this is not an implemented
@@ -602,6 +602,31 @@ broker, vector engine, and ML implementations shown for later processing require
 
 ### Search
 
+[ADR 0040](adr/0040-use-pgvector-for-exact-face-search.md) accepts a parallel pgvector table
+and exact full-cohort database ranking behind a temporary `off` / `staff` / `on` reader gate.
+[ADR 0041](adr/0041-accept-pgvector-numerical-boundaries.md) accepts very borderline numerical
+changes while retaining native SQL-only ranking and strict eligibility/privacy.
+The [implementation plan](plans/2026-09-27-pgvector-exact-face-search.md) preserves the legacy
+reader during historical population and numerical comparison. The repository implements parallel
+immutable embedding publication, bounded population/reconciliation commands, and current-state
+reader selection for both query sources. `off` reads legacy, `staff` reads pgvector for validated
+active staff, and `on` reads pgvector for all otherwise eligible searches. The new reader computes
+full-cohort cosine distances, best detections, fixed-threshold membership and order in SQL without
+gallery-vector hydration. A scored/window stream avoids repeatedly scanning best-face reduction
+for every eligible detection. Missing or divergent evidence fails closed without reader fallback.
+An explicit active-staff comparison request uses the same transient query and repeatable database
+snapshot for both readers, publishes only the selected result, and emits aggregate diagnostics.
+The bounded private `review_pgvector_face_search` command separates production-equivalent reader
+timing from diagnostic passes. Unexplained differences or incomplete evidence block acceptance;
+classified numerical anchor effects and resulting expansion changes require operator review.
+Base and deployed PostgreSQL use a `256m` Docker shared-memory ceiling for concurrent native
+searches; this is a ceiling, not a memory reservation or an accepted production concurrency target.
+Deployment, public activation, later
+SFace-to-AdaFace reprocessing, and old-reader removal are separate delivery states.
+Before later new-only publication, that worker migration must replace transitional legacy identity
+and gallery-source dependencies with independent vector eligibility and establish its recovery
+boundary; current parallel validation deliberately expects matching old evidence.
+
 1. The customer selects an event before searching.
 2. A bib query is a separate GET request using `?bib=<1-16 ASCII digits>` and matches only current
    accepted `BibReading` rows by exact string equality after the ordinary eligible event gallery is
@@ -609,7 +634,7 @@ broker, vector engine, and ML implementations shown for later processing require
    There is no manual bib correction or combined bib/selfie request in this release. A face query
    uses either an uploaded selfie, which creates a temporary query embedding through the existing
    worker, or one explicitly selected current compatible accepted embedding from an eligible
-   gallery photo. Django performs exact comparison and publishes an immutable probable-match
+   gallery photo. The selected reader performs exact comparison and Django publishes an immutable probable-match
    snapshot; the selfie path deletes its temporary image before publication, while the gallery path
    is immediately ready and creates no temporary object or worker job. When the optional cluster
    gate is enabled and an explicitly activated compatible corpus exists, either query source may
@@ -811,8 +836,12 @@ separate release gates.
 
 Each item needs evidence and an ADR before implementation commits the architecture:
 
+- [ADR 0043](adr/0043-observe-isolated-workers-with-git-managed-alerts.md) proposes bounded
+  isolated-worker host/container observation and Git-managed diagnostic alerts applied through
+  Managed Prometheus APIs. Acceptance, implementation and live activation remain pending;
+  existing native alerts and ADR 0042 autoscaling remain unchanged.
 - Stage 3 processing SLA and the measured threshold for replacing ADR 0017 polling with a broker.
-- `pgvector` versus a dedicated vector database and migration thresholds.
+- Approximate vector indexing or a dedicated vector database beyond ADR 0040's exact PostgreSQL path.
 - Broader biometric governance beyond ADR 0019's event-scoped public bearer-link MVP.
 - Bib-region detection/OCR implementation and model licensing.
 - Refund workflow and its operator contract.

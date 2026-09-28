@@ -8,7 +8,9 @@
   authorized media transport only;
   [ADR 0021](0021-allow-original-download-for-authorized-photos.md) for the attachment-download
   exclusion only; and [ADR 0029](0029-use-watermarked-previews-for-paid-photos.md) for original
-  presentation by the new paid-photo generation only
+  presentation by the new paid-photo generation only;
+  [ADR 0040](0040-use-pgvector-for-exact-face-search.md) for in-memory direct comparison and
+  initial exclusion of vector infrastructure only
 
 ## Context
 

@@ -5,7 +5,9 @@ from uuid import uuid4
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
+from django.db.models.lookups import Exact, GreaterThanOrEqual, LessThanOrEqual
 from django.utils import timezone
+from pgvector.django import VectorField
 from picflow.models import Event, Photo
 
 JSON_MAX_BYTES = 16_384
@@ -626,6 +628,77 @@ class FaceEmbedding(models.Model):  # noqa: DJ008
             errors["detection"] = "Quality-rejected face detections cannot own embeddings."
         if errors:
             raise ValidationError(errors)
+
+
+class FaceEmbeddingVector(models.Model):  # noqa: DJ008
+    """Independent immutable evidence, retained after the JSON store is retired."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    detection = models.OneToOneField(
+        PhotoFaceDetection, on_delete=models.PROTECT, related_name="embedding_vector"
+    )
+    model_version = models.CharField(max_length=64)
+    vector = VectorField()
+    metadata = models.JSONField(default=dict, validators=[validate_bounded_json])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(model_version="sface")
+                    & Exact(
+                        models.Func(
+                            "vector", function="vector_dims", output_field=models.IntegerField()
+                        ),
+                        models.Value(128),
+                    )
+                )
+                | (
+                    models.Q(model_version="adaface-ir18-webface4m")
+                    & Exact(
+                        models.Func(
+                            "vector", function="vector_dims", output_field=models.IntegerField()
+                        ),
+                        models.Value(512),
+                    )
+                ),
+                name="proc_vector_model_dimension",
+            ),
+            models.CheckConstraint(
+                condition=GreaterThanOrEqual(
+                    models.Func("vector", function="vector_norm", output_field=models.FloatField()),
+                    models.Value(0.9999989),
+                )
+                & LessThanOrEqual(
+                    models.Func("vector", function="vector_norm", output_field=models.FloatField()),
+                    models.Value(1.0000011),
+                ),
+                name="proc_vector_unit_norm",
+            ),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Face vector evidence is immutable.")
+        super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        from processing.services.vector_embeddings import validate_embedding
+
+        try:
+            validate_embedding(
+                [float(value) for value in self.vector], model_version=self.model_version
+            )
+        except ValueError as exc:
+            raise ValidationError({"vector": str(exc)}) from exc
+        if self.detection_id and (
+            self.detection.status != PhotoFaceDetection.Status.KEPT
+            or self.detection.attempt.status != ProcessingAttempt.Status.SUCCEEDED
+            or not self.detection.attempt.accepted
+        ):
+            raise ValidationError({"detection": "Vector evidence requires an accepted kept face."})
 
 
 class PhotoFaceEmbeddingProjection(models.Model):  # noqa: DJ008

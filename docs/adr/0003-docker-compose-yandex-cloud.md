@@ -4,7 +4,7 @@
 - Date: 2026-07-11
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: [ADR 0041](0041-isolate-autoscaled-photo-worker-pools.md) for photo-worker placement only
+- Superseded by: [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md) for photo-worker placement only
 
 ## Context
 

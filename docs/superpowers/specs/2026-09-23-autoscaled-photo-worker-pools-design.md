@@ -5,16 +5,18 @@
 - **Owner:** FindMe Photo.
 - **Related architecture:** [Current deployment and accepted constraints](../../architecture.md#current-architecture--implemented), [photo ingestion and indexing](../../architecture.md#photo-ingestion-and-indexing), [Operations](../../architecture.md#target-mvp-architecture--proposed), and [open decisions](../../architecture.md#open-decisions).
 - **Related ADRs:** [0003](../../adr/0003-docker-compose-yandex-cloud.md), [0017](../../adr/0017-use-django-polled-photo-processing-jobs.md), [0018](../../adr/0018-use-managed-yandex-monitoring.md), [0019](../../adr/0019-use-public-event-selfie-search.md), [0028](../../adr/0028-operate-one-canonical-deployment.md), and [0035](../../adr/0035-use-django-polled-yandex-disk-import.md).
-- **ADR impact:** Conforms to accepted [ADR 0041](../../adr/0041-isolate-autoscaled-photo-worker-pools.md): multi-VM placement, private encrypted worker API, queue-driven scaling, and fixed initial sizing without a separate measurement project. It narrowly supersedes ADRs 0003/0028's photo-worker placement, ADR 0017's separate capacity-measurement prerequisite for this relocation, and ADR 0018's observation-only restriction for these worker autoscalers. Existing state, credential, privacy, one-deployment and one-SHA boundaries remain unchanged.
+- **ADR impact:** Conforms to accepted [ADR 0042](../../adr/0042-isolate-autoscaled-photo-worker-pools.md): multi-VM placement, private encrypted worker API, queue-driven scaling, and fixed initial sizing without a separate measurement project. It narrowly supersedes ADRs 0003/0028's photo-worker placement, ADR 0017's separate capacity-measurement prerequisite for this relocation, and ADR 0018's observation-only restriction for these worker autoscalers. Existing state, credential, privacy, one-deployment and one-SHA boundaries remain unchanged.
 - **Related specifications:** [Event photo processing worker](2026-07-29-event-photo-processing-worker-design.md), [public selfie search](2026-07-30-public-selfie-search-design.md), and [Yandex Disk import](2026-09-07-yandex-disk-photo-import-design.md).
 
 ## Intent and current boundary
 
 An event must be able to increase photo-processing capacity without consuming the CPU and memory needed by Django and PostgreSQL. When processing demand falls, the extra machines should disappear. Selfie jobs need predictable response time; bulk photo processing may wait for a machine to start. The user selected automatic scaling by queue demand in this first separation stage.
 
-The refreshed repository base `7e3212d` defines separate on-host `worker-bulk` and
+The refreshed deployed integration base `866a894` (2026-09-28) defines on-host `worker-bulk` and
 `worker-selfie` services. The [dated read-only inventory](../../operations/2026-09-27-worker-isolation-inventory.md)
 records their then-current identities and replicas; it is not a fresh cutover inventory.
+The integration baseline includes deployed pgvector `processing/0011`, selfie reader context
+`selfie_search/0006`, ADRs 0040/0041 and `pgvector-face-search-read=on`; relocation preserves them.
 Recheck actual names, enabled identities and any separately operated bib worker before
 cutover. The local worker polls Django through a Compose-only `http://web:8000` URL; the
 public Nginx edge returns 404 for the private worker route. Workers have no database connection
@@ -145,13 +147,14 @@ Moving workers does not by itself lower the existing VM's charge. Its later down
 4. Worker startup, drain, forced stop, lost API, stale metric, incompatible image, duplicate callback, and rollback drills preserve durable job and attempt evidence, recover retryable work within its configured retry policy, and expose no credential or public worker API.
 5. Operators can observe per-pool queue count, oldest claimable age, active leases, VM count, publisher freshness, worker health, restart/failure rate, and the canonical VM's web and PostgreSQL saturation. An alert has an explicit runbook response for stalled queue, autoscaling at ceiling, and missing metric.
 6. The final deployed SHA and compatible worker images are independently verified on the canonical VM and each group, along with a real private API request, one representative bulk job, one representative selfie job, and a public HTTPS customer path. Local/CI tests alone are insufficient proof of deployment.
-7. Before provisioning, ADR 0041 is accepted, fixed initial VM shapes and hard pool ceilings are approved, and a current Yandex Cloud estimate lists minimum, peak, and cutover costs. No separate capacity report or benchmark is required. Charged cloud mutations require their own explicit approval.
+7. Before provisioning, ADR 0042 is accepted, fixed initial VM shapes and hard pool ceilings are approved, and a current Yandex Cloud estimate lists minimum, peak, and cutover costs. No separate capacity report or benchmark is required. Charged cloud mutations require their own explicit approval.
 
 ## Subsequent new-only model backfill
 
 Prepare a separate blocked task after relocation; do not execute it in this scope. It depends on
-the completed neighboring pgvector rollout (not included in this package), including
-public new-reader activation, and verified isolated workers. Recompute historical SFace events
+the deployed pgvector baseline with public new-reader activation and verified isolated workers.
+The vector schema and enabled gate are recorded on 2026-09-28; worker live acceptance remains
+pending. Recompute historical SFace events
 with AdaFace and write new vectors only to the independent `FaceEmbeddingVector` table. Do not
 dual-write those new vectors to legacy `FaceEmbedding`, regenerate previews/watermarks/capture
 metadata, or modify originals or saved result snapshots. Existing durable processing evidence,

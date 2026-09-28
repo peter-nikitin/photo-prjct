@@ -1,4 +1,4 @@
-# 0041: Isolate autoscaled photo worker pools
+# 0042: Isolate autoscaled photo worker pools
 
 - Status: Accepted
 - Date: 2026-09-27
@@ -108,5 +108,6 @@ results on rollback. No benchmark or measurement tooling is a prerequisite of th
 - [ADR 0017](0017-use-django-polled-photo-processing-jobs.md)
 - [ADR 0018](0018-use-managed-yandex-monitoring.md)
 - [ADR 0028](0028-operate-one-canonical-deployment.md)
-- Neighboring pgvector task's ADR 0040 and design/recovery boundary (not included in this package;
-  reconcile its delivered contract before the blocked backfill is approved)
+- Deployed pgvector baseline's [ADR 0040](0040-use-pgvector-for-exact-face-search.md) and
+  [ADR 0041](0041-accept-pgvector-numerical-boundaries.md); preserve their design/recovery boundary
+  when reviewing the blocked backfill

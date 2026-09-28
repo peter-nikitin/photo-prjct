@@ -129,6 +129,8 @@ def test_rendered_private_nginx_enforces_tls_routes_marker_and_body_boundary(tmp
             "docker",
             "run",
             "--rm",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
             "-e",
             "PUBLIC_DOMAIN=findme-photo.ru",
             "-e",

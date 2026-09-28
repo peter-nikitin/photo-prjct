@@ -60,7 +60,8 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-026 | Maintainer | Keep paid purchase dark until external prerequisites are approved | In progress | 2026-08-22 |
 | EJ-027 | Maintainer | Gate bib-recognition activation | Validated | 2026-09-25 |
 | EJ-028 | Maintainer | Issue bounded direct gallery preview capabilities | In progress | 2026-09-15 |
-| EJ-030 | Operator | Isolate and autoscale photo-worker capacity | In progress | 2026-09-28 |
+| EJ-030 | Maintainer | Move exact face search into PostgreSQL with controlled reading | In progress | 2026-09-27 |
+| EJ-031 | Operator | Isolate and autoscale photo-worker capacity | In progress | 2026-09-28 |
 
 ## Job details
 
@@ -615,13 +616,39 @@ grow without becoming the customer request path.
   separately unrecorded.
 - Last updated: 2026-09-15
 
-### EJ-030 — Operator — Isolate and autoscale photo-worker capacity
+### EJ-030 — Maintainer — Move exact face search into PostgreSQL with controlled reading
+
+When I migrate face-search storage and ranking, I want independent vector evidence and controlled
+reader selection, so I can populate and compare the new path before activating it publicly.
+
+- Status: In progress
+- Evidence: [ADR 0040](adr/0040-use-pgvector-for-exact-face-search.md),
+  [ADR 0041](adr/0041-accept-pgvector-numerical-boundaries.md), and the
+  [implementation plan](plans/2026-09-27-pgvector-exact-face-search.md) govern independent immutable
+  vector publication, bounded historical population and verification, SQL exact full scans, and
+  temporary `off` / `staff` / `on` routing for both selfie and gallery queries. Scoped reader/routing
+  reviews and local tests passed. Native ranking accepts classified numerical boundary changes;
+  eligibility, privacy, immutable results and missing-evidence failure remain strict.
+- Boundary: Explicit staff-only comparison and a bounded private review command are implemented
+  and independently reviewed. Their regular-reader timings are separate from diagnostic passes;
+  unexplained differences and incomplete evidence block acceptance. Restore/HTTP acceptance work
+  uses the existing local database snapshot and real serialized Django callback endpoints;
+  network/Nginx behavior is not inferred from an in-process API client. Native SQL uses a single
+  scored/window stream; base/deployment shared-memory ceiling is `256m` after a reproduced local
+  concurrent-search failure at `64m`. Final-package checks and PR/CI evidence belong to the
+  implementation handoff. Database-image deployment, production population, representative
+  production capacity evidence and public activation remain unrecorded.
+  Later worker extraction, SFace-to-AdaFace reprocessing
+  and coordinated retirement of old storage/readers are separate work.
+- Last updated: 2026-09-27
+
+### EJ-031 — Operator — Isolate and autoscale photo-worker capacity
 
 When event processing grows, I want separate queue-driven bulk and selfie worker pools, so ML
 work does not consume the public web/database host's resources and idle bulk capacity can stop.
 
 - Status: In progress
-- Evidence: [ADR 0041](adr/0041-isolate-autoscaled-photo-worker-pools.md) and the
+- Evidence: [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md) and the
   [approved implementation plan](plans/2026-09-27-autoscaled-worker-isolation.md) govern repository
   preparation. Private transport, durable admission/retirement, read-only demand publication and
   bounded fleet templates are implemented with local automated evidence. Canonical release
@@ -687,4 +714,5 @@ This log is append-only.
 | 2026-09-15 | EJ-028 | Not recorded | In progress | Repository implementation of ADR 0036 issues six-hour exact-object URLs only for accepted derivative-backed small presentation on bounded normal-gallery pages. Legacy, large, download, result, private, archive, and purchased-media paths remain application-authorized; CI, canonical deployment, direct-transfer, and live-capacity evidence are unrecorded. |
 | 2026-09-15 | EJ-029 | Not recorded | In progress | Repository implementation of ADR 0037 adds atomic gallery-media projection publication, projection-backed customer reads, a bounded all-in-progress old-publication drain with immutable creation-time fencing, all-events rebuild and clean verification, worker-paused candidate cutover, privacy-safe `EXPLAIN ANALYZE` smoke, and fresh/established prior-state recovery. CI, merge, canonical deployment, and live outcome remain unrecorded. |
 | 2026-09-27 | EJ-009 | Planned | Validated | Baseline VM/public-probe ingestion is live; the operator verified the console dashboard and baseline alert settings and received Alarm/OK emails from the [isolated failure/recovery drill](runbooks/minimal-monitoring.md#activation-evidence-2026-09-27). Commerce worker metric collection remains a separate extension. |
-| 2026-09-28 | EJ-030 | Not recorded | In progress | Approved worker-isolation repository implementation has reviewed private transport, lifecycle, metrics and provisioning code; canonical release integration and final verification remain in progress. No paid provisioning or live relocation is claimed. |
+| 2026-09-27 | EJ-030 | Not recorded | In progress | Accepted ADRs 0040/0041 and scoped local schema, reconciliation, SQL-reader and feature-routing evidence; final-package and production rollout gates remain open. |
+| 2026-09-28 | EJ-031 | Not recorded | In progress | Approved worker-isolation repository implementation has reviewed private transport, lifecycle, metrics and provisioning code; canonical release integration and final verification remain in progress. No paid provisioning or live relocation is claimed. |

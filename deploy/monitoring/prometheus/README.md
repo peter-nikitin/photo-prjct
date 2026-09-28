@@ -59,8 +59,10 @@ Validation uses the official generated SDK schema, positive Prometheus grid step
 references, promtool syntax and behavior scenarios. No credential or network call to Yandex is
 needed; Docker may pull the pinned tool image. Yandex's receiver extension is checked structurally
 by the renderer and accepted by the service on explicit PUT; upstream Alertmanager does not
-understand `yandex_monitoring_configs`. Firing, missing-data and recovery email delivery still
-require a separate live drill; no undocumented receiver options are assumed.
+understand `yandex_monitoring_configs`. Email delivery needs a separate live drill.
+The project email receiver explicitly sets `send_resolved: true`;
+Yandex accepted this configuration on 2026-09-28. Firing email was received, while recovery email
+delivery remains pending verification. No receiver default is assumed.
 
 ## Observed metric contract
 

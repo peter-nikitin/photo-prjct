@@ -50,6 +50,19 @@ def test_offline_render_has_missing_observations_separate(control):
     assert len(json.loads(package["dashboard.json"])["widgets"]) == 14
 
 
+def test_rendered_project_email_receiver_explicitly_sends_recovery(control):
+    routing = yaml.safe_load(control.render(config(control))["alertmanager.yml"])
+    receiver = next(item for item in routing["receivers"] if item["name"] == "findme-email")
+    assert receiver["yandex_monitoring_configs"] == [
+        {"channel_names": ["operator-email"], "send_resolved": True}
+    ]
+    assert routing["route"]["routes"] == [
+        {"receiver": "findme-email", "matchers": ['project="findme-photo"']}
+    ]
+    unmatched = next(item for item in routing["receivers"] if item["name"] == "unmatched")
+    assert unmatched["yandex_monitoring_configs"] == [{"channel_names": []}]
+
+
 def test_activation_rejects_missing_foundation(control):
     cfg = control.load_config()
     cfg["workspace_id"] = ""

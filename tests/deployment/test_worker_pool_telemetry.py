@@ -215,13 +215,16 @@ def test_local_actual_oom_and_auto_restart_are_observed_without_control_in_probe
         "64m",
         "--cpus",
         "0.25",
+        "--tmpfs",
+        "/pressure:rw,size=128m",
         "--restart",
         "on-failure:1",
         "--entrypoint",
         "sh",
         "nginx:1.27-alpine",
         "-c",
-        "sleep 1; exec awk 'BEGIN {a=\"aaaaaaaa\"; while (1) a=a a}'",
+        # Charge touched tmpfs pages to the cgroup; a large malloc can fail in userspace instead.
+        "sleep 1; exec dd if=/dev/zero of=/pressure/touched bs=1M count=128",
     )
     assert len(identifier) == 64
     try:

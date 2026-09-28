@@ -1,8 +1,10 @@
 # FindMe monitoring as code
 
-Repository preparation is complete only after the recorded local checks. **Live activation is
-pending.** Existing native alerts, routes and timers remain active. No command below has been
-run against production as part of implementation.
+The operator-approved host installation and initial cloud activation ran on 2026-09-28. Fresh
+public/Linux/HTTP/Commerce samples, eleven successful rule evaluations and all fourteen desired
+dashboard widgets were verified through the cloud API. Email acceptance and retirement of native
+duplicates remain separate gates. Existing native alerts, routes and timers remain active. See
+[activation evidence](../../../docs/operations/2026-09-28-monitoring-activation.md).
 
 ## Owned objects and inputs
 
@@ -10,8 +12,9 @@ run against production as part of implementation.
 - `rules.yml`: one owned `findme-photo.yml` file; alert thresholds/windows are editable here.
 - `alertmanager.yml`: full routing configuration for a **dedicated FindMe workspace**. The CLI
   rejects any foreign rule file before replacing routing. It never deletes foreign rules.
-- `dashboard.json`: title and all 14 graph widgets, including duration, TLS, uptime, load, HTTP
-  rates/latency and Commerce. Other dashboard fields come from a fresh Get and are preserved.
+- `dashboard.json`: title and all 19 graph widgets, including duration, TLS, uptime, load, HTTP
+  rates/latency, Commerce, swap, root filesystem inodes, disk/network I/O and native Unified Agent
+  backlog. Other dashboard fields come from a fresh Get and are preserved.
 - `oidc.json`: protected `monitoring` environment identity; service account
   `aje3t70qka1dtc09k5ic` (`findme-monitoring-ci`).
 
@@ -21,7 +24,9 @@ The workflow never retargets configuration from CI variables. The approved found
 on 2026-09-28: GitHub environment `monitoring`, reviewer `peter-nikitin`, main-only deployment policy,
 and credential `ajeprb31m2nhu6pbj2gn` in existing federation `ajeula3gd46omgf9jiko`, bound to subject
 `repo:peter-nikitin/photo-prjct:environment:monitoring`. Its only folder role is `monitoring.editor`.
-Ingestion, rule activation and OIDC runtime acceptance remain separate live checks.
+Ingestion and initial rule/dashboard activation have live evidence. The first GitHub OIDC check
+reached cloud query preflight; final exact-main CI reconciliation and email acceptance are recorded
+separately in the activation evidence.
 The tools reuse validated short-lived OIDC exchange from `run-with-environment-secrets.py` without
 loading any Lockbox consumer or adding a long-lived key.
 
@@ -51,12 +56,15 @@ rm -r "$PWD/.monitoring-render"
 make test TESTS='tests/monitoring/test_prometheus_control.py tests/monitoring/test_prometheus_host.py -m operational'
 ```
 
-Validation uses the official generated SDK schema, positive Prometheus grid steps and target
-references, promtool syntax and behavior scenarios. No credential or network call to Yandex is
+Validation uses the official generated SDK schema for Prometheus and native Monitoring sources,
+positive Prometheus grid steps, matching source/target kinds and references, resolved queries,
+promtool syntax and behavior scenarios. No credential or network call to Yandex is
 needed; Docker may pull the pinned tool image. Yandex's receiver extension is checked structurally
 by the renderer and accepted by the service on explicit PUT; upstream Alertmanager does not
-understand `yandex_monitoring_configs`. Firing, missing-data and recovery email delivery still
-require a separate live drill; no undocumented receiver options are assumed.
+understand `yandex_monitoring_configs`. Email delivery needs a separate live drill.
+The project email receiver explicitly sets `send_resolved: true`;
+Yandex accepted this configuration on 2026-09-28. Firing email was received, while recovery email
+delivery remains pending verification. No receiver default is assumed.
 
 ## Observed metric contract
 
@@ -69,9 +77,32 @@ are semantically cumulative application counters even though the observed SPACK 
 uses GAUGE; do not infer semantics from the wire type. This proof describes the producer, not
 successful workspace ingestion. `type_contract_evidence` binds this reviewed contract in config.
 
-Check/apply require actual selectors to return finite, fresh values through the supported query
-API. Timestamp values prove observation age rather than query execution time. Counter range
-calculations must have sufficient real points. An absent 5xx subset becomes zero only alongside
+Dashboard diagnostics use the existing observations: swap free/total bytes are shown separately
+in GiB (both zero means swap is disabled), and root filesystem inode capacity is free/total in
+percent. Disk read/write and network Rx/Tx are cumulative byte counters, so charts use
+`rate(...[5m])` in bytes/second. Selectors restrict disk I/O to `disk=vda` and network I/O to
+`intf=eth0`, both on `instance=dev-photo-prjct`; Docker/veth traffic is not summed.
+Raw diagnostic observations retain 120s freshness, and their derived expressions must produce
+finite nonempty vectors before check/apply.
+
+The nineteenth chart queries native Monitoring `ua.backlog` for `host=dev-photo-prjct`,
+`service=custom`, `scope=health` in the explicit configured folder. The dashboard query puts
+`folderId` in its selector; the native data-read API takes that folder in the request URI instead.
+It is managed by the same
+Git dashboard package, but does not use the Prometheus workspace. Preserve the native Unified
+Agent health observation route even if duplicate native alerts are retired later; removing or
+migrating that route needs separate approval and proof. Its fresh native query is verified
+separately from the CLI's Prometheus preflight. Missing native points do not mean zero backlog.
+
+Check/apply query each raw selector as a range vector over its configured `max_age` seconds.
+Selectors without labels omit `{}` because the backend returns vectors for empty-brace range
+selectors; nonempty labels and the HTTP 5xx filter remain explicit.
+They require a matrix with actual points, and check the latest point timestamp and finite value
+of every observed series. The backend's `timestamp(selector)` reports query evaluation time and
+cannot prove observation age. Public probe/TLS freshness is 600s, matching the accepted 10-minute
+no-data window and two 300s probe intervals; all other raw metrics retain 120s freshness.
+An empty instant vector between public scrapes does not replace this actual-point check. Counter
+range calculations must have sufficient real points. An absent 5xx subset becomes zero only alongside
 observed HTTP totals; zero traffic passes the preflight and fails the >=5-request alert gate.
 Missing totals never become zero. Raw Linux names/labels and histogram `_count` must appear in
 this workspace. A missing mapping, NaN, stale sample, query error or unsupported CPU contract
@@ -79,7 +110,8 @@ blocks apply; `/metadata` is not supported and is never called.
 
 Public/Commerce availability preserve maximum-over-window semantics (10m/5m), with separate
 `absent_over_time` rules. Disk and memory use maximum free capacity over 10m/15m; CPU uses minimum
-utilization over 15m. TLS uses minimum remaining days over 5m; ready work uses maximum age over 5m.
+utilization over 15m. TLS uses minimum remaining days over 10m, preserving observations between 300s polls plus
+delivery lag; the preflight uses the same TLS window. Ready work uses maximum age over 5m.
 Missing resource series do not fire pressure rules. Native worker-pool control observations are
 outside this migration and stay untouched.
 
@@ -179,7 +211,7 @@ With reviewed foundation/config in Git and separately approved live operations:
 drift is always reported **unverified**: there is no confirmed GET Alertmanager API. `apply`
 preflights raw and computed samples and every alert expression, saves target-bound dashboard/rules
 snapshots, applies routing before the owned rule file, verifies the file, waits up to 120s for fresh
-successful evaluation snapshots, updates with the fresh etag and waits for the gRPC operation,
+successful evaluation snapshots, updates with the fresh etag and validates the returned synchronous gRPC operation,
 then reads back owned fields. Failed or stale snapshots are failures, never health. API/SDK errors
 are sanitized; credentials and response bodies are not printed. Apply is not atomic across services;
 a failure after rules PUT leaves the recorded backup for explicit restore.

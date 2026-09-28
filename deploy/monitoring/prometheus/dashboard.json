@@ -734,6 +734,293 @@
           "showMode": "SHOW_MODE_CONSTANT_LINE"
         }
       }
+    },
+    {
+      "position": {
+        "y": "56",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "54eec836-65df-4a2f-a2fd-7986692294c9",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "8f8c0462-561f-43c7-abf8-bd27a3ad48e8",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{swap_free_gib}}",
+              "textMode": true,
+              "name": "Free"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "8f8c0462-561f-43c7-abf8-bd27a3ad48e8",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{swap_total_gib}}",
+              "textMode": true,
+              "name": "Total"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "8f8c0462-561f-43c7-abf8-bd27a3ad48e8",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Swap — свободно и всего, ГиБ",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        },
+        "displayLegend": true,
+        "description": "Обе линии равны 0 — swap отключён."
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "56",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "cf08a1a3-919b-4c4f-bc88-00d86fee7290",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "476df3c0-cabd-4a24-95a4-6c3109f82730",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{inode_percent}}",
+              "textMode": true,
+              "name": "Free"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "476df3c0-cabd-4a24-95a4-6c3109f82730",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Диск / — свободные inode, %",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "y": "64",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "6ae403ef-c916-4fb1-be0b-3cec361f39d8",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "01867e3c-5b11-4eef-a5d9-a299f5edd914",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{disk_read_rate}}",
+              "textMode": true,
+              "name": "Read"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "01867e3c-5b11-4eef-a5d9-a299f5edd914",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{disk_write_rate}}",
+              "textMode": true,
+              "name": "Write"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "01867e3c-5b11-4eef-a5d9-a299f5edd914",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Диск vda — чтение и запись, байт/с",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        },
+        "displayLegend": true
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "64",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "5b11982a-8ed7-40a1-8f75-03db5b765a14",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "88fcab85-8b32-4aba-bca8-5df5fb58e0ec",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{network_rx_rate}}",
+              "textMode": true,
+              "name": "Rx"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "88fcab85-8b32-4aba-bca8-5df5fb58e0ec",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{network_tx_rate}}",
+              "textMode": true,
+              "name": "Tx"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "88fcab85-8b32-4aba-bca8-5df5fb58e0ec",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Сеть eth0 — приём и передача, байт/с",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        },
+        "displayLegend": true
+      }
+    },
+    {
+      "position": {
+        "y": "72",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "82ce90d7-075c-4f2d-b15d-82ab3d2ac02a",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "1d1e41e9-2d31-459c-8c95-096bade86493",
+              "query": "\"ua.backlog\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"dev-photo-prjct\",scope=\"health\"}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "1d1e41e9-2d31-459c-8c95-096bade86493"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Unified Agent — очередь отправки, сообщений",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        },
+        "description": "Нативная метрика Monitoring: отсутствие точек не означает пустую очередь."
+      }
     }
   ]
 }

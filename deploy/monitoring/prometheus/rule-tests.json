@@ -5,6 +5,68 @@
   "evaluation_interval": "1m",
   "tests": [
     {
+      "name": "expiring TLS remains evaluated during five-minute scrape delivery lag",
+      "interval": "5m",
+      "input_series": [
+        {
+          "series": "findme_probe_tls_days_remaining{check=\"canonical-health\"}",
+          "values": "10 _ _"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "6m",
+          "alertname": "TLSCertificateExpiring",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "check": "canonical-health"
+              },
+              "exp_annotations": {
+                "summary": "TLS certificate lifetime is below fourteen days."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "11m",
+          "alertname": "TLSCertificateExpiring",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "healthy TLS remains finite during five-minute scrape delivery lag",
+      "interval": "5m",
+      "input_series": [
+        {
+          "series": "findme_probe_tls_days_remaining{check=\"canonical-health\"}",
+          "values": "30 _ _"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "min_over_time(findme_probe_tls_days_remaining{check=\"canonical-health\"}[10m])",
+          "eval_time": "6m",
+          "exp_samples": [
+            {
+              "labels": "{check=\"canonical-health\"}",
+              "value": 30
+            }
+          ]
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "6m",
+          "alertname": "TLSCertificateExpiring",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
       "name": "public failure after success then recovery",
       "interval": "1m",
       "input_series": [

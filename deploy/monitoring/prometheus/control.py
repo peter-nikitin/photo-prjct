@@ -64,17 +64,21 @@ def validate_config(config: dict[str, Any], *, live: bool = False) -> None:
 
 
 def selectors(config: dict[str, Any]) -> dict[str, str]:
-    result = {
-        key: value["name"]
-        + "{"
-        + ",".join(f"{name}={json.dumps(label)}" for name, label in sorted(value["labels"].items()))
-        + "}"
-        for key, value in config["metrics"].items()
-    }
+    def selector(name: str, labels: dict[str, str]) -> str:
+        if not labels:
+            return name
+        return (
+            name
+            + "{"
+            + ",".join(f"{key}={json.dumps(value)}" for key, value in sorted(labels.items()))
+            + "}"
+        )
 
-    requests = result["http_requests"]
-    comma = "," if requests[-2] != "{" else ""
-    result["http_5xx"] = requests[:-1] + comma + 'status_class="5xx"}'
+    result = {
+        key: selector(value["name"], value["labels"]) for key, value in config["metrics"].items()
+    }
+    requests = config["metrics"]["http_requests"]
+    result["http_5xx"] = selector(requests["name"], {**requests["labels"], "status_class": "5xx"})
     return result
 
 
@@ -82,9 +86,16 @@ def expressions(config: dict[str, Any]) -> dict[str, str]:
     s = selectors(config)
     return {
         "public": f"max_over_time({s['public_success']}[10m])",
-        "tls": f"min_over_time({s['tls_days']}[5m])",
+        "tls": f"min_over_time({s['tls_days']}[10m])",
         "disk_percent": f"100 * {s['disk_free']} / {s['disk_size']}",
         "disk_bytes": s["disk_free"],
+        "swap_free_gib": f"{s['swap_free']} / 1073741824",
+        "swap_total_gib": f"{s['swap_total']} / 1073741824",
+        "inode_percent": f"100 * {s['inode_free']} / {s['inode_total']}",
+        "disk_read_rate": f"rate({s['disk_read']}[5m])",
+        "disk_write_rate": f"rate({s['disk_write']}[5m])",
+        "network_rx_rate": f"rate({s['network_rx']}[5m])",
+        "network_tx_rate": f"rate({s['network_tx']}[5m])",
         "memory": f"100 * {s['memory_available']} / {s['memory_total']}",
         "cpu": (
             f"100 * rate({s['cpu_useful']}[5m]) / "
@@ -112,6 +123,7 @@ def render(config: dict[str, Any]) -> dict[str, str]:
     substitutions = {
         **s,
         **e,
+        "folder_id": config["folder_id"],
         "channel_name": config["channel_name"] or "__CHANNEL_NAME_REQUIRED__",
         "workspace_id": config["workspace_id"] or "__WORKSPACE_ID_REQUIRED__",
         "disk_gib": f"{s['disk_free']} / 1073741824",
@@ -128,7 +140,9 @@ def render(config: dict[str, Any]) -> dict[str, str]:
         if isinstance(value, list):
             return [substitute(item) for item in value]
         if isinstance(value, str):
-            return re.sub(r"\{\{([a-z_]+)\}\}", lambda match: substitutions[match.group(1)], value)
+            return re.sub(
+                r"\{\{([a-z_][a-z_0-9]*)\}\}", lambda match: substitutions[match.group(1)], value
+            )
         return value
 
     return {
@@ -188,20 +202,36 @@ def preflight(config: dict[str, Any], transport: Any, *, now: float | None = Non
         selector = s[key]
         if metric["type"] == "histogram":
             selector = metric["name"] + "_count" + selector[len(metric["name"]) :]
-        for query in (selector, f"timestamp({selector})"):
-            values = _vector(
-                transport.request("GET", "/api/v1/query?" + urlencode({"query": query}))
-            )
-            observed_at = time.time() if now is None else now
-            if not values:
-                raise ControlError(f"expected sample missing: {key}")
-            for item in values:
-                number = float(item["value"][1])
-                if not math.isfinite(number) or (
-                    query.startswith("timestamp(")
-                    and not 0 <= observed_at - number <= metric["max_age"]
-                ):
-                    raise ControlError(f"sample stale/nonfinite: {key}")
+        query = f"{selector}[{metric['max_age']}s]"
+        response = transport.request("GET", "/api/v1/query?" + urlencode({"query": query}))
+        observed_at = time.time() if now is None else now
+        data = response.get("data")
+        if (
+            response.get("status") != "success"
+            or not isinstance(data, dict)
+            or data.get("resultType") != "matrix"
+        ):
+            raise ControlError(f"sample query failed: {key}")
+        values = data.get("result")
+        if not isinstance(values, list) or not values:
+            raise ControlError(f"expected sample missing: {key}")
+        for item in values:
+            try:
+                points = item["values"]
+                if not isinstance(points, list) or not points:
+                    raise ValueError
+                latest = points[-1]
+                if not isinstance(latest, list) or len(latest) != 2:
+                    raise ValueError
+                timestamp, number = map(float, latest)
+            except (KeyError, TypeError, ValueError):
+                raise ControlError(f"sample malformed: {key}") from None
+            if (
+                not math.isfinite(timestamp)
+                or not math.isfinite(number)
+                or not 0 <= observed_at - timestamp <= metric["max_age"]
+            ):
+                raise ControlError(f"sample stale/nonfinite: {key}")
     # HTTP zero traffic is valid. Divide only when positive; an absent result is failure.
     for key, query in expressions(config).items():
         values = _vector(transport.request("GET", "/api/v1/query?" + urlencode({"query": query})))
@@ -420,23 +450,17 @@ class CloudTransport:
 
     def dashboard_update(self, request: dict[str, Any]) -> None:
         from google.protobuf.json_format import ParseDict
-        from yandex.cloud.monitoring.v3.dashboard_pb2 import Dashboard
         from yandex.cloud.monitoring.v3.dashboard_service_pb2 import UpdateDashboardRequest
-        from yandexcloud.operations import OperationError
 
         try:
             operation = self.dashboard.Update(
                 ParseDict(request, UpdateDashboardRequest()), timeout=30
             )
-            result = self.sdk.wait_operation_and_get_result(
-                operation, response_type=Dashboard, timeout=120
-            )
-            if isinstance(result, OperationError):
-                raise ControlError("dashboard operation failed")
+            # Monitoring Update is synchronous; its operation cannot be polled globally.
+            if not operation.done or operation.HasField("error"):
+                raise ControlError("dashboard operation incomplete or failed")
         except Exception:
-            raise ControlError(
-                "DashboardService Update/wait failed; inspect saved backup"
-            ) from None
+            raise ControlError("DashboardService Update failed; inspect saved backup") from None
 
 
 def identity(mode: str, oidc_path: Path | None = None) -> str:
@@ -468,18 +492,37 @@ def validate_package(config: dict[str, Any], output: Path, promtool: str) -> Non
     dashboard = json.loads(package["dashboard.json"])
     for widget in dashboard["widgets"]:
         chart = widget["multiSourceChart"]
-        sources = {item["prometheusDataSource"]["id"] for item in chart["dataSources"]}
-        if any(
-            int(item["prometheusDataSource"].get("step", 0)) <= 0 for item in chart["dataSources"]
-        ):
-            raise ControlError("dashboard Prometheus grid step must be positive")
-        if any(
-            not target["prometheusTarget"]["workspaceId"]
-            or target["prometheusTarget"]["dataSourceId"] not in sources
-            or not target["prometheusTarget"]["query"]
-            for target in chart["targets"]
-        ):
-            raise ControlError("dashboard target reference/workspace/query invalid")
+        sources = {}
+        for item in chart["dataSources"]:
+            kinds = [kind for kind in ("prometheus", "monitoring") if kind + "DataSource" in item]
+            if len(kinds) != 1:
+                raise ControlError("dashboard source kind invalid")
+            kind = kinds[0]
+            source = item[kind + "DataSource"]
+            source_id = source.get("id")
+            if not source_id or source_id in sources:
+                raise ControlError("dashboard source identity invalid")
+            sources[source_id] = kind
+            if kind == "prometheus" and int(source.get("step", 0)) <= 0:
+                raise ControlError("dashboard Prometheus grid step must be positive")
+        for item in chart["targets"]:
+            kinds = [kind for kind in ("prometheus", "monitoring") if kind + "Target" in item]
+            if len(kinds) != 1:
+                raise ControlError("dashboard target kind invalid")
+            kind = kinds[0]
+            target = item[kind + "Target"]
+            query = target.get("query")
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", target.get("name", "")):
+                raise ControlError(
+                    "dashboard target name must use Latin letters/digits and start with a letter"
+                )
+            if (
+                sources.get(target.get("dataSourceId")) != kind
+                or not query
+                or "{{" in query
+                or (kind == "prometheus" and not target.get("workspaceId"))
+            ):
+                raise ControlError("dashboard target reference/workspace/query invalid")
     ParseDict(
         {"dashboardId": config["dashboard_id"], **json.loads(package["dashboard.json"])},
         UpdateDashboardRequest(),

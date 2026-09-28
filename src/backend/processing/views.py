@@ -62,7 +62,7 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.results import parse_canonical_timestamp
-from processing.services import worker_pool_lifecycle
+from processing.services import worker_pool_lifecycle, worker_pool_telemetry
 from processing.services.bibs import complete_bib_attempt
 from processing.services.face_quality import (
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
@@ -308,6 +308,25 @@ def _member_request(request: HttpRequest, operation: str) -> JsonResponse:
         return _error("registration_changed", "Worker registration changed.", status=412)
     except worker_pool_lifecycle.AdmissionDenied:
         return _error("worker_unavailable", "Worker admission is unavailable.", status=503)
+
+
+@_endpoint
+def member_telemetry(request: HttpRequest) -> JsonResponse:
+    if request.headers.get("X-FindMe-Worker-Transport") != "private-tls":
+        return _error("worker_unauthorized", "Unauthorized.", status=401)
+    try:
+        data, error = _json_object(
+            request, required=worker_pool_telemetry.FIELDS, maximum_bytes=16_384
+        )
+        if error is not None:
+            return error
+        assert data is not None
+        duplicate = worker_pool_telemetry.receive(data)
+    except worker_pool_lifecycle.AdmissionDenied:
+        return _error("worker_unavailable", "Worker admission is unavailable.", status=503)
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        return _invalid_request()
+    return JsonResponse({"accepted": True, "duplicate": duplicate})
 
 
 @_endpoint

@@ -120,6 +120,27 @@ class WorkerPoolMember(models.Model):  # noqa: DJ008
         ]
 
 
+class WorkerPoolTelemetry(models.Model):  # noqa: DJ008
+    """Latest diagnostic receipt and runtime baseline; never lease or admission authority."""
+
+    pool = models.ForeignKey(WorkerPool, on_delete=models.CASCADE, related_name="telemetry")
+    instance_id = models.CharField(max_length=64)
+    sampled_at = models.DateTimeField()
+    received_at = models.DateTimeField()
+    envelope = models.JSONField()
+    runtime_baseline = models.JSONField(null=True, default=None)
+    container_baseline = models.JSONField(null=True, default=None)
+    runtime_reset_at = models.DateTimeField(null=True, default=None)
+    container_reset_at = models.DateTimeField(null=True, default=None)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["pool", "instance_id"], name="worker_telemetry_source_uniq"
+            )
+        ]
+
+
 def validate_bounded_json(value: object) -> None:
     serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     if len(serialized.encode()) > JSON_MAX_BYTES:

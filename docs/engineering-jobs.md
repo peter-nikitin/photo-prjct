@@ -200,6 +200,10 @@ internals, privileged container collection, and disabled-worker metrics remain o
 The baseline is active. The operator verified the console dashboard and baseline alert settings;
 the isolated public probe failure/recovery drill confirmed Alarm and OK email delivery. Commerce
 collection is a separate extension and is not implied by this baseline validation.
+The [ADR 0043 worker diagnostic extension](adr/0043-observe-isolated-workers-with-git-managed-alerts.md)
+has default-off repository collection/ingestion/export code and local acceptance evidence; worker
+Remote Write ingestion, diagnostic alert application and notifications are not part of this
+baseline validation and remain separately gated.
 
 - Status: Validated
 - Evidence: [Minimal service monitoring design](superpowers/specs/2026-07-30-minimal-service-monitoring-design.md),
@@ -656,6 +660,12 @@ work does not consume the public web/database host's resources and idle bulk cap
   certificate acceptance, production cutover and native autoscaler behavior remain unverified.
   The main VM, import/commerce placement, recognition features and historical events are not
   changed by repository preparation.
+  The [phase-one telemetry plan](plans/2026-09-28-worker-telemetry-collection.md) adds default-off
+  runtime/host diagnostics through a private authenticated receiver and the existing canonical
+  Managed Prometheus channel. Actual local TLS/container, renewal-under-ingestion-failure and
+  isolated previous-snapshot additive migration rehearsals cover repository behavior only.
+  Missing/stale observations remain unknown, not healthy zeros. No worker VM telemetry, cloud
+  ingestion, diagnostic alert or notification acceptance is claimed.
 - Last updated: 2026-09-28
 
 ## Status log

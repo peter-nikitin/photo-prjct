@@ -475,3 +475,117 @@ def test_valid_narrow_bootstrap_secret_has_exact_keys_and_no_application_project
     payload["entries"].append(deepcopy(payload["entries"][0]))
     with pytest.raises(ValueError):
         bootstrap.validate_payload(payload, "secret-version")
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_telemetry_packaging_opt_in_is_default_off_and_uses_reviewed_image_dependencies(
+    tmp_path, monkeypatch, enabled
+):
+    provision = module("provision")
+    bootstrap = module("bootstrap")
+    supplied = config() | ({"telemetry_enabled": True} if enabled else {})
+    user_data = yaml.safe_load(
+        provision.prepare(supplied)["groups"]["bulk"]["instanceTemplate"]["metadata"]["user-data"]
+    )
+    files = {
+        entry["path"]: base64.b64decode(entry["content"]).decode()
+        for entry in user_data["write_files"]
+    }
+    conf = json.loads(files["/etc/findme-worker/bootstrap.json"])
+    assert conf["telemetry_enabled"] is enabled
+    assert conf["zone"] == "ru-central1-a"
+    assert "/usr/local/lib/findme-worker/telemetry.py" in files
+    assert "/usr/local/lib/findme-worker/telemetry-requirements.txt" in files
+    assert set(user_data) == {"write_files", "runcmd"}
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[1:3] == ["image", "inspect"]:
+            return Mock(stdout=conf["worker_build"] + "\n")
+        if args[1] == "version":
+            return Mock(stdout="27.5.1\n")
+        if args[1:3] == ["compose", "version"]:
+            return Mock(stdout="2.32.4\n")
+        return Mock(stdout="")
+
+    bootstrap.activate(
+        conf,
+        {"PHOTO_PROCESSING_FLEET_TOKEN": "fleet-token", "IMAGE_PULL_AUTH": "dXNlcjpwYXNz"},
+        "instance-1",
+        root=tmp_path,
+        run=run,
+    )
+    telemetry_calls = [
+        args
+        for args in calls
+        if args[0] == "/opt/findme-worker-telemetry/bin/python"
+        or args[-1] == "findme-worker-telemetry.timer"
+    ]
+    assert bool(telemetry_calls) is enabled
+    assert not any(arg in {"pip", "apt", "curl"} for args in calls for arg in args)
+    if enabled:
+        assert calls.index(next(args for args in calls if "up" in args)) < calls.index(
+            telemetry_calls[0]
+        )
+        assert ["systemctl", "enable", "--now", "findme-worker-telemetry.timer"] in calls
+        telemetry_env = tmp_path / "etc/findme-worker/telemetry.env"
+        assert telemetry_env.stat().st_mode & 0o777 == 0o600
+        values = dict(line.split("=", 1) for line in telemetry_env.read_text().splitlines())
+        assert set(values) == {
+            "PHOTO_WORKER_POOL",
+            "PHOTO_WORKER_BUILD",
+            "PHOTO_WORKER_ZONE",
+            "PHOTO_PROCESSING_FLEET_TOKEN",
+        }
+        assert json.loads(values["PHOTO_WORKER_ZONE"]) == "ru-central1-a"
+        runtime = (tmp_path / "etc/findme-worker/runtime.env").read_text()
+        assert 'PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED="True"' in runtime
+
+
+def test_failed_optional_probe_setup_preserves_started_worker_and_retirement(tmp_path, capsys):
+    provision = module("provision")
+    bootstrap = module("bootstrap")
+    user_data = yaml.safe_load(
+        provision.prepare(config() | {"telemetry_enabled": True})["groups"]["bulk"][
+            "instanceTemplate"
+        ]["metadata"]["user-data"]
+    )
+    conf = json.loads(
+        next(
+            base64.b64decode(entry["content"])
+            for entry in user_data["write_files"]
+            if entry["path"].endswith("bootstrap.json")
+        )
+    )
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if any("/opt/findme-worker-telemetry/bin/python" in arg for arg in args):
+            raise subprocess.CalledProcessError(1, args, stderr="private exception")
+        if args[1:3] == ["image", "inspect"]:
+            return Mock(stdout=conf["worker_build"] + "\n")
+        if args[1] == "version":
+            return Mock(stdout="27.5.1\n")
+        if args[1:3] == ["compose", "version"]:
+            return Mock(stdout="2.32.4\n")
+        return Mock(stdout="")
+
+    bootstrap.activate(
+        conf,
+        {"PHOTO_PROCESSING_FLEET_TOKEN": "fleet-token", "IMAGE_PULL_AUTH": "dXNlcjpwYXNz"},
+        "instance-1",
+        root=tmp_path,
+        run=run,
+    )
+    assert any("up" in args for args in calls)
+    assert ["systemctl", "enable", "--now", "findme-worker-retire.timer"] in calls
+    assert ["systemctl", "enable", "--now", "findme-worker-telemetry.timer"] not in calls
+    assert capsys.readouterr().out == "worker_telemetry_setup_unavailable\n"
+
+
+@pytest.mark.parametrize("value", ["True", 1, None, {}, []])
+def test_telemetry_opt_in_rejects_non_boolean_configuration(value):
+    with pytest.raises(ValueError):
+        module("provision").prepare(config() | {"telemetry_enabled": value})

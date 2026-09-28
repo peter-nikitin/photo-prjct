@@ -168,6 +168,35 @@ Validate fresh workspace names, values, timestamps, counter semantics and measur
 before alert apply. Cardinality and pricing approval require actual current measurements; old
 sample-volume estimates are insufficient.
 
+## Optional isolated worker diagnostics
+
+The canonical renderer accepts `--worker-telemetry` only with `--role canonical`. It adds
+`http://127.0.0.1:8080/worker-diagnostics/metrics/` with a 30-second poll and 10-second timeout
+to the existing `findme_prometheus_remote_write` channel and its bounded 100 MB buffer.
+Both roles retain their existing rendering when the flag is absent. Re-render with the flag
+to retain diagnostics; omitting it removes that owned route. Review the complete diff against
+the actual current agent snapshot before any separately approved installation.
+
+Use the existing reviewed `environment.json` workspace input as `--workspace-id`; the renderer
+accepts a workspace ID, never an arbitrary output URL. Authorization remains the canonical VM's
+metadata IAM. Missing/unauthorized IAM cannot be proven offline: an agent buffer or a successful
+local scrape is not a successful write. No worker receives Monitoring credentials or a new sender.
+The existing installer still requires agent >=25.03.80 and checks the exact rendered config.
+
+Only the diagnostic route uses `channel.pipe.filter`, plugin `transform_metric_labels`, with
+`config.labels` equal to `[{job: '-'}, {instance: '-'}, {host: '-'}]`. This is the documented
+[filter grammar](https://yandex.cloud/en/docs/monitoring/concepts/data-collection/unified-agent/filters).
+The [Prometheus agent contract](https://yandex.cloud/en/docs/monitoring/operations/prometheus/ingestion/prometheus-agent)
+describes generated job/instance labels and metadata IAM. The backend already constrains source
+labels to pool/instance_id/zone_id and runtime kind/outcome/le. Shared-channel and native/Linux,
+HTTP, Commerce and public routes keep their existing labels. No worker alert or routing is applied.
+
+The worker [runbook](../../../docs/runbooks/worker-pools.md#optional-worker-diagnostics)
+documents status, local TLS rehearsal, reset/freshness guards and cost inputs. Before live
+acceptance, query actual ingested point timestamps along with source age/freshness: a retained
+`fresh=1` point during a sender outage is stale evidence. Ingestion, rules and notification
+firing/no-data/recovery each require their own separately approved evidence.
+
 ## Read-only check and explicit apply
 
 With reviewed foundation/config in Git and separately approved live operations:

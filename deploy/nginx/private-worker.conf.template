@@ -12,6 +12,18 @@ server {
     proxy_read_timeout 900s;
     proxy_send_timeout 900s;
 
+    location = /internal/photo-processing/v1/members/telemetry {
+        client_max_body_size 16k;
+        client_body_buffer_size 16k;
+        access_log off;
+        error_log /dev/null emerg;
+        proxy_pass http://django_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host findme-photo.ru;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-SSL on;
+        proxy_set_header X-FindMe-Worker-Transport private-tls;
+    }
     location ^~ /internal/photo-processing/v1/ {
         proxy_pass http://django_upstream;
         proxy_http_version 1.1;

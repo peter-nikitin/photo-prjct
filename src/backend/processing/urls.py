@@ -3,6 +3,7 @@ from django.urls import path
 from processing import views
 
 urlpatterns = [
+    path("members/telemetry", views.member_telemetry, name="processing_member_telemetry"),
     path("members/register", views.member_register, name="processing_member_register"),
     path("members/heartbeat", views.member_heartbeat, name="processing_member_heartbeat"),
     path("members/retire", views.member_retire, name="processing_member_retire"),

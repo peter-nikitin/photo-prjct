@@ -115,6 +115,10 @@ class FleetLifecycle:
         self._force_exit = force_exit
 
     @property
+    def registration_generation(self) -> str | None:
+        return self._client.registration_generation
+
+    @property
     def can_claim(self) -> bool:
         return (
             self._warm

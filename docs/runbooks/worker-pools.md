@@ -99,6 +99,81 @@ Counts are observations across SELECTs while workers may progress, not a frozen 
 snapshot. For cutover preservation checks, compare observations after the approved drain or
 with workers stopped, and distinguish expected processing progress from lost data.
 
+## Optional worker diagnostics
+
+Phase-one repository capability provides a separate 16 KiB diagnostic receipt and private
+canonical scrape. It does not authorize paid activation or establish cloud delivery. Enable
+the compatible receiver/schema first, then explicitly opt in a reviewed worker's
+`telemetry_enabled=true` bootstrap input, then separately approve canonical agent delivery.
+The host image must already contain `/opt/findme-worker-telemetry/bin/python` with the pinned
+dependencies from `deploy/worker-pools/telemetry-requirements.txt`; bootstrap installs no packages.
+The host oneshot timer runs every 30 seconds independently of worker startup. It keeps one
+private latest snapshot, uses immutable reviewed zone and the existing fleet token, and has
+no processing or cloud mutation authority. Default worker/runtime and sender collection are off.
+
+On the configured backend, inspect aggregates through SELECT-only diagnostics:
+
+```sh
+.venv/bin/python src/backend/manage.py report_worker_pool_telemetry --json
+```
+
+The bounded report gives bulk/selfie expected, cloud-fresh, missing, host-fresh and runtime-fresh
+counts and emitted scalar sample counts, without payloads, product IDs or individual source IDs.
+`remote_write=unverified` and `alerts=deferred` explicitly delimit local evidence. Expected nodes
+without a receipt use `zone_id="unknown"` in exposition; zone is never guessed from cloud data.
+An empty fresh membership has no missing-node series. Readiness/serving/heartbeat derive from
+the existing coordinator and cannot be changed by a receipt.
+
+Host RAM/root bytes describe the VM; Docker usage/limits describe the one fixed container.
+Failed groups are omitted. Source and receipt freshness must both be <=90 seconds; runtime
+also requires current registration generation and fresh scrape time. Duplicate/replayed sources
+cannot renew freshness. Rate/delta and duration consumers must exclude windows containing a
+freshness gap or a change of `worker_runtime_reset_timestamp_seconds`; ordinary `rate` cannot
+detect every process reset when its first new counter exceeds the preceding old counter.
+Apply the analogous guard using `worker_container_reset_timestamp_seconds` for restarts.
+Container/boot/process IDs are protocol fences only, never metric labels. Docker retrospective
+events return at most the last 256 global events, so positive OOM/restart values are lower-bound
+evidence, `events_available=false` expresses unknown completeness, and omitted/empty values do
+not prove zero incidents. Runtime outcomes describe delivered callbacks, not accepted results.
+
+For a local synthetic TLS/container rehearsal using the existing reviewed local fixture image:
+
+```sh
+DB_PORT=5432 sh scripts/run-in-test-env.sh .venv/bin/pytest tests/deployment/test_worker_telemetry_delivery.py -n 0 -s
+```
+
+The fixture skips if the fixed `findme-photo-worker` container exists, uses a unique ownership
+label and exact returned container ID, and cleans only its synthetic container. It exercises
+real runtime HTTP scrape, the real probe's verified HTTPS client and actual Django receipt,
+duplicate/reset/staleness and lease renewal during ingestion failure. Fixture CA, resolution
+and alternate local ports exist only in the test process; production keeps canonical hostname,
+system CA, rejected redirects and ignored proxies. No production DB, private snapshot DB,
+Object Storage, cloud writes or broad container/image/volume cleanup belongs to this rehearsal.
+
+Maximum-valued measured synthetic envelopes with all permitted pairs, a 64-character instance
+ID and a fresh coordinator heartbeat emitted 255 scalar samples for bulk (20 pairs, 5274 compact
+JSON bytes) and 79 for selfie (4 pairs, 2075 bytes). These measured fixture sizes fit 16 KiB;
+identity/timestamp lengths affect actual bytes.
+Each pair adds 11 samples: execution counter, 8 buckets, duration sum and count. At four
+concurrent VMs, two per pool, that measured ceiling is 668 samples per 30-second scrape,
+1336 samples/minute. It is a cost input, not a production measurement or price approval.
+Historical cardinality also grows with distinct instance IDs over retention; each new maximum
+bulk/selfie source can add 255/79 series, and an unknown→reviewed zone receipt may retain an
+additional missing-source label set. Include measured source churn, retention, scrape gaps,
+active kind/outcome pairs and actual ingested samples in a separately approved cost estimate.
+
+Canonical opt-in uses the existing agent/channel and metadata IAM described in the
+[monitoring README](../../deploy/monitoring/prometheus/README.md#optional-isolated-worker-diagnostics).
+Keep native demand/capacity, public health, HTTP and Commerce controls active. Validate actual
+ingested timestamps, allowed labels, source freshness/reset boundaries and measured volume
+before declaring delivery; retained buffered data or a retained `fresh=1` sample is insufficient.
+Diagnostic rules, routing and notification firing/no-data/recovery are deferred. On loss,
+inspect exact timer/receiver/sender status and preserve unknown state and existing lease authority.
+Rollback disables worker probe/runtime opt-in and re-renders canonical config without
+`--worker-telemetry`, using the existing reviewed host installer/rollback only after approval.
+Retain additive schema and current product/vector/gate state; no migration reversal or old-image
+restore over the deployed pgvector contract.
+
 ## Canonical demand publisher and cloud reader
 
 `publish_worker_pool_metrics --zone <zone>` is a local read-only dry run by default. It emits

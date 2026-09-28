@@ -2,7 +2,8 @@
 
 ## Observed gap
 
-The Managed Prometheus package owns the current dashboard's complete 14-widget baseline.
+The Managed Prometheus package owns the dashboard's complete baseline, now 19 widgets in Git
+after PR #222 (the earlier activation snapshot below had 14).
 The worker-pool template in `deploy/monitoring/dashboard.json` now declares three additional native
 diagnostic widgets. Applying that template and then the Prometheus dashboard would remove those
 extra views. Full Alertmanager routing also assumes a dedicated workspace without foreign rule files.
@@ -11,7 +12,8 @@ extra views. Full Alertmanager routing also assumes a dedicated workspace withou
 
 The fresh live dashboard snapshot contained 14 widgets. There is no evidence the three worker views
 were applied, and the worker deployment/provisioning tools do not update dashboards. ADR-0043 is
-proposed; activating worker diagnostics is a separate operational step. Native worker-pool control
+accepted; phase-one repository delivery does not apply dashboards or rules, and activating worker
+diagnostics is a separate operational step. Native worker-pool control
 publication remains untouched by this migration.
 
 ## Trigger and required work

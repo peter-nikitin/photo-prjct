@@ -1,0 +1,3 @@
+# Installed into /opt/findme-worker-telemetry by reviewed base-image preparation only.
+psutil==7.1.3
+prometheus-client==0.25.0

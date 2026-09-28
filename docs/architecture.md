@@ -287,6 +287,18 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 
 ## Accepted constraints
 
+- [ADR 0043](adr/0043-observe-isolated-workers-with-git-managed-alerts.md) accepts bounded
+  host-owned worker observation relayed through the canonical backend and Git-managed diagnostic
+  alerts applied through Managed Prometheus APIs. Phase-one repository code provides an opt-in
+  loopback runtime exporter, independent bounded host probe, private fleet-authenticated ingestion,
+  fenced latest diagnostic state, canonical exposition and a disabled-by-default scrape in the
+  existing Managed Prometheus agent renderer. Local TLS/container and additive-upgrade rehearsals
+  are separate from cloud delivery. Supported automated resource lifecycle/configuration
+  verification, diagnostic alert application and live activation remain pending. Existing native
+  alerts and ADR 0042's authoritative autoscaling remain unchanged. See the
+  [worker runbook](runbooks/worker-pools.md); diagnostic failures never grant processing capacity
+  or prevent lease renewal, callbacks or drain.
+
 - [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md) accepts independently autoscaled
   bulk/selfie worker pools over a private authenticated HTTPS API, preserving one canonical release
   and database authority. It excludes a separate capacity-benchmark workstream. Multi-VM delivery,
@@ -836,10 +848,6 @@ separate release gates.
 
 Each item needs evidence and an ADR before implementation commits the architecture:
 
-- [ADR 0043](adr/0043-observe-isolated-workers-with-git-managed-alerts.md) proposes bounded
-  isolated-worker host/container observation and Git-managed diagnostic alerts applied through
-  Managed Prometheus APIs. Acceptance, implementation and live activation remain pending;
-  existing native alerts and ADR 0042 autoscaling remain unchanged.
 - Stage 3 processing SLA and the measured threshold for replacing ADR 0017 polling with a broker.
 - Approximate vector indexing or a dedicated vector database beyond ADR 0040's exact PostgreSQL path.
 - Broader biometric governance beyond ADR 0019's event-scoped public bearer-link MVP.

@@ -26,6 +26,7 @@ from photo_worker.contracts import (
 from photo_worker.face_embedding import FaceEmbeddingError
 from photo_worker.face_quality import FaceQualityEvidence, FaceQualityThresholds
 from photo_worker.runner import Worker, WorkerConfig, _LeaseKeeper, _lifecycle
+from photo_worker.telemetry import RuntimeTelemetry
 from PIL import Image
 
 
@@ -236,6 +237,112 @@ class Client:
             idempotent=False,
             stale=False,
         )
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (None, "callback_delivered"),
+        ("compute", "execution_failed"),
+        ("download", "transport_failed"),
+        ("callback", "transport_failed"),
+        ("lease", "lease_lost"),
+        ("failure_callback", "transport_failed"),
+        ("stale", "lease_lost"),
+        ("failure_stale", "lease_lost"),
+    ],
+)
+def test_telemetry_observes_whole_execution_once_and_always_clears_busy(
+    failure: str | None,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from photo_worker.metadata import MetadataError
+    from prometheus_client.parser import text_string_to_metric_families
+
+    telemetry = RuntimeTelemetry(lambda: "00000000-0000-0000-0000-000000000001")
+    clock = [0.0]
+    monkeypatch.setattr("photo_worker.telemetry.monotonic", lambda: clock[0])
+
+    class ObservedClient(Client):
+        def download(self, *args, **kwargs):
+            if failure == "download":
+                raise DownloadError("network_interruption", retryable=True)
+            return super().download(*args, **kwargs)
+
+        def complete(self, *args, **kwargs):
+            assert b"worker_runtime_busy 1.0" in telemetry.scrape()[1]
+            clock[0] += 17
+            if failure in {"callback", "lease"}:
+                raise ApiError(
+                    "lease_not_current" if failure == "lease" else "network_interruption",
+                    retryable=True,
+                )
+            if failure == "stale":
+                return CallbackResult(
+                    "00000000-0000-0000-0000-000000000012", "stale", idempotent=False, stale=True
+                )
+            return super().complete(*args, **kwargs)
+
+        def fail(self, *args, **kwargs):
+            clock[0] += 17
+            if failure == "failure_callback":
+                raise ApiError("network_interruption", retryable=True)
+            if failure == "failure_stale":
+                return CallbackResult(
+                    "00000000-0000-0000-0000-000000000012", "stale", idempotent=False, stale=True
+                )
+            return super().fail(*args, **kwargs)
+
+    if failure in {"compute", "failure_callback", "failure_stale"}:
+        monkeypatch.setattr(
+            "photo_worker.runner.extract_capture_metadata",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(MetadataError("decode_failed")),
+        )
+    client = ObservedClient(make_claim())
+    worker = Worker(client, WorkerConfig("test", 60, temp_dir=tmp_path), telemetry=telemetry)
+    if failure in {"callback", "failure_callback"}:
+        with pytest.raises(ApiError, match="network_interruption"):
+            worker.run_once()
+    else:
+        worker.run_once()
+    _, body = telemetry.scrape()
+    values = [
+        sample
+        for family in text_string_to_metric_families(body.decode())
+        for sample in family.samples
+    ]
+    terminal = [sample for sample in values if sample.name == "worker_runtime_executions_total"]
+    assert [(sample.labels, sample.value) for sample in terminal] == [
+        ({"kind": "capture_metadata", "outcome": expected}, 1)
+    ]
+    assert (
+        next(
+            sample.value
+            for sample in values
+            if sample.name == "worker_runtime_execution_duration_seconds_sum"
+        )
+        == 17
+    )
+    assert next(sample.value for sample in values if sample.name == "worker_runtime_busy") == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_telemetry_failure_does_not_prevent_execution_or_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    telemetry = RuntimeTelemetry(lambda: None)
+    monkeypatch.setattr(
+        telemetry, "started", lambda *_args: (_ for _ in ()).throw(RuntimeError("broken metric"))
+    )
+    monkeypatch.setattr(
+        telemetry, "finished", lambda *_args: (_ for _ in ()).throw(RuntimeError("broken metric"))
+    )
+    client = Client(make_claim())
+    Worker(client, WorkerConfig("test", 60, temp_dir=tmp_path), telemetry=telemetry).run_once()
+    assert len(client.completed) == 1
+    assert not client.failed
 
 
 class SchedulingClient(Client):

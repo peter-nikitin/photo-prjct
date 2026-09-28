@@ -1,9 +1,15 @@
 # Isolated worker telemetry through the canonical backend
 
 - Date: 2026-09-28
-- Status: Written specification approved in conversation on 2026-09-28; implementation and
-  the required host-probe ADR remain pending. Publication in the current PR is authorized;
-  paid provisioning and live activation are not authorized.
+- Status: Written specification and ADR 0043 explicitly approved in conversation on 2026-09-28;
+  phase-one repository implementation covers collection, private ingestion, canonical export and
+  default-off delivery preparation. Paid provisioning and live activation are separately gated.
+- Delivery split approved in conversation on 2026-09-28: implement collection, private ingestion,
+  canonical export and delivery preparation first; diagnostic alert application remains blocked.
+- Alert-stage prerequisite status (2026-09-28): blocked by unconfirmed workspace/channel
+  lifecycle and Alertmanager configuration read-back. See the
+  [official API feasibility review](../../research/2026-09-28-worker-diagnostic-alert-api.md).
+  Phase-one approval and acceptance of ADR 0043 do not waive these requirements.
 - Owner: FindMe Photo.
 - Related architecture: [Accepted constraints](../../architecture.md#accepted-constraints),
   [Operations](../../architecture.md#target-mvp-architecture--proposed),
@@ -12,15 +18,15 @@
   [0017](../../adr/0017-use-django-polled-photo-processing-jobs.md),
   [0028](../../adr/0028-operate-one-canonical-deployment.md),
   [0042](../../adr/0042-isolate-autoscaled-photo-worker-pools.md),
-  proposed [0043](../../adr/0043-observe-isolated-workers-with-git-managed-alerts.md).
+  accepted [0043](../../adr/0043-observe-isolated-workers-with-git-managed-alerts.md).
 - Related specification: [Autoscaled pools](2026-09-23-autoscaled-photo-worker-pools-design.md).
-- ADR impact: Requires a new ADR narrowly superseding ADR 0018's prohibition on Docker
+- ADR impact: Conforms to accepted ADR 0043, narrowly superseding ADR 0018's prohibition on Docker
   inspection for monitoring: a fixed-command, host-owned read-only worker probe only.
-  Git-managed alerting and any Managed Prometheus ingestion/evaluator transition require
-  reconciliation with ADR 0018 before implementation; this specification does not accept
-  that transition or claim Terraform resource support is already established.
-  Conforms to ADR 0042's private transport, credential and scaling boundaries. No accepted
-  ADR is amended or implicitly accepted by approving this specification.
+  Git-managed diagnostic alerting and Managed Prometheus delivery follow ADR 0043; supported
+  lifecycle and safe configuration verification/rollback still require evidence before alert-stage
+  implementation. Phase one preserves this requirement rather than substituting a different mechanism.
+  Conforms to ADR 0042's private transport, credential and scaling boundaries. No Terraform
+  managed-resource support is inferred from this decision.
 
 ## Intent and scope
 
@@ -36,7 +42,7 @@ limits or the durable ownership protocol. It is not a benchmark or sizing workst
 Exclude pgvector schema, reader, gate and release; historical backfill; legacy deletion;
 database relocation or internal database metrics; import/commerce; main-VM downsizing;
 logs/traces export; automatic remediation; paid provisioning and live activation.
-The deployed pgvector baseline `866a894` and enabled reader gate (2026-09-28 inventory)
+The deployed integration baseline `eddc9a1` and enabled reader gate (2026-09-28 inventory)
 must be preserved; telemetry preparation neither reverts it nor races canonical Deploy.
 
 ## Selected approach and alternatives
@@ -164,8 +170,8 @@ provider resource surface, the maintainer explicitly approved Managed Prometheus
 for rules and routing on 2026-09-28. Do not substitute an imperative Terraform provisioner for
 managed-resource semantics. Supported workspace/channel lifecycle, configuration read-back,
 ownership, drift detection and rollback remain implementation prerequisites; unsupported API
-operations must not be guessed, and manual UI setup is not an acceptable fallback. Proposed
-ADR 0043 records the architectural reconciliation and still requires explicit acceptance.
+operations must not be guessed, and manual UI setup is not an acceptable fallback. Accepted
+ADR 0043 records the explicitly approved architectural reconciliation.
 
 Managed Prometheus YAML/PromQL rules and Alertmanager configuration are the documented API path,
 not proof that existing native Monitoring points are queryable in its workspace. If that path
@@ -198,6 +204,24 @@ does not authorize migration of unrelated HTTP, public-probe or Commerce alerts.
 
 ## Release and acceptance boundaries
 
+### Approved delivery milestones
+
+Phase one delivers the host probe, worker runtime endpoint, private receiver, latest diagnostic
+state, canonical Prometheus exposition and a disabled-by-default managed delivery configuration.
+Use the existing canonical Unified Agent for Remote Write rather than implementing a new wire
+protocol or operating another monitoring service. Its documented Prometheus support requires
+version 25.03.80 or newer; installation/configuration must reject an incompatible agent rather
+than silently upgrading production. Preserve its existing native collection routes and strip
+generated labels outside this specification's allowlist. See the
+[official agent contract](https://yandex.cloud/en/docs/monitoring/operations/prometheus/ingestion/prometheus-agent).
+No workspace/channel creation, credential grant or live Remote Write enablement is included.
+Offline delivery tests and a local private transport rehearsal are phase-one evidence only.
+
+Phase two retains the complete Git-managed alert, lifecycle, drift and rollback requirements
+below. It cannot execute until the API feasibility prerequisites are resolved. Phase one must
+not add guessed control endpoints, apply routing, remove existing alerts or claim notification
+acceptance. This split changes delivery order, not the selected diagnostic architecture.
+
 This is one canonical web/worker release, not another deployment pipeline. Publish the compatible
 private receiver before enabling probes. Old workers without runtime telemetry remain process-
 compatible during bounded drain; mark telemetry unavailable, never deny their existing callbacks
@@ -220,9 +244,12 @@ application verification/rollback for the approved mechanism. Git files or a suc
 apply alone do not prove cloud ingestion, rule evaluation or notification delivery. Full live
 acceptance requires fresh target-series queries and controlled firing, missing-data and recovery
 evidence; no manual UI configuration is required to reproduce the delivered worker alerts.
+These are whole-feature and phase-two criteria, not a claim made at phase-one handoff. Phase-one
+acceptance covers the observation/transport/metric and preserved-processing checks above, tested
+exposition and delivery configuration, and an explicit record of deferred cloud/alert evidence.
 
 Local/CI preparation is separate from paid/live activation. Before activation, approve the added
-custom-metric cardinality/cost, resolve the host-probe ADR and verify actual fresh worker points,
+custom-metric cardinality/cost and verify actual fresh worker points,
 source attribution and controlled alert/recovery on explicitly approved resources. No provisioning,
 IAM/network mutation, production deploy, branch rewrite, pgvector change or backfill is authorized
 by this document. Current implementation/architecture status remains unchanged until delivery.

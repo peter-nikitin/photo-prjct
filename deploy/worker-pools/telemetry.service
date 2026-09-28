@@ -1,0 +1,19 @@
+[Unit]
+Description=FindMe worker independent host diagnostics
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/findme-worker/telemetry.env
+ExecStart=/opt/findme-worker-telemetry/bin/python /usr/local/lib/findme-worker/telemetry.py
+TimeoutStartSec=25
+StateDirectory=findme-worker-telemetry
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

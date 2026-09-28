@@ -106,6 +106,11 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run)
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": config["identities"],
         "PHOTO_PROCESSING_FLEET_TOKEN": values["PHOTO_PROCESSING_FLEET_TOKEN"],
     }
+    telemetry_enabled = config.get("telemetry_enabled", False)
+    if type(telemetry_enabled) is not bool:
+        raise ValueError("explicit boolean telemetry opt-in required")
+    if telemetry_enabled:
+        from_config["PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED"] = "True"
     # JSON quoting produces dotenv double-quoted values; escape Compose interpolation explicitly.
     private_file(
         base / "runtime.env",
@@ -169,6 +174,45 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run)
     )
     invoke(["systemctl", "daemon-reload"])
     invoke(["systemctl", "enable", "--now", "findme-worker-retire.timer"])
+    if telemetry_enabled:
+        try:
+            if config["zone"] not in {"ru-central1-a", "ru-central1-b", "ru-central1-d"}:
+                raise ValueError("unsupported telemetry zone")
+            # Dependencies are an immutable reviewed-image prerequisite, never installed here.
+            run(
+                [
+                    "/opt/findme-worker-telemetry/bin/python",
+                    "-c",
+                    "from importlib.metadata import version; "
+                    "assert version('psutil') == '7.1.3'; "
+                    "assert version('prometheus-client') == '0.25.0'",
+                ],
+                check=True,
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+            )
+            telemetry_env = {
+                "PHOTO_WORKER_POOL": pool,
+                "PHOTO_WORKER_BUILD": config["worker_build"],
+                "PHOTO_WORKER_ZONE": config["zone"],
+                "PHOTO_PROCESSING_FLEET_TOKEN": values["PHOTO_PROCESSING_FLEET_TOKEN"],
+            }
+            private_file(
+                base / "telemetry.env",
+                "".join(f"{key}={json.dumps(value)}\n" for key, value in telemetry_env.items()),
+            )
+            run(
+                ["systemctl", "enable", "--now", "findme-worker-telemetry.timer"],
+                check=True,
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+            )
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            print("worker_telemetry_setup_unavailable")
 
 
 def main():

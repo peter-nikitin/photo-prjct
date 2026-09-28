@@ -45,9 +45,11 @@ from photo_worker.face_embedding import (
     extract_face_embeddings,
     extract_selfie_embedding,
 )
+from photo_worker.lifecycle import DrainController, FleetLifecycle
 from photo_worker.metadata import InputTooLarge, MetadataError, extract_capture_metadata
 from photo_worker.observability import SelfieWorkerEventName, emit_selfie_worker_event
 from photo_worker.preview import PreviewError, PreviewResult, generate_preview
+from photo_worker.transport import validate_remote_config
 from photo_worker.watermark import (
     WatermarkedPreviewError,
     WatermarkedPreviewResult,
@@ -138,6 +140,7 @@ class WorkerConfig:
     minimum_delay_seconds: float = 1.0
     maximum_backoff_seconds: float = 30.0
     log_secrets: tuple[str, ...] = ()
+    remote_pool: str | None = None
 
     def __post_init__(self) -> None:
         if self.concurrency != 1:
@@ -198,6 +201,16 @@ class WorkerConfig:
             if not all(processor_types):
                 raise ValueError("processor types must not contain empty values")
         identities = tuple(item.strip() for item in raw_identities.split(",") if item.strip())
+        transport = os.environ.get("PHOTO_WORKER_TRANSPORT", "local")
+        if transport == "remote":
+            validate_remote_config(
+                pool=os.environ.get("PHOTO_WORKER_POOL", ""),
+                private_ip=os.environ.get("WORKER_POOL_PRIVATE_API_IPV4", ""),
+                build=build,
+                image=os.environ.get("PHOTO_WORKER_IMAGE", ""),
+                identities=raw_identities,
+                processor_types=plural,
+            )
         return (
             cls(
                 worker_build=build,
@@ -206,8 +219,9 @@ class WorkerConfig:
                 processor_identities=identities,
                 processor_types=processor_types,
                 log_secrets=(token,),
+                remote_pool=os.environ["PHOTO_WORKER_POOL"] if transport == "remote" else None,
             ),
-            HttpClient(api_url, token, timeout_seconds=http_timeout_seconds),
+            HttpClient(api_url, token, timeout_seconds=http_timeout_seconds, transport=transport),
         )
 
 
@@ -294,6 +308,7 @@ class Worker:
         config: WorkerConfig,
         *,
         lease_keeper_factory: Callable[[WorkerClient, ClaimedJob, int], LeaseKeeper] = _LeaseKeeper,
+        drain: DrainController | None = None,
     ) -> None:
         if config.lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
@@ -305,8 +320,16 @@ class Worker:
         self._photo_identity_index = 0
         self._prefer_selfie = True
         self._last_claim_identity: tuple[int, str, int] | None = None
+        self.drain = drain or DrainController()
+        self.draining = self.drain.requested
+        self.fleet: FleetLifecycle | None = None
+
+    def request_drain(self) -> None:
+        self.drain.request()
 
     def run_once(self) -> int | None:
+        if self.draining.is_set():
+            return None
         empty_delays: list[int] = []
         claim: Claim | None
         if not self._config.processor_types:
@@ -373,6 +396,9 @@ class Worker:
         return None
 
     def _claim_identity(self, identity: tuple[int, str, int], empty_delays: list[int]) -> Claim:
+        if self.draining.is_set() or (self.fleet is not None and not self.fleet.can_claim):
+            empty_delays.append(2)
+            return Claim(job=None, suggested_delay_seconds=2)
         contract_version, processor_type, processor_version = identity
         self._last_claim_identity = identity
         claim = self._client.claim_job(
@@ -423,7 +449,7 @@ class Worker:
 
     def run_forever(self) -> None:
         failures = 0
-        while True:
+        while not self.draining.is_set():
             try:
                 idle_delay = self.run_once()
                 failures = 0

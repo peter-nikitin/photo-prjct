@@ -24,6 +24,102 @@ BIB_RECOGNITION_PROCESSOR = "bib_recognition"
 _TERMINAL_ATTEMPT_STATUSES = ("succeeded", "failed", "expired", "stale")
 
 
+class WorkerPool(models.Model):  # noqa: DJ008
+    """Canonical infrastructure coordination; never an execution lease authority."""
+
+    name = models.CharField(
+        max_length=6, unique=True, choices=(("bulk", "Bulk"), ("selfie", "Selfie"))
+    )
+    group_id = models.CharField(max_length=64)
+    active_build = models.CharField(max_length=40)
+    staged_build = models.CharField(max_length=40, null=True, default=None)  # noqa: DJ001
+    claims_paused = models.BooleanField(default=True)
+    local_claims_paused = models.BooleanField(default=False)
+    observation_sequence = models.PositiveBigIntegerField(default=0)
+    observation_started_at = models.DateTimeField(null=True, default=None)
+    observation_completed_at = models.DateTimeField(null=True, default=None)
+    target_size = models.PositiveSmallIntegerField(default=0)
+    observed_members = models.JSONField(default=list)
+    queue_observed_at = models.DateTimeField(null=True, default=None)
+    endpoint_available = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(name__in=("bulk", "selfie")), name="worker_pool_name_chk"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(target_size__lte=2), name="worker_pool_target_chk"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(staged_build__isnull=True)
+                | ~models.Q(staged_build=models.F("active_build")),
+                name="worker_pool_builds_differ_chk",
+            ),
+        ]
+
+
+class WorkerPoolMember(models.Model):  # noqa: DJ008
+    pool = models.ForeignKey(WorkerPool, on_delete=models.PROTECT, related_name="members")
+    instance_id = models.CharField(max_length=64, unique=True)
+    boot_id = models.UUIDField()
+    registration_generation = models.UUIDField(null=True, default=None)
+    worker_build = models.CharField(max_length=40)
+    ready = models.BooleanField(default=False)
+    draining = models.BooleanField(default=False)
+    heartbeat_at = models.DateTimeField(null=True, default=None)
+    idle_since = models.DateTimeField(null=True, default=None)
+    active_processing_attempt = models.OneToOneField(
+        "ProcessingAttempt",
+        on_delete=models.PROTECT,
+        null=True,
+        default=None,
+        related_name="pool_member",
+    )
+    active_selfie_attempt = models.OneToOneField(
+        "selfie_search.SelfieSearchAttempt",
+        on_delete=models.PROTECT,
+        null=True,
+        default=None,
+        related_name="pool_member",
+    )
+    retirement_grant = models.UUIDField(null=True, default=None)
+    granted_at = models.DateTimeField(null=True, default=None)
+    grant_observation_sequence = models.PositiveBigIntegerField(null=True, default=None)
+    reconciled_at = models.DateTimeField(null=True, default=None)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(active_processing_attempt__isnull=True)
+                | models.Q(active_selfie_attempt__isnull=True),
+                name="worker_member_one_attempt_chk",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        retirement_grant__isnull=True,
+                        granted_at__isnull=True,
+                        grant_observation_sequence__isnull=True,
+                    )
+                    | models.Q(
+                        retirement_grant__isnull=False,
+                        granted_at__isnull=False,
+                        grant_observation_sequence__isnull=False,
+                        ready=False,
+                        draining=True,
+                    )
+                ),
+                name="worker_member_grant_fields_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(reconciled_at__isnull=True)
+                | models.Q(retirement_grant__isnull=False),
+                name="worker_member_reconciled_chk",
+            ),
+        ]
+
+
 def validate_bounded_json(value: object) -> None:
     serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     if len(serialized.encode()) > JSON_MAX_BYTES:

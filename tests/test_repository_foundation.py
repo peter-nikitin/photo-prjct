@@ -193,9 +193,15 @@ def test_optional_ci_jobs_print_untrusted_selector_reasons_as_environment_data()
 def test_selected_operational_ci_has_the_core_django_environment() -> None:
     ci = _load_workflow("ci.yml")
     operational = ci["jobs"]["operational"]
+    startup = _workflow_step(ci, "operational", "Start PostgreSQL")
 
     assert operational["env"] == ci["jobs"]["quality"]["env"]
     assert "services" not in operational
+    assert startup["if"] == "needs.select-test-suites.outputs.operational == 'true'"
+    assert "for attempt in $(seq 1 15); do" in startup["run"]
+    assert "docker ps --filter name=operational-postgres" in startup["run"]
+    assert "docker logs --tail 100 operational-postgres || true" in startup["run"]
+    assert startup["run"].rstrip().endswith("exit 1")
     assert _workflow_step(ci, "operational", "Test operational layer")["if"] == (
         "needs.select-test-suites.outputs.operational == 'true'"
     )

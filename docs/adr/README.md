@@ -61,6 +61,8 @@ place, and add the new record to this index.
 | 0039 | [Run the public health probe on the image-origin VM](0039-run-public-probe-on-image-origin-vm.md) | Accepted |
 | 0040 | [Use pgvector for exact event-scoped face search](0040-use-pgvector-for-exact-face-search.md) | Accepted |
 | 0041 | [Accept numerical boundary differences in exact pgvector search](0041-accept-pgvector-numerical-boundaries.md) | Accepted |
+| 0042 | [Isolate autoscaled photo worker pools](0042-isolate-autoscaled-photo-worker-pools.md) | Accepted |
+| 0043 | [Observe isolated workers with Git-managed alerts](0043-observe-isolated-workers-with-git-managed-alerts.md) | Proposed |
 
 ## Public selfie-search outcome
 

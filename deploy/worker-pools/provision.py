@@ -1,0 +1,609 @@
+#!/usr/bin/env python3
+"""Checksum-bound preparation/create/update of exactly two managed worker Instance Groups.
+
+Prerequisite IAM, network, SG, egress, Lockbox and reviewed OS image creation is deliberately
+outside this interface. Default mode is local preparation only. Inspect/status never mutate.
+An apply receipt fences uncertain submissions; there is no automatic recreation or retry.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib.request import Request
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src/backend"))
+from processing.services import worker_pool_cloud  # noqa: E402
+from processing.services.worker_pool_cloud import (  # noqa: E402
+    COMPUTE,
+    CloudReader,
+    identifier,
+    request_json,
+)
+
+FIELDS = {
+    "cloud_id",
+    "folder_id",
+    "zone",
+    "network_id",
+    "subnet_id",
+    "worker_sg_id",
+    "canonical_vm_id",
+    "private_api_ipv4",
+    "worker_sa_id",
+    "manager_sa_id",
+    "bootstrap_secret_id",
+    "bootstrap_version_id",
+    "application_secret_id",
+    "boot_image_id",
+    "docker_version",
+    "compose_version",
+    "worker_build",
+    "worker_image",
+    "egress_gateway_id",
+    "route_table_id",
+    "groups",
+}
+LABELS = {"project": "findme-photo", "deployment": "canonical", "managed-by": "worker-pools"}
+MANAGED_FIELDS = (
+    "name",
+    "labels",
+    "instanceTemplate",
+    "scalePolicy",
+    "deployPolicy",
+    "allocationPolicy",
+    "serviceAccountId",
+    "deletionProtection",
+)
+
+
+def digest(value):
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def validate(config):
+    if not isinstance(config, dict) or set(config) != FIELDS:
+        raise ValueError("unsupported provisioning input")
+    for key in FIELDS - {
+        "groups",
+        "private_api_ipv4",
+        "worker_build",
+        "worker_image",
+        "docker_version",
+        "compose_version",
+    }:
+        identifier(config[key])
+    address = ipaddress.IPv4Address(config["private_api_ipv4"])
+    if not any(
+        address in ipaddress.IPv4Network(cidr)
+        for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    ):
+        raise ValueError("private endpoint required")
+    if (
+        config["bootstrap_secret_id"] == config["application_secret_id"]
+        or config["worker_sa_id"] == config["manager_sa_id"]
+    ):
+        raise ValueError("worker authority must be isolated")
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", config["worker_build"]) is None
+        or re.fullmatch(
+            r"ghcr\.io/[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9._-]*-worker@sha256:[0-9a-f]{64}",
+            config["worker_image"],
+        )
+        is None
+    ):
+        raise ValueError("immutable worker release required")
+    for key in ("docker_version", "compose_version"):
+        if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", config[key]) is None:
+            raise ValueError("reviewed installed runtime required")
+    if not isinstance(config["groups"], dict) or set(config["groups"]) != {"bulk", "selfie"}:
+        raise ValueError("exactly two managed groups required")
+    ids = []
+    for entry in config["groups"].values():
+        if not isinstance(entry, dict) or set(entry) != {"id", "baseline"}:
+            raise ValueError("invalid managed group")
+        if entry["id"] is None:
+            if entry["baseline"] is not None:
+                raise ValueError("creation requires expected absence")
+        else:
+            ids.append(identifier(entry["id"]))
+            if (
+                not isinstance(entry["baseline"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", entry["baseline"]) is None
+            ):
+                raise ValueError("update requires exact inspected baseline")
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate group IDs")
+
+
+def cloud_init(config, pool):
+    runtime = {
+        key: config[key]
+        for key in (
+            "bootstrap_secret_id",
+            "bootstrap_version_id",
+            "worker_build",
+            "worker_image",
+            "docker_version",
+            "compose_version",
+            "private_api_ipv4",
+        )
+    }
+    contract = dict(
+        line.split("=", 1)
+        for line in (ROOT / "deploy/worker-pools/contract.env.example").read_text().splitlines()
+        if line and not line.startswith("#")
+    )
+    runtime.update(pool=pool, identities=contract[f"WORKER_POOL_{pool.upper()}_IDENTITIES"])
+    files = {
+        "/etc/findme-worker/bootstrap.json": json.dumps(runtime, sort_keys=True),
+        "/usr/local/lib/findme-worker/bootstrap.py": (
+            ROOT / "deploy/worker-pools/bootstrap.py"
+        ).read_text(),
+        "/usr/local/lib/findme-worker/worker_pool_cloud.py": Path(
+            worker_pool_cloud.__file__
+        ).read_text(),
+        "/usr/local/lib/findme-worker/compose.yml": (
+            ROOT / "deploy/worker-pools/compose.yml"
+        ).read_text(),
+        "/usr/local/lib/findme-worker/retire.py": (
+            ROOT / "deploy/worker-pools/retire.py"
+        ).read_text(),
+        "/etc/systemd/system/findme-worker-retire.service": (
+            ROOT / "deploy/worker-pools/retire.service"
+        ).read_text(),
+        "/etc/systemd/system/findme-worker-retire.timer": (
+            ROOT / "deploy/worker-pools/retire.timer"
+        ).read_text(),
+    }
+    # Reviewed base image already contains Python, Docker and Compose. No apt/curl installs.
+    return "#cloud-config\n" + json.dumps(
+        {
+            "write_files": [
+                {
+                    "path": path,
+                    "owner": "root:root",
+                    "permissions": "0600" if path.endswith("bootstrap.json") else "0644",
+                    "encoding": "b64",
+                    "content": base64.b64encode(content.encode()).decode(),
+                }
+                for path, content in files.items()
+            ],
+            "runcmd": [
+                [
+                    "python3",
+                    "/usr/local/lib/findme-worker/bootstrap.py",
+                    "--config",
+                    "/etc/findme-worker/bootstrap.json",
+                ]
+            ],
+        },
+        sort_keys=True,
+    )
+
+
+def prepare(config):
+    validate(config)
+    groups = {}
+    for pool in ("bulk", "selfie"):
+        groups[pool] = {
+            "folderId": config["folder_id"],
+            "name": f"findme-photo-worker-{pool}",
+            "labels": LABELS | {"pool": pool},
+            "serviceAccountId": config["manager_sa_id"],
+            "deletionProtection": True,
+            "instanceTemplate": {
+                "platformId": "standard-v3",
+                "resourcesSpec": {"cores": "2", "coreFraction": "100", "memory": "8589934592"},
+                "bootDiskSpec": {
+                    "mode": "READ_WRITE",
+                    "diskSpec": {
+                        "typeId": "network-ssd",
+                        "size": "34359738368",
+                        "imageId": config["boot_image_id"],
+                        "preserveAfterInstanceDelete": False,
+                    },
+                },
+                "networkInterfaceSpecs": [
+                    {
+                        "networkId": config["network_id"],
+                        "subnetIds": [config["subnet_id"]],
+                        "primaryV4AddressSpec": {},
+                        "securityGroupIds": [config["worker_sg_id"]],
+                    }
+                ],
+                "schedulingPolicy": {"preemptible": pool == "bulk"},
+                "serviceAccountId": config["worker_sa_id"],
+                "metadata": {
+                    "findme-worker-build": config["worker_build"],
+                    "findme-worker-image": config["worker_image"],
+                    "user-data": cloud_init(config, pool),
+                },
+            },
+            "scalePolicy": {
+                "autoScale": {
+                    "minZoneSize": "0" if pool == "bulk" else "1",
+                    "maxSize": "2",
+                    "initialSize": "1",
+                    "measurementDuration": "60s",
+                    "warmupDuration": "300s",
+                    "stabilizationDuration": "300s",
+                    "autoScaleType": "ZONAL",
+                    "customRules": [
+                        {
+                            "ruleType": "WORKLOAD",
+                            "metricType": "GAUGE",
+                            "metricName": "worker_pool_workload",
+                            "labels": {"pool": pool, "zone_id": config["zone"]},
+                            "target": "1",
+                            "folderId": config["folder_id"],
+                            "service": "custom",
+                        }
+                    ],
+                }
+            },
+            "deployPolicy": {
+                "strategy": "OPPORTUNISTIC",
+                "maxUnavailable": "1",
+                "maxExpansion": "0",
+                "maxDeleting": "1",
+                "maxCreating": "1",
+                "startupDuration": "600s",
+            },
+            "allocationPolicy": {"zones": [{"zoneId": config["zone"]}]},
+        }
+    plan = {
+        "configuration": config,
+        "groups": groups,
+        "boundary": (
+            "create/update exact worker groups only; "
+            "prerequisites and live acceptance remain separate"
+        ),
+    }
+    return plan | {"checksum": digest(plan)}
+
+
+def managed_baseline(group):
+    return digest({key: group.get(key) for key in MANAGED_FIELDS})
+
+
+def allows_private_port(rule):
+    if rule.get("direction") != "INGRESS" or rule.get("protocolName", "ANY") not in {"ANY", "TCP"}:
+        return False
+    ports = rule.get("ports")
+    return not ports or int(ports.get("fromPort", 0)) <= 8443 <= int(ports.get("toPort", 65535))
+
+
+def validate_private_edge(config, canonical, groups):
+    if (
+        canonical.get("id") != config["canonical_vm_id"]
+        or canonical.get("folderId") != config["folder_id"]
+    ):
+        raise ValueError("wrong canonical VM")
+    found = False
+    allowed = False
+    for nic in canonical["networkInterfaces"]:
+        found = (
+            found or nic.get("primaryV4Address", {}).get("address") == config["private_api_ipv4"]
+        )
+        # Caller resolves implicit/default groups from the actual NIC network. Empty is unknown.
+        attached = nic.get("securityGroupIds")
+        if not attached:
+            raise ValueError("unknown effective canonical security group union")
+        for group_id in attached:
+            for rule in groups[group_id]["rules"]:
+                if allows_private_port(rule):
+                    if (
+                        rule.get("securityGroupId") != config["worker_sg_id"]
+                        or rule.get("cidrBlocks")
+                        or rule.get("predefinedTarget")
+                    ):
+                        raise ValueError("canonical 8443 is reachable outside exact worker SG")
+                    allowed = True
+    if not found or not allowed:
+        raise ValueError("canonical private edge prerequisite missing")
+
+
+class Cloud(CloudReader):
+    def resource(self, service, collection, resource_id):
+        base = {
+            "vpc": "https://vpc.api.cloud.yandex.net/vpc/v1",
+            "lockbox": "https://lockbox.api.cloud.yandex.net/lockbox/v1",
+            "resourcemanager": "https://resource-manager.api.cloud.yandex.net/resource-manager/v1",
+        }[service]
+        return request_json(
+            Request(
+                f"{base}/{collection}/{identifier(resource_id)}",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+        )
+
+    def bindings(self, service, collection, resource_id):
+        base = {
+            "lockbox": "https://lockbox.api.cloud.yandex.net/lockbox/v1",
+            "resourcemanager": "https://resource-manager.api.cloud.yandex.net/resource-manager/v1",
+        }[service]
+        rows, page, seen = [], "", set()
+        from urllib.parse import urlencode
+
+        for _ in range(10):
+            result = request_json(
+                Request(
+                    f"{base}/{collection}/{identifier(resource_id)}:listAccessBindings?"
+                    + urlencode({"pageToken": page, "pageSize": "100"}),
+                    headers={"Authorization": f"Bearer {self.token}"},
+                )
+            )
+            rows.extend(result.get("accessBindings", []))
+            page = result.get("nextPageToken", "")
+            if not page:
+                return rows
+            if not isinstance(page, str) or page in seen:
+                raise ValueError("incomplete access bindings")
+            seen.add(page)
+        raise ValueError("incomplete access bindings")
+
+    def mutate(self, method, path, body):
+        return request_json(
+            Request(
+                f"{COMPUTE}/{path}",
+                data=json.dumps(body, separators=(",", ":")).encode(),
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json",
+                },
+                method=method,
+            )
+        )
+
+
+def relevant_bindings(rows, worker):
+    return [
+        row
+        for row in rows
+        if row.get("subject", {}).get("id") in {worker, "allUsers", "allAuthenticatedUsers"}
+    ]
+
+
+def inspect(config, cloud):
+    validate(config)
+    folder = cloud.resource("resourcemanager", "folders", config["folder_id"])
+    if folder.get("id") != config["folder_id"] or folder.get("cloudId") != config["cloud_id"]:
+        raise ValueError("wrong explicit cloud/folder")
+    # Worker identity must have no inherited cloud/folder authority, especially DB/S3/manage.
+    for kind, resource in (("clouds", config["cloud_id"]), ("folders", config["folder_id"])):
+        if relevant_bindings(
+            cloud.bindings("resourcemanager", kind, resource), config["worker_sa_id"]
+        ):
+            raise ValueError("worker has ancestor authority")
+    for service, collection, resource, role in (
+        ("lockbox", "secrets", config["bootstrap_secret_id"], "lockbox.payloadViewer"),
+    ):
+        grants = relevant_bindings(
+            cloud.bindings(service, collection, resource), config["worker_sa_id"]
+        )
+        if grants != [
+            {"roleId": role, "subject": {"id": config["worker_sa_id"], "type": "serviceAccount"}}
+        ]:
+            raise ValueError("worker scoped authority differs from narrow prerequisite")
+    if relevant_bindings(
+        cloud.bindings("lockbox", "secrets", config["application_secret_id"]),
+        config["worker_sa_id"],
+    ):
+        raise ValueError("worker can read application secret")
+    secret = cloud.resource("lockbox", "secrets", config["bootstrap_secret_id"])
+    if (
+        secret.get("folderId") != config["folder_id"]
+        or secret.get("status") != "ACTIVE"
+        or secret.get("currentVersion", {}).get("id") != config["bootstrap_version_id"]
+        or set(secret.get("currentVersion", {}).get("payloadEntryKeys", []))
+        != {"PHOTO_PROCESSING_FLEET_TOKEN", "IMAGE_PULL_AUTH"}
+    ):
+        raise ValueError("narrow bootstrap secret prerequisite missing")
+    subnet = cloud.resource("vpc", "subnets", config["subnet_id"])
+    if (
+        subnet.get("folderId") != config["folder_id"]
+        or subnet.get("zoneId") != config["zone"]
+        or subnet.get("networkId") != config["network_id"]
+        or subnet.get("routeTableId") != config["route_table_id"]
+    ):
+        raise ValueError("wrong private subnet/egress")
+    routes = cloud.resource("vpc", "routeTables", config["route_table_id"])
+    if routes.get("networkId") != config["network_id"] or not any(
+        row.get("destinationPrefix") == "0.0.0.0/0"
+        and row.get("gatewayId") == config["egress_gateway_id"]
+        for row in routes.get("staticRoutes", [])
+    ):
+        raise ValueError("private egress prerequisite missing")
+    gateway = cloud.resource("vpc", "gateways", config["egress_gateway_id"])
+    if gateway.get("folderId") != config["folder_id"] or "sharedEgressGateway" not in gateway:
+        raise ValueError("wrong private egress gateway")
+    worker_sg = cloud.resource("vpc", "securityGroups", config["worker_sg_id"])
+    if (
+        worker_sg.get("networkId") != config["network_id"]
+        or any(rule.get("direction") == "INGRESS" for rule in worker_sg.get("rules", []))
+        or not any(rule.get("direction") == "EGRESS" for rule in worker_sg.get("rules", []))
+    ):
+        raise ValueError("worker SG prerequisite missing")
+    canonical = cloud.get(f"instances/{config['canonical_vm_id']}", view="FULL")
+    groups = {}
+    for nic in canonical["networkInterfaces"]:
+        if not nic.get("securityGroupIds"):
+            nic_subnet = cloud.resource("vpc", "subnets", identifier(nic.get("subnetId")))
+            network = cloud.resource("vpc", "networks", identifier(nic_subnet.get("networkId")))
+            nic["securityGroupIds"] = [identifier(network.get("defaultSecurityGroupId"))]
+        for resource in nic["securityGroupIds"]:
+            groups[resource] = cloud.resource("vpc", "securityGroups", resource)
+    validate_private_edge(config, canonical, groups)
+    image = cloud.get(f"images/{config['boot_image_id']}")
+    if image.get("id") != config["boot_image_id"] or image.get("status") != "READY":
+        raise ValueError("reviewed base image prerequisite missing")
+    existing = cloud.pages("instanceGroups", "instanceGroups", folderId=config["folder_id"])
+    managed = {}
+    for pool, entry in config["groups"].items():
+        candidates = [row for row in existing if row.get("name") == f"findme-photo-worker-{pool}"]
+        if entry["id"] is None:
+            if candidates:
+                raise ValueError("creation target already exists; inspect and reconcile")
+            managed[pool] = None
+        else:
+            actual = cloud.get(f"instanceGroups/{entry['id']}", view="FULL")
+            if (
+                len(candidates) != 1
+                or candidates[0].get("id") != entry["id"]
+                or actual.get("folderId") != config["folder_id"]
+                or actual.get("labels") != LABELS | {"pool": pool}
+                or actual.get("name") != f"findme-photo-worker-{pool}"
+            ):
+                raise ValueError("unknown or ambiguous managed target")
+            if managed_baseline(actual) != entry["baseline"]:
+                raise ValueError("managed target drift")
+            members = cloud.pages(f"instanceGroups/{entry['id']}/instances", "instances")
+            if sum(row.get("status") != "DELETED" for row in members) > 2:
+                raise ValueError("existing capacity exceeds hard maximum")
+            managed[pool] = {"id": entry["id"], "baseline": managed_baseline(actual)}
+    return managed
+
+
+def write_receipt(path, value, *, exclusive=False):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_EXCL if exclusive else os.O_TRUNC)
+    with os.fdopen(os.open(path, flags, 0o600), "w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(value, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def apply(config, checksum, *, cloud, receipt_path=None):
+    plan = prepare(config)
+    if checksum != plan["checksum"]:
+        raise ValueError("reviewed checksum mismatch")
+    if receipt_path is None or Path(receipt_path).exists():
+        raise ValueError("fresh durable receipt required; reconcile prior submission first")
+    inspect(config, cloud)
+    receipt = {"checksum": checksum, "folder_id": config["folder_id"], "groups": {}}
+    write_receipt(receipt_path, receipt, exclusive=True)
+    for pool, body in plan["groups"].items():
+        entry = config["groups"][pool]
+        # Recheck each concrete target immediately before its submission, including after
+        # a preceding group create. Any concurrent operator drift aborts the remainder.
+        if entry["id"] is None:
+            candidates = cloud.pages(
+                "instanceGroups", "instanceGroups", folderId=config["folder_id"]
+            )
+            if any(row.get("name") == body["name"] for row in candidates):
+                raise ValueError("creation target appeared after inspection")
+        elif (
+            managed_baseline(cloud.get(f"instanceGroups/{entry['id']}", view="FULL"))
+            != entry["baseline"]
+        ):
+            raise ValueError("managed target drift after inspection")
+        receipt["groups"][pool] = {
+            "name": body["name"],
+            "id": entry["id"],
+            "state": "submission_uncertain",
+        }
+        write_receipt(receipt_path, receipt)
+        # Do not retry a timed-out mutation. Exact-name status and durable receipt reconcile it.
+        if entry["id"] is None:
+            operation = cloud.mutate("POST", "instanceGroups", body)
+        else:
+            update = {key: body[key] for key in MANAGED_FIELDS}
+            update["updateMask"] = ",".join(MANAGED_FIELDS)
+            operation = cloud.mutate("PATCH", f"instanceGroups/{entry['id']}", update)
+        operation_id = identifier(operation.get("id"))
+        resource_id = identifier(operation.get("metadata", {}).get("instanceGroupId"))
+        if entry["id"] is not None and resource_id != entry["id"]:
+            raise ValueError("mutation returned wrong target")
+        receipt["groups"][pool].update(id=resource_id, operation_id=operation_id, state="submitted")
+        write_receipt(receipt_path, receipt)
+    return receipt
+
+
+def status(config, cloud):
+    validate(config)
+    existing = cloud.pages("instanceGroups", "instanceGroups", folderId=config["folder_id"])
+    result = {}
+    for pool in ("bulk", "selfie"):
+        matches = [row for row in existing if row.get("name") == f"findme-photo-worker-{pool}"]
+        if len(matches) > 1 or any(row.get("labels") != LABELS | {"pool": pool} for row in matches):
+            raise ValueError("ambiguous or unmanaged target")
+        if not matches:
+            result[pool] = {"state": "absent"}
+            continue
+        group_id = identifier(matches[0]["id"])
+        if config["groups"][pool]["id"] not in {None, group_id}:
+            raise ValueError("status target mismatch")
+        group = cloud.get(f"instanceGroups/{group_id}", view="FULL")
+        if (
+            group.get("id") != group_id
+            or group.get("folderId") != config["folder_id"]
+            or group.get("name") != f"findme-photo-worker-{pool}"
+            or group.get("labels") != LABELS | {"pool": pool}
+        ):
+            raise ValueError("wrong status target")
+        result[pool] = {
+            "id": group_id,
+            "baseline": managed_baseline(group),
+            "state": group.get("status"),
+            "managed_instances": group.get("managedInstancesState"),
+        }
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--profile")
+    parser.add_argument("--inspect", action="store_true")
+    parser.add_argument("--status", action="store_true")
+    parser.add_argument("--apply", metavar="REVIEWED_SHA256")
+    parser.add_argument("--receipt", type=Path)
+    args = parser.parse_args()
+    try:
+        config = json.loads(args.config.read_text())
+        plan = prepare(config)
+        if sum(bool(value) for value in (args.inspect, args.status, args.apply)) > 1:
+            raise ValueError("one explicit operation required")
+        if not any((args.inspect, args.status, args.apply)):
+            result = plan
+        else:
+            if not args.profile:
+                raise ValueError("explicit yc profile required")
+            token = subprocess.run(
+                ["yc", "--profile", args.profile, "iam", "create-token"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            ).stdout.strip()
+            if not token or any(c.isspace() for c in token):
+                raise ValueError("cloud identity unavailable")
+            cloud = Cloud(token)
+            result = (
+                apply(config, args.apply, cloud=cloud, receipt_path=args.receipt)
+                if args.apply
+                else status(config, cloud)
+                if args.status
+                else {"inspected": inspect(config, cloud), "checksum": plan["checksum"]}
+            )
+        print(json.dumps(result, sort_keys=True))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        print("worker pool preparation failed; inspect any durable receipt before retry")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

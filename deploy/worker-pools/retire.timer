@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll canonical worker retirement authority
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=findme-worker-retire.service
+
+[Install]
+WantedBy=timers.target

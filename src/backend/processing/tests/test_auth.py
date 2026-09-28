@@ -3,7 +3,48 @@ import json
 from django.http import HttpResponse
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
-from processing.auth import require_worker_token
+from processing.auth import has_worker_token, require_worker_token
+
+
+@override_settings(
+    PHOTO_PROCESSING_ENABLED=True,
+    PHOTO_PROCESSING_WORKER_TOKEN="local-secret",
+    PHOTO_PROCESSING_FLEET_TOKEN="fleet-secret",
+)
+class FleetTokenAuthenticationTests(SimpleTestCase):
+    def test_transport_credentials_are_disjoint(self):
+        factory = RequestFactory()
+        for marker, token, expected in (
+            ("private-tls", "fleet-secret", True),
+            ("private-tls", "local-secret", False),
+            ("", "local-secret", True),
+            ("", "fleet-secret", False),
+            ("unexpected", "fleet-secret", False),
+        ):
+            with self.subTest(marker=marker, token=token):
+                request = factory.post(
+                    "/",
+                    HTTP_AUTHORIZATION=f"Bearer {token}",
+                    HTTP_X_FINDME_WORKER_TRANSPORT=marker,
+                )
+                self.assertEqual(has_worker_token(request), expected)
+
+    def test_private_transport_fails_closed_on_missing_or_equal_fleet_token(self):
+        request = RequestFactory().post(
+            "/",
+            HTTP_AUTHORIZATION="Bearer local-secret",
+            HTTP_X_FINDME_WORKER_TRANSPORT="private-tls",
+        )
+        for token in ("", "local-secret"):
+            with self.subTest(token=token), override_settings(PHOTO_PROCESSING_FLEET_TOKEN=token):
+                self.assertFalse(has_worker_token(request))
+
+    def test_fleet_credential_cannot_be_persisted_in_durable_callback_strings(self):
+        from processing.views import _safe_durable_string, _safe_error_detail
+
+        self.assertFalse(_safe_durable_string("build-fleet-secret"))
+        self.assertFalse(_safe_error_detail("error-fleet-secret"))
+        self.assertTrue(_safe_durable_string("a" * 40))
 
 
 class WorkerTokenAuthenticationTests(SimpleTestCase):

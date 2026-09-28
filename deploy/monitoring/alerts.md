@@ -124,3 +124,74 @@ No alert performs automated remediation. The alert resource names below are the 
 - Notification states: `Alarm` and `OK`.
 - Firing notification: `FindMe Commerce ready work is overdue; inspect Commerce Admin and worker health.`
 - Recovery notification: `FindMe Commerce ready work is within the configured threshold.`
+
+## Worker pool observation missing
+
+- Activate after the canonical host collector publishes every thirty seconds for each exact
+  `pool` (`bulk`, `selfie`) and configured `zone_id`. Create one alert per pool.
+- Resource names: `findme-photo-worker-bulk-observation-missing` and
+  `findme-photo-worker-selfie-observation-missing`.
+- Selector: `worker_pool_capacity_fresh{service="custom", pool="bulk", zone_id="<zone>"}`
+  (use `selfie` for its corresponding alert). Aggregation: maximum below 0.5 over 90 seconds
+  is `Alarm` for unavailable/stale cloud membership. Both no-data policies are `No data`;
+  missing publication points over that window mean unconfirmed demand and capacity. Notify
+  `Alarm`, `No data` and `OK` through the existing operator channel. Queue publication and F
+  are in the same complete Monitoring write; `worker_pool_observed_timestamp` corroborates it.
+- A collection, endpoint or Monitoring write failure produces no workload zero and leaves the
+  coordinator's last successful queue timestamp unchanged. No data means demand is unconfirmed;
+  it is not proof of an empty queue, dead worker or customer-facing outage.
+- A cloud-read failure can
+  coexist with fresh queue metrics; inspect the collector's nonzero exit and capacity freshness,
+  not only the queue timestamp. Capacity unavailable is not zero VMs.
+
+## Worker pool work overdue
+
+- Resource names: `findme-photo-worker-bulk-work-overdue` and
+  `findme-photo-worker-selfie-work-overdue`.
+- Selector: `worker_pool_oldest_claimable_age_seconds{service="custom", pool="<pool>", zone_id="<zone>"}`.
+- Maximum over five minutes, above 300 seconds. Notify on `Alarm` and `OK`; no data is handled
+  by the observation rule. These initial operator thresholds are not measured capacity promises.
+- Inspect claimable, active/recoverable lease and failed-job gauges before changing capacity.
+  No worker alert changes group sizes, feature gates, jobs or releases automatically.
+
+## Worker pool at-ceiling saturation
+
+- Prepare one resource per exact pool/zone: `findme-photo-worker-bulk-at-ceiling-saturation`
+  and `findme-photo-worker-selfie-at-ceiling-saturation`. Do not activate before fleet telemetry
+  and the existing operator email channel are separately approved.
+- Selector: named queries `R = worker_pool_running_instances{service="custom", pool="<pool>", zone_id="<zone>"}`,
+  `F = worker_pool_capacity_fresh{service="custom", pool="<pool>", zone_id="<zone>"}` and
+  `A = worker_pool_oldest_claimable_age_seconds{service="custom", pool="<pool>", zone_id="<zone>"}`.
+  Select exactly one timeseries per query, with the same pool and zone; folder is request context.
+- Test query `S = F * ramp(sign(replace_nan(R, -1) - 1.5)) * ramp(sign(A - 300)) * ramp(sign(derivative(A)))`.
+  Aggregation: minimum of S over a five-minute evaluation window; `Alarm` above 0.5, no Warning,
+  evaluation delay zero, evaluate once per minute. This requires two actual running VMs and
+  claimable age above 300 seconds with positive change at every observed interval throughout
+  the window. Queue progress/age reset, fewer running VMs or unavailable capacity breaks it.
+- Capacity source is the coordinator's ordered complete trusted current cloud membership:
+  RUNNING_ACTUAL/RUNNING_OUTDATED rows only, completion time within 90 seconds. Not requested
+  target size, historical registered processes, pending slots or workload-derived capacity.
+- No data: both no-selector and no-points policies `No data`; notify `Alarm`, `No data`, `OK`.
+  Do not fill/interpolate with last values or zero. NaN in R uses -1 as **unknown predicate**, never an
+  actual-capacity zero. Absent/stale capacity publishes F=0 and omits R; saturation is excluded,
+  and the observation-missing rule reports this separately after 90 seconds. Missing queue
+  observations are likewise handled by that rule, not interpreted as empty/healthy capacity.
+  The first undefined derivative is not replaced with zero or -1 (which would permanently
+  suppress a minimum-window alarm); require subsequent age deltas and separately verify the
+  observation rule's 90-second gap/staleness behavior during activation.
+- Firing annotation: `FindMe <pool> is at its approved VM ceiling while claimable age keeps rising; inspect worker-pool diagnostics before any capacity decision.`
+- Recovery notification: `FindMe <pool> no longer satisfies the sustained saturation predicate; confirm queue progress and fresh capacity.`
+- Response: use `docs/runbooks/worker-pools.md` diagnostics to distinguish warm/serving capacity,
+  stalled attempts and container restarts. Preserve hard maximum two and selfie claim cap one;
+  this alert never raises a limit, opens the second claim slot or restarts/mutates anything.
+- A total publisher outage may leave positive historical S points inside this five-minute
+  window even when the 90-second observation rule reports Alarm/NoData. That observation state
+  takes precedence: historical saturation is UNCONFIRMED until fresh current capacity, queue
+  and coordinator status are obtained. Do not label it current saturation or authority to raise
+  resources. Exact native gap suppression/evaluation is not proven by repository preparation.
+  Apply this qualification to the firing annotation above when observation is Alarm/NoData.
+
+Named queries, derivative/ramp/sign/replace_nan and window aggregation follow the
+[Monitoring query language](https://yandex.cloud/en/docs/monitoring/concepts/querying) and
+[alert contract](https://yandex.cloud/en/docs/monitoring/concepts/alerting/alert).
+Native evaluation, gap handling and notification/recovery proof remain approved activation gates.

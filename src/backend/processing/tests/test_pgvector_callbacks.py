@@ -6,14 +6,67 @@ from datetime import timedelta
 from math import sqrt
 from typing import Any, cast
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
+from django.core.management import call_command
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 
+def _remote_session(client, settings, pool):
+    """Seed trusted cloud inventory, then register through the actual private API."""
+    from processing.services import worker_pool_lifecycle as lifecycle
+
+    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = True
+    settings.PHOTO_PROCESSING_FLEET_TOKEN = "fleet-secret"
+    build = "a" * 40
+    now = timezone.now()
+    lifecycle.configure_pool(pool, group_id=pool + "-group", active_build=build)
+    lifecycle.record_cloud_snapshot(
+        pool,
+        group_id=pool + "-group",
+        sequence=1,
+        started_at=now,
+        completed_at=now,
+        target_size=1,
+        members=[
+            {"instance_id": pool + "-node", "status": "RUNNING_ACTUAL", "worker_build": build}
+        ],
+        complete=True,
+    )
+    lifecycle.record_queue_observation(pool, observed_at=now, endpoint_available=True)
+    lifecycle.set_claims_paused(pool, paused=False)
+    headers = {
+        "HTTP_AUTHORIZATION": "Bearer fleet-secret",
+        "HTTP_X_FINDME_WORKER_TRANSPORT": "private-tls",
+    }
+    envelope = {
+        "pool": pool,
+        "instance_id": pool + "-node",
+        "boot_id": str(uuid4()),
+        "worker_build": build,
+    }
+    base = "/internal/photo-processing/v1/members/"
+    registration = client.post(
+        base + "register", envelope, content_type="application/json", **headers
+    )
+    assert registration.status_code == 200, registration.content
+    envelope["registration_generation"] = registration.json()["registration_generation"]
+    heartbeat = client.post(
+        base + "heartbeat",
+        envelope | {"ready": True, "draining": False},
+        content_type="application/json",
+        **headers,
+    )
+    assert heartbeat.status_code == 200, heartbeat.content
+    return envelope, headers
+
+
 @pytest.mark.django_db
-@pytest.mark.parametrize("dimensions", [128, 512])
-def test_maximum_gallery_callback_dual_publication(client, settings, dimensions):
+@pytest.mark.parametrize("dimensions,remote", [(128, False), (512, False), (512, True)])
+def test_maximum_gallery_callback_dual_publication(client, settings, dimensions, remote):
     from processing.models import FaceEmbedding, FaceEmbeddingVector, ProcessingAttempt
     from processing.services.enrollment import (
         FACE_EMBEDDING_QUALITY_CONFIGURATION,
@@ -28,6 +81,9 @@ def test_maximum_gallery_callback_dual_publication(client, settings, dimensions)
     h = test_views.WorkerApiTests()
     h.client = client
     h.setUp()
+    envelope = {}
+    if remote:
+        envelope, h.headers = _remote_session(client, settings, "bulk")
     photo = h.photo()
     derivative = h.publish_preview(photo)
     version = 5 if dimensions == 512 else 4
@@ -57,7 +113,7 @@ def test_maximum_gallery_callback_dual_publication(client, settings, dimensions)
         grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
         response = h.post(
             "/internal/photo-processing/v1/claim",
-            h.face_claim_body(contract_version=3, processor_version=version),
+            h.face_claim_body(contract_version=3, processor_version=version) | envelope,
         )
     assert response.status_code == 200
     job = response.json()["job"]
@@ -93,6 +149,8 @@ def test_maximum_gallery_callback_dual_publication(client, settings, dimensions)
         processor_version=version,
         result=result,
     )
+    if remote:
+        body["worker_build"] = envelope["worker_build"]
     encoded = json.dumps(body).encode()
     worker_configuration = cast(dict[str, int], configuration["worker"])
     assert len(encoded) < worker_configuration["terminal_result_max_bytes"]
@@ -112,6 +170,69 @@ def test_maximum_gallery_callback_dual_publication(client, settings, dimensions)
     replay = h.post(f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body)
     assert replay.status_code == 200 and replay.json()["idempotent"]
     assert FaceEmbedding.objects.count() == FaceEmbeddingVector.objects.count() == 32
+
+
+@pytest.mark.django_db
+def test_remote_selfie_callback_uses_enabled_vector_reader_and_keeps_results_immutable(
+    client, settings
+):
+    from feature_flags.models import FeatureFlag
+    from feature_flags.registry import PGVECTOR_FACE_SEARCH_READ
+    from selfie_search.models import SelfieSearch, SelfieSearchAttempt
+    from selfie_search.tests.test_jobs import SearchJobTests
+
+    from processing.models import FaceEmbedding, FaceEmbeddingVector, WorkerPoolMember
+    from processing.tests.test_views import SelfieWorkerApiTests, SelfieWorkerStorage
+
+    settings.PHOTO_PROCESSING_ENABLED = True
+    settings.PHOTO_PROCESSING_FACE_ENABLED = True
+    settings.PHOTO_PROCESSING_WORKER_TOKEN = "local-secret"
+    fixture = SearchJobTests()
+    fixture.setUp()
+    search = fixture.make_search()
+    for embedding in FaceEmbedding.objects.all():
+        FaceEmbeddingVector.objects.create(
+            detection=embedding.detection,
+            model_version=embedding.model_version,
+            vector=embedding.vector,
+        )
+    flag = FeatureFlag.objects.create(key=PGVECTOR_FACE_SEARCH_READ.key, state="on")
+    call_command("sync_feature_flags")
+    flag.refresh_from_db()
+    assert flag.state == "on"
+    wire = SelfieWorkerApiTests()
+    wire.client = client
+    envelope, wire.headers = _remote_session(client, settings, "selfie")
+    storage = SelfieWorkerStorage()
+    with patch("processing.views.TemporarySelfieStorage", return_value=storage):
+        claim = wire.post("/internal/photo-processing/v1/claim", wire.claim_body() | envelope)
+        assert claim.status_code == 200, claim.content
+        job = claim.json()["job"]
+        member = WorkerPoolMember.objects.get(instance_id="selfie-node")
+        assert str(member.active_selfie_attempt_id) == job["attempt_id"]
+        body = wire.success_body(job) | {"worker_build": envelope["worker_build"]}
+        assert len(json.dumps(body).encode()) < 16384
+        with CaptureQueriesContext(connection) as queries:
+            complete = wire.post(
+                f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body
+            )
+        assert complete.status_code == 200, complete.content
+        assert any("<=>" in row["sql"] for row in queries.captured_queries)
+        search.refresh_from_db()
+        assert search.status == SelfieSearch.Status.READY
+        assert search.temporary_object_key == "" and len(storage.deleted) == 1
+        assert search.results.count() == 1
+        saved = list(search.results.values())
+        assert saved[0]["photo_id"] == "candidate-0"
+        assert SelfieSearchAttempt.objects.get(pk=job["attempt_id"]).status == "succeeded"
+        replay = wire.post(
+            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body
+        )
+        assert replay.status_code == 200 and replay.json()["idempotent"]
+        assert list(search.results.values()) == saved
+        assert len(storage.deleted) == 1
+        flag.refresh_from_db()
+        assert flag.state == "on"
 
 
 @pytest.mark.django_db

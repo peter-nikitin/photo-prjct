@@ -240,27 +240,17 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          build-args: RELEASE_SHA=${{ needs.classify-release.outputs.release_sha }}
           push: true
           tags: ${{ steps.image.outputs.app_image }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web,ignore-error=true
-      - name: Reuse unchanged worker image
-        id: reuse-worker
-        if: ${{ github.event_name == 'push' && needs.classify-release.outputs.worker_inputs_changed == 'false' }}
-        continue-on-error: true
-        env:
-          PREVIOUS_WORKER_IMAGE: ghcr.io/${{ github.repository }}-worker:${{ github.event.before }}
-          WORKER_IMAGE: ${{ steps.image.outputs.worker_image }}
-        run: |
-          digest="$(docker buildx imagetools inspect "$PREVIOUS_WORKER_IMAGE" --format '{{.Manifest.Digest}}')"
-          test -n "$digest"
-          docker buildx imagetools create --tag "$WORKER_IMAGE" "$PREVIOUS_WORKER_IMAGE@$digest"
       - name: Build and push worker image
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.classify-release.outputs.worker_inputs_changed == 'true' || steps.reuse-worker.outcome != 'success' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile.worker
+          build-args: RELEASE_SHA=${{ needs.classify-release.outputs.release_sha }}
           push: true
           tags: ${{ steps.image.outputs.worker_image }}
           cache-from: type=gha,scope=worker
@@ -304,6 +294,10 @@ jobs:
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
           WORKER_IMAGE: ${{ needs.build.outputs.worker_image }}
+          PHOTO_WORKER_PLACEMENT: ${{ vars.PHOTO_WORKER_PLACEMENT || 'local' }}
+          WORKER_POOL_PRIVATE_API_IPV4: ${{ vars.WORKER_POOL_PRIVATE_API_IPV4 }}
+          WORKER_POOL_RELEASE_MANIFEST: ${{ vars.WORKER_POOL_RELEASE_MANIFEST }}
+          WORKER_POOL_RELEASE_CHECKSUM: ${{ vars.WORKER_POOL_RELEASE_CHECKSUM }}
           IMPORT_WORKER_IMAGE: ${{ needs.build.outputs.import_worker_image }}
           PHOTO_IMPORT_ENABLED: ${{ vars.PHOTO_IMPORT_ENABLED || 'False' }}
           PHOTO_IMPORT_BUILD: ${{ needs.classify-release.outputs.release_sha }}

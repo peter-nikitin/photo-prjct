@@ -1,0 +1,11 @@
+[Unit]
+Description=Observe FindMe worker groups and queues every thirty seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=findme-worker-pool-metrics.service
+
+[Install]
+WantedBy=timers.target

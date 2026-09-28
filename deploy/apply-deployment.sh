@@ -74,6 +74,25 @@ case "$requested_import_enabled" in
     *) echo "PHOTO_IMPORT_ENABLED must be True or False" >&2; exit 2 ;;
 esac
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
+requested_worker_placement="${PHOTO_WORKER_PLACEMENT:-local}"
+requested_local_processing_enabled="$requested_processing_enabled"
+fleet_prepared=0
+case "$requested_worker_placement" in
+    local) ;;
+    remote)
+        if [ "$requested_processing_enabled" != True ] || \
+            [ -z "${PHOTO_PROCESSING_FLEET_TOKEN:-}" ] || \
+            [ "${PHOTO_PROCESSING_FLEET_TOKEN:-}" = "${PHOTO_PROCESSING_WORKER_TOKEN:-}" ] || \
+            [ -z "${WORKER_POOL_PRIVATE_API_IPV4:-}" ] || \
+            [ -z "${WORKER_POOL_RELEASE_MANIFEST:-}" ] || \
+            [ -z "${WORKER_POOL_RELEASE_CHECKSUM:-}" ]; then
+            echo "remote placement requires enabled API, distinct fleet credential and reviewed release" >&2
+            exit 2
+        fi
+        requested_local_processing_enabled=False
+        ;;
+    *) echo "PHOTO_WORKER_PLACEMENT must be local or remote" >&2; exit 2 ;;
+esac
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 requested_bulk_processor_identities="${PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1}"
@@ -533,6 +552,16 @@ verify_observability_bootstrap() {
 compose_with_env_file() {
     compose_env_file="$1"
     shift
+    private_overlay=""
+    if [ "$(sed -n 's/^PHOTO_WORKER_PLACEMENT=//p' "$compose_env_file" | head -n 1)" = remote ]; then
+        private_overlay="$DEPLOY_ROOT/deploy/worker-pools/private-edge.compose.yml"
+    fi
+    if [ -n "$private_overlay" ]; then
+        APP_ENV_FILE="$compose_env_file" docker compose --project-name "$COMPOSE_PROJECT_NAME" \
+            --env-file "$compose_env_file" -f "$DEPLOY_ROOT/docker-compose.deployment.yml" \
+            -f "$overlay_file" -f "$private_overlay" "$@"
+        return
+    fi
     APP_ENV_FILE="$compose_env_file" \
     docker compose --project-name "$COMPOSE_PROJECT_NAME" \
         --env-file "$compose_env_file" \
@@ -563,7 +592,7 @@ compose_with_runtime_profiles() {
 
 compose_with_requested_runtime_profiles() {
     compose_with_runtime_profiles \
-        "$requested_processing_enabled" "$requested_commerce_worker_enabled" "$DEPLOY_ROOT/.env" "$@"
+        "$requested_local_processing_enabled" "$requested_commerce_worker_enabled" "$DEPLOY_ROOT/.env" "$@"
 }
 
 compose_reconcile_runtime_profiles() {
@@ -588,6 +617,16 @@ compose_reconcile_runtime_profiles() {
 }
 
 compose_reconcile_requested_runtime_profiles() {
+    if [ "$requested_worker_placement" = remote ]; then
+        # Compatible web/private edge first. Existing locals continue until authoritative drain.
+        compose up -d --no-deps web nginx || return 1
+        if [ "$requested_commerce_worker_enabled" = True ]; then
+            compose --profile commerce up -d --no-deps commerce-worker || return 1
+        else
+            compose --profile commerce rm -sf commerce-worker || return 1
+        fi
+        return 0
+    fi
     compose_reconcile_runtime_profiles \
         "$requested_processing_enabled" "$requested_commerce_worker_enabled" \
         "$DEPLOY_ROOT/.env" "$requested_worker_replicas"
@@ -679,6 +718,14 @@ cleanup() {
         ${candidate_command_output_tmp:+"$candidate_command_output_tmp"}
 }
 
+clear_fleet_recovery_snapshot() {
+    [ "$requested_worker_placement" = remote ] || return 0
+    rm -f "$DEPLOY_ROOT/.deployment-recovery/previous.env" \
+        "$DEPLOY_ROOT/.deployment-recovery/deployed-image" \
+        "$DEPLOY_ROOT/.deployment-recovery/package-path"
+    rmdir "$DEPLOY_ROOT/.deployment-recovery"
+}
+
 previous_cart_cleanup_is_present() {
     awk -v schedule="23 3 * * * DEPLOY_ROOT=$DEPLOY_ROOT /bin/sh $DEPLOY_ROOT/deploy/run-cart-cleanup.sh >> $DEPLOY_ROOT/cart-cleanup.log 2>&1" '
         $0 == "# BEGIN photo-prjct-cart-cleanup" {
@@ -740,6 +787,10 @@ clear_candidate_compose_interpolation() {
         PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY \
         PRIVATE_MEDIA_ALLOWED_ORIGINS \
         WORKER_IMAGE \
+        PHOTO_WORKER_PLACEMENT \
+        PHOTO_WORKER_POOL_COORDINATOR_ENABLED \
+        PHOTO_PROCESSING_FLEET_TOKEN \
+        WORKER_POOL_PRIVATE_API_IPV4 \
         PHOTO_PROCESSING_ENABLED \
         PHOTO_PROCESSING_PREVIEW_ENABLED \
         PHOTO_PROCESSING_FACE_ENABLED \
@@ -901,6 +952,10 @@ start_import_after_web_ready() {
 }
 
 recover_previous_deployment() {
+    if [ "$fleet_prepared" -eq 1 ]; then
+        # Failure keeps compatible candidate web in place until remote ownership is safe.
+        fleet_phase rollback || return 1
+    fi
     stop_import_before_web_change "$requested_import_enabled" || return 1
 
     if [ "$previous_env_exists" -eq 0 ]; then
@@ -928,9 +983,22 @@ recover_previous_deployment() {
     recovered_worker_topology="${PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY:-split}"
     restore_previous_deployment_package || return 1
     clear_candidate_compose_interpolation
-    compose_reconcile_recovered_runtime_profiles \
-        "$previous_processing_enabled" "$previous_commerce_worker_enabled" \
-        "$DEPLOY_ROOT/.env" "$previous_worker_replicas" "$recovered_worker_topology" || return 1
+    if [ "$previous_worker_placement" = remote ] || [ "$requested_worker_placement" = remote ]; then
+        compose up -d --no-deps web nginx || return 1
+        if [ "$previous_worker_placement" = local ] && [ "$previous_processing_enabled" = True ]; then
+            compose --profile worker up -d --no-deps --scale worker-bulk="$previous_worker_replicas" \
+                --scale worker-selfie=1 worker-bulk worker-selfie || return 1
+        fi
+        if [ "$previous_commerce_worker_enabled" = True ]; then
+            compose --profile commerce up -d --no-deps commerce-worker || return 1
+        else
+            compose --profile commerce rm -sf commerce-worker || return 1
+        fi
+    else
+        compose_reconcile_recovered_runtime_profiles \
+            "$previous_processing_enabled" "$previous_commerce_worker_enabled" \
+            "$DEPLOY_ROOT/.env" "$previous_worker_replicas" "$recovered_worker_topology" || return 1
+    fi
     if [ "$previous_import_enabled" = True ]; then
         compose_with_env_file "$DEPLOY_ROOT/.env" up -d --wait web || return 1
         start_import_after_web_ready "$DEPLOY_ROOT/.env" || return 1
@@ -954,6 +1022,9 @@ on_exit() {
                 diagnostics
             else
                 rollback_result=succeeded
+                if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
+                    clear_fleet_recovery_snapshot || rollback_result=failed
+                fi
                 if [ "${previous_upload_enabled:-False}" = True ]; then
                     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
                 else
@@ -973,6 +1044,10 @@ on_exit() {
                     echo "Observability managed-file rollback failed" >&2
                 }
         fi
+    elif [ "$fleet_prepared" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
+        # No fleet mutation has begun. Close the prepared receipt before the installer
+        # restores a potentially legacy package that has no fleet recovery command.
+        fleet_phase rollback || status=1
     fi
 
     cleanup
@@ -1009,6 +1084,20 @@ phase() {
 }
 
 phase snapshot
+if [ "${FINDME_CANONICAL_LOCK:-}" != 1 ]; then
+    exec 9>"$DEPLOY_ROOT/.deployment.lock"
+    flock -n 9 || fail "Canonical deployment is already active"
+    FINDME_CANONICAL_LOCK=1
+    export FINDME_CANONICAL_LOCK
+fi
+[ ! -e "$DEPLOY_ROOT/.deployment-recovery" ] || fail "Canonical recovery remains unfinished"
+fleet_phase() {
+    PYTHONPATH="$DEPLOY_ROOT/deploy/worker-pools/_canonical" \
+        python3 "$DEPLOY_ROOT/deploy/worker-pools/release.py" "$1" --root "$DEPLOY_ROOT" \
+        --manifest "${WORKER_POOL_RELEASE_MANIFEST:-}" --checksum "${WORKER_POOL_RELEASE_CHECKSUM:-}" \
+        --app-image "$requested_image"
+}
+previous_worker_placement=local
 previous_import_enabled="False"
 previous_upload_enabled="False"
 previous_processing_enabled="False"
@@ -1026,6 +1115,11 @@ if previous_cart_cleanup_is_present; then
 fi
 install -d -m 0755 "$DEPLOY_ROOT"
 if [ -f "$DEPLOY_ROOT/.env" ]; then
+    previous_worker_placement="$(sed -n 's/^PHOTO_WORKER_PLACEMENT=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    previous_worker_placement="${previous_worker_placement:-local}"
+    if [ "$previous_worker_placement" = remote ] && [ "$requested_worker_placement" = local ]; then
+        fail "Remote to local recovery requires canonical fleet rollback before a local deployment"
+    fi
     has_established_deployment=1
     previous_env_exists=1
     previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not snapshot previous deployment environment"
@@ -1075,6 +1169,10 @@ if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
     previous_deployed_image_exists=1
     previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
     cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
+fi
+
+if [ "$requested_worker_placement" = remote ] && [ "$previous_env_exists" -ne 1 ]; then
+    fail "Remote cutover requires an established compatible local deployment"
 fi
 
 postgres_volume="${COMPOSE_PROJECT_NAME}_pgdata"
@@ -1159,6 +1257,12 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS=%s\n' "$requested_commerce_worker_health_max_ready_age_seconds"
     printf 'COMMERCE_WORKER_ENABLED=%s\n' "$requested_commerce_worker_enabled"
     printf 'WORKER_IMAGE=%s\n' "${WORKER_IMAGE:-}"
+    printf 'PHOTO_WORKER_PLACEMENT=%s\n' "$requested_worker_placement"
+    if [ "$requested_worker_placement" = remote ]; then
+        printf 'PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True\n'
+        write_literal_dotenv_value PHOTO_PROCESSING_FLEET_TOKEN "$PHOTO_PROCESSING_FLEET_TOKEN"
+        printf 'WORKER_POOL_PRIVATE_API_IPV4=%s\n' "$WORKER_POOL_PRIVATE_API_IPV4"
+    fi
     printf 'PHOTO_PROCESSING_ENABLED=%s\n' "$requested_processing_enabled"
     printf 'PHOTO_PROCESSING_PREVIEW_ENABLED=%s\n' "$requested_preview_enabled"
     printf 'PHOTO_PROCESSING_FACE_ENABLED=%s\n' "$requested_face_enabled"
@@ -1216,6 +1320,12 @@ if [ "$requested_import_enabled" = True ]; then
     compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
 fi
 
+if [ "$requested_worker_placement" = remote ]; then
+    # Includes complete canonical attached-SG allow-union inspection before exposing private8443.
+    fleet_phase preflight || fail "Fleet release preflight failed"
+    fleet_prepared=1
+fi
+
 gallery_media_preflight='
 from contextlib import closing
 from ingestion.storage import PrivateUploadStorage
@@ -1268,6 +1378,16 @@ fi
 phase observability-preflight
 verify_observability_bootstrap || fail "Selfie observability bootstrap is missing or stale; run deploy/bootstrap-selfie-observability.sh as an operator"
 phase observability-reconcile
+if [ "$requested_worker_placement" = remote ]; then
+    # Keep rollback inputs through interruption or failed remote fencing. The outer installer
+    # recognizes this directory and must retain compatible tooling plus the prior package.
+    mkdir -m 0700 "$DEPLOY_ROOT/.deployment-recovery"
+    install -m 0600 "$previous_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/previous.env"
+    if [ "$previous_deployed_image_exists" -eq 1 ]; then
+        install -m 0600 "$previous_deployed_image_tmp" "$DEPLOY_ROOT/.deployment-recovery/deployed-image"
+    fi
+    (umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}" > "$DEPLOY_ROOT/.deployment-recovery/package-path")
+fi
 observability_installed=1
 mutation_started=1
 sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
@@ -1276,7 +1396,9 @@ if [ "$previous_env_exists" -eq 1 ]; then
 fi
 
 phase vector-database-preflight
-stop_existing_processing_worker_topology || fail "Processing worker stop failed"
+if [ "$requested_worker_placement" = local ]; then
+    stop_existing_processing_worker_topology || fail "Processing worker stop failed"
+fi
 compose_with_env_file "$requested_env_tmp" pull db || fail "Vector database image pull failed"
 compose_with_env_file "$requested_env_tmp" up -d --wait --no-deps db || fail "Vector database start failed"
 if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
@@ -1405,7 +1527,10 @@ if [ "$requested_import_enabled" = True ]; then
 fi
 
 phase worker-health
-if [ "$requested_processing_enabled" = True ]; then
+if [ "$requested_worker_placement" = remote ]; then
+    fleet_phase rollout || fail "Canonical fleet release failed"
+fi
+if [ "$requested_local_processing_enabled" = True ]; then
     bulk_worker_containers="$(compose_with_requested_runtime_profiles ps -q worker-bulk)"
     selfie_worker_containers="$(compose_with_requested_runtime_profiles ps -q worker-selfie)"
     bulk_worker_container_count="$(
@@ -1514,6 +1639,9 @@ if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
 fi
 
 phase commit
+if [ "$requested_worker_placement" = remote ]; then
+    fleet_phase commit || fail "Fleet release verification failed"
+fi
 if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
 else
@@ -1527,3 +1655,6 @@ mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
 sudo -n "$observability_helper" commit
 deployment_committed=1
+if [ "$requested_worker_placement" = remote ]; then
+    clear_fleet_recovery_snapshot
+fi

@@ -12,8 +12,9 @@ duplicates remain separate gates. Existing native alerts, routes and timers rema
 - `rules.yml`: one owned `findme-photo.yml` file; alert thresholds/windows are editable here.
 - `alertmanager.yml`: full routing configuration for a **dedicated FindMe workspace**. The CLI
   rejects any foreign rule file before replacing routing. It never deletes foreign rules.
-- `dashboard.json`: title and all 14 graph widgets, including duration, TLS, uptime, load, HTTP
-  rates/latency and Commerce. Other dashboard fields come from a fresh Get and are preserved.
+- `dashboard.json`: title and all 19 graph widgets, including duration, TLS, uptime, load, HTTP
+  rates/latency, Commerce, swap, root filesystem inodes, disk/network I/O and native Unified Agent
+  backlog. Other dashboard fields come from a fresh Get and are preserved.
 - `oidc.json`: protected `monitoring` environment identity; service account
   `aje3t70qka1dtc09k5ic` (`findme-monitoring-ci`).
 
@@ -55,8 +56,9 @@ rm -r "$PWD/.monitoring-render"
 make test TESTS='tests/monitoring/test_prometheus_control.py tests/monitoring/test_prometheus_host.py -m operational'
 ```
 
-Validation uses the official generated SDK schema, positive Prometheus grid steps and target
-references, promtool syntax and behavior scenarios. No credential or network call to Yandex is
+Validation uses the official generated SDK schema for Prometheus and native Monitoring sources,
+positive Prometheus grid steps, matching source/target kinds and references, resolved queries,
+promtool syntax and behavior scenarios. No credential or network call to Yandex is
 needed; Docker may pull the pinned tool image. Yandex's receiver extension is checked structurally
 by the renderer and accepted by the service on explicit PUT; upstream Alertmanager does not
 understand `yandex_monitoring_configs`. Email delivery needs a separate live drill.
@@ -74,6 +76,23 @@ values are gauges in bytes; `sys_system_UpTimeRaw` is milliseconds; load is
 are semantically cumulative application counters even though the observed SPACK serialization
 uses GAUGE; do not infer semantics from the wire type. This proof describes the producer, not
 successful workspace ingestion. `type_contract_evidence` binds this reviewed contract in config.
+
+Dashboard diagnostics use the existing observations: swap free/total bytes are shown separately
+in GiB (both zero means swap is disabled), and root filesystem inode capacity is free/total in
+percent. Disk read/write and network Rx/Tx are cumulative byte counters, so charts use
+`rate(...[5m])` in bytes/second. Selectors restrict disk I/O to `disk=vda` and network I/O to
+`intf=eth0`, both on `instance=dev-photo-prjct`; Docker/veth traffic is not summed.
+Raw diagnostic observations retain 120s freshness, and their derived expressions must produce
+finite nonempty vectors before check/apply.
+
+The nineteenth chart queries native Monitoring `ua.backlog` for `host=dev-photo-prjct`,
+`service=custom`, `scope=health` in the explicit configured folder. The dashboard query puts
+`folderId` in its selector; the native data-read API takes that folder in the request URI instead.
+It is managed by the same
+Git dashboard package, but does not use the Prometheus workspace. Preserve the native Unified
+Agent health observation route even if duplicate native alerts are retired later; removing or
+migrating that route needs separate approval and proof. Its fresh native query is verified
+separately from the CLI's Prometheus preflight. Missing native points do not mean zero backlog.
 
 Check/apply query each raw selector as a range vector over its configured `max_age` seconds.
 Selectors without labels omit `{}` because the backend returns vectors for empty-brace range

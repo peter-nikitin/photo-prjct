@@ -47,7 +47,7 @@ def test_offline_render_has_missing_observations_separate(control):
     assert "[10m]) < 0.5" in package["rules.yml"]
     assert "absent_over_time" in package["rules.yml"]
     assert "increase(findme_http_requests_total" in package["rules.yml"]
-    assert len(json.loads(package["dashboard.json"])["widgets"]) == 14
+    assert len(json.loads(package["dashboard.json"])["widgets"]) == 19
 
 
 def test_rendered_project_email_receiver_explicitly_sends_recovery(control):
@@ -450,3 +450,139 @@ def test_matrix_freshness_rejects_stale_latest_point_in_any_observed_series(cont
     transport.request = request
     with pytest.raises(control.ControlError, match="sample"):
         control.preflight(cfg, transport, now=1000)
+
+
+DIAGNOSTIC_IO = ("disk_read_rate", "disk_write_rate", "network_rx_rate", "network_tx_rate")
+
+
+def test_diagnostic_charts_use_verified_gauges_and_scoped_counter_rates(control):
+    cfg = config(control)
+    metrics = cfg["metrics"]
+    expected = {
+        "swap_free": ("sys_memory_SwapFree", "gauge", {"instance": "dev-photo-prjct"}),
+        "swap_total": ("sys_memory_SwapTotal", "gauge", {"instance": "dev-photo-prjct"}),
+        "inode_free": (
+            "sys_filesystem_INodeFree",
+            "gauge",
+            {"instance": "dev-photo-prjct", "mountpoint": "/"},
+        ),
+        "inode_total": (
+            "sys_filesystem_INodeTotal",
+            "gauge",
+            {"instance": "dev-photo-prjct", "mountpoint": "/"},
+        ),
+        "disk_read": (
+            "sys_io_Disks_ReadBytes",
+            "counter",
+            {"instance": "dev-photo-prjct", "disk": "vda"},
+        ),
+        "disk_write": (
+            "sys_io_Disks_WriteBytes",
+            "counter",
+            {"instance": "dev-photo-prjct", "disk": "vda"},
+        ),
+        "network_rx": (
+            "sys_net_Ifs_RxBytes",
+            "counter",
+            {"instance": "dev-photo-prjct", "intf": "eth0"},
+        ),
+        "network_tx": (
+            "sys_net_Ifs_TxBytes",
+            "counter",
+            {"instance": "dev-photo-prjct", "intf": "eth0"},
+        ),
+    }
+    for key, (name, kind, labels) in expected.items():
+        assert metrics[key] == {"name": name, "type": kind, "labels": labels, "max_age": 120}
+    selectors = control.selectors(cfg)
+    expressions = control.expressions(cfg)
+    assert expressions["swap_free_gib"] == f"{selectors['swap_free']} / 1073741824"
+    assert expressions["swap_total_gib"] == f"{selectors['swap_total']} / 1073741824"
+    assert (
+        expressions["inode_percent"]
+        == f"100 * {selectors['inode_free']} / {selectors['inode_total']}"
+    )
+    for key, metric in zip(
+        DIAGNOSTIC_IO, ("disk_read", "disk_write", "network_rx", "network_tx"), strict=True
+    ):
+        assert expressions[key] == f"rate({selectors[metric]}[5m])"
+    widgets = json.loads(control.render(cfg)["dashboard.json"])["widgets"]
+    charts = [widget["multiSourceChart"] for widget in widgets[14:]]
+    assert [len(chart["targets"]) for chart in charts] == [2, 1, 2, 2, 1]
+    for chart in (charts[0], charts[2], charts[3]):
+        assert chart["displayLegend"] is True
+    assert [widget["position"] for widget in widgets[14:]] == [
+        {"y": "56", "w": "12", "h": "8"},
+        {"x": "12", "y": "56", "w": "12", "h": "8"},
+        {"y": "64", "w": "12", "h": "8"},
+        {"x": "12", "y": "64", "w": "12", "h": "8"},
+        {"y": "72", "w": "12", "h": "8"},
+    ]
+    native = charts[4]["targets"][0]["monitoringTarget"]
+    assert (
+        native["query"] == '"ua.backlog"{folderId="b1g2qttgfhb4gdunvlge",service="custom",'
+        'host="dev-photo-prjct",scope="health"}'
+    )
+    assert "workspaceId" not in native
+
+
+def test_zero_swap_is_valid_when_disabled(control):
+    cfg = config(control)
+    transport = FakeTransport(control, cfg)
+    original = transport.request
+    zero_queries = {
+        control.selectors(cfg)[key] + "[120s]" for key in ("swap_free", "swap_total")
+    } | {control.expressions(cfg)[key] for key in ("swap_free_gib", "swap_total_gib")}
+    seen = set()
+
+    def request(method, path, body=None):
+        response = original(method, path, body)
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        if query in zero_queries:
+            seen.add(query)
+            point = response["data"]["result"][0]
+            point["values" if query.endswith("]") else "value"] = (
+                [[1000, "0"]] if query.endswith("]") else [1000, "0"]
+            )
+        return response
+
+    transport.request = request
+    control.preflight(cfg, transport, now=1000)
+    assert seen == zero_queries
+
+
+@pytest.mark.parametrize("key", DIAGNOSTIC_IO)
+@pytest.mark.parametrize("value", [None, "NaN"])
+def test_missing_or_nonfinite_diagnostic_rate_blocks_apply(control, tmp_path, key, value):
+    cfg = config(control)
+    transport = FakeTransport(control, cfg)
+    original = transport.request
+    query_to_fail = control.expressions(cfg)[key]
+
+    def request(method, path, body=None):
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        if query == query_to_fail:
+            return {
+                "status": "success",
+                "data": {
+                    "resultType": "vector",
+                    "result": [] if value is None else [{"value": [1000, value]}],
+                },
+            }
+        return original(method, path, body)
+
+    transport.request = request
+    with pytest.raises(control.ControlError, match="expression calculation failed: " + key):
+        control.apply(cfg, transport, tmp_path / "backup", now=1000)
+    assert not any(event[0] in ("PUT", "update-dashboard") for event in transport.events)
+
+
+def test_render_resolves_histogram_quantile_placeholders_with_numeric_names(control):
+    dashboard = json.loads(control.render(config(control))["dashboard.json"])
+    targets = dashboard["widgets"][9]["multiSourceChart"]["targets"]
+    queries = [target["prometheusTarget"]["query"] for target in targets]
+    assert queries == [
+        f"histogram_quantile({quantile}, sum by (le) "
+        "(rate(findme_http_request_duration_seconds_bucket[5m])))"
+        for quantile in ("0.50", "0.95")
+    ]

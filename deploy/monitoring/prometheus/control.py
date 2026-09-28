@@ -89,6 +89,13 @@ def expressions(config: dict[str, Any]) -> dict[str, str]:
         "tls": f"min_over_time({s['tls_days']}[10m])",
         "disk_percent": f"100 * {s['disk_free']} / {s['disk_size']}",
         "disk_bytes": s["disk_free"],
+        "swap_free_gib": f"{s['swap_free']} / 1073741824",
+        "swap_total_gib": f"{s['swap_total']} / 1073741824",
+        "inode_percent": f"100 * {s['inode_free']} / {s['inode_total']}",
+        "disk_read_rate": f"rate({s['disk_read']}[5m])",
+        "disk_write_rate": f"rate({s['disk_write']}[5m])",
+        "network_rx_rate": f"rate({s['network_rx']}[5m])",
+        "network_tx_rate": f"rate({s['network_tx']}[5m])",
         "memory": f"100 * {s['memory_available']} / {s['memory_total']}",
         "cpu": (
             f"100 * rate({s['cpu_useful']}[5m]) / "
@@ -116,6 +123,7 @@ def render(config: dict[str, Any]) -> dict[str, str]:
     substitutions = {
         **s,
         **e,
+        "folder_id": config["folder_id"],
         "channel_name": config["channel_name"] or "__CHANNEL_NAME_REQUIRED__",
         "workspace_id": config["workspace_id"] or "__WORKSPACE_ID_REQUIRED__",
         "disk_gib": f"{s['disk_free']} / 1073741824",
@@ -132,7 +140,9 @@ def render(config: dict[str, Any]) -> dict[str, str]:
         if isinstance(value, list):
             return [substitute(item) for item in value]
         if isinstance(value, str):
-            return re.sub(r"\{\{([a-z_]+)\}\}", lambda match: substitutions[match.group(1)], value)
+            return re.sub(
+                r"\{\{([a-z_][a-z_0-9]*)\}\}", lambda match: substitutions[match.group(1)], value
+            )
         return value
 
     return {
@@ -482,18 +492,33 @@ def validate_package(config: dict[str, Any], output: Path, promtool: str) -> Non
     dashboard = json.loads(package["dashboard.json"])
     for widget in dashboard["widgets"]:
         chart = widget["multiSourceChart"]
-        sources = {item["prometheusDataSource"]["id"] for item in chart["dataSources"]}
-        if any(
-            int(item["prometheusDataSource"].get("step", 0)) <= 0 for item in chart["dataSources"]
-        ):
-            raise ControlError("dashboard Prometheus grid step must be positive")
-        if any(
-            not target["prometheusTarget"]["workspaceId"]
-            or target["prometheusTarget"]["dataSourceId"] not in sources
-            or not target["prometheusTarget"]["query"]
-            for target in chart["targets"]
-        ):
-            raise ControlError("dashboard target reference/workspace/query invalid")
+        sources = {}
+        for item in chart["dataSources"]:
+            kinds = [kind for kind in ("prometheus", "monitoring") if kind + "DataSource" in item]
+            if len(kinds) != 1:
+                raise ControlError("dashboard source kind invalid")
+            kind = kinds[0]
+            source = item[kind + "DataSource"]
+            source_id = source.get("id")
+            if not source_id or source_id in sources:
+                raise ControlError("dashboard source identity invalid")
+            sources[source_id] = kind
+            if kind == "prometheus" and int(source.get("step", 0)) <= 0:
+                raise ControlError("dashboard Prometheus grid step must be positive")
+        for item in chart["targets"]:
+            kinds = [kind for kind in ("prometheus", "monitoring") if kind + "Target" in item]
+            if len(kinds) != 1:
+                raise ControlError("dashboard target kind invalid")
+            kind = kinds[0]
+            target = item[kind + "Target"]
+            query = target.get("query")
+            if (
+                sources.get(target.get("dataSourceId")) != kind
+                or not query
+                or "{{" in query
+                or (kind == "prometheus" and not target.get("workspaceId"))
+            ):
+                raise ControlError("dashboard target reference/workspace/query invalid")
     ParseDict(
         {"dashboardId": config["dashboard_id"], **json.loads(package["dashboard.json"])},
         UpdateDashboardRequest(),

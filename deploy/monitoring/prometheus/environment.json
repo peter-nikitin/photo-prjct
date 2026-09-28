@@ -123,7 +123,77 @@
       "labels": {},
       "type": "histogram",
       "max_age": 120
+    },
+    "swap_free": {
+      "name": "sys_memory_SwapFree",
+      "labels": {
+        "instance": "dev-photo-prjct"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "swap_total": {
+      "name": "sys_memory_SwapTotal",
+      "labels": {
+        "instance": "dev-photo-prjct"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "inode_free": {
+      "name": "sys_filesystem_INodeFree",
+      "labels": {
+        "instance": "dev-photo-prjct",
+        "mountpoint": "/"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "inode_total": {
+      "name": "sys_filesystem_INodeTotal",
+      "labels": {
+        "instance": "dev-photo-prjct",
+        "mountpoint": "/"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "disk_read": {
+      "name": "sys_io_Disks_ReadBytes",
+      "labels": {
+        "instance": "dev-photo-prjct",
+        "disk": "vda"
+      },
+      "type": "counter",
+      "max_age": 120
+    },
+    "disk_write": {
+      "name": "sys_io_Disks_WriteBytes",
+      "labels": {
+        "instance": "dev-photo-prjct",
+        "disk": "vda"
+      },
+      "type": "counter",
+      "max_age": 120
+    },
+    "network_rx": {
+      "name": "sys_net_Ifs_RxBytes",
+      "labels": {
+        "instance": "dev-photo-prjct",
+        "intf": "eth0"
+      },
+      "type": "counter",
+      "max_age": 120
+    },
+    "network_tx": {
+      "name": "sys_net_Ifs_TxBytes",
+      "labels": {
+        "instance": "dev-photo-prjct",
+        "intf": "eth0"
+      },
+      "type": "counter",
+      "max_age": 120
     }
   },
-  "type_contract_evidence": "2026-09-28 Unified Agent 26.09.10/21106904 isolated SPACK capture: CPU COUNTER; UpTimeRaw milliseconds; resources DGAUGE. See README; workspace freshness/mapping remains mandatory."
+  "type_contract_evidence": "2026-09-28 Unified Agent 26.09.10/21106904 isolated SPACK capture: CPU COUNTER; UpTimeRaw milliseconds; resources DGAUGE. See README; workspace freshness/mapping remains mandatory. Dashboard diagnostics live queries 2026-09-28: swap bytes and root inode gauges, cumulative vda disk bytes and eth0 network bytes; native ua.backlog DGAUGE remains in Monitoring."
 }

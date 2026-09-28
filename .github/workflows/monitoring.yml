@@ -32,6 +32,7 @@ jobs:
       - run: |
           python -m venv /tmp/monitoring-tools
           /tmp/monitoring-tools/bin/pip install -r deploy/monitoring/prometheus/requirements.txt
+          /tmp/monitoring-tools/bin/python tests/monitoring/test_prometheus_sdk.py
           docker run --rm --entrypoint promtool prom/prometheus:v3.5.0 --version
           cat > /tmp/promtool <<'EOF'
           #!/bin/sh

@@ -357,7 +357,9 @@ class CloudTransport:
         self.sdk = yandexcloud.SDK(
             iam_token=token, endpoints={"monitoring": "monitoring.api.cloud.yandex.net:443"}
         )
-        self.dashboard = self.sdk.client(DashboardServiceStub)
+        # Pinned SDK 0.408.0 ships Monitoring stubs but omits their client registry entry.
+        # Its channel factory retains SDK TLS/IAM handling without patching that registry.
+        self.dashboard = DashboardServiceStub(self.sdk._channels.channel("monitoring"))
 
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         url = API + "/prometheus/workspaces/" + self.config["workspace_id"] + path

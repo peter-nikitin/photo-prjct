@@ -12,14 +12,16 @@ run against production as part of implementation.
   rejects any foreign rule file before replacing routing. It never deletes foreign rules.
 - `dashboard.json`: title and all 14 graph widgets, including duration, TLS, uptime, load, HTTP
   rates/latency and Commerce. Other dashboard fields come from a fresh Get and are preserved.
-- `oidc.json`: protected `monitoring` environment identity; service-account ID is deliberately
-  blank until foundation provisioning is separately approved.
+- `oidc.json`: protected `monitoring` environment identity; service account
+  `aje3t70qka1dtc09k5ic` (`findme-monitoring-ci`).
 
 The operator supplied channel name is `findme-photo-operator-email` (ID
-`fbefs2ubu6sq0k0jvlch`). Workspace ID is `mon0c97qv2s5uju1ark8`, supplied by the operator. Commit the real
-service-account ID before activation; the workflow never retargets configuration from CI variables.
-Create the protected GitHub environment and review the matching WIF subject
-`repo:peter-nikitin/photo-prjct:environment:monitoring`, main ref, workflow and folder IAM separately.
+`fbefs2ubu6sq0k0jvlch`). Workspace ID is `mon0c97qv2s5uju1ark8`, supplied by the operator.
+The workflow never retargets configuration from CI variables. The approved foundation was created
+on 2026-09-28: GitHub environment `monitoring`, reviewer `peter-nikitin`, main-only deployment policy,
+and credential `ajeprb31m2nhu6pbj2gn` in existing federation `ajeula3gd46omgf9jiko`, bound to subject
+`repo:peter-nikitin/photo-prjct:environment:monitoring`. Its only folder role is `monitoring.editor`.
+Ingestion, rule activation and OIDC runtime acceptance remain separate live checks.
 The tools reuse validated short-lived OIDC exchange from `run-with-environment-secrets.py` without
 loading any Lockbox consumer or adding a long-lived key.
 
@@ -119,8 +121,11 @@ sudo /usr/bin/python3 REVIEWED_SOURCE/deploy/monitoring/prometheus/install.py in
 The installer checks VM metadata identity, all three hashes, minimum supported agent version and
 `unified_agent --config FILE check-config` before changes. It locks installation, backs up files and
 unit state, atomically installs the library/unit/config, then starts the new exporter and restarts
-only `unified_agent.service`. It never restarts application containers or native timers. Public
-uses DynamicUser; canonical retains the existing root host-Docker observation boundary. Output
+the agent unit for the selected role. Canonical uses `/etc/yc/unified_agent/config.yml` and
+`unified_agent.service`; public uses `/etc/yandex/unified_agent/config.yml` and
+`unified-agent.service`. Rollback validates the backup's role and exact managed paths/units,
+then restores the recorded files and unit states. It never restarts application containers or
+native timers. Public uses DynamicUser; canonical retains the existing root host-Docker observation boundary. Output
 is the retained backup directory. Any activation failure restores files and prior enabled/active
 unit state; a restoration failure retains the backup and reports it for operator action.
 

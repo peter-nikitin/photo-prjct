@@ -135,15 +135,19 @@ class Commands:
         if arguments[0] == "/usr/bin/unified_agent" and "--svnrevision" in arguments:
             output = "26.09.10/21106904"
         elif "is-enabled" in arguments or "is-active" in arguments:
-            code = 0 if arguments[-1] == "unified_agent.service" else 1
+            code = 0 if arguments[-1] in ("unified_agent.service", "unified-agent.service") else 1
         if self.failure and self.failure(arguments):
             code = 1
             self.failure = None
         return subprocess.CompletedProcess(arguments, code, output, "")
 
 
-def setup_install(installer, tmp_path):
-    config = tmp_path / "etc/yc/unified_agent/config.yml"
+def setup_install(installer, tmp_path, *, role="canonical"):
+    config = tmp_path / (
+        "etc/yandex/unified_agent/config.yml"
+        if role == "public"
+        else "etc/yc/unified_agent/config.yml"
+    )
     config.parent.mkdir(parents=True)
     config.write_text("routes: []\n")
     rendered = tmp_path / "rendered.yml"
@@ -153,7 +157,7 @@ def setup_install(installer, tmp_path):
 
 @pytest.mark.parametrize("phase", ["daemon-reload", "enable", "restart"])
 def test_install_failure_rolls_back_files_and_native_service(installer, tmp_path, phase):
-    config, rendered, digest = setup_install(installer, tmp_path)
+    config, rendered, digest = setup_install(installer, tmp_path, role="public")
     commands = Commands(lambda args: phase in args)
     with pytest.raises(installer.InstallError, match="rolled back"):
         installer.install(
@@ -172,7 +176,8 @@ def test_install_failure_rolls_back_files_and_native_service(installer, tmp_path
     assert config.read_text() == "routes: []\n"
     assert not (tmp_path / "etc/systemd/system/findme-prometheus-public.service").exists()
     assert not (tmp_path / "usr/local/lib/findme-prometheus/exporter.py").exists()
-    assert any("unified_agent.service" in args and "restart" in args for args in commands.calls)
+    assert any("unified-agent.service" in args and "restart" in args for args in commands.calls)
+    assert not any("unified_agent.service" in args for args in commands.calls)
     assert not any("docker" in args or "web" in args for args in commands.calls)
 
 
@@ -218,8 +223,18 @@ def test_installer_validates_agent_before_changes(installer, tmp_path):
     assert not any("systemctl" in args[0] for args in commands.calls)
 
 
-def test_installer_success_changes_only_owned_host_files(installer, tmp_path):
-    config, rendered, digest = setup_install(installer, tmp_path)
+@pytest.mark.parametrize("role", ["canonical", "public"])
+def test_installer_success_changes_only_owned_host_files(installer, tmp_path, role):
+    config, rendered, digest = setup_install(installer, tmp_path, role=role)
+    agent_unit = "unified-agent.service" if role == "public" else "unified_agent.service"
+    other_agent_unit = "unified_agent.service" if role == "public" else "unified-agent.service"
+    other_config = tmp_path / (
+        "etc/yc/unified_agent/config.yml"
+        if role == "public"
+        else "etc/yandex/unified_agent/config.yml"
+    )
+    other_config.parent.mkdir(parents=True)
+    other_config.write_text("unrelated configuration\n")
     commands = Commands()
     original = commands.__call__
     active = set()
@@ -237,7 +252,7 @@ def test_installer_success_changes_only_owned_host_files(installer, tmp_path):
     backup = installer.install(
         ROOT,
         rendered,
-        role="public",
+        role=role,
         expected_current_sha256=digest,
         expected_source_sha256=installer.source_hash(ROOT),
         expected_rendered_sha256=installer.sha256(rendered.read_bytes()),
@@ -248,13 +263,22 @@ def test_installer_success_changes_only_owned_host_files(installer, tmp_path):
         instance_id=lambda: "vm1",
     )
     assert config.read_bytes() == rendered.read_bytes()
-    assert ["systemctl", "enable", "findme-prometheus-public.service"] in commands.calls
-    assert ["systemctl", "restart", "findme-prometheus-public.service"] in commands.calls
+    assert ["systemctl", "enable", f"findme-prometheus-{role}.service"] in commands.calls
+    assert ["systemctl", "restart", f"findme-prometheus-{role}.service"] in commands.calls
+    assert ["systemctl", "restart", agent_unit] in commands.calls
+    assert not any(other_agent_unit in args for args in commands.calls)
+    manifest = json.loads((backup / "manifest.json").read_text())
+    assert set(manifest["units"]) == {f"findme-prometheus-{role}.service", agent_unit}
+    assert str(config.relative_to(tmp_path)) in {item["path"] for item in manifest["files"]}
+    assert str(other_config.relative_to(tmp_path)) not in {
+        item["path"] for item in manifest["files"]
+    }
     assert (backup / "manifest.json").is_file()
     assert (tmp_path / "usr/local/lib/findme-prometheus/monitor_public_health.py").is_file()
     installer._restore(backup, tmp_path, run)
     assert config.read_text() == "routes: []\n"
-    assert not (tmp_path / "etc/systemd/system/findme-prometheus-public.service").exists()
+    assert not (tmp_path / f"etc/systemd/system/findme-prometheus-{role}.service").exists()
+    assert other_config.read_text() == "unrelated configuration\n"
 
 
 def test_http_endpoint_has_no_file_browsing_or_query_paths(exporter, monkeypatch):
@@ -287,7 +311,7 @@ def test_existing_active_exporter_loads_new_code_or_restores_previous_state(
 ):
     import subprocess
 
-    config, rendered, digest = setup_install(installer, tmp_path)
+    config, rendered, digest = setup_install(installer, tmp_path, role="public")
     unit = "findme-prometheus-public.service"
     old_files = {
         installer.LIBRARY / "exporter.py": b"old exporter\n",
@@ -355,5 +379,5 @@ def test_existing_active_exporter_loads_new_code_or_restores_previous_state(
         installer.install(ROOT, rendered, **kwargs)
         assert state["loaded"] == (ROOT / "deploy/monitoring/prometheus/exporter.py").read_bytes()
         assert calls.index(["systemctl", "restart", unit]) < calls.index(
-            ["systemctl", "restart", "unified_agent.service"]
+            ["systemctl", "restart", "unified-agent.service"]
         )

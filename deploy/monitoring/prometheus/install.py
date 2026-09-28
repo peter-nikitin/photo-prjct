@@ -19,10 +19,12 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-AGENT_CONFIG = Path("etc/yc/unified_agent/config.yml")
+AGENT_HOSTS = {
+    "canonical": (Path("etc/yc/unified_agent/config.yml"), "unified_agent.service"),
+    "public": (Path("etc/yandex/unified_agent/config.yml"), "unified-agent.service"),
+}
 LIBRARY = Path("usr/local/lib/findme-prometheus")
 UNIT_DIRECTORY = Path("etc/systemd/system")
-AGENT_UNIT = "unified_agent.service"
 SOURCE_FILES = (
     "deploy/monitoring/prometheus/exporter.py",
     "deploy/monitoring/prometheus/install.py",
@@ -75,17 +77,17 @@ def _atomic(path: Path, content: bytes, mode: int) -> None:
 def _restore(backup: Path, root: Path, runner: Callable[..., Any]) -> None:
     manifest = json.loads((backup / "manifest.json").read_text())
     role = manifest["role"]
+    if role not in AGENT_HOSTS:
+        raise InstallError("backup managed-file identity mismatch")
+    agent_config, agent_unit = AGENT_HOSTS[role]
     unit = f"findme-prometheus-{role}.service"
-    allowed = {str(AGENT_CONFIG), str(UNIT_DIRECTORY / unit)} | {
+    allowed = {str(agent_config), str(UNIT_DIRECTORY / unit)} | {
         str(LIBRARY / name)
         for name in ("exporter.py", "monitor_public_health.py", "monitor_commerce.py")
     }
-    if (
-        role not in ("canonical", "public")
-        or {item["path"] for item in manifest["files"]} != allowed
-    ):
+    if {item["path"] for item in manifest["files"]} != allowed:
         raise InstallError("backup managed-file identity mismatch")
-    if set(manifest["units"]) != {unit, AGENT_UNIT}:
+    if set(manifest["units"]) != {unit, agent_unit}:
         raise InstallError("backup managed-unit identity mismatch")
     cleanup_failed = False
     for unit, state in manifest["units"].items():
@@ -139,7 +141,8 @@ def install(
         raise InstallError("exact source revision and host role required")
     if not expected_instance_id or instance_id() != expected_instance_id:
         raise InstallError("VM instance identity mismatch")
-    current = root / AGENT_CONFIG
+    agent_config, agent_unit = AGENT_HOSTS[role]
+    current = root / agent_config
     if sha256(current.read_bytes()) != expected_current_sha256:
         raise InstallError("current agent configuration hash mismatch")
     if source_hash(source) != expected_source_sha256:
@@ -171,7 +174,7 @@ def install(
         if (root / UNIT_DIRECTORY / opposite).exists():
             raise InstallError("opposite host role already installed")
         files: dict[Path, bytes] = {
-            AGENT_CONFIG: rendered.read_bytes(),
+            agent_config: rendered.read_bytes(),
             LIBRARY / "exporter.py": (source / SOURCE_FILES[0]).read_bytes(),
             LIBRARY / "monitor_public_health.py": (
                 source / "scripts/monitor_public_health.py"
@@ -202,14 +205,14 @@ def install(
                 saved = backup / "files" / relative
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(target, saved)
-        for service in (unit, AGENT_UNIT):
+        for service in (unit, agent_unit):
             enabled = runner(["systemctl", "is-enabled", service])
             if enabled.stdout.strip() in ("masked", "masked-runtime"):
                 raise InstallError(
                     "masked service requires operator resolution before installation"
                 )
             manifest["units"][service] = {
-                "existed": service == AGENT_UNIT or (root / UNIT_DIRECTORY / service).exists(),
+                "existed": service == agent_unit or (root / UNIT_DIRECTORY / service).exists(),
                 "enabled": enabled.returncode == 0,
                 "active": runner(["systemctl", "is-active", service]).returncode == 0,
             }
@@ -222,9 +225,9 @@ def install(
                 ["systemctl", "daemon-reload"],
                 ["systemctl", "enable", unit],
                 ["systemctl", "restart", unit],
-                ["systemctl", "restart", AGENT_UNIT],
+                ["systemctl", "restart", agent_unit],
                 ["systemctl", "is-active", unit],
-                ["systemctl", "is-active", AGENT_UNIT],
+                ["systemctl", "is-active", agent_unit],
             ]:
                 if runner(command).returncode:
                     raise InstallError("service activation failed")

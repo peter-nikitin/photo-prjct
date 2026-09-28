@@ -15,7 +15,7 @@ from enum import StrEnum
 from uuid import UUID
 
 SCHEMA_VERSION = 1
-RANKING_SCHEMA_VERSION = 3
+RANKING_SCHEMA_VERSION = 4
 TERMINAL_SCHEMA_VERSION = 2
 SERVICE = "web"
 MAX_BOUNDED_INTEGER = 2**31 - 1
@@ -39,6 +39,7 @@ class SelfieEventName(StrEnum):
     SUBMISSION_FINISHED = "selfie_submission_finished"
     RANKING_FINISHED = "selfie_ranking_finished"
     SEARCH_TERMINAL = "selfie_search_terminal"
+    DIRECT_READER_FINISHED = "selfie_direct_reader_finished"
 
 
 _SUBMISSION_REASONS = frozenset(
@@ -117,6 +118,7 @@ _RANKING_FIELDS_V3 = _RANKING_FIELDS_V2 | {
     "validated_face_count",
     "shortlist_count",
 }
+_RANKING_FIELDS_V4 = _RANKING_FIELDS_V3 | {"reader", "native_sql_ms"}
 _TERMINAL_FIELDS_V1 = frozenset(
     {
         "event_id",
@@ -138,6 +140,17 @@ _TERMINAL_FIELDS_V2 = _TERMINAL_FIELDS_V1 | {
 
 _EVENT_FIELDS: dict[SelfieEventName, frozenset[str]] = {
     SelfieEventName.OBSERVABILITY_PROBE: frozenset({"probe_id"}),
+    SelfieEventName.DIRECT_READER_FINISHED: frozenset(
+        {
+            "event_id",
+            "search_id",
+            "reader",
+            "eligible_face_count",
+            "eligible_photo_count",
+            "matched_photo_count",
+            "ranking_ms",
+        }
+    ),
     SelfieEventName.SUBMISSION_FINISHED: frozenset(
         {
             "event_id",
@@ -150,7 +163,7 @@ _EVENT_FIELDS: dict[SelfieEventName, frozenset[str]] = {
             "duration_ms",
         }
     ),
-    SelfieEventName.RANKING_FINISHED: _RANKING_FIELDS_V3,
+    SelfieEventName.RANKING_FINISHED: _RANKING_FIELDS_V4,
     SelfieEventName.SEARCH_TERMINAL: _TERMINAL_FIELDS_V2,
 }
 
@@ -264,8 +277,27 @@ def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dic
         normalized = {"probe_id": _opaque_id(fields["probe_id"], allow_integer=False)}
     elif event is SelfieEventName.SUBMISSION_FINISHED:
         normalized = _submission_fields(fields)
+    elif event is SelfieEventName.DIRECT_READER_FINISHED:
+        normalized = {
+            **_worker_like_ids(fields, ("event_id", "search_id")),
+            "reader": _enum(fields["reader"], frozenset({"legacy", "pgvector"}), "reader"),
+            **{
+                key: _bounded_int(fields[key], nullable=False)
+                for key in (
+                    "eligible_face_count",
+                    "eligible_photo_count",
+                    "matched_photo_count",
+                    "ranking_ms",
+                )
+            },
+        }
+        matched = _bounded_int(fields["matched_photo_count"], nullable=False)
+        eligible = _bounded_int(fields["eligible_photo_count"], nullable=False)
+        assert matched is not None and eligible is not None
+        if matched > eligible:
+            raise SelfieEventContractError("direct result counts do not reconcile")
     elif event is SelfieEventName.RANKING_FINISHED:
-        normalized = _ranking_fields_v3(fields)
+        normalized = _ranking_fields_v4(fields)
     else:
         normalized = _terminal_fields_v2(fields)
     return {
@@ -403,7 +435,9 @@ def _ranking_fields_v2(fields: dict[str, object]) -> dict[str, object]:
 def _ranking_fields_v3(fields: dict[str, object]) -> dict[str, object]:
     normalized = _ranking_fields_v2(fields)
     cache_outcome = _enum(
-        fields["cache_outcome"], frozenset({"hit", "miss", "unavailable"}), "cache outcome"
+        fields["cache_outcome"],
+        frozenset({"hit", "miss", "unavailable", "native"}),
+        "cache outcome",
     )
     identity_ms = _bounded_int(fields["identity_ms"], nullable=True)
     build_ms = _bounded_int(fields["build_ms"], nullable=True)
@@ -431,6 +465,24 @@ def _ranking_fields_v3(fields: dict[str, object]) -> dict[str, object]:
         "validated_face_count": validated,
         "shortlist_count": shortlist,
     }
+
+
+def _ranking_fields_v4(fields: dict[str, object]) -> dict[str, object]:
+    normalized = _ranking_fields_v3(fields)
+    reader = _enum(fields["reader"], frozenset({"legacy", "pgvector"}), "reader")
+    native_sql_ms = _bounded_int(fields["native_sql_ms"], nullable=True)
+    if reader == "legacy" and (
+        native_sql_ms is not None or normalized["cache_outcome"] == "native"
+    ):
+        raise SelfieEventContractError("legacy ranking cannot have native timing")
+    if reader == "pgvector":
+        if normalized["outcome"] == "succeeded" and (
+            normalized["cache_outcome"] != "native" or native_sql_ms != normalized["rank_ms"]
+        ):
+            raise SelfieEventContractError("native ranking requires complete SQL timing")
+        if normalized["outcome"] == "incompatible" and native_sql_ms is not None:
+            raise SelfieEventContractError("failed native ranking cannot have SQL timing")
+    return {**normalized, "reader": reader, "native_sql_ms": native_sql_ms}
 
 
 def _terminal_fields_v1(fields: dict[str, object]) -> dict[str, object]:

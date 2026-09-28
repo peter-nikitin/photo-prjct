@@ -1,0 +1,174 @@
+from datetime import date
+from unittest.mock import patch
+
+import pytest
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
+from django.utils import timezone
+from picflow.models import Event, Photo
+
+from processing.models import (
+    EventProcessingRun,
+    FaceEmbedding,
+    FaceEmbeddingVector,
+    FaceProcessingAttemptArtifact,
+    PhotoFaceDetection,
+    ProcessingAttempt,
+    ProcessingJob,
+)
+from processing.services.vector_embeddings import persist_parallel_embedding, vector_values
+
+pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture
+def detection():
+    event = Event.objects.create(
+        name="Vector", slug="vector", start_date=date.today(), end_date=date.today()
+    )
+    photo = Photo.objects.create(id="vector-photo", event=event, src="photo.jpg")
+    fields = dict(
+        event=event,
+        contract_version=1,
+        processor_type="face_embedding",
+        processor_version=1,
+        configuration={},
+        configuration_hash="a" * 64,
+    )
+    run = EventProcessingRun.objects.create(**fields)
+    job = ProcessingJob.objects.create(**fields, run=run, photo=photo, input_fingerprint={})
+    attempt = ProcessingAttempt.objects.create(
+        **{key: value for key, value in fields.items() if key != "configuration_hash"},
+        run=run,
+        job=job,
+        photo=photo,
+        input_fingerprint={},
+        status="succeeded",
+        accepted=True,
+        terminal_at=timezone.now(),
+    )
+    artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
+    return PhotoFaceDetection.objects.create(
+        attempt=attempt, artifact=artifact, face_index=0, status="kept"
+    )
+
+
+@pytest.mark.parametrize(("model", "dimensions"), [("sface", 128), ("adaface-ir18-webface4m", 512)])
+def test_parallel_publication_keeps_independent_identity_metadata_and_values(
+    detection, model, dimensions
+):
+    values = [1.0] + [0.0] * (dimensions - 1)
+    legacy = persist_parallel_embedding(
+        detection=detection, model_version=model, vector=values, metadata={"quality": 0.9}
+    )
+    row = FaceEmbeddingVector.objects.get(detection=detection)
+    assert row.pk != legacy.pk
+    assert row.model_version == model
+    assert row.metadata == legacy.metadata == {"quality": 0.9}
+    assert vector_values(row.vector) == legacy.vector == values
+    assert all(type(value) is float for value in vector_values(row.vector))
+
+
+@pytest.mark.parametrize(
+    ("model", "values"),
+    [
+        ("unknown", [1.0] + [0.0] * 127),
+        ("sface", [1.0] + [0.0] * 511),
+        ("adaface-ir18-webface4m", [1.0] + [0.0] * 127),
+        ("sface", [0.0] * 128),
+        ("sface", [2.0] + [0.0] * 127),
+        ("sface", [1.000005] + [0.0] * 127),
+        ("sface", [float("nan")] + [0.0] * 127),
+        ("sface", [float("inf")] + [0.0] * 127),
+        ("sface", [True] + [0.0] * 127),
+    ],
+)
+def test_invalid_input_writes_neither_representation(detection, model, values):
+    with pytest.raises(ValueError):
+        persist_parallel_embedding(
+            detection=detection, model_version=model, vector=values, metadata={}
+        )
+    assert not FaceEmbedding.objects.exists()
+    assert not FaceEmbeddingVector.objects.exists()
+
+
+def test_rejected_detection_cannot_publish_vector(detection):
+    detection = PhotoFaceDetection.objects.create(
+        attempt=detection.attempt,
+        artifact=detection.artifact,
+        face_index=1,
+        status="quality_rejected",
+    )
+    with pytest.raises(ValueError):
+        persist_parallel_embedding(
+            detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
+        )
+    assert not FaceEmbeddingVector.objects.exists()
+
+
+@pytest.mark.parametrize("store", ["FaceEmbedding", "FaceEmbeddingVector"])
+def test_either_write_failure_rolls_back_both_stores(detection, store):
+    with patch(
+        f"processing.services.vector_embeddings.{store}.objects.create",
+        side_effect=IntegrityError("write failed"),
+    ):
+        with pytest.raises(IntegrityError):
+            persist_parallel_embedding(
+                detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
+            )
+    assert not FaceEmbedding.objects.exists()
+    assert not FaceEmbeddingVector.objects.exists()
+
+
+def test_detection_is_unique_and_terminal_vector_is_immutable(detection):
+    persist_parallel_embedding(
+        detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
+    )
+    row = FaceEmbeddingVector.objects.get(detection=detection)
+    with pytest.raises(IntegrityError), transaction.atomic():
+        FaceEmbeddingVector.objects.create(
+            detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127
+        )
+    row.vector = [0.0, 1.0] + [0.0] * 126
+    with pytest.raises(ValidationError):
+        row.save()
+
+
+@pytest.mark.parametrize(
+    ("model", "values"),
+    [("sface", [1.0] + [0.0] * 511), ("sface", [0.0] * 128), ("sface", [2.0] + [0.0] * 127)],
+)
+def test_database_constraints_protect_bulk_writes(detection, model, values):
+    with pytest.raises(IntegrityError), transaction.atomic():
+        FaceEmbeddingVector.objects.bulk_create(
+            [FaceEmbeddingVector(detection=detection, model_version=model, vector=values)]
+        )
+
+
+def test_database_blocks_mutating_or_deleting_accepted_vector_evidence(detection):
+    persist_parallel_embedding(
+        detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
+    )
+    with pytest.raises(IntegrityError), transaction.atomic():
+        FaceEmbeddingVector.objects.filter(detection=detection).update(
+            vector=[0.0, 1.0] + [0.0] * 126
+        )
+    with pytest.raises(IntegrityError), transaction.atomic():
+        FaceEmbeddingVector.objects.filter(detection=detection).delete()
+
+
+def test_database_rejects_vector_for_quality_rejected_detection(detection):
+    rejected = PhotoFaceDetection.objects.create(
+        attempt=detection.attempt,
+        artifact=detection.artifact,
+        face_index=1,
+        status="quality_rejected",
+    )
+    with pytest.raises(IntegrityError), transaction.atomic():
+        FaceEmbeddingVector.objects.bulk_create(
+            [
+                FaceEmbeddingVector(
+                    detection=rejected, model_version="sface", vector=[1.0] + [0.0] * 127
+                )
+            ]
+        )

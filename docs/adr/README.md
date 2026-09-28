@@ -59,6 +59,8 @@ place, and add the new record to this index.
 | 0037 | [Use a gallery-media read projection](0037-use-gallery-media-read-projection.md) | Accepted |
 | 0038 | [Deliver gallery grid images through CDN and imgproxy](0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) | Accepted |
 | 0039 | [Run the public health probe on the image-origin VM](0039-run-public-probe-on-image-origin-vm.md) | Accepted |
+| 0040 | [Use pgvector for exact event-scoped face search](0040-use-pgvector-for-exact-face-search.md) | Accepted |
+| 0041 | [Accept numerical boundary differences in exact pgvector search](0041-accept-pgvector-numerical-boundaries.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -134,3 +136,13 @@ compatible face embedding of an existing gallery photo as a second event-scoped 
 single usable face submits directly; multiple usable faces require an explicit crop-based choice.
 It preserves ADR 0019's ranking, immutable bearer result, and media-authorization boundaries
 without creating a crop object, temporary image, or worker job.
+
+[ADR 0040](0040-use-pgvector-for-exact-face-search.md) supersedes ADR 0019 only for
+in-memory direct comparison and its initial exclusion of vector infrastructure. It accepts an
+independent parallel vector table, exact full-cohort PostgreSQL ranking, and a temporary
+`off` / `staff` / `on` read gate. Public activation requires reconciliation, parity, capacity,
+and recovery evidence; worker separation and recognition-model reprocessing remain later work.
+
+[ADR 0041](0041-accept-pgvector-numerical-boundaries.md) supersedes only ADR 0040's strict
+numerical parity condition. It accepts native SQL ranking with classified very borderline
+changes within the existing numerical tolerance; unexplained differences still block activation.

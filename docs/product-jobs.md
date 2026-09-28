@@ -204,6 +204,13 @@ search within that event, so I can review probable matches.
   This is dated former-topology evidence for the existing selfie-upload path only; the current
   activation boundary is the canonical deployment and its feature gate.
 
+  The [pgvector migration plan](plans/2026-09-27-pgvector-exact-face-search.md) adds native exact
+  SQL ranking behind a separate `off` / `staff` / `on` reader gate for both query sources.
+  [ADR 0041](adr/0041-accept-pgvector-numerical-boundaries.md) accepts very borderline numerical
+  changes without changing recognition models or thresholds. Local reader/routing tests and
+  scoped independent reviews passed; full-package, deployment, representative performance and
+  public activation evidence remain separate gates. This adds no customer-outcome claim.
+
   The gallery-photo query path is defined by [ADR 0024](adr/0024-use-gallery-face-as-search-query.md)
   and the approved [gallery-photo search design](superpowers/specs/2026-08-05-gallery-face-selector-design.md).
   Current local evidence for the combined gallery-photo implementation is 145 focused Python tests,

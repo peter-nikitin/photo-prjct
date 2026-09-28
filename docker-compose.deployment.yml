@@ -1,6 +1,7 @@
 services:
   db:
-    image: postgres:16
+    shm_size: "256m"
+    image: pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
     environment:
       POSTGRES_DB: ${DB_NAME:-app}
       POSTGRES_USER: ${DB_USER:-app}

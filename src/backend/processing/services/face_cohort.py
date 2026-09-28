@@ -10,7 +10,7 @@ from uuid import UUID
 from django.db.models import F, Q, QuerySet
 from picflow.models import Event
 
-from processing.models import FaceEmbedding, PhotoFaceEmbeddingProjection
+from processing.models import FaceEmbedding, PhotoFaceDetection, PhotoFaceEmbeddingProjection
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,20 +106,7 @@ def _compatible_face_projections(
 ) -> QuerySet[PhotoFaceEmbeddingProjection]:
     if not generations:
         raise ValueError("face-embedding generations are required")
-    return PhotoFaceEmbeddingProjection.objects.filter(
-        _projection_generation_predicate(generations),
-        photo__event=event,
-        photo__is_hidden=False,
-        photo__src="",
-        photo__original_key__isnull=False,
-        photo__original_key__gt="",
-        photo__original_size__isnull=False,
-        accepted_attempt__event=event,
-        accepted_attempt__photo_id=F("photo_id"),
-        accepted_attempt__status="succeeded",
-        accepted_attempt__accepted=True,
-        accepted_attempt__face_detections__status="kept",
-    )
+    return _scalar_face_projections(event, _projection_generation_predicate(generations))
 
 
 def load_compatible_face_embeddings(
@@ -239,11 +226,13 @@ def compatible_face_embedding_queryset(
 
 def _projection_generation_predicate(
     generations: Sequence[Mapping[str, object]],
+    *,
+    include_legacy_model: bool = True,
 ) -> Q:
     compatible_generation = Q()
     for generation in generations:
         _validate_generation(generation)
-        compatible_generation |= Q(
+        generation_predicate = Q(
             contract_version=generation["contract_version"],
             processor_version=generation["processor_version"],
             configuration_hash=generation["configuration_hash"],
@@ -258,8 +247,12 @@ def _projection_generation_predicate(
             accepted_attempt__run__processor_type=generation["processor_type"],
             accepted_attempt__run__processor_version=generation["processor_version"],
             accepted_attempt__run__configuration_hash=generation["configuration_hash"],
-            accepted_attempt__face_detections__embedding__model_version=generation["model"],
         )
+        if include_legacy_model:
+            generation_predicate &= Q(
+                accepted_attempt__face_detections__embedding__model_version=generation["model"]
+            )
+        compatible_generation |= generation_predicate
     return compatible_generation
 
 
@@ -278,3 +271,61 @@ def _validate_generation(generation: Mapping[str, object]) -> None:
         generation["configuration_hash"], str
     ):
         raise ValueError("invalid face-embedding generation")
+
+
+def eligible_face_detections(
+    event: Event | None = None,
+    generations: Sequence[Mapping[str, object]] | None = None,
+) -> QuerySet[PhotoFaceDetection]:
+    """Scalar current-projection eligibility independent of either embedding store.
+
+    Explicit generations pin online use. Without them, operator reconciliation covers every
+    internally consistent current projection, including older accepted generations.
+    """
+    projections = _scalar_face_projections(event)
+    if generations is not None:
+        if not generations:
+            raise ValueError("face-embedding generations are required")
+        projections = projections.filter(
+            _projection_generation_predicate(generations, include_legacy_model=False)
+        )
+    else:
+        projections = projections.filter(
+            accepted_attempt__processor_type="face_embedding",
+            accepted_attempt__contract_version=F("contract_version"),
+            accepted_attempt__processor_version=F("processor_version"),
+            accepted_attempt__job__processor_type="face_embedding",
+            accepted_attempt__job__contract_version=F("contract_version"),
+            accepted_attempt__job__processor_version=F("processor_version"),
+            accepted_attempt__job__configuration_hash=F("configuration_hash"),
+            accepted_attempt__run__processor_type="face_embedding",
+            accepted_attempt__run__contract_version=F("contract_version"),
+            accepted_attempt__run__processor_version=F("processor_version"),
+            accepted_attempt__run__configuration_hash=F("configuration_hash"),
+        )
+    return PhotoFaceDetection.objects.filter(
+        pk__in=projections.values("accepted_attempt__face_detections__id")
+    )
+
+
+def _scalar_face_projections(
+    event: Event | None,
+    generation_predicate: Q | None = None,
+) -> QuerySet[PhotoFaceEmbeddingProjection]:
+    predicate = Q(
+        photo__is_hidden=False,
+        photo__src="",
+        photo__original_key__isnull=False,
+        photo__original_key__gt="",
+        photo__original_size__isnull=False,
+        accepted_attempt__event_id=F("photo__event_id"),
+        accepted_attempt__photo_id=F("photo_id"),
+        accepted_attempt__status="succeeded",
+        accepted_attempt__accepted=True,
+        accepted_attempt__face_detections__status="kept",
+    )
+    if event is not None:
+        predicate &= Q(photo__event=event)
+    if generation_predicate is not None:
+        predicate &= generation_predicate
+    return PhotoFaceEmbeddingProjection.objects.filter(predicate)

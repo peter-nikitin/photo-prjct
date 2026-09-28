@@ -64,17 +64,21 @@ def validate_config(config: dict[str, Any], *, live: bool = False) -> None:
 
 
 def selectors(config: dict[str, Any]) -> dict[str, str]:
-    result = {
-        key: value["name"]
-        + "{"
-        + ",".join(f"{name}={json.dumps(label)}" for name, label in sorted(value["labels"].items()))
-        + "}"
-        for key, value in config["metrics"].items()
-    }
+    def selector(name: str, labels: dict[str, str]) -> str:
+        if not labels:
+            return name
+        return (
+            name
+            + "{"
+            + ",".join(f"{key}={json.dumps(value)}" for key, value in sorted(labels.items()))
+            + "}"
+        )
 
-    requests = result["http_requests"]
-    comma = "," if requests[-2] != "{" else ""
-    result["http_5xx"] = requests[:-1] + comma + 'status_class="5xx"}'
+    result = {
+        key: selector(value["name"], value["labels"]) for key, value in config["metrics"].items()
+    }
+    requests = config["metrics"]["http_requests"]
+    result["http_5xx"] = selector(requests["name"], {**requests["labels"], "status_class": "5xx"})
     return result
 
 
@@ -188,20 +192,36 @@ def preflight(config: dict[str, Any], transport: Any, *, now: float | None = Non
         selector = s[key]
         if metric["type"] == "histogram":
             selector = metric["name"] + "_count" + selector[len(metric["name"]) :]
-        for query in (selector, f"timestamp({selector})"):
-            values = _vector(
-                transport.request("GET", "/api/v1/query?" + urlencode({"query": query}))
-            )
-            observed_at = time.time() if now is None else now
-            if not values:
-                raise ControlError(f"expected sample missing: {key}")
-            for item in values:
-                number = float(item["value"][1])
-                if not math.isfinite(number) or (
-                    query.startswith("timestamp(")
-                    and not 0 <= observed_at - number <= metric["max_age"]
-                ):
-                    raise ControlError(f"sample stale/nonfinite: {key}")
+        query = f"{selector}[{metric['max_age']}s]"
+        response = transport.request("GET", "/api/v1/query?" + urlencode({"query": query}))
+        observed_at = time.time() if now is None else now
+        data = response.get("data")
+        if (
+            response.get("status") != "success"
+            or not isinstance(data, dict)
+            or data.get("resultType") != "matrix"
+        ):
+            raise ControlError(f"sample query failed: {key}")
+        values = data.get("result")
+        if not isinstance(values, list) or not values:
+            raise ControlError(f"expected sample missing: {key}")
+        for item in values:
+            try:
+                points = item["values"]
+                if not isinstance(points, list) or not points:
+                    raise ValueError
+                latest = points[-1]
+                if not isinstance(latest, list) or len(latest) != 2:
+                    raise ValueError
+                timestamp, number = map(float, latest)
+            except (KeyError, TypeError, ValueError):
+                raise ControlError(f"sample malformed: {key}") from None
+            if (
+                not math.isfinite(timestamp)
+                or not math.isfinite(number)
+                or not 0 <= observed_at - timestamp <= metric["max_age"]
+            ):
+                raise ControlError(f"sample stale/nonfinite: {key}")
     # HTTP zero traffic is valid. Divide only when positive; an absent result is failure.
     for key, query in expressions(config).items():
         values = _vector(transport.request("GET", "/api/v1/query?" + urlencode({"query": query})))
@@ -420,23 +440,17 @@ class CloudTransport:
 
     def dashboard_update(self, request: dict[str, Any]) -> None:
         from google.protobuf.json_format import ParseDict
-        from yandex.cloud.monitoring.v3.dashboard_pb2 import Dashboard
         from yandex.cloud.monitoring.v3.dashboard_service_pb2 import UpdateDashboardRequest
-        from yandexcloud.operations import OperationError
 
         try:
             operation = self.dashboard.Update(
                 ParseDict(request, UpdateDashboardRequest()), timeout=30
             )
-            result = self.sdk.wait_operation_and_get_result(
-                operation, response_type=Dashboard, timeout=120
-            )
-            if isinstance(result, OperationError):
-                raise ControlError("dashboard operation failed")
+            # Monitoring Update is synchronous; its operation cannot be polled globally.
+            if not operation.done or operation.HasField("error"):
+                raise ControlError("dashboard operation incomplete or failed")
         except Exception:
-            raise ControlError(
-                "DashboardService Update/wait failed; inspect saved backup"
-            ) from None
+            raise ControlError("DashboardService Update failed; inspect saved backup") from None
 
 
 def identity(mode: str, oidc_path: Path | None = None) -> str:

@@ -59,3 +59,59 @@ The canonical exporter needs only `CAP_DAC_READ_SEARCH` within the existing root
 boundary. Public exporter retains an empty capability set. File modes, IAM, SSH metadata and
 application containers do not change. Fresh ingestion, rule evaluation and notification acceptance
 remain live gates after the corrected installation.
+
+## Corrected host installation and API freshness contract
+
+PR #218 merged as `d8b755b0f5647ae8d385531037b3fb2018f0dc70`; CI and final local gates passed.
+The reviewed host package `6c0f15b2142f5f93e4f811174a2c62c64da851eb`, source SHA256
+`8c8250c8010c8c930a26ba8e2c5480c18d31ca46057ffcec344cdf189f0fa10e`, installed successfully
+on both VMs. Commerce exporter returned HTTP200, alive=1, oldest-ready age=0 under its actual unit.
+Public exporter and both agents were active. Cloud queries subsequently returned the expected
+public/Linux/HTTP/Commerce series. Retained host rollback backups:
+
+- Canonical: `/var/lib/findme-prometheus/backups/1790576803732274212-6c0f15b2142f5f93e4f811174a2c62c64da851eb`.
+- Public: `/var/lib/findme-prometheus/backups/1790576811443339287-6c0f15b2142f5f93e4f811174a2c62c64da851eb`.
+
+An owner-approved GitHub OIDC read-only run reached cloud query preflight; it failed on the public
+instant selector. Five-minute public observations appeared in historical windows while the instant
+selector periodically returned no points. Live `timestamp(selector)` returned evaluation time,
+including an explicit historical query at an off-grid timestamp; it is not source-sample-age proof
+in this backend. Instant range-vector queries returned `resultType=matrix` with actual source
+points: public on the five-minute grid, Commerce/CPU on the one-minute grid.
+
+Freshness preflight must inspect the latest actual matrix point for each series, reject missing,
+nonfinite, stale and future samples, and preserve computed vector/rate checks. Public age bound is
+600 seconds to match the existing ten-minute missing-observation rule; collection remains300s.
+Other raw observation age bounds remain120s. Alert application, full dashboard read-back and new
+notification acceptance remain pending. Native alerts and worker control remain active.
+
+The live API also treats a selector with an empty `{}` filter followed by a range as an instant
+vector: `findme_http_requests_total{}[120s]` returned evaluation-time values, whereas the same
+selector without `{}` returned a matrix containing 22 series with source timestamps. The same
+behavior was reproduced with the public metric. Generated selectors omit empty filters; labeled
+selectors and the derived HTTP 5xx filter retain valid braces. No vector fallback is accepted for
+raw freshness checks.
+
+## Initial cloud activation
+
+The corrected live preflight passed with actual source timestamps for every configured metric.
+Operator-approved apply wrote Alertmanager routing and the exact eleven rules to
+`mon0c97qv2s5uju1ark8`. All eleven evaluation snapshots subsequently had state `OK`, empty errors
+and fresh evaluation timestamps; `ALERTS{project="findme-photo"}` was empty. The dashboard Get
+returned fourteen widgets matching every owned desired field, etag `3`. Initial control backup:
+`/private/tmp/findme-monitoring-backup-b78ef299-20260928`.
+
+The first apply reported an SDK wait error after successful dashboard mutation: Monitoring Update
+returns a synchronous operation, while the generic SDK waiter polls the global OperationService,
+which rejected the Monitoring operation ID. Polling OperationService on the Monitoring endpoint
+returned `UNIMPLEMENTED`. The control validates the completed Update response and preserves
+mandatory fresh Dashboard Get/read-back in both apply and restore; incomplete or errored responses
+fail closed. No application container or native timer was changed during cloud activation.
+
+The bounded notification drill retained exactly eleven rules and changed only the first existing
+rule's expression/summary. `PublicServiceUnavailable` with an explicit synthetic-test summary
+was observed in `ALERTS` with `alertstate="firing"`; the public health response remained `ok`.
+After about two minutes its condition was cleared, then the exact original Git rule content was
+restored and read back. Native public observation alerts remained active throughout. The test
+created no additional rule, workspace or VM. Operator receipt of firing/recovery emails and final
+exact-main GitHub reconciliation remain acceptance observations.

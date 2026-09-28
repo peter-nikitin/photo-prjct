@@ -12,7 +12,7 @@
         "check": "canonical-health"
       },
       "type": "gauge",
-      "max_age": 360
+      "max_age": 600
     },
     "public_duration": {
       "name": "findme_probe_duration_seconds",
@@ -20,7 +20,7 @@
         "check": "canonical-health"
       },
       "type": "gauge",
-      "max_age": 360
+      "max_age": 600
     },
     "tls_days": {
       "name": "findme_probe_tls_days_remaining",
@@ -28,7 +28,7 @@
         "check": "canonical-health"
       },
       "type": "gauge",
-      "max_age": 360
+      "max_age": 600
     },
     "commerce_alive": {
       "name": "commerce_worker_alive",

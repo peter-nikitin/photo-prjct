@@ -19,3 +19,4 @@ receivers:
   yandex_monitoring_configs:
   - channel_names:
     - '{{channel_name}}'
+    send_resolved: true

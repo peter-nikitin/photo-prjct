@@ -2,7 +2,8 @@
 
 ## Observed gap
 
-The Managed Prometheus package owns the current dashboard's complete 14-widget baseline.
+The Managed Prometheus package owns the dashboard's complete baseline, now 19 widgets in Git
+after PR #222 (the earlier activation snapshot below had 14).
 The worker-pool template in `deploy/monitoring/dashboard.json` now declares three additional native
 diagnostic widgets. Applying that template and then the Prometheus dashboard would remove those
 extra views. Full Alertmanager routing also assumes a dedicated workspace without foreign rule files.

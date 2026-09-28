@@ -29,12 +29,13 @@ in the [API review](../research/2026-09-28-worker-diagnostic-alert-api.md).
 
 ### Integration baseline refreshed on 2026-09-28
 
-The implementation branch includes main `d8b755b` (PRs #217 and #218). Reuse the merged
+The implementation branch includes main `269d628` (PRs #217–#223). Reuse the merged
 [monitoring-as-code package](../../deploy/monitoring/prometheus/README.md), rather than creating
 another agent renderer, Remote Write channel, installer or alert control client. Its reviewed
 environment supplies existing target identities; workers still receive no monitoring credentials.
-The [activation record](../operations/2026-09-28-monitoring-activation.md) records preparation and
-rollback, not completed ingestion or notification acceptance. The unknown Alertmanager GET
+The [activation record](../operations/2026-09-28-monitoring-activation.md) now records baseline
+ingestion, initial rule/dashboard activation and firing email receipt; recovery email acceptance
+remains pending. These observations do not establish worker diagnostic delivery. The unknown Alertmanager GET
 contract remains unknown; the merged package does not waive ADR 0043's verification gate.
 Reconcile the [dashboard/routing ownership finding](../future-work/2026-09-28-worker-monitoring-ownership.md)
 before future diagnostic activation; do not independently apply the old native dashboard template

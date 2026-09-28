@@ -99,7 +99,7 @@ automatic remediation, paid provisioning, IAM change or live activation is autho
   establishes rule CRUD and routing PUT, but does not establish those lifecycle/read-back
   prerequisites. Alert-stage implementation remains blocked pending a supported contract or an
   explicitly approved scope revision; ADR acceptance does not resolve API availability.
-- Phase-one integration includes main `d8b755b` and preserves deployed pgvector and feature state;
+- Phase-one integration includes main `269d628` and preserves deployed pgvector and feature state;
   refresh the actual runtime inventory before any separately approved deployment.
 
 ## Validation and rollback

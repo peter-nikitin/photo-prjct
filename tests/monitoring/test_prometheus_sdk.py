@@ -27,6 +27,31 @@ class DashboardTransportTests(unittest.TestCase):
         package = self.control.render(self.control.load_config())
         self.validate_dashboard(package)
 
+    def test_cyrillic_target_name_rejected_before_promtool(self):
+        import json
+        from subprocess import CompletedProcess
+
+        package = self.control.render(self.control.load_config())
+        dashboard = json.loads(package["dashboard.json"])
+        dashboard["widgets"][0]["multiSourceChart"]["targets"][0]["prometheusTarget"]["name"] = (
+            "Свободно"
+        )
+        package["dashboard.json"] = json.dumps(dashboard)
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(self.control, "render", return_value=package),
+            patch.object(
+                self.control.subprocess,
+                "run",
+                return_value=CompletedProcess([], 0, "version 3.5.0", ""),
+            ) as run,
+        ):
+            with self.assertRaisesRegex(self.control.ControlError, "target name"):
+                self.control.validate_package(
+                    self.control.load_config(), Path(directory), "promtool"
+                )
+            run.assert_not_called()
+
     def validate_dashboard(self, package):
         from subprocess import CompletedProcess
 
@@ -60,7 +85,12 @@ class DashboardTransportTests(unittest.TestCase):
             ],
             "dataSources": [{"monitoringDataSource": {"id": "native"}}],
         }
-        prometheus_target = {"dataSourceId": "native", "workspaceId": "workspace1", "query": "up"}
+        prometheus_target = {
+            "dataSourceId": "native",
+            "workspaceId": "workspace1",
+            "query": "up",
+            "name": "A",
+        }
         cases = {
             "source missing kind": lambda c: c["dataSources"].__setitem__(0, {}),
             "source both kinds": lambda c: c["dataSources"][0].update(

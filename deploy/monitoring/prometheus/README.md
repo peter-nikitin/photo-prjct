@@ -125,7 +125,10 @@ the agent unit for the selected role. Canonical uses `/etc/yc/unified_agent/conf
 `unified_agent.service`; public uses `/etc/yandex/unified_agent/config.yml` and
 `unified-agent.service`. Rollback validates the backup's role and exact managed paths/units,
 then restores the recorded files and unit states. It never restarts application containers or
-native timers. Public uses DynamicUser; canonical retains the existing root host-Docker observation boundary. Output
+native timers. Public uses DynamicUser with an empty capability bounding set. Canonical retains
+the existing root host-Docker observation boundary with only `CAP_DAC_READ_SEARCH`, allowing
+Docker Compose to read the existing deploy-owned `0600` environment file without changing its
+permissions. Output
 is the retained backup directory. Any activation failure restores files and prior enabled/active
 unit state; a restoration failure retains the backup and reports it for operator action.
 

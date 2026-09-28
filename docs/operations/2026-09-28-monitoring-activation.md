@@ -115,3 +115,20 @@ After about two minutes its condition was cleared, then the exact original Git r
 restored and read back. Native public observation alerts remained active throughout. The test
 created no additional rule, workspace or VM. Operator receipt of firing/recovery emails and final
 exact-main GitHub reconciliation remain acceptance observations.
+
+## Exact-main GitHub acceptance and TLS window correction
+
+PR #219 merged as `4870552382e9112e007812304016329754b11ab4` after full GREEN CI. The exact
+merge's automatic application Deploy run `36390545954` completed cancelled; its Deploy job had
+zero steps. GitHub Monitoring run `36390566055` used the protected environment and successfully
+exchanged its OIDC identity, but preflight stopped at `expression calculation failed: tls` before
+any mutation/backup. Its raw source freshness checks passed.
+
+A five-minute `min_over_time` TLS window can be empty between five-minute polls plus delivery lag,
+even while the latest actual observation meets the approved 600-second freshness bound. TLS
+preflight and certificate alert both use ten minutes; the fourteen-day threshold, 300s collection
+cadence and eleven-rule count do not change. Sparse-point rule fixtures protect the expiry
+condition and healthy certificate behavior during that gap. No host reinstall is needed.
+
+The operator confirmed receipt of the synthetic firing email. Current alert condition and ALERTS
+subsequently cleared after exact original rule restoration. Recovery email receipt remains pending.

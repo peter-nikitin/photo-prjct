@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PATH = ROOT / "deploy/monitoring/prometheus/control.py"
@@ -326,6 +327,33 @@ def test_public_freshness_bounds_match_two_probe_intervals(control):
     public = {"public_success", "public_duration", "tls_days"}
     assert {metric["max_age"] for key, metric in metrics.items() if key in public} == {600}
     assert {metric["max_age"] for key, metric in metrics.items() if key not in public} == {120}
+
+
+@pytest.mark.parametrize("days", ["10", "30"])
+def test_tls_preflight_uses_fresh_public_observation_older_than_five_minutes(control, days):
+    cfg = config(control)
+    transport = FakeTransport(control, cfg)
+    original = transport.request
+    selector = control.selectors(cfg)["tls_days"]
+    expected = f"min_over_time({selector}[10m])"
+
+    def request(method, path, body=None):
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        if query == selector + "[600s]":
+            return {
+                "status": "success",
+                "data": {"resultType": "matrix", "result": [{"values": [[640, days]]}]},
+            }
+        if query == f"min_over_time({selector}[5m])":
+            return {"status": "success", "data": {"resultType": "vector", "result": []}}
+        return original(method, path, body)
+
+    transport.request = request
+    control.preflight(cfg, transport, now=1000)
+    assert control.expressions(cfg)["tls"] == expected
+    rules = yaml.safe_load(control.render(cfg)["rules.yml"])["groups"][0]["rules"]
+    tls_rule = next(rule for rule in rules if rule["alert"] == "TLSCertificateExpiring")
+    assert tls_rule["expr"] == expected + " < 14"
 
 
 def test_fresh_matrix_accepts_public_when_instant_vector_is_empty(control):

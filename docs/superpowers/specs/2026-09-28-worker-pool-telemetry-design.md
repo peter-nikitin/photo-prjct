@@ -15,6 +15,9 @@
 - Related specification: [Autoscaled pools](2026-09-23-autoscaled-photo-worker-pools-design.md).
 - ADR impact: Requires a new ADR narrowly superseding ADR 0018's prohibition on Docker
   inspection for monitoring: a fixed-command, host-owned read-only worker probe only.
+  Git-managed alerting and any Managed Prometheus ingestion/evaluator transition require
+  reconciliation with ADR 0018 before implementation; this specification does not accept
+  that transition or claim Terraform resource support is already established.
   Conforms to ADR 0041's private transport, credential and scaling boundaries. No accepted
   ADR is amended or implicitly accepted by approving this specification.
 
@@ -148,6 +151,27 @@ Extend the existing worker dashboard with per-node resource/container views, rea
 heartbeat freshness, execution rate/duration/failures and telemetry freshness. Pool-level queue,
 capacity and saturation graphs retain their authoritative sources and existing semantics.
 
+Alert definitions, thresholds, evaluation windows, missing-data rules and notification routing
+are versioned in Git and changed through reviewed pull requests. Creating or editing these
+objects in the cloud UI is not the delivery mechanism; the UI may be used for observation only.
+Application must be reproducible and automated, with verification of deployed configuration
+and a rollback to a reviewed version. Credentials remain outside tracked definitions.
+
+Terraform is the target application mechanism. Before implementation, confirm supported resources
+for the selected evaluator, rules, notification routing and required workspace/channel lifecycle,
+including read-back and drift detection. Do not assume the Yandex provider supports native alerts
+or that an imperative Terraform provisioner provides managed-resource semantics. If supported
+Terraform resources do not cover the required contract, obtain explicit approval for the documented
+Managed Prometheus API application path; neither a silent API substitution nor manual UI setup
+is an acceptable fallback. The precise application mechanism remains an implementation gate.
+
+Managed Prometheus YAML/PromQL rules and Alertmanager configuration are the documented API path,
+not proof that existing native Monitoring points are queryable in its workspace. If that path
+is selected, worker observations must be delivered through the canonical collection boundary
+into the target workspace, and actual metric names/labels must be verified there. Worker VMs
+still receive no Monitoring credentials. Do not move authoritative autoscaling demand/capacity
+series or change their evaluator as an incidental consequence of the diagnostic alerting work.
+
 Prepare observation-only alerts for a required running member with stale host/runtime data;
 missing/unready worker after the existing startup grace; sustained host/container memory or disk
 pressure; observed OOM/restart failures; and repeated execution failures with actual work.
@@ -158,10 +182,17 @@ Do not hide resource/collection failures for a staged VM that is still expected 
 
 Missing telemetry takes precedence over interpreting historical resource values as current.
 Loss of the whole VM cannot be reported by its probe: compare trusted cloud membership, required
-pool floor, existing queue age and last observations. Native alert evaluation, no-data alignment
+pool floor, existing queue age and last observations. Selected managed alert evaluation, no-data alignment
 and notification/recovery require later live proof; offline tests do not establish them.
 Runbook responses inspect status and preserved ownership first; no automatic restart, lease expiry,
 capacity increase, second selfie claim slot or model activation is authorized by an alert.
+
+Preserve existing time-window semantics rather than replacing aggregation windows mechanically
+with PromQL `for`. Missing samples, idle zero and evaluator errors are distinct states. Existing
+active alerts remain in place until target ingestion, intended firing/missing-data behavior,
+notification delivery and recovery are proven on explicitly approved resources; then retire the
+replaced rules without leaving duplicate notifications as the steady state. This worker increment
+does not authorize migration of unrelated HTTP, public-probe or Commerce alerts.
 
 ## Release and acceptance boundaries
 
@@ -181,6 +212,12 @@ reset observations, actual container restart/OOM fixtures, histogram/outcome cor
 allowlist and body rejection, cold/idle/draining members, missing telemetry and backend/Monitoring
 failure while jobs and leases continue. Existing durable results and authoritative queue metrics
 must be unchanged. No benchmark or production failure injection is part of repository acceptance.
+
+Repository acceptance also requires validated versioned alert/routing definitions and automated
+application verification/rollback for the approved mechanism. Git files or a successful Terraform
+apply alone do not prove cloud ingestion, rule evaluation or notification delivery. Full live
+acceptance requires fresh target-series queries and controlled firing, missing-data and recovery
+evidence; no manual UI configuration is required to reproduce the delivered worker alerts.
 
 Local/CI preparation is separate from paid/live activation. Before activation, approve the added
 custom-metric cardinality/cost, resolve the host-probe ADR and verify actual fresh worker points,

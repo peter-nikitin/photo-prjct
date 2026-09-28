@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -89,6 +90,15 @@ class FakeTransport:
     def request(self, method, path, body=None):
         self.events.append((method, path, body))
         if "/api/v1/query?" in path:
+            query = parse_qs(urlsplit(path).query)["query"][0]
+            if query.endswith("]"):
+                return {
+                    "status": "success",
+                    "data": {
+                        "resultType": "matrix",
+                        "result": [{"metric": {}, "values": [[1000, "1000"]]}],
+                    },
+                }
             return {
                 "status": "success",
                 "data": {
@@ -141,7 +151,7 @@ def test_stale_or_nan_samples_block_activation(control):
         if "/api/v1/query?" in path:
             return {
                 "status": "success",
-                "data": {"resultType": "vector", "result": [{"value": [1, "NaN"]}]},
+                "data": {"resultType": "matrix", "result": [{"values": [[1, "NaN"]]}]},
             }
         return original(method, path, body)
 
@@ -196,7 +206,25 @@ def test_cli_missing_workspace_never_attempts_identity(control, capsys, monkeypa
 def test_http_absent_5xx_coalesces_only_when_total_exists(control):
     cfg = config(control)
     expression = control.expressions(cfg)["http_errors"]
-    assert "or (0 * sum(increase(findme_http_requests_total{}[5m])))" in expression
+    assert "or (0 * sum(increase(findme_http_requests_total[5m])))" in expression
+
+
+@pytest.mark.parametrize("labels", [{}, {"job": "private-http"}])
+def test_selectors_omit_empty_labels_and_preserve_http_5xx_filter(control, labels):
+    cfg = config(control)
+    cfg["metrics"]["http_requests"]["labels"] = labels
+    selectors = control.selectors(cfg)
+    expected = (
+        'findme_http_requests_total{job="private-http"}' if labels else "findme_http_requests_total"
+    )
+    assert selectors["http_requests"] == expected
+    assert selectors["public_success"] == 'findme_probe_success{check="canonical-health"}'
+    expected_5xx = (
+        'findme_http_requests_total{job="private-http",status_class="5xx"}'
+        if labels
+        else 'findme_http_requests_total{status_class="5xx"}'
+    )
+    assert selectors["http_5xx"] == expected_5xx
 
 
 def test_owned_rule_404_is_absence_but_other_http_errors_fail_closed(control, monkeypatch):
@@ -257,8 +285,6 @@ def test_restore_rejects_different_workspace(control, tmp_path):
 
 
 def test_freshness_uses_response_time_when_scrape_advances_during_preflight(control, monkeypatch):
-    from urllib.parse import parse_qs, urlsplit
-
     cfg = config(control)
     transport = FakeTransport(control, cfg)
     original = transport.request
@@ -269,8 +295,8 @@ def test_freshness_uses_response_time_when_scrape_advances_during_preflight(cont
         clock[0] += 1
         response = original(method, path, body)
         query = parse_qs(urlsplit(path).query).get("query", [""])[0]
-        if query.startswith("timestamp("):
-            response["data"]["result"][0]["value"] = [clock[0], str(clock[0] - 1)]
+        if query.endswith("]"):
+            response["data"]["result"][0]["values"] = [[clock[0] - 1, "1"]]
         return response
 
     transport.request = request
@@ -279,8 +305,6 @@ def test_freshness_uses_response_time_when_scrape_advances_during_preflight(cont
 
 @pytest.mark.parametrize("observed", ["NaN", "0", "1001"])
 def test_fixed_now_rejects_nonfinite_stale_and_future_observations(control, observed):
-    from urllib.parse import parse_qs, urlsplit
-
     cfg = config(control)
     transport = FakeTransport(control, cfg)
     original = transport.request
@@ -288,8 +312,98 @@ def test_fixed_now_rejects_nonfinite_stale_and_future_observations(control, obse
     def request(method, path, body=None):
         response = original(method, path, body)
         query = parse_qs(urlsplit(path).query).get("query", [""])[0]
-        if query.startswith("timestamp("):
-            response["data"]["result"][0]["value"] = [1000, observed]
+        if query.endswith("]"):
+            response["data"]["result"][0]["values"] = [[observed, "1"]]
+        return response
+
+    transport.request = request
+    with pytest.raises(control.ControlError, match="sample"):
+        control.preflight(cfg, transport, now=1000)
+
+
+def test_public_freshness_bounds_match_two_probe_intervals(control):
+    metrics = control.load_config()["metrics"]
+    public = {"public_success", "public_duration", "tls_days"}
+    assert {metric["max_age"] for key, metric in metrics.items() if key in public} == {600}
+    assert {metric["max_age"] for key, metric in metrics.items() if key not in public} == {120}
+
+
+def test_fresh_matrix_accepts_public_when_instant_vector_is_empty(control):
+    cfg = config(control)
+    transport = FakeTransport(control, cfg)
+    original = transport.request
+    selector = control.selectors(cfg)["public_success"]
+
+    def request(method, path, body=None):
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        if query == selector:
+            return {"status": "success", "data": {"resultType": "vector", "result": []}}
+        response = original(method, path, body)
+        if query == selector + "[600s]":
+            response["data"]["result"][0]["values"] = [[700, "1"], [990, "1"]]
+        return response
+
+    transport.request = request
+    control.preflight(cfg, transport, now=1000)
+    queries = [
+        parse_qs(urlsplit(event[1]).query)["query"][0]
+        for event in transport.events
+        if "/api/v1/query?" in event[1]
+    ]
+    assert selector + "[600s]" in queries
+    assert not any(query.startswith("timestamp(") for query in queries)
+    assert "findme_http_request_duration_seconds_count[120s]" in queries
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": "error", "data": {"resultType": "matrix", "result": []}},
+        {"status": "success", "data": {"resultType": "vector", "result": []}},
+        {"status": "success", "data": {"resultType": "matrix", "result": []}},
+        {"status": "success", "data": {"resultType": "matrix", "result": [{"values": []}]}},
+        {"status": "success", "data": {"resultType": "matrix", "result": [{"values": [[990]]}]}},
+        {"status": "success", "data": {"resultType": "matrix", "result": [{"values": [[0, "1"]]}]}},
+        {
+            "status": "success",
+            "data": {"resultType": "matrix", "result": [{"values": [[1001, "1"]]}]},
+        },
+        {
+            "status": "success",
+            "data": {"resultType": "matrix", "result": [{"values": [[990, "NaN"]]}]},
+        },
+        {
+            "status": "success",
+            "data": {"resultType": "matrix", "result": [{"values": [["NaN", "1"]]}]},
+        },
+    ],
+)
+def test_matrix_freshness_rejects_failed_missing_malformed_or_invalid_points(control, response):
+    cfg = config(control)
+    transport = FakeTransport(control, cfg)
+    original = transport.request
+
+    def request(method, path, body=None):
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        return response if query.endswith("]") else original(method, path, body)
+
+    transport.request = request
+    with pytest.raises(control.ControlError, match="sample"):
+        control.preflight(cfg, transport, now=1000)
+
+
+def test_matrix_freshness_rejects_stale_latest_point_in_any_observed_series(control):
+    cfg = config(control)
+    transport = FakeTransport(control, cfg)
+    original = transport.request
+
+    def request(method, path, body=None):
+        response = original(method, path, body)
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        if query.endswith("]"):
+            response["data"]["result"].append(
+                {"metric": {"instance": "stale"}, "values": [[0, "1"]]}
+            )
         return response
 
     transport.request = request

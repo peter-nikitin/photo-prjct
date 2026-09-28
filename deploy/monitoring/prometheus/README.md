@@ -1,8 +1,10 @@
 # FindMe monitoring as code
 
-Repository preparation is complete only after the recorded local checks. **Live activation is
-pending.** Existing native alerts, routes and timers remain active. No command below has been
-run against production as part of implementation.
+The operator-approved host installation and initial cloud activation ran on 2026-09-28. Fresh
+public/Linux/HTTP/Commerce samples, eleven successful rule evaluations and all fourteen desired
+dashboard widgets were verified through the cloud API. Email acceptance and retirement of native
+duplicates remain separate gates. Existing native alerts, routes and timers remain active. See
+[activation evidence](../../../docs/operations/2026-09-28-monitoring-activation.md).
 
 ## Owned objects and inputs
 
@@ -21,7 +23,9 @@ The workflow never retargets configuration from CI variables. The approved found
 on 2026-09-28: GitHub environment `monitoring`, reviewer `peter-nikitin`, main-only deployment policy,
 and credential `ajeprb31m2nhu6pbj2gn` in existing federation `ajeula3gd46omgf9jiko`, bound to subject
 `repo:peter-nikitin/photo-prjct:environment:monitoring`. Its only folder role is `monitoring.editor`.
-Ingestion, rule activation and OIDC runtime acceptance remain separate live checks.
+Ingestion and initial rule/dashboard activation have live evidence. The first GitHub OIDC check
+reached cloud query preflight; final exact-main CI reconciliation and email acceptance are recorded
+separately in the activation evidence.
 The tools reuse validated short-lived OIDC exchange from `run-with-environment-secrets.py` without
 loading any Lockbox consumer or adding a long-lived key.
 
@@ -69,9 +73,15 @@ are semantically cumulative application counters even though the observed SPACK 
 uses GAUGE; do not infer semantics from the wire type. This proof describes the producer, not
 successful workspace ingestion. `type_contract_evidence` binds this reviewed contract in config.
 
-Check/apply require actual selectors to return finite, fresh values through the supported query
-API. Timestamp values prove observation age rather than query execution time. Counter range
-calculations must have sufficient real points. An absent 5xx subset becomes zero only alongside
+Check/apply query each raw selector as a range vector over its configured `max_age` seconds.
+Selectors without labels omit `{}` because the backend returns vectors for empty-brace range
+selectors; nonempty labels and the HTTP 5xx filter remain explicit.
+They require a matrix with actual points, and check the latest point timestamp and finite value
+of every observed series. The backend's `timestamp(selector)` reports query evaluation time and
+cannot prove observation age. Public probe/TLS freshness is 600s, matching the accepted 10-minute
+no-data window and two 300s probe intervals; all other raw metrics retain 120s freshness.
+An empty instant vector between public scrapes does not replace this actual-point check. Counter
+range calculations must have sufficient real points. An absent 5xx subset becomes zero only alongside
 observed HTTP totals; zero traffic passes the preflight and fails the >=5-request alert gate.
 Missing totals never become zero. Raw Linux names/labels and histogram `_count` must appear in
 this workspace. A missing mapping, NaN, stale sample, query error or unsupported CPU contract
@@ -150,7 +160,7 @@ With reviewed foundation/config in Git and separately approved live operations:
 drift is always reported **unverified**: there is no confirmed GET Alertmanager API. `apply`
 preflights raw and computed samples and every alert expression, saves target-bound dashboard/rules
 snapshots, applies routing before the owned rule file, verifies the file, waits up to 120s for fresh
-successful evaluation snapshots, updates with the fresh etag and waits for the gRPC operation,
+successful evaluation snapshots, updates with the fresh etag and validates the returned synchronous gRPC operation,
 then reads back owned fields. Failed or stale snapshots are failures, never health. API/SDK errors
 are sanitized; credentials and response bodies are not printed. Apply is not atomic across services;
 a failure after rules PUT leaves the recorded backup for explicit restore.

@@ -16,9 +16,13 @@ STORAGE = "findme_prometheus_buffer"
 CHANNEL = "findme_prometheus_remote_write"
 
 
-def merge_agent(native: dict[str, Any], *, role: str, workspace_id: str) -> dict[str, Any]:
+def merge_agent(
+    native: dict[str, Any], *, role: str, workspace_id: str, worker_telemetry: bool = False
+) -> dict[str, Any]:
     if role not in ("canonical", "public") or not re.fullmatch(r"[A-Za-z0-9_-]+", workspace_id):
         raise ValueError("valid role and workspace ID required")
+    if type(worker_telemetry) is not bool or (worker_telemetry and role != "canonical"):
+        raise ValueError("worker telemetry requires the canonical role")
     result = copy.deepcopy(native)
     for section, name in [("storages", STORAGE), ("channels", CHANNEL)]:
         result[section] = [item for item in result.get(section, []) if item.get("name") != name]
@@ -93,6 +97,34 @@ def merge_agent(native: dict[str, Any], *, role: str, workspace_id: str) -> dict
         result.setdefault("routes", []).append(
             {"input": item, "channel": {"channel_ref": {"name": CHANNEL}}}
         )
+    if worker_telemetry:
+        result["routes"].append(
+            {
+                "input": {
+                    "plugin": "metrics_pull",
+                    "config": {
+                        "url": "http://127.0.0.1:8080/worker-diagnostics/metrics/",
+                        "format": {"prometheus": {}},
+                        "poll_period": "30s",
+                        "timeout": "10s",
+                        "prometheus_config": {"job_name": "findme-worker-diagnostics"},
+                    },
+                },
+                "channel": {
+                    "pipe": [
+                        {
+                            "filter": {
+                                "plugin": "transform_metric_labels",
+                                "config": {
+                                    "labels": [{"job": "-"}, {"instance": "-"}, {"host": "-"}]
+                                },
+                            }
+                        }
+                    ],
+                    "channel_ref": {"name": CHANNEL},
+                },
+            }
+        )
     return result
 
 
@@ -101,10 +133,16 @@ def main() -> None:
     parser.add_argument("--current", type=Path, required=True)
     parser.add_argument("--role", choices=("canonical", "public"), required=True)
     parser.add_argument("--workspace-id", required=True)
+    parser.add_argument("--worker-telemetry", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     content = args.current.read_bytes()
-    config = merge_agent(yaml.safe_load(content), role=args.role, workspace_id=args.workspace_id)
+    config = merge_agent(
+        yaml.safe_load(content),
+        role=args.role,
+        workspace_id=args.workspace_id,
+        worker_telemetry=args.worker_telemetry,
+    )
     args.output.write_text(yaml.safe_dump(config, sort_keys=False))
     print("Current configuration sha256: " + hashlib.sha256(content).hexdigest())
 

@@ -49,6 +49,7 @@ from photo_worker.lifecycle import DrainController, FleetLifecycle
 from photo_worker.metadata import InputTooLarge, MetadataError, extract_capture_metadata
 from photo_worker.observability import SelfieWorkerEventName, emit_selfie_worker_event
 from photo_worker.preview import PreviewError, PreviewResult, generate_preview
+from photo_worker.telemetry import Outcome, RuntimeTelemetry
 from photo_worker.transport import validate_remote_config
 from photo_worker.watermark import (
     WatermarkedPreviewError,
@@ -141,8 +142,11 @@ class WorkerConfig:
     maximum_backoff_seconds: float = 30.0
     log_secrets: tuple[str, ...] = ()
     remote_pool: str | None = None
+    runtime_telemetry_enabled: bool = False
 
     def __post_init__(self) -> None:
+        if self.runtime_telemetry_enabled and self.remote_pool is None:
+            raise ValueError("runtime telemetry requires remote worker transport")
         if self.concurrency != 1:
             raise ValueError("worker concurrency must be exactly 1")
         supported = {
@@ -220,6 +224,10 @@ class WorkerConfig:
                 processor_types=processor_types,
                 log_secrets=(token,),
                 remote_pool=os.environ["PHOTO_WORKER_POOL"] if transport == "remote" else None,
+                runtime_telemetry_enabled=os.environ.get(
+                    "PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED", "False"
+                )
+                == "True",
             ),
             HttpClient(api_url, token, timeout_seconds=http_timeout_seconds, transport=transport),
         )
@@ -309,6 +317,7 @@ class Worker:
         *,
         lease_keeper_factory: Callable[[WorkerClient, ClaimedJob, int], LeaseKeeper] = _LeaseKeeper,
         drain: DrainController | None = None,
+        telemetry: RuntimeTelemetry | None = None,
     ) -> None:
         if config.lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
@@ -323,6 +332,7 @@ class Worker:
         self.drain = drain or DrainController()
         self.draining = self.drain.requested
         self.fleet: FleetLifecycle | None = None
+        self.telemetry = telemetry
 
     def request_drain(self) -> None:
         self.drain.request()
@@ -484,6 +494,28 @@ class Worker:
                 time.sleep(backoff_delay)
 
     def _process(self, job: ClaimedJob) -> int | None:
+        # Diagnostics must never participate in lease, processing or callback control.
+        outcome: list[Outcome] = ["execution_failed"]
+        self._observe_runtime("started", job.processor_type)
+        try:
+            return self._handle_job(job, outcome)
+        finally:
+            self._observe_runtime("finished", job.processor_type, outcome[0])
+
+    def _observe_runtime(
+        self, operation: str, kind: str, outcome: Outcome = "execution_failed"
+    ) -> None:
+        if self.telemetry is None:
+            return
+        try:
+            if operation == "started":
+                self.telemetry.started(kind)
+            else:
+                self.telemetry.finished(kind, outcome)
+        except Exception:
+            LOGGER.warning("worker_runtime_observation_failed")
+
+    def _handle_job(self, job: ClaimedJob, outcome: list[Outcome]) -> int | None:
         _lifecycle("started", job, secrets=self._config.log_secrets)
         started_at = _timestamp()
         total_started = monotonic()
@@ -562,6 +594,7 @@ class Worker:
             )
             _assert_terminal_size(payload, job.configuration.terminal_result_max_bytes)
             try:
+                outcome[0] = "transport_failed"
                 callback = self._client.complete(
                     job.attempt_id,
                     payload,
@@ -580,6 +613,11 @@ class Worker:
                             compute_ms=compute_ms,
                             total_ms=total_ms,
                         )
+                outcome[0] = (
+                    "lease_lost"
+                    if isinstance(callback, CallbackResult) and callback.stale
+                    else "callback_delivered"
+                )
             finally:
                 # A selfie embedding is transient: release its payload as soon as the callback ends.
                 del payload
@@ -602,11 +640,17 @@ class Worker:
             WatermarkedPreviewError,
             UploadError,
         ) as error:
+            outcome[0] = (
+                "transport_failed"
+                if isinstance(error, (DownloadError, UploadError))
+                else "execution_failed"
+            )
             assert keeper is not None
             keeper.stop()
             try:
                 keeper.raise_if_lost()
             except AttemptLost:
+                outcome[0] = "lease_lost"
                 _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
                 return job.configuration.poll_min_delay_seconds
             code = getattr(error, "code", None)
@@ -640,6 +684,8 @@ class Worker:
                     payload,
                     response_max_bytes=job.configuration.api_response_max_bytes,
                 )
+                if isinstance(callback, CallbackResult) and callback.stale:
+                    outcome[0] = "lease_lost"
                 if job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
                     if not isinstance(callback, CallbackResult):
                         raise ApiError("invalid_api_response", retryable=False)
@@ -654,6 +700,11 @@ class Worker:
                             total_ms=total_ms,
                         )
             except ApiError as submission_error:
+                outcome[0] = (
+                    "lease_lost"
+                    if submission_error.code == "lease_not_current"
+                    else "transport_failed"
+                )
                 if submission_error.code == "lease_not_current":
                     _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
                     return job.configuration.poll_min_delay_seconds
@@ -668,9 +719,11 @@ class Worker:
                     secrets=self._config.log_secrets,
                 )
         except AttemptLost:
+            outcome[0] = "lease_lost"
             _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
             return job.configuration.poll_min_delay_seconds
         except ApiError as error:
+            outcome[0] = "lease_lost" if error.code == "lease_not_current" else "transport_failed"
             if error.code == "lease_not_current":
                 _lifecycle("lease_lost", job, secrets=self._config.log_secrets)
                 return job.configuration.poll_min_delay_seconds

@@ -768,6 +768,7 @@ def test_canonical_archive_runs_exact_cloud_helper_without_source_checkout(tmp_p
             "import provision; print(provision.digest(provision.cloud_init({"
             "'bootstrap_secret_id':'secret','bootstrap_version_id':'version','worker_build':'a'*40,"
             "'worker_image':'ghcr.io/example/photo-prjct-worker@sha256:'+'a'*64,"
+            "'zone':'ru-central1-a',"
             "'docker_version':'27.5.1','compose_version':'2.32.4','private_api_ipv4':'10.0.0.5'},'bulk')))",
         ],
         cwd=package_dir,

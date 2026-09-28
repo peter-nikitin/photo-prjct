@@ -23,7 +23,7 @@ ENV = {
 }
 
 
-def test_worker_only_compose_projects_no_host_ports_or_backend_credentials():
+def test_worker_only_compose_projects_loopback_runtime_port_without_backend_credentials():
     result = subprocess.run(
         ["docker", "compose", "-f", "deploy/worker-pools/compose.yml", "config"],
         cwd=ROOT,
@@ -41,7 +41,16 @@ def test_worker_only_compose_projects_no_host_ports_or_backend_credentials():
     services = yaml.safe_load(result.stdout)["services"]
     assert set(services) == {"photo-worker"}
     worker = services["photo-worker"]
-    assert not worker.get("ports")
+    assert worker["ports"] == [
+        {
+            "mode": "ingress",
+            "host_ip": "127.0.0.1",
+            "target": 9101,
+            "published": "9101",
+            "protocol": "tcp",
+        }
+    ]
+    assert worker["environment"]["PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED"] == "False"
     assert {
         (mount["source"], mount["target"], mount["read_only"]) for mount in worker["volumes"]
     } == {
@@ -65,6 +74,7 @@ def test_worker_only_compose_projects_no_host_ports_or_backend_credentials():
         "PHOTO_WORKER_PROCESSOR_IDENTITIES",
         "PHOTO_WORKER_LEASE_SECONDS",
         "PHOTO_WORKER_HTTP_TIMEOUT_SECONDS",
+        "PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED",
     }
 
 
@@ -194,7 +204,7 @@ def test_rendered_private_nginx_enforces_tls_routes_marker_and_body_boundary(tmp
 
         private_port, public_port = port(8443), port(443)
 
-        def request(path, body=None, public=False):
+        def request(path, body=None, public=False, marker="spoofed"):
             selected_port = public_port if public else private_port
             command = [
                 "curl",
@@ -210,7 +220,7 @@ def test_rendered_private_nginx_enforces_tls_routes_marker_and_body_boundary(tmp
                 f"findme-photo.ru:{selected_port}:127.0.0.1",
                 "-i",
                 "-H",
-                "X-FindMe-Worker-Transport: spoofed",
+                "X-FindMe-Worker-Transport: " + marker,
                 "-H",
                 "Authorization: Bearer private-test-secret",
             ]
@@ -228,6 +238,13 @@ def test_rendered_private_nginx_enforces_tls_routes_marker_and_body_boundary(tmp
         assert "404 Not Found" in request("/internal/photo-processing/v1-other/claim")
         assert "404 Not Found" in request("/internal/photo-import/v1/claim")
         assert "404 Not Found" in request("/internal/photo-processing/v1/claim", public=True)
+        telemetry_path = "/internal/photo-processing/v1/members/telemetry"
+        assert "404 Not Found" in request(telemetry_path, b"{}", public=True, marker="private-tls")
+        assert "404 Not Found" in request("/worker-diagnostics/metrics/", public=True)
+        assert "404 Not Found" in request("/worker-diagnostics/metrics/")
+        response = request(telemetry_path, b"x" * 16384)
+        assert "200 OK" in response and "X-Received-Transport: private-tls" in response
+        assert "413 Request Entity Too Large" in request(telemetry_path, b"x" * 16385)
         response = request("/internal/photo-processing/v1/claim", b"{}")
         assert "200 OK" in response and "X-Received-Transport: private-tls" in response
         # Actual maximum32x512 worker result with quality evidence and complete envelope.

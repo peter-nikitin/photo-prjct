@@ -2,6 +2,7 @@ from commerce import views as commerce_views
 from django.contrib import admin
 from django.urls import include, path
 from processing.admin_progress import admin_processing_progress
+from processing.telemetry_views import metrics as worker_diagnostic_metrics
 
 from config import views
 
@@ -18,6 +19,9 @@ urlpatterns = [
     path("", include("selfie_search.urls")),
     path("health/", views.health, name="health"),
     path("metrics/", views.metrics, name="metrics"),
+    path(
+        "worker-diagnostics/metrics/", worker_diagnostic_metrics, name="worker_diagnostic_metrics"
+    ),
     path("", views.event_catalog, name="event_catalog"),
     path("events/", views.legacy_events_redirect, name="legacy_events"),
     path(

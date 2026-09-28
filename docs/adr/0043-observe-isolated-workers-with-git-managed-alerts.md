@@ -1,11 +1,11 @@
 # 0043: Observe isolated workers with Git-managed alerts
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-28
-- Deciders: project maintainer
+- Deciders: project maintainer; explicitly accepted in conversation on 2026-09-28
 - Supersedes: [ADR 0018](0018-use-managed-yandex-monitoring.md) only for isolated
   photo-worker host/container observation and the evaluator/application mechanism of
-  their new diagnostic alerts, upon acceptance
+  their new diagnostic alerts
 - Superseded by: none
 
 ## Context
@@ -18,7 +18,7 @@ requires Git-reviewed alerts without manual cloud UI configuration.
 
 The maintainer approved automated Managed Prometheus API application instead of Terraform
 for rules and routing after checking the Yandex provider's published resource surface.
-That approves the application mechanism, not acceptance of this previously unwritten ADR.
+The maintainer subsequently explicitly accepted this ADR on 2026-09-28.
 Workspace/channel lifecycle and configuration read-back must still be verified; undocumented
 API methods must not be inferred. Existing native metrics are not assumed to be queryable
 in a Prometheus workspace.
@@ -40,7 +40,7 @@ in a Prometheus workspace.
 
 ## Decision
 
-Propose option 3, within the approved specification's metric and transport contract.
+Select option 3, within the approved specification's metric and transport contract.
 
 A host-owned probe may read Linux resources and fixed, allowlisted state/resource/lifecycle
 fields for exactly `findme-photo-worker` through bounded read-only Docker commands. It runs
@@ -90,10 +90,17 @@ automatic remediation, paid provisioning, IAM change or live activation is autho
 
 ### Follow-up
 
-- Obtain explicit acceptance of this ADR before writing the implementation plan.
+- The approved [phase-one plan](../plans/2026-09-28-worker-telemetry-collection.md) delivers
+  repository collection, private ingestion, canonical export and opt-in delivery preparation.
+  This does not activate cloud delivery or waive the alert-stage prerequisites below.
 - Resolve supported workspace/channel lifecycle and Alertmanager read-back/rollback without
   manual configuration; return unsupported requirements to the maintainer, not to UI setup.
-- Coordinate current-main/migration integration after the neighboring pgvector delivery.
+  The [2026-09-28 API feasibility review](../research/2026-09-28-worker-diagnostic-alert-api.md)
+  establishes rule CRUD and routing PUT, but does not establish those lifecycle/read-back
+  prerequisites. Alert-stage implementation remains blocked pending a supported contract or an
+  explicitly approved scope revision; ADR acceptance does not resolve API availability.
+- Phase-one integration includes main `d8b755b` and preserves deployed pgvector and feature state;
+  refresh the actual runtime inventory before any separately approved deployment.
 
 ## Validation and rollback
 

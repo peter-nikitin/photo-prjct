@@ -141,6 +141,12 @@ server {
         return 404;
     }
 
+    location ^~ /worker-diagnostics/ {
+        access_log off;
+        error_log /dev/null emerg;
+        return 404;
+    }
+
     # Submission uploads can contain private request metadata. Keep edge failures out of logs.
     location ~ ^/events/[^/]+/selfie-search/$ {
         error_log /dev/null emerg;
@@ -240,6 +246,14 @@ server {
     listen 8080;
     server_name _;
     access_log /var/log/nginx/access.log selfie_search_safe;
+
+    location = /worker-diagnostics/metrics/ {
+        access_log off;
+        error_log /dev/null emerg;
+        proxy_pass http://django_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${PUBLIC_DOMAIN};
+    }
 
     location = /health/ {
         proxy_pass http://django_upstream;

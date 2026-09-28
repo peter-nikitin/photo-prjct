@@ -126,6 +126,11 @@ class HttpClient:
         self._registration_generation: str | None = None
         self._member_lock = threading.Lock()
 
+    @property
+    def registration_generation(self) -> str | None:
+        # Immutable pointer reads do not wait for a network request holding _member_lock.
+        return self._registration_generation
+
     def bind_member(self, envelope: dict[str, str]) -> None:
         if self._transport != "remote" or set(envelope) != {
             "pool",

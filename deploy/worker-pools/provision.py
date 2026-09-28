@@ -73,8 +73,12 @@ def digest(value):
 
 
 def validate(config):
-    if not isinstance(config, dict) or set(config) != FIELDS:
+    if not isinstance(config, dict) or set(config) - {"telemetry_enabled"} != FIELDS:
         raise ValueError("unsupported provisioning input")
+    if type(config.get("telemetry_enabled", False)) is not bool:
+        raise ValueError("explicit boolean telemetry opt-in required")
+    if config["zone"] not in {"ru-central1-a", "ru-central1-b", "ru-central1-d"}:
+        raise ValueError("unsupported worker zone")
     for key in FIELDS - {
         "groups",
         "private_api_ipv4",
@@ -145,7 +149,12 @@ def cloud_init(config, pool):
         for line in (ROOT / "deploy/worker-pools/contract.env.example").read_text().splitlines()
         if line and not line.startswith("#")
     )
-    runtime.update(pool=pool, identities=contract[f"WORKER_POOL_{pool.upper()}_IDENTITIES"])
+    runtime.update(
+        pool=pool,
+        identities=contract[f"WORKER_POOL_{pool.upper()}_IDENTITIES"],
+        zone=config["zone"],
+        telemetry_enabled=config.get("telemetry_enabled", False),
+    )
     files = {
         "/etc/findme-worker/bootstrap.json": json.dumps(runtime, sort_keys=True),
         "/usr/local/lib/findme-worker/bootstrap.py": (
@@ -165,6 +174,18 @@ def cloud_init(config, pool):
         ).read_text(),
         "/etc/systemd/system/findme-worker-retire.timer": (
             ROOT / "deploy/worker-pools/retire.timer"
+        ).read_text(),
+        "/usr/local/lib/findme-worker/telemetry.py": (
+            ROOT / "deploy/worker-pools/telemetry.py"
+        ).read_text(),
+        "/usr/local/lib/findme-worker/telemetry-requirements.txt": (
+            ROOT / "deploy/worker-pools/telemetry-requirements.txt"
+        ).read_text(),
+        "/etc/systemd/system/findme-worker-telemetry.service": (
+            ROOT / "deploy/worker-pools/telemetry.service"
+        ).read_text(),
+        "/etc/systemd/system/findme-worker-telemetry.timer": (
+            ROOT / "deploy/worker-pools/telemetry.timer"
         ).read_text(),
     }
     # Reviewed base image already contains Python, Docker and Compose. No apt/curl installs.

@@ -129,6 +129,51 @@ def test_agent_reconciliation_is_idempotent():
     assert "workspace2" in updated["channels"][0]["channel"]["output"]["config"]["url"]
 
 
+def test_worker_diagnostic_route_is_explicit_canonical_and_route_local():
+    renderer = load("render_agent")
+    native = {
+        "routes": [
+            {"input": {"plugin": "agent_metrics"}, "channel": {"output": {"plugin": "debug"}}}
+        ]
+    }
+    default = renderer.merge_agent(native, role="canonical", workspace_id="workspace1")
+    enabled = renderer.merge_agent(
+        native, role="canonical", workspace_id="workspace1", worker_telemetry=True
+    )
+    assert enabled["routes"][:-1] == default["routes"]
+    assert enabled["channels"] == default["channels"]
+    route = enabled["routes"][-1]
+    assert route["input"]["config"]["url"] == "http://127.0.0.1:8080/worker-diagnostics/metrics/"
+    assert route["input"]["config"]["poll_period"] == "30s"
+    assert route["input"]["config"]["timeout"] == "10s"
+    assert route["channel"]["channel_ref"] == {"name": "findme_prometheus_remote_write"}
+    assert route["channel"]["pipe"] == [
+        {
+            "filter": {
+                "plugin": "transform_metric_labels",
+                "config": {"labels": [{"job": "-"}, {"instance": "-"}, {"host": "-"}]},
+            }
+        }
+    ]
+    assert (
+        renderer.merge_agent(
+            enabled, role="canonical", workspace_id="workspace1", worker_telemetry=True
+        )
+        == enabled
+    )
+    assert renderer.merge_agent(enabled, role="canonical", workspace_id="workspace1") == default
+    with pytest.raises(ValueError):
+        renderer.merge_agent({}, role="public", workspace_id="workspace1", worker_telemetry=True)
+
+
+@pytest.mark.parametrize("workspace", ["", "https://unapproved.invalid/write", "../other"])
+def test_worker_route_requires_reviewed_workspace_and_rejects_endpoint_input(workspace):
+    with pytest.raises(ValueError):
+        load("render_agent").merge_agent(
+            {}, role="canonical", workspace_id=workspace, worker_telemetry=True
+        )
+
+
 def test_bounded_installer_exists():
     assert (HERE / "install.py").exists(), "bounded transactional installer missing"
 

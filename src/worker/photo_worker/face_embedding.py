@@ -50,6 +50,34 @@ class _ModelRuntime:
 _MODEL_RUNTIMES: dict[tuple[Path, Path, str], _ModelRuntime] = {}
 
 
+def warm_models() -> None:
+    """Exercise the packaged query/enrollment models using their normal cached runtimes.
+
+    Both pools can encounter SFace and AdaFace configurations. This performs no enrollment
+    and changes no product gate. Synthetic pixels contain no customer or biometric input.
+    """
+    np = _load_numpy()
+    cv2 = _load_cv2()
+    image = np.zeros((112, 112, 3), dtype=np.uint8)
+    detection = {
+        "bbox": (0.0, 0.0, 112.0, 112.0),
+        "landmarks": (
+            (38.2946, 51.6963),
+            (73.5318, 51.5014),
+            (56.0252, 71.7366),
+            (41.5493, 92.3655),
+            (70.7299, 92.2041),
+        ),
+        "confidence": 1.0,
+    }
+    for model in ("sface", ADAFACE_MODEL_NAME):
+        runtime = _runtime_for_model(
+            cv2, model=model, scrfd_model_path=None, sface_model_path=None, adaface_model_path=None
+        )
+        runtime.detector.detect(image, threshold=0.5)
+        _extract_embedding(np, runtime.recognizer, image, detection, model=model)
+
+
 def extract_selfie_embedding(
     path: Path,
     *,

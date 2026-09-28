@@ -60,6 +60,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-026 | Maintainer | Keep paid purchase dark until external prerequisites are approved | In progress | 2026-08-22 |
 | EJ-027 | Maintainer | Gate bib-recognition activation | Validated | 2026-09-25 |
 | EJ-028 | Maintainer | Issue bounded direct gallery preview capabilities | In progress | 2026-09-15 |
+| EJ-030 | Operator | Isolate and autoscale photo-worker capacity | In progress | 2026-09-28 |
 
 ## Job details
 
@@ -614,6 +615,22 @@ grow without becoming the customer request path.
   separately unrecorded.
 - Last updated: 2026-09-15
 
+### EJ-030 — Operator — Isolate and autoscale photo-worker capacity
+
+When event processing grows, I want separate queue-driven bulk and selfie worker pools, so ML
+work does not consume the public web/database host's resources and idle bulk capacity can stop.
+
+- Status: In progress
+- Evidence: [ADR 0041](adr/0041-isolate-autoscaled-photo-worker-pools.md) and the
+  [approved implementation plan](plans/2026-09-27-autoscaled-worker-isolation.md) govern repository
+  preparation. Private transport, durable admission/retirement, read-only demand publication and
+  bounded fleet templates are implemented with local automated evidence. Canonical release
+  integration and final package verification are in progress; paid resources, IAM/network and
+  certificate acceptance, production cutover and native autoscaler behavior remain unverified.
+  The main VM, import/commerce placement, recognition features and historical events are not
+  changed by repository preparation.
+- Last updated: 2026-09-28
+
 ## Status log
 
 This log is append-only.
@@ -670,3 +687,4 @@ This log is append-only.
 | 2026-09-15 | EJ-028 | Not recorded | In progress | Repository implementation of ADR 0036 issues six-hour exact-object URLs only for accepted derivative-backed small presentation on bounded normal-gallery pages. Legacy, large, download, result, private, archive, and purchased-media paths remain application-authorized; CI, canonical deployment, direct-transfer, and live-capacity evidence are unrecorded. |
 | 2026-09-15 | EJ-029 | Not recorded | In progress | Repository implementation of ADR 0037 adds atomic gallery-media projection publication, projection-backed customer reads, a bounded all-in-progress old-publication drain with immutable creation-time fencing, all-events rebuild and clean verification, worker-paused candidate cutover, privacy-safe `EXPLAIN ANALYZE` smoke, and fresh/established prior-state recovery. CI, merge, canonical deployment, and live outcome remain unrecorded. |
 | 2026-09-27 | EJ-009 | Planned | Validated | Baseline VM/public-probe ingestion is live; the operator verified the console dashboard and baseline alert settings and received Alarm/OK emails from the [isolated failure/recovery drill](runbooks/minimal-monitoring.md#activation-evidence-2026-09-27). Commerce worker metric collection remains a separate extension. |
+| 2026-09-28 | EJ-030 | Not recorded | In progress | Approved worker-isolation repository implementation has reviewed private transport, lifecycle, metrics and provisioning code; canonical release integration and final verification remain in progress. No paid provisioning or live relocation is claimed. |

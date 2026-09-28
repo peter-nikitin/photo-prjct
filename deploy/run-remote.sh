@@ -387,7 +387,16 @@ esac'''
 
 deployment_command = r'''set -eu
 deployment_root=/opt/photo-prjct
-candidate_archive="$deployment_root/.deployment-candidate.tar"
+exec 9>"$deployment_root/.deployment.lock"
+flock -n 9 || exit 1
+export FINDME_CANONICAL_LOCK=1
+[ ! -e "$deployment_root/.deployment-recovery" ] || exit 1
+case "$DEPLOYMENT_ARCHIVE_NAME" in
+  *[!a-zA-Z0-9.-]*|'') exit 2 ;;
+  .deployment-candidate.*.tar) ;;
+  *) exit 2 ;;
+esac
+candidate_archive="$deployment_root/$DEPLOYMENT_ARCHIVE_NAME"
 candidate_package="$(mktemp -d "$deployment_root/.deployment-candidate.XXXXXX")"
 previous_package="$(mktemp -d "$deployment_root/.deployment-previous.XXXXXX")"
 package_mutation_started=0
@@ -396,6 +405,12 @@ previous_package_exists=0
 restore_install_failure() {
   status=$?
   trap - EXIT HUP INT TERM
+  if [ -d "$deployment_root/.deployment-recovery" ]; then
+    # Candidate web may still own remote attempts. Never restore incompatible tooling or
+    # erase the exact prior package/env while canonical recovery remains incomplete.
+    rm -rf "$candidate_package" "$candidate_archive"
+    exit "$status"
+  fi
   if [ "$status" -ne 0 ] && [ "$package_mutation_started" -eq 1 ] && \
     [ -d "$previous_package" ]; then
     for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
@@ -475,6 +490,10 @@ package_mutation_started=0'''
 
 commands = {
     'deploy': deployment_command,
+    'worker-pools': r'''set -eu
+case "$WORKER_POOL_OPERATION" in status|rollout|rollback|verify) ;; *) exit 2 ;; esac
+export PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical
+exec python3 /opt/photo-prjct/deploy/worker-pools/release.py "$WORKER_POOL_OPERATION" --root /opt/photo-prjct''',
     'cutover-compose-identity': r'''set -eu
 test "$COMPOSE_IDENTITY_CUTOVER_CONFIRMATION" = confirm-canonical-compose-identity-cutover
 cd /opt/photo-prjct
@@ -533,9 +552,20 @@ export TBANK_RECEIPT_TAXATION TBANK_RECEIPT_TAX TBANK_RECEIPT_PAYMENT_METHOD
 export TBANK_RECEIPT_PAYMENT_OBJECT TBANK_RECEIPT_MEASUREMENT_UNIT
 export TBANK_RECEIPT_CLOSING_REQUIRED
 
+PHOTO_WORKER_PLACEMENT="${PHOTO_WORKER_PLACEMENT:-local}"
+WORKER_POOL_PRIVATE_API_IPV4="${WORKER_POOL_PRIVATE_API_IPV4:-}"
+WORKER_POOL_RELEASE_MANIFEST="${WORKER_POOL_RELEASE_MANIFEST:-}"
+WORKER_POOL_RELEASE_CHECKSUM="${WORKER_POOL_RELEASE_CHECKSUM:-}"
+export PHOTO_WORKER_PLACEMENT WORKER_POOL_PRIVATE_API_IPV4
+export WORKER_POOL_RELEASE_MANIFEST WORKER_POOL_RELEASE_CHECKSUM
+
 REMOTE_DEPLOYMENT_VALUES='
 APP_IMAGE
 WORKER_IMAGE
+PHOTO_WORKER_PLACEMENT
+WORKER_POOL_PRIVATE_API_IPV4
+WORKER_POOL_RELEASE_MANIFEST
+WORKER_POOL_RELEASE_CHECKSUM
 IMPORT_WORKER_IMAGE
 PHOTO_IMPORT_ENABLED
 PHOTO_IMPORT_BUILD
@@ -681,7 +711,7 @@ case "$mode" in
 esac
 
 case "$mode" in
-    deploy|cutover-compose-identity|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
+    deploy|worker-pools|cutover-compose-identity|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
     *) fail arguments unknown_operation ;;
 esac
 
@@ -731,14 +761,21 @@ fi
 case "$mode" in
     deploy)
         deployment_package=$temporary_root/deployment-package.tar
-        tar -cf "$deployment_package" \
-            docker-compose.deployment.yml docker-compose.https.yml deploy
+        DEPLOYMENT_ARCHIVE_NAME=".deployment-candidate.$(python3 -c 'import uuid; print(uuid.uuid4().hex)').tar"
+        export DEPLOYMENT_ARCHIVE_NAME
+        sh deploy/package-deployment.sh "$deployment_package"
         run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" \
-            "$deployment_package" "$remote_target:/opt/photo-prjct/.deployment-candidate.tar"
+            "$deployment_package" "$remote_target:/opt/photo-prjct/$DEPLOYMENT_ARCHIVE_NAME"
         remote_environment=$temporary_root/remote.env
         # shellcheck disable=SC2086
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" $remote_deployment_values >"$command_output" 2>&1; then
+        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" $remote_deployment_values DEPLOYMENT_ARCHIVE_NAME >"$command_output" 2>&1; then
+            fail environment materialization_failed
+        fi
+        ;;
+    worker-pools)
+        remote_environment=$temporary_root/remote.env
+        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" WORKER_POOL_OPERATION >"$command_output" 2>&1; then
             fail environment materialization_failed
         fi
         ;;
@@ -797,6 +834,9 @@ esac
 quoted_program=$(quote_for_remote_shell "$REMOTE_PROGRAM")
 run_quietly_with_stdin remote remote_failed "$remote_environment" ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i "$key_file" "$remote_target" "exec python3 -c '$quoted_program' '$mode'"
 if [ "$mode" = face-embedding-benchmark ]; then
+    cat "$command_output"
+fi
+if [ "$mode" = worker-pools ]; then
     cat "$command_output"
 fi
 if [ "$mode" = deploy ]; then

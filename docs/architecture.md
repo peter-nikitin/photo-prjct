@@ -80,6 +80,13 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   evidence commits were not included. Neither automated result represents a canonical-deployment activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
+- The repository prepares the isolated photo-worker boundary accepted by
+  [ADR 0041](adr/0041-isolate-autoscaled-photo-worker-pools.md): private verified TLS and separate
+  fleet authorization, additive pool/member admission and boot-fenced retirement, aggregate
+  queue metrics, and dry-run-first bounded fleet templates. Existing processing attempts and
+  artifacts remain authoritative. These code paths do not establish deployed multi-VM topology;
+  paid provisioning, canonical cutover and native scale-from-zero/retirement acceptance remain
+  pending under the [implementation plan](plans/2026-09-27-autoscaled-worker-isolation.md).
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
   PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first
@@ -279,6 +286,12 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 ```
 
 ## Accepted constraints
+
+- [ADR 0041](adr/0041-isolate-autoscaled-photo-worker-pools.md) accepts independently autoscaled
+  bulk/selfie worker pools over a private authenticated HTTPS API, preserving one canonical release
+  and database authority. It excludes a separate capacity-benchmark workstream. Multi-VM delivery,
+  functional acceptance and charged provisioning remain pending; this is not an implemented
+  topology, database HA or approval to execute new-only model backfill.
 
 - [ADR 0035](adr/0035-use-django-polled-yandex-disk-import.md) accepts public Yandex Disk import
   through a dedicated ingestion worker polling a private Django API backed by PostgreSQL.

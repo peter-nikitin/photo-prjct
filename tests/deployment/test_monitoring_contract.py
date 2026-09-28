@@ -29,6 +29,9 @@ def test_dashboard_is_importable_and_covers_only_configured_monitoring_streams()
         "Django request latency (p50 / p95)",
         "Commerce worker alive (requires host collector activation)",
         "Commerce oldest ready work age, seconds",
+        "Worker pool workload (requires fleet collector activation)",
+        "Worker pool oldest claimable age, seconds",
+        "Worker pool running instances and capacity freshness",
     }
     rendered_queries = "\n".join(
         target["query"] for chart in charts.values() for target in chart["queries"]["targets"]
@@ -126,7 +129,7 @@ def test_alert_manifest_has_the_baseline_and_disabled_commerce_alert_contracts()
             "5 minutes",
         ),
     }
-    assert manifest.count("## ") == 9
+    assert manifest.count("## ") == 12
     for name, required in expected_alerts.items():
         section = manifest.split(f"## {name}\n", 1)[1].split("\n## ", 1)[0]
         for value in required:
@@ -158,7 +161,7 @@ def test_alert_selectors_use_folder_as_request_context_not_metric_label() -> Non
 
     assert "__YANDEX_CLOUD_FOLDER_ID__" in manifest.split("## ", 1)[0]
     selectors = [line for line in manifest.splitlines() if line.startswith("- Selector:")]
-    assert len(selectors) == 7
+    assert len(selectors) == 10
     console_selectors = [
         line for line in manifest.splitlines() if line.startswith("- Console selector:")
     ]
@@ -166,6 +169,45 @@ def test_alert_selectors_use_folder_as_request_context_not_metric_label() -> Non
     assert all('folderId="__YANDEX_CLOUD_FOLDER_ID__"' in line for line in console_selectors)
     assert all('check="canonical-commerce"' in line for line in console_selectors)
     assert all("folderId=" not in selector for selector in selectors)
+
+
+def test_worker_pool_saturation_and_diagnostics_preserve_limits_and_unknown_capacity() -> None:
+    manifest = (ROOT / "deploy/monitoring/alerts.md").read_text()
+    dashboard = (ROOT / "deploy/monitoring/dashboard.json").read_text()
+    runbook = (ROOT / "docs/runbooks/worker-pools.md").read_text()
+    section = manifest.split("## Worker pool at-ceiling saturation\n", 1)[1]
+    for required in (
+        "worker_pool_running_instances",
+        "worker_pool_capacity_fresh",
+        "worker_pool_oldest_claimable_age_seconds",
+        "five-minute",
+        "300 seconds",
+        "No data",
+        "90 seconds",
+        "hard maximum two",
+        "selfie claim cap one",
+    ):
+        assert required in section
+    assert "worker_pool_running_instances" in dashboard
+    assert "worker_pool_capacity_fresh" in dashboard
+    assert "historical saturation is UNCONFIRMED" in section
+    assert "historical saturation is UNCONFIRMED" in runbook
+    for required in (
+        "at-ceiling",
+        '"operation":"status"',
+        "report_worker_pool_state --json",
+        "warm",
+        "serving",
+        "RestartCount",
+        "OOMKilled",
+        "docker events",
+        "journalctl",
+        "failed",
+        "stale",
+        "hard maximum two",
+        "selfie claim cap one",
+    ):
+        assert required in runbook
 
 
 def test_runbook_preserves_activation_evidence_and_safe_rollback_boundaries() -> None:

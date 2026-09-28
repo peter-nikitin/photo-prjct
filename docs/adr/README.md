@@ -59,6 +59,7 @@ place, and add the new record to this index.
 | 0037 | [Use a gallery-media read projection](0037-use-gallery-media-read-projection.md) | Accepted |
 | 0038 | [Deliver gallery grid images through CDN and imgproxy](0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) | Accepted |
 | 0039 | [Run the public health probe on the image-origin VM](0039-run-public-probe-on-image-origin-vm.md) | Accepted |
+| 0041 | [Isolate autoscaled photo worker pools](0041-isolate-autoscaled-photo-worker-pools.md) | Accepted |
 
 ## Public selfie-search outcome
 

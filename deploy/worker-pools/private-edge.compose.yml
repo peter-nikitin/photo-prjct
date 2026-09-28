@@ -1,0 +1,9 @@
+# Opt-in overlay on docker-compose.deployment.yml + docker-compose.https.yml.
+# Restrict inbound TCP 8443 to the approved worker subnets/security group before activation.
+# A private bind is not proof of those firewall restrictions.
+services:
+  nginx:
+    environment:
+      WORKER_POOL_PRIVATE_API_IPV4: ${WORKER_POOL_PRIVATE_API_IPV4:?Set explicit RFC1918 IPv4}
+    ports:
+      - "${WORKER_POOL_PRIVATE_API_IPV4:?Set explicit RFC1918 IPv4}:8443:8443"

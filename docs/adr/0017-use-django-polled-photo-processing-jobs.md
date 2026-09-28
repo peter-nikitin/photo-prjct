@@ -4,7 +4,7 @@
 - Date: 2026-07-29
 - Deciders: project maintainer
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0041](0041-isolate-autoscaled-photo-worker-pools.md) for the separate capacity-measurement prerequisite of this relocation only
 
 ## Context
 

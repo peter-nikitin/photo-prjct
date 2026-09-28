@@ -25,6 +25,7 @@ VERIFIER_PATH = REPOSITORY_ROOT / "scripts/verify-environment-secret-projection.
 IMAGE_ORIGIN_PROVISION = REPOSITORY_ROOT / "deploy/image-origin/provision.sh"
 
 EXPECTED_SECRET_KEYS = {
+    "PHOTO_PROCESSING_FLEET_TOKEN",
     "SECRET_KEY",
     "DB_PASSWORD",
     "LETSENCRYPT_EMAIL",
@@ -52,6 +53,7 @@ EXPECTED_SECRET_KEYS = {
     "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
 }
 OPTIONAL_DARK_SECRET_KEYS = {
+    "PHOTO_PROCESSING_FLEET_TOKEN",
     "PHOTO_IMPORT_WORKER_TOKEN",
     "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
     "COMMERCE_POSTBOX_API_KEY_ID",
@@ -281,6 +283,7 @@ def test_manifest_declares_complete_schema_and_closed_projections(
         "local": False,
     }
     for key in (
+        "PHOTO_PROCESSING_FLEET_TOKEN",
         "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
         "COMMERCE_POSTBOX_API_KEY_ID",
         "COMMERCE_POSTBOX_API_KEY_SECRET",
@@ -526,6 +529,8 @@ def test_invalid_payload_schema_fails_before_child(
 ) -> None:
     values = _sentinel_values(manifest)
     payload = _payload(values)
+    # Required-entry mutations must target a required key, independent of manifest ordering.
+    payload["entries"].sort(key=lambda entry: entry["key"] != "SECRET_KEY")
     mutate(payload)
     marker = tmp_path / "child-ran"
     http = _HttpBoundary([_metadata(), payload])

@@ -62,6 +62,7 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.results import parse_canonical_timestamp
+from processing.services import worker_pool_lifecycle
 from processing.services.bibs import complete_bib_attempt
 from processing.services.face_quality import (
     HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
@@ -229,6 +230,7 @@ def _endpoint(view: Callable[..., JsonResponse]) -> Callable[..., HttpResponse]:
 
 @_endpoint
 def claim(request: HttpRequest) -> JsonResponse:
+    remote = request.headers.get("X-FindMe-Worker-Transport") == "private-tls"
     data, error = _json_object(
         request,
         required={
@@ -237,7 +239,8 @@ def claim(request: HttpRequest) -> JsonResponse:
             "processor_version",
             "worker_build",
             "lease_seconds",
-        },
+        }
+        | ({"pool", "instance_id", "boot_id", "registration_generation"} if remote else set()),
     )
     if error is not None:
         return error
@@ -250,12 +253,20 @@ def claim(request: HttpRequest) -> JsonResponse:
         and _positive_int(data["lease_seconds"])
     ):
         return _invalid_request()
+    try:
+        member = worker_pool_lifecycle.MemberIdentity.parse(data) if remote else None
+    except worker_pool_lifecycle.AdmissionDenied:
+        return _invalid_request()
     if data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type:
         recover_expired_search_attempts(storage=TemporarySelfieStorage())
     else:
         recover_expired_attempts()
     try:
-        payload = _claim_with_grant(data)
+        payload = _claim_with_grant(data, member=member)
+    except worker_pool_lifecycle.RegistrationChanged:
+        return _error("registration_changed", "Worker registration changed.", status=412)
+    except worker_pool_lifecycle.AdmissionDenied:
+        return _error("worker_unavailable", "Worker admission is unavailable.", status=503)
     except ValueError:
         return _invalid_request()
     except FingerprintInvariant:
@@ -267,6 +278,51 @@ def claim(request: HttpRequest) -> JsonResponse:
             "storage_unavailable", "Object storage is temporarily unavailable.", status=503
         )
     return JsonResponse(payload)
+
+
+def _member_request(request: HttpRequest, operation: str) -> JsonResponse:
+    if request.headers.get("X-FindMe-Worker-Transport") != "private-tls":
+        return _error("worker_unauthorized", "Unauthorized.", status=401)
+    required = worker_pool_lifecycle.ENVELOPE_FIELDS | (
+        {"ready", "draining", "registration_generation"} if operation == "heartbeat" else set()
+    )
+    data, error = _json_object(request, required=required, maximum_bytes=1024)
+    if error is not None:
+        return error
+    assert data is not None
+    try:
+        identity = worker_pool_lifecycle.MemberIdentity.parse(data)
+        if operation == "register":
+            return JsonResponse(worker_pool_lifecycle.register(identity))
+        if operation == "heartbeat":
+            if type(data["ready"]) is not bool or type(data["draining"]) is not bool:
+                return _invalid_request()
+            return JsonResponse(
+                worker_pool_lifecycle.heartbeat(
+                    identity, ready=data["ready"], draining=data["draining"]
+                )
+            )
+        grant = worker_pool_lifecycle.request_retirement(identity)
+        return JsonResponse({"grant": grant})
+    except worker_pool_lifecycle.RegistrationChanged:
+        return _error("registration_changed", "Worker registration changed.", status=412)
+    except worker_pool_lifecycle.AdmissionDenied:
+        return _error("worker_unavailable", "Worker admission is unavailable.", status=503)
+
+
+@_endpoint
+def member_register(request: HttpRequest) -> JsonResponse:
+    return _member_request(request, "register")
+
+
+@_endpoint
+def member_heartbeat(request: HttpRequest) -> JsonResponse:
+    return _member_request(request, "heartbeat")
+
+
+@_endpoint
+def member_retire(request: HttpRequest) -> JsonResponse:
+    return _member_request(request, "retire")
 
 
 @_endpoint
@@ -520,12 +576,18 @@ def _claim(data: dict[str, Any]) -> ClaimedJob | EmptyClaim | ClaimedSearchJob |
     )
 
 
-def _claim_with_grant(data: dict[str, Any]) -> dict[str, object]:
+def _claim_with_grant(
+    data: dict[str, Any], *, member: worker_pool_lifecycle.MemberIdentity | None = None
+) -> dict[str, object]:
     """Keep the claim rows locked until local signature construction succeeds or rolls back."""
-    with transaction.atomic():
+    identity = (data["contract_version"], data["processor_type"], data["processor_version"])
+    with transaction.atomic(), worker_pool_lifecycle.claim_admission(identity, member) as admission:
+        if not admission.allowed:
+            return {"empty": True, "suggested_delay_seconds": 2}
         claimed = _claim(data)
         if isinstance(claimed, (EmptyClaim, EmptySearchClaim)):
             return {"empty": True, "suggested_delay_seconds": claimed.suggested_delay_seconds}
+        admission.bind(claimed.attempt)
         if isinstance(claimed, ClaimedSearchJob):
             search = claimed.job.search
             storage = TemporarySelfieStorage()
@@ -1732,7 +1794,7 @@ def _safe_face_coordinate(value: object) -> bool:
 def _safe_source_value(value: object) -> bool:
     if not isinstance(value, str) or _EXIF_SOURCE_VALUE.fullmatch(value) is None:
         return False
-    if settings.PHOTO_PROCESSING_WORKER_TOKEN and settings.PHOTO_PROCESSING_WORKER_TOKEN in value:
+    if _contains_worker_secret(value):
         return False
     try:
         datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
@@ -1754,7 +1816,7 @@ def _safe_error_detail(value: str) -> bool:
     return (
         "\x00" not in value
         and _SECRET_MARKER.search(value) is None
-        and settings.PHOTO_PROCESSING_WORKER_TOKEN not in value
+        and not _contains_worker_secret(value)
     )
 
 
@@ -1767,12 +1829,18 @@ def _safe_worker_build(value: object) -> bool:
 
 
 def _safe_durable_string(value: str) -> bool:
-    configured = settings.PHOTO_PROCESSING_WORKER_TOKEN
     return bool(
         "\x00" not in value
         and not any(character.isspace() for character in value)
         and _SECRET_MARKER.search(value) is None
-        and (not configured or configured not in value)
+        and not _contains_worker_secret(value)
+    )
+
+
+def _contains_worker_secret(value: str) -> bool:
+    return any(
+        token and token in value
+        for token in (settings.PHOTO_PROCESSING_WORKER_TOKEN, settings.PHOTO_PROCESSING_FLEET_TOKEN)
     )
 
 

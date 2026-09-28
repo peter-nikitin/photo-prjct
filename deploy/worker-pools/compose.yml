@@ -1,0 +1,28 @@
+services:
+  photo-worker:
+    container_name: findme-photo-worker
+    image: ${WORKER_IMAGE:?Set immutable WORKER_IMAGE}
+    environment:
+      PHOTO_WORKER_TRANSPORT: remote
+      PHOTO_WORKER_POOL: ${PHOTO_WORKER_POOL:?Set PHOTO_WORKER_POOL}
+      PHOTO_WORKER_API_URL: ${PHOTO_WORKER_API_URL:?Set canonical private HTTPS API}
+      WORKER_POOL_PRIVATE_API_IPV4: ${WORKER_POOL_PRIVATE_API_IPV4:?Set private API IPv4}
+      PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_FLEET_TOKEN:?Set fleet-only token}
+      PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:?Set immutable build SHA}
+      PHOTO_WORKER_IMAGE: ${WORKER_IMAGE:?Set immutable WORKER_IMAGE}
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: ${PHOTO_WORKER_PROCESSOR_IDENTITIES:?Set exact pool identities}
+      PHOTO_WORKER_LEASE_SECONDS: "120"
+      PHOTO_WORKER_HTTP_TIMEOUT_SECONDS: "900"
+    extra_hosts:
+      - "findme-photo.ru:${WORKER_POOL_PRIVATE_API_IPV4:?Set private API IPv4}"
+    volumes:
+      - /proc/sys/kernel/random/boot_id:/run/findme-worker/boot-id:ro
+      - /etc/findme-worker/instance-id:/run/findme-worker/instance-id:ro
+    cpus: "2"
+    mem_limit: 5g
+    stop_grace_period: 960s
+    restart: unless-stopped
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=worker-${PHOTO_WORKER_POOL:?Set PHOTO_WORKER_POOL}"

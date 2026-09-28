@@ -4,7 +4,7 @@
 - Date: 2026-07-30
 - Deciders: project maintainer
 - Supersedes: none
-- Superseded by: ADR 0039, public-probe placement only
+- Superseded by: ADR 0039 for public-probe placement only; [ADR 0041](0041-isolate-autoscaled-photo-worker-pools.md) for observation-only metrics used by photo-worker autoscalers only
 
 ## Context
 

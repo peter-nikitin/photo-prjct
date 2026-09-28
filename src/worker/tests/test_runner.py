@@ -1993,6 +1993,70 @@ def test_lease_keeper_sends_one_deterministic_heartbeat_and_joins(tmp_path: Path
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("signum", [15, 2, None])
+@pytest.mark.parametrize("lost_callback", [False, True])
+def test_signal_during_attempt_keeps_heartbeats_and_callback_but_never_claims_again(
+    tmp_path, monkeypatch, signum, lost_callback
+):
+    import threading
+    from unittest.mock import Mock
+
+    from photo_worker.lifecycle import (
+        DrainController,
+        FleetLifecycle,
+        HostIdentity,
+        install_signal_handlers,
+    )
+
+    handlers = {}
+    monkeypatch.setattr(
+        "signal.signal", lambda number, handler: handlers.setdefault(number, handler)
+    )
+    completed = threading.Event()
+
+    class DrainClient(Client):
+        def heartbeat(self, attempt_id, **kwargs):
+            if signum is None:
+                lifecycle.pulse()
+            else:
+                handlers[signum](signum, None)
+            super().heartbeat(attempt_id, **kwargs)
+
+        def complete(self, attempt_id, payload, **kwargs):
+            assert worker.draining.is_set()
+            if lost_callback:
+                raise ApiError("lease_not_current", retryable=False)
+            return super().complete(attempt_id, payload, **kwargs)
+
+    client = DrainClient(make_claim())
+    threads = []
+    forced = Mock()
+    worker = Worker(
+        client,
+        WorkerConfig("worker-test", 120, temp_dir=tmp_path),
+        lease_keeper_factory=deterministic_keeper_factory([False, False, True], threads),
+        drain=DrainController(completed=completed, force_exit=forced),
+    )
+    install_signal_handlers(worker)
+    member_client = Mock()
+    member_client.member_request.return_value = {"ready": False, "draining": True}
+    lifecycle = FleetLifecycle(
+        member_client,
+        HostIdentity("selfie", "instance-1", "00000000-0000-0000-0000-000000000001", "a" * 40),
+        worker.drain,
+    )
+    try:
+        worker.run_forever()
+    finally:
+        completed.set()
+    assert len(client.claim_identities) == 1
+    assert len(client.heartbeats) == 2
+    assert len(client.completed) == (0 if lost_callback else 1)
+    assert threads[0].join_count == 1
+    assert list(tmp_path.iterdir()) == []
+    forced.assert_not_called()
+
+
 @pytest.mark.parametrize("boundary", ["heartbeat", "refresh", "complete", "fail"])
 def test_lease_loss_abandons_only_current_attempt_and_cleans_temp_file(
     tmp_path: Path,

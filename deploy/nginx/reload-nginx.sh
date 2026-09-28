@@ -81,11 +81,24 @@ else
     HTTPS_ALIAS_SERVER=""
 fi
 
-export PUBLIC_DOMAIN PUBLIC_DOMAIN_ALIAS_SERVER_NAME HTTPS_ALIAS_SERVER
+PRIVATE_WORKER_SERVER=""
+if [ -n "${WORKER_POOL_PRIVATE_API_IPV4:-}" ]; then
+    if [ "$PUBLIC_DOMAIN" != "findme-photo.ru" ] || ! printf '%s\n' "$WORKER_POOL_PRIVATE_API_IPV4" | awk -F. '
+        NF != 4 { exit 1 }
+        { for (i=1; i<=4; i++) if ($i !~ /^[0-9]+$/ || $i > 255 || (length($i)>1 && substr($i,1,1)=="0")) exit 1 }
+        !($1==10 || ($1==172 && $2>=16 && $2<=31) || ($1==192 && $2==168)) { exit 1 }
+    '; then
+        echo "Private worker edge requires canonical domain and explicit RFC1918 IPv4" >&2
+        exit 2
+    fi
+    PRIVATE_WORKER_SERVER="$(cat /opt/nginx/private-worker.conf.template)"
+fi
+
+export PUBLIC_DOMAIN PUBLIC_DOMAIN_ALIAS_SERVER_NAME HTTPS_ALIAS_SERVER PRIVATE_WORKER_SERVER
 
 render_config() {
     output="$1"
-    envsubst '${PUBLIC_DOMAIN} ${PUBLIC_DOMAIN_ALIAS_SERVER_NAME} ${HTTPS_ALIAS_SERVER}' \
+    envsubst '${PUBLIC_DOMAIN} ${PUBLIC_DOMAIN_ALIAS_SERVER_NAME} ${HTTPS_ALIAS_SERVER} ${PRIVATE_WORKER_SERVER}' \
         < /opt/nginx/https.conf.template > "$output"
 }
 

@@ -86,7 +86,7 @@ def expressions(config: dict[str, Any]) -> dict[str, str]:
     s = selectors(config)
     return {
         "public": f"max_over_time({s['public_success']}[10m])",
-        "tls": f"min_over_time({s['tls_days']}[5m])",
+        "tls": f"min_over_time({s['tls_days']}[10m])",
         "disk_percent": f"100 * {s['disk_free']} / {s['disk_size']}",
         "disk_bytes": s["disk_free"],
         "memory": f"100 * {s['memory_available']} / {s['memory_total']}",

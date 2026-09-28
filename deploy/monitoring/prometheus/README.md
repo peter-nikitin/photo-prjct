@@ -89,7 +89,8 @@ blocks apply; `/metadata` is not supported and is never called.
 
 Public/Commerce availability preserve maximum-over-window semantics (10m/5m), with separate
 `absent_over_time` rules. Disk and memory use maximum free capacity over 10m/15m; CPU uses minimum
-utilization over 15m. TLS uses minimum remaining days over 5m; ready work uses maximum age over 5m.
+utilization over 15m. TLS uses minimum remaining days over 10m, preserving observations between 300s polls plus
+delivery lag; the preflight uses the same TLS window. Ready work uses maximum age over 5m.
 Missing resource series do not fire pressure rules. Native worker-pool control observations are
 outside this migration and stay untouched.
 

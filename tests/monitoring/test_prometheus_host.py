@@ -21,6 +21,24 @@ def test_host_exporter_exists():
     assert (HERE / "exporter.py").is_file(), "fresh private host exporter missing"
 
 
+@pytest.mark.parametrize(
+    "role,capabilities", [("canonical", {"CAP_DAC_READ_SEARCH"}), ("public", set())]
+)
+def test_exporter_unit_capabilities_match_observation_role(role, capabilities):
+    from configparser import ConfigParser
+
+    config = ConfigParser(interpolation=None)
+    config.read_string((HERE / "units" / f"findme-prometheus-{role}.service").read_text())
+    service = config["Service"]
+    assert set(service["CapabilityBoundingSet"].split()) == capabilities
+    assert service["NoNewPrivileges"] == "yes"
+    assert service["ProtectSystem"] == "strict"
+    if role == "canonical":
+        assert service["User"] == "root"
+    else:
+        assert service["DynamicUser"] == "yes"
+
+
 @pytest.fixture
 def exporter():
     if not (HERE / "exporter.py").exists():

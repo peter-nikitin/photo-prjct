@@ -1,0 +1,9 @@
+[Unit]
+Description=FindMe worker host retirement permission
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/findme-worker/runtime.env
+ExecStart=/usr/bin/python3 /usr/local/lib/findme-worker/retire.py --apply
+TimeoutStartSec=1010

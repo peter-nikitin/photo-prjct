@@ -3,12 +3,100 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("previous_placement", ["local", "remote"])
+@pytest.mark.parametrize("requested_commerce", ["True", "False"])
+@pytest.mark.parametrize("previous_commerce", ["True", "False"])
+def test_remote_application_reconciles_commerce_forward_and_after_failed_candidate(
+    tmp_path, previous_placement, requested_commerce, previous_commerce
+):
+    source = (ROOT / "deploy/apply-deployment.sh").read_text()
+    functions = "\n".join(
+        re.search(rf"^{name}\(\) \{{\n.*?^\}}", source, re.M | re.S)[0]
+        for name in (
+            "compose_reconcile_requested_runtime_profiles",
+            "clear_candidate_compose_interpolation",
+            "recover_previous_deployment",
+            "restore_previous_deployment_package",
+            "retain_vector_database_image",
+        )
+    )
+    previous_package = tmp_path / "previous-package"
+    (previous_package / "deploy").mkdir(parents=True)
+    (tmp_path / "deploy").mkdir()
+    for root in (tmp_path, previous_package):
+        (root / "docker-compose.deployment.yml").write_text(
+            "services:\n  db:\n    image: postgres:16\n  web:\n    image: previous-package\n"
+        )
+        (root / "docker-compose.https.yml").write_text("services: {}\n")
+    database_image = (
+        "pgvector/pgvector:0.8.6-pg16-trixie@sha256:"
+        "c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b"
+    )
+    (tmp_path / ".env").write_text("APP_IMAGE=candidate-image\n")
+    previous_env = tmp_path / "previous.env"
+    previous_env.write_text("APP_IMAGE=previous-image\n")
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-eu",
+            "-c",
+            functions
+            + """
+compose() { printf '%s %s\n' "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" "$*"; }
+fleet_phase() { [ "$1" = rollback ]; }
+stop_import_before_web_change() { :; }
+restore_previous_deployment_markers() { :; }
+compose_reconcile_requested_runtime_profiles
+recover_previous_deployment
+""",
+        ],
+        env={
+            **os.environ,
+            "DEPLOY_ROOT": str(tmp_path),
+            "requested_worker_placement": "remote",
+            "previous_worker_placement": previous_placement,
+            "requested_commerce_worker_enabled": requested_commerce,
+            "previous_commerce_worker_enabled": previous_commerce,
+            "previous_processing_enabled": "True",
+            "previous_worker_replicas": "1",
+            "requested_import_enabled": "False",
+            "previous_import_enabled": "False",
+            "fleet_prepared": "1",
+            "previous_env_exists": "1",
+            "previous_env_tmp": str(previous_env),
+            "PREVIOUS_DEPLOYMENT_PACKAGE_ROOT": str(previous_package),
+            "vector_database_reconciled": "1",
+            "vector_database_image": database_image,
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    commerce = [line for line in result.stdout.splitlines() if "commerce-worker" in line]
+    commands = {
+        "True": "--profile commerce up -d --no-deps commerce-worker",
+        "False": "--profile commerce rm -sf commerce-worker",
+    }
+    assert commerce == [
+        f"candidate-image {commands[requested_commerce]}",
+        f"previous-image {commands[previous_commerce]}",
+    ]
+    assert (tmp_path / ".env").read_text() == "APP_IMAGE=previous-image\n"
+    assert "rm -sf worker" not in result.stdout
+    assert "--remove-orphans" not in result.stdout
+    assert "postgres" not in result.stdout
+    assert f"image: {database_image}" in (tmp_path / "docker-compose.deployment.yml").read_text()
+    assert not previous_package.exists()
+
 
 PREVIOUS_ENV = (
     b"APP_IMAGE=old-image\n"
@@ -966,6 +1054,76 @@ esac
 
 def _apply_log(tmp_path: Path) -> list[str]:
     return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
+
+
+def test_remote_placement_requires_reviewed_release_before_mutation(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env["PHOTO_WORKER_PLACEMENT"] = "remote"
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    assert "remote placement requires" in result.stderr
+    assert not (tmp_path / "apply.log").exists()
+
+
+@pytest.mark.parametrize(
+    "rollback_fails,scenario",
+    [(False, "success"), (True, "success"), (False, "migration-plan-failure")],
+)
+def test_remote_cutover_never_force_removes_local_workers_and_gates_image_marker(
+    tmp_path: Path, fake_bin: Path, rollback_fails: bool, scenario: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    env.update(
+        PHOTO_WORKER_PLACEMENT="remote",
+        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
+        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
+        WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
+        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
+        FLEET_ROLLBACK_FAILS="1" if rollback_fails else "0",
+    )
+    # Inject only fleet/cloud host boundary. Canonical shell and real file marker paths execute.
+    _write_executable(
+        fake_bin / "python3",
+        """
+case "$*" in
+  *worker-pools/release.py*)
+    printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"
+    [ "$2" != rollout ] || exit 1
+    [ "$2:$FLEET_ROLLBACK_FAILS" != rollback:1 ] || exit 1
+    exit 0 ;;
+esac
+exec """
+        + sys.executable
+        + """ "$@"
+""",
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    log = _apply_log(tmp_path)
+    assert ("fleet rollout" in log) == (scenario == "success")
+    assert "fleet rollback" in log
+    assert not any("rm -sf worker" in line for line in log)
+    assert not any(line.startswith("docker stop ") for line in log)
+    if scenario == "success":
+        assert (
+            log.index("candidate-vector-collation-check")
+            < log.index("candidate-vector-capability")
+            < log.index("candidate-migrate")
+            < log.index("fleet rollout")
+        )
+        database_start = next(line for line in log if " up -d --wait --no-deps db" in line)
+        assert "--force-recreate" not in database_start
+        assert "--remove-orphans" not in database_start
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+    recovery = tmp_path / ".deployment-recovery"
+    if rollback_fails:
+        assert (recovery / "previous.env").read_bytes() == PREVIOUS_ENV
+        assert (recovery / "deployed-image").read_text() == "old-image\n"
+        assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
+    else:
+        assert not recovery.exists()
 
 
 def _render_gallery_environment(env_file: Path) -> tuple[dict[str, str], str]:

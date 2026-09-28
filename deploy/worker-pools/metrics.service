@@ -1,0 +1,13 @@
+[Unit]
+Description=Canonical FindMe worker pool observation and metrics
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/findme-worker-pools/metrics.py --config /etc/findme-worker-pools/metrics.json
+TimeoutStartSec=115s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict

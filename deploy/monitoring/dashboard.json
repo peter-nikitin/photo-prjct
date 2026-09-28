@@ -96,6 +96,29 @@
       "chart": {"id": "commerce-ready-work-age", "title": "Commerce oldest ready work age, seconds", "queries": {"targets": [
         {"query": "\"commerce_oldest_ready_age_seconds\"{service=\"custom\", check=\"canonical-commerce\"}"}
       ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "0", "y": "52", "w": "18", "h": "8"},
+      "chart": {"id": "worker-pool-workload", "title": "Worker pool workload (requires fleet collector activation)", "queries": {"targets": [
+        {"query": "\"worker_pool_workload\"{service=\"custom\", pool=\"bulk\"}"},
+        {"query": "\"worker_pool_workload\"{service=\"custom\", pool=\"selfie\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "18", "y": "52", "w": "18", "h": "8"},
+      "chart": {"id": "worker-pool-queue-age", "title": "Worker pool oldest claimable age, seconds", "queries": {"targets": [
+        {"query": "\"worker_pool_oldest_claimable_age_seconds\"{service=\"custom\", pool=\"bulk\"}"},
+        {"query": "\"worker_pool_oldest_claimable_age_seconds\"{service=\"custom\", pool=\"selfie\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"interpolate": "INTERPOLATE_LINEAR", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
+    },
+    {
+      "position": {"x": "0", "y": "60", "w": "36", "h": "8"},
+      "chart": {"id": "worker-pool-capacity", "title": "Worker pool running instances and capacity freshness", "queries": {"targets": [
+        {"query": "\"worker_pool_running_instances\"{service=\"custom\", pool=\"bulk\"}"},
+        {"query": "\"worker_pool_running_instances\"{service=\"custom\", pool=\"selfie\"}"},
+        {"query": "\"worker_pool_capacity_fresh\"{service=\"custom\", pool=\"bulk\"}"},
+        {"query": "\"worker_pool_capacity_fresh\"{service=\"custom\", pool=\"selfie\"}"}
+      ], "downsampling": {}}, "visualizationSettings": {"type": "VISUALIZATION_TYPE_POINTS", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {}}, "seriesOverrides": [], "nameHidingSettings": {}}
     }
   ]
 }

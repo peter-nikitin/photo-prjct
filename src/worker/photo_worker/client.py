@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from uuid import UUID
 
 from photo_worker.contracts import (
     MAX_JSON_FIELD_BYTES,
@@ -20,6 +22,7 @@ from photo_worker.contracts import (
     _processor_version,
     _utc_timestamp,
 )
+from photo_worker.transport import REMOTE_API_URL
 
 BOOTSTRAP_RESPONSE_MAX_BYTES = MAX_JSON_FIELD_BYTES
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
@@ -73,6 +76,16 @@ class UploadError(ApiError):
     pass
 
 
+class _RejectApiRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def private_api_opener() -> OpenUrl:
+    """Use system trust/hostname verification and reject every private API redirect."""
+    return build_opener(_RejectApiRedirects()).open
+
+
 @dataclass(frozen=True)
 class CallbackResult:
     attempt_id: str
@@ -88,16 +101,65 @@ class HttpClient:
         token: str,
         *,
         timeout_seconds: float = 180.0,
-        opener: OpenUrl = urlopen,
+        opener: OpenUrl | None = None,
+        transport: str = "local",
     ) -> None:
         if not api_url.startswith(("http://", "https://")) or not token:
             raise ValueError("worker API URL and token are required")
+        if transport not in {"local", "remote"}:
+            raise ValueError("unknown worker transport")
+        if transport == "remote" and api_url != REMOTE_API_URL:
+            raise ValueError("remote worker API must use canonical HTTPS endpoint")
+        if transport == "remote" and (not token.isascii() or any(c.isspace() for c in token)):
+            raise ValueError("remote worker token must be one ASCII bearer credential")
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("worker HTTP timeout must be finite and positive")
         self._api_url = api_url.rstrip("/")
         self._token = token
         self._timeout_seconds = timeout_seconds
-        self._opener = opener
+        self._opener = opener or urlopen
+        # urllib's default HTTPS handler retains system CA and hostname verification.
+        # Disable API redirects so credentials can never follow an alternate endpoint.
+        self._api_opener = opener or (private_api_opener() if transport == "remote" else urlopen)
+        self._transport = transport
+        self._member: dict[str, str] | None = None
+        self._registration_generation: str | None = None
+        self._member_lock = threading.Lock()
+
+    def bind_member(self, envelope: dict[str, str]) -> None:
+        if self._transport != "remote" or set(envelope) != {
+            "pool",
+            "instance_id",
+            "boot_id",
+            "worker_build",
+        }:
+            raise ValueError("remote host envelope required")
+        from photo_worker.lifecycle import HostIdentity
+
+        HostIdentity(**envelope)
+        if self._member is not None and self._member != envelope:
+            raise ValueError("worker host identity cannot change")
+        self._member = dict(envelope)
+
+    def member_request(self, operation: str, **fields: object) -> dict[str, Any]:
+        if self._member is None or operation not in {"register", "heartbeat", "retire"}:
+            raise ValueError("remote member operation requires host identity")
+        # One process cannot install an earlier registration response after a later one,
+        # or send a heartbeat while its registration response is still in flight.
+        with self._member_lock:
+            payload: dict[str, object] = self._member | fields
+            if operation == "heartbeat":
+                if self._registration_generation is None:
+                    raise ValueError("member heartbeat requires registration")
+                payload["registration_generation"] = self._registration_generation
+            result = self.post_json(f"members/{operation}", payload)
+            if operation == "register":
+                try:
+                    generation = str(UUID(result["registration_generation"]))
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    raise ApiError("invalid_api_response", retryable=True) from None
+                self._registration_generation = generation
+            return result
 
     def post_json(
         self,
@@ -120,7 +182,7 @@ class HttpClient:
             },
         )
         try:
-            with self._opener(request, timeout=self._timeout_seconds) as response:
+            with self._api_opener(request, timeout=self._timeout_seconds) as response:
                 raw = _read_bounded(response, response_max_bytes)
         except HTTPError as error:
             error.close()
@@ -144,6 +206,16 @@ class HttpClient:
         processor_version: int | None = None,
         contract_version: int = 1,
     ) -> Claim:
+        if self._transport == "remote" and (
+            self._member is None or self._member["worker_build"] != worker_build
+        ):
+            raise ValueError("remote claim requires matching registered host identity")
+        with self._member_lock:
+            envelope: dict[str, object] = dict(self._member or {})
+            if self._transport == "remote":
+                if self._registration_generation is None:
+                    raise ValueError("remote claim requires process registration")
+                envelope["registration_generation"] = self._registration_generation
         try:
             return Claim.from_response(
                 self.post_json(
@@ -158,7 +230,8 @@ class HttpClient:
                         ),
                         "worker_build": worker_build,
                         "lease_seconds": lease_seconds,
-                    },
+                    }
+                    | envelope,
                 )
             )
         except ContractError as error:
@@ -390,6 +463,10 @@ def _header(headers: Any, name: str) -> str:
 
 
 def _api_error(status: int) -> ApiError:
+    if status == 412:
+        return ApiError(
+            "registration_changed", retryable=True, diagnostic="http:registration_changed"
+        )
     if status in {401, 403}:
         return ApiError(
             "worker_unauthorized", retryable=False, diagnostic=_http_error_diagnostic(status)

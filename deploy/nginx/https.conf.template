@@ -107,6 +107,8 @@ server {
 
 ${HTTPS_ALIAS_SERVER}
 
+${PRIVATE_WORKER_SERVER}
+
 server {
     listen 443 ssl;
     listen [::]:443 ssl;

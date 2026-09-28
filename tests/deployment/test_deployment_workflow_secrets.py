@@ -238,6 +238,7 @@ def _deployment_values() -> dict[str, str]:
 def remote_boundary(tmp_path: Path) -> Path:
     binary_dir = tmp_path / "bin"
     binary_dir.mkdir()
+    _write_executable(binary_dir / "flock", "exit 0")
     _write_executable(
         binary_dir / "scp",
         """
@@ -254,8 +255,9 @@ def remote_boundary(tmp_path: Path) -> Path:
         for argument in "$@"; do
           target=$argument
         done
-        deployment_target="$VM_USER@$VM_HOST:/opt/photo-prjct/.deployment-candidate.tar"
-        if [ "$target" = "$deployment_target" ] && [ "${EXECUTE_REMOTE_DEPLOY:-0}" = 1 ]; then
+        deployment_target="$VM_USER@$VM_HOST:/opt/photo-prjct/.deployment-candidate."
+        if [ "${target#"$deployment_target"}" != "$target" ] && \\
+           [ "${EXECUTE_REMOTE_DEPLOY:-0}" = 1 ]; then
           source=''
           skip_next=0
           for argument in "$@"; do
@@ -271,7 +273,7 @@ def remote_boundary(tmp_path: Path) -> Path:
             source=$argument
           done
           [ -n "$source" ] || exit 53
-          cp "$source" "$REMOTE_DEPLOY_ROOT/.deployment-candidate.tar"
+          cp "$source" "$REMOTE_DEPLOY_ROOT/${target##*/}"
           exit 0
         fi
         release_sha=${RELEASE_SHA:-missing-release-sha}
@@ -503,7 +505,7 @@ def test_deploy_helper_uses_private_files_and_ssh_stdin_without_disclosing_value
     assert "docker-compose.deployment.yml" not in scp_arguments
     assert "docker-compose.https.yml" not in scp_arguments
     assert "\ndeploy\n" not in f"\n{scp_arguments}\n"
-    assert "/opt/photo-prjct/.deployment-candidate.tar" in scp_arguments
+    assert "/opt/photo-prjct/.deployment-candidate." in scp_arguments
     assert "StrictHostKeyChecking=yes" in ssh_arguments
     assert "UserKnownHostsFile=" in ssh_arguments
     assert "ServerAliveInterval=30" in ssh_arguments
@@ -545,6 +547,11 @@ def _initial_deployment_helper(tmp_path: Path, *, apply_status: int) -> tuple[Pa
     deploy_dir.mkdir(parents=True)
     helper = deploy_dir / "run-remote.sh"
     shutil.copy2(HELPER, helper)
+    shutil.copy2(ROOT / "deploy/package-deployment.sh", deploy_dir / "package-deployment.sh")
+    for name in ("__init__.py", "services/__init__.py", "services/worker_pool_cloud.py"):
+        target = project_root / "src/backend/processing" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "src/backend/processing" / name, target)
     candidate_compose = b"services:\n  worker-bulk:\n    image: ${WORKER_IMAGE}\n"
     (project_root / "docker-compose.deployment.yml").write_bytes(candidate_compose)
     (project_root / "docker-compose.https.yml").write_text(

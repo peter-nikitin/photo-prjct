@@ -17,7 +17,13 @@ def has_worker_token(request: HttpRequest) -> bool:
     Disabled or unconfigured deployments deliberately use the same response as a bad credential,
     so this endpoint never confirms feature or token configuration to an unauthenticated caller.
     """
-    configured = settings.PHOTO_PROCESSING_WORKER_TOKEN
+    local_token = settings.PHOTO_PROCESSING_WORKER_TOKEN
+    fleet_token = settings.PHOTO_PROCESSING_FLEET_TOKEN
+    marker = request.headers.get("X-FindMe-Worker-Transport", "")
+    configured = fleet_token if marker == "private-tls" else local_token
+    transport_valid = marker in {"", "private-tls"} and (
+        not fleet_token or not compare_digest(local_token, fleet_token)
+    )
     header = request.headers.get("Authorization", "")
     prefix = "Bearer "
     supplied = header[len(prefix) :] if header.startswith(prefix) else ""
@@ -25,7 +31,13 @@ def has_worker_token(request: HttpRequest) -> bool:
     # Keep the denial path's comparison operation independent of configuration and header shape.
     # A fixed dummy also avoids passing an empty secret to a timing-sensitive branch.
     compared = compare_digest(configured or "!worker-token-unconfigured!", supplied)
-    return bool(settings.PHOTO_PROCESSING_ENABLED and configured and valid_shape and compared)
+    return bool(
+        settings.PHOTO_PROCESSING_ENABLED
+        and transport_valid
+        and configured
+        and valid_shape
+        and compared
+    )
 
 
 def require_worker_token(view: Callable[..., HttpResponse]) -> Callable[..., HttpResponse]:

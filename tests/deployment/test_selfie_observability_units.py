@@ -174,11 +174,20 @@ def test_deployment_workflow_uses_canonical_compose_tags(tmp_path: Path) -> None
     )
     deployment_root = tmp_path / "deployment"
     deployment_root.mkdir()
-    with tarfile.open(deployment_root / ".deployment-candidate.tar", "w") as archive:
+    with tarfile.open(deployment_root / ".deployment-candidate.fixture.tar", "w") as archive:
         for entry in candidate.iterdir():
             archive.add(entry, arcname=entry.name)
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    (binary / "flock").write_text("#!/bin/sh\nexit 0\n")
+    (binary / "flock").chmod(0o755)
     result = subprocess.run(
         ["sh", "-c", deploy_command.replace("/opt/photo-prjct", str(deployment_root))],
+        env={
+            **os.environ,
+            "PATH": str(binary) + ":" + os.environ["PATH"],
+            "DEPLOYMENT_ARCHIVE_NAME": ".deployment-candidate.fixture.tar",
+        },
         text=True,
         capture_output=True,
         check=False,

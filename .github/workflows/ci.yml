@@ -131,6 +131,18 @@ jobs:
       - name: Install dependencies
         if: needs.select-test-suites.outputs.operational == 'true'
         run: pip install -r requirements-dev.txt -r src/worker/requirements.txt
+      - name: Start PostgreSQL
+        if: needs.select-test-suites.outputs.operational == 'true'
+        run: |
+          docker run --detach --rm --name operational-postgres --publish 5432:5432 \
+            --env POSTGRES_DB=app --env POSTGRES_USER=app --env POSTGRES_PASSWORD=app pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
+          for attempt in $(seq 1 15); do
+            if docker exec operational-postgres pg_isready -U app -d app; then exit 0; fi
+            sleep 1
+          done
+          docker ps --filter name=operational-postgres --format '{{.Status}}' || true
+          docker logs --tail 100 operational-postgres || true
+          exit 1
       - name: Test operational layer
         if: needs.select-test-suites.outputs.operational == 'true'
         run: pytest -n 4 --dist loadscope -m "operational and not clone_deployed_slow"

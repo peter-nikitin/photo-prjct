@@ -1,0 +1,432 @@
+{
+  "rule_files": [
+    "rules.yml"
+  ],
+  "evaluation_interval": "1m",
+  "tests": [
+    {
+      "name": "public failure after success then recovery",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_probe_success{check=\"canonical-health\"}",
+          "values": "1 0+0x10 1+0x5"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "9m",
+          "alertname": "PublicServiceUnavailable",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "10m",
+          "alertname": "PublicServiceUnavailable",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "check": "canonical-health"
+              },
+              "exp_annotations": {
+                "summary": "Public HTTPS attempts have failed throughout ten minutes."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "12m",
+          "alertname": "PublicServiceUnavailable",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "public missing is separate",
+      "interval": "1m",
+      "input_series": [],
+      "alert_rule_test": [
+        {
+          "eval_time": "11m",
+          "alertname": "PublicServiceUnavailable",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "11m",
+          "alertname": "PublicObservationsMissing",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "check": "canonical-health"
+              },
+              "exp_annotations": {
+                "summary": "Public HTTPS observations are missing; availability is unconfirmed."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Commerce sustained failure recovery and overdue",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "commerce_worker_alive{check=\"canonical-commerce\"}",
+          "values": "1 0+0x5 1+0x5"
+        },
+        {
+          "series": "commerce_oldest_ready_age_seconds{check=\"canonical-commerce\"}",
+          "values": "0 600+0x5 0+0x5"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "4m",
+          "alertname": "CommerceWorkerUnavailable",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "5m",
+          "alertname": "CommerceWorkerUnavailable",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "check": "canonical-commerce"
+              },
+              "exp_annotations": {
+                "summary": "Commerce liveness observations are zero throughout five minutes."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "7m",
+          "alertname": "CommerceWorkerUnavailable",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "5m",
+          "alertname": "CommerceReadyWorkOverdue",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "check": "canonical-commerce"
+              },
+              "exp_annotations": {
+                "summary": "Commerce ready work is older than three hundred seconds."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "12m",
+          "alertname": "CommerceReadyWorkOverdue",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "Commerce missing is not worker death",
+      "interval": "1m",
+      "input_series": [],
+      "alert_rule_test": [
+        {
+          "eval_time": "6m",
+          "alertname": "CommerceWorkerUnavailable",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "6m",
+          "alertname": "CommerceObservationsMissing",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "check": "canonical-commerce"
+              },
+              "exp_annotations": {
+                "summary": "Commerce observations are missing; inspect collector, web and database."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "missing resources do not mean pressure",
+      "interval": "1m",
+      "input_series": [],
+      "alert_rule_test": [
+        {
+          "eval_time": "20m",
+          "alertname": "DiskSpaceCritical",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "MemoryPressure",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "CPUPressure",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "Application5xxDegradation",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "HTTP insufficient traffic",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_http_requests_total{status_class=\"5xx\"}",
+          "values": "0+0.5x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "Application5xxDegradation",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "HTTP sufficient 5xx and counter reset",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_http_requests_total{status_class=\"5xx\"}",
+          "values": "10 12 14 0 2 4 6 8 10 12"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "Application5xxDegradation",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "HTTP 5xx exceeds twenty percent with at least five requests in five minutes."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "HTTP zero traffic",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_http_requests_total{status_class=\"2xx\"}",
+          "values": "0+0x10"
+        },
+        {
+          "series": "findme_http_requests_total{status_class=\"5xx\"}",
+          "values": "0+0x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "Application5xxDegradation",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "resource sustained windows recovery",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "sys_memory_MemAvailable{instance=\"dev-photo-prjct\"}",
+          "values": "20 5+0x15 20+0x5"
+        },
+        {
+          "series": "sys_memory_MemTotal{instance=\"dev-photo-prjct\"}",
+          "values": "100+0x22"
+        },
+        {
+          "series": "sys_system_UsefulTime{instance=\"dev-photo-prjct\"}",
+          "values": "0+95x30"
+        },
+        {
+          "series": "sys_system_IdleTime{instance=\"dev-photo-prjct\"}",
+          "values": "0+5x30"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "14m",
+          "alertname": "MemoryPressure",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "16m",
+          "alertname": "MemoryPressure",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "instance": "dev-photo-prjct"
+              },
+              "exp_annotations": {
+                "summary": "Available memory is below ten percent throughout fifteen minutes."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "17m",
+          "alertname": "MemoryPressure",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "20m",
+          "alertname": "CPUPressure",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "instance": "dev-photo-prjct"
+              },
+              "exp_annotations": {
+                "summary": "CPU utilization is above ninety percent throughout fifteen minutes."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "disk both thresholds and recovery",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "sys_filesystem_FreeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"}",
+          "values": "10737418240 4294967296+0x10 10737418240+0x5"
+        },
+        {
+          "series": "sys_filesystem_SizeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"}",
+          "values": "107374182400+0x20"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "9m",
+          "alertname": "DiskSpaceCritical",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "11m",
+          "alertname": "DiskSpaceCritical",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "instance": "dev-photo-prjct",
+                "mountpoint": "/"
+              },
+              "exp_annotations": {
+                "summary": "System filesystem free capacity is below ten percent or five GiB."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "12m",
+          "alertname": "DiskSpaceCritical",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "disk percentage threshold alone",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "sys_filesystem_FreeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"}",
+          "values": "6442450944+0x15"
+        },
+        {
+          "series": "sys_filesystem_SizeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"}",
+          "values": "107374182400+0x15"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "11m",
+          "alertname": "DiskSpaceCritical",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "instance": "dev-photo-prjct",
+                "mountpoint": "/"
+              },
+              "exp_annotations": {
+                "summary": "System filesystem free capacity is below ten percent or five GiB."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "disk bytes threshold alone",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "sys_filesystem_FreeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"}",
+          "values": "4294967296+0x15"
+        },
+        {
+          "series": "sys_filesystem_SizeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"}",
+          "values": "21474836480+0x15"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "11m",
+          "alertname": "DiskSpaceCritical",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "instance": "dev-photo-prjct",
+                "mountpoint": "/"
+              },
+              "exp_annotations": {
+                "summary": "System filesystem free capacity is below ten percent or five GiB."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,739 @@
+{
+  "title": "FindMe Photo — мониторинг",
+  "widgets": [
+    {
+      "position": {
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "54bfa512-2c6c-42d0-8c8b-b0ee40d0cade",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "78aefd16-ff7f-469e-8d1e-35b70ac74559",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{public_success}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "78aefd16-ff7f-469e-8d1e-35b70ac74559",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Доступность сайта — 1 = доступен",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "0605c993-f3ce-4971-a307-918e89c7711a",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f7b3cea2-41cb-4ffc-94d3-a5b13b2355b6",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{public_duration}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "f7b3cea2-41cb-4ffc-94d3-a5b13b2355b6",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Длительность публичной проверки, секунды",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "y": "8",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "8472076d-7fc9-40d9-8efc-18fca5659ef3",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f10b636c-d97e-471b-ba93-7d014255ff81",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{tls_days}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "f10b636c-d97e-471b-ba93-7d014255ff81",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "TLS — дней до истечения",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "8",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "05a8fc47-4864-4bd2-85bc-70afcc134339",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2916a9f-d6be-4a1e-bf5a-a0fed6204703",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{cpu}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "f2916a9f-d6be-4a1e-bf5a-a0fed6204703",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "CPU — загрузка, %",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "y": "16",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "7e37e457-841b-4715-a4e5-e829134a9045",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "a8e6a150-4a37-43a0-a86a-4801638cf51a",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{memory}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "a8e6a150-4a37-43a0-a86a-4801638cf51a",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Память — доступно, %",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "16",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "200776c3-e0a6-4e2e-b50d-5c1b313e73eb",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "a2a991aa-8aa5-4c59-93a5-bab03ad281e3",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{disk_percent}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "a2a991aa-8aa5-4c59-93a5-bab03ad281e3",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Диск / — свободно, %",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "y": "24",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "6487e668-1ec8-4f57-a425-dbe5910b8e70",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f631aa14-3616-4b21-bcfa-07c8a2bc03eb",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{disk_gib}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "f631aa14-3616-4b21-bcfa-07c8a2bc03eb",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Диск / — свободно, ГиБ",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "24",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "20ae7942-1713-49e3-a7a7-67a6cb0af888",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "8ef0a1e9-ba48-4219-b0f2-30ccf2a65a3d",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{http_rate}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "8ef0a1e9-ba48-4219-b0f2-30ccf2a65a3d",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "HTTP — запросов в секунду",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "y": "32",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "1fc69f09-d68c-4970-aa38-703298b807bb",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "cd45bf46-8570-4cc1-9dad-95f36268ce9f",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{http_error_rate}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "cd45bf46-8570-4cc1-9dad-95f36268ce9f",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "HTTP 5xx — ответов в секунду",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "32",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "c710260a-13bf-4faf-ba85-4106d6e77d37",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "dc4db789-047b-4224-8b1a-0fe4ac09a487",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{http_p50}}",
+              "textMode": true,
+              "name": "A"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "dc4db789-047b-4224-8b1a-0fe4ac09a487",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{http_p95}}",
+              "textMode": true,
+              "name": "B"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "dc4db789-047b-4224-8b1a-0fe4ac09a487",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "HTTP — задержка p50 и p95, секунды",
+        "displayLegend": true,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "y": "40",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "41b0534b-8d4f-4bca-b526-a293f50779e7",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "113207a5-1deb-405b-9497-ff099825e859",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{uptime_seconds}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "113207a5-1deb-405b-9497-ff099825e859",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Основная VM — uptime, секунды",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "40",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "72953460-6f39-4edc-a46b-7ef8f026fb00",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "28c82d6f-0ba7-4897-aba9-ed7324f96b69",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{load}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "28c82d6f-0ba7-4897-aba9-ed7324f96b69",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Основная VM — load average 1 мин",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "y": "48",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "f03c7391-08c7-4bf0-87e9-5f27f503c4eb",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "4ec4451d-1fb2-4998-addd-d6595847bb65",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{commerce_alive}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "4ec4451d-1fb2-4998-addd-d6595847bb65",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0",
+              "max": "1.1"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "description": "0 — worker недоступен; отсутствие точек — не удалось получить наблюдение.",
+        "title": "Commerce worker — 1 = работает",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "48",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "bee88af1-498a-4d79-9e0e-7ed02a408433",
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "4d0abc13-7b33-42b6-a50c-5aa73a160dd1",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{commerce_age}}",
+              "textMode": true,
+              "name": "A"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "4d0abc13-7b33-42b6-a50c-5aa73a160dd1",
+              "step": "60000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "description": "0 — очередь пуста. Порог алерта: больше 300 секунд.",
+        "title": "Commerce — возраст очереди, секунды",
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,129 @@
+{
+  "folder_id": "b1g2qttgfhb4gdunvlge",
+  "dashboard_id": "fbeketud0mdaupj43of6",
+  "channel_id": "fbefs2ubu6sq0k0jvlch",
+  "workspace_id": "mon0c97qv2s5uju1ark8",
+  "channel_name": "findme-photo-operator-email",
+  "cpu_semantics": "cumulative_counter",
+  "metrics": {
+    "public_success": {
+      "name": "findme_probe_success",
+      "labels": {
+        "check": "canonical-health"
+      },
+      "type": "gauge",
+      "max_age": 360
+    },
+    "public_duration": {
+      "name": "findme_probe_duration_seconds",
+      "labels": {
+        "check": "canonical-health"
+      },
+      "type": "gauge",
+      "max_age": 360
+    },
+    "tls_days": {
+      "name": "findme_probe_tls_days_remaining",
+      "labels": {
+        "check": "canonical-health"
+      },
+      "type": "gauge",
+      "max_age": 360
+    },
+    "commerce_alive": {
+      "name": "commerce_worker_alive",
+      "labels": {
+        "check": "canonical-commerce"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "commerce_age": {
+      "name": "commerce_oldest_ready_age_seconds",
+      "labels": {
+        "check": "canonical-commerce"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "disk_free": {
+      "name": "sys_filesystem_FreeB",
+      "labels": {
+        "mountpoint": "/",
+        "instance": "dev-photo-prjct"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "disk_size": {
+      "name": "sys_filesystem_SizeB",
+      "labels": {
+        "mountpoint": "/",
+        "instance": "dev-photo-prjct"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "memory_available": {
+      "name": "sys_memory_MemAvailable",
+      "labels": {
+        "instance": "dev-photo-prjct"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "memory_total": {
+      "name": "sys_memory_MemTotal",
+      "labels": {
+        "instance": "dev-photo-prjct"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "cpu_useful": {
+      "name": "sys_system_UsefulTime",
+      "labels": {
+        "instance": "dev-photo-prjct"
+      },
+      "type": "counter",
+      "max_age": 120
+    },
+    "cpu_idle": {
+      "name": "sys_system_IdleTime",
+      "labels": {
+        "instance": "dev-photo-prjct"
+      },
+      "type": "counter",
+      "max_age": 120
+    },
+    "uptime": {
+      "name": "sys_system_UpTimeRaw",
+      "labels": {
+        "instance": "dev-photo-prjct"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "load": {
+      "name": "sys_proc_LoadAverage1min",
+      "labels": {
+        "instance": "dev-photo-prjct"
+      },
+      "type": "gauge",
+      "max_age": 120
+    },
+    "http_requests": {
+      "name": "findme_http_requests_total",
+      "labels": {},
+      "type": "counter",
+      "max_age": 120
+    },
+    "http_duration": {
+      "name": "findme_http_request_duration_seconds",
+      "labels": {},
+      "type": "histogram",
+      "max_age": 120
+    }
+  },
+  "type_contract_evidence": "2026-09-28 Unified Agent 26.09.10/21106904 isolated SPACK capture: CPU COUNTER; UpTimeRaw milliseconds; resources DGAUGE. See README; workspace freshness/mapping remains mandatory."
+}

@@ -1,0 +1,3 @@
+# Operational CLI only; never install in application/worker containers.
+yandexcloud==0.408.0
+PyYAML==6.0.3

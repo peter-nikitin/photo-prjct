@@ -1,0 +1,13 @@
+{
+  "github_oidc": {
+    "issuer": "https://token.actions.githubusercontent.com",
+    "audience": "https://github.com/peter-nikitin",
+    "subject": "repo:peter-nikitin/photo-prjct:environment:monitoring",
+    "repository": "peter-nikitin/photo-prjct",
+    "ref": "refs/heads/main",
+    "service_account_id": "",
+    "allowed_workflows": [
+      "peter-nikitin/photo-prjct/.github/workflows/monitoring.yml@refs/heads/main"
+    ]
+  }
+}

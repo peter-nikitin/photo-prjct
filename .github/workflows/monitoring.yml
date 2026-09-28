@@ -1,0 +1,93 @@
+name: Monitoring
+on:
+  pull_request:
+    paths:
+      - deploy/monitoring/prometheus/**
+      - tests/monitoring/**
+      - .github/workflows/monitoring.yml
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Exact main commit SHA to reconcile
+        required: true
+        type: string
+      action:
+        description: Read-only check or explicit apply (requires separate operational approval)
+        required: true
+        default: check
+        type: choice
+        options: [check, apply]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m venv /tmp/monitoring-tools
+          /tmp/monitoring-tools/bin/pip install -r deploy/monitoring/prometheus/requirements.txt
+          docker run --rm --entrypoint promtool prom/prometheus:v3.5.0 --version
+          cat > /tmp/promtool <<'EOF'
+          #!/bin/sh
+          exec docker run --rm --entrypoint promtool -v "$PWD:$PWD" -w "$PWD" prom/prometheus:v3.5.0 "$@"
+          EOF
+          chmod +x /tmp/promtool
+          /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/control.py validate --output "$PWD/.monitoring-render" --promtool /tmp/promtool
+  reconcile:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: monitoring
+    concurrency:
+      group: findme-monitoring-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MONITORING_REVISION: ${{ inputs.revision }}
+      MONITORING_ACTION: ${{ inputs.action }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind to exact main revision
+        run: |
+          set -eu
+          printf '%s' "$MONITORING_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          test "$MONITORING_REVISION" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$MONITORING_REVISION"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare isolated tools and foundation inputs
+        run: |
+          python -m venv /tmp/monitoring-tools
+          /tmp/monitoring-tools/bin/pip install -r deploy/monitoring/prometheus/requirements.txt
+          /tmp/monitoring-tools/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+          source = Path('deploy/monitoring/prometheus')
+          config = json.loads((source / 'environment.json').read_text())
+          Path('/tmp/monitoring-environment.json').write_text(json.dumps(config))
+          identity = json.loads((source / 'oidc.json').read_text())
+          Path('/tmp/monitoring-oidc.json').write_text(json.dumps(identity))
+          PY
+      - name: Check or apply exact reviewed configuration
+        run: |
+          /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/control.py "$MONITORING_ACTION" \
+            --config /tmp/monitoring-environment.json --identity github-oidc --oidc-config /tmp/monitoring-oidc.json \
+            --backup "$PWD/monitoring-backup-$MONITORING_REVISION"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.action == 'apply' }}
+        with:
+          name: monitoring-backup-${{ inputs.revision }}
+          path: monitoring-backup-${{ inputs.revision }}
+          if-no-files-found: ignore

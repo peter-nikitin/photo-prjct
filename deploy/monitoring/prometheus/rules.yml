@@ -1,0 +1,83 @@
+groups:
+- name: findme-photo
+  interval: 1m
+  rules:
+  - alert: PublicServiceUnavailable
+    expr: max_over_time({{public_success}}[10m]) < 0.5
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Public HTTPS attempts have failed throughout ten minutes.
+  - alert: PublicObservationsMissing
+    expr: absent_over_time({{public_success}}[10m])
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Public HTTPS observations are missing; availability is unconfirmed.
+  - alert: TLSCertificateExpiring
+    expr: min_over_time({{tls_days}}[5m]) < 14
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: TLS certificate lifetime is below fourteen days.
+  - alert: VMTelemetryMissing
+    expr: absent_over_time({{uptime}}[5m]) or absent_over_time({{http_requests}}[5m])
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Host or private HTTP observations are missing; public health is unconfirmed.
+  - alert: DiskSpaceCritical
+    expr: max_over_time(({{disk_percent}})[10m:1m]) < 10 or max_over_time({{disk_bytes}}[10m])
+      < 5368709120
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: System filesystem free capacity is below ten percent or five GiB.
+  - alert: MemoryPressure
+    expr: max_over_time(({{memory}})[15m:1m]) < 10
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Available memory is below ten percent throughout fifteen minutes.
+  - alert: CPUPressure
+    expr: min_over_time(({{cpu}})[15m:1m]) > 90
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: CPU utilization is above ninety percent throughout fifteen minutes.
+  - alert: Application5xxDegradation
+    expr: ({{http_errors}} / {{http_total}} > 0.2) and ({{http_total}} >= 5)
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: HTTP 5xx exceeds twenty percent with at least five requests in five
+        minutes.
+  - alert: CommerceWorkerUnavailable
+    expr: max_over_time({{commerce_alive}}[5m]) < 0.5
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Commerce liveness observations are zero throughout five minutes.
+  - alert: CommerceObservationsMissing
+    expr: absent_over_time({{commerce_alive}}[5m]) or absent_over_time({{commerce_age}}[5m])
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Commerce observations are missing; inspect collector, web and database.
+  - alert: CommerceReadyWorkOverdue
+    expr: max_over_time({{commerce_age}}[5m]) > 300
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Commerce ready work is older than three hundred seconds.

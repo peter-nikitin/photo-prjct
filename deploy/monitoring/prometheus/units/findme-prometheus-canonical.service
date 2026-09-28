@@ -1,0 +1,28 @@
+[Unit]
+Description=FindMe fresh Commerce Prometheus observations
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/findme-prometheus/exporter.py --role canonical
+User=root
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=128M
+CPUQuota=20%
+TasksMax=32
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -512,6 +512,10 @@ def validate_package(config: dict[str, Any], output: Path, promtool: str) -> Non
             kind = kinds[0]
             target = item[kind + "Target"]
             query = target.get("query")
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", target.get("name", "")):
+                raise ControlError(
+                    "dashboard target name must use Latin letters/digits and start with a letter"
+                )
             if (
                 sources.get(target.get("dataSourceId")) != kind
                 or not query

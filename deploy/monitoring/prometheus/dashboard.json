@@ -750,7 +750,7 @@
               "workspaceId": "{{workspace_id}}",
               "query": "{{swap_free_gib}}",
               "textMode": true,
-              "name": "Свободно"
+              "name": "Free"
             }
           },
           {
@@ -759,7 +759,7 @@
               "workspaceId": "{{workspace_id}}",
               "query": "{{swap_total_gib}}",
               "textMode": true,
-              "name": "Всего"
+              "name": "Total"
             }
           }
         ],
@@ -813,7 +813,7 @@
               "workspaceId": "{{workspace_id}}",
               "query": "{{inode_percent}}",
               "textMode": true,
-              "name": "Свободно"
+              "name": "Free"
             }
           }
         ],
@@ -864,7 +864,7 @@
               "workspaceId": "{{workspace_id}}",
               "query": "{{disk_read_rate}}",
               "textMode": true,
-              "name": "Чтение"
+              "name": "Read"
             }
           },
           {
@@ -873,7 +873,7 @@
               "workspaceId": "{{workspace_id}}",
               "query": "{{disk_write_rate}}",
               "textMode": true,
-              "name": "Запись"
+              "name": "Write"
             }
           }
         ],
@@ -926,7 +926,7 @@
               "workspaceId": "{{workspace_id}}",
               "query": "{{network_rx_rate}}",
               "textMode": true,
-              "name": "Приём"
+              "name": "Rx"
             }
           },
           {
@@ -935,7 +935,7 @@
               "workspaceId": "{{workspace_id}}",
               "query": "{{network_tx_rate}}",
               "textMode": true,
-              "name": "Передача"
+              "name": "Tx"
             }
           }
         ],
@@ -1010,7 +1010,7 @@
             }
           }
         },
-        "title": "Unified Agent — очередь отправки, метрик",
+        "title": "Unified Agent — очередь отправки, сообщений",
         "thresholds": {
           "items": [
             {

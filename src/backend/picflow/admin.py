@@ -1,7 +1,12 @@
 from decimal import Decimal
+from io import BytesIO
 
 from django.contrib import admin
+from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
+from django.core.files.uploadedfile import UploadedFile
 from django.forms import BaseInlineFormSet, DecimalField, ModelForm
+from PIL import Image, ImageOps
 
 from picflow.models import Event, EventFolder, Photo
 
@@ -98,6 +103,24 @@ class EventAdmin(admin.ModelAdmin):
                     "Access type cannot be changed after the event has photos.",
                 )
             return cleaned_data
+
+        def clean_cover(self):
+            cover = self.cleaned_data.get("cover")
+            if not isinstance(cover, UploadedFile):
+                return cover
+            output = BytesIO()
+            try:
+                with Image.open(cover) as source:
+                    image = ImageOps.exif_transpose(source)
+                    image.thumbnail((960, 960), Image.Resampling.LANCZOS)
+                    image = image.convert("RGB")
+                    image.info.clear()
+                    image.save(output, format="JPEG", quality=78, progressive=True)
+            except (OSError, ValueError) as error:
+                raise ValidationError(
+                    "The cover could not be decoded. Upload a valid image."
+                ) from error
+            return ContentFile(output.getvalue(), name="cover.jpg")
 
     form = Form
     inlines = (EventFolderInline,)

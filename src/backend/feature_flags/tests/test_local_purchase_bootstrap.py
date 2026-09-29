@@ -3,6 +3,7 @@ from django.test import TestCase, override_settings
 
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import (
+    EVENT_COVER_CDN_IMAGES,
     FEATURE_DEFINITIONS,
     GALLERY_CDN_IMAGES,
     PGVECTOR_FACE_SEARCH_READ,
@@ -24,7 +25,12 @@ class LocalPurchaseBootstrapTests(TestCase):
                     definition.description,
                     FeatureFlag.State.OFF
                     if definition
-                    in {GALLERY_CDN_IMAGES, YANDEX_DISK_IMPORT, PGVECTOR_FACE_SEARCH_READ}
+                    in {
+                        GALLERY_CDN_IMAGES,
+                        EVENT_COVER_CDN_IMAGES,
+                        YANDEX_DISK_IMPORT,
+                        PGVECTOR_FACE_SEARCH_READ,
+                    }
                     else FeatureFlag.State.ON,
                 )
                 for definition in FEATURE_DEFINITIONS

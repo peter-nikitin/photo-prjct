@@ -4,6 +4,7 @@ from django.test import SimpleTestCase
 
 from feature_flags.registry import (
     BULK_PHOTO_DOWNLOAD,
+    EVENT_COVER_CDN_IMAGES,
     FEATURE_DEFINITIONS,
     GALLERY_CDN_IMAGES,
     PAID_EVENTS,
@@ -57,6 +58,7 @@ class FeatureDefinitionTests(SimpleTestCase):
                 BULK_PHOTO_DOWNLOAD,
                 YANDEX_DISK_IMPORT,
                 GALLERY_CDN_IMAGES,
+                EVENT_COVER_CDN_IMAGES,
                 PGVECTOR_FACE_SEARCH_READ,
             ),
         )
@@ -83,6 +85,7 @@ class FeatureDefinitionTests(SimpleTestCase):
                     "gallery-cdn-images",
                     "Deliver gallery grid images through CDN",
                 ),
+                ("event-cover-cdn-images", "Deliver event catalog covers through CDN"),
                 ("pgvector-face-search-read", "Use native exact face search"),
             ),
         )

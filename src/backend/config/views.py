@@ -16,7 +16,11 @@ from django.urls import reverse
 from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET
 from feature_flags import services as feature_flag_services
-from feature_flags.registry import GALLERY_CDN_IMAGES, PAID_WATERMARKED_PREVIEWS
+from feature_flags.registry import (
+    EVENT_COVER_CDN_IMAGES,
+    GALLERY_CDN_IMAGES,
+    PAID_WATERMARKED_PREVIEWS,
+)
 from ingestion.storage import (
     ObjectMissing,
     PrivateUploadStorage,
@@ -37,7 +41,11 @@ from picflow.gallery import (
     gallery_photo_queryset,
     public_gallery_photo,
 )
-from picflow.gallery_image_delivery import GalleryImageDeliverySettings, GalleryImageUrlSigner
+from picflow.gallery_image_delivery import (
+    EventCoverImageDeliverySettings,
+    GalleryImageDeliverySettings,
+    GalleryImageUrlSigner,
+)
 from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, EventFolder, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
@@ -63,6 +71,28 @@ def event_catalog(request):
     past = list(visible.filter(end_date__lt=today).order_by("-start_date", "name"))
     events = [*upcoming, *past]
     mark_event_staff_preview(request, events)
+    cover_signer = None
+    if any(event.cover for event in events) and feature_flag_services.is_enabled(
+        EVENT_COVER_CDN_IMAGES, request.user
+    ):
+        try:
+            cover_signer = GalleryImageUrlSigner(
+                EventCoverImageDeliverySettings.from_django_settings()
+            )
+        except ImproperlyConfigured:
+            pass
+    cover_count = 0
+    for event in events:
+        if event.cover:
+            cover_count += 1
+            cover_url = event.cover.url
+            if cover_signer is not None:
+                try:
+                    cover_url = cover_signer.sign_event_cover(key=event.cover.name)
+                except ValueError:
+                    pass
+            event.catalog_cover_url = cover_url
+            event.catalog_cover_loading = "eager" if cover_count <= 4 else "lazy"
     return render(request, "catalog/event_catalog.html", {"events": events})
 
 

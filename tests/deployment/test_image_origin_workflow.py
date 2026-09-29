@@ -59,6 +59,7 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     assert deploy["env"] | {
         "IMAGE_ORIGIN_RELEASE": "${{ inputs.deployment_sha }}",
         "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
+        "MEDIA_S3_PUBLIC_BUCKET": "${{ vars.MEDIA_S3_PUBLIC_BUCKET }}",
         "IMAGE_ORIGIN_PROBE_PATH": "${{ vars.IMAGE_ORIGIN_PROBE_PATH }}",
         "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
     } == {
@@ -70,6 +71,7 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
         "IMAGE_ORIGIN_VM_USER": "${{ vars.IMAGE_ORIGIN_VM_USER }}",
         "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}",
         "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
+        "MEDIA_S3_PUBLIC_BUCKET": "${{ vars.MEDIA_S3_PUBLIC_BUCKET }}",
         "IMAGE_ORIGIN_PROBE_PATH": "${{ vars.IMAGE_ORIGIN_PROBE_PATH }}",
         "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
     }
@@ -184,6 +186,7 @@ def test_remote_transport_verifies_host_key_keeps_secrets_out_of_arguments_and_p
             "VM_SSH_KNOWN_HOSTS": "203.0.113.10 ssh-ed25519 bastion-host-key",
             "IMAGE_ORIGIN_RELEASE": release,
             "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
+            "MEDIA_S3_PUBLIC_BUCKET": "canonical-public",
             "IMAGE_ORIGIN_PROBE_PATH": "/" + "A" * 43 + "/gallery-v1/czM6Ly9h.jpg",
             "YANDEX_CLOUD_FOLDER_ID": "folder-contract-id",
             "TRANSPORT_LOG": str(log),
@@ -223,6 +226,7 @@ def test_remote_transport_verifies_host_key_keeps_secrets_out_of_arguments_and_p
             assert secret not in result.stdout + result.stderr + transport
     remote_env = (capture / f"findme-image-origin-{release}.env").read_text(encoding="utf-8")
     assert "VM_SSH_KEY_FILE" not in remote_env
+    assert 'MEDIA_S3_PUBLIC_BUCKET="canonical-public"\n' in remote_env
     assert stat.S_IMODE(projection.stat().st_mode) == 0o600
     archive = capture / f"findme-image-origin-{release}.tar"
     with tarfile.open(archive) as package:
@@ -276,6 +280,7 @@ def test_remote_preflight_failures_are_sanitized_and_stop_before_transport(
             "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "10.0.0.4 ssh-ed25519 origin-host-key",
             "IMAGE_ORIGIN_RELEASE": release,
             "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
+            "MEDIA_S3_PUBLIC_BUCKET": "canonical-public",
             "IMAGE_ORIGIN_PROBE_PATH": "/" + "A" * 43 + "/gallery-v1/czM6Ly9h.jpg",
             "YANDEX_CLOUD_FOLDER_ID": "folder-contract-id",
             "TRANSPORT_LOG": str(log),
@@ -346,6 +351,7 @@ def test_remote_transport_mode_check_does_not_use_ambiguous_gnu_stat_fallback(
             "IMAGE_ORIGIN_RELEASE": release,
             "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
             "IMAGE_ORIGIN_PROBE_PATH": "/" + "A" * 43 + "/gallery-v1/czM6Ly9h.jpg",
+            "MEDIA_S3_PUBLIC_BUCKET": "canonical-public",
             "YANDEX_CLOUD_FOLDER_ID": "folder-contract-id",
             "TRANSPORT_LOG": str(tmp_path / "transport.log"),
             "CAPTURE_ROOT": str(capture),
@@ -482,7 +488,7 @@ def test_cdn_default_is_secret_free_read_only_plan_with_inactive_cache_contract(
         "ignore_query_string": True,
         "ignore_cookie": True,
         "edge_ttl_seconds": 2592000,
-        "browser_ttl_seconds": 21600,
+        "browser_cache": "origin_cache_control",
         "static_request_header": "X-FindMe-Origin-Auth",
         "secure_key": "projected",
         "origin_shielding": False,
@@ -521,12 +527,12 @@ def test_cdn_apply_requires_exact_nonce_and_creates_inactive_resource_without_op
         "--ignore-query-string",
         "--ignore-cookie",
         "--cache-expiration-time 2592000",
-        "--browser-cache-expiration-time 21600",
         "--host-header img-origin.findme-photo.ru",
         "--static-request-headers X-FindMe-Origin-Auth=origin-private-sentinel",
         "--secure-key cdn-private-sentinel",
     ):
         assert expected in rendered
+    assert "--browser-cache-expiration-time" not in resource
     for forbidden in ("shield", "logs", "dedicated", "slice", "gzip", "brotli", "warming"):
         assert forbidden not in rendered
     assert "private-sentinel" not in result.stdout + result.stderr
@@ -585,6 +591,8 @@ def test_cdn_update_preserves_attached_certificate(tmp_path: Path) -> None:
     update = next(command for command in commands if command[:3] == ["cdn", "resource", "update"])
     assert "--dont-use-ssl-cert" not in update
     assert "--cert-manager-ssl-cert-id" not in update
+    assert "--clear-browser-cache-expiration-time" in update
+    assert "--browser-cache-expiration-time" not in update
     after, _ = _run_cdn(tmp_path)
     assert (
         json.loads(after.stdout)["actual"]["cdn_resource"]["certificate"]

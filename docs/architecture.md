@@ -41,6 +41,15 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   and SVG assets under `src/backend`.
 - The `picflow` application owns the first target `Event` catalog model and a preliminary `Photo`
   model. Published events are managed through Django Admin and rendered by server-side templates.
+- Under [ADR 0044](adr/0044-deliver-public-event-covers-through-image-cdn.md), the repository
+  extends the isolated image CDN to public immutable `event-covers/` sources over HTTPS, with no
+  new IAM access or infrastructure. The separate default-off `event-cover-cdn-images` gate controls
+  catalog cover URLs; fixed `cover-v1` transforms fit within 960 pixels and permit one-year immutable
+  browser caching. Private-gallery authorization and its six-hour browser-cache policy remain
+  unchanged. New Admin cover uploads store only a normalized JPEG within 960 pixels, not the large
+  uploaded source; existing immutable covers are not rewritten. Canonical application/origin
+  deployment, compatibility checks of existing covers, CDN header verification and gate activation
+  require separate live evidence; this implementation does not claim them.
 - Published event detail pages apply an explicit persisted gallery-media policy. Free events retain
   the existing legacy and accepted-clean-preview rules. With the off-by-default paid-watermark gate
   enabled, a published paid event lists only `watermarked_preview_required` photos backed by an

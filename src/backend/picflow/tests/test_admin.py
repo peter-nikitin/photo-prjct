@@ -1,11 +1,18 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from commerce.models import Order, OrderItem
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, modify_settings, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from PIL import Image
 
 from picflow.models import Event, EventFolder, Photo
 
@@ -23,6 +30,136 @@ class EventAdminTests(TestCase):
             "admin", "admin@example.com", "password"
         )
         self.client.force_login(self.user)
+
+    def test_admin_cover_upload_saves_only_reduced_jpeg(self) -> None:
+        source = BytesIO()
+        Image.new("RGB", (6000, 5000), "red").save(source, format="JPEG")
+        upload = SimpleUploadedFile("large.jpeg", source.getvalue(), content_type="image/jpeg")
+        event = Event(
+            name="Cover run",
+            slug="cover-run",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="Europe/Moscow",
+        )
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            response = self.client.post(
+                reverse("admin:picflow_event_add"), self.event_change_data(event, cover=upload)
+            )
+            self.assertEqual(response.status_code, 302)
+            saved = Event.objects.get(slug=event.slug)
+            self.assertRegex(saved.cover.name, r"^event-covers/[0-9a-f-]{36}\.jpg$")
+            files = [path for path in Path(media_root).rglob("*") if path.is_file()]
+            self.assertEqual(len(files), 1)
+            with Image.open(files[0]) as reduced:
+                self.assertEqual(reduced.size, (960, 800))
+                self.assertEqual(reduced.format, "JPEG")
+                self.assertEqual(reduced.info.get("progressive"), 1)
+                self.assertEqual(reduced.quantization[0][:8], [7, 5, 4, 7, 11, 18, 22, 27])
+
+    def test_admin_small_cover_respects_orientation_without_upscale_and_strips_metadata(
+        self,
+    ) -> None:
+        source = BytesIO()
+        exif = Image.Exif()
+        exif[274] = 6
+        exif[270] = "private-cover-description"
+        Image.new("RGB", (120, 80), "blue").save(source, format="JPEG", exif=exif)
+        upload = SimpleUploadedFile("small.jpg", source.getvalue(), content_type="image/jpeg")
+        event = Event(
+            name="Small cover",
+            slug="small-cover",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="Europe/Moscow",
+        )
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            response = self.client.post(
+                reverse("admin:picflow_event_add"), self.event_change_data(event, cover=upload)
+            )
+            self.assertEqual(response.status_code, 302)
+            saved = Event.objects.get(slug=event.slug)
+            with Image.open(Path(media_root) / saved.cover.name) as reduced:
+                self.assertEqual(reduced.size, (80, 120))
+                self.assertFalse(reduced.getexif())
+                self.assertNotIn("icc_profile", reduced.info)
+            self.assertNotIn(
+                b"private-cover-description", (Path(media_root) / saved.cover.name).read_bytes()
+            )
+
+    def test_admin_edit_preserves_cover_and_replacement_gets_new_immutable_key(self) -> None:
+        source = BytesIO()
+        Image.new("RGB", (320, 200), "red").save(source, format="PNG")
+        original = source.getvalue()
+        event = Event.objects.create(
+            name="Edit cover",
+            slug="edit-cover",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="Europe/Moscow",
+        )
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            event.cover.save("existing.png", ContentFile(original), save=True)
+            old_key = event.cover.name
+            with patch.object(
+                event.cover.storage, "open", side_effect=AssertionError("Existing cover was read")
+            ):
+                response = self.client.post(
+                    reverse("admin:picflow_event_change", args=[event.pk]),
+                    self.event_change_data(event, description="Metadata edit"),
+                )
+            self.assertEqual(response.status_code, 302)
+            event.refresh_from_db()
+            self.assertEqual(event.cover.name, old_key)
+            self.assertEqual((Path(media_root) / old_key).read_bytes(), original)
+            replacement = SimpleUploadedFile("replacement.png", original, content_type="image/png")
+            response = self.client.post(
+                reverse("admin:picflow_event_change", args=[event.pk]),
+                self.event_change_data(event, cover=replacement),
+            )
+            self.assertEqual(response.status_code, 302)
+            event.refresh_from_db()
+            self.assertNotEqual(event.cover.name, old_key)
+            self.assertRegex(event.cover.name, r"^event-covers/[0-9a-f-]{36}\.jpg$")
+            self.assertEqual((Path(media_root) / old_key).read_bytes(), original)
+            response = self.client.post(
+                reverse("admin:picflow_event_change", args=[event.pk]),
+                self.event_change_data(event, **{"cover-clear": "on"}),
+            )
+            self.assertEqual(response.status_code, 302)
+            event.refresh_from_db()
+            self.assertFalse(event.cover)
+            self.assertEqual(
+                len([path for path in Path(media_root).rglob("*") if path.is_file()]), 2
+            )
+
+    def test_admin_cover_decode_failure_is_a_form_error_without_saving(self) -> None:
+        source = BytesIO()
+        Image.new("RGB", (120, 80), "blue").save(source, format="JPEG")
+        truncated = source.getvalue()[:-20]
+        # JPEG header verification succeeds; full pixel decoding detects the broken scan.
+        with Image.open(BytesIO(truncated)) as image:
+            image.verify()
+        upload = SimpleUploadedFile("truncated.jpg", truncated, content_type="image/jpeg")
+        event = Event(
+            name="Broken cover",
+            slug="broken-cover",
+            start_date=date.today(),
+            end_date=date.today(),
+            city="Moscow",
+            timezone_name="Europe/Moscow",
+        )
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            response = self.client.post(
+                reverse("admin:picflow_event_add"), self.event_change_data(event, cover=upload)
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("cover", response.context["adminform"].form.errors)
+            self.assertFalse(Event.objects.filter(slug=event.slug).exists())
+            self.assertEqual([path for path in Path(media_root).rglob("*") if path.is_file()], [])
 
     def test_admin_creates_and_publishes_event(self) -> None:
         response = self.client.post(

@@ -22,6 +22,8 @@ import boto3
 from PIL import Image
 
 BUCKET = "image-origin-contract"
+PUBLIC_BUCKET = "image-origin-public-contract"
+COVER_KEY = "event-covers/00000000-0000-4000-8000-000000000001.jpg"
 AUTH = "contract-origin-secret-0123456789"
 SENTINEL = "private-query-value-must-never-be-logged"
 
@@ -113,30 +115,84 @@ def seed():
         capture_output=True,
     )
     os.chmod(certdir / "privkey.pem", 0o644)  # Ephemeral test-only key shared with non-root nginx.
-    s3 = boto3.client(
-        "s3",
-        endpoint_url="http://minio:9000",
-        region_name="us-east-1",
-        aws_access_key_id="contract-access",
-        aws_secret_access_key="contract-secret-0123456789",
+    source_cert = Path("/certificates/source-ca.pem")
+    source_key = Path("/certificates/source-key.pem")
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=storage.yandexcloud.net",
+            "-addext",
+            "subjectAltName=DNS:storage.yandexcloud.net",
+            "-keyout",
+            str(source_key),
+            "-out",
+            str(source_cert),
+        ],
+        check=True,
+        capture_output=True,
     )
-    if BUCKET not in [item["Name"] for item in s3.list_buckets()["Buckets"]]:
-        s3.create_bucket(Bucket=BUCKET)
     image = Image.effect_noise((1600, 1067), 35).convert("RGB")
     exif = Image.Exif()
     exif[270] = "contract-private-photo-description"
     output = io.BytesIO()
     image.save(output, format="JPEG", quality=92, exif=exif)
     payload = output.getvalue()
-    for index in range(100):
-        s3.put_object(Bucket=BUCKET, Key=key(index), Body=payload, ContentType="image/jpeg")
-    s3.put_object(
-        Bucket=BUCKET, Key=key(100), Body=payload + b"0" * (10 * 1024**2), ContentType="image/jpeg"
-    )
-    large = io.BytesIO()
-    Image.new("RGB", (5001, 5000)).save(large, format="JPEG")
-    s3.put_object(Bucket=BUCKET, Key=key(101), Body=large.getvalue(), ContentType="image/jpeg")
+    if sys.argv[1] != "seed-cover":
+        s3 = boto3.client(
+            "s3",
+            endpoint_url="http://minio:9000",
+            region_name="us-east-1",
+            aws_access_key_id="contract-access",
+            aws_secret_access_key="contract-secret-0123456789",
+        )
+        if BUCKET not in [item["Name"] for item in s3.list_buckets()["Buckets"]]:
+            s3.create_bucket(Bucket=BUCKET)
+        for index in range(100):
+            s3.put_object(Bucket=BUCKET, Key=key(index), Body=payload, ContentType="image/jpeg")
+        s3.put_object(
+            Bucket=BUCKET,
+            Key=key(100),
+            Body=payload + b"0" * (10 * 1024**2),
+            ContentType="image/jpeg",
+        )
+        large = io.BytesIO()
+        Image.new("RGB", (5001, 5000)).save(large, format="JPEG")
+        s3.put_object(Bucket=BUCKET, Key=key(101), Body=large.getvalue(), ContentType="image/jpeg")
     counters = {"redirect_requests": 0, "target_requests": 0}
+    small = io.BytesIO()
+    Image.new("RGB", (320, 200)).save(small, format="JPEG")
+
+    class CoverFixture(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == f"/{PUBLIC_BUCKET}/{COVER_KEY}":
+                body = payload
+            elif self.path == f"/{PUBLIC_BUCKET}/event-covers/small.jpg":
+                body = small.getvalue()
+            else:
+                # Real JPEG exists at denied prefixes too: rejection cannot rely on a 404.
+                body = payload
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, pattern, *args):
+            pass
+
+    source_server = http.server.ThreadingHTTPServer(("0.0.0.0", 443), CoverFixture)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(source_cert, source_key)
+    source_server.socket = tls.wrap_socket(source_server.socket, server_side=True)
+    threading.Thread(target=source_server.serve_forever, daemon=True).start()
 
     class RedirectFixture(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -163,7 +219,7 @@ def seed():
         def log_message(self, pattern, *args):
             pass  # Endpoint counts are sufficient; do not log request data.
 
-    print("FIXTURES_READY accepted=100 oversized_bytes=1 oversized_pixels=1")
+    print("FIXTURES_READY source_https=true")
     Path("/tmp/ready").touch()
     http.server.ThreadingHTTPServer(("0.0.0.0", 9001), RedirectFixture).serve_forever()
 
@@ -202,6 +258,8 @@ def check():
         )
     )
 
+    check_covers()
+
     fixture_baseline = verify_redirect_fixture()
     failures = {
         "origin_auth": (signed(), "wrong-origin-auth"),
@@ -221,11 +279,12 @@ def check():
         assert "Cache-Control" not in rejected_headers, name
         assert duration < 4, name
     # Verify the imgproxy security boundary itself, even behind Nginx path validation.
-    for name in ["preset", "prefix", "bucket", "scheme", "http_redirect_source", "signature"]:
+    direct_failures = ["preset", "prefix", "bucket", "scheme", "http_redirect_source", "signature"]
+    for name in direct_failures:
         path, auth = failures[name]
         status, _, _, _ = request(path, auth=auth, host="http://imgproxy:8080")
         assert 400 <= status < 600, f"imgproxy boundary failed: {name}"
-    print("REJECTIONS_PASS cases=10 direct_imgproxy_cases=6")
+    print(f"REJECTIONS_PASS cases={len(failures)} direct_imgproxy_cases={len(direct_failures)}")
     status, _, counters = fixture_get("/counts")
     assert status == 200 and json.loads(counters) == fixture_baseline, (
         "The protected source must fetch neither the redirect endpoint nor the target JPEG"
@@ -277,7 +336,7 @@ def check():
     status, _, body, _ = request("/metrics", host="http://nginx:8081")
     assert status == 200
     assert re.search(rb'image_origin_responses_total\{status_class="2xx"\} [1-9][0-9]*', body)
-    assert b"image_origin_auth_rejected_total 1" in body
+    assert b"image_origin_auth_rejected_total 2" in body
     status, _, image_metrics, _ = request("/imgproxy-metrics", host="http://nginx:8081")
     assert status == 200
     assert b"workers 4" in image_metrics
@@ -289,5 +348,57 @@ def check():
     print("AGGREGATE_METRICS_PASS")
 
 
+def check_covers():
+    source = f"https://storage.yandexcloud.net/{PUBLIC_BUCKET}/{COVER_KEY}"
+    path = signed(source, preset="cover-v1")
+    status, headers, body, _ = request(path)
+    assert status == 200, f"HTTPS cover transform failed: status={status}"
+    assert headers["Content-Type"] == "image/jpeg"
+    assert headers["Cache-Control"] == "public, max-age=31536000, immutable, s-maxage=2592000"
+    cover = Image.open(io.BytesIO(body))
+    assert cover.size == (960, 640)
+    assert cover.info.get("progressive") == 1
+    # Standard JPEG luminance table scaled for quality 78 (libjpeg's scale is 44).
+    assert cover.quantization[0][:8] == [7, 5, 4, 7, 11, 18, 22, 27]
+    assert b"contract-private-photo-description" not in body
+    status, _, body, _ = request(
+        signed(
+            f"https://storage.yandexcloud.net/{PUBLIC_BUCKET}/event-covers/small.jpg",
+            preset="cover-v1",
+        )
+    )
+    assert status == 200
+    assert Image.open(io.BytesIO(body)).size == (320, 200)
+    status, headers, body, _ = request(signed(source))
+    assert status == 200
+    assert headers["Cache-Control"] == "public, max-age=21600, s-maxage=2592000"
+    assert Image.open(io.BytesIO(body)).size == (960, 640)
+    print(
+        "HTTPS_COVER_TRANSFORM_PASS max_dimension=960 progressive=true no_upscale=true "
+        "browser_ttl=31536000 gallery_ttl=21600"
+    )
+    failures = {
+        "public_other_prefix": signed(
+            f"https://storage.yandexcloud.net/{PUBLIC_BUCKET}/originals/private.jpg",
+            preset="cover-v1",
+        ),
+        "public_other_bucket": signed(
+            "https://storage.yandexcloud.net/other-public/event-covers/cover.jpg", preset="cover-v1"
+        ),
+        "public_http": signed(source.replace("https:", "http:"), preset="cover-v1"),
+        "private_original": signed(f"s3://{BUCKET}/originals/private-photo", preset="cover-v1"),
+        "signature": "/" + "A" * 43 + path[44:],
+        "preset": signed(source, preset="cover-v2"),
+    }
+    for name, rejected in failures.items():
+        for host in ["https://nginx:8443", "http://imgproxy:8080"]:
+            status, headers, _, _ = request(rejected, host=host)
+            assert 400 <= status < 600, f"Cover boundary failed: {name}"
+            assert "Cache-Control" not in headers
+    status, _, _, _ = request(path, auth="wrong-origin-auth")
+    assert status == 403
+    print(f"HTTPS_COVER_REJECTIONS_PASS cases={len(failures)} origin_auth=denied")
+
+
 if __name__ == "__main__":
-    {"seed": seed, "check": check}[sys.argv[1]]()
+    {"seed": seed, "seed-cover": seed, "check": check, "check-cover": check_covers}[sys.argv[1]]()

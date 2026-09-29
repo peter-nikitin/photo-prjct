@@ -2,15 +2,17 @@
 
 import json
 import subprocess
+import sys
 
 PROJECT = "findme-image-origin-contract"
-SERVICES = ("nginx", "imgproxy", "minio", "seed", "acceptance")
+SERVICES = ("nginx", "imgproxy", "seed", "acceptance")
 
 
 def inspect() -> None:
+    services = SERVICES if "--cover-only" in sys.argv else (*SERVICES, "minio")
     containers = json.loads(
         subprocess.check_output(
-            ["docker", "inspect", *[f"{PROJECT}-{service}-1" for service in SERVICES]], text=True
+            ["docker", "inspect", *[f"{PROJECT}-{service}-1" for service in services]], text=True
         )
     )
     cpus = 0.0
@@ -49,6 +51,7 @@ def inspect() -> None:
             "22222222222222222222222222222222",
             "contract-private-photo-description",
             "/gallery-v1/",
+            "/cover-v1/",
             "X-FindMe-Origin-Auth",
         ]:
             assert private not in logs, f"Private request data leaked from {service}"

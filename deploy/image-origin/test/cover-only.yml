@@ -1,0 +1,9 @@
+# Focused HTTPS source acceptance; the complete S3/gallery fixture remains compose.yml.
+services:
+  minio:
+    profiles: [gallery]
+  seed:
+    command: [seed-cover]
+    depends_on: !reset {}
+  acceptance:
+    command: [check-cover]

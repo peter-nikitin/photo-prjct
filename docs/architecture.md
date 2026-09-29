@@ -96,6 +96,12 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   artifacts remain authoritative. These code paths do not establish deployed multi-VM topology;
   paid provisioning, canonical cutover and native scale-from-zero/retirement acceptance remain
   pending under the [implementation plan](plans/2026-09-27-autoscaled-worker-isolation.md).
+  The [capped activation amendment](superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md)
+  selects bulk 0..1 and selfie 1..1 before quota expansion, preserving workload-driven bulk-zero
+  behavior. Repository tooling implements a checksum-bound ceiling and serial release
+  replacement with policy restoration and provider disk-absence fences. This does not establish
+  provisioned groups, physical provider replacement bounds or production acceptance; smaller
+  worker disks remain [unverified sizing candidates](operations/2026-09-29-worker-disk-sizing.md).
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
   PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first

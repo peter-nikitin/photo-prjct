@@ -205,21 +205,28 @@ def retire(gateway, name, snapshot, member):
 
 def transition(gateway, name, manifest, *, timeout=900, pause=5):
     build = manifest["configuration"]["worker_build"]
+    capped = manifest["configuration"]["pool_max_size"] == 1
     snapshot = gateway.observe()[name]
     if snapshot["active_build"] != build:
         gateway.control(
             "stage", pool=name, active_build=snapshot["active_build"], staged_build=build
         )
-    # OPPORTUNISTIC preserves existing running nodes. The spare floor includes replacements,
-    # and is bounded by maxSize2/maxExpansion0 from the reviewed provision contract.
-    gateway.template(name, manifest, 1 if snapshot["claims_paused"] else 2)
+    # Re-entry after promotion must not allocate another replacement for the retired VM.
+    floor = 1 if snapshot["claims_paused"] or (capped and snapshot["active_build"] == build) else 2
+    gateway.template(name, manifest, floor)
     deadline = time.monotonic() + timeout
     while True:
         snapshot = gateway.observe()[name]
+        if capped and snapshot["active_build"] == build:
+            # Bound replenishment before granting retirement, then refresh survivor evidence.
+            gateway.template(name, manifest, 1)
+            snapshot = gateway.observe()[name]
         step, member = next_step(snapshot, build)
         if step == "verified":
             return
         if step == "retire":
+            if capped:
+                gateway.disk_fence(manifest)
             retire(gateway, name, snapshot, member)
         elif step == "promote":
             gateway.control(
@@ -231,7 +238,8 @@ def transition(gateway, name, manifest, *, timeout=900, pause=5):
 
 
 def cancel(gateway, name, previous, *, timeout=900, pause=5):
-    gateway.template(name, previous, 2)
+    capped = previous["configuration"]["pool_max_size"] == 1
+    gateway.template(name, previous, 1 if capped else 2)
     deadline = time.monotonic() + timeout
     while True:
         snapshot = gateway.observe()[name]
@@ -247,6 +255,8 @@ def cancel(gateway, name, previous, *, timeout=900, pause=5):
             )
         ]
         if candidates:
+            if capped:
+                gateway.disk_fence(previous)
             retire(gateway, name, snapshot, candidates[0])
         elif snapshot["fresh"] and not any(
             m["grant"] and not m["reconciled"] for m in snapshot["members"]
@@ -281,12 +291,16 @@ def validate_manifest(manifest):
     if any(entry["id"] is None for entry in manifest["configuration"]["groups"].values()):
         raise ValueError("release requires existing exact group IDs")
     # Prior artifacts preserve their original bootstrap; no legacy image may be invented.
+    expected = provision.prepare(manifest["configuration"])["groups"]
+    if set(manifest["groups"]) != {"bulk", "selfie"}:
+        raise ValueError("unsafe fleet manifest")
     for name, group in manifest["groups"].items():
         if (
             name not in {"bulk", "selfie"}
             or group["deployPolicy"]["strategy"] != "OPPORTUNISTIC"
             or group["deployPolicy"]["maxExpansion"] != "0"
-            or group["scalePolicy"]["autoScale"]["maxSize"] != "2"
+            or group["scalePolicy"] != expected[name]["scalePolicy"]
+            or group["deployPolicy"] != expected[name]["deployPolicy"]
         ):
             raise ValueError("unsafe fleet manifest")
 
@@ -357,11 +371,20 @@ class Host:
         return self.control("status")
 
     def template(self, name, manifest, floor):
+        self.reconcile_pending()
         group = manifest["groups"][name]
         body = {
             key: deepcopy(group[key]) for key in ("instanceTemplate", "scalePolicy", "deployPolicy")
         }
         body["scalePolicy"]["autoScale"]["minZoneSize"] = str(floor)
+        body["scalePolicy"]["autoScale"]["maxSize"] = str(
+            max(manifest["configuration"]["pool_max_size"], floor)
+        )
+        if manifest["configuration"]["pool_max_size"] == 1 and floor:
+            self.disk_fence(manifest, expanding=name if floor == 2 else None)
+            if floor == 2:
+                self.journal.data["expanded_pool"] = name
+                self.journal.save()
         group_id = manifest["configuration"]["groups"][name]["id"]
         deadline = time.monotonic() + 90
         while True:
@@ -375,6 +398,128 @@ class Host:
             if time.monotonic() >= deadline:
                 raise ValueError("cloud configuration submission uncertain")
             time.sleep(2)
+
+    def reconcile_pending(self):
+        pending = self.journal.data.get("pending")
+        if pending:
+            update_group(pending["group"], pending["body"], cloud=self.cloud, journal=self.journal)
+
+    def disk_fence(self, manifest, *, expanding=None, settled=None):
+        """Persist disk identities; only complete stable listings can prove their absence."""
+        from processing.services.worker_pool_cloud import identifier
+
+        if self.journal.data.get("pending"):
+            raise ValueError("cloud submission uncertain; disk fence cannot proceed")
+        config = manifest["configuration"]
+        groups, members = {}, {}
+        started = time.monotonic()
+        for name, entry in config["groups"].items():
+            group_id = identifier(entry["id"])
+            group = self.cloud.get(f"instanceGroups/{group_id}", view="FULL")
+            if (
+                group.get("id") != group_id
+                or group.get("folderId") != config["folder_id"]
+                or group.get("labels") != manifest["groups"][name]["labels"]
+                or group.get("allocationPolicy") != manifest["groups"][name]["allocationPolicy"]
+                or group["instanceTemplate"]["bootDiskSpec"]["diskSpec"]["imageId"]
+                != config["boot_image_id"]
+                or group["deployPolicy"] != manifest["groups"][name]["deployPolicy"]
+            ):
+                raise ValueError("wrong worker group ownership")
+            groups[name] = group
+            members[name] = self.cloud.pages(f"instanceGroups/{group_id}/instances", "instances")
+
+        def inventory(kind):
+            rows = self.cloud.pages(kind, kind, folderId=config["folder_id"])
+            indexed = {identifier(row.get("id")): row for row in rows}
+            if len(indexed) != len(rows):
+                raise ValueError("duplicate cloud inventory")
+            return indexed
+
+        instances = inventory("instances")
+        disks = inventory("disks")
+        known = self.journal.data.setdefault("worker_disks", {})
+        current, identities, counts = {}, set(), {name: 0 for name in groups}
+        transitional = False
+        for name, rows in members.items():
+            for row in rows:
+                status = row.get("status")
+                instance_id = row.get("instanceId")
+                if status == "DELETED" and instance_id not in instances:
+                    continue
+                instance_id = identifier(instance_id)
+                if instance_id in identities or row.get("zoneId") != config["zone"]:
+                    raise ValueError("ambiguous worker membership")
+                identities.add(instance_id)
+                instance = instances.get(instance_id, {})
+                if (
+                    instance.get("folderId") != config["folder_id"]
+                    or instance.get("zoneId") != config["zone"]
+                ):
+                    raise ValueError("missing or wrong worker instance")
+                disk_id = identifier(instance.get("bootDisk", {}).get("diskId"))
+                disk = disks.get(disk_id, {})
+                if (
+                    disk.get("folderId") != config["folder_id"]
+                    or disk.get("zoneId") != config["zone"]
+                    or disk.get("sourceImageId") != config["boot_image_id"]
+                    or disk.get("instanceIds") != [instance_id]
+                    or disk_id in current
+                ):
+                    raise ValueError("unverified worker boot disk")
+                owner = {"pool": name, "instance_id": instance_id}
+                if disk_id in known and known[disk_id] != owner:
+                    raise ValueError("worker disk ownership changed")
+                current[disk_id] = owner
+                counts[name] += 1
+                transitional |= (
+                    status not in RUNNING
+                    or instance.get("status") != "RUNNING"
+                    or disk.get("status") != "READY"
+                )
+        # Save identified disks before any retirement, including an interrupted observation.
+        known.update(current)
+        self.journal.save()
+        for name, group in groups.items():
+            path = f"instanceGroups/{group['id']}"
+            if (
+                self.cloud.pages(path + "/instances", "instances") != members[name]
+                or self.cloud.get(path, view="FULL") != group
+            ):
+                raise ValueError("worker membership changed during disk inventory")
+        if inventory("disks") != disks or inventory("instances") != instances:
+            raise ValueError("worker disk inventory changed during observation")
+        if time.monotonic() - started > 60:
+            raise ValueError("worker disk inventory stale")
+        relevant = {
+            identity
+            for identity, disk in disks.items()
+            if identity in known or disk.get("sourceImageId") == config["boot_image_id"]
+        }
+        if relevant - known.keys():
+            raise ValueError("unexplained worker disk")
+        if relevant - current.keys():
+            raise ValueError("retained worker disk; complete listing must prove deletion")
+        if len(relevant) > 3 or any(count > 2 for count in counts.values()):
+            raise ValueError("worker disk allocation exceeds release bound")
+        if transitional:
+            raise ValueError("stopped or transitional worker allocation")
+        if expanding:
+            if self.journal.data.get("expanded_pool") not in {None, expanding}:
+                raise ValueError("serial release must finish the expanded pool first")
+            if not self.journal.data.get("expanded_pool") and counts[expanding] > 1:
+                raise ValueError("unexplained worker expansion outside release journal")
+            for name, group in groups.items():
+                if name != expanding and (
+                    counts[name] > 1 or group["scalePolicy"]["autoScale"]["maxSize"] != "1"
+                ):
+                    raise ValueError("serial release cannot expand both pools")
+        if settled:
+            if counts[settled] > 1 or groups[settled]["scalePolicy"]["autoScale"]["maxSize"] != "1":
+                raise ValueError("pool disk retirement has not settled")
+            if self.journal.data.get("expanded_pool") == settled:
+                self.journal.data["expanded_pool"] = None
+                self.journal.save()
 
     def stop_local(self):
         for name in ("worker", "worker-bulk", "worker-selfie"):
@@ -432,6 +577,8 @@ def observation_config(candidate, previous):
     releases = {config["worker_build"]: config["worker_image"]}
     if previous:
         old = previous["manifest"]["configuration"]
+        if old["pool_max_size"] != config["pool_max_size"]:
+            raise ValueError("cross-ceiling release requires separately reviewed activation")
         if any(old[key] != config[key] for key in ("folder_id", "zone", "boot_image_id")):
             raise ValueError("release scope changed")
         if {name: row["id"] for name, row in old["groups"].items()} != {
@@ -453,7 +600,12 @@ def verify_fleet(host, manifest):
     for name in ("bulk", "selfie"):
         group_id = manifest["configuration"]["groups"][name]["id"]
         group = host.cloud.get(f"instanceGroups/{group_id}", view="FULL")
+        if group["scalePolicy"] != manifest["groups"][name]["scalePolicy"]:
+            raise ValueError("steady pool scale policy mismatch")
         verify_pool(name, snapshot[name], group, manifest)
+    if manifest["configuration"]["pool_max_size"] == 1:
+        for name in ("bulk", "selfie"):
+            host.disk_fence(manifest, settled=name)
 
 
 def execute(mode, root, manifest_path, checksum, app_image):
@@ -526,6 +678,16 @@ def execute(mode, root, manifest_path, checksum, app_image):
         )
         return
     host.verify_web(candidate["proof"])
+    capped = manifest["configuration"]["pool_max_size"] == 1
+    order = ["bulk", "selfie"]
+    if capped and (mode == "rollout" or (mode == "rollback" and journal.data["previous"])):
+        host.reconcile_pending()
+        expanded = journal.data.get("expanded_pool")
+        if expanded:
+            if expanded not in order:
+                raise ValueError("invalid expanded pool receipt")
+            order.remove(expanded)
+            order.insert(0, expanded)
     if mode == "rollout":
         # Re-entry after a lost response follows durable CAS and the write-ahead cloud receipt.
         journal.data["phase"] = "rolling"
@@ -539,8 +701,12 @@ def execute(mode, root, manifest_path, checksum, app_image):
                     group_id=manifest["configuration"]["groups"][name]["id"],
                     active_build=manifest["configuration"]["worker_build"],
                 )
-        for name in ("bulk", "selfie"):
+        for name in order:
             transition(host, name, manifest)
+            if capped:
+                paused = host.observe()[name]["claims_paused"]
+                host.template(name, manifest, 1 if paused or name == "selfie" else 0)
+                host.disk_fence(manifest, settled=name)
         cutover(host)
         for name in ("bulk", "selfie"):
             host.template(name, manifest, 0 if name == "bulk" else 1)
@@ -552,7 +718,7 @@ def execute(mode, root, manifest_path, checksum, app_image):
         if previous is None:
             # A preflight failure has not necessarily configured rows yet.
             existing = host.control("status")
-            for name in ("bulk", "selfie"):
+            for name in order:
                 if name not in existing:
                     host.control(
                         "configure",
@@ -563,7 +729,7 @@ def execute(mode, root, manifest_path, checksum, app_image):
             rollback_initial(host, journal, marker)
         else:
             old = previous["manifest"]
-            for name in ("bulk", "selfie"):
+            for name in order:
                 snapshot = host.observe()[name]
                 if snapshot["active_build"] == old["configuration"]["worker_build"]:
                     if snapshot["staged_build"]:
@@ -571,6 +737,8 @@ def execute(mode, root, manifest_path, checksum, app_image):
                 else:
                     transition(host, name, old)
                 host.template(name, old, 0 if name == "bulk" else 1)
+                if capped:
+                    host.disk_fence(old, settled=name)
             verify_fleet(host, old)
             Journal(marker, previous)
             journal.data["phase"] = "rolled-back"

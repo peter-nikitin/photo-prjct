@@ -31,6 +31,7 @@ from processing.services.worker_pool_cloud import (  # noqa: E402
 )
 
 FIELDS = {
+    "pool_max_size",
     "cloud_id",
     "folder_id",
     "zone",
@@ -77,9 +78,12 @@ def validate(config):
         raise ValueError("unsupported provisioning input")
     if type(config.get("telemetry_enabled", False)) is not bool:
         raise ValueError("explicit boolean telemetry opt-in required")
+    if type(config["pool_max_size"]) is not int or config["pool_max_size"] not in {1, 2}:
+        raise ValueError("explicit integer pool maximum of one or two required")
     if config["zone"] not in {"ru-central1-a", "ru-central1-b", "ru-central1-d"}:
         raise ValueError("unsupported worker zone")
     for key in FIELDS - {
+        "pool_max_size",
         "groups",
         "private_api_ipv4",
         "worker_build",
@@ -255,7 +259,7 @@ def prepare(config):
             "scalePolicy": {
                 "autoScale": {
                     "minZoneSize": "0" if pool == "bulk" else "1",
-                    "maxSize": "2",
+                    "maxSize": str(config["pool_max_size"]),
                     "initialSize": "1",
                     "measurementDuration": "60s",
                     "warmupDuration": "300s",
@@ -577,6 +581,7 @@ def status(config, cloud):
         result[pool] = {
             "id": group_id,
             "baseline": managed_baseline(group),
+            "scale_policy": group.get("scalePolicy"),
             "state": group.get("status"),
             "managed_instances": group.get("managedInstancesState"),
         }

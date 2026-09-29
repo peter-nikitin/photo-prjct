@@ -22,8 +22,9 @@ def module(name):
     return loaded
 
 
-def config():
+def config(pool_max_size=2):
     return {
+        "pool_max_size": pool_max_size,
         "cloud_id": "cloud",
         "folder_id": "folder",
         "zone": "ru-central1-a",
@@ -51,12 +52,12 @@ def config():
     }
 
 
-def test_dry_run_is_deterministic_secretless_and_has_fixed_bounded_shapes():
+@pytest.mark.parametrize("pool_max_size", [1, 2])
+def test_dry_run_is_deterministic_secretless_and_has_bounded_shapes(pool_max_size):
     provision = module("provision")
-    cloud = Mock()
-    plan = provision.prepare(config())
-    assert plan == provision.prepare(config())
-    cloud.assert_not_called()
+    plan = provision.prepare(config(pool_max_size))
+    assert plan == provision.prepare(config(pool_max_size))
+    assert plan["configuration"]["pool_max_size"] == pool_max_size
     assert set(plan["groups"]) == {"bulk", "selfie"}
     for pool, body in plan["groups"].items():
         assert body["name"] == f"findme-photo-worker-{pool}"
@@ -66,14 +67,38 @@ def test_dry_run_is_deterministic_secretless_and_has_fixed_bounded_shapes():
             "memory": "8589934592",
         }
         assert body["instanceTemplate"]["bootDiskSpec"]["diskSpec"]["size"] == "34359738368"
+        assert body["instanceTemplate"]["platformId"] == "standard-v3"
+        assert body["instanceTemplate"]["networkInterfaceSpecs"] == [
+            {
+                "networkId": "network",
+                "subnetIds": ["subnet"],
+                "primaryV4AddressSpec": {},
+                "securityGroupIds": ["worker-sg"],
+            }
+        ]
         assert body["instanceTemplate"]["schedulingPolicy"]["preemptible"] is (pool == "bulk")
-        policy = body["scalePolicy"]["autoScale"]
-        assert (policy["minZoneSize"], policy["maxSize"], policy["initialSize"]) == (
-            "0" if pool == "bulk" else "1",
-            "2",
-            "1",
-        )
-        assert policy["customRules"][0]["labels"] == {"pool": pool, "zone_id": "ru-central1-a"}
+        assert body["scalePolicy"] == {
+            "autoScale": {
+                "minZoneSize": "0" if pool == "bulk" else "1",
+                "maxSize": "1" if pool_max_size == 1 else "2",
+                "initialSize": "1",
+                "measurementDuration": "60s",
+                "warmupDuration": "300s",
+                "stabilizationDuration": "300s",
+                "autoScaleType": "ZONAL",
+                "customRules": [
+                    {
+                        "ruleType": "WORKLOAD",
+                        "metricType": "GAUGE",
+                        "metricName": "worker_pool_workload",
+                        "labels": {"pool": pool, "zone_id": "ru-central1-a"},
+                        "target": "1",
+                        "folderId": "folder",
+                        "service": "custom",
+                    }
+                ],
+            }
+        }
         assert body["deployPolicy"] == {
             "strategy": "OPPORTUNISTIC",
             "maxUnavailable": "1",
@@ -87,7 +112,62 @@ def test_dry_run_is_deterministic_secretless_and_has_fixed_bounded_shapes():
         user_data = body["instanceTemplate"]["metadata"]["user-data"]
         assert "PHOTO_PROCESSING_FLEET_TOKEN=" not in user_data
         assert "app-secret" not in user_data
+        bootstrap = json.loads(
+            next(
+                base64.b64decode(entry["content"])
+                for entry in yaml.safe_load(user_data)["write_files"]
+                if entry["path"] == "/etc/findme-worker/bootstrap.json"
+            )
+        )
+        assert set(bootstrap) == {
+            "bootstrap_secret_id",
+            "bootstrap_version_id",
+            "worker_build",
+            "worker_image",
+            "docker_version",
+            "compose_version",
+            "private_api_ipv4",
+            "pool",
+            "identities",
+            "zone",
+            "telemetry_enabled",
+        }
+        assert bootstrap["private_api_ipv4"] == "10.0.0.5"
+        assert bootstrap["bootstrap_secret_id"] == "worker-secret"
         assert "boot-image" in json.dumps(body)
+
+
+@pytest.mark.parametrize(
+    "pool_max_size", [None, "", "1", "2", 0, 3, -1, True, False, 1.0, 2.0, {}, []]
+)
+def test_configuration_rejects_invalid_or_non_integer_pool_max_size(pool_max_size):
+    with pytest.raises(ValueError):
+        module("provision").prepare(config(pool_max_size))
+
+
+def test_configuration_requires_pool_max_size_without_legacy_default():
+    conf = config()
+    del conf["pool_max_size"]
+    with pytest.raises(ValueError):
+        module("provision").prepare(conf)
+
+
+def test_pool_ceiling_changes_reviewed_checksum_and_rejects_stale_apply(tmp_path):
+    provision = module("provision")
+    cap_two = provision.prepare(config(2))
+    cap_one = provision.prepare(config(1))
+    assert cap_one["checksum"] != cap_two["checksum"]
+    assert cap_one["checksum"] == provision.prepare(config(1))["checksum"]
+    cloud = FakeCloud(provision, config(1))
+    with pytest.raises(ValueError, match="reviewed checksum mismatch"):
+        provision.apply(
+            config(1),
+            cap_two["checksum"],
+            cloud=cloud,
+            receipt_path=tmp_path / "receipt.json",
+        )
+    assert cloud.calls == []
+    assert not (tmp_path / "receipt.json").exists()
 
 
 def test_prepared_bootstrap_projects_real_compose_environment_into_worker_config(
@@ -147,10 +227,14 @@ def test_prepared_bootstrap_projects_real_compose_environment_into_worker_config
     assert actual.remote_pool == "selfie"
 
 
-def test_configuration_rejects_unknown_targets_shared_secret_public_api_and_unknown_inputs():
+@pytest.mark.parametrize("pool_max_size", [1, 2])
+def test_configuration_rejects_unknown_targets_shared_secret_public_api_and_unknown_inputs(
+    pool_max_size,
+):
     provision = module("provision")
     for mutation in (
         {"extra": "secret"},
+        {"capacity_mode": "fixed"},
         {"private_api_ipv4": "111.88.151.64"},
         {"bootstrap_secret_id": "app-secret"},
         {"worker_sa_id": "manager-sa"},
@@ -164,7 +248,7 @@ def test_configuration_rejects_unknown_targets_shared_secret_public_api_and_unkn
             }
         },
     ):
-        value = config() | mutation
+        value = config(pool_max_size) | mutation
         with pytest.raises(ValueError):
             provision.prepare(value)
 
@@ -367,9 +451,10 @@ class FakeCloud:
         return {"id": f"{pool}-operation", "metadata": {"instanceGroupId": resource}}
 
 
-def test_initial_creation_records_exact_ids_and_never_writes_prerequisites(tmp_path):
+@pytest.mark.parametrize("pool_max_size", [1, 2])
+def test_initial_creation_records_exact_ids_and_never_writes_prerequisites(tmp_path, pool_max_size):
     provision = module("provision")
-    conf = config()
+    conf = config(pool_max_size)
     cloud = FakeCloud(provision, conf)
     receipt = provision.apply(
         conf,
@@ -384,7 +469,44 @@ def test_initial_creation_records_exact_ids_and_never_writes_prerequisites(tmp_p
     assert receipt["groups"]["bulk"]["id"] == "bulk-group"
     assert receipt["groups"]["selfie"]["id"] == "selfie-group"
     assert json.loads((tmp_path / "receipt.json").read_text()) == receipt
-    assert provision.status(conf, cloud)["bulk"]["id"] == "bulk-group"
+    read_back = provision.status(conf, cloud)
+    for pool in ("bulk", "selfie"):
+        assert read_back[pool]["id"] == f"{pool}-group"
+        assert (
+            read_back[pool]["scale_policy"]
+            == provision.prepare(conf)["groups"][pool]["scalePolicy"]
+        )
+        assert read_back[pool]["baseline"] == provision.managed_baseline(
+            cloud.groups[0 if pool == "bulk" else 1]
+        )
+    assert len(cloud.calls) == 2
+
+
+def test_cap_one_inspection_and_status_are_read_only_and_policy_drift_blocks_apply(tmp_path):
+    provision = module("provision")
+    conf = config(1)
+    cloud = FakeCloud(provision, conf)
+    cloud.groups = [
+        body | {"id": f"{pool}-group", "status": "ACTIVE"}
+        for pool, body in provision.prepare(conf)["groups"].items()
+    ]
+    read_back = provision.status(conf, cloud)
+    conf["groups"] = {
+        pool: {"id": row["id"], "baseline": row["baseline"]} for pool, row in read_back.items()
+    }
+    assert provision.inspect(conf, cloud) == conf["groups"]
+    assert cloud.calls == []
+    cloud.groups[0]["scalePolicy"]["autoScale"]["maxSize"] = "2"
+    assert provision.status(conf, cloud)["bulk"]["scale_policy"]["autoScale"]["maxSize"] == "2"
+    with pytest.raises(ValueError, match="managed target drift"):
+        provision.apply(
+            conf,
+            provision.prepare(conf)["checksum"],
+            cloud=cloud,
+            receipt_path=tmp_path / "receipt.json",
+        )
+    assert cloud.calls == []
+    assert not (tmp_path / "receipt.json").exists()
 
 
 def test_partial_creation_or_uncertain_response_requires_reconciliation_not_automatic_retry(

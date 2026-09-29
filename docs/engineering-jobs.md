@@ -61,7 +61,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-027 | Maintainer | Gate bib-recognition activation | Validated | 2026-09-25 |
 | EJ-028 | Maintainer | Issue bounded direct gallery preview capabilities | In progress | 2026-09-15 |
 | EJ-030 | Maintainer | Move exact face search into PostgreSQL with controlled reading | In progress | 2026-09-27 |
-| EJ-031 | Operator | Isolate and autoscale photo-worker capacity | In progress | 2026-09-28 |
+| EJ-031 | Operator | Isolate and autoscale photo-worker capacity | In progress | 2026-09-29 |
 
 ## Job details
 
@@ -655,18 +655,23 @@ work does not consume the public web/database host's resources and idle bulk cap
 - Evidence: [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md) and the
   [approved implementation plan](plans/2026-09-27-autoscaled-worker-isolation.md) govern repository
   preparation. Private transport, durable admission/retirement, read-only demand publication and
-  bounded fleet templates are implemented with local automated evidence. Canonical release
-  integration and final package verification are in progress; paid resources, IAM/network and
-  certificate acceptance, production cutover and native autoscaler behavior remain unverified.
+  bounded fleet templates and canonical release integration are implemented. Repository
+  verification does not establish paid resources, IAM/network and
+  certificate acceptance, production cutover or native autoscaler behavior; those remain unverified.
   The main VM, import/commerce placement, recognition features and historical events are not
   changed by repository preparation.
+  The [capped activation plan](plans/2026-09-29-capped-worker-pool-activation.md) preserves native
+  workload scaling with bulk 0..1/selfie 1..1, rather than a fixed-capacity deployment. Serial
+  release/rollback restores the reviewed ceiling and fences expansion on complete provider
+  inventory and obsolete-disk absence; these repository controls do not prove provider behavior.
+  Fresh quota, real provider lifecycle and production cutover remain separate live gates.
   The [phase-one telemetry plan](plans/2026-09-28-worker-telemetry-collection.md) adds default-off
   runtime/host diagnostics through a private authenticated receiver and the existing canonical
   Managed Prometheus channel. Actual local TLS/container, renewal-under-ingestion-failure and
   isolated previous-snapshot additive migration rehearsals cover repository behavior only.
   Missing/stale observations remain unknown, not healthy zeros. No worker VM telemetry, cloud
   ingestion, diagnostic alert or notification acceptance is claimed.
-- Last updated: 2026-09-28
+- Last updated: 2026-09-29
 
 ## Status log
 

@@ -1,6 +1,6 @@
 # Isolated worker pools
 
-This runbook describes the fixed worker-pool contract and its read-only state report.
+This runbook describes the worker-pool contract and its read-only state report.
 Code preparation does not provision paid resources, deploy a worker release, or cut over
 the current workers. Provisioning and live cutover require the separate approved rollout.
 The example contract is [contract.env.example](../../deploy/worker-pools/contract.env.example);
@@ -18,7 +18,8 @@ schema and `selfie_search/0006` reader context, and `pgvector-face-search-read=o
 This worker package preserves that baseline, its pinned pgvector 0.8.6 database image,
 accepted numerical policy (ADR 0041) and operator gate state. Worker coordination adds
 `processing/0012`; no vector backfill, reader change or gate activation is part of relocation.
-Live worker placement remains local; remote activation and telemetry delivery remain pending.
+Those inventories record local worker placement; refresh runtime state before activation.
+Remote activation and telemetry delivery still require separate live evidence.
 
 The main VM retains Django, PostgreSQL, media services, Yandex Disk imports and commerce.
 Only photo processing and selfie query workers move into their own pools. The import worker
@@ -28,9 +29,15 @@ pgvector capability; adding bulk VMs does not implement or approve that backfill
 Both pools use Intel Ice Lake (`standard-v3`), two cores at 100%, 8 GiB memory and a
 32 GiB `network-ssd` boot disk. Each worker processes one job at a time and preserves
 the existing container limit of two CPUs and `5g` memory (5 GiB), leaving VM headroom.
-Selfie uses regular instances with bounds 1..2; activation of the second live instance waits
-for functional acceptance. Bulk uses preemptible instances with bounds 0..2. These bounds
-do not authorize provisioning or changes to the current live instance count.
+The approved initial autoscaling ceiling is one per pool: regular selfie instances use
+bounds 1..1, while preemptible bulk instances use bounds 0..1. Bulk scale-to-zero and wakeup
+remain mandatory live acceptance checks. The separately activated ceiling of two preserves
+selfie bounds 1..2 and bulk bounds 0..2; activation of the second live selfie instance waits
+for functional acceptance. These bounds do not authorize provisioning or changes to the
+current live instance count.
+The [20/24 GiB disk diagnosis](../operations/2026-09-29-worker-disk-sizing.md) is sizing
+evidence only; the approved shape retains 32 GiB. One bulk VM replaces two local bulk
+processes, so reduced bulk concurrency and longer queue time are accepted at this stage.
 
 ## Fixed, disjoint capabilities
 
@@ -232,7 +239,8 @@ demand publication even if its cloud read fails, then exits nonzero for the inco
 it never invents fresh cloud evidence. Existing trusted per-pool snapshots remain authoritative
 until stale. Failed Monitoring publication still cannot advance successful queue freshness.
 
-The prepared at-ceiling rule requires two running VMs with fresh evidence and claimable age
+The prepared at-ceiling rule targets the separately approved ceiling-two policy: it requires
+two running VMs with fresh evidence and claimable age
 above 300 seconds increasing at every observed interval throughout five minutes. A new successful
 publication with capacity_fresh=0 excludes its new saturation points and fires the observation
 diagnostic separately. During a **total publisher outage**, positive historical S points may
@@ -242,6 +250,15 @@ queue and coordinator status evidence is refreshed. It is never authority to rai
 Missing queue telemetry is unconfirmed demand, not healthy/empty service. No interpolation/fake
 zero may hide gaps. Native evaluation and email delivery are proved only during separately
 approved activation.
+
+That rule does not diagnose saturation at the approved ceiling one. Use fresh queue/capacity
+and serving/progress evidence for that bound; do not infer spare capacity from a silent
+ceiling-two rule. The [cap-one alert prerequisite](../future-work/2026-09-29-cap-one-worker-saturation-alert.md)
+must be accepted **before any ceiling-one customer cutover**: a reviewed cap-one-specific
+predicate, native Alarm/NoData/recovery and delivered notifications for the actual pool/zone,
+preserving fresh/unknown observation handling. Manual inspection does not clear this gate;
+it cannot wait for optional diagnostics activation. Any alert-policy change requires its own
+reviewed activation evidence.
 
 On the canonical VM, use the actual Compose project, its reviewed overlays and existing .env;
 the following read-only commands emit bounded queue/status data, not credential files:
@@ -284,15 +301,16 @@ credentials before sharing; never dump full Docker inspect, environment or Lockb
   availability and exact cloud snapshot read/ownership/release allowlist first. Preserve unknown
   status; do not clear members/grants or treat absence as zero. Restore only approved collector
   configuration/transport, then obtain fresh observations and recovery notification.
-- Stalled/overdue work with fewer than two serving members: correlate warm/serving state,
+- Stalled/overdue work: correlate the reviewed ceiling with warm/serving state,
   claims_paused, build mismatch, draining/grants, expired leases and worker restart/OOM evidence.
   Check private TLS/API and storage failures. Preserve existing lease recovery and release
   authority; do not manually expire attempts, grant retirement or auto-restart a serving worker.
-- At-ceiling saturation: if both VMs are warm/serving, outcomes progress but age still rises,
+- At-ceiling saturation: if the reviewed capacity is warm/serving, outcomes progress but age still rises,
   record the arrival/completion deltas and acknowledge bounded throughput. If progress stops,
   follow the stalled-work diagnosis instead of declaring capacity shortage. Communicate backlog
   impact and request a separate reviewed capacity/claim-policy decision if needed. Preserve
-  hard maximum two and selfie claim cap one; do not raise the limit, enable the second claim
+  reviewed steady maximum one (two only after separate approval) and selfie claim cap one;
+  do not raise the limit, enable the second claim
   slot, enroll backfill or change feature gates as an incident workaround.
 
 Record the bounded incident window, queue/status snapshots, exact VM/build/container identity,
@@ -307,8 +325,9 @@ Compose and nonsecret bootstrap configuration. Exactly two managed names are sup
 `findme-photo-worker-bulk` and `findme-photo-worker-selfie`, with repository ownership labels.
 No generic resource reconciler, deletion/recreation command or main-VM mutation is provided.
 
-The input requires these explicit reviewed values: `cloud_id`, `folder_id`, `zone`, `network_id`,
-`subnet_id`, `worker_sg_id`, `canonical_vm_id`, `private_api_ipv4`, `worker_sa_id`, `manager_sa_id`,
+The input requires these explicit reviewed values: `pool_max_size`, `cloud_id`, `folder_id`,
+`zone`, `network_id`, `subnet_id`, `worker_sg_id`, `canonical_vm_id`, `private_api_ipv4`,
+`worker_sa_id`, `manager_sa_id`,
 `bootstrap_secret_id`, `bootstrap_version_id`, `application_secret_id`,
 `boot_image_id`, `docker_version`, `compose_version`, `worker_build`, `worker_image`,
 `egress_gateway_id`, `route_table_id`, and `groups`. Unknown input keys fail closed.
@@ -316,6 +335,13 @@ The input requires these explicit reviewed values: `cloud_id`, `folder_id`, `zon
 expected absence for initial creation. For updates, use the exact existing group ID and the
 managed-configuration baseline obtained by `--status`. Image is an immutable GHCR worker digest;
 Docker/Compose versions refer to binaries already installed in the explicitly reviewed OS image.
+`pool_max_size` must be an integer exactly 1 or 2; missing values, booleans, strings,
+other ceilings and unknown policy inputs fail closed. It is part of the reviewed checksum.
+The approved `pool_max_size=1` renders `scalePolicy.autoScale.maxSize="1"` for both groups,
+with bulk `minZoneSize="0"` and selfie `minZoneSize="1"`. The WORKLOAD rule and observation
+cadence remain unchanged. `pool_max_size=2` preserves the accepted bulk 0..2 and selfie 1..2
+policy for separately approved activation. Raising the ceiling is an explicit, baseline-bound
+cloud change requiring separate review, including after quota approval.
 
 `--inspect --profile <yc-profile>` performs read-only prerequisite checks and returns the same
 prepared checksum. It verifies cloud/folder, worker cloud/folder grants, exact narrow bootstrap
@@ -342,13 +368,27 @@ For a lost response or partial two-group creation, keep the receipt, use read-on
 to resolve the exact names/IDs, and inspect the recorded provider operations. Do not invent a new
 receipt or retry an uncertain create until the original operation has been reconciled. No
 undocumented idempotency header or automatic recreation hides that uncertainty.
+After submission, use read-only `--status` to read each group's actual `scale_policy` and
+its managed baseline; verify the expected autoscaling policy after the provider operation
+completes. A submitted receipt alone does not prove the applied policy or successful rollout.
 
-Initial creation uses size one for both pools because provider `initialSize` is at least one,
-including bulk minimum zero. Quote that temporary VM and disk cost in activation approval.
-Both groups use maximum two including rollout, OPPORTUNISTIC deployment, unavailable/deleting/
-creating maximum one and expansion zero. WORKLOAD GAUGE target is one, measured over 60 seconds,
-with 300-second provider warmup/stabilization and 600-second provider startup. Coordinator idle
-and freshness remain the existing 600/90-second constants. These are initial policies, not
+When both capped pools have a VM, the canonical 100 GiB SSD and two 32 GiB worker disks
+total 164 GiB allocated SSD; one temporary replacement reaches 196 GiB.
+Fresh disk/quota evidence must confirm this budget before activation. Complete builder disk
+cleanup before release replacement; a stopped instance's retained disk still consumes quota.
+With the last inspected quota of 200 GiB this leaves only 4 GiB at replacement, so builder
+and replacement cannot overlap. An unrelated retained SSD invalidates this dated arithmetic.
+Bulk idle-zero savings depend on separately proven provider scale-down and disk removal.
+Live lifecycle, serial release and cleanup proof remain separate acceptance work; this
+provisioning command does not delete disks or authorize expansion.
+
+Autoscaled initial creation uses size one for both pools because provider `initialSize` is at
+least one, including bulk minimum zero. Quote that temporary VM and disk cost in activation
+approval. Groups retain OPPORTUNISTIC deployment, unavailable/deleting/creating maximum one
+and expansion zero, with the explicit configured ceiling. Their WORKLOAD GAUGE target is one,
+measured over 60 seconds, with 300-second provider warmup/stabilization and 600-second provider
+startup. Coordinator idle and freshness remain the existing 600/90-second constants.
+These are initial policies, not
 performance promises; native scale-to-zero, floor retention and update ceilings need live proof.
 The backend selfie claim cap stays one until separately accepted two-worker functional evidence.
 
@@ -412,7 +452,28 @@ Worker rollout itself neither reconciles PostgreSQL nor pauses compatible remote
 database work. Application-package rollback retains the vector-capable DB image after successful
 capability reconciliation, including fleet recovery; it never downgrades vector-bearing data.
 
-Staged releases temporarily hold a warm spare within the hard maximum two. At one selfie node,
+For `pool_max_size=1`, remote forward release and rollback use the same reviewed ceiling
+in candidate and previous manifests. Mixed ceilings are rejected; capacity changes are
+separate reviewed operations. Only one pool temporarily raises maxSize to two and its warm
+floor to two. After promotion, maxSize/floor return to one before fresh survivor observation
+and durable retirement grants. Bulk subsequently returns to floor zero, selfie to one.
+During initial local cutover, paused bulk retains floor one until remote claims open.
+Each pool settles before the next expands; at most three worker boot disks may be allocated,
+including stopped/transitional instances. The other pool keeps its reviewed ceiling.
+
+`worker-pools-release.json` records `expanded_pool` before expansion and the identified
+`worker_disks` with owner identities before VM retirement. Complete stable group, folder-VM
+and folder-disk listings must prove old boot disks absent independently of member disappearance.
+The controller rejects retained/deleting or unexplained worker-image disks, unsafe VM states,
+incomplete/changing inventory and excess allocations; it performs no arbitrary disk deletion.
+Re-entry reconciles pending cloud read-back first and settles the recorded expanded pool
+first in either direction. An uncertain unapplied submission is not retried and cannot permit
+the other pool to expand. Final verification checks both steady policies and disk settlement.
+Actual provider scale-down, survivor safety, recovery and disk lifetime require a charged
+resource rehearsal before customer cutover; these controller fences alone do not prove them.
+
+For the separately approved ceiling two, staged releases hold a warm spare within each
+pool's hard maximum two. At one selfie node,
 the candidate warms alongside the old node. At two, the existing template is changed
 OPPORTUNISTICALLY, one exact old boot receives a canonical retirement grant while a fresh old
 active survivor remains, and its replacement warms before promotion. Remaining old capacity
@@ -430,11 +491,18 @@ explicit; do not delete its receipt to bypass reconciliation.
 The bounded fleet-only recovery interface uses the same host lock and never restarts unrelated
 services. Through the existing narrow remote-check secret wrapper, set `WORKER_POOL_OPERATION`
 to `status`, `rollout` (resume), `verify` or `rollback`, then invoke `deploy/run-remote.sh worker-pools`.
-Equivalently, an already-authorized canonical operator can run:
+Equivalently, an already-authorized canonical operator selects one appropriate phase below,
+starting with status after an interruption:
 
 ```sh
 PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
   python3 /opt/photo-prjct/deploy/worker-pools/release.py status --root /opt/photo-prjct
+PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
+  python3 /opt/photo-prjct/deploy/worker-pools/release.py rollout --root /opt/photo-prjct
+PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
+  python3 /opt/photo-prjct/deploy/worker-pools/release.py verify --root /opt/photo-prjct
+PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
+  python3 /opt/photo-prjct/deploy/worker-pools/release.py rollback --root /opt/photo-prjct
 ```
 
 Read status/receipt and provider operation evidence first after a lost response. Resume uses the
@@ -463,7 +531,11 @@ candidate or separately reconcile its fenced VMs/coordinator before reviewing an
 ## Functional evidence versus live acceptance
 
 From the repository, `.venv/bin/python deploy/worker-pools/acceptance.py --functional-fixture`
-runs the isolated PostgreSQL/Django/Nginx HTTPS fixture. It uses a temporary CA and verified
+runs the isolated PostgreSQL/Django/Nginx HTTPS fixture plus existing provisioning, release
+and retirement operational modules. Both supported ceilings are exercised; cap-one forward,
+rollback and interrupted second-pool recovery use the release module's provider fixtures,
+including complete inventories, retained disks and uncertain mutations. Disk evidence comes
+from those fixtures, not the TLS test. The HTTPS fixture uses a temporary CA and verified
 hostname with the real remote `HttpClient`; only fixture connection routing, external object
 storage, cloud and host actions are injected. The fixture persists a maximum 32×512 face result
 and a 512-value selfie result within its 16KiB envelope, checks CA/hostname/auth/redirect/body
@@ -472,8 +544,12 @@ expired-work recovery. Synthetic deterministic vectors are protocol data, not a 
 model, recognition benchmark or historical-event replay. Existing image packaged-model smoke is
 still a separate build gate.
 
-Running `acceptance.py` without the flag prints the outstanding live checklist and performs no
-cloud actions. Fixture success does not prove native autoscaling, private networking/IAM,
+Running `acceptance.py` without the flag prints the outstanding live checklist for the approved
+ceiling one and performs no cloud actions. `--pool-max-size 1` selects bulk0..1/selfie1..1
+policy/wakeup and serial release/disk gates. `--pool-max-size 2` lists the separately approved
+second-instance demand and two-independent-selfie gates; it grants no capacity or claim change.
+`--functional-fixture` covers both ceilings regardless of that checklist option.
+Fixture success does not prove native autoscaling, private networking/IAM,
 billable hard ceilings, real-model memory/startup, guest shutdown, or production cutover/recovery.
 Those checks require the explicit charged/live approval. No backfill, second selfie claim slot,
 or changes to the already enabled pgvector gate are authorized by these results.

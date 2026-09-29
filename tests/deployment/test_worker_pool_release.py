@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+from copy import deepcopy
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -112,11 +113,15 @@ def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
             "allocationPolicy": {"zones": [{"zoneId": "ru-central1-a"}]},
             "instanceTemplate": template,
             "managedInstancesState": {"targetSize": "1"},
+            "scalePolicy": {
+                "autoScale": {"maxSize": "2", "minZoneSize": "0" if name == "bulk" else "1"}
+            },
         }
         for name in ("bulk", "selfie")
     }
     manifest = {
         "configuration": {
+            "pool_max_size": 2,
             "worker_build": build,
             "groups": {name: {"id": name + "-group"} for name in groups},
         },
@@ -462,6 +467,7 @@ def test_initial_app_failure_after_fleet_commit_restores_absence_and_recovery_mo
     manifest = {
         "checksum": "reviewed",
         "configuration": {
+            "pool_max_size": 2,
             "folder_id": "folder",
             "zone": "ru-central1-a",
             "boot_image_id": "boot",
@@ -599,7 +605,7 @@ def test_initial_zero_bulk_requires_a_warm_acceptance_node_before_cutover():
     empty = state()
     empty["claims_paused"] = True
     gateway.observe.return_value = {"bulk": empty}
-    manifest = {"configuration": {"worker_build": "a" * 40}}
+    manifest = {"configuration": {"worker_build": "a" * 40, "pool_max_size": 2}}
     with pytest.raises(ValueError, match="transition timeout"):
         release.transition(gateway, "bulk", manifest, timeout=0, pause=0)
     gateway.template.assert_called_once_with("bulk", manifest, 1)
@@ -692,7 +698,7 @@ class FleetFixture:
 def test_transition_preserves_survivor_and_rolls_back_as_new_staged_build(count):
     release = release_module()
     fixture = FleetFixture(count)
-    manifest = {"configuration": {"worker_build": "b" * 40}}
+    manifest = {"configuration": {"worker_build": "b" * 40, "pool_max_size": 2}}
     release.transition(fixture, "selfie", manifest, timeout=1, pause=0)
     assert fixture.snapshot_state["active_build"] == "b" * 40
     assert all(m["worker_build"] == "b" * 40 for m in fixture.snapshot_state["members"])
@@ -702,7 +708,11 @@ def test_transition_preserves_survivor_and_rolls_back_as_new_staged_build(count)
         < fixture.events.index("promote")
     )
     release.transition(
-        fixture, "selfie", {"configuration": {"worker_build": "a" * 40}}, timeout=1, pause=0
+        fixture,
+        "selfie",
+        {"configuration": {"worker_build": "a" * 40, "pool_max_size": 2}},
+        timeout=1,
+        pause=0,
     )
     assert fixture.events.count("stage") == 2
     assert fixture.snapshot_state["active_build"] == "a" * 40
@@ -714,7 +724,11 @@ def test_cancel_retires_candidate_then_uses_guarded_cancel():
     fixture.control("stage", active_build="a" * 40, staged_build="b" * 40)
     fixture.template("selfie", {"configuration": {"worker_build": "b" * 40}}, 2)
     release.cancel(
-        fixture, "selfie", {"configuration": {"worker_build": "a" * 40}}, timeout=1, pause=0
+        fixture,
+        "selfie",
+        {"configuration": {"worker_build": "a" * 40, "pool_max_size": 2}},
+        timeout=1,
+        pause=0,
     )
     assert fixture.snapshot_state["staged_build"] is None
     assert fixture.events.index("retire") < fixture.events.index("cancel")
@@ -808,3 +822,483 @@ def test_actual_image_proof_checks_web_and_worker_revision_and_digest():
         run=run,
     )
     assert proof == {"web_image": web, "web_id": "sha256:web", "worker_id": "sha256:worker"}
+
+
+def capped_manifest(cap=1, build="a" * 40):
+    from tests.deployment.test_worker_pool_provisioning import config
+
+    configuration = config(cap)
+    configuration["worker_build"] = build
+    configuration["worker_image"] = "ghcr.io/example/photo-prjct-worker@sha256:" + build[0] * 64
+    for name, entry in configuration["groups"].items():
+        entry.update(id=name + "-group", baseline="0" * 64)
+    return release_module().provision_module().prepare(configuration)
+
+
+@pytest.mark.parametrize("cap", [1, 2])
+def test_release_manifest_binds_each_pool_to_explicit_reviewed_ceiling(cap):
+    release = release_module()
+    manifest = capped_manifest(cap)
+    release.validate_manifest(manifest)
+    manifest["groups"]["bulk"]["scalePolicy"]["autoScale"]["maxSize"] = str(3 - cap)
+    manifest["checksum"] = release.provision_module().digest(
+        {key: value for key, value in manifest.items() if key != "checksum"}
+    )
+    with pytest.raises(ValueError, match="manifest"):
+        release.validate_manifest(manifest)
+
+
+def test_release_rejects_cross_ceiling_previous_manifest():
+    with pytest.raises(ValueError, match="ceiling"):
+        release_module().observation_config(capped_manifest(1), {"manifest": capped_manifest(2)})
+
+
+class DiskCloud:
+    """Provider boundary with paginated inventories and independent VM/disk lifetimes."""
+
+    def __init__(self, manifest):
+        from processing.services.worker_pool_cloud import CloudReader
+
+        self.pages = CloudReader.pages.__get__(self)
+        self.groups = {
+            name + "-group": {"id": name + "-group", **deepcopy(group)}
+            for name, group in manifest["groups"].items()
+        }
+        self.members = {name + "-group": [] for name in ("bulk", "selfie")}
+        self.instances = {}
+        self.disks = {}
+        self.writes = []
+        self.lost_response = False
+        self.incomplete_disks = False
+        for name in ("bulk", "selfie"):
+            self.add(name, name + "-old")
+
+    def add(self, name, identity, *, status="RUNNING_ACTUAL"):
+        self.members[name + "-group"].append(
+            {"instanceId": identity, "status": status, "zoneId": "ru-central1-a"}
+        )
+        self.instances[identity] = {
+            "id": identity,
+            "folderId": "folder",
+            "zoneId": "ru-central1-a",
+            "status": "RUNNING",
+            "bootDisk": {"diskId": identity + "-disk"},
+        }
+        self.disks[identity + "-disk"] = {
+            "id": identity + "-disk",
+            "folderId": "folder",
+            "zoneId": "ru-central1-a",
+            "sourceImageId": "boot-image",
+            "status": "READY",
+            "instanceIds": [identity],
+        }
+
+    def get(self, path, **parameters):
+        if path.startswith("instanceGroups/"):
+            parts = path.split("/")
+            if len(parts) == 2:
+                return deepcopy(self.groups[parts[1]])
+            return {"instances": deepcopy(self.members[parts[1]])}
+        assert path in {"instances", "disks"}, path
+        rows = list(getattr(self, path).values())
+        # Exercise canonical complete pagination, including the final empty page.
+        offset = int(parameters.get("pageToken") or "0")
+        if path == "disks" and self.incomplete_disks and offset:
+            raise TimeoutError("disk page unavailable")
+        return {
+            path: deepcopy(rows[offset : offset + 1]),
+            **({"nextPageToken": str(offset + 1)} if offset < len(rows) else {}),
+        }
+
+    def mutate(self, method, path, body):
+        assert method == "PATCH"
+        self.writes.append((path, deepcopy(body)))
+        self.groups[path.split("/")[1]].update(
+            {key: deepcopy(value) for key, value in body.items() if key != "updateMask"}
+        )
+        if self.lost_response:
+            self.lost_response = False
+            raise TimeoutError("lost response")
+        return {"id": "operation"}
+
+
+def disk_host(tmp_path, monkeypatch):
+    release = release_module()
+    monkeypatch.setattr(release.time, "sleep", lambda delay: None)
+    manifest = capped_manifest()
+    cloud = DiskCloud(manifest)
+    journal = release.Journal(tmp_path / "journal.json", {"pending": None})
+    return release, release.Host(tmp_path, cloud, journal), manifest
+
+
+def test_temporary_ceiling_is_restored_and_other_pool_cannot_expand(tmp_path, monkeypatch):
+    _, host, manifest = disk_host(tmp_path, monkeypatch)
+    host.template("bulk", manifest, 2)
+    assert host.cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["maxSize"] == "2"
+    with pytest.raises(ValueError, match="serial"):
+        host.template("selfie", manifest, 2)
+    host.template("bulk", manifest, 0)
+    host.disk_fence(manifest, settled="bulk")
+    host.template("selfie", manifest, 2)
+    assert host.cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["maxSize"] == "1"
+
+
+@pytest.mark.parametrize("status", ["STOPPED", "DELETING", "CREATING"])
+def test_stopped_or_transitional_allocation_blocks_fourth_disk(tmp_path, monkeypatch, status):
+    _, host, manifest = disk_host(tmp_path, monkeypatch)
+    host.cloud.add("bulk", "bulk-spare", status=status)
+    with pytest.raises(ValueError):
+        host.template("selfie", manifest, 2)
+    assert not host.cloud.writes
+
+
+@pytest.mark.parametrize("status", ["STOPPED", "STOPPING", "STARTING", "UNKNOWN", None])
+def test_compute_instance_must_affirm_running_before_expansion(tmp_path, monkeypatch, status):
+    release, host, manifest = disk_host(tmp_path, monkeypatch)
+    instance = host.cloud.instances["bulk-old"]
+    if status is None:
+        del instance["status"]
+    else:
+        instance["status"] = status
+    # Group membership remains RUNNING_ACTUAL and the disk remains READY.
+    with pytest.raises(ValueError, match="stopped or transitional"):
+        host.template("selfie", manifest, 2)
+    assert not host.cloud.writes
+    assert release.Journal(host.journal.path).data["worker_disks"]["bulk-old-disk"] == {
+        "pool": "bulk",
+        "instance_id": "bulk-old",
+    }
+
+
+@pytest.mark.parametrize("status", ["READY", "DELETING"])
+def test_disk_absence_is_independent_of_member_absence_and_survives_restart(
+    tmp_path, monkeypatch, status
+):
+    release, host, manifest = disk_host(tmp_path, monkeypatch)
+    host.disk_fence(manifest)
+    assert "bulk-old-disk" in release.Journal(host.journal.path).data["worker_disks"]
+    host.cloud.members["bulk-group"] = []
+    del host.cloud.instances["bulk-old"]
+    host.cloud.disks["bulk-old-disk"]["status"] = status
+    restarted = release.Host(tmp_path, host.cloud, release.Journal(host.journal.path))
+    with pytest.raises(ValueError, match="retained"):
+        restarted.template("selfie", manifest, 2)
+    assert not host.cloud.writes
+    del host.cloud.disks["bulk-old-disk"]
+    restarted.template("selfie", manifest, 2)
+    assert len(host.cloud.writes) == 1
+
+
+@pytest.mark.parametrize(
+    "problem", ["unexplained", "folder", "image", "duplicate", "incomplete", "changing"]
+)
+def test_ambiguous_inventory_cannot_authorize_expansion(tmp_path, monkeypatch, problem):
+    _, host, manifest = disk_host(tmp_path, monkeypatch)
+    cloud = host.cloud
+    if problem == "unexplained":
+        cloud.disks["retained"] = {**cloud.disks["bulk-old-disk"], "id": "retained"}
+    elif problem == "folder":
+        cloud.disks["bulk-old-disk"]["folderId"] = "other"
+    elif problem == "image":
+        cloud.disks["bulk-old-disk"]["sourceImageId"] = "other"
+    elif problem == "duplicate":
+        cloud.members["selfie-group"] = deepcopy(cloud.members["bulk-group"])
+    elif problem == "incomplete":
+        cloud.incomplete_disks = True
+    else:
+        original = cloud.get
+        calls = 0
+
+        def changed(path, **kwargs):
+            nonlocal calls
+            result = original(path, **kwargs)
+            if path == "instanceGroups/bulk-group/instances":
+                calls += 1
+                if calls > 1:
+                    return {"instances": []}
+            return result
+
+        cloud.get = changed
+    with pytest.raises((ValueError, TimeoutError)):
+        host.template("selfie", manifest, 2)
+    assert not cloud.writes
+
+
+def test_lost_expansion_response_reconciles_without_a_second_submission(tmp_path, monkeypatch):
+    release, host, manifest = disk_host(tmp_path, monkeypatch)
+    host.cloud.lost_response = True
+    with pytest.raises(TimeoutError):
+        host.template("bulk", manifest, 2)
+    restarted = release.Host(tmp_path, host.cloud, release.Journal(host.journal.path))
+    restarted.template("bulk", manifest, 2)
+    assert len(host.cloud.writes) == 1
+    assert restarted.journal.data["pending"] is None
+    with pytest.raises(ValueError, match="serial"):
+        restarted.template("selfie", manifest, 2)
+
+
+def capped_fleet(tmp_path, monkeypatch, *, initial=False):
+    release = release_module()
+    monkeypatch.setattr(release.time, "sleep", lambda delay: None)
+    old, new = capped_manifest(), capped_manifest(build="b" * 40)
+    cloud = DiskCloud(new if initial else old)
+    journal = release.Journal(
+        tmp_path / "worker-pools-release.json",
+        {
+            "phase": "rolling",
+            "pending": None,
+            "candidate": {"manifest": new, "proof": {}},
+            "previous": None if initial else {"manifest": old, "proof": {}},
+        },
+    )
+
+    class Host(release.Host):
+        def __init__(self):
+            super().__init__(tmp_path, cloud, journal)
+            self.events = []
+            self.retain_disk = False
+            self.interrupt_pool = None
+            self.states = {}
+            for name in ("bulk", "selfie"):
+                snapshot = state(("b" if initial else "a") * 40)
+                snapshot["active_build"] = ("b" if initial else "a") * 40
+                snapshot["claims_paused"] = initial
+                for key in ("members", "observed_members"):
+                    snapshot[key][0]["instance_id"] = name + "-old"
+                snapshot["members"][0]["serving"] = not initial
+                self.states[name] = snapshot
+
+        def observe(self):
+            return deepcopy(self.states)
+
+        def verify_web(self, proof):
+            pass
+
+        def stop_local(self):
+            self.events.append(("stop-local",))
+
+        def template(self, name, manifest, floor):
+            if floor == 0:
+                assert not self.states[name]["claims_paused"], "paused sole candidate lost"
+            super().template(name, manifest, floor)
+            self.events.append(("template", name, floor))
+            build = manifest["configuration"]["worker_build"]
+            snapshot = self.states[name]
+            if floor > len(snapshot["members"]) and not any(
+                member["worker_build"] == build for member in snapshot["members"]
+            ):
+                identity = name + "-" + build[0]
+                cloud.add(name, identity)
+                member = {
+                    **state(build)["members"][0],
+                    "instance_id": identity,
+                    "serving": False,
+                }
+                snapshot["members"].append(member)
+                snapshot["observed_members"].append({**member, "status": "RUNNING_ACTUAL"})
+            assert len(cloud.disks) <= 3, "fourth allocated worker disk"
+            if name == self.interrupt_pool and floor == 2:
+                self.interrupt_pool = None
+                raise TimeoutError("interrupted after expansion")
+
+        def control(self, operation, **args):
+            if operation == "status":
+                return self.observe()
+            name = args.get("pool", args.get("identity", {}).get("pool"))
+            snapshot = self.states[name]
+            self.events.append((operation, name))
+            if operation == "stage":
+                snapshot["staged_build"] = args["staged_build"]
+            elif operation == "promote":
+                snapshot["active_build"], snapshot["staged_build"] = args["staged_build"], None
+                for member in snapshot["members"]:
+                    member["serving"] = member["worker_build"] == snapshot["active_build"]
+            elif operation == "retire":
+                victim = args["identity"]["instance_id"]
+                assert any(m["instance_id"] != victim and m["serving"] for m in snapshot["members"])
+                assert cloud.groups[name + "-group"]["scalePolicy"]["autoScale"]["maxSize"] == "1"
+                assert victim + "-disk" in release.Journal(journal.path).data["worker_disks"]
+                for key in ("members", "observed_members"):
+                    snapshot[key] = [m for m in snapshot[key] if m["instance_id"] != victim]
+                cloud.members[name + "-group"] = [
+                    row for row in cloud.members[name + "-group"] if row["instanceId"] != victim
+                ]
+                del cloud.instances[victim]
+                if not self.retain_disk:
+                    del cloud.disks[victim + "-disk"]
+            elif operation == "cancel":
+                snapshot["staged_build"] = None
+            elif operation == "pause":
+                key = "local_claims_paused" if args["local"] else "claims_paused"
+                snapshot[key] = args["paused"]
+                if not args["local"]:
+                    for member in snapshot["members"]:
+                        member["serving"] = not args["paused"]
+            elif operation not in {"recover", "drain-local"}:
+                raise AssertionError(operation)
+            return {"ok": True}
+
+    host = Host()
+
+    def restore_host(root, provider, restored_journal):
+        host.journal = restored_journal
+        return host
+
+    monkeypatch.setattr(release, "Host", restore_host)
+    monkeypatch.setattr(
+        release, "provision_module", lambda: SimpleNamespace(Cloud=lambda token: cloud)
+    )
+    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
+    return release, host, new, old
+
+
+def test_capped_forward_and_rollback_restore_each_pool_before_next_expansion(tmp_path, monkeypatch):
+    release, host, new, old = capped_fleet(tmp_path, monkeypatch)
+    for mode, manifest in (("rollout", new), ("rollback", old)):
+        host.events.clear()
+        release.execute(mode, tmp_path, None, None, None)
+        assert host.events.index(("template", "bulk", 0)) < host.events.index(
+            ("template", "selfie", 2)
+        )
+        assert len(host.cloud.disks) == 2
+        for name in ("bulk", "selfie"):
+            assert (
+                host.cloud.groups[name + "-group"]["scalePolicy"]
+                == manifest["groups"][name]["scalePolicy"]
+            )
+            assert host.states[name]["active_build"] == manifest["configuration"]["worker_build"]
+
+
+@pytest.mark.parametrize("mode", ["rollout", "rollback"])
+def test_retained_disk_blocks_next_pool_and_reentry_until_complete_absence(
+    tmp_path, monkeypatch, mode
+):
+    release, host, _, _ = capped_fleet(tmp_path, monkeypatch)
+    if mode == "rollback":
+        release.execute("rollout", tmp_path, None, None, None)
+        host.events.clear()
+    host.retain_disk = True
+    with pytest.raises(ValueError, match="retained"):
+        release.execute(mode, tmp_path, None, None, None)
+    assert ("template", "selfie", 2) not in host.events
+    host.journal = release.Journal(host.journal.path)
+    with pytest.raises(ValueError, match="retained"):
+        release.execute(mode, tmp_path, None, None, None)
+    del host.cloud.disks["bulk-old-disk" if mode == "rollout" else "bulk-b-disk"]
+    host.retain_disk = False
+    release.execute(mode, tmp_path, None, None, None)
+    assert host.journal.data["phase"] == ("verified" if mode == "rollout" else "rolled-back")
+
+
+@pytest.mark.parametrize("mode", ["rollout", "rollback"])
+def test_interrupted_second_pool_is_reconciled_first_in_either_direction(
+    tmp_path, monkeypatch, mode
+):
+    release, host, _, old = capped_fleet(tmp_path, monkeypatch)
+    host.interrupt_pool = "selfie"
+    with pytest.raises(TimeoutError, match="interrupted"):
+        release.execute("rollout", tmp_path, None, None, None)
+    host.journal = release.Journal(host.journal.path)
+    host.events.clear()
+    release.execute(mode, tmp_path, None, None, None)
+    assert host.events[0][1] == "selfie"
+    assert len(host.cloud.disks) == 2
+    if mode == "rollback":
+        assert all(
+            row["active_build"] == old["configuration"]["worker_build"]
+            for row in host.states.values()
+        )
+
+
+def test_initial_capped_cutover_preserves_paused_bulk_until_claims_open(tmp_path, monkeypatch):
+    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
+    release.execute("rollout", tmp_path, None, None, None)
+    assert host.events.index(("stop-local",)) < host.events.index(("template", "bulk", 0))
+    assert all(any(member["serving"] for member in row["members"]) for row in host.states.values())
+
+
+def test_initial_warm_floor_cannot_allocate_over_unexplained_worker_disks(tmp_path, monkeypatch):
+    _, host, manifest = disk_host(tmp_path, monkeypatch)
+    host.cloud.disks["retained"] = {**host.cloud.disks["bulk-old-disk"], "id": "retained"}
+    with pytest.raises(ValueError, match="unexplained"):
+        host.template("bulk", manifest, 1)
+    assert not host.cloud.writes
+
+
+def test_unjournaled_extra_running_member_blocks_release_expansion(tmp_path, monkeypatch):
+    _, host, manifest = disk_host(tmp_path, monkeypatch)
+    host.cloud.add("bulk", "bulk-extra")
+    with pytest.raises(ValueError, match="unexplained"):
+        host.template("bulk", manifest, 2)
+    assert not host.cloud.writes
+
+
+def test_final_fleet_verification_rejects_unsettled_extra_candidate(tmp_path, monkeypatch):
+    release, host, new, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
+    release.execute("rollout", tmp_path, None, None, None)
+    host.cloud.add("bulk", "extra-candidate")
+    with pytest.raises(ValueError, match="settled"):
+        release.verify_fleet(host, new)
+
+
+def test_uncertain_unapplied_expansion_does_not_retry_or_switch_pools(tmp_path, monkeypatch):
+    release, host, manifest = disk_host(tmp_path, monkeypatch)
+    calls = []
+
+    def lost(method, path, body):
+        calls.append(path)
+        raise TimeoutError("unknown submission outcome")
+
+    host.cloud.mutate = lost
+    with pytest.raises(TimeoutError):
+        host.template("bulk", manifest, 2)
+    restarted = release.Host(tmp_path, host.cloud, release.Journal(host.journal.path))
+    with pytest.raises(ValueError, match="uncertain"):
+        restarted.template("selfie", manifest, 2)
+    assert calls == ["instanceGroups/bulk-group"]
+    assert restarted.journal.data["expanded_pool"] == "bulk"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "name,target,allowed", [("selfie", 1, False), ("bulk", 1, False), ("bulk", 0, True)]
+)
+def test_capped_sole_worker_uses_fresh_target_and_existing_retirement_grants(
+    settings, name, target, allowed
+):
+    from datetime import timedelta
+
+    from django.utils import timezone
+    from processing.models import WorkerPoolMember
+    from processing.services import worker_pool_lifecycle as lifecycle
+
+    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = True
+    now = timezone.now()
+    build = "a" * 40
+    lifecycle.configure_pool(name, group_id=name + "-group", active_build=build)
+    assert lifecycle.record_cloud_snapshot(
+        name,
+        group_id=name + "-group",
+        sequence=1,
+        started_at=now,
+        completed_at=now,
+        target_size=target,
+        members=[{"instance_id": "sole", "status": "RUNNING_ACTUAL", "worker_build": build}],
+        complete=True,
+    )
+    lifecycle.record_queue_observation(name, observed_at=now, endpoint_available=True)
+    lifecycle.set_claims_paused(name, paused=False)
+    identity = lifecycle.MemberIdentity(name, "sole", uuid4(), build)
+    response = lifecycle.register(identity)
+    identity = replace(identity, registration_generation=UUID(response["registration_generation"]))
+    lifecycle.heartbeat(identity, ready=True, draining=False)
+    WorkerPoolMember.objects.filter(instance_id="sole").update(
+        idle_since=now - timedelta(minutes=20)
+    )
+    grant = lifecycle.request_retirement(identity)
+    assert bool(grant) is allowed
+    if allowed:
+        assert lifecycle.request_retirement(identity) == grant
+    else:
+        member = WorkerPoolMember.objects.get(instance_id="sole")
+        assert member.ready and not member.draining

@@ -1,11 +1,13 @@
 """Functional contract evidence only: synthetic images/results, real TLS/proxy/Django/Postgres."""
 
 import http.client
+import importlib.util
 import json
 import math
 import socket
 import ssl
 import subprocess
+import sys
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -46,6 +48,66 @@ from selfie_search.storage import StoredTemporarySelfie
 pytestmark = [pytest.mark.operational, pytest.mark.django_db(transaction=True)]
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = "a" * 40
+
+
+def acceptance_module():
+    spec = importlib.util.spec_from_file_location(
+        "worker_pool_acceptance", ROOT / "deploy/worker-pools/acceptance.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("ceiling", [None, 1, 2])
+def test_live_checklist_binds_policy_and_replacement_gates_to_selected_ceiling(ceiling):
+    args = [sys.executable, str(ROOT / "deploy/worker-pools/acceptance.py")]
+    if ceiling is not None:
+        args += ["--pool-max-size", str(ceiling)]
+    result = subprocess.run(args, capture_output=True, text=True, check=True)
+    checklist = json.loads(result.stdout)
+    selected = 1 if ceiling is None else ceiling
+    assert checklist["live_verified"] is False
+    assert checklist["approval_required"] is True
+    assert checklist["pool_max_size"] == selected
+    assert checklist["scale_bounds"] == {"bulk": [0, selected], "selfie": [1, selected]}
+    gates = " ".join(checklist["gates"])
+    assert "disk" in gates and "production" in gates
+    if selected == 1:
+        assert "serial" in gates and "<=3" in gates
+        assert "second-instance demand" not in gates
+    else:
+        assert "second-instance demand" in gates
+        assert "two independent selfie" in gates
+
+
+def test_functional_entrypoint_runs_existing_policy_and_interrupted_release_fixtures(
+    monkeypatch,
+):
+    acceptance = acceptance_module()
+    monkeypatch.setattr(sys, "argv", ["acceptance.py", "--functional-fixture"])
+    submitted = []
+
+    def run_fixture(command, *, cwd, check):
+        submitted.append((command, cwd, check))
+        return subprocess.CompletedProcess(command, 17)
+
+    monkeypatch.setattr(acceptance.subprocess, "run", run_fixture)
+    assert acceptance.main() == 17
+    assert submitted == [
+        (
+            [
+                "make",
+                "test",
+                "TESTS=-m operational tests/deployment/test_worker_pool_acceptance.py "
+                "tests/deployment/test_worker_pool_provisioning.py "
+                "tests/deployment/test_worker_pool_release.py "
+                "tests/deployment/test_worker_pool_retire.py",
+            ],
+            ROOT,
+            False,
+        )
+    ]
 
 
 def run(*args):

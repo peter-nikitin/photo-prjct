@@ -21,7 +21,6 @@ ORIGIN = "img-origin.findme-photo.ru"
 CNAME = "img.findme-photo.ru"
 HEADER = "X-FindMe-Origin-Auth"
 EDGE_TTL = 2_592_000
-BROWSER_TTL = 21_600
 ID = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
@@ -245,7 +244,7 @@ def desired() -> dict[str, Any]:
         "ignore_query_string": True,
         "ignore_cookie": True,
         "edge_ttl_seconds": EDGE_TTL,
-        "browser_ttl_seconds": BROWSER_TTL,
+        "browser_cache": "origin_cache_control",
         "static_request_header": HEADER,
         "secure_key": "projected",
         "origin_shielding": False,
@@ -270,7 +269,6 @@ def resource_arguments(
         "--origin-protocol", "https",
         "--active=false",
         "--cache-expiration-time", str(EDGE_TTL),
-        "--browser-cache-expiration-time", str(BROWSER_TTL),
         "--ignore-query-string",
         "--ignore-cookie",
         "--host-header", ORIGIN,
@@ -281,6 +279,8 @@ def resource_arguments(
     ]
     if initial_create:
         arguments[5:5] = ["--dont-use-ssl-cert"]
+    else:
+        arguments.append("--clear-browser-cache-expiration-time")
     return arguments
 
 

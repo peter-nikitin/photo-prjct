@@ -3,6 +3,9 @@ services:
     environment:
       IMGPROXY_S3_ENDPOINT: http://minio:9000
       IMGPROXY_S3_REGION: us-east-1
+      SSL_CERT_FILE: /certificates/source-ca.pem
+    volumes:
+      - certificates:/certificates:ro
     depends_on:
       seed: {condition: service_healthy}
   nginx:

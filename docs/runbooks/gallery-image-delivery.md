@@ -268,3 +268,51 @@ application workers, modify derivatives, revoke credentials, or delete billed re
 that application rollback. Origin-package rollback uses the retained package described in
 `deploy/image-origin/README.md`. Any CDN deactivation, credential revocation, policy restoration, or
 resource deletion is a separate exact-target operation requiring a fresh inventory and approval.
+
+## Public catalog covers (ADR 0044)
+
+The separate `event-cover-cdn-images` definition reconciles in `off`. It does not alter
+`gallery-cdn-images`, event publication, draft visibility, or private-media authorization. Only
+public immutable `event-covers/` objects use the `cover-v1` transform over HTTPS. The existing
+`MEDIA_S3_PUBLIC_BUCKET` repository variable is projected to image-origin alongside the private
+bucket name; no public-storage credential or additional IAM grant is required.
+New Admin uploads save only a normalized progressive JPEG within 960 pixels, without upscaling;
+the full uploaded source is not stored. Existing cover objects are not automatically rewritten.
+
+1. Deploy the application with the cover gate `off`; verify the new row and preservation of
+   existing flag states. Existing catalog covers must still load directly.
+2. Deploy the same reviewed origin package through `Deploy isolated image origin`. Verify
+   `cover-v1` and the existing `gallery-v1` signed JPEG paths, denied arbitrary sources, and origin
+   health. The maintainer will re-upload existing covers through Admin after this implementation:
+   selecting a new cover file produces a normalized object under a new key; clicking Save without
+   a new file does not resize an old cover. Complete this before activation (or prove every
+   remaining old cover fits the unchanged source limits). No provisioning command or bucket-policy
+   update is part of this rollout.
+3. Review the CDN cache contract, then obtain the normal separate exact-target cloud approval for
+   clearing only the resource-wide browser-cache override. Preserve the current active state,
+   certificate, 30-day edge TTL, query-independent cache identity, secure token and origin
+   authentication; compare sanitized before/after settings. Do **not** run the bootstrap
+   `configure-cdn.sh --apply` against the active gallery resource: that entrypoint deliberately
+   makes resources inactive. Its dry run records the desired origin-controlled browser policy,
+   but this existing-resource rollout requires a browser-cache-only update, not bootstrap apply.
+4. Enable the cover flag for `staff` in Admin. On the real public CDN host verify both cold and
+   warm covers are complete reduced JPEGs, use the same image path across newly issued tokens,
+   and return `max-age=31536000` with `immutable`. Verify a gallery image still returns
+   `max-age=21600`. Verify altered/expired tokens are rejected on a warm path. Do not activate
+   public covers while the shared CDN still overrides the cover header to six hours or any
+   gallery authentication/cache check fails.
+5. Inspect desktop and mobile cards, no-cover placeholders, eager first four covers, lazy later
+   covers, response bytes and an image-error window. Verify a new oversized Admin upload is saved
+   reduced and an ordinary event edit leaves the stored cover unchanged. Then set the cover gate
+   to `on` separately.
+
+Rollback emission through Admin `off`; catalog HTML immediately returns to its existing public
+source. Browser-cached covers need no purge because cover replacement creates a new object key.
+Disable cover emission before rolling the origin back to a package without `cover-v1`. For CDN
+configuration rollback, restore only the saved shared six-hour browser override, preserving the
+resource's active state and other settings; this does not revoke copies already retained by
+browsers. Record live validation independently from
+repository tests, merge and deployment.
+
+References: [ADR 0044](../adr/0044-deliver-public-event-covers-through-image-cdn.md),
+[Yandex CDN browser caching](https://yandex.cloud/en/docs/cdn/concepts/caching).

@@ -25,6 +25,9 @@ services:
     cpus: 0.0625
     mem_limit: 192m
     volumes: [certificates:/certificates]
+    networks:
+      default:
+        aliases: [storage.yandexcloud.net]
     depends_on:
       minio: {condition: service_healthy}
     healthcheck:

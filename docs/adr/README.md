@@ -63,6 +63,7 @@ place, and add the new record to this index.
 | 0041 | [Accept numerical boundary differences in exact pgvector search](0041-accept-pgvector-numerical-boundaries.md) | Accepted |
 | 0042 | [Isolate autoscaled photo worker pools](0042-isolate-autoscaled-photo-worker-pools.md) | Accepted |
 | 0043 | [Observe isolated workers with Git-managed alerts](0043-observe-isolated-workers-with-git-managed-alerts.md) | Accepted |
+| 0044 | [Deliver public event covers through the image CDN](0044-deliver-public-event-covers-through-image-cdn.md) | Accepted |
 
 ## Public selfie-search outcome
 

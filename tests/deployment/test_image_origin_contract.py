@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "deploy/image-origin"
 TEST_ENV = {
     "PRIVATE_MEDIA_S3_BUCKET": "image-origin-contract",
+    "MEDIA_S3_PUBLIC_BUCKET": "image-origin-public-contract",
     "GALLERY_IMGPROXY_KEY": "11" * 32,
     "GALLERY_IMGPROXY_SALT": "22" * 32,
     "IMAGE_ORIGIN_HEADER_SECRET": "contract-origin-secret-0123456789",
@@ -59,6 +60,12 @@ def test_effective_compose_keeps_image_compute_isolated_and_bounded():
         assert service.get("network_mode") != "host"
     assert not services["imgproxy"].get("ports")
     assert not services["imgproxy"].get("volumes")
+    environment = services["imgproxy"]["environment"]
+    assert environment["IMGPROXY_ALLOWED_SOURCES"].split(",") == [
+        "s3://image-origin-contract/derivatives/previews/",
+        "https://storage.yandexcloud.net/image-origin-public-contract/event-covers/",
+    ]
+    assert environment["IMGPROXY_S3_ALLOWED_BUCKETS"] == "image-origin-contract"
     assert set(services["imgproxy"]["environment"]).isdisjoint(
         {"DATABASE_URL", "GALLERY_CDN_TOKEN_SECRET", "IMGPROXY_TRUSTED_SIGNATURES"}
     )
@@ -115,6 +122,11 @@ if pathlib.Path(sys.argv[0]).name == "curl":
         "HTTP/1.1 200 OK\\nContent-Type: image/jpeg\\n"
         "Cache-Control: public, max-age=21600, s-maxage=2592000\\n"
     )
+elif args and args[0] == "compose":
+    if os.environ.get("MEDIA_S3_PUBLIC_BUCKET") is not None:
+        raise SystemExit(91)
+    stored = pathlib.Path(args[args.index("--env-file") + 1]).read_text()
+    assert "MEDIA_S3_PUBLIC_BUCKET=image-origin-public-contract\\n" in stored
 """
     )
     for name in ["docker", "curl"]:
@@ -141,6 +153,7 @@ if pathlib.Path(sys.argv[0]).name == "curl":
     assert result.returncode == 0, result.stderr
 
     release = root / "current"
+    assert "MEDIA_S3_PUBLIC_BUCKET=image-origin-public-contract\n" in (release / ".env").read_text()
     for service, relative_path in (
         ("imgproxy", "imgproxy-start.sh"),
         ("imgproxy", "presets.txt"),
@@ -157,6 +170,14 @@ if pathlib.Path(sys.argv[0]).name == "curl":
 
     assert release.stat().st_mode & 0o077 == 0
     assert (release / ".env").stat().st_mode & 0o077 == 0
+    (root / "previous").symlink_to(release.resolve())
+    rollback = subprocess.run(
+        ["sh", str(PACKAGE / "apply.sh"), "rollback"],
+        env={**env, "MEDIA_S3_PUBLIC_BUCKET": "caller-public-bucket"},
+        capture_output=True,
+        text=True,
+    )
+    assert rollback.returncode == 0, rollback.stderr
 
 
 @pytest.mark.parametrize("failure", ["none", "candidate", "public"])

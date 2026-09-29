@@ -18,7 +18,7 @@
           <a class="event-card-link" href="{% url 'event_detail' event.slug %}">
             <div class="event-card-cover">
               {% if event.cover %}
-                <img src="{{ event.cover.url }}" alt="Обложка события {{ event.name }}">
+                <img src="{{ event.catalog_cover_url|default:event.cover.url }}" alt="Обложка события {{ event.name }}" loading="{{ event.catalog_cover_loading|default:'eager' }}">
               {% else %}
                 <div class="cover-placeholder" role="img" aria-label="У события {{ event.name }} пока нет обложки">
                   <span aria-hidden="true">FM</span>

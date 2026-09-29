@@ -299,13 +299,16 @@ LOGGING = {
     },
 }
 
+MEDIA_S3_PUBLIC_BUCKET = env("MEDIA_S3_PUBLIC_BUCKET", default="")
+
 if env("MEDIA_STORAGE_BACKEND", default="filesystem") == "s3":
+    MEDIA_S3_PUBLIC_BUCKET = env("MEDIA_S3_PUBLIC_BUCKET")
     STORAGES["default"] = {
         "BACKEND": "storages.backends.s3.S3Storage",
         "OPTIONS": {
             "access_key": env("MEDIA_S3_ACCESS_KEY_ID"),
             "secret_key": env("MEDIA_S3_SECRET_ACCESS_KEY"),
-            "bucket_name": env("MEDIA_S3_PUBLIC_BUCKET"),
+            "bucket_name": MEDIA_S3_PUBLIC_BUCKET,
             "endpoint_url": env("MEDIA_S3_ENDPOINT_URL", default="https://storage.yandexcloud.net"),
             "region_name": env("MEDIA_S3_REGION", default="ru-central1"),
             "default_acl": "public-read",

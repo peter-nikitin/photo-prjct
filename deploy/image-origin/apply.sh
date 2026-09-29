@@ -29,7 +29,7 @@ compose() (
     project=$2
     shift 2
     # Stored release configuration owns rollback, even when the caller has new secrets.
-    unset PRIVATE_MEDIA_S3_BUCKET GALLERY_IMGPROXY_KEY GALLERY_IMGPROXY_SALT \
+    unset PRIVATE_MEDIA_S3_BUCKET MEDIA_S3_PUBLIC_BUCKET GALLERY_IMGPROXY_KEY GALLERY_IMGPROXY_SALT \
         IMAGE_ORIGIN_HEADER_SECRET IMAGE_ORIGIN_S3_ACCESS_KEY_ID IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY \
         IMAGE_ORIGIN_CERTIFICATES IMAGE_ORIGIN_ACME
     docker compose --env-file "$release/.env" -f "$release/compose.yml" -p "$project" "$@"
@@ -68,7 +68,7 @@ if [ "$mode" = rollback ]; then
 else
     candidate="$root/releases/$IMAGE_ORIGIN_RELEASE"
     # Only these projections become persistent runtime configuration. No app/CDN token secret.
-    values='PRIVATE_MEDIA_S3_BUCKET GALLERY_IMGPROXY_KEY GALLERY_IMGPROXY_SALT
+    values='PRIVATE_MEDIA_S3_BUCKET MEDIA_S3_PUBLIC_BUCKET GALLERY_IMGPROXY_KEY GALLERY_IMGPROXY_SALT
 IMAGE_ORIGIN_HEADER_SECRET IMAGE_ORIGIN_S3_ACCESS_KEY_ID IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY
 IMAGE_ORIGIN_PROBE_PATH'
     for name in $values; do

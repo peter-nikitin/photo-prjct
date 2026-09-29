@@ -49,6 +49,9 @@ YANDEX_DISK_IMPORT: Final = FeatureDefinition(
 GALLERY_CDN_IMAGES: Final = FeatureDefinition(
     "gallery-cdn-images", "Deliver gallery grid images through CDN"
 )
+EVENT_COVER_CDN_IMAGES: Final = FeatureDefinition(
+    "event-cover-cdn-images", "Deliver event catalog covers through CDN"
+)
 
 PGVECTOR_FACE_SEARCH_READ: Final = FeatureDefinition(
     "pgvector-face-search-read", "Use native exact face search"
@@ -63,6 +66,7 @@ FEATURE_DEFINITIONS: Final = (
     BULK_PHOTO_DOWNLOAD,
     YANDEX_DISK_IMPORT,
     GALLERY_CDN_IMAGES,
+    EVENT_COVER_CDN_IMAGES,
     PGVECTOR_FACE_SEARCH_READ,
 )
 

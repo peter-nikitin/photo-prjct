@@ -1,6 +1,6 @@
 # 0046: Separate Order payment from new cart selection
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-30
 - Deciders: project maintainers
 - Supersedes: [ADR 0031](0031-use-orders-and-adapters-for-paid-original-delivery.md), only its decisions to retain and lock an originating cart until payment, retry from that cart, and remove cart positions on paid fulfillment

@@ -763,6 +763,12 @@ is hidden and denied by the reconciled default-off `bulk-photo-download` gate. D
 activation, representative maximum-page capacity acceptance, and live customer evidence remain
 explicitly incomplete.
 
+ADR 0046 replaces ADR 0031's cart-retention and cart-based retry rules: an Order consumes its
+event cart, the browser starts a new cart identity, and payment retry is scoped to that Order.
+The existing purchase-browser capability also authorizes a private, temporary browser Order list.
+This decision is accepted but its implementation has not yet been delivered; the running purchase
+flow still retains and can lock an originating cart.
+
 ## Security, privacy, and legal boundaries
 
 - Originals remain private storage objects. The implemented preview-first slice creates an

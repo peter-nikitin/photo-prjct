@@ -5,7 +5,7 @@
 - Deciders: project maintainers
 - Supersedes: [ADR 0029](0029-use-watermarked-previews-for-paid-photos.md), only for original
   authorization after a qualifying Order becomes paid
-- Superseded by: none
+- Superseded by: [ADR 0046](0046-separate-order-payment-from-new-cart-selection.md), only for originating-cart retention and locking, cart-based payment retry, and paid-time cart removal
 
 ## Context
 

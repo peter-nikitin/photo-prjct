@@ -31,10 +31,13 @@ Organization/cloud direct bindings contain only individual user accounts, with n
 require read-back after creation. Existing canonical identity has `monitoring.editor`
 and `backup.user` on its folder; no Compute grant is added there.
 
-The **customer-cutover blocker is alert lifecycle**, not SSD quota. First obtain the
-supported API contract described below. Folder/accounts can be prepared separately;
-defer paid NAT/image/VM resources until the alert route and clean-image recipe are
-ready so infrastructure is not billed while waiting for an API decision.
+The monitoring platform already exists: Managed Prometheus, Git-owned rules and
+Alertmanager application are delivered by the observability work. The remaining
+worker-specific prerequisite is to connect queue/capacity and diagnostics to that
+platform and add cap-one rules. A new native-alert API investigation is not the next
+step. Folder/accounts can be prepared separately; schedule paid NAT/image/VM resources
+with the worker-monitoring integration and clean-image recipe, then prove alerts with
+live worker data before customer cutover.
 
 ## Price and quota envelope
 
@@ -113,7 +116,7 @@ yc resource-manager folder remove-access-binding "$WORKER_FOLDER_ID" --role comp
 
 ## Phase B: worker network and staged SGs
 
-Prerequisites: phase A receipt, fresh overlap/quota check, alert lifecycle feasibility,
+Prerequisites: phase A receipt, fresh overlap/quota check, reviewed worker-monitoring integration,
 and approval of the NAT charge. Proposed names are unique in the new folder.
 Use [direct cross-folder subnet creation](https://yandex.cloud/en/docs/vpc/tutorials/multi-folder-vpc)
 against the existing VPC; no existing subnet is moved.
@@ -205,40 +208,64 @@ and checksum-bound dry-run/inspection receipts. No guessed IDs or secret values 
 in Git. The fleet token and GHCR read-only credential go through the private secret
 path; the application secret's other fields and pgvector state remain intact.
 
-## Alert finding and concrete vendor question
+## Existing Prometheus delivery and remaining worker integration
 
-Rechecked on 2026-09-30: the public
-[native API reference](https://yandex.cloud/en/docs/monitoring/api-ref/) exposes metric
-operations; the [Monitoring protobuf directory](https://github.com/yandex-cloud/cloudapi/tree/d86a4cdd0ab9036b2f5a39455f1ef650893be41b/yandex/cloud/monitoring/v3)
-has dashboards, not a native alert/channel service. The official
-[Terraform resources](https://github.com/yandex-cloud/terraform-provider-yandex/tree/25b64ed02372180f19be96ff5d494a869c1ef722/docs/resources)
-contain `monitoring_dashboard`, but no native alert/channel resource.
-This is an unconfirmed public API route, not proof that no supported API can exist.
+The [approved monitoring-as-code design](../superpowers/specs/2026-09-28-monitoring-as-code-design.md),
+[implementation/runbook](../../deploy/monitoring/prometheus/README.md) and
+[activation evidence](2026-09-28-monitoring-activation.md) establish the delivered
+foundation in canonical folder `b1g2qttgfhb4gdunvlge`:
 
-The prepared rule in `deploy/monitoring/alerts.md` still requires two running VMs.
-Changing its threshold alone cannot clear the cap-one activation requirement: Git-owned
-apply/read-back/rollback, fresh running capacity and queue samples, Alarm, both NoData
-paths, recovery and delivery must all be proven. ADR 0043 has separate missing workspace,
-channel and Alertmanager read-back contracts; documented routing PUT does not establish GET.
-See the [API audit](../research/2026-09-28-worker-diagnostic-alert-api.md).
+- Workspace `mon0c97qv2s5uju1ark8`, email channel `fbefs2ubu6sq0k0jvlch`
+  (`findme-photo-operator-email`) and protected GitHub `monitoring` environment exist.
+- `deploy/monitoring/prometheus/rules.yml` owns eleven public/TLS/Linux/HTTP/Commerce
+  rules. `control.py` renders, validates, checks, applies and restores the owned rules
+  through the documented API. Live application is explicit and bound to a Git revision.
+- `alertmanager.yml` owns routing for the dedicated workspace. The accepted design
+  restores routing from a known Git revision and explicitly reports server-side routing
+  drift as unverified; it does not require an invented Alertmanager GET.
+- The operator confirmed receipt of the recovery email in the `обсервабилити` chat on
+  2026-09-30. The older activation document still says that receipt is pending. This is
+  operator evidence for the existing notification drill, not a worker alert drill.
 
-Prepared request for Yandex support (not sent; no credentials or project IDs required):
+The initial version of this package incorrectly treated the older API feasibility audit
+as proof that this foundation was still missing. No support request is needed merely to
+reuse the delivered platform. Workspace/channel provisioning and its accepted routing
+limitation have already been handled for the existing monitoring scope.
 
-> We need to manage native Monitoring alerts and notification channels from Git without
-> console edits. Please provide a supported REST/gRPC API or Terraform resource for
-> create/list/get/update/delete, including complete configuration read-back, channel
-> references, both no-selector/no-points policies, evaluation state and IAM scopes.
-> We need to restore a reviewed prior configuration and detect drift. For Managed
-> Prometheus, please also identify supported workspace/channel lifecycle APIs and
-> Alertmanager configuration GET/download plus update/version semantics. Public docs
-> currently show rule CRUD and Alertmanager PUT, but we cannot find the remaining
-> contracts. Are these APIs publicly supported, available by request, or unavailable?
+Worker coverage is a separate, concrete repository delta. Inspection at `e66a09d`
+found no bulk/selfie rule in `rules.yml` or worker metric selector in `environment.json`.
+The canonical agent renderer has an opt-in `--worker-telemetry` diagnostics route, but
+that does not itself export native queue/capacity metrics or install worker alerts.
+`worker_pool_metrics.py` still publishes the authoritative autoscaling series through
+the native Monitoring writer. Keep that writer and its scale/retirement semantics.
 
-The agent can prepare and verify repository changes, render commands from actual
-receipts, and perform approved operations. The maintainer approves exact access/paid
-batches and supplies any credential only through the private channel. Sending this
-support request requires explicit authorization or the maintainer can submit it.
-Do not start paid workers while the required native alert route remains unresolved.
+The next worker-monitoring package should:
 
-Architecture reconciliation: conforms to ADR 0046 and existing cap-one/ADR 0043 gates;
-this document changes no runtime, IAM, network, alert or architecture decision.
+1. Reconcile the worker specification's native-alert requirement and ADR 0043's old
+   routing prerequisites with the delivered Prometheus contract before changing behavior.
+   Preserve immutable accepted ADR text; record any required superseding decision.
+2. Reuse the existing workspace, apply/restore tooling and operator receiver. Define an
+   additive observation path for queue age, fresh actual running membership, source
+   timestamps and worker diagnostics through the canonical boundary. Do not infer that
+   native series already exist in Prometheus or replace the autoscaling writer.
+3. Add bulk/selfie cap-one, overdue-work and missing-observation rules to the owned Git
+   package. Cover bulk-zero, warm selfie, stale capacity, total publisher loss and
+   recovery with promtool fixtures; missing data must not become healthy zero.
+4. Verify actual source timestamps and rule evaluation on the provisioned fleet, then
+   controlled firing, missing-data and recovery delivery before customer cutover.
+   Generic email-drill evidence does not substitute for those worker scenarios.
+
+The observability chat also reported missing public-probe samples in Prometheus on
+2026-09-30. That is a separate ingestion finding, not absence of the alert platform;
+coordinate its resolution with that work. The existing apply preflight requires fresh
+configured inputs, so check it before applying a combined rules file. This package
+does not claim to have rerun cloud metric queries or fixed that source.
+
+The agent prepares the worker integration and commands, using actual creation receipts.
+The maintainer approves the exact access/paid batches and supplies credentials through
+the private channel. Native worker control, application state and current alert rules
+are unchanged by this documentation correction.
+
+Architecture reconciliation: infrastructure remains within ADR 0046. The next worker
+monitoring design must explicitly reconcile evaluator/routing requirements with the
+existing observability design; this package does not silently supersede an ADR.

@@ -188,6 +188,72 @@ def render(config: dict[str, Any]) -> dict[str, str]:
             f"{WORKER_SOURCE_MAX_AGE})"
         ),
     }
+    worker_queue_gate = substitutions["worker_queue_fresh"]
+    worker_cloud_gate = substitutions["worker_cloud_fresh"]
+    runtime_labels = "pool, instance_id, zone_id"
+    worker_runtime_gate = (
+        f"({substitutions['worker_current_nodes']}) and on(pool) ({worker_cloud_gate}) "
+        f"and on({runtime_labels}) (worker_runtime_scrape_available == 1) "
+        f"and on({runtime_labels}) (worker_runtime_observation_fresh == 1) "
+        f"and on({runtime_labels}) (worker_runtime_observation_age_seconds >= 0) "
+        f"and on({runtime_labels}) "
+        "((time() - timestamp(worker_runtime_observation_age_seconds)) >= 0) "
+        f"and on({runtime_labels}) "
+        "((worker_runtime_observation_age_seconds + time() - "
+        "timestamp(worker_runtime_observation_age_seconds)) <= "
+        f"{WORKER_SOURCE_MAX_AGE})"
+    )
+    runtime_rate = (
+        "rate(worker_runtime_executions_total[5m]) "
+        f"and on({runtime_labels}) ({worker_runtime_gate})"
+    )
+
+    def bucket_rate(bound: str) -> str:
+        return (
+            "sum by (pool, kind, outcome) ("
+            "rate(worker_runtime_execution_duration_seconds_bucket"
+            f'{{le="{bound}"}}[5m]) and on({runtime_labels}) ({worker_runtime_gate}))'
+        )
+
+    def interval_rate(lower: str, upper: str) -> str:
+        return f"clamp_min(({bucket_rate(upper)}) - ({bucket_rate(lower)}), 0) * 60"
+
+    substitutions.update(
+        {
+            "worker_claimable_chart": (f"worker_pool_claimable and on(pool) ({worker_queue_gate})"),
+            "worker_oldest_age_chart": (
+                f"worker_pool_oldest_claimable_age_seconds and on(pool) ({worker_queue_gate})"
+            ),
+            "worker_workload_chart": (f"worker_pool_workload and on(pool) ({worker_queue_gate})"),
+            "worker_running_chart": (
+                f"worker_pool_running_instances and on(pool) ({worker_cloud_gate})"
+            ),
+            "worker_operation_rate": (f"sum by (pool, kind, outcome) ({runtime_rate}) * 60"),
+            "worker_duration_p50": (
+                "histogram_quantile(0.50, sum by (pool, kind, outcome, le) ("
+                "rate(worker_runtime_execution_duration_seconds_bucket[5m]) "
+                f"and on({runtime_labels}) ({worker_runtime_gate})))"
+            ),
+            "worker_duration_p95": (
+                "histogram_quantile(0.95, sum by (pool, kind, outcome, le) ("
+                "rate(worker_runtime_execution_duration_seconds_bucket[5m]) "
+                f"and on({runtime_labels}) ({worker_runtime_gate})))"
+            ),
+            "worker_bucket_le_1": f"{bucket_rate('1')} * 60",
+            "worker_bucket_1_5": interval_rate("1", "5"),
+            "worker_bucket_5_15": interval_rate("5", "15"),
+            "worker_bucket_15_60": interval_rate("15", "60"),
+            "worker_bucket_60_300": interval_rate("60", "300"),
+            "worker_bucket_300_900": interval_rate("300", "900"),
+            "worker_bucket_900_1800": interval_rate("900", "1800"),
+            "worker_bucket_gt_1800": interval_rate("1800", "+Inf"),
+            "accepted_preview_rate": (
+                "(rate(findme_accepted_previews_total[5m]) * 60) and on() "
+                "((time() - timestamp(findme_accepted_previews_total)) >= 0) and on() "
+                "((time() - timestamp(findme_accepted_previews_total)) <= 120)"
+            ),
+        }
+    )
 
     def substitute(value: Any) -> Any:
         if isinstance(value, dict):
@@ -713,11 +779,57 @@ def _validate_dashboard(package: dict[str, str], config: dict[str, Any]) -> None
                 raise ControlError("dashboard target reference/workspace/query invalid")
 
 
+def validate_dashboard_queries(package: dict[str, str], output: Path, promtool: str) -> None:
+    import yaml
+
+    dashboard = json.loads(package["dashboard.json"])
+    queries: list[tuple[str, str]] = []
+    for widget in dashboard["widgets"]:
+        for item in widget["multiSourceChart"]["targets"]:
+            if "prometheusTarget" in item:
+                target = item["prometheusTarget"]
+                queries.append((target["name"], target["query"]))
+    rules_path = output / "dashboard-query-rules.yml"
+    rules_path.write_text(
+        yaml.safe_dump(
+            {
+                "groups": [
+                    {
+                        "name": "findme-dashboard-queries",
+                        "rules": [
+                            {"record": f"findme_dashboard_query_{index}", "expr": query}
+                            for index, (_, query) in enumerate(queries)
+                        ],
+                    }
+                ]
+            },
+            sort_keys=False,
+        )
+    )
+    subprocess.run([promtool, "check", "rules", str(rules_path)], check=True)
+
+    by_name = {name: query for name, query in queries}
+    tests = load_config(HERE / "dashboard-query-tests.json")
+    for case in tests["tests"]:
+        for expression in case["promql_expr_test"]:
+            try:
+                expression["expr"] = by_name[expression["expr"]]
+            except KeyError as error:
+                raise ControlError("dashboard behavior fixture target missing") from error
+    tests["rule_files"] = [str(rules_path.resolve())]
+    tests_path = output / "dashboard-query-tests.yml"
+    tests_path.write_text(yaml.safe_dump(tests, sort_keys=False))
+    subprocess.run([promtool, "test", "rules", str(tests_path)], check=True)
+
+
 def validate_prometheus_profiles(config: dict[str, Any], output: Path, promtool: str) -> None:
     version = subprocess.run([promtool, "--version"], check=True, capture_output=True, text=True)
     if f"version {PROMETHEUS_VERSION}" not in version.stdout + version.stderr:
         raise ControlError(f"promtool must be {PROMETHEUS_VERSION}")
     import yaml
+
+    output.mkdir(parents=True, exist_ok=True)
+    validate_dashboard_queries(render(config), output, promtool)
 
     for enabled in (False, True):
         profile = copy.deepcopy(config)

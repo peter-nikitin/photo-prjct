@@ -1,0 +1,87 @@
+{
+  "tests": [
+    {
+      "name": "fresh queue remains visible without cloud or publisher",
+      "interval": "30s",
+      "input_series": [
+        {"series": "worker_pool_queue_observation_available{pool=\"bulk\"}", "values": "1+0x4"},
+        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}", "values": "0+30x4"},
+        {"series": "worker_pool_claimable{pool=\"bulk\"}", "values": "3+0x4"}
+      ],
+      "promql_expr_test": [
+        {"expr": "Claimable", "eval_time": "2m", "exp_samples": [{"labels": "{__name__=\"worker_pool_claimable\",pool=\"bulk\"}", "value": 3}]},
+        {"expr": "Running", "eval_time": "2m", "exp_samples": []}
+      ]
+    },
+    {
+      "name": "idle capacity is zero while missing capacity is no data",
+      "interval": "30s",
+      "input_series": [
+        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"bulk\"}", "values": "0+30x4"},
+        {"series": "worker_pool_running_instances{pool=\"bulk\"}", "values": "0+0x4"}
+      ],
+      "promql_expr_test": [
+        {"expr": "Running", "eval_time": "2m", "exp_samples": [{"labels": "{__name__=\"worker_pool_running_instances\",pool=\"bulk\"}", "value": 0}]}
+      ]
+    },
+    {
+      "name": "runtime source age includes time since the last sender sample",
+      "interval": "15s",
+      "input_series": [
+        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0+15x3"},
+        {"series": "worker_pool_running_instances{pool=\"selfie\"}", "values": "1+0x3"},
+        {"series": "worker_node_cloud_observation_timestamp_seconds{pool=\"selfie\",instance_id=\"node-1\",zone_id=\"ru-central1-a\"}", "values": "0+15x3"},
+        {"series": "worker_runtime_scrape_available{pool=\"selfie\",instance_id=\"node-1\",zone_id=\"ru-central1-a\"}", "values": "1+0x3"},
+        {"series": "worker_runtime_observation_fresh{pool=\"selfie\",instance_id=\"node-1\",zone_id=\"ru-central1-a\"}", "values": "1+0x3"},
+        {"series": "worker_runtime_observation_age_seconds{pool=\"selfie\",instance_id=\"node-1\",zone_id=\"ru-central1-a\"}", "values": "60 _ _ _"},
+        {"series": "worker_runtime_executions_total{pool=\"selfie\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"selfie_query\",outcome=\"callback_delivered\"}", "values": "0+1x3"}
+      ],
+      "promql_expr_test": [
+        {"expr": "Operations", "eval_time": "45s", "exp_samples": []}
+      ]
+    },
+    {
+      "name": "runtime intervals are disjoint and sum to total throughput",
+      "interval": "1m",
+      "input_series": [
+        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"bulk\"}", "values": "0+60x5"},
+        {"series": "worker_pool_running_instances{pool=\"bulk\"}", "values": "1+0x5"},
+        {"series": "worker_node_cloud_observation_timestamp_seconds{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\"}", "values": "0+60x5"},
+        {"series": "worker_runtime_scrape_available{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\"}", "values": "1+0x5"},
+        {"series": "worker_runtime_observation_fresh{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\"}", "values": "1+0x5"},
+        {"series": "worker_runtime_observation_age_seconds{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\"}", "values": "0+0x5"},
+        {"series": "worker_runtime_executions_total{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\"}", "values": "0+480x5"},
+        {"series": "worker_runtime_execution_duration_seconds_bucket{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\",le=\"1\"}", "values": "0+60x5"},
+        {"series": "worker_runtime_execution_duration_seconds_bucket{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\",le=\"5\"}", "values": "0+120x5"},
+        {"series": "worker_runtime_execution_duration_seconds_bucket{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\",le=\"15\"}", "values": "0+180x5"},
+        {"series": "worker_runtime_execution_duration_seconds_bucket{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\",le=\"60\"}", "values": "0+240x5"},
+        {"series": "worker_runtime_execution_duration_seconds_bucket{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\",le=\"300\"}", "values": "0+300x5"},
+        {"series": "worker_runtime_execution_duration_seconds_bucket{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\",le=\"900\"}", "values": "0+360x5"},
+        {"series": "worker_runtime_execution_duration_seconds_bucket{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\",le=\"1800\"}", "values": "0+420x5"},
+        {"series": "worker_runtime_execution_duration_seconds_bucket{pool=\"bulk\",instance_id=\"node-1\",zone_id=\"ru-central1-a\",kind=\"generate_preview\",outcome=\"callback_delivered\",le=\"+Inf\"}", "values": "0+480x5"}
+      ],
+      "promql_expr_test": [
+        {"expr": "Operations", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 480}]},
+        {"expr": "Le1", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 60}]},
+        {"expr": "From1To5", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 60}]},
+        {"expr": "From5To15", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 60}]},
+        {"expr": "From15To60", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 60}]},
+        {"expr": "From60To300", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 60}]},
+        {"expr": "From300To900", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 60}]},
+        {"expr": "From900To1800", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 60}]},
+        {"expr": "Gt1800", "eval_time": "5m", "exp_samples": [{"labels": "{kind=\"generate_preview\",outcome=\"callback_delivered\",pool=\"bulk\"}", "value": 60}]}
+      ]
+    },
+    {
+      "name": "accepted preview zero is observed but missing source is no data",
+      "interval": "1m",
+      "input_series": [
+        {"series": "findme_accepted_previews_total", "values": "0+0x5"}
+      ],
+      "promql_expr_test": [
+        {"expr": "Accepted", "eval_time": "5m", "exp_samples": [{"labels": "{}", "value": 0}]},
+        {"expr": "Accepted", "eval_time": "8m", "exp_samples": []}
+      ]
+    }
+  ]
+}

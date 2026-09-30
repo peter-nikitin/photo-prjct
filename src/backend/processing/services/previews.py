@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import UUID
 
+from config.metrics import observe_accepted_preview
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
@@ -338,6 +339,8 @@ def _publish_after_verification(
                 )
                 request_generate_watermarked_preview(photo, clean_preview)
         jobs._close_locked_run_if_terminal(run, now)
+        if profile.variant == "preview-small-v1":
+            transaction.on_commit(observe_accepted_preview, robust=True)
         return AttemptCompletion(attempt=attempt)
 
 

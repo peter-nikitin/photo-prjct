@@ -194,7 +194,58 @@ class MultiprocessMetricsTests(SimpleTestCase):
             'route="health",status_class="2xx"} 1.0',
             result.stdout,
         )
+        self.assertIn("findme_accepted_previews_total 0.0", result.stdout)
         self.assertNotIn('route="metrics"', result.stdout)
+
+    def test_accepted_preview_counter_aggregates_committed_observations(self) -> None:
+        worker = """
+            from config.metrics import observe_accepted_preview
+
+            observe_accepted_preview()
+        """
+        scrape = """
+            import django
+            from django.test import Client
+
+            django.setup()
+            response = Client().get("/metrics/")
+            print(response.content.decode(), end="")
+        """
+
+        with tempfile.TemporaryDirectory() as metrics_directory:
+            environment = {
+                **os.environ,
+                "PROMETHEUS_MULTIPROC_DIR": metrics_directory,
+                "DJANGO_SETTINGS_MODULE": "config.settings",
+                "DB_NAME": "app",
+                "DB_USER": "app",
+                "DB_PASSWORD": "app",
+                "DB_HOST": "localhost",
+                "DB_PORT": "5432",
+                "SECRET_KEY": "test",
+                "ALLOWED_HOSTS": "testserver",
+            }
+            for _ in range(2):
+                result = subprocess.run(
+                    [sys.executable, "-c", textwrap.dedent(worker)],
+                    cwd=BACKEND_DIR,
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run(
+                [sys.executable, "-c", textwrap.dedent(scrape)],
+                cwd=BACKEND_DIR,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("findme_accepted_previews_total 2.0", result.stdout)
 
 
 class GunicornMetricsLifecycleTests(SimpleTestCase):

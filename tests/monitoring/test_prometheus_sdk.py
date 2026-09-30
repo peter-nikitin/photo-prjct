@@ -73,6 +73,8 @@ class DashboardTransportTests(unittest.TestCase):
                     ["test", "rules"],
                     ["check", "rules"],
                     ["test", "rules"],
+                    ["check", "rules"],
+                    ["test", "rules"],
                 ],
             )
 

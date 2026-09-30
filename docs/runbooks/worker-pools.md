@@ -281,10 +281,33 @@ native and Prometheus routes in `/etc/yc/unified_agent/config.yml`. Validate `ch
 including source timestamps and expected-node identity. Repeat the cloud proof after deployment;
 a running service or successful scrape alone does not prove delivery.
 
-Activation is blocked until the legacy manual `deploy/configure-monitoring-agent.sh` full-config
-replacement is reconciled with this ownership contract. Do not use it to reconfigure an activated
-worker scrape: it can remove Prometheus routes. Coordinate the shared configuration remediation
-with observability before activation; this package does not modify `deploy/image-origin/**`.
+Only deploy the route-preserving `deploy/configure-monitoring-agent.sh` revision before activating
+the worker scrape; older revisions replace the configuration and can remove Prometheus routes.
+Offline repeated-refresh tests do not replace live configuration read-back and fresh cloud samples.
+Coordinate deployment with observability; this package does not modify `deploy/image-origin/**`.
+
+### Queue and processing-speed dashboard
+
+The Git-owned Prometheus dashboard separates queue size, oldest waiting age, workload and actual
+running capacity from worker execution throughput and duration. Runtime operations/minute and
+duration distributions/p50/p95 are split by operation kind and outcome, with fresh current-node
+evidence. A successful callback delivery is not a count of accepted photos; retries and separate
+stages must not be summed into photo throughput. Runtime duration includes delivery and cleanup,
+not queue waiting. Quantiles are estimates from the existing histogram boundaries.
+
+"Фото с принятым превью/мин" measures clean `preview-small-v1` publications accepted by the backend
+after transaction commit, averaged over five minutes. It uses the private application metrics
+counter, not worker callbacks or historical database scans. Rollback, duplicate callbacks, failed
+attempts and watermarked derivatives do not increment it. This is operational telemetry since
+instrumentation was deployed, not historical accounting or completion of every assigned stage.
+Clean preview acceptance alone also does not imply public availability under watermark policy.
+
+Prepare and validate the dashboard before provisioning worker VMs. Deploy compatible backend
+metrics and route-preserving configuration, then separately approve scrape/dashboard activation.
+Fresh accepted-preview and queue data can be verified before remote workers exist. Missing
+cloud/runtime data stays "no data", not zero. After approved provisioning, verify current-node
+runtime graphs and controlled alert firing/recovery/delivery before customer cutover. Idle bulk
+zero is valid only when fresh cloud observation confirms zero members.
 
 On the canonical VM, use the actual Compose project, its reviewed overlays and existing .env;
 the following read-only commands emit bounded queue/status data, not credential files:

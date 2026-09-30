@@ -335,6 +335,10 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   reuses the delivered Prometheus workspace, operator channel and Git reconciliation for
   worker queue/capacity and diagnostic alerts. The worker profile is disabled until live
   activation; source timestamps distinguish retained stale data from fresh observations.
+  The Git-owned dashboard separates queue/capacity, runtime operation throughput and duration
+  distributions from backend-accepted clean-preview throughput. The latter is a label-free,
+  commit-only application counter, not a count of all completed processing stages or an accounting
+  ledger. Missing source evidence is not rendered as zero; runtime charts require current members.
   Rule read-back and known-Git-revision routing rollback follow the existing monitoring contract;
   routing drift remains explicitly unverified. Existing active alerts and ADR 0042's
   authoritative native autoscaling remain unchanged. See the

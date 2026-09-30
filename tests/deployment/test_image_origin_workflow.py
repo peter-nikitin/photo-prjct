@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import stat
@@ -17,6 +18,7 @@ WORKFLOW = ROOT / ".github/workflows/deploy-image-origin.yml"
 REMOTE = ROOT / "deploy/image-origin/run-remote.sh"
 CONFIGURE_CDN = ROOT / "deploy/image-origin/configure-cdn.sh"
 MANIFEST = ROOT / "deploy/environment-secrets.json"
+ORIGIN_AGENT_TEMPLATE = ROOT / "deploy/image-origin/monitoring/unified-agent.yml.template"
 
 
 def _workflow() -> dict[str, Any]:
@@ -29,6 +31,41 @@ def _step(job: dict[str, Any], name: str) -> dict[str, Any]:
     return steps[0]
 
 
+def test_origin_deploy_agent_keeps_public_prometheus_route() -> None:
+    source = ROOT / "deploy/monitoring/prometheus/render_agent.py"
+    spec = importlib.util.spec_from_file_location("findme_render_agent", source)
+    assert spec and spec.loader
+    renderer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(renderer)
+    template = ORIGIN_AGENT_TEMPLATE.read_text(encoding="utf-8")
+    native = yaml.safe_load(
+        template.replace("__YANDEX_CLOUD_FOLDER_ID__", "folder1").replace(
+            "__PROMETHEUS_WORKSPACE_ID__", "workspace1"
+        )
+    )
+    expected = renderer.merge_agent(native, role="public", workspace_id="workspace1")
+    assert native == expected
+    native_routes = [
+        route
+        for route in native["routes"]
+        if route["channel"]["channel_ref"]["name"] == "cloud_monitoring"
+    ]
+    assert len(native_routes) == 4
+    assert {
+        route["input"]["config"]["url"]
+        for route in native_routes
+        if route["input"]["plugin"] == "metrics_pull"
+    } == {"http://127.0.0.1:18081/metrics", "http://127.0.0.1:18081/imgproxy-metrics"}
+    assert "__PROMETHEUS_WORKSPACE_ID__" in template
+    remote = REMOTE.read_text(encoding="utf-8")
+    assert "deploy/monitoring/prometheus/environment.json" in remote
+    assert "__PROMETHEUS_WORKSPACE_ID__" in remote
+    assert 'if [ "$monitoring_only" = false ]; then\n    sh "$package/apply.sh"' in remote
+    assert 'cp -p "$backup_path" "$config_path"' in remote
+    remote_program = remote.split("<<'REMOTE'\n", 1)[1].split("\nREMOTE\n", 1)[0]
+    subprocess.run(["sh", "-n"], input=remote_program, text=True, check=True)
+
+
 def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     workflow = _workflow()
     assert workflow[True] == {
@@ -38,7 +75,15 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
                     "description": "Exact 40-character repository commit to deploy",
                     "required": True,
                     "type": "string",
-                }
+                },
+                "monitoring_only": {
+                    "description": (
+                        "Restore Unified Agent routes without redeploying image containers"
+                    ),
+                    "required": False,
+                    "default": False,
+                    "type": "boolean",
+                },
             }
         }
     }
@@ -58,12 +103,14 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     command = deploy["run"]
     assert deploy["env"] | {
         "IMAGE_ORIGIN_RELEASE": "${{ inputs.deployment_sha }}",
+        "IMAGE_ORIGIN_MONITORING_ONLY": "${{ inputs.monitoring_only }}",
         "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
         "MEDIA_S3_PUBLIC_BUCKET": "${{ vars.MEDIA_S3_PUBLIC_BUCKET }}",
         "IMAGE_ORIGIN_PROBE_PATH": "${{ vars.IMAGE_ORIGIN_PROBE_PATH }}",
         "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
     } == {
         "IMAGE_ORIGIN_RELEASE": "${{ inputs.deployment_sha }}",
+        "IMAGE_ORIGIN_MONITORING_ONLY": "${{ inputs.monitoring_only }}",
         "VM_HOST": "${{ vars.VM_HOST }}",
         "VM_USER": "${{ vars.VM_USER }}",
         "VM_SSH_KNOWN_HOSTS": "${{ vars.VM_SSH_KNOWN_HOSTS }}",
@@ -78,6 +125,8 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     assert "--consumer image-origin" in command
     assert "--identity github-oidc" in command
     assert "deploy/image-origin/run-remote.sh" in command
+    assert _step(job, "Record deployed commit")["if"] == "${{ !inputs.monitoring_only }}"
+    assert _step(job, "Record monitoring repair")["if"] == "${{ inputs.monitoring_only }}"
     assert "${{ secrets." not in json.dumps(workflow)
     assert "deploy.yml" not in json.dumps(job)
     forbidden = ("docker-compose.deployment.yml", "apply-deployment.sh", "worker", "postgres")

@@ -5,6 +5,10 @@ Code preparation does not provision paid resources, deploy a worker release, or 
 the current workers. Provisioning and live cutover require the separate approved rollout.
 The example contract is [contract.env.example](../../deploy/worker-pools/contract.env.example);
 it is design data, not an executable provisioning script.
+The [2026-09-30 worker-folder amendment](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
+replaces the earlier same-folder provisioning assumption. The
+[dated operational handoff](../operations/2026-09-30-worker-folder-operational-handoff.md)
+lists known IDs separately from resources that have yet to be created.
 
 ## Scope and dated starting point
 
@@ -191,7 +195,8 @@ bulk preemption at zero; the existing claim endpoint performs recovery when that
 The publisher performs no enrollment, recovery, attempt/job changes or feature activation.
 Missing lease expiry or an unavailable endpoint is a fault, with no fake zero publication.
 
-Only `--publish --folder-id <folder>` writes Monitoring. It fetches a fresh short-lived metadata
+Only `--publish --folder-id <canonical_folder_id>` writes Monitoring. The worker folder is not
+the native metric namespace. It fetches a fresh short-lived metadata
 IAM identity, verifies TLS, refuses redirects and proxy fallback, limits the response body, and
 requires the documented full `writtenMetricsCount` with no `errorMessage`. The coordinator's
 queue timestamp is recorded only after that complete success, atomically for both configured
@@ -201,10 +206,12 @@ coordinator's existing 90-second limit. Web startup does not invoke the publishe
 `observe_worker_pool_cloud --config <path>` validates and shows exact configured group IDs
 without a cloud request or coordinator write. `--record` performs the trusted canonical read
 and submits complete snapshots through the existing coordinator service. Its nonsecret JSON
-has exactly `folder_id`, `zone`, `groups` (bulk/selfie IDs), `boot_image_id` and `releases`
+has exactly `folder_id` (worker), `canonical_folder_id`, `zone`, `groups` (bulk/selfie IDs),
+`boot_image_id` and `releases`
 (one or two SHA-to-digest-image mappings). It reads Get with `view=FULL`, completes every member
-page, validates exact group/folder/zone/target and actual per-instance metadata, and reads each
-running machine's boot disk source image. Unknown states, duplicates, over-capacity, missing
+page in the worker folder, validates exact group/folder/zone/target and actual per-instance
+metadata, and reads each running machine's worker-folder boot disk source image. Same-folder,
+missing-folder and older single-folder inputs reject. Unknown states, duplicates, over-capacity, missing
 actual image proof, partial pages or a changing group reject the whole observation.
 
 Running old nodes retain their own `findme-worker-build` and `findme-worker-image` evidence;
@@ -223,6 +230,12 @@ or enables these units by default. The collector's `/etc/findme-worker-pools/met
 ```json
 {"deploy_root":"/opt/photo-prjct","cloud":"/opt/photo-prjct/worker-pools-observation.json"}
 ```
+
+The observation JSON is the current release journal's two-folder document. The collector
+rejects a wrong path or invalid/equal folder IDs before running either command. After a cloud
+read failure it still attempts authoritative demand publication to `canonical_folder_id`,
+reports an incomplete collection, and leaves capacity unknown. Release-time publication uses
+that same canonical folder. Neither publisher may substitute the worker folder or CLI default.
 
 Use the existing Monitoring dashboard and alert manifest, preserving the public-health,
 host and Commerce streams. Worker alerts distinguish no observation from observed backlog.
@@ -326,26 +339,75 @@ Compose and nonsecret bootstrap configuration. Exactly two managed names are sup
 No generic resource reconciler, deletion/recreation command or main-VM mutation is provided.
 
 The input requires these explicit reviewed values: `pool_max_size`, `cloud_id`, `folder_id`,
+`canonical_folder_id`,
 `zone`, `network_id`, `subnet_id`, `worker_sg_id`, `canonical_vm_id`, `private_api_ipv4`,
 `worker_sa_id`, `manager_sa_id`,
 `bootstrap_secret_id`, `bootstrap_version_id`, `application_secret_id`,
 `boot_image_id`, `docker_version`, `compose_version`, `worker_build`, `worker_image`,
 `egress_gateway_id`, `route_table_id`, and `groups`. Unknown input keys fail closed.
+`folder_id` owns only new worker resources; `canonical_folder_id` owns the existing VM,
+application secret and native Monitoring namespace. They must be distinct and in the reviewed
+`cloud_id`. The existing VPC remains in the canonical folder and only the new subnet extends it
+into the worker folder. No fallback to a configured CLI folder or legacy single-folder JSON is
+accepted. Both IDs are immutable normal-release and rollback inputs; either mismatch aborts
+before journal or provider mutation.
 `groups` has exactly bulk/selfie entries, each with `id` and `baseline`; both null mean reviewed
 expected absence for initial creation. For updates, use the exact existing group ID and the
 managed-configuration baseline obtained by `--status`. Image is an immutable GHCR worker digest;
 Docker/Compose versions refer to binaries already installed in the explicitly reviewed OS image.
+The following is the **complete nonsecret JSON shape**, with deliberately invalid placeholders
+for resources that do not yet exist. Materialize it only after exact creation outputs and
+fresh read-back; never run cloud commands with placeholders. The listed canonical VM/VPC/folder
+IDs and address are from the [2026-09-30 preflight](../operations/2026-09-30-worker-folder-activation-preflight.md);
+the application-secret ID is from the older [2026-09-28 proposal](../operations/2026-09-28-worker-pool-activation-approval.md).
+All require a fresh check. The current deployed SHA/digest are not a future image pin.
+
+```json
+{
+  "pool_max_size": 1,
+  "cloud_id": "b1gmcsmr51o5kvp86l55",
+  "folder_id": "<NEW_WORKER_FOLDER_ID>",
+  "canonical_folder_id": "b1g2qttgfhb4gdunvlge",
+  "zone": "ru-central1-b",
+  "network_id": "enpevjgdgdavmrv9ahb8",
+  "subnet_id": "<NEW_WORKER_SUBNET_ID>",
+  "worker_sg_id": "<NEW_WORKER_SG_ID>",
+  "canonical_vm_id": "epdr5g3p24tdns9890nr",
+  "private_api_ipv4": "10.129.0.34",
+  "worker_sa_id": "<NEW_RUNTIME_SA_ID>",
+  "manager_sa_id": "<NEW_MANAGER_SA_ID>",
+  "bootstrap_secret_id": "<NEW_WORKER_SECRET_ID>",
+  "bootstrap_version_id": "<NEW_WORKER_SECRET_VERSION_ID>",
+  "application_secret_id": "e6q85jjl76r45maigtfb",
+  "boot_image_id": "<NEW_CLEAN_WORKER_IMAGE_ID>",
+  "docker_version": "<REVIEWED_X.Y.Z>",
+  "compose_version": "<REVIEWED_X.Y.Z>",
+  "worker_build": "<CURRENT_REVIEWED_40_CHARACTER_SHA>",
+  "worker_image": "<CURRENT_REVIEWED_GHCR_WORKER_SHA256_DIGEST>",
+  "egress_gateway_id": "<NEW_WORKER_NAT_GATEWAY_ID>",
+  "route_table_id": "<NEW_WORKER_ROUTE_TABLE_ID>",
+  "groups": {
+    "bulk": {"id": null, "baseline": null},
+    "selfie": {"id": null, "baseline": null}
+  }
+}
+```
 `pool_max_size` must be an integer exactly 1 or 2; missing values, booleans, strings,
 other ceilings and unknown policy inputs fail closed. It is part of the reviewed checksum.
 The approved `pool_max_size=1` renders `scalePolicy.autoScale.maxSize="1"` for both groups,
 with bulk `minZoneSize="0"` and selfie `minZoneSize="1"`. The WORKLOAD rule and observation
-cadence remain unchanged. `pool_max_size=2` preserves the accepted bulk 0..2 and selfie 1..2
+cadence remain unchanged; its `folderId` is `canonical_folder_id` even though both groups
+belong to `folder_id`. `pool_max_size=2` preserves the accepted bulk 0..2 and selfie 1..2
 policy for separately approved activation. Raising the ceiling is an explicit, baseline-bound
 cloud change requiring separate review, including after quota approval.
 
 `--inspect --profile <yc-profile>` performs read-only prerequisite checks and returns the same
-prepared checksum. It verifies cloud/folder, worker cloud/folder grants, exact narrow bootstrap
-payload-read grants, lack of application-secret access, exact payload-key metadata, private
+prepared checksum. It verifies both folders' cloud membership; exact worker ownership of
+group manager/runtime accounts, image, subnet, SG, NAT, route and bootstrap secret; canonical
+ownership of VM, application secret and VPC; direct manager `compute.editor` only on the worker
+folder and canonical cross-folder `vpc.user` without canonical Compute management; exact runtime
+`lockbox.payloadViewer` on the worker bootstrap secret with no ancestor grant or application-
+secret access; exact payload-key metadata; private
 subnet/NAT route/gateway, worker SG ingress absence, and ALL canonical NIC SGs, including resolved
 default groups. Any SG in the allow union that permits 8443 beyond the exact worker SG rejects
 activation. Adding a restrictive group alongside a broad group cannot pass. It never changes
@@ -361,9 +423,11 @@ Cloud API inspection does not replace these live proofs.
 
 After those prerequisites and current cost are reviewed and separately approved, explicit
 `--apply <reviewed-sha256> --profile <yc-profile> --receipt <fresh-private-path>` can submit only
-the two exact group creates or baseline-bound updates. It rechecks expected absence/ownership/drift
+the two exact worker-folder group creates or baseline-bound updates. It rechecks expected absence/ownership/drift
 and writes a durable private receipt **before** each mutation. Receipts record returned operation
-and group IDs; submission is not rollout success. Existing receipt paths refuse resubmission.
+and group IDs plus both folder IDs; submission is not rollout success. Existing receipt paths
+refuse resubmission. Changing either folder changes the configuration checksum. Keep private
+config, receipt, release journal and any token out of Git and shared logs.
 For a lost response or partial two-group creation, keep the receipt, use read-only `--status`
 to resolve the exact names/IDs, and inspect the recorded provider operations. Do not invent a new
 receipt or retry an uncertain create until the original operation has been reconciled. No
@@ -376,8 +440,10 @@ When both capped pools have a VM, the canonical 100 GiB SSD and two 32 GiB worke
 total 164 GiB allocated SSD; one temporary replacement reaches 196 GiB.
 Fresh disk/quota evidence must confirm this budget before activation. Complete builder disk
 cleanup before release replacement; a stopped instance's retained disk still consumes quota.
-With the last inspected quota of 200 GiB this leaves only 4 GiB at replacement, so builder
-and replacement cannot overlap. An unrelated retained SSD invalidates this dated arithmetic.
+The [2026-09-30 read-only preflight](../operations/2026-09-30-worker-folder-activation-preflight.md)
+reported 256 GiB SSD quota and 100 GiB allocated in the existing cloud, replacing the
+2026-09-28 200 GiB snapshot as dated evidence. Worker-folder separation does not exempt
+the shared quota. An unrelated retained SSD invalidates this arithmetic.
 Bulk idle-zero savings depend on separately proven provider scale-down and disk removal.
 Live lifecycle, serial release and cleanup proof remain separate acceptance work; this
 provisioning command does not delete disks or authorize expansion.

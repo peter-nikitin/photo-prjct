@@ -129,6 +129,7 @@ def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
     }
     config = {
         "folder_id": "folder",
+        "canonical_folder_id": "canonical-folder",
         "zone": "ru-central1-a",
         "boot_image_id": "boot-image",
         "groups": {name: name + "-group" for name in groups},
@@ -162,7 +163,7 @@ def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
                     "networkInterfaces": [{"primaryV4Address": {"address": "10.0.0.4"}}],
                 }
             assert kind == "disks"
-            return {"id": identity, "sourceImageId": "boot-image"}
+            return {"id": identity, "folderId": "folder", "sourceImageId": "boot-image"}
 
         def pages(self, path, key):
             name = path.split("/")[1].split("-")[0]
@@ -469,6 +470,7 @@ def test_initial_app_failure_after_fleet_commit_restores_absence_and_recovery_mo
         "configuration": {
             "pool_max_size": 2,
             "folder_id": "folder",
+            "canonical_folder_id": "canonical-folder",
             "zone": "ru-central1-a",
             "boot_image_id": "boot",
             "worker_build": "a" * 40,
@@ -624,12 +626,48 @@ def test_collector_reads_release_owned_build_allowlist_from_canonical_path(tmp_p
     collector = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(collector)
     path = tmp_path / "worker-pools-observation.json"
-    config = {"zone": "ru-central1-a", "folder_id": "folder", "releases": {"a" * 40: "digest"}}
+    config = {
+        "zone": "ru-central1-a",
+        "folder_id": "worker-folder",
+        "canonical_folder_id": "canonical-folder",
+        "releases": {"a" * 40: "digest"},
+    }
     path.write_text(json.dumps(config))
     run = Mock()
     collector.collect({"deploy_root": str(tmp_path), "cloud": str(path)}, run=run)
     assert json.loads(run.call_args_list[0].kwargs["input"]) == config
     assert run.call_count == 2
+    assert run.call_args_list[1].args[0][-2:] == ["--folder-id", "canonical-folder"]
+
+
+def test_host_observe_publishes_in_canonical_folder(tmp_path):
+    release = release_module()
+    config = {
+        "folder_id": "worker-folder",
+        "canonical_folder_id": "canonical-folder",
+        "zone": "ru-central1-a",
+    }
+    (tmp_path / "worker-pools-observation.json").write_text(json.dumps(config))
+    host = release.Host(tmp_path, Mock(), Mock())
+    host.command = Mock()
+    host.control = Mock(return_value={"bulk": {}})
+
+    assert host.observe() == {"bulk": {}}
+    assert host.command.call_args_list[0].kwargs["payload"] == config
+    assert host.command.call_args_list[1].args[0][-2:] == ["--folder-id", "canonical-folder"]
+
+
+def test_host_observe_does_not_publish_when_cloud_command_rejects_config(tmp_path):
+    release = release_module()
+    (tmp_path / "worker-pools-observation.json").write_text(
+        json.dumps({"folder_id": "worker-folder"})
+    )
+    host = release.Host(tmp_path, Mock(), Mock())
+    host.command = Mock(side_effect=ValueError("invalid cloud configuration"))
+
+    with pytest.raises(ValueError, match="invalid cloud configuration"):
+        host.observe()
+    assert host.command.call_count == 1
 
 
 class FleetFixture:
@@ -853,6 +891,38 @@ def test_release_rejects_cross_ceiling_previous_manifest():
         release_module().observation_config(capped_manifest(1), {"manifest": capped_manifest(2)})
 
 
+def test_release_observation_carries_both_folder_ids():
+    config = release_module().observation_config(capped_manifest(), None)
+    assert config["folder_id"] == "worker-folder"
+    assert config["canonical_folder_id"] == "canonical-folder"
+
+
+@pytest.mark.parametrize("mode", ["rollout", "rollback"])
+@pytest.mark.parametrize("field", ["folder_id", "canonical_folder_id"])
+def test_release_rejects_folder_drift_before_journal_change(tmp_path, monkeypatch, mode, field):
+    release = release_module()
+    candidate = capped_manifest()
+    previous = deepcopy(candidate)
+    previous["configuration"][field] = "other-folder"
+    original = {
+        "phase": "rolling",
+        "pending": None,
+        "candidate": {"manifest": candidate, "proof": {}},
+        "previous": {"manifest": previous, "proof": {}},
+    }
+    path = tmp_path / "worker-pools-release.json"
+    release.Journal(path, deepcopy(original))
+    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
+    monkeypatch.setattr(
+        release, "provision_module", lambda: SimpleNamespace(Cloud=lambda token: Mock())
+    )
+    monkeypatch.setattr(release, "Host", Mock(side_effect=AssertionError("host started")))
+
+    with pytest.raises(ValueError, match="release scope changed"):
+        release.execute(mode, tmp_path, None, None, None)
+    assert release.Journal(path).data == original
+
+
 class DiskCloud:
     """Provider boundary with paginated inventories and independent VM/disk lifetimes."""
 
@@ -879,14 +949,14 @@ class DiskCloud:
         )
         self.instances[identity] = {
             "id": identity,
-            "folderId": "folder",
+            "folderId": "worker-folder",
             "zoneId": "ru-central1-a",
             "status": "RUNNING",
             "bootDisk": {"diskId": identity + "-disk"},
         }
         self.disks[identity + "-disk"] = {
             "id": identity + "-disk",
-            "folderId": "folder",
+            "folderId": "worker-folder",
             "zoneId": "ru-central1-a",
             "sourceImageId": "boot-image",
             "status": "READY",

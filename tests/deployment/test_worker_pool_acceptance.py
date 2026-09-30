@@ -73,7 +73,10 @@ def test_live_checklist_binds_policy_and_replacement_gates_to_selected_ceiling(c
     assert checklist["scale_bounds"] == {"bulk": [0, selected], "selfie": [1, selected]}
     gates = " ".join(checklist["gates"])
     assert "disk" in gates and "production" in gates
+    assert "distinct worker and canonical folders" in gates
+    assert "canonical Monitoring folder" in gates
     if selected == 1:
+        assert "cap-one Git-owned alert" in gates
         assert "serial" in gates and "<=3" in gates
         assert "second-instance demand" not in gates
     else:

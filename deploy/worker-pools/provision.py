@@ -34,6 +34,7 @@ FIELDS = {
     "pool_max_size",
     "cloud_id",
     "folder_id",
+    "canonical_folder_id",
     "zone",
     "network_id",
     "subnet_id",
@@ -92,6 +93,8 @@ def validate(config):
         "compose_version",
     }:
         identifier(config[key])
+    if config["folder_id"] == config["canonical_folder_id"]:
+        raise ValueError("worker and canonical folders must differ")
     address = ipaddress.IPv4Address(config["private_api_ipv4"])
     if not any(
         address in ipaddress.IPv4Network(cidr)
@@ -272,7 +275,7 @@ def prepare(config):
                             "metricName": "worker_pool_workload",
                             "labels": {"pool": pool, "zone_id": config["zone"]},
                             "target": "1",
-                            "folderId": config["folder_id"],
+                            "folderId": config["canonical_folder_id"],
                             "service": "custom",
                         }
                     ],
@@ -293,7 +296,8 @@ def prepare(config):
         "groups": groups,
         "boundary": (
             "create/update exact worker groups only; "
-            "prerequisites and live acceptance remain separate"
+            "organization/effective-policy IAM review, prerequisites, and "
+            "live acceptance remain separate"
         ),
     }
     return plan | {"checksum": digest(plan)}
@@ -313,7 +317,7 @@ def allows_private_port(rule):
 def validate_private_edge(config, canonical, groups):
     if (
         canonical.get("id") != config["canonical_vm_id"]
-        or canonical.get("folderId") != config["folder_id"]
+        or canonical.get("folderId") != config["canonical_folder_id"]
     ):
         raise ValueError("wrong canonical VM")
     found = False
@@ -346,6 +350,7 @@ class Cloud(CloudReader):
             "vpc": "https://vpc.api.cloud.yandex.net/vpc/v1",
             "lockbox": "https://lockbox.api.cloud.yandex.net/lockbox/v1",
             "resourcemanager": "https://resource-manager.api.cloud.yandex.net/resource-manager/v1",
+            "iam": "https://iam.api.cloud.yandex.net/iam/v1",
         }[service]
         return request_json(
             Request(
@@ -358,6 +363,7 @@ class Cloud(CloudReader):
         base = {
             "lockbox": "https://lockbox.api.cloud.yandex.net/lockbox/v1",
             "resourcemanager": "https://resource-manager.api.cloud.yandex.net/resource-manager/v1",
+            "compute": COMPUTE,
         }[service]
         rows, page, seen = [], "", set()
         from urllib.parse import urlencode
@@ -403,15 +409,39 @@ def relevant_bindings(rows, worker):
 
 def inspect(config, cloud):
     validate(config)
-    folder = cloud.resource("resourcemanager", "folders", config["folder_id"])
-    if folder.get("id") != config["folder_id"] or folder.get("cloudId") != config["cloud_id"]:
-        raise ValueError("wrong explicit cloud/folder")
-    # Worker identity must have no inherited cloud/folder authority, especially DB/S3/manage.
-    for kind, resource in (("clouds", config["cloud_id"]), ("folders", config["folder_id"])):
-        if relevant_bindings(
-            cloud.bindings("resourcemanager", kind, resource), config["worker_sa_id"]
-        ):
+    for folder_id in (config["folder_id"], config["canonical_folder_id"]):
+        folder = cloud.resource("resourcemanager", "folders", folder_id)
+        if folder.get("id") != folder_id or folder.get("cloudId") != config["cloud_id"]:
+            raise ValueError("wrong explicit cloud/folder")
+    for account in ("manager_sa_id", "worker_sa_id"):
+        identity = cloud.resource("iam", "serviceAccounts", config[account])
+        if identity.get("id") != config[account] or identity.get("folderId") != config["folder_id"]:
+            raise ValueError("worker identity belongs outside worker folder")
+    # Direct cloud/folder bindings are inspectable. Organization and effective-policy
+    # authority require a separate operator read-back before activation.
+    for kind, resource in (
+        ("clouds", config["cloud_id"]),
+        ("folders", config["folder_id"]),
+        ("folders", config["canonical_folder_id"]),
+    ):
+        rows = cloud.bindings("resourcemanager", kind, resource)
+        if relevant_bindings(rows, config["worker_sa_id"]):
             raise ValueError("worker has ancestor authority")
+        manager = relevant_bindings(rows, config["manager_sa_id"])
+        expected = {
+            config["cloud_id"]: set(),
+            config["folder_id"]: {"compute.editor"},
+            config["canonical_folder_id"]: {"vpc.user"},
+        }[resource]
+        if (
+            {row.get("roleId") for row in manager} != expected
+            or len(manager) != len(expected)
+            or any(
+                row.get("subject") != {"id": config["manager_sa_id"], "type": "serviceAccount"}
+                for row in manager
+            )
+        ):
+            raise ValueError("manager authority differs from reviewed folder scope")
     for service, collection, resource, role in (
         ("lockbox", "secrets", config["bootstrap_secret_id"], "lockbox.payloadViewer"),
     ):
@@ -422,14 +452,22 @@ def inspect(config, cloud):
             {"roleId": role, "subject": {"id": config["worker_sa_id"], "type": "serviceAccount"}}
         ]:
             raise ValueError("worker scoped authority differs from narrow prerequisite")
-    if relevant_bindings(
-        cloud.bindings("lockbox", "secrets", config["application_secret_id"]),
-        config["worker_sa_id"],
+    application_grants = cloud.bindings("lockbox", "secrets", config["application_secret_id"])
+    if any(
+        relevant_bindings(application_grants, config[account])
+        for account in ("manager_sa_id", "worker_sa_id")
     ):
-        raise ValueError("worker can read application secret")
+        raise ValueError("worker identity has direct application secret authority")
+    application = cloud.resource("lockbox", "secrets", config["application_secret_id"])
+    if (
+        application.get("id") != config["application_secret_id"]
+        or application.get("folderId") != config["canonical_folder_id"]
+    ):
+        raise ValueError("wrong canonical application secret")
     secret = cloud.resource("lockbox", "secrets", config["bootstrap_secret_id"])
     if (
-        secret.get("folderId") != config["folder_id"]
+        secret.get("id") != config["bootstrap_secret_id"]
+        or secret.get("folderId") != config["folder_id"]
         or secret.get("status") != "ACTIVE"
         or secret.get("currentVersion", {}).get("id") != config["bootstrap_version_id"]
         or set(secret.get("currentVersion", {}).get("payloadEntryKeys", []))
@@ -437,6 +475,12 @@ def inspect(config, cloud):
     ):
         raise ValueError("narrow bootstrap secret prerequisite missing")
     subnet = cloud.resource("vpc", "subnets", config["subnet_id"])
+    network = cloud.resource("vpc", "networks", config["network_id"])
+    if (
+        network.get("id") != config["network_id"]
+        or network.get("folderId") != config["canonical_folder_id"]
+    ):
+        raise ValueError("shared VPC belongs outside canonical folder")
     if (
         subnet.get("folderId") != config["folder_id"]
         or subnet.get("zoneId") != config["zone"]
@@ -445,10 +489,14 @@ def inspect(config, cloud):
     ):
         raise ValueError("wrong private subnet/egress")
     routes = cloud.resource("vpc", "routeTables", config["route_table_id"])
-    if routes.get("networkId") != config["network_id"] or not any(
-        row.get("destinationPrefix") == "0.0.0.0/0"
-        and row.get("gatewayId") == config["egress_gateway_id"]
-        for row in routes.get("staticRoutes", [])
+    if (
+        routes.get("folderId") != config["folder_id"]
+        or routes.get("networkId") != config["network_id"]
+        or not any(
+            row.get("destinationPrefix") == "0.0.0.0/0"
+            and row.get("gatewayId") == config["egress_gateway_id"]
+            for row in routes.get("staticRoutes", [])
+        )
     ):
         raise ValueError("private egress prerequisite missing")
     gateway = cloud.resource("vpc", "gateways", config["egress_gateway_id"])
@@ -456,23 +504,56 @@ def inspect(config, cloud):
         raise ValueError("wrong private egress gateway")
     worker_sg = cloud.resource("vpc", "securityGroups", config["worker_sg_id"])
     if (
-        worker_sg.get("networkId") != config["network_id"]
+        worker_sg.get("folderId") != config["folder_id"]
+        or worker_sg.get("networkId") != config["network_id"]
         or any(rule.get("direction") == "INGRESS" for rule in worker_sg.get("rules", []))
         or not any(rule.get("direction") == "EGRESS" for rule in worker_sg.get("rules", []))
     ):
         raise ValueError("worker SG prerequisite missing")
     canonical = cloud.get(f"instances/{config['canonical_vm_id']}", view="FULL")
+    canonical_grants = cloud.bindings("compute", "instances", config["canonical_vm_id"])
+    if any(
+        relevant_bindings(canonical_grants, config[account])
+        for account in ("manager_sa_id", "worker_sa_id")
+    ):
+        raise ValueError("worker identity has direct canonical VM authority")
+    attached_disks = [canonical.get("bootDisk", {})] + canonical.get("secondaryDisks", [])
+    for attached in attached_disks:
+        disk_id = identifier(attached.get("diskId"))
+        disk = cloud.get(f"disks/{disk_id}")
+        if disk.get("id") != disk_id or disk.get("folderId") != config["canonical_folder_id"]:
+            raise ValueError("canonical disk belongs outside canonical folder")
+        disk_grants = cloud.bindings("compute", "disks", disk_id)
+        if any(
+            relevant_bindings(disk_grants, config[account])
+            for account in ("manager_sa_id", "worker_sa_id")
+        ):
+            raise ValueError("worker identity has direct canonical disk authority")
     groups = {}
     for nic in canonical["networkInterfaces"]:
+        nic_subnet = cloud.resource("vpc", "subnets", identifier(nic.get("subnetId")))
+        if (
+            nic_subnet.get("folderId") != config["canonical_folder_id"]
+            or nic_subnet.get("networkId") != config["network_id"]
+        ):
+            raise ValueError("canonical NIC is outside reviewed network")
         if not nic.get("securityGroupIds"):
-            nic_subnet = cloud.resource("vpc", "subnets", identifier(nic.get("subnetId")))
-            network = cloud.resource("vpc", "networks", identifier(nic_subnet.get("networkId")))
             nic["securityGroupIds"] = [identifier(network.get("defaultSecurityGroupId"))]
         for resource in nic["securityGroupIds"]:
-            groups[resource] = cloud.resource("vpc", "securityGroups", resource)
+            group = cloud.resource("vpc", "securityGroups", resource)
+            if (
+                group.get("folderId") != config["canonical_folder_id"]
+                or group.get("networkId") != config["network_id"]
+            ):
+                raise ValueError("canonical security group is outside reviewed network")
+            groups[resource] = group
     validate_private_edge(config, canonical, groups)
     image = cloud.get(f"images/{config['boot_image_id']}")
-    if image.get("id") != config["boot_image_id"] or image.get("status") != "READY":
+    if (
+        image.get("id") != config["boot_image_id"]
+        or image.get("folderId") != config["folder_id"]
+        or image.get("status") != "READY"
+    ):
         raise ValueError("reviewed base image prerequisite missing")
     existing = cloud.pages("instanceGroups", "instanceGroups", folderId=config["folder_id"])
     managed = {}
@@ -517,7 +598,12 @@ def apply(config, checksum, *, cloud, receipt_path=None):
     if receipt_path is None or Path(receipt_path).exists():
         raise ValueError("fresh durable receipt required; reconcile prior submission first")
     inspect(config, cloud)
-    receipt = {"checksum": checksum, "folder_id": config["folder_id"], "groups": {}}
+    receipt = {
+        "checksum": checksum,
+        "folder_id": config["folder_id"],
+        "canonical_folder_id": config["canonical_folder_id"],
+        "groups": {},
+    }
     write_receipt(receipt_path, receipt, exclusive=True)
     for pool, body in plan["groups"].items():
         entry = config["groups"][pool]

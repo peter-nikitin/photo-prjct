@@ -19,10 +19,19 @@ from processing.services.worker_pool_lifecycle import (
 
 
 def validate_config(config: dict[str, Any]) -> None:
-    if set(config) != {"folder_id", "zone", "groups", "boot_image_id", "releases"}:
+    if set(config) != {
+        "folder_id",
+        "canonical_folder_id",
+        "zone",
+        "groups",
+        "boot_image_id",
+        "releases",
+    }:
         raise ValueError("invalid cloud configuration")
-    for key in ("folder_id", "zone", "boot_image_id"):
+    for key in ("folder_id", "canonical_folder_id", "zone", "boot_image_id"):
         identifier(config[key])
+    if config["folder_id"] == config["canonical_folder_id"]:
+        raise ValueError("worker and canonical folders must differ")
     if (
         not isinstance(config["groups"], dict)
         or not config["groups"]
@@ -111,7 +120,11 @@ def observe_cloud(name: str, config: dict[str, Any], *, reader: CloudReader | No
                 raise ValueError("unverified actual image")
             disk_id = identifier(instance["bootDisk"]["diskId"])
             disk = reader.get(f"disks/{disk_id}")
-            if disk.get("id") != disk_id or disk.get("sourceImageId") != config["boot_image_id"]:
+            if (
+                disk.get("id") != disk_id
+                or disk.get("folderId") != config["folder_id"]
+                or disk.get("sourceImageId") != config["boot_image_id"]
+            ):
                 raise ValueError("unverified boot image")
             for nic in instance["networkInterfaces"]:
                 if nic.get("primaryV4Address", {}).get("oneToOneNat") or nic.get(

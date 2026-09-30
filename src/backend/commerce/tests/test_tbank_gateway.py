@@ -442,11 +442,12 @@ def test_get_state_rejects_zero_amount_for_non_canceled_payment(attempt, status)
 
 
 def test_callback_resolves_persisted_attempt_without_mutating_it(attempt):
-    result = (
-        gateway_module().TBankGateway(config()).authenticate_notification(signed_notification())
-    )
+    module = gateway_module()
+    with patch.object(module.logger, "warning") as warning:
+        result = module.TBankGateway(config()).authenticate_notification(signed_notification())
     assert result.status == "succeeded"
     assert result.idempotency_key == attempt.idempotency_key
+    warning.assert_not_called()
     attempt.refresh_from_db()
     assert attempt.status == "pending"
 
@@ -632,6 +633,31 @@ def test_authenticated_callback_conflict_carries_only_safe_attempt_context(attem
 
 
 @pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"PaymentId": "67890"}, "payment_id_mismatch"),
+        ({"Amount": 1501}, "amount_mismatch"),
+        ({"Amount": True}, "amount_invalid"),
+        ({"Status": "REFUNDED"}, "status_unknown"),
+        ({"Success": False}, "success_mismatch"),
+        ({"ErrorCode": "1"}, "success_mismatch"),
+    ],
+)
+def test_authenticated_callback_logs_safe_rejection_reason(attempt, changes, reason):
+    module = gateway_module()
+    notification = signed_notification(CardId="4111111111111111", **changes)
+    with patch.object(module.logger, "warning") as warning:
+        with pytest.raises(module.TBankAuthenticatedNotificationError):
+            module.TBankGateway(config()).authenticate_notification(notification)
+    assert warning.call_args.args == (
+        "tbank_notification_rejected attempt_id=%s reason=%s",
+        attempt.pk,
+        reason,
+    )
+    assert not warning.call_args.kwargs
+
+
+@pytest.mark.parametrize(
     "changes",
     [{"TerminalKey": "other"}, {"OrderId": "fm-unknown"}, {"Token": "0" * 64}],
 )
@@ -641,9 +667,12 @@ def test_untrusted_callback_does_not_carry_attempt_context(attempt, changes):
         body = json.loads(notification.body)
         body["Token"] = changes["Token"]
         notification = IncomingPaymentNotification(headers={}, body=json.dumps(body).encode())
-    with pytest.raises(PaymentGatewayError) as caught:
-        gateway_module().TBankGateway(config()).authenticate_notification(notification)
+    module = gateway_module()
+    with patch.object(module.logger, "warning") as warning:
+        with pytest.raises(PaymentGatewayError) as caught:
+            module.TBankGateway(config()).authenticate_notification(notification)
     assert not hasattr(caught.value, "attempt_id")
+    warning.assert_not_called()
 
 
 def test_cancel_new_payment_requires_bank_confirmed_terminal_evidence(attempt):

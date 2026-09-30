@@ -7,6 +7,7 @@ Only a merchant-approved, full-payment receipt without a closing obligation is s
 import hashlib
 import hmac
 import json
+import logging
 import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ from commerce.payment_gateway import (
 
 TBANK_ADAPTER_KEY = "tbank-eacq-v1"
 MAX_BODY_BYTES = 65536
+logger = logging.getLogger(__name__)
 _API_ORIGINS = {"https://securepay.tinkoff.ru", "https://rest-api-test.tinkoff.ru"}
 _OBJECTS_105 = frozenset(
     (
@@ -58,6 +60,12 @@ class TBankAuthenticatedNotificationError(PaymentGatewayError):
     def __init__(self, attempt_id: int) -> None:
         super().__init__(PaymentGatewayErrorCategory.INVALID_RESPONSE)
         self.attempt_id = attempt_id
+
+
+class _InvalidObservation(PaymentGatewayError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(PaymentGatewayErrorCategory.INVALID_RESPONSE)
+        self.reason = reason
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -335,30 +343,37 @@ class TBankGateway:
         )
 
     def _observation(self, data: dict[str, object], attempt: PaymentAttempt) -> PaymentObservation:
-        payment_id = _payment_id(data.get("PaymentId"))
-        status = normalize_status(data.get("Status"))
+        try:
+            payment_id = _payment_id(data.get("PaymentId"))
+        except PaymentGatewayError:
+            raise _InvalidObservation("payment_id_invalid") from None
+        try:
+            status = normalize_status(data.get("Status"))
+        except PaymentGatewayError:
+            raise _InvalidObservation("status_unknown") from None
         amount = data.get("Amount")
-        if (
-            data.get("TerminalKey") != self.config.terminal_key
-            or data.get("OrderId") != bank_order_id(attempt.idempotency_key)
-            or (attempt.provider_payment_id and payment_id != attempt.provider_payment_id)
-            or type(amount) is not int
-            or (
-                amount != attempt.amount_kopecks
-                and not (
-                    status == NormalizedPaymentStatus.CANCELED
-                    and amount == 0
-                    and attempt.provider_payment_id == payment_id
-                )
-            )
-            or attempt.currency != "RUB"
+        if data.get("TerminalKey") != self.config.terminal_key:
+            raise _InvalidObservation("terminal_key_mismatch")
+        if data.get("OrderId") != bank_order_id(attempt.idempotency_key):
+            raise _InvalidObservation("order_id_mismatch")
+        if attempt.provider_payment_id and payment_id != attempt.provider_payment_id:
+            raise _InvalidObservation("payment_id_mismatch")
+        if type(amount) is not int:
+            raise _InvalidObservation("amount_invalid")
+        if amount != attempt.amount_kopecks and not (
+            status == NormalizedPaymentStatus.CANCELED
+            and amount == 0
+            and attempt.provider_payment_id == payment_id
         ):
-            raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
-        if type(data.get("Success")) is not bool or (
-            status == NormalizedPaymentStatus.SUCCEEDED
-            and (data["Success"] is not True or data.get("ErrorCode") != "0")
+            raise _InvalidObservation("amount_mismatch")
+        if attempt.currency != "RUB":
+            raise _InvalidObservation("currency_mismatch")
+        if type(data.get("Success")) is not bool:
+            raise _InvalidObservation("success_invalid")
+        if status == NormalizedPaymentStatus.SUCCEEDED and (
+            data["Success"] is not True or data.get("ErrorCode") != "0"
         ):
-            raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
+            raise _InvalidObservation("success_mismatch")
         return PaymentObservation(
             provider_payment_id=payment_id,
             status=status,
@@ -439,7 +454,10 @@ class TBankGateway:
             raise PaymentGatewayError(PaymentGatewayErrorCategory.NOT_FOUND)
         try:
             return self._observation(data, attempt)
-        except PaymentGatewayError:
+        except _InvalidObservation as error:
+            logger.warning(
+                "tbank_notification_rejected attempt_id=%s reason=%s", attempt.pk, error.reason
+            )
             raise TBankAuthenticatedNotificationError(attempt.pk) from None
 
 

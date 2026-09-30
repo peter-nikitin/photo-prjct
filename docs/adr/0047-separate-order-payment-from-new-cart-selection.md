@@ -1,4 +1,4 @@
-# 0046: Separate Order payment from new cart selection
+# 0047: Separate Order payment from new cart selection
 
 - Status: Accepted
 - Date: 2026-09-30

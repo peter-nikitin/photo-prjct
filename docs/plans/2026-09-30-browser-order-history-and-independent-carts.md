@@ -5,8 +5,8 @@
 - Owner: project maintainer
 - Related specification: [Browser Order History and Independent Carts](../superpowers/specs/2026-09-30-browser-order-history-and-independent-carts-design.md)
 - Related architecture: [Purchase and download](../architecture.md#purchase-and-download), [Security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)
-- Related ADRs: [ADR 0030](../adr/0030-use-anonymous-server-side-event-carts.md), [ADR 0031](../adr/0031-use-orders-and-adapters-for-paid-original-delivery.md), [ADR 0046](../adr/0046-separate-order-payment-from-new-cart-selection.md)
-- ADR impact: ADR 0046 was explicitly accepted on 2026-09-30 and partially supersedes ADR 0031; the implementation must conform to it.
+- Related ADRs: [ADR 0030](../adr/0030-use-anonymous-server-side-event-carts.md), [ADR 0031](../adr/0031-use-orders-and-adapters-for-paid-original-delivery.md), [ADR 0047](../adr/0047-separate-order-payment-from-new-cart-selection.md)
+- ADR impact: ADR 0047 was explicitly accepted on 2026-09-30 and partially supersedes ADR 0031; the implementation must conform to it.
 
 ## Goal
 
@@ -37,7 +37,7 @@ Use the [eight specification criteria](../superpowers/specs/2026-09-30-browser-o
 **Files:** `src/backend/commerce/capabilities.py`, `src/backend/commerce/views.py`, `src/backend/commerce/urls.py`, new `src/backend/commerce/context_processors.py`, `src/backend/config/settings.py`, `src/backend/templates/ui/base.html`, new `src/backend/templates/commerce/order_list.html`, `src/backend/static/ui/catalog.css`, `src/backend/commerce/tests/test_capabilities.py`, `src/backend/commerce/tests/test_order_views.py`, `tests/visual/views.py`, `tests/visual/urls.py`, `tests/visual/visual.spec.js`, and the selected visual snapshots.
 
 - **Specification:** Customer behavior and Identity and transaction boundaries.
-- **Depends on:** Accepted ADR 0046.
+- **Depends on:** Accepted ADR 0047.
 - **Produces:** One private `commerce:order_list` GET route, a purchase-cookie-scoped query with existing 30-day validity, and a gate-aware navigation link.
 
 - [ ] Add failing tests for current/foreign/expired/missing purchase cookies, 50-plus-one pagination, private/no-store responses, masked customer data, and purchase-gate visibility.
@@ -87,7 +87,7 @@ Use the [eight specification criteria](../superpowers/specs/2026-09-30-browser-o
 
 ### Final task: Architecture and ADR reconciliation
 
-- [ ] Compare the final behavior with the approved specification, ADRs 0030/0031/0046, and `docs/architecture.md`; update the architecture's implementation status only after verification.
+- [ ] Compare the final behavior with the approved specification, ADRs 0030/0031/0047, and `docs/architecture.md`; update the architecture's implementation status only after verification.
 - [ ] Run the selector and fingerprint against the final package, normalize/type-check exact changed Python files with `.venv/bin/pre-commit run --files <changed Python paths>`, run `make static` after integration, and run `make check` once on the final branch.
 - [ ] Run every selector-required expensive suite with GREEN evidence for that exact fingerprint; do not reuse evidence after a package change. Record exact commands, exits, and results.
 - [ ] Review the full diff and report ADR conformance before one consolidated implementation commit and PR. Execute the approved plan through `$execute-implementation-plan` and its implementer/reviewer gates.

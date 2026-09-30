@@ -166,6 +166,15 @@ class TBankSigningTests(SimpleTestCase):
 
 
 class TBankProtocolTests(SimpleTestCase):
+    def test_init_accepts_bank_hosted_payment_form_url(self):
+        module = gateway_module()
+        payment_url = "https://securepayments.tinkoff.ru/pay/abc"
+        with patch.object(
+            module, "urlopen", return_value=Response(response(PaymentURL=payment_url))
+        ):
+            created = module.TBankGateway(config()).create_payment(request())
+        self.assertEqual(created.confirmation_url, payment_url)
+
     def test_init_sends_exact_receipt_and_signed_one_stage_request(self):
         module = gateway_module()
         with patch.object(module, "urlopen", return_value=Response(response())) as network:

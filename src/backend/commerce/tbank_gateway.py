@@ -35,7 +35,12 @@ from commerce.payment_gateway import (
 TBANK_ADAPTER_KEY = "tbank-eacq-v1"
 MAX_BODY_BYTES = 65536
 _API_ORIGINS = {"https://securepay.tinkoff.ru", "https://rest-api-test.tinkoff.ru"}
-_PAYMENT_HOSTS = {"pay.tbank.ru", "securepay.tinkoff.ru", "rest-api-test.tinkoff.ru"}
+_PAYMENT_HOSTS = {
+    "pay.tbank.ru",
+    "securepay.tinkoff.ru",
+    "securepayments.tinkoff.ru",
+    "rest-api-test.tinkoff.ru",
+}
 _OBJECTS_105 = frozenset(
     (
         "commodity excise job service gambling_bet gambling_prize lottery lottery_prize "

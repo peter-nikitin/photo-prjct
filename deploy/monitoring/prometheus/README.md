@@ -18,8 +18,10 @@ duplicates remain separate gates. Existing native alerts, routes and timers rema
 - `oidc.json`: protected `monitoring` environment identity; service account
   `aje3t70qka1dtc09k5ic` (`findme-monitoring-ci`).
 
-The operator supplied channel name is `findme-photo-operator-email` (ID
-`fbefs2ubu6sq0k0jvlch`). Workspace ID is `mon0c97qv2s5uju1ark8`, supplied by the operator.
+The operator supplied channel names are `findme-photo-operator-email` (ID
+`fbefs2ubu6sq0k0jvlch`) and `findme-photo-operator-telegram` (ID
+`cloud__b1gmcsmr51o5kvp86l55_findme-photo-operator-telegram`). Workspace ID is
+`mon0c97qv2s5uju1ark8`, supplied by the operator.
 The workflow never retargets configuration from CI variables. The approved foundation was created
 on 2026-09-28: GitHub environment `monitoring`, reviewer `peter-nikitin`, main-only deployment policy,
 and credential `ajeprb31m2nhu6pbj2gn` in existing federation `ajeula3gd46omgf9jiko`, bound to subject
@@ -62,9 +64,21 @@ promtool syntax and behavior scenarios. No credential or network call to Yandex 
 needed; Docker may pull the pinned tool image. Yandex's receiver extension is checked structurally
 by the renderer and accepted by the service on explicit PUT; upstream Alertmanager does not
 understand `yandex_monitoring_configs`. Email delivery needs a separate live drill.
-The project email receiver explicitly sets `send_resolved: true`;
-Yandex accepted this configuration on 2026-09-28. Firing email was received, while recovery email
-delivery remains pending verification. No receiver default is assumed.
+The project receiver sends to both operator channels with `send_resolved: true`.
+The operator confirmed receipt of firing and recovery email. Telegram delivery needs a separate
+live drill after routing is applied. No receiver default is assumed.
+
+If public probe samples are missing, the normal `apply` preflight blocks all owned objects.
+After reviewing the exact Git revision, change only the Alertmanager route without rewriting rules
+or the dashboard:
+
+```sh
+/tmp/findme-monitoring-tools/bin/python deploy/monitoring/prometheus/control.py apply-routing --identity yc
+```
+
+The command requires a dedicated FindMe workspace and both named Monium channels. The provider
+does not expose a supported routing GET/read-back contract; keep the previous Git revision's
+rendered `alertmanager.yml` for rollback. A successful PUT does not prove Telegram delivery.
 
 ## Observed metric contract
 

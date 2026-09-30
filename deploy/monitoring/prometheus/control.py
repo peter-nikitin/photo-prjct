@@ -37,7 +37,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
 
 def validate_config(config: dict[str, Any], *, live: bool = False) -> None:
     for field in ("folder_id", "dashboard_id", "channel_id") + (
-        ("workspace_id", "channel_name") if live else ()
+        ("workspace_id", "channel_name", "telegram_channel_name") if live else ()
     ):
         if not isinstance(config.get(field), str) or not config[field].strip():
             raise ControlError(f"activation requires {field}")
@@ -125,6 +125,8 @@ def render(config: dict[str, Any]) -> dict[str, str]:
         **e,
         "folder_id": config["folder_id"],
         "channel_name": config["channel_name"] or "__CHANNEL_NAME_REQUIRED__",
+        "telegram_channel_name": config["telegram_channel_name"]
+        or "__TELEGRAM_CHANNEL_NAME_REQUIRED__",
         "workspace_id": config["workspace_id"] or "__WORKSPACE_ID_REQUIRED__",
         "disk_gib": f"{s['disk_free']} / 1073741824",
         "uptime_seconds": f"{s['uptime']} / 1000",
@@ -289,6 +291,17 @@ def dedicated_workspace(transport: Any) -> None:
     files = response.get("files")
     if not isinstance(files, list) or any(name != OWNED_RULES for name in files):
         raise ControlError("routing replacement requires a dedicated FindMe workspace")
+
+
+def apply_routing(config: dict[str, Any], transport: Any) -> None:
+    validate_config(config, live=True)
+    dedicated_workspace(transport)
+    routing = render(config)["alertmanager.yml"]
+    transport.request(
+        "PUT",
+        "/extensions/v1/alertmanager",
+        {"content": base64.b64encode(routing.encode()).decode()},
+    )
 
 
 def restore(
@@ -544,7 +557,9 @@ def validate_package(config: dict[str, Any], output: Path, promtool: str) -> Non
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("render", "validate", "check", "apply", "restore"))
+    parser.add_argument(
+        "command", choices=("render", "validate", "check", "apply", "apply-routing", "restore")
+    )
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path, default=Path("/tmp/findme-monitoring-render"))
     parser.add_argument("--backup", type=Path)
@@ -566,6 +581,9 @@ def main() -> int:
             transport = CloudTransport(config, identity(args.identity, args.oidc_config))
             if args.command == "check":
                 print(json.dumps(check(config, transport), indent=2))
+            elif args.command == "apply-routing":
+                apply_routing(config, transport)
+                print("Applied Alertmanager routing only; verify delivery with a live drill.")
             elif args.command == "restore":
                 if args.backup is None:
                     raise ControlError("restore requires --backup")

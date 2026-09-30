@@ -7,6 +7,12 @@ storages:
       directory: /var/lib/yandex/unified_agent/metrics_buffer
       max_partition_size: 128mb
       max_segment_size: 16mb
+  - name: findme_prometheus_buffer
+    plugin: fs
+    config:
+      directory: /var/lib/yandex/unified_agent/findme_prometheus_buffer
+      max_partition_size: 100mb
+      max_segment_size: 10mb
 channels:
   - name: cloud_monitoring
     channel:
@@ -16,6 +22,16 @@ channels:
         plugin: yc_metrics
         config:
           folder_id: __YANDEX_CLOUD_FOLDER_ID__
+          iam: {cloud_meta: {}}
+  - name: findme_prometheus_remote_write
+    channel:
+      pipe:
+        - storage_ref: {name: findme_prometheus_buffer}
+      output:
+        plugin: metrics
+        config:
+          url: https://monitoring.api.cloud.yandex.net/prometheus/workspaces/__PROMETHEUS_WORKSPACE_ID__/api/v1/write
+          set_host_label:
           iam: {cloud_meta: {}}
 routes:
   - input:
@@ -50,3 +66,13 @@ routes:
         namespace: imgproxy
     channel:
       channel_ref: {name: cloud_monitoring}
+  - input:
+      plugin: metrics_pull
+      config:
+        url: http://127.0.0.1:19091/metrics
+        format: {prometheus: {}}
+        poll_period: 300s
+        timeout: 30s
+        prometheus_config: {job_name: findme-public}
+    channel:
+      channel_ref: {name: findme_prometheus_remote_write}

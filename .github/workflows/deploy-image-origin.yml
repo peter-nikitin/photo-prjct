@@ -7,6 +7,11 @@ on:
         description: Exact 40-character repository commit to deploy
         required: true
         type: string
+      monitoring_only:
+        description: Restore Unified Agent routes without redeploying image containers
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   deploy-image-origin:
@@ -38,6 +43,7 @@ jobs:
       - name: Deploy isolated image origin
         env:
           IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
+          IMAGE_ORIGIN_MONITORING_ONLY: ${{ inputs.monitoring_only }}
           VM_HOST: ${{ vars.VM_HOST }}
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
@@ -54,7 +60,14 @@ jobs:
             --identity github-oidc \
             -- deploy/image-origin/run-remote.sh
       - name: Record deployed commit
+        if: ${{ !inputs.monitoring_only }}
         env:
           IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
         run: |
           printf 'Deployed image-origin repository SHA: `%s`\n' "$IMAGE_ORIGIN_RELEASE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Record monitoring repair
+        if: ${{ inputs.monitoring_only }}
+        env:
+          IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
+        run: |
+          printf 'Restored image-origin monitoring from repository SHA: `%s`\n' "$IMAGE_ORIGIN_RELEASE" >> "$GITHUB_STEP_SUMMARY"

@@ -388,6 +388,22 @@ class TBankGateway:
             self._post("GetState", {"PaymentId": provider_payment_id}), attempt
         )
 
+    def cancel_new_payment(self, attempt: PaymentAttempt) -> PaymentObservation:
+        """Cancel only a freshly verified NEW operation, then fetch its terminal evidence."""
+        payment_id = _payment_id(attempt.provider_payment_id)
+        state = self._post("GetState", {"PaymentId": payment_id})
+        self._observation(state, attempt)
+        if state.get("Status") != "NEW":
+            raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
+        canceled = self._post("Cancel", {"PaymentId": payment_id})
+        if canceled.get("PaymentId") != payment_id or canceled.get("Status") != "CANCELED":
+            raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
+        final_state = self._post("GetState", {"PaymentId": payment_id})
+        observation = self._observation(final_state, attempt)
+        if final_state.get("Status") != "CANCELED":
+            raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
+        return observation
+
     def recover_payment(self, idempotency_key: str) -> PaymentObservation | None:
         """Return bank evidence, or None for an inconclusive empty lookup; never retry Init."""
         attempt = PaymentAttempt.objects.filter(

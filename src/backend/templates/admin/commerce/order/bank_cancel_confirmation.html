@@ -1,0 +1,14 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>Отменить попытку в банке</h1>
+  <p>Заказ {{ order.public_number }}, попытка №{{ attempt.pk }}, PaymentId {{ attempt.provider_payment_id }}.</p>
+  <p>У этой попытки нет ссылки на оплату. Банк отменит её только при текущем статусе NEW. После подтверждения CANCELED покупатель сможет повторить оплату.</p>
+  <p>Заказ останется ожидающим оплаты. Отмена заказа — отдельное действие в списке заказов.</p>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="confirm_cancel" value="yes">
+    <input type="submit" value="Отменить попытку в банке">
+    <a href="{{ detail_url }}">Вернуться к заказу</a>
+  </form>
+{% endblock %}

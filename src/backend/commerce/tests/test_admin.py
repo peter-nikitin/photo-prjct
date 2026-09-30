@@ -653,3 +653,141 @@ class CommerceAdminTests(TransactionTestCase):
                 change_message="Обращение разрешено вручную.",
             ).exists()
         )
+
+    def bank_cancel_url(self):
+        return reverse(
+            "admin:commerce_order_cancel_bank_attempt", args=(self.order.pk, self.attempt.pk)
+        )
+
+    def prepare_bank_cancel(self):
+        self.order = self.make_order()
+        self.attempt = PaymentAttempt.objects.create(
+            order=self.order,
+            adapter_key="tbank-eacq-v1",
+            provider_payment_id="12345",
+            amount_kopecks=30000,
+            currency="RUB",
+            idempotency_key="bank-admin-attempt",
+        )
+        self.enable_purchase()
+
+    def test_order_detail_exposes_exact_bank_attempt_confirmation_without_bank_call(self):
+        self.prepare_bank_cancel()
+        with patch("commerce.admin._payment_gateway_for_adapter") as gateway:
+            detail = self.client.get(reverse("admin:commerce_order_change", args=(self.order.pk,)))
+            self.assertContains(detail, self.bank_cancel_url())
+            confirmation = self.client.get(self.bank_cancel_url())
+        self.assertContains(confirmation, "Отменить попытку в банке")
+        self.assertContains(confirmation, "12345")
+        self.assertContains(confirmation, 'name="csrfmiddlewaretoken"')
+        gateway.assert_not_called()
+
+    def test_bank_cancel_requires_permission_gate_and_csrf(self):
+        self.prepare_bank_cancel()
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.operator)
+        with patch("commerce.admin._payment_gateway_for_adapter") as gateway:
+            self.assertEqual(csrf_client.post(self.bank_cancel_url()).status_code, 403)
+            viewer = get_user_model().objects.create_user(username="bank-viewer", is_staff=True)
+            viewer.user_permissions.add(
+                Permission.objects.get(content_type__app_label="commerce", codename="view_order")
+            )
+            self.client.force_login(viewer)
+            self.assertEqual(self.client.get(self.bank_cancel_url()).status_code, 403)
+            self.assertEqual(self.client.post(self.bank_cancel_url()).status_code, 403)
+            detail = self.client.get(reverse("admin:commerce_order_change", args=(self.order.pk,)))
+            self.assertNotContains(detail, self.bank_cancel_url())
+            self.client.force_login(self.operator)
+            FeatureFlag.objects.filter(key="paid-photo-purchase").update(
+                state=FeatureFlag.State.OFF
+            )
+            self.assertEqual(self.client.post(self.bank_cancel_url()).status_code, 403)
+        gateway.assert_not_called()
+
+    def test_bank_cancel_confirms_exact_attempt_and_audits_without_canceling_order(self):
+        from commerce.tbank_gateway import TBankGateway
+
+        self.prepare_bank_cancel()
+        observation = PaymentObservation(
+            provider_payment_id="12345",
+            status=NormalizedPaymentStatus.CANCELED,
+            amount_kopecks=30000,
+            currency="RUB",
+            idempotency_key=self.attempt.idempotency_key,
+        )
+        gateway = object.__new__(TBankGateway)
+        with (
+            patch("commerce.admin._payment_gateway_for_adapter", return_value=gateway),
+            patch.object(gateway, "cancel_new_payment", return_value=observation) as cancel,
+        ):
+            result = self.client.post(self.bank_cancel_url(), {"confirm_cancel": "yes"})
+            repeated = self.client.post(self.bank_cancel_url(), {"confirm_cancel": "yes"})
+        self.assertEqual(result.status_code, 302)
+        self.assertEqual(repeated.status_code, 302)
+        self.assertEqual(cancel.call_count, 1)
+        self.attempt.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(self.attempt.status, PaymentAttempt.Status.CANCELED)
+        self.assertEqual(self.order.status, Order.Status.PENDING)
+        self.assertEqual(self.attempt.evidence.filter(normalized_status="canceled").count(), 1)
+        self.assertTrue(
+            LogEntry.objects.filter(
+                user=self.operator,
+                object_id=str(self.order.pk),
+                change_message__contains=f"PaymentAttempt {self.attempt.pk}",
+            ).exists()
+        )
+
+    def test_bank_cancel_refuses_missing_confirmation_and_wrong_order(self):
+        self.prepare_bank_cancel()
+        with patch("commerce.admin._payment_gateway_for_adapter") as gateway:
+            self.assertEqual(self.client.post(self.bank_cancel_url()).status_code, 400)
+            other_order = self.make_order()
+            wrong_url = reverse(
+                "admin:commerce_order_cancel_bank_attempt", args=(other_order.pk, self.attempt.pk)
+            )
+            self.assertEqual(
+                self.client.post(wrong_url, {"confirm_cancel": "yes"}).status_code, 404
+            )
+        gateway.assert_not_called()
+
+    def test_bank_cancel_post_state_timeout_keeps_pending_and_operator_request_audit(self):
+        from commerce.tbank_gateway import TBankGateway
+        from commerce.tests.test_tbank_gateway import Response, config, response
+
+        self.prepare_bank_cancel()
+        gateway = TBankGateway(config())
+        bank_reply = response(Amount=30000, OrderId="fm-bank-admin-attempt")
+        with (
+            patch("commerce.admin._payment_gateway_for_adapter", return_value=gateway),
+            patch(
+                "commerce.tbank_gateway.urlopen",
+                side_effect=[
+                    Response(bank_reply),
+                    Response({**bank_reply, "Status": "CANCELED"}),
+                    TimeoutError(),
+                ],
+            ),
+        ):
+            result = self.client.post(self.bank_cancel_url(), {"confirm_cancel": "yes"})
+        self.assertEqual(result.status_code, 302)
+        self.attempt.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(self.attempt.status, PaymentAttempt.Status.PENDING)
+        self.assertEqual(self.order.status, Order.Status.PENDING)
+        self.assertEqual(self.attempt.evidence.count(), 0)
+        request_audit = LogEntry.objects.get(user=self.operator, object_id=str(self.order.pk))
+        self.assertIn("Запрошена отмена", request_audit.change_message)
+        self.assertIn(f"PaymentAttempt {self.attempt.pk}", request_audit.change_message)
+        self.assertIn("PaymentId 12345", request_audit.change_message)
+
+    def test_usable_bank_attempt_has_no_cancel_control_and_rejects_post(self):
+        self.prepare_bank_cancel()
+        self.attempt.confirmation_url = "https://pay.tbank.ru/form"
+        self.attempt.save(update_fields=["confirmation_url", "updated_at"])
+        with patch("commerce.admin._payment_gateway_for_adapter") as gateway:
+            detail = self.client.get(reverse("admin:commerce_order_change", args=(self.order.pk,)))
+            self.assertNotContains(detail, self.bank_cancel_url())
+            result = self.client.post(self.bank_cancel_url(), {"confirm_cancel": "yes"})
+        self.assertEqual(result.status_code, 302)
+        gateway.assert_not_called()

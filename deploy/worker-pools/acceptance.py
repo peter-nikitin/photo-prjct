@@ -7,6 +7,10 @@ import subprocess
 from pathlib import Path
 
 COMMON_LIVE_GATES = (
+    "distinct worker and canonical folders in reviewed cloud; effective direct and inherited "
+    "manager/runtime grants and shared-VPC ownership read back",
+    "worker group, VM, disk and image inventory in worker folder; native autoscaling and both "
+    "publishers use canonical Monitoring folder with fresh metric samples",
     "approved identities, effective IAM, exact groups/subnet and canonical SG allow union",
     "private TLS success, public8443 denial and worker DNS/HTTPS egress",
     "actual candidate OCI revision/digest on web, launch template and both warm worker pools",
@@ -20,6 +24,8 @@ COMMON_LIVE_GATES = (
 POLICY_LIVE_GATES = {
     1: (
         "native WORKLOAD policy bulk 0..1/selfie 1..1; backlog cannot allocate a second instance",
+        "cap-one Git-owned alert apply/read-back/rollback, native Alarm/NoData/recovery "
+        "and approved operator notification before customer cutover",
         "serial forward/rollback: only current pool temporarily maxSize=2, <=3 worker boot disks; "
         "restore maxSize=1 and prove obsolete disks absent before next pool expansion",
         "actual provider recovery/replacement survivor and physical disk allocation rehearsal",

@@ -16,6 +16,7 @@ class CloudObservationTests(TestCase):
         configure_pool("bulk", group_id="bulk-group", active_build="a" * 40)
         self.config: dict[str, Any] = {
             "folder_id": "folder",
+            "canonical_folder_id": "canonical-folder",
             "zone": "ru-central1-a",
             "groups": {"bulk": "bulk-group"},
             "boot_image_id": "boot-image",
@@ -72,7 +73,7 @@ class CloudObservationTests(TestCase):
         if path == "instances/old-node":
             return deepcopy(self.instance)
         if path == "disks/disk":
-            return {"id": "disk", "sourceImageId": "boot-image"}
+            return {"id": "disk", "folderId": "folder", "sourceImageId": "boot-image"}
         raise AssertionError(path)
 
     def test_complete_pages_preserve_actual_old_build_and_known_pending_slot(self):
@@ -89,6 +90,37 @@ class CloudObservationTests(TestCase):
                 {"instance_id": "", "status": "CREATING_INSTANCE", "worker_build": ""},
             ],
         )
+
+    def test_worker_instance_and_disk_must_belong_to_worker_folder(self):
+        from processing.services.worker_pool_observation import observe_cloud
+
+        reader = CloudReader("fake-token")
+        self.instance["folderId"] = "canonical-folder"
+        with patch.object(reader, "get", side_effect=self.get), self.assertRaises(ValueError):
+            observe_cloud("bulk", self.config, reader=reader)
+        self.instance["folderId"] = "folder"
+
+        def wrong_disk(path, **parameters):
+            if path == "disks/disk":
+                return {"id": "disk", "folderId": "canonical-folder", "sourceImageId": "boot-image"}
+            return self.get(path, **parameters)
+
+        with patch.object(reader, "get", side_effect=wrong_disk), self.assertRaises(ValueError):
+            observe_cloud("bulk", self.config, reader=reader)
+        self.assertEqual(WorkerPool.objects.get(name="bulk").observation_sequence, 0)
+
+    def test_worker_observation_requires_distinct_folder_inputs_before_cloud_reads(self):
+        from processing.services.worker_pool_observation import observe_cloud
+
+        reader = Mock()
+        for change in ({"canonical_folder_id": None}, {"canonical_folder_id": "folder"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                observe_cloud("bulk", self.config | change, reader=reader)
+        missing = deepcopy(self.config)
+        del missing["canonical_folder_id"]
+        with self.assertRaises(ValueError):
+            observe_cloud("bulk", missing, reader=reader)
+        reader.get.assert_not_called()
 
     def test_partial_pagination_never_replaces_previous_complete_evidence(self):
         from processing.services.worker_pool_observation import observe_cloud

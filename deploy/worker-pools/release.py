@@ -364,7 +364,7 @@ class Host:
                 "--zone",
                 config["zone"],
                 "--folder-id",
-                config["folder_id"],
+                config["canonical_folder_id"],
             ],
             timeout=35,
         )
@@ -579,7 +579,10 @@ def observation_config(candidate, previous):
         old = previous["manifest"]["configuration"]
         if old["pool_max_size"] != config["pool_max_size"]:
             raise ValueError("cross-ceiling release requires separately reviewed activation")
-        if any(old[key] != config[key] for key in ("folder_id", "zone", "boot_image_id")):
+        if any(
+            old[key] != config[key]
+            for key in ("folder_id", "canonical_folder_id", "zone", "boot_image_id")
+        ):
             raise ValueError("release scope changed")
         if {name: row["id"] for name, row in old["groups"].items()} != {
             name: row["id"] for name, row in config["groups"].items()
@@ -588,6 +591,7 @@ def observation_config(candidate, previous):
         releases[old["worker_build"]] = old["worker_image"]
     return {
         "folder_id": config["folder_id"],
+        "canonical_folder_id": config["canonical_folder_id"],
         "zone": config["zone"],
         "boot_image_id": config["boot_image_id"],
         "groups": {name: row["id"] for name, row in config["groups"].items()},
@@ -661,6 +665,8 @@ def execute(mode, root, manifest_path, checksum, app_image):
         journal.data["phase"] = "rolled-back"
         journal.save()
         return
+    if mode in {"rollout", "rollback"} and journal.data.get("previous"):
+        observation_config(journal.data["candidate"]["manifest"], journal.data["previous"])
     cloud = provision.Cloud(metadata_token()) if mode != "status" else None
     host = Host(root, cloud, journal)
     candidate = journal.data["candidate"]

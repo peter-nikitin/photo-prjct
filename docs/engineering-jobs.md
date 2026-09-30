@@ -671,7 +671,17 @@ work does not consume the public web/database host's resources and idle bulk cap
   isolated previous-snapshot additive migration rehearsals cover repository behavior only.
   Missing/stale observations remain unknown, not healthy zeros. No worker VM telemetry, cloud
   ingestion, diagnostic alert or notification acceptance is claimed.
-- Last updated: 2026-09-29
+  [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) and the
+  [approved folder specification](superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
+  add repository support for distinct worker/canonical folder ownership, scoped direct IAM
+  prerequisite checks, canonical native-metric publication, and two-folder immutable release
+  inputs. Local provision/observation/release fixtures exercise the cap-one disk and recovery
+  fences. The [dated handoff](operations/2026-09-30-worker-folder-operational-handoff.md)
+  identifies unresolved new resource IDs, effective organization policy, exact SG/IAM/secret
+  approvals, real provider lifecycle, Git-owned cap-one alert delivery, ADR 0043 workspace/API
+  gates and live processing/cutover proof. Current local placement is not evidence of any of
+  those remote capabilities.
+- Last updated: 2026-09-30
 
 ## Status log
 

@@ -26,7 +26,8 @@ def config(pool_max_size=2):
     return {
         "pool_max_size": pool_max_size,
         "cloud_id": "cloud",
-        "folder_id": "folder",
+        "folder_id": "worker-folder",
+        "canonical_folder_id": "canonical-folder",
         "zone": "ru-central1-a",
         "network_id": "network",
         "subnet_id": "subnet",
@@ -60,6 +61,7 @@ def test_dry_run_is_deterministic_secretless_and_has_bounded_shapes(pool_max_siz
     assert plan["configuration"]["pool_max_size"] == pool_max_size
     assert set(plan["groups"]) == {"bulk", "selfie"}
     for pool, body in plan["groups"].items():
+        assert body["folderId"] == "worker-folder"
         assert body["name"] == f"findme-photo-worker-{pool}"
         assert body["instanceTemplate"]["resourcesSpec"] == {
             "cores": "2",
@@ -93,7 +95,7 @@ def test_dry_run_is_deterministic_secretless_and_has_bounded_shapes(pool_max_siz
                         "metricName": "worker_pool_workload",
                         "labels": {"pool": pool, "zone_id": "ru-central1-a"},
                         "target": "1",
-                        "folderId": "folder",
+                        "folderId": "canonical-folder",
                         "service": "custom",
                     }
                 ],
@@ -150,6 +152,56 @@ def test_configuration_requires_pool_max_size_without_legacy_default():
     del conf["pool_max_size"]
     with pytest.raises(ValueError):
         module("provision").prepare(conf)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"canonical_folder_id": None},
+        {"canonical_folder_id": "worker-folder"},
+        {"folder_id": "canonical-folder"},
+    ],
+)
+def test_distinct_explicit_folders_are_required(mutation):
+    with pytest.raises(ValueError):
+        module("provision").prepare(config() | mutation)
+    conf = config()
+    del conf["canonical_folder_id"]
+    with pytest.raises(ValueError):
+        module("provision").prepare(conf)
+
+
+@pytest.mark.parametrize("field", ["folder_id", "canonical_folder_id"])
+def test_either_folder_changes_checksum_and_stale_apply_is_rejected(field, tmp_path):
+    provision = module("provision")
+    original = config()
+    changed = config() | {field: "other-folder"}
+    assert provision.prepare(original)["checksum"] != provision.prepare(changed)["checksum"]
+    cloud = FakeCloud(provision, changed)
+    with pytest.raises(ValueError, match="reviewed checksum mismatch"):
+        provision.apply(
+            changed,
+            provision.prepare(original)["checksum"],
+            cloud=cloud,
+            receipt_path=tmp_path / "receipt.json",
+        )
+    assert cloud.calls == []
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_swapped_folder_inputs_fail_inspection_before_group_mutation(tmp_path):
+    provision = module("provision")
+    conf = config() | {"folder_id": "canonical-folder", "canonical_folder_id": "worker-folder"}
+    cloud = FakeCloud(provision, conf)
+    with pytest.raises(ValueError):
+        provision.apply(
+            conf,
+            provision.prepare(conf)["checksum"],
+            cloud=cloud,
+            receipt_path=tmp_path / "receipt.json",
+        )
+    assert cloud.calls == []
+    assert not (tmp_path / "receipt.json").exists()
 
 
 def test_pool_ceiling_changes_reviewed_checksum_and_rejects_stale_apply(tmp_path):
@@ -330,7 +382,7 @@ def test_public_8443_in_any_attached_canonical_security_group_is_rejected():
     provision = module("provision")
     canonical = {
         "id": "canonical",
-        "folderId": "folder",
+        "folderId": "canonical-folder",
         "networkInterfaces": [
             {
                 "subnetId": "subnet",
@@ -373,12 +425,15 @@ class FakeCloud:
         self.groups = []
         self.calls = []
         self.fail_second = False
-
-    def resource(self, service, collection, resource):
-        rows = {
-            "folder": {"id": "folder", "cloudId": "cloud"},
+        self.resources = {
+            "worker-folder": {"id": "worker-folder", "cloudId": "cloud"},
+            "canonical-folder": {"id": "canonical-folder", "cloudId": "cloud"},
+            "manager-sa": {"id": "manager-sa", "folderId": "worker-folder"},
+            "worker-sa": {"id": "worker-sa", "folderId": "worker-folder"},
+            "app-secret": {"id": "app-secret", "folderId": "canonical-folder"},
             "worker-secret": {
-                "folderId": "folder",
+                "id": "worker-secret",
+                "folderId": "worker-folder",
                 "status": "ACTIVE",
                 "currentVersion": {
                     "id": "secret-version",
@@ -386,19 +441,30 @@ class FakeCloud:
                 },
             },
             "subnet": {
-                "folderId": "folder",
+                "folderId": "worker-folder",
                 "zoneId": "ru-central1-a",
                 "networkId": "network",
                 "routeTableId": "routes",
             },
             "routes": {
+                "folderId": "worker-folder",
                 "networkId": "network",
                 "staticRoutes": [{"destinationPrefix": "0.0.0.0/0", "gatewayId": "gateway"}],
             },
-            "gateway": {"folderId": "folder", "sharedEgressGateway": {}},
-            "network": {"defaultSecurityGroupId": "edge-sg"},
-            "worker-sg": {"networkId": "network", "rules": [{"direction": "EGRESS"}]},
+            "gateway": {"folderId": "worker-folder", "sharedEgressGateway": {}},
+            "network": {
+                "id": "network",
+                "folderId": "canonical-folder",
+                "defaultSecurityGroupId": "edge-sg",
+            },
+            "worker-sg": {
+                "folderId": "worker-folder",
+                "networkId": "network",
+                "rules": [{"direction": "EGRESS"}],
+            },
             "edge-sg": {
+                "folderId": "canonical-folder",
+                "networkId": "network",
                 "rules": [
                     {
                         "direction": "INGRESS",
@@ -406,36 +472,69 @@ class FakeCloud:
                         "ports": {"fromPort": "8443", "toPort": "8443"},
                         "securityGroupId": "worker-sg",
                     }
-                ]
+                ],
             },
         }
-        return deepcopy(rows[resource])
-
-    def bindings(self, service, collection, resource):
-        role = {
-            "worker-secret": "lockbox.payloadViewer",
-        }.get(resource)
-        return (
-            [{"roleId": role, "subject": {"id": "worker-sa", "type": "serviceAccount"}}]
-            if role
-            else []
-        )
-
-    def get(self, path, **parameters):
-        if path == "instances/canonical":
-            return {
+        self.grants = {
+            "worker-folder": [
+                {
+                    "roleId": "compute.editor",
+                    "subject": {"id": "manager-sa", "type": "serviceAccount"},
+                },
+            ],
+            "canonical-folder": [
+                {"roleId": "vpc.user", "subject": {"id": "manager-sa", "type": "serviceAccount"}},
+            ],
+            "worker-secret": [
+                {
+                    "roleId": "lockbox.payloadViewer",
+                    "subject": {"id": "worker-sa", "type": "serviceAccount"},
+                },
+            ],
+        }
+        self.computes = {
+            "instances/canonical": {
                 "id": "canonical",
-                "folderId": "folder",
+                "folderId": "canonical-folder",
+                "bootDisk": {"diskId": "canonical-boot-disk"},
+                "secondaryDisks": [{"diskId": "canonical-data-disk"}],
                 "networkInterfaces": [
                     {
                         "securityGroupIds": [],
-                        "subnetId": "subnet",
+                        "subnetId": "canonical-subnet",
                         "primaryV4Address": {"address": "10.0.0.5"},
                     }
                 ],
-            }
-        if path == "images/boot-image":
-            return {"id": "boot-image", "status": "READY"}
+            },
+            "images/boot-image": {
+                "id": "boot-image",
+                "folderId": "worker-folder",
+                "status": "READY",
+            },
+            "disks/canonical-boot-disk": {
+                "id": "canonical-boot-disk",
+                "folderId": "canonical-folder",
+            },
+            "disks/canonical-data-disk": {
+                "id": "canonical-data-disk",
+                "folderId": "canonical-folder",
+            },
+        }
+        self.resources["canonical-subnet"] = {
+            "id": "canonical-subnet",
+            "folderId": "canonical-folder",
+            "networkId": "network",
+        }
+
+    def resource(self, service, collection, resource):
+        return deepcopy(self.resources[resource])
+
+    def bindings(self, service, collection, resource):
+        return deepcopy(self.grants.get(resource, []))
+
+    def get(self, path, **parameters):
+        if path in self.computes:
+            return deepcopy(self.computes[path])
         return deepcopy(next(row for row in self.groups if path == "instanceGroups/" + row["id"]))
 
     def pages(self, path, key, **parameters):
@@ -449,6 +548,203 @@ class FakeCloud:
         resource = f"{pool}-group"
         self.groups.append(body | {"id": resource, "status": "ACTIVE"})
         return {"id": f"{pool}-operation", "metadata": {"instanceGroupId": resource}}
+
+
+@pytest.mark.parametrize("resource", ["worker-folder", "canonical-folder"])
+def test_inspection_rejects_folder_outside_reviewed_cloud(resource):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.resources[resource]["cloudId"] = "other-cloud"
+    with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
+
+
+@pytest.mark.parametrize(
+    "resource",
+    [
+        "app-secret",
+        "worker-secret",
+        "network",
+        "subnet",
+        "routes",
+        "gateway",
+        "worker-sg",
+        "manager-sa",
+        "worker-sa",
+    ],
+)
+def test_inspection_rejects_resource_in_wrong_folder(resource):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.resources[resource]["folderId"] = "other-folder"
+    with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
+
+
+@pytest.mark.parametrize("resource", ["instances/canonical", "images/boot-image"])
+def test_inspection_rejects_compute_resource_in_wrong_folder(resource):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.computes[resource]["folderId"] = "other-folder"
+    with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
+
+
+@pytest.mark.parametrize("resource", ["canonical-subnet", "edge-sg"])
+def test_inspection_rejects_canonical_nic_resource_in_wrong_folder(resource):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.resources[resource]["folderId"] = "other-folder"
+    with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
+
+
+@pytest.mark.parametrize("resource", ["cloud", "worker-folder", "canonical-folder"])
+def test_inspection_rejects_runtime_grant_from_either_folder_or_cloud(resource):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.grants.setdefault(resource, []).append(
+        {"roleId": "monitoring.editor", "subject": {"id": "worker-sa", "type": "serviceAccount"}}
+    )
+    with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
+
+
+@pytest.mark.parametrize("resource", ["cloud", "canonical-folder"])
+def test_inspection_rejects_manager_compute_authority_on_canonical_ancestors(resource):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.grants.setdefault(resource, []).append(
+        {"roleId": "compute.editor", "subject": {"id": "manager-sa", "type": "serviceAccount"}}
+    )
+    with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
+
+
+@pytest.mark.parametrize("identity", ["manager-sa", "worker-sa"])
+@pytest.mark.parametrize("role", ["compute.editor", "compute.operator", "editor", "admin"])
+def test_direct_canonical_vm_grant_blocks_group_creation(identity, role, tmp_path):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.grants["canonical"] = [
+        {"roleId": role, "subject": {"id": identity, "type": "serviceAccount"}}
+    ]
+    receipt_path = tmp_path / "receipt.json"
+    with pytest.raises(ValueError, match="canonical VM"):
+        provision.apply(
+            conf,
+            provision.prepare(conf)["checksum"],
+            cloud=cloud,
+            receipt_path=receipt_path,
+        )
+    assert cloud.calls == []
+    assert not receipt_path.exists()
+
+
+@pytest.mark.parametrize("disk_id", ["canonical-boot-disk", "canonical-data-disk"])
+@pytest.mark.parametrize("identity", ["manager-sa", "worker-sa"])
+def test_direct_attached_disk_grant_blocks_group_creation(disk_id, identity, tmp_path):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.grants[disk_id] = [
+        {"roleId": "compute.editor", "subject": {"id": identity, "type": "serviceAccount"}}
+    ]
+    receipt_path = tmp_path / "receipt.json"
+    with pytest.raises(ValueError, match="canonical disk"):
+        provision.apply(
+            conf,
+            provision.prepare(conf)["checksum"],
+            cloud=cloud,
+            receipt_path=receipt_path,
+        )
+    assert cloud.calls == []
+    assert not receipt_path.exists()
+
+
+@pytest.mark.parametrize("disk_id", ["canonical-boot-disk", "canonical-data-disk"])
+def test_attached_disk_outside_canonical_folder_blocks_group_creation(disk_id, tmp_path):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.computes[f"disks/{disk_id}"]["folderId"] = "other-folder"
+    receipt_path = tmp_path / "receipt.json"
+    with pytest.raises(ValueError, match="canonical disk"):
+        provision.apply(
+            conf,
+            provision.prepare(conf)["checksum"],
+            cloud=cloud,
+            receipt_path=receipt_path,
+        )
+    assert cloud.calls == []
+    assert not receipt_path.exists()
+
+
+def test_missing_canonical_boot_disk_blocks_group_creation(tmp_path):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    del cloud.computes["instances/canonical"]["bootDisk"]
+    receipt_path = tmp_path / "receipt.json"
+    with pytest.raises(ValueError):
+        provision.apply(
+            conf,
+            provision.prepare(conf)["checksum"],
+            cloud=cloud,
+            receipt_path=receipt_path,
+        )
+    assert cloud.calls == []
+    assert not receipt_path.exists()
+
+
+def test_manager_direct_application_secret_grant_blocks_group_creation(tmp_path):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.grants["app-secret"] = [
+        {
+            "roleId": "lockbox.payloadViewer",
+            "subject": {"id": "manager-sa", "type": "serviceAccount"},
+        }
+    ]
+    receipt_path = tmp_path / "receipt.json"
+    with pytest.raises(ValueError, match="application secret"):
+        provision.apply(
+            conf,
+            provision.prepare(conf)["checksum"],
+            cloud=cloud,
+            receipt_path=receipt_path,
+        )
+    assert cloud.calls == []
+    assert not receipt_path.exists()
+
+
+@pytest.mark.parametrize("resource", ["worker-folder", "canonical-folder"])
+def test_inspection_rejects_missing_manager_folder_authority(resource):
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.grants[resource] = []
+    with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
+
+
+def test_inspection_rejects_redundant_worker_folder_vpc_grant():
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.grants["worker-folder"].append(
+        {"roleId": "vpc.user", "subject": {"id": "manager-sa", "type": "serviceAccount"}}
+    )
+    with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
 
 
 @pytest.mark.parametrize("pool_max_size", [1, 2])
@@ -468,6 +764,8 @@ def test_initial_creation_records_exact_ids_and_never_writes_prerequisites(tmp_p
     ]
     assert receipt["groups"]["bulk"]["id"] == "bulk-group"
     assert receipt["groups"]["selfie"]["id"] == "selfie-group"
+    assert receipt["folder_id"] == "worker-folder"
+    assert receipt["canonical_folder_id"] == "canonical-folder"
     assert json.loads((tmp_path / "receipt.json").read_text()) == receipt
     read_back = provision.status(conf, cloud)
     for pool in ("bulk", "selfie"):
@@ -558,7 +856,15 @@ def test_collector_cloud_fault_still_publishes_demand_but_reports_incomplete_col
     collector = module("metrics")
     runner = Mock(side_effect=[TimeoutError("sensitive-url"), Mock()])
     path = tmp_path / "worker-pools-observation.json"
-    path.write_text(json.dumps({"zone": "ru-central1-a", "folder_id": "folder"}))
+    path.write_text(
+        json.dumps(
+            {
+                "zone": "ru-central1-a",
+                "folder_id": "worker-folder",
+                "canonical_folder_id": "canonical-folder",
+            }
+        )
+    )
     with pytest.raises(ValueError, match="cloud observation unavailable"):
         collector.collect(
             {
@@ -569,16 +875,61 @@ def test_collector_cloud_fault_still_publishes_demand_but_reports_incomplete_col
         )
     assert runner.call_count == 2
     assert "publish_worker_pool_metrics" in runner.call_args_list[1].args[0]
+    assert runner.call_args_list[1].args[0][-2:] == ["--folder-id", "canonical-folder"]
 
 
 def test_collector_publication_fault_is_not_reported_as_success(tmp_path):
     collector = module("metrics")
     runner = Mock(side_effect=[Mock(), subprocess.CalledProcessError(1, "publish")])
     path = tmp_path / "worker-pools-observation.json"
-    path.write_text(json.dumps({"zone": "ru-central1-a", "folder_id": "folder"}))
+    path.write_text(
+        json.dumps(
+            {
+                "zone": "ru-central1-a",
+                "folder_id": "worker-folder",
+                "canonical_folder_id": "canonical-folder",
+            }
+        )
+    )
     with pytest.raises(subprocess.CalledProcessError):
         collector.collect({"deploy_root": str(tmp_path), "cloud": str(path)}, run=runner)
     assert runner.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"canonical_folder_id": None},
+        {"canonical_folder_id": "worker-folder"},
+        {"canonical_folder_id": "bad/folder"},
+        {"folder_id": "bad/folder"},
+    ],
+)
+def test_collector_rejects_invalid_folder_route_before_subprocess(tmp_path, change):
+    collector = module("metrics")
+    cloud = {
+        "zone": "ru-central1-a",
+        "folder_id": "worker-folder",
+        "canonical_folder_id": "canonical-folder",
+    } | change
+    path = tmp_path / "worker-pools-observation.json"
+    path.write_text(json.dumps(cloud))
+    runner = Mock()
+
+    with pytest.raises(ValueError):
+        collector.collect({"deploy_root": str(tmp_path), "cloud": str(path)}, run=runner)
+    runner.assert_not_called()
+
+
+def test_collector_requires_explicit_canonical_folder_before_subprocess(tmp_path):
+    collector = module("metrics")
+    path = tmp_path / "worker-pools-observation.json"
+    path.write_text(json.dumps({"zone": "ru-central1-a", "folder_id": "worker-folder"}))
+    runner = Mock()
+
+    with pytest.raises(ValueError):
+        collector.collect({"deploy_root": str(tmp_path), "cloud": str(path)}, run=runner)
+    runner.assert_not_called()
 
 
 def test_valid_narrow_bootstrap_secret_has_exact_keys_and_no_application_projection():

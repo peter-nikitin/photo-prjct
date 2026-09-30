@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,17 @@ def collect(config, *, run=subprocess.run):
     if config["cloud"] != str(root / "worker-pools-observation.json"):
         raise ValueError("invalid release observation path")
     cloud = json.loads(Path(config["cloud"]).read_text())
+    if not isinstance(cloud, dict):
+        raise ValueError("invalid cloud configuration")
+    for key in ("folder_id", "canonical_folder_id"):
+        value = cloud.get(key)
+        if (
+            not isinstance(value, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value) is None
+        ):
+            raise ValueError("invalid cloud folder")
+    if cloud["folder_id"] == cloud["canonical_folder_id"]:
+        raise ValueError("worker and canonical folders must differ")
     prefix = [
         "docker",
         "compose",
@@ -56,7 +68,7 @@ def collect(config, *, run=subprocess.run):
             "--zone",
             cloud["zone"],
             "--folder-id",
-            cloud["folder_id"],
+            cloud["canonical_folder_id"],
         ],
         check=True,
         stdout=subprocess.DEVNULL,

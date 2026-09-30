@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import Mock, patch
 
 from django.test import Client, override_settings
@@ -11,7 +12,7 @@ from selfie_search.middleware import PublicSelfieBearerProtectionMiddleware
 
 from commerce.capabilities import create_order_access_grant, sign_order_access_grant
 from commerce.delivery import ResendOrderAccessRateLimited
-from commerce.identity import browser_token_sha256
+from commerce.identity import browser_token_sha256, generate_browser_token
 from commerce.models import Order, OrderItem
 from commerce.tests.test_checkout_views import CheckoutViewTestCase
 
@@ -523,3 +524,220 @@ class OrderViewTests(OrderViewFixture):
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
         self.assertIn("Cookie", response["Vary"])
+
+
+class OrderListTests(OrderViewFixture):
+    def test_history_is_private_scoped_and_paginated(self) -> None:
+        self.enable(purchase=FEATURE_FLAG_ON)
+        orders = [
+            self.make_order(public_number=f"FM-AAAAAA{chr(65 + index // 8)}{index % 8 + 2}")
+            for index in range(51)
+        ]
+        current_token = self.cart_token
+        self.cart_token = generate_browser_token()
+        foreign = self.make_order(public_number="FM-ZZZZZZZZ")
+        self.cart_token = current_token
+        self.client.cookies["findme_purchase"] = current_token
+        url = reverse("commerce:order_list")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context["orders_page"]), 50)
+        self.assertContains(response, orders[-1].public_number)
+        self.assertNotContains(response, orders[0].public_number)
+        self.assertNotContains(response, foreign.public_number)
+        self.assertNotContains(response, "buyer@example.test")
+        self.assertNotContains(response, self.cart_token)
+        self.assertNotContains(response, "mc.yandex.ru")
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        self.assertIn("Cookie", response["Vary"])
+        page_two = self.client.get(url, {"page": 2})
+        self.assertEqual(len(page_two.context["orders_page"]), 1)
+        self.assertContains(page_two, orders[0].public_number)
+
+    def test_missing_foreign_invalid_and_expired_cookie_have_empty_history(self) -> None:
+        self.enable(purchase=FEATURE_FLAG_ON)
+        order = self.make_order()
+        url = reverse("commerce:order_list")
+        for token in (None, generate_browser_token(), "invalid"):
+            if token is None:
+                self.client.cookies.pop("findme_purchase", None)
+            else:
+                self.client.cookies["findme_purchase"] = token
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "В этом браузере пока нет заказов")
+            self.assertNotContains(response, order.public_number)
+        self.client.cookies["findme_purchase"] = self.cart_token
+        with patch(
+            "commerce.capabilities.timezone.now", return_value=order.created_at + timedelta(days=30)
+        ):
+            self.assertNotContains(self.client.get(url), order.public_number)
+            self.assertEqual(self.client.get(self.order_url(order)).status_code, 404)
+
+    def test_purchase_gate_controls_history_and_navigation(self) -> None:
+        url = reverse("commerce:order_list")
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertNotContains(self.client.get(reverse("event_catalog")), "Мои заказы")
+        self.enable(purchase=FEATURE_FLAG_ON)
+        self.assertContains(self.client.get(reverse("event_catalog")), "Мои заказы")
+        self.assertEqual(self.client.post(url).status_code, 405)
+        self.assertEqual(self.client.post(url)["Cache-Control"], "private, no-store")
+
+
+@override_settings(COMMERCE_SUPPORT_CONTACT="support@example.test")
+class OrderPaymentContinuationTests(OrderViewFixture):
+    def setUp(self):
+        super().setUp()
+        self.enable(purchase=FEATURE_FLAG_ON)
+        self.pending_order = self.make_order(status="pending")
+        self.retry_url = f"/orders/{self.pending_order.public_number}/retry-payment/"
+
+    def attempt(self, **values):
+        from commerce.models import PaymentAttempt
+
+        return PaymentAttempt.objects.create(
+            order=self.pending_order,
+            amount_kopecks=30000,
+            currency="RUB",
+            adapter_key="deterministic-test",
+            idempotency_key=generate_browser_token(),
+            **values,
+        )
+
+    def test_active_hosted_payment_resumes_without_cart_or_gateway_call(self):
+        attempt = self.attempt(
+            provider_payment_id="existing", confirmation_url="https://bank.test/pay"
+        )
+        del self.client.cookies["findme_cart"]
+        with patch("commerce.views._payment_gateway") as gateway:
+            response = self.client.post(self.retry_url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, attempt.confirmation_url)
+        gateway.assert_not_called()
+        self.assertEqual(self.pending_order.payment_attempts.count(), 1)
+
+    def test_active_no_url_and_unsafe_url_show_waiting_without_new_attempt(self):
+        for url in ("", "javascript:alert(1)", "https://[malformed"):
+            attempt = self.attempt(confirmation_url=url)
+            with patch("commerce.views._payment_gateway") as gateway:
+                response = self.client.post(self.retry_url)
+            self.assertContains(response, "Проверяем связь с банком; повторите позже")
+            gateway.assert_not_called()
+            self.assertEqual(
+                self.pending_order.payment_attempts.filter(status="pending").count(), 1
+            )
+            type(attempt).objects.filter(pk=attempt.pk).update(
+                status="failed", terminal_at=timezone.now()
+            )
+
+    def test_terminal_retry_uses_saved_terms_and_exact_order(self):
+        from commerce.models import PaymentAttempt
+        from commerce.test_payment_gateway import TestPaymentOutcome
+        from commerce.tests.test_checkout import RecordingGateway
+
+        self.attempt(status=PaymentAttempt.Status.CANCELED, terminal_at=timezone.now())
+        self.event.price_per_photo_kopecks = 99900
+        self.event.save(update_fields=["price_per_photo_kopecks"])
+        gateway = RecordingGateway(
+            outcome=TestPaymentOutcome.PENDING, notification_secret=b"secret"
+        )
+        del self.client.cookies["findme_cart"]
+        with patch("commerce.views._payment_gateway", return_value=gateway):
+            response = self.client.post(
+                self.retry_url,
+                {"email": "attacker@example.test", "amount": "1", "photo": "foreign"},
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(self.pending_order.payment_attempts.count(), 2)
+        request = gateway.requests[0]
+        self.assertEqual(request.order_public_number, self.pending_order.public_number)
+        self.assertEqual(request.amount_kopecks, 30000)
+        self.assertEqual(request.checkout_email, "buyer@example.test")
+        self.assertEqual(request.currency, "RUB")
+        self.assertEqual(request.receipt_lines[0].unit_amount_kopecks, 30000)
+
+    def test_gateway_uncertainty_keeps_single_active_attempt_and_waiting(self):
+        from commerce.models import PaymentAttempt
+        from commerce.test_payment_gateway import TestPaymentOutcome
+        from commerce.tests.test_checkout import TimeoutOnceGateway
+
+        self.attempt(status=PaymentAttempt.Status.FAILED, terminal_at=timezone.now())
+        gateway = TimeoutOnceGateway(
+            adapter_key="tbank-eacq-v1",
+            outcome=TestPaymentOutcome.PENDING,
+            notification_secret=b"secret",
+        )
+        with patch("commerce.views._payment_gateway", return_value=gateway):
+            first = self.client.post(self.retry_url)
+            second = self.client.post(self.retry_url)
+        self.assertContains(first, "Проверяем связь с банком; повторите позже")
+        self.assertContains(second, "Проверяем связь с банком; повторите позже")
+        self.assertEqual(self.pending_order.payment_attempts.count(), 2)
+        self.assertEqual(len(gateway.requests), 1)
+        active = self.pending_order.payment_attempts.get(status=PaymentAttempt.Status.PENDING)
+        self.assertIsNotNone(active.initiation_started_at)
+        self.assertIsNotNone(active.reconciliation_next_attempt_at)
+
+    def test_nonpending_order_or_invalid_cookie_fail_closed(self):
+        for status in ("paid", "canceled", "superseded"):
+            Order.objects.filter(pk=self.pending_order.pk).update(
+                status=status, paid_at=timezone.now() if status == "paid" else None
+            )
+            self.assertEqual(self.client.post(self.retry_url).status_code, 404)
+        Order.objects.filter(pk=self.pending_order.pk).update(status="pending", paid_at=None)
+        for token in ("", generate_browser_token()):
+            self.client.cookies["findme_purchase"] = token
+            self.assertEqual(self.client.post(self.retry_url).status_code, 404)
+        self.client.cookies["findme_purchase"] = self.cart_token
+        with patch(
+            "commerce.order_payment.timezone.now", return_value=timezone.now() + timedelta(days=31)
+        ):
+            self.assertEqual(self.client.post(self.retry_url).status_code, 404)
+        self.assertEqual(self.pending_order.payment_attempts.count(), 0)
+
+    def test_retry_requires_post_and_csrf_and_page_distinguishes_terminal(self):
+        from commerce.models import PaymentAttempt
+
+        self.attempt(status=PaymentAttempt.Status.CANCELED, terminal_at=timezone.now())
+        self.assertEqual(self.client.get(self.retry_url).status_code, 405)
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.cookies["findme_purchase"] = self.cart_token
+        self.assertEqual(csrf_client.post(self.retry_url).status_code, 403)
+        page = self.client.get(self.order_url(self.pending_order))
+        self.assertContains(page, "Повторить оплату")
+        self.assertContains(page, "Оплата не завершена")
+        self.assertNotContains(page, "Проверяем оплату")
+        self.assertContains(page, self.retry_url)
+
+    def test_mismatched_bank_success_conflict_cannot_start_another_payment(self):
+        from commerce.models import PaymentAttempt
+        from commerce.payment_gateway import NormalizedPaymentStatus, PaymentObservation
+        from commerce.payments import apply_payment_observation
+
+        attempt = self.attempt(provider_payment_id="conflicted-payment")
+        apply_payment_observation(
+            attempt_id=attempt.pk,
+            adapter_key=attempt.adapter_key,
+            source="notification",
+            observation=PaymentObservation(
+                provider_payment_id=attempt.provider_payment_id,
+                status=NormalizedPaymentStatus.SUCCEEDED,
+                amount_kopecks=29999,
+                currency="RUB",
+                idempotency_key=attempt.idempotency_key,
+            ),
+        )
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.status, PaymentAttempt.Status.CONFLICT)
+        page = self.client.get(self.order_url(self.pending_order))
+        self.assertNotContains(page, "Повторить оплату")
+        self.assertNotContains(page, "Оплата не завершена")
+        with patch("commerce.views._payment_gateway") as gateway:
+            response = self.client.post(self.retry_url)
+        self.assertContains(response, "Свяжитесь с поддержкой")
+        gateway.assert_not_called()
+        self.assertEqual(self.pending_order.payment_attempts.count(), 1)
+        self.pending_order.refresh_from_db()
+        self.assertEqual(self.pending_order.status, Order.Status.PENDING)

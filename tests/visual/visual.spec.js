@@ -32,7 +32,12 @@ const desktopPages = [
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
   ['event-cart', '/__visual__/event/cart/'],
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
+  ['event-cart-legacy-locked', '/__visual__/event/cart/legacy-locked/'],
+  ['order-list', '/__visual__/orders/'],
   ['order-pending', '/__visual__/order/pending/'],
+  ['order-pending-hosted', '/__visual__/order/pending/hosted/'],
+  ['order-pending-waiting', '/__visual__/order/pending/waiting/'],
+  ['order-pending-retry', '/__visual__/order/pending/retry/'],
   ['order-paid', '/__visual__/order/paid/'],
   ['order-paid-multi', '/__visual__/order/paid/multi/'],
   ['order-email-failed', '/__visual__/order/email-failed/'],
@@ -81,7 +86,12 @@ const mobilePages = [
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
   ['event-cart', '/__visual__/event/cart/'],
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
+  ['event-cart-legacy-locked', '/__visual__/event/cart/legacy-locked/'],
+  ['order-list', '/__visual__/orders/'],
   ['order-pending', '/__visual__/order/pending/'],
+  ['order-pending-hosted', '/__visual__/order/pending/hosted/'],
+  ['order-pending-waiting', '/__visual__/order/pending/waiting/'],
+  ['order-pending-retry', '/__visual__/order/pending/retry/'],
   ['order-paid', '/__visual__/order/paid/'],
   ['order-paid-multi', '/__visual__/order/paid/multi/'],
   ['order-email-failed', '/__visual__/order/email-failed/'],
@@ -194,6 +204,18 @@ async function capturePage(page, { path, snapshot, viewport, cookieAcknowledged 
   expect(response, `Expected a document response for ${path}`).not.toBeNull();
   expect(response.status(), `Expected ${path} to load successfully`).toBeLessThan(400);
   await settlePage(page);
+  if ([
+    '/__visual__/event/cart/legacy-locked/',
+    '/__visual__/orders/',
+    '/__visual__/order/pending/hosted/',
+    '/__visual__/order/pending/waiting/',
+    '/__visual__/order/pending/retry/',
+  ].includes(path)) {
+    await expect(
+      page.getByRole('navigation', { name: 'Основная навигация' })
+        .getByRole('link', { name: 'Мои заказы' }),
+    ).toBeVisible();
+  }
   if (path.startsWith('/__visual__/workspace/photos/')) {
     const expectedFiltered = path.includes('/filtered-empty/')
       ? '0'

@@ -522,6 +522,29 @@ class CartViewTests(TestCase):
         self.assertNotIn(self.token, response.content.decode())
         self.assert_private(response)
 
+    def test_ordinary_add_extends_server_cart_expiry_but_not_issued_browser_cookie_lifetime(self):
+        self.enable()
+        first_now = timezone.now()
+        second = self.make_watermarked_photo(self.event, photo_id="cookie-lifetime-second")
+        with patch("commerce.services.timezone.now", return_value=first_now):
+            issued = self.client.post(self.set_url(), self.selection_data("1"))
+        initial_cookie = issued.cookies["findme_cart"]
+        initial_browser_expiry = initial_cookie["expires"]
+        self.assertEqual(initial_cookie["max-age"], 30 * 24 * 60 * 60)
+        initial_cart_expiry = Cart.objects.get().expires_at
+        later = first_now + timedelta(days=29)
+        with patch("commerce.services.timezone.now", return_value=later):
+            changed = self.client.post(self.set_url(), self.selection_data("1", photo=second))
+        self.assertNotIn("findme_cart", changed.cookies)
+        self.assertEqual(Cart.objects.get().expires_at, later + timedelta(days=30))
+        self.assertGreater(Cart.objects.get().expires_at, initial_cart_expiry)
+        self.assertEqual(self.client.cookies["findme_cart"]["expires"], initial_browser_expiry)
+        # A real browser drops the bearer 30 days after issuance despite later server retention.
+        self.client.cookies.pop("findme_cart")
+        empty = self.client.get(self.detail_url())
+        self.assertContains(empty, "В корзине пока нет фотографий")
+        self.assertEqual(CartItem.objects.count(), 2)
+
     def test_idempotent_retries_return_state_without_refreshing_the_cookie_or_expiry(self) -> None:
         self.enable()
         self.client.cookies["findme_cart"] = self.token
@@ -580,7 +603,7 @@ class CartViewTests(TestCase):
         self.assertRedirects(reflected, event_fallback, fetch_redirect_response=False)
         self.assertNotIn(self.token, reflected["Location"])
 
-    def test_final_cart_deletion_expires_cookie_only_after_other_event_cart_is_removed(
+    def test_final_cart_deletion_never_refreshes_or_expires_browser_cookie(
         self,
     ) -> None:
         self.enable()
@@ -599,13 +622,9 @@ class CartViewTests(TestCase):
             self.selection_data("0", photo=other_photo),
         )
 
-        self.assertEqual(first_removal.cookies["findme_cart"].value, self.token)
-        self.assertEqual(first_removal.cookies["findme_cart"]["max-age"], 30 * 24 * 60 * 60)
-        self.assertEqual(final_removal.cookies["findme_cart"]["max-age"], 0)
-        self.assertEqual(final_removal.cookies["findme_cart"]["path"], "/")
-        self.assertTrue(final_removal.cookies["findme_cart"]["secure"])
-        self.assertTrue(final_removal.cookies["findme_cart"]["httponly"])
-        self.assertEqual(final_removal.cookies["findme_cart"]["samesite"], "Lax")
+        self.assertNotIn("findme_cart", first_removal.cookies)
+        self.assertNotIn("findme_cart", final_removal.cookies)
+        self.assertEqual(self.client.cookies["findme_cart"].value, self.token)
         self.assertEqual(Cart.objects.count(), 0)
 
     def test_clear_is_event_scoped_and_returns_an_authoritative_empty_json_snapshot(self) -> None:
@@ -635,7 +654,7 @@ class CartViewTests(TestCase):
         self.assertNotIn("total_kopecks", response.json())
         self.assertFalse(Cart.objects.filter(event=self.event).exists())
         self.assertTrue(Cart.objects.filter(event=other_event).exists())
-        self.assertEqual(response.cookies["findme_cart"].value, self.token)
+        self.assertNotIn("findme_cart", response.cookies)
 
     def test_cart_page_renders_current_items_in_addition_order_without_private_identifiers(
         self,
@@ -738,7 +757,7 @@ class CartViewTests(TestCase):
             "Некоторые фотографии больше недоступны и удалены из корзины",
         )
         self.assertFalse(Cart.objects.filter(pk=cart.pk).exists())
-        self.assertEqual(pruned.cookies["findme_cart"]["max-age"], 0)
+        self.assertNotIn("findme_cart", pruned.cookies)
 
     @override_settings(**CDN_SETTINGS)
     def test_cart_cdn_signs_only_selected_watermarked_preview_and_keeps_large_route(self) -> None:

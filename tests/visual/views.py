@@ -14,6 +14,9 @@ from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import render
 from django.test import override_settings
 from django.urls import reverse
+from feature_flags.registry import PAID_PHOTO_PURCHASE
+from feature_flags.states import FEATURE_FLAG_ON
+from feature_flags.testing import override_feature_flags
 from picflow.archive_presentation import archive_page_action
 from picflow.forms import BibSearchForm, EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from selfie_search.forms import SelfieSearchUploadForm
@@ -149,6 +152,8 @@ class FixtureCartPresentation:
     item_count: int
     total_display: str
     pruned: bool = False
+    mutation_locked: bool = False
+    pending_order_public_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -662,6 +667,13 @@ def _render(request: HttpRequest, template: str, context: dict[str, Any]) -> Htt
     return render(request, template, context)
 
 
+def _render_purchase_enabled(
+    request: HttpRequest, template: str, context: dict[str, Any]
+) -> HttpResponse:
+    with override_feature_flags({PAID_PHOTO_PURCHASE: FEATURE_FLAG_ON}):
+        return _render(request, template, context)
+
+
 def _as_staff(request: HttpRequest) -> None:
     request.user = FixtureUser("Администратор", is_staff=True)
 
@@ -970,6 +982,24 @@ def cart_empty(request: HttpRequest) -> HttpResponse:
     )
 
 
+def cart_legacy_locked(request: HttpRequest) -> HttpResponse:
+    photos = PAID_GALLERY_PHOTOS[:2]
+    return _render_purchase_enabled(
+        request,
+        "commerce/cart.html",
+        {
+            "event": EVENTS[0],
+            "cart_presentation": replace(
+                _cart_presentation(photos, selected_ids=tuple(photo.photo_id for photo in photos)),
+                mutation_locked=True,
+                pending_order_public_number="FM-ABCDEFGH",
+            ),
+            "purchase_enabled": True,
+            "yandex_metrika_counter_id": None,
+        },
+    )
+
+
 def _order_context(
     *, status: str, photos: tuple[FixtureGalleryPhoto, ...], archive_available: bool
 ) -> dict[str, Any]:
@@ -1012,6 +1042,69 @@ def order_pending(request: HttpRequest) -> HttpResponse:
         "commerce/order.html",
         _order_context(status="pending", photos=PAID_GALLERY_PHOTOS[:2], archive_available=False)
         | {"order_status_url": "/__visual__/order/pending/status/"},
+    )
+
+
+def order_pending_hosted(request: HttpRequest) -> HttpResponse:
+    return _render_purchase_enabled(
+        request,
+        "commerce/order.html",
+        _order_context(status="pending", photos=PAID_GALLERY_PHOTOS[:2], archive_available=False)
+        | {
+            "payment_continuation": "hosted",
+            "order_status_url": "/__visual__/order/pending/status/",
+        },
+    )
+
+
+def order_pending_waiting(request: HttpRequest) -> HttpResponse:
+    return _render_purchase_enabled(
+        request,
+        "commerce/order.html",
+        _order_context(status="pending", photos=PAID_GALLERY_PHOTOS[:2], archive_available=False)
+        | {
+            "payment_continuation": "waiting",
+            "order_status_url": "/__visual__/order/pending/status/",
+        },
+    )
+
+
+def order_pending_retry(request: HttpRequest) -> HttpResponse:
+    return _render_purchase_enabled(
+        request,
+        "commerce/order.html",
+        _order_context(status="pending", photos=PAID_GALLERY_PHOTOS[:2], archive_available=False)
+        | {
+            "payment_continuation": "retry",
+            "order_status_url": "/__visual__/order/pending/status/",
+        },
+    )
+
+
+def order_list(request: HttpRequest) -> HttpResponse:
+    return _render_purchase_enabled(
+        request,
+        "commerce/order_list.html",
+        {
+            "order_rows": (
+                {
+                    "public_number": "FM-ABCDEFGH",
+                    "event_name": EVENTS[0].name,
+                    "created_at": date(2026, 6, 18),
+                    "total_display": "600 ₽",
+                    "status_display": "Ожидает оплаты",
+                },
+                {
+                    "public_number": "FM-HGFEDCBA",
+                    "event_name": EVENTS[1].name,
+                    "created_at": date(2026, 6, 15),
+                    "total_display": "300 ₽",
+                    "status_display": "Заказ оплачен",
+                },
+            ),
+            "orders_page": Paginator((1, 2), 50).page(1),
+            "yandex_metrika_counter_id": None,
+        },
     )
 
 

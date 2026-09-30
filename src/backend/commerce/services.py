@@ -3,11 +3,12 @@ from datetime import datetime, timedelta
 
 from django.db import connection, transaction
 from django.utils import timezone
+from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import purchasable_paid_photo_queryset
 from picflow.models import Event, Photo
 
 from commerce.identity import browser_token_sha256, generate_browser_token
-from commerce.models import Cart, CartItem, Order, PaymentAttempt
+from commerce.models import Cart, CartItem, Order
 from commerce.pricing import calculate_cart_pricing
 
 CART_TTL = timedelta(days=30)
@@ -20,7 +21,6 @@ class CartSnapshot:
     item_count: int
     total_kopecks: int
     pruned: bool = False
-    delete_browser_token: bool = False
     mutation_locked: bool = False
     pending_order_public_number: str | None = None
 
@@ -31,15 +31,12 @@ class CartMutationResult:
     selected: bool
     changed: bool
     issued_browser_token: str | None
-    refresh_browser_token: bool
-    delete_browser_token: bool
 
 
 @dataclass(frozen=True)
 class _OriginOrderState:
     order: Order | None = None
     mutation_locked: bool = False
-    supersede_on_mutation: bool = False
 
 
 def read_cart(
@@ -153,9 +150,25 @@ def set_photo_selected(
                     snapshot=snapshot,
                     selected=photo_id in snapshot.photo_ids,
                 )
-            _supersede_for_mutation(order_state)
+
             cart.delete()
             cart = None
+        if (
+            cart is None
+            and selected
+            and Order.objects.filter(originating_cart_token_sha256=digest).exists()
+        ):
+            # Checkout can still be in bank I/O, so only its response may issue the new cookie.
+            if Order.objects.filter(
+                originating_cart_token_sha256=digest,
+                status=Order.Status.PENDING,
+            ).exists():
+                return _mutation_result(
+                    snapshot=_snapshot(event=authoritative_event), selected=False
+                )
+            issued_token = _rotate_cart_identity(digest=digest)
+            digest = browser_token_sha256(issued_token)
+            order_state = _OriginOrderState()
         if cart is None and not selected:
             return _mutation_result(
                 snapshot=_snapshot(event=authoritative_event),
@@ -203,19 +216,18 @@ def set_photo_selected(
         if selected:
             if item is not None:
                 return _mutation_result(snapshot=snapshot, selected=True)
-            _supersede_for_mutation(order_state)
+
             CartItem.objects.create(cart=cart, photo_id=photo_id)
         else:
             if item is None:
                 return _mutation_result(snapshot=snapshot, selected=False)
-            _supersede_for_mutation(order_state)
+
             item.delete()
 
         if not CartItem.objects.filter(cart=cart).exists():
             cart.delete()
             updated_snapshot = _snapshot(
                 event=authoritative_event,
-                delete_browser_token=_should_delete_browser_token(digest=digest, now=current_time),
             )
         else:
             cart.expires_at = current_time + CART_TTL
@@ -233,8 +245,6 @@ def set_photo_selected(
             selected=selected,
             changed=True,
             issued_browser_token=issued_token,
-            refresh_browser_token=True,
-            delete_browser_token=updated_snapshot.delete_browser_token,
         )
 
 
@@ -271,19 +281,57 @@ def clear_cart(
                 ),
                 selected=False,
             )
-        _supersede_for_mutation(order_state)
+
         cart.delete()
         snapshot = _snapshot(
             event=authoritative_event,
-            delete_browser_token=_should_delete_browser_token(digest=digest, now=current_time),
         )
         return CartMutationResult(
             snapshot=snapshot,
             selected=False,
             changed=True,
             issued_browser_token=None,
-            refresh_browser_token=True,
-            delete_browser_token=snapshot.delete_browser_token,
+        )
+
+
+@sensitive_variables("token")
+def _rotate_cart_identity(*, digest: str) -> str:
+    """Rotate a selection bearer under the caller's transaction and old-digest lock."""
+    token = generate_browser_token()
+    Cart.objects.filter(browser_token_sha256=digest).update(
+        browser_token_sha256=browser_token_sha256(token)
+    )
+    return token
+
+
+def consume_cart(*, cart: Cart, digest: str) -> str:
+    """Consume one selection under the caller's transaction and digest lock."""
+    cart.delete()
+    return _rotate_cart_identity(digest=digest)
+
+
+@sensitive_variables("browser_token", "token")
+def start_new_cart(*, event: Event, browser_token: str | None) -> CartMutationResult:
+    digest = _digest_or_none(browser_token)
+    with transaction.atomic():
+        if digest is not None:
+            _lock_digest(digest)
+        authoritative_event = _locked_event(event)
+        if digest is None:
+            return _mutation_result(snapshot=_snapshot(event=authoritative_event), selected=False)
+        cart = (
+            Cart.objects.select_for_update()
+            .filter(event=authoritative_event, browser_token_sha256=digest)
+            .first()
+        )
+        if cart is None:
+            return _mutation_result(snapshot=_snapshot(event=authoritative_event), selected=False)
+        token = consume_cart(cart=cart, digest=digest)
+        return CartMutationResult(
+            snapshot=_snapshot(event=authoritative_event),
+            selected=False,
+            changed=True,
+            issued_browser_token=token,
         )
 
 
@@ -350,8 +398,7 @@ def _pruned_snapshot(
         watermarked_previews_enabled=watermarked_previews_enabled,
     )
     removed, _ = CartItem.objects.filter(cart=cart).exclude(photo_id__in=eligible).delete()
-    if removed:
-        _supersede_for_mutation(state)
+
     photo_ids = tuple(
         CartItem.objects.filter(cart=cart)
         .order_by("added_at", "photo_id")
@@ -362,7 +409,6 @@ def _pruned_snapshot(
         return _snapshot(
             event=event,
             pruned=removed > 0,
-            delete_browser_token=_should_delete_browser_token(digest=digest, now=now),
         )
     return _snapshot(event=event, photo_ids=photo_ids, pruned=removed > 0)
 
@@ -372,7 +418,6 @@ def _snapshot(
     event: Event,
     photo_ids: tuple[str, ...] = (),
     pruned: bool = False,
-    delete_browser_token: bool = False,
     mutation_locked: bool = False,
     pending_order_public_number: str | None = None,
 ) -> CartSnapshot:
@@ -383,7 +428,6 @@ def _snapshot(
         item_count=pricing.item_count,
         total_kopecks=pricing.total_kopecks,
         pruned=pruned,
-        delete_browser_token=delete_browser_token,
         mutation_locked=mutation_locked,
         pending_order_public_number=pending_order_public_number,
     )
@@ -424,38 +468,7 @@ def _locked_origin_order_state(*, event: Event, digest: str) -> _OriginOrderStat
     )
     if order is None:
         return _OriginOrderState()
-    attempts = list(
-        PaymentAttempt.objects.select_for_update()
-        .filter(order=order)
-        .order_by("-created_at", "-pk")
-    )
-    if not attempts or any(
-        attempt.status in (PaymentAttempt.Status.PENDING, PaymentAttempt.Status.SUCCEEDED)
-        for attempt in attempts
-    ):
-        return _OriginOrderState(order=order, mutation_locked=True)
-    return _OriginOrderState(
-        order=order,
-        supersede_on_mutation=attempts[0].status
-        in (
-            PaymentAttempt.Status.CANCELED,
-            PaymentAttempt.Status.EXPIRED,
-            PaymentAttempt.Status.FAILED,
-            PaymentAttempt.Status.CONFLICT,
-        ),
-    )
-
-
-def _supersede_for_mutation(order_state: _OriginOrderState) -> None:
-    order = order_state.order
-    if (
-        not order_state.supersede_on_mutation
-        or order is None
-        or order.status != Order.Status.PENDING
-    ):
-        return
-    order.status = Order.Status.SUPERSEDED
-    order.save(update_fields=["status"])
+    return _OriginOrderState(order=order, mutation_locked=True)
 
 
 def _mutation_result(*, snapshot: CartSnapshot, selected: bool) -> CartMutationResult:
@@ -464,13 +477,4 @@ def _mutation_result(*, snapshot: CartSnapshot, selected: bool) -> CartMutationR
         selected=selected,
         changed=False,
         issued_browser_token=None,
-        refresh_browser_token=False,
-        delete_browser_token=snapshot.delete_browser_token,
     )
-
-
-def _should_delete_browser_token(*, digest: str, now: datetime) -> bool:
-    return not Cart.objects.filter(
-        browser_token_sha256=digest,
-        expires_at__gt=now,
-    ).exists()

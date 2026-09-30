@@ -658,6 +658,28 @@ def test_authenticated_callback_logs_safe_rejection_reason(attempt, changes, rea
 
 
 @pytest.mark.parametrize(
+    ("payment_id", "field_type", "field_length"),
+    [(12345, "int", None), ("", "str", 0), ("x" * 21, "str", 21)],
+)
+def test_invalid_payment_id_logs_only_safe_shape(attempt, payment_id, field_type, field_length):
+    module = gateway_module()
+    notification = signed_notification(PaymentId=payment_id, Pan="411111******1111")
+    with patch.object(module.logger, "warning") as warning:
+        with pytest.raises(module.TBankAuthenticatedNotificationError):
+            module.TBankGateway(config()).authenticate_notification(notification)
+    assert warning.call_args.args == (
+        "tbank_notification_rejected attempt_id=%s reason=%s "
+        "payment_id_present=%s payment_id_type=%s payment_id_length=%s",
+        attempt.pk,
+        "payment_id_invalid",
+        True,
+        field_type,
+        field_length,
+    )
+    assert not warning.call_args.kwargs
+
+
+@pytest.mark.parametrize(
     "changes",
     [{"TerminalKey": "other"}, {"OrderId": "fm-unknown"}, {"Token": "0" * 64}],
 )

@@ -741,6 +741,82 @@ class CommerceWorkerTests(TransactionTestCase):
         self.assertNotIn("buyer@example.test", sender.messages[0].text_body)
         self.assertEqual(attention.next_reminder_at, self.now + timedelta(hours=48))
 
+    def test_due_paid_attempt_attention_rechecks_bank_before_operator_email(self) -> None:
+        order = self.make_order(public_number="FM-RCHK2222")
+        attempt = PaymentAttempt.objects.create(
+            order=order,
+            amount_kopecks=30000,
+            currency="RUB",
+            adapter_key="deterministic-test",
+            idempotency_key="worker-recheck-attention",
+            provider_payment_id="provider-recheck",
+            status=PaymentAttempt.Status.SUCCEEDED,
+            terminal_at=self.now,
+        )
+        attention = open_attention(
+            kind="manual_payment_conflict",
+            subject=f"payment-attempt:{attempt.pk}",
+            order=order,
+            payment_attempt=attempt,
+            now=self.now,
+            initial_delay=timedelta(minutes=10),
+        )
+        observation = PaymentObservation(
+            provider_payment_id=attempt.provider_payment_id,
+            status=NormalizedPaymentStatus.SUCCEEDED,
+            amount_kopecks=attempt.amount_kopecks,
+            currency="RUB",
+            idempotency_key=attempt.idempotency_key,
+        )
+        sender = _WorkerSender()
+        gateway = _ObservationGateway(observation)
+        worker = self.make_worker(sender=sender, gateway=gateway)
+
+        early = worker.run_once(now=self.now + timedelta(minutes=9))
+        due = worker.run_once(now=self.now + timedelta(minutes=10))
+
+        attention.refresh_from_db()
+        self.assertEqual(early.attention_reminders, 0)
+        self.assertEqual(due.attention_reminders, 0)
+        self.assertIsNotNone(attention.resolved_at)
+        self.assertEqual(gateway.fetches, ["provider-recheck"])
+        self.assertEqual(sender.messages, [])
+
+    def test_due_paid_attempt_attention_stays_open_when_bank_recheck_fails(self) -> None:
+        order = self.make_order(public_number="FM-RCHK3333")
+        attempt = PaymentAttempt.objects.create(
+            order=order,
+            amount_kopecks=30000,
+            currency="RUB",
+            adapter_key="deterministic-test",
+            idempotency_key="worker-recheck-unavailable",
+            provider_payment_id="provider-unavailable",
+            status=PaymentAttempt.Status.SUCCEEDED,
+            terminal_at=self.now,
+        )
+        attention = open_attention(
+            kind="manual_payment_conflict",
+            subject=f"payment-attempt:{attempt.pk}",
+            order=order,
+            payment_attempt=attempt,
+            now=self.now,
+        )
+        observation = PaymentObservation(
+            provider_payment_id=attempt.provider_payment_id,
+            status=NormalizedPaymentStatus.SUCCEEDED,
+            amount_kopecks=attempt.amount_kopecks,
+            currency="RUB",
+            idempotency_key=attempt.idempotency_key,
+        )
+        gateway = _UnavailableGateway(observation)
+
+        result = self.make_worker(sender=_WorkerSender(), gateway=gateway).run_once(now=self.now)
+
+        attention.refresh_from_db()
+        self.assertEqual(result.attention_reminders, 1)
+        self.assertIsNone(attention.resolved_at)
+        self.assertEqual(gateway.fetches, ["provider-unavailable"])
+
     def test_health_is_read_only_and_fails_for_stale_ready_work_or_dead_worker(self) -> None:
         """A mutating probe or a healthy stale queue would defeat independent monitoring."""
         order = self.make_order(public_number="FM-HEALTWK2")

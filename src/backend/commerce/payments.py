@@ -51,6 +51,20 @@ def apply_authenticated_notification(
     try:
         observation = gateway.authenticate_notification(notification)
     except TBankAuthenticatedNotificationError as error:
+        rejected_attempt = PaymentAttempt.objects.get(pk=error.attempt_id)
+        if rejected_attempt.provider_payment_id:
+            try:
+                verified_observation = gateway.fetch_payment(rejected_attempt.provider_payment_id)
+            except PaymentGatewayError:
+                pass
+            else:
+                return apply_payment_observation(
+                    attempt_id=rejected_attempt.pk,
+                    adapter_key=gateway.adapter_key,
+                    source="status_fetch",
+                    observation=verified_observation,
+                    now=now,
+                )
         event_id, cart_digest, order_id = _payment_identity_for_attempt(attempt_id=error.attempt_id)
         with transaction.atomic():
             _cart, order, attempt = _lock_payment_transition(
@@ -67,6 +81,7 @@ def apply_authenticated_notification(
                 order=order,
                 payment_attempt=attempt,
                 now=_current_time(now),
+                initial_delay=timedelta(minutes=10),
             )
         raise
     attempt = _matching_attempt_for_gateway(gateway=gateway, observation=observation)

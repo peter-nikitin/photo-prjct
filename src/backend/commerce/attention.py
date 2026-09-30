@@ -1,7 +1,7 @@
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -38,6 +38,7 @@ def open_attention(
     order: Order | None = None,
     payment_attempt: PaymentAttempt | None = None,
     now: datetime | None = None,
+    initial_delay: timedelta = timedelta(0),
 ) -> CommerceAttention:
     """Open one durable problem, or record another observation of the same open problem."""
     if kind not in CommerceAttention.Kind.values:
@@ -62,7 +63,7 @@ def open_attention(
                         payment_attempt=payment_attempt,
                         first_observed_at=observed_at,
                         last_observed_at=observed_at,
-                        next_reminder_at=observed_at,
+                        next_reminder_at=observed_at + initial_delay,
                     )
             except IntegrityError:
                 attention = CommerceAttention.objects.select_for_update().get(

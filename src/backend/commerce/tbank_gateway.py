@@ -455,9 +455,23 @@ class TBankGateway:
         try:
             return self._observation(data, attempt)
         except _InvalidObservation as error:
-            logger.warning(
-                "tbank_notification_rejected attempt_id=%s reason=%s", attempt.pk, error.reason
-            )
+            if error.reason == "payment_id_invalid":
+                payment_id = data.get("PaymentId")
+                logger.warning(
+                    "tbank_notification_rejected attempt_id=%s reason=%s "
+                    "payment_id_present=%s payment_id_type=%s payment_id_length=%s",
+                    attempt.pk,
+                    error.reason,
+                    "PaymentId" in data,
+                    type(payment_id).__name__,
+                    len(payment_id) if isinstance(payment_id, str) else None,
+                )
+            else:
+                logger.warning(
+                    "tbank_notification_rejected attempt_id=%s reason=%s",
+                    attempt.pk,
+                    error.reason,
+                )
             raise TBankAuthenticatedNotificationError(attempt.pk) from None
 
 

@@ -149,7 +149,7 @@ class BankTransitionTests(TransactionTestCase):
     attempt: PaymentAttempt
     setUp = payment_tests.PaymentTransitionTests.setUp
 
-    def bank_attempt(self, *, missing_id=False):
+    def bank_attempt(self, *, missing_id=False, payment_id="bank-payment-1"):
         PaymentAttempt.objects.filter(pk=self.attempt.pk).update(
             status="failed", terminal_at=self.now
         )
@@ -158,7 +158,7 @@ class BankTransitionTests(TransactionTestCase):
             adapter_key=TBANK_ADAPTER_KEY,
             amount_kopecks=30000,
             idempotency_key="bank-attempt",
-            provider_payment_id="" if missing_id else "bank-payment-1",
+            provider_payment_id="" if missing_id else payment_id,
             reconciliation_next_attempt_at=self.now,
             expires_at=self.now + timedelta(hours=1),
         )
@@ -293,6 +293,81 @@ class BankTransitionTests(TransactionTestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertEqual(EmailDelivery.objects.count(), 1)
+
+    def test_signed_malformed_payment_id_uses_verified_bank_state_without_attention(self):
+        import json
+
+        from commerce.tbank_gateway import TBankGateway, sign_payload
+        from commerce.tests.test_tbank_gateway import config
+
+        self.bank_attempt(payment_id="12345")
+        gateway = TBankGateway(config())
+        payload = dict(
+            TerminalKey="terminal",
+            OrderId="fm-bank-attempt",
+            PaymentId=12345,
+            Amount=30000,
+            Status="CONFIRMED",
+            Success=True,
+            ErrorCode="0",
+        )
+        payload["Token"] = sign_payload(payload, "secret")
+        bank_state = payload | {"PaymentId": "12345"}
+        with (
+            patch("commerce.views._configured_adapter", return_value=gateway),
+            patch.object(gateway, "_post", return_value=bank_state) as bank,
+        ):
+            for _ in range(2):
+                response = self.client.post(
+                    reverse("payment_notification"),
+                    data=json.dumps(payload),
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, b"OK")
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertEqual(EmailDelivery.objects.count(), 1)
+        self.assertFalse(CommerceAttention.objects.filter(payment_attempt=self.attempt).exists())
+        self.assertEqual(bank.call_count, 2)
+
+    def test_unavailable_bank_delays_alert_for_signed_malformed_callback(self):
+        import json
+
+        from commerce.payment_gateway import PaymentGatewayError, PaymentGatewayErrorCategory
+        from commerce.tbank_gateway import (
+            TBankAuthenticatedNotificationError,
+            TBankGateway,
+            sign_payload,
+        )
+        from commerce.tests.test_tbank_gateway import config
+
+        self.bank_attempt(payment_id="12345")
+        gateway = TBankGateway(config())
+        payload = dict(
+            TerminalKey="terminal",
+            OrderId="fm-bank-attempt",
+            PaymentId=12345,
+            Amount=30000,
+            Status="CONFIRMED",
+            Success=True,
+            ErrorCode="0",
+        )
+        payload["Token"] = sign_payload(payload, "secret")
+        with patch.object(
+            gateway,
+            "_post",
+            side_effect=PaymentGatewayError(PaymentGatewayErrorCategory.UNAVAILABLE),
+        ):
+            with self.assertRaises(TBankAuthenticatedNotificationError):
+                apply_authenticated_notification(
+                    gateway=gateway,
+                    notification=IncomingPaymentNotification({}, json.dumps(payload).encode()),
+                    now=self.now,
+                )
+        attention = CommerceAttention.objects.get(payment_attempt=self.attempt)
+        self.assertEqual(attention.kind, "payment_mismatch")
+        self.assertEqual(attention.next_reminder_at, self.now + timedelta(minutes=10))
 
     def test_return_only_fetches_for_authorized_order_and_uses_server_evidence(self):
         from django.http import HttpResponse

@@ -147,3 +147,77 @@ groups:
       severity: critical
     annotations:
       summary: Expected worker runtime diagnostics are missing or unavailable.
+- name: findme-image-origin
+  interval: 1m
+  rules:
+  - alert: ImageOriginTelemetryMissing
+    expr: sum(absent_over_time({{image_2xx}}[5m])) or sum(absent_over_time({{image_proxy_requests}}[5m])) or sum(absent_over_time({{image_mem_available}}[5m]))
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Image-origin host, Nginx or imgproxy observations are missing.
+  - alert: ImageOrigin5xxDegradation
+    expr: ({{image_5xx_ratio}})
+    for: 2m
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Image-origin 5xx exceeds 2 percent with at least 20 requests in five minutes.
+  - alert: ImageOriginRateLimited
+    expr: ({{image_429_ratio}})
+    for: 2m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: Image-origin 429 exceeds 1 percent with at least 20 requests in five minutes.
+  - alert: ImageOriginCPUPressure
+    expr: ({{image_cpu}}) > 90
+    for: 10m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: Image-origin VM CPU has exceeded 90 percent for ten minutes.
+  - alert: ImageOriginMemoryPressure
+    expr: ({{image_mem_free_percent}}) < 15
+    for: 10m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: Image-origin VM has less than 15 percent available memory.
+  - alert: ImageOriginDiskSpaceCritical
+    expr: ({{image_disk_free_percent}}) < 10 or {{image_disk_free}} < 5368709120
+    for: 10m
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Image-origin root filesystem has less than 10 percent or five GiB free.
+  - alert: ImageOriginAuthRejections
+    expr: increase({{image_auth_rejected}}[5m]) > 50
+    for: 2m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: Image-origin rejects more than ten unauthenticated requests per minute.
+  - alert: ImgproxyErrors
+    expr: sum(increase({{image_proxy_errors}}[5m])) > 0
+    for: 5m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: imgproxy queue or timeout errors are rising; inspect processing and source access.
+  - alert: ImgproxyLatencyHigh
+    expr: ({{image_proxy_p95}} > 1.5) and ({{image_proxy_requests_5m}} >= 20)
+    for: 5m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: imgproxy five-minute p95 has exceeded 1.5 seconds with enough requests.

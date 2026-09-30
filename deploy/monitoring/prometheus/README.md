@@ -12,13 +12,46 @@ duplicates remain separate gates. Existing native alerts, routes and timers rema
 - `rules.yml`: one owned `findme-photo.yml` file; alert thresholds/windows are editable here.
 - `alertmanager.yml`: full routing configuration for a **dedicated FindMe workspace**. The CLI
   rejects any foreign rule file before replacing routing. It never deletes foreign rules.
-- `dashboard.json`: title and all 27 graph widgets. The original 19 cover duration, TLS, uptime,
+- `dashboard.json`: title and all 41 graph widgets. The original 19 cover duration, TLS, uptime,
   load, HTTP rates/latency, Commerce, swap, root filesystem inodes, disk/network I/O and native
   Unified Agent backlog. Eight additional widgets cover worker queue/capacity, terminal operation
   throughput, p50/p95, non-overlapping duration intervals and accepted clean-preview throughput.
+  Fourteen image-delivery widgets show the image-origin VM, CDN and origin traffic, imgproxy
+  concurrency, latency quantiles and non-overlapping latency intervals from existing native metrics.
   Other dashboard fields come from a fresh Get and are preserved.
 - `oidc.json`: protected `monitoring` environment identity; service account
   `aje3t70qka1dtc09k5ic` (`findme-monitoring-ci`).
+
+The image-origin rules are enabled in the reviewed package. They require additional Prometheus
+series from the existing image-origin VM before `check` or `apply` can succeed. The native chart
+queries were checked against actual Monitoring data on 2026-09-30; a dashboard render does not
+prove their later freshness. See the [image alert contract](../../image-origin/monitoring/alerts.md).
+
+## Image-origin activation order
+
+1. Merge the reviewed package. This only changes Git; no VM or Monitoring resource changes yet.
+2. After the explicit cloud-cost and agent-restart approval, run `deploy-image-origin.yml` on the
+   exact main SHA with `monitoring_only=true`. This installs the reviewed image-origin agent
+   template and restarts only Unified Agent, preserving the native `sys`, `origin`, `imgproxy` and
+   agent-health routes while adding separate Prometheus routes for host, Nginx and imgproxy.
+   The runtime saves the preceding agent configuration as `config.yml.pre-image-origin` and
+   restores it if the agent cannot start. Application containers are not restarted.
+3. Read back fresh Prometheus samples for `sys_memory_MemAvailable{job="findme-image-linux"}`,
+   `origin_image_origin_responses_total{job="findme-image-origin"}`, and
+   `imgproxy_requests_total{job="findme-imgproxy"}`. Confirm exact names, labels, counter
+   behavior, timestamps, and observed write volume before enabling alert evaluation. If any
+   contract differs, restore the agent backup and leave the rules unapplied.
+4. Dispatch `monitoring.yml` with `action=apply` and the exact main SHA. Its fresh-sample
+   preflight must pass before it updates the owned rules and dashboard. Read back rule snapshots
+   and all 41 dashboard widgets, then drill firing and recovery to email and Telegram.
+
+The additional Remote Write volume is a potential charge. At the 2026-09-30 native inventory,
+the host exposed about 340 series including agent-health and interface series; the three new
+Prometheus routes may write roughly 330 series every minute, about 14 million values per 30 days.
+This is an upper-order estimate, not a price quote: actual Remote Write cardinality and pricing
+must be checked before the approved VM step. [Monium pricing](https://yandex.cloud/en/docs/monium/pricing)
+lists Remote Write and alert calculation as billable. The existing 5-minute public probe route
+remains in place.
 
 The operator supplied channel names are `findme-photo-operator-email` (ID
 `cloud__b1gmcsmr51o5kvp86l55_findme-photo-operator-email`) and

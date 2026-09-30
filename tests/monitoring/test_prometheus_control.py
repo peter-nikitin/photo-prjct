@@ -40,6 +40,7 @@ def config(control):
         telegram_channel_name="operator-telegram",
         cpu_semantics="cumulative_counter",
         type_contract_evidence="reviewed capture",
+        image_origin_alerts_enabled=False,
     )
     return value
 
@@ -50,20 +51,24 @@ def test_offline_render_has_missing_observations_separate(control):
     assert "[10m]) < 0.5" in package["rules.yml"]
     assert "absent_over_time" in package["rules.yml"]
     assert "increase(findme_http_requests_total" in package["rules.yml"]
-    assert len(json.loads(package["dashboard.json"])["widgets"]) == 27
+    assert len(json.loads(package["dashboard.json"])["widgets"]) == 41
 
 
 def test_worker_profile_is_boolean_default_off_and_renders_only_when_enabled(control):
     cfg = control.load_config()
     assert cfg["worker_alerts_enabled"] is False
     disabled = yaml.safe_load(control.render(cfg)["rules.yml"])
-    assert [group["name"] for group in disabled["groups"]] == ["findme-photo"]
+    assert [group["name"] for group in disabled["groups"]] == [
+        "findme-photo",
+        "findme-image-origin",
+    ]
 
     cfg["worker_alerts_enabled"] = True
     enabled = yaml.safe_load(control.render(cfg)["rules.yml"])
     assert [group["name"] for group in enabled["groups"]] == [
         "findme-photo",
         "findme-workers",
+        "findme-image-origin",
     ]
     assert [rule["alert"] for rule in enabled["groups"][1]["rules"]] == [
         "WorkerReadyWorkOverdue",
@@ -77,6 +82,43 @@ def test_worker_profile_is_boolean_default_off_and_renders_only_when_enabled(con
 
     cfg["worker_alerts_enabled"] = 1
     with pytest.raises(control.ControlError, match="worker_alerts_enabled"):
+        control.validate_config(cfg)
+
+
+def test_image_origin_rules_and_charts_are_scoped_and_can_be_withheld(control):
+    cfg = control.load_config()
+    assert cfg["image_origin_alerts_enabled"] is True
+    package = control.render(cfg)
+    groups = yaml.safe_load(package["rules.yml"])["groups"]
+    image = next(group for group in groups if group["name"] == "findme-image-origin")
+    names = {rule["alert"] for rule in image["rules"]}
+    assert {
+        "ImageOriginTelemetryMissing",
+        "ImageOrigin5xxDegradation",
+        "ImgproxyLatencyHigh",
+    } <= names
+    assert 'job="findme-image-origin"' in package["rules.yml"]
+    assert 'job="findme-imgproxy"' in package["rules.yml"]
+    assert 'job="findme-image-linux"' in package["rules.yml"]
+    dashboard = json.loads(package["dashboard.json"])
+    assert len(dashboard["widgets"]) == 41
+    queries = [
+        target["monitoringTarget"]["query"]
+        for widget in dashboard["widgets"][27:]
+        for target in widget["multiSourceChart"]["targets"]
+    ]
+    assert all('folderId="b1g2qttgfhb4gdunvlge"' in query for query in queries)
+    assert all(
+        "epdf6696opq3ock91pih" in query or "img.findme-photo.ru" in query for query in queries
+    )
+    assert any("histogram_percentile(95" in query for query in queries)
+    assert any("histogram_count(0.1, 0.5" in query for query in queries)
+    cfg["image_origin_alerts_enabled"] = False
+    assert "findme-image-origin" not in [
+        group["name"] for group in yaml.safe_load(control.render(cfg)["rules.yml"])["groups"]
+    ]
+    cfg["image_origin_alerts_enabled"] = "true"
+    with pytest.raises(control.ControlError, match="image_origin_alerts_enabled"):
         control.validate_config(cfg)
 
 
@@ -100,8 +142,8 @@ def test_validate_package_checks_disabled_and_enabled_worker_profiles(
         if path.name != "dashboard-query-rules.yml"
     ]
     assert {tuple(group["name"] for group in item["groups"]) for item in rendered} == {
-        ("findme-photo",),
-        ("findme-photo", "findme-workers"),
+        ("findme-photo", "findme-image-origin"),
+        ("findme-photo", "findme-workers", "findme-image-origin"),
     }
     tested = [Path(command[-1]) for command in calls if command[1:3] == ["test", "rules"]]
     assert len(tested) == 3
@@ -228,6 +270,22 @@ class FakeTransport:
         if method == "GET" and path.endswith("/rules/findme-photo.yml"):
             return self.rules or {"content": "", "absent": True}
         return {}
+
+
+def test_image_origin_activation_requires_fresh_workspace_samples(control):
+    cfg = config(control)
+    cfg["image_origin_alerts_enabled"] = True
+
+    class MissingImageTransport(FakeTransport):
+        def request(self, method, path, body=None):
+            if "/api/v1/query?" in path:
+                query = parse_qs(urlsplit(path).query)["query"][0]
+                if query.startswith("origin_image_origin_responses_total") and query.endswith("]"):
+                    return {"status": "success", "data": {"resultType": "matrix", "result": []}}
+            return super().request(method, path, body)
+
+    with pytest.raises(control.ControlError, match="expected sample missing: image_2xx"):
+        control.preflight(cfg, MissingImageTransport(control, cfg), now=1000)
 
 
 def test_apply_preflights_routes_then_owned_rules_and_preserves_dashboard(control, tmp_path):
@@ -873,10 +931,10 @@ def test_render_resolves_histogram_quantile_placeholders_with_numeric_names(cont
 
 def test_worker_dashboard_keeps_baseline_and_gates_fresh_pool_and_runtime_sources(control):
     dashboard = json.loads(control.render(config(control))["dashboard.json"])
-    assert len(dashboard["widgets"]) == 27
+    assert len(dashboard["widgets"]) == 41
     worker = {
         widget["multiSourceChart"]["title"]: widget["multiSourceChart"]
-        for widget in dashboard["widgets"][19:]
+        for widget in dashboard["widgets"][19:27]
     }
     assert list(worker) == [
         "Worker — доступные задачи",

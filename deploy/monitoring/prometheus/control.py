@@ -59,14 +59,24 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
 def validate_config(config: dict[str, Any], *, live: bool = False) -> None:
     if type(config.get("worker_alerts_enabled")) is not bool:
         raise ControlError("worker_alerts_enabled must be boolean")
-    for field in ("folder_id", "dashboard_id", "channel_id") + (
-        ("workspace_id", "channel_name", "telegram_channel_name") if live else ()
-    ):
+    if type(config.get("image_origin_alerts_enabled")) is not bool:
+        raise ControlError("image_origin_alerts_enabled must be boolean")
+    for field in (
+        "folder_id",
+        "dashboard_id",
+        "channel_id",
+        "image_origin_host",
+        "image_cdn_resource",
+    ) + (("workspace_id", "channel_name", "telegram_channel_name") if live else ()):
         if not isinstance(config.get(field), str) or not config[field].strip():
             raise ControlError(f"activation requires {field}")
     for field in ("folder_id", "dashboard_id", "workspace_id"):
         if config.get(field) and not re.fullmatch(r"[a-zA-Z0-9_-]+", config[field]):
             raise ControlError(f"invalid {field}")
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", config["image_origin_host"]):
+        raise ControlError("invalid image_origin_host")
+    if not re.fullmatch(r"[a-zA-Z0-9.-]+", config["image_cdn_resource"]):
+        raise ControlError("invalid image_cdn_resource")
     for metric in config["metrics"].values():
         if not re.fullmatch(r"[a-zA-Z_:][a-zA-Z0-9_:]*", metric["name"]):
             raise ControlError("invalid metric name")
@@ -133,16 +143,70 @@ def expressions(config: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def image_selectors() -> dict[str, str]:
+    linux = '{job="findme-image-linux"}'
+    origin = '{job="findme-image-origin"}'
+    proxy = '{job="findme-imgproxy"}'
+    return {
+        "image_cpu_useful": "sys_system_UsefulTime" + linux,
+        "image_cpu_idle": "sys_system_IdleTime" + linux,
+        "image_mem_available": "sys_memory_MemAvailable" + linux,
+        "image_mem_total": "sys_memory_MemTotal" + linux,
+        "image_disk_free": 'sys_filesystem_FreeB{job="findme-image-linux",mountpoint="/"}',
+        "image_disk_size": 'sys_filesystem_SizeB{job="findme-image-linux",mountpoint="/"}',
+        "image_responses": "origin_image_origin_responses_total" + origin,
+        "image_5xx": (
+            'origin_image_origin_responses_total{job="findme-image-origin",status_class="5xx"}'
+        ),
+        "image_2xx": (
+            'origin_image_origin_responses_total{job="findme-image-origin",status_class="2xx"}'
+        ),
+        "image_limited": "origin_image_origin_limited_total" + origin,
+        "image_auth_rejected": "origin_image_origin_auth_rejected_total" + origin,
+        "image_proxy_requests": "imgproxy_requests_total" + proxy,
+        "image_proxy_errors": "imgproxy_errors_total" + proxy,
+        "image_proxy_duration_count": "imgproxy_request_duration_seconds_count" + proxy,
+        "image_proxy_duration_bucket": (
+            'imgproxy_request_duration_seconds_bucket{job="findme-imgproxy"}'
+        ),
+    }
+
+
+def image_expressions() -> dict[str, str]:
+    s = image_selectors()
+    total = f"sum(increase({s['image_responses']}[5m]))"
+    errors = f"sum(increase({s['image_5xx']}[5m]))"
+    limited = f"sum(increase({s['image_limited']}[5m]))"
+    cpu_useful = f"rate({s['image_cpu_useful']}[5m])"
+    cpu_idle = f"rate({s['image_cpu_idle']}[5m])"
+    duration = s["image_proxy_duration_bucket"]
+    return {
+        "image_requests_5m": total,
+        "image_5xx_ratio": f"({errors} / {total} > 0.02) and ({total} >= 20)",
+        "image_429_ratio": f"({limited} / {total} > 0.01) and ({total} >= 20)",
+        "image_cpu": f"100 * {cpu_useful} / ({cpu_useful} + {cpu_idle})",
+        "image_mem_free_percent": (f"100 * {s['image_mem_available']} / {s['image_mem_total']}"),
+        "image_disk_free_percent": f"100 * {s['image_disk_free']} / {s['image_disk_size']}",
+        "image_proxy_p95": (f"histogram_quantile(0.95, sum by (le) (rate({duration}[5m])))"),
+        "image_proxy_requests_5m": f"sum(increase({s['image_proxy_requests']}[5m]))",
+    }
+
+
 def render(config: dict[str, Any]) -> dict[str, str]:
     import yaml
 
     validate_config(config)
     s, e = selectors(config), expressions(config)
+    image_s, image_e = image_selectors(), image_expressions()
     # Window aggregations explicitly match the native maximum/minimum contracts.
     rule_doc = yaml.safe_load((HERE / "rules.yml").read_text())
     if not config["worker_alerts_enabled"]:
         rule_doc["groups"] = [
             group for group in rule_doc["groups"] if group["name"] != "findme-workers"
+        ]
+    if not config["image_origin_alerts_enabled"]:
+        rule_doc["groups"] = [
+            group for group in rule_doc["groups"] if group["name"] != "findme-image-origin"
         ]
     routing = yaml.safe_load((HERE / "alertmanager.yml").read_text())
     dashboard = json.loads((HERE / "dashboard.json").read_text())
@@ -150,11 +214,15 @@ def render(config: dict[str, Any]) -> dict[str, str]:
     substitutions = {
         **s,
         **e,
+        **image_s,
+        **image_e,
         "folder_id": config["folder_id"],
         "channel_name": config["channel_name"] or "__CHANNEL_NAME_REQUIRED__",
         "telegram_channel_name": config["telegram_channel_name"]
         or "__TELEGRAM_CHANNEL_NAME_REQUIRED__",
         "workspace_id": config["workspace_id"] or "__WORKSPACE_ID_REQUIRED__",
+        "image_origin_host": config["image_origin_host"],
+        "image_cdn_resource": config["image_cdn_resource"],
         "disk_gib": f"{s['disk_free']} / 1073741824",
         "uptime_seconds": f"{s['uptime']} / 1000",
         "http_rate": f"sum(rate({s['http_requests']}[5m]))",
@@ -452,6 +520,29 @@ def preflight(config: dict[str, Any], transport: Any, *, now: float | None = Non
             max_age=metric["max_age"],
             now=now,
         )
+    if config["image_origin_alerts_enabled"]:
+        image_s = image_selectors()
+        for key in (
+            "image_cpu_useful",
+            "image_cpu_idle",
+            "image_mem_available",
+            "image_mem_total",
+            "image_disk_free",
+            "image_disk_size",
+            "image_2xx",
+            "image_5xx",
+            "image_limited",
+            "image_auth_rejected",
+            "image_proxy_requests",
+            "image_proxy_duration_count",
+        ):
+            _fresh_matrix(
+                transport,
+                f"{image_s[key]}[120s]",
+                key=key,
+                max_age=120,
+                now=now,
+            )
     if config["worker_alerts_enabled"]:
         _preflight_workers(transport, now=now)
     # HTTP zero traffic is valid. Divide only when positive; an absent result is failure.

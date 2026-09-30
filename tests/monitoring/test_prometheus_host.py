@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = ROOT / "deploy/monitoring/prometheus"
@@ -127,6 +128,40 @@ def test_agent_reconciliation_is_idempotent():
     assert renderer.merge_agent(first, role="public", workspace_id="workspace1") == first
     updated = renderer.merge_agent(first, role="public", workspace_id="workspace2")
     assert "workspace2" in updated["channels"][0]["channel"]["output"]["config"]["url"]
+
+
+def test_public_agent_reconciliation_keeps_native_routes_and_collects_image_metrics():
+    renderer = load("render_agent")
+    native = {
+        "routes": [
+            {"input": {"plugin": "agent_metrics"}, "channel": {"output": {"plugin": "debug"}}}
+        ]
+    }
+    merged = renderer.merge_agent(native, role="public", workspace_id="workspace1")
+    assert merged["routes"][0] == native["routes"][0]
+    owned = merged["routes"][1:]
+    assert [route["input"]["config"]["prometheus_config"]["job_name"] for route in owned] == [
+        "findme-public",
+        "findme-image-linux",
+        "findme-image-origin",
+        "findme-imgproxy",
+    ]
+    assert [route["input"]["config"].get("namespace") for route in owned] == [
+        None,
+        "sys",
+        "origin",
+        "imgproxy",
+    ]
+    assert all(route["channel"]["channel_ref"]["name"] == renderer.CHANNEL for route in owned)
+    template = yaml.safe_load(
+        (ROOT / "deploy/image-origin/monitoring/unified-agent.yml.template").read_text()
+    )
+    direct = [
+        route["input"]["config"]
+        for route in template["routes"]
+        if route["channel"]["channel_ref"]["name"] == renderer.CHANNEL
+    ]
+    assert direct == [route["input"]["config"] for route in owned]
 
 
 def test_worker_diagnostic_route_is_explicit_canonical_and_route_local():

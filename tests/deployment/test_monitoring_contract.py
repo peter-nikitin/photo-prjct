@@ -193,7 +193,10 @@ def test_worker_pool_alerts_are_default_off_cap_one_prometheus_rules() -> None:
 
     assert config["worker_alerts_enabled"] is False
     disabled = yaml.safe_load(control.render(config)["rules.yml"])
-    assert [group["name"] for group in disabled["groups"]] == ["findme-photo"]
+    assert [group["name"] for group in disabled["groups"]] == [
+        "findme-photo",
+        "findme-image-origin",
+    ]
 
     config["worker_alerts_enabled"] = True
     enabled = yaml.safe_load(control.render(config)["rules.yml"])

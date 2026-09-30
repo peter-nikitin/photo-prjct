@@ -4,6 +4,7 @@
   "channel_id": "fbefs2ubu6sq0k0jvlch",
   "workspace_id": "mon0c97qv2s5uju1ark8",
   "channel_name": "findme-photo-operator-email",
+  "telegram_channel_name": "findme-photo-operator-telegram",
   "cpu_semantics": "cumulative_counter",
   "metrics": {
     "public_success": {

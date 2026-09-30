@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import json
 import sys
@@ -35,6 +36,7 @@ def config(control):
     value.update(
         workspace_id="workspace1",
         channel_name="operator-email",
+        telegram_channel_name="operator-telegram",
         cpu_semantics="cumulative_counter",
         type_contract_evidence="reviewed capture",
     )
@@ -50,14 +52,14 @@ def test_offline_render_has_missing_observations_separate(control):
     assert len(json.loads(package["dashboard.json"])["widgets"]) == 19
 
 
-def test_rendered_project_email_receiver_explicitly_sends_recovery(control):
+def test_rendered_project_receiver_delivers_email_and_telegram_recovery(control):
     routing = yaml.safe_load(control.render(config(control))["alertmanager.yml"])
-    receiver = next(item for item in routing["receivers"] if item["name"] == "findme-email")
+    receiver = next(item for item in routing["receivers"] if item["name"] == "findme-operator")
     assert receiver["yandex_monitoring_configs"] == [
-        {"channel_names": ["operator-email"], "send_resolved": True}
+        {"channel_names": ["operator-email", "operator-telegram"], "send_resolved": True}
     ]
     assert routing["route"]["routes"] == [
-        {"receiver": "findme-email", "matchers": ['project="findme-photo"']}
+        {"receiver": "findme-operator", "matchers": ['project="findme-photo"']}
     ]
     unmatched = next(item for item in routing["receivers"] if item["name"] == "unmatched")
     assert unmatched["yandex_monitoring_configs"] == [{"channel_names": []}]
@@ -140,6 +142,21 @@ def test_apply_preflights_routes_then_owned_rules_and_preserves_dashboard(contro
     assert not any(event[0] == "DELETE" for event in transport.events)
     assert (tmp_path / "backup/dashboard.json").is_file()
     assert (tmp_path / "backup/rules.json").is_file()
+
+
+def test_apply_routing_changes_only_alertmanager_when_public_samples_are_missing(control):
+    cfg = config(control)
+    transport = FakeTransport(control, cfg)
+    control.apply_routing(cfg, transport)
+    puts = [event for event in transport.events if event[0] == "PUT"]
+    assert len(puts) == 1
+    assert puts[0][1] == "/extensions/v1/alertmanager"
+    routing = yaml.safe_load(base64.b64decode(puts[0][2]["content"]))
+    receiver = next(item for item in routing["receivers"] if item["name"] == "findme-operator")
+    assert receiver["yandex_monitoring_configs"] == [
+        {"channel_names": ["operator-email", "operator-telegram"], "send_resolved": True}
+    ]
+    assert not any("/api/v1/query?" in event[1] for event in transport.events)
 
 
 def test_wrong_folder_blocks_all_mutations(control, tmp_path):

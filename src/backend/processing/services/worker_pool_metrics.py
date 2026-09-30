@@ -12,14 +12,15 @@ from processing.models import WorkerPool
 from processing.services.worker_pool_cloud import identifier, write_metrics
 from processing.services.worker_pool_lifecycle import (
     RUNNING,
+    STOPPED,
     _cloud_fresh,
     record_queue_observation,
 )
 from processing.services.worker_pool_state import build_worker_pool_state
 
 
-def observe_metrics(zone: str) -> dict[str, Any]:
-    identifier(zone)
+def observe_pool_state() -> dict[str, Any]:
+    """Build one read-only queue/capacity observation for both supported pools."""
     state = build_worker_pool_state()
     if not state["endpoint_enabled"]:
         raise ValueError("worker endpoint unavailable")
@@ -28,9 +29,9 @@ def observe_metrics(zone: str) -> dict[str, Any]:
         or settings.PHOTO_PROCESSING_FLEET_TOKEN == settings.PHOTO_PROCESSING_WORKER_TOKEN
     ):
         raise ValueError("fleet endpoint unavailable")
-    metrics: list[dict[str, object]] = []
     observed_at = timezone.datetime.fromisoformat(state["observed_at"])
     capacity = {pool.name: pool for pool in WorkerPool.objects.all()}
+    pools: dict[str, dict[str, Any]] = {}
     for name, pool in state["pools"].items():
         leases = pool["leases"]
         if leases["missing_expiry"]:
@@ -55,6 +56,31 @@ def observe_metrics(zone: str) -> dict[str, Any]:
             values["worker_pool_running_instances"] = sum(
                 row["status"] in RUNNING for row in observation.observed_members
             )
+        pools[name] = {
+            "metrics": values,
+            "cloud_observed_at": (
+                observation.observation_completed_at if observation is not None else None
+            ),
+            "native_publisher_succeeded_at": (
+                observation.queue_observed_at if observation is not None else None
+            ),
+            "expected_instances": (
+                sum(
+                    bool(row["instance_id"]) and row["status"] not in STOPPED
+                    for row in observation.observed_members
+                )
+                if fresh and observation is not None
+                else None
+            ),
+        }
+    return {"observed_at": state["observed_at"], "pools": pools}
+
+
+def observe_metrics(zone: str) -> dict[str, Any]:
+    identifier(zone)
+    observation = observe_pool_state()
+    metrics: list[dict[str, object]] = []
+    for name, pool in observation["pools"].items():
         metrics.extend(
             {
                 "name": metric,
@@ -62,9 +88,13 @@ def observe_metrics(zone: str) -> dict[str, Any]:
                 "type": "DGAUGE",
                 "value": value,
             }
-            for metric, value in values.items()
+            for metric, value in pool["metrics"].items()
         )
-    return {"observed_at": state["observed_at"], "metrics": metrics, "published": False}
+    return {
+        "observed_at": observation["observed_at"],
+        "metrics": metrics,
+        "published": False,
+    }
 
 
 def publish_metrics(zone: str, folder_id: str) -> dict[str, Any]:

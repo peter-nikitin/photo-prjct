@@ -25,6 +25,27 @@ ROOT = HERE.parents[2]
 OWNED_RULES = "findme-photo.yml"
 API = "https://monitoring.api.cloud.yandex.net"
 PROMETHEUS_VERSION = "3.5.0"
+WORKER_POOLS = ("bulk", "selfie")
+WORKER_SOURCE_MAX_AGE = 90
+WORKER_POOL_METRICS = {
+    "queue_available": "worker_pool_queue_observation_available",
+    "queue_timestamp": "worker_pool_queue_observation_timestamp_seconds",
+    "cloud_timestamp": "worker_pool_cloud_observation_timestamp_seconds",
+    "publisher_timestamp": "worker_pool_native_publisher_success_timestamp_seconds",
+    "claimable": "worker_pool_claimable",
+    "oldest_age": "worker_pool_oldest_claimable_age_seconds",
+    "workload": "worker_pool_workload",
+    "running": "worker_pool_running_instances",
+    "expected": "worker_pool_expected_instances",
+}
+WORKER_NODE_METRICS = (
+    "worker_node_cloud_observation_timestamp_seconds",
+    "worker_host_observation_missing",
+    "worker_host_observation_fresh",
+    "worker_host_collection_available",
+    "worker_runtime_scrape_available",
+    "worker_runtime_observation_fresh",
+)
 
 
 class ControlError(Exception):
@@ -36,6 +57,8 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
 
 
 def validate_config(config: dict[str, Any], *, live: bool = False) -> None:
+    if type(config.get("worker_alerts_enabled")) is not bool:
+        raise ControlError("worker_alerts_enabled must be boolean")
     for field in ("folder_id", "dashboard_id", "channel_id") + (
         ("workspace_id", "channel_name", "telegram_channel_name") if live else ()
     ):
@@ -117,6 +140,10 @@ def render(config: dict[str, Any]) -> dict[str, str]:
     s, e = selectors(config), expressions(config)
     # Window aggregations explicitly match the native maximum/minimum contracts.
     rule_doc = yaml.safe_load((HERE / "rules.yml").read_text())
+    if not config["worker_alerts_enabled"]:
+        rule_doc["groups"] = [
+            group for group in rule_doc["groups"] if group["name"] != "findme-workers"
+        ]
     routing = yaml.safe_load((HERE / "alertmanager.yml").read_text())
     dashboard = json.loads((HERE / "dashboard.json").read_text())
     histogram = config["metrics"]["http_duration"]["name"] + "_bucket"
@@ -134,6 +161,32 @@ def render(config: dict[str, Any]) -> dict[str, str]:
         "http_error_rate": f"sum(rate({s['http_5xx']}[5m]))",
         "http_p50": f"histogram_quantile(0.50, sum by (le) (rate({histogram}[5m])))",
         "http_p95": f"histogram_quantile(0.95, sum by (le) (rate({histogram}[5m])))",
+        "worker_pool_universe": (
+            'label_replace(vector(1), "pool", "bulk", "", "") or '
+            'label_replace(vector(1), "pool", "selfie", "", "")'
+        ),
+        "worker_queue_fresh": (
+            "(worker_pool_queue_observation_available == 1) and on(pool) "
+            "((time() - worker_pool_queue_observation_timestamp_seconds) >= 0) and on(pool) "
+            "((time() - worker_pool_queue_observation_timestamp_seconds) <= "
+            f"{WORKER_SOURCE_MAX_AGE})"
+        ),
+        "worker_cloud_fresh": (
+            "((time() - worker_pool_cloud_observation_timestamp_seconds) >= 0) and on(pool) "
+            "((time() - worker_pool_cloud_observation_timestamp_seconds) <= "
+            f"{WORKER_SOURCE_MAX_AGE}) "
+            "and on(pool) (worker_pool_running_instances >= 0)"
+        ),
+        "worker_current_nodes": (
+            "(worker_node_cloud_observation_timestamp_seconds == on(pool) group_left "
+            "worker_pool_cloud_observation_timestamp_seconds)"
+        ),
+        "worker_publisher_fresh": (
+            "((time() - worker_pool_native_publisher_success_timestamp_seconds) >= 0) "
+            "and on(pool) "
+            "((time() - worker_pool_native_publisher_success_timestamp_seconds) <= "
+            f"{WORKER_SOURCE_MAX_AGE})"
+        ),
     }
 
     def substitute(value: Any) -> Any:
@@ -152,6 +205,28 @@ def render(config: dict[str, Any]) -> dict[str, str]:
         "alertmanager.yml": yaml.safe_dump(substitute(routing), sort_keys=False),
         "dashboard.json": json.dumps(substitute(dashboard), ensure_ascii=False, indent=2) + "\n",
     }
+
+
+def rule_identities(rendered_rules: str) -> dict[str, list[str]]:
+    import yaml
+
+    document = yaml.safe_load(rendered_rules)
+    result: dict[str, list[str]] = {}
+    for group in document.get("groups", []):
+        name = group.get("name")
+        alerts = [rule.get("alert") for rule in group.get("rules", [])]
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in result
+            or any(not isinstance(alert, str) or not alert for alert in alerts)
+            or len(alerts) != len(set(alerts))
+        ):
+            raise ControlError("rendered rule identities invalid")
+        result[name] = alerts
+    if not result:
+        raise ControlError("rendered rule identities invalid")
+    return result
 
 
 def dashboard_request(
@@ -195,6 +270,105 @@ def _vector(response: dict[str, Any]) -> list[dict[str, Any]]:
     return response["data"]["result"]
 
 
+def _fresh_matrix(
+    transport: Any,
+    query: str,
+    *,
+    key: str,
+    max_age: int,
+    now: float | None,
+) -> list[tuple[dict[str, Any], float]]:
+    response = transport.request("GET", "/api/v1/query?" + urlencode({"query": query}))
+    observed_at = time.time() if now is None else now
+    data = response.get("data")
+    if (
+        response.get("status") != "success"
+        or not isinstance(data, dict)
+        or data.get("resultType") != "matrix"
+    ):
+        raise ControlError(f"sample query failed: {key}")
+    values = data.get("result")
+    if not isinstance(values, list) or not values:
+        raise ControlError(f"expected sample missing: {key}")
+    result = []
+    for item in values:
+        try:
+            points = item["values"]
+            metric = item.get("metric", {})
+            if not isinstance(metric, dict) or not isinstance(points, list) or not points:
+                raise ValueError
+            latest = points[-1]
+            if not isinstance(latest, list) or len(latest) != 2:
+                raise ValueError
+            timestamp, number = map(float, latest)
+        except (KeyError, TypeError, ValueError):
+            raise ControlError(f"sample malformed: {key}") from None
+        if (
+            not math.isfinite(timestamp)
+            or not math.isfinite(number)
+            or not 0 <= observed_at - timestamp <= max_age
+        ):
+            raise ControlError(f"sample stale/nonfinite: {key}")
+        result.append((metric, number))
+    return result
+
+
+def _preflight_workers(
+    transport: Any,
+    *,
+    now: float | None,
+) -> None:
+    for pool in WORKER_POOLS:
+        values: dict[str, float] = {}
+        for key, metric in WORKER_POOL_METRICS.items():
+            samples = _fresh_matrix(
+                transport,
+                f"{metric}{{pool={json.dumps(pool)}}}[{WORKER_SOURCE_MAX_AGE}s]",
+                key=f"worker_{pool}_{key}",
+                max_age=WORKER_SOURCE_MAX_AGE,
+                now=now,
+            )
+            if len(samples) != 1 or samples[0][0].get("pool", pool) != pool:
+                raise ControlError(f"worker sample identity invalid: {pool}_{key}")
+            values[key] = samples[0][1]
+        observed_at = time.time() if now is None else now
+        if values["queue_available"] != 1:
+            raise ControlError(f"worker queue observation unavailable: {pool}")
+        for key in ("queue_timestamp", "cloud_timestamp", "publisher_timestamp"):
+            if not 0 <= observed_at - values[key] <= WORKER_SOURCE_MAX_AGE:
+                raise ControlError(f"worker source stale/future: {pool}_{key}")
+        if values["running"] not in (0, 1) or values["expected"] not in (0, 1):
+            raise ControlError(f"worker capacity invalid: {pool}")
+        if any(values[key] < 0 for key in ("claimable", "oldest_age", "workload")):
+            raise ControlError(f"worker queue value invalid: {pool}")
+        expected = int(values["expected"])
+        if expected == 0:
+            continue
+        identities: set[tuple[str, str]] | None = None
+        for metric in WORKER_NODE_METRICS:
+            samples = _fresh_matrix(
+                transport,
+                f"{metric}{{pool={json.dumps(pool)}}}[{WORKER_SOURCE_MAX_AGE}s]",
+                key=f"worker_{pool}_{metric}",
+                max_age=WORKER_SOURCE_MAX_AGE,
+                now=now,
+            )
+            current = {
+                (str(labels.get("instance_id", "")), str(labels.get("zone_id", "")))
+                for labels, value in samples
+                if metric == "worker_node_cloud_observation_timestamp_seconds" or value in (0, 1)
+            }
+            if len(current) != expected or any(not all(identity) for identity in current):
+                raise ControlError(f"worker node diagnostics invalid: {pool}")
+            if metric == "worker_node_cloud_observation_timestamp_seconds" and any(
+                value != values["cloud_timestamp"] for _, value in samples
+            ):
+                raise ControlError(f"worker node membership stale: {pool}")
+            if identities is not None and current != identities:
+                raise ControlError(f"worker node diagnostics inconsistent: {pool}")
+            identities = current
+
+
 def preflight(config: dict[str, Any], transport: Any, *, now: float | None = None) -> None:
     validate_config(config, live=True)
     if not config.get("type_contract_evidence"):
@@ -205,35 +379,15 @@ def preflight(config: dict[str, Any], transport: Any, *, now: float | None = Non
         if metric["type"] == "histogram":
             selector = metric["name"] + "_count" + selector[len(metric["name"]) :]
         query = f"{selector}[{metric['max_age']}s]"
-        response = transport.request("GET", "/api/v1/query?" + urlencode({"query": query}))
-        observed_at = time.time() if now is None else now
-        data = response.get("data")
-        if (
-            response.get("status") != "success"
-            or not isinstance(data, dict)
-            or data.get("resultType") != "matrix"
-        ):
-            raise ControlError(f"sample query failed: {key}")
-        values = data.get("result")
-        if not isinstance(values, list) or not values:
-            raise ControlError(f"expected sample missing: {key}")
-        for item in values:
-            try:
-                points = item["values"]
-                if not isinstance(points, list) or not points:
-                    raise ValueError
-                latest = points[-1]
-                if not isinstance(latest, list) or len(latest) != 2:
-                    raise ValueError
-                timestamp, number = map(float, latest)
-            except (KeyError, TypeError, ValueError):
-                raise ControlError(f"sample malformed: {key}") from None
-            if (
-                not math.isfinite(timestamp)
-                or not math.isfinite(number)
-                or not 0 <= observed_at - timestamp <= metric["max_age"]
-            ):
-                raise ControlError(f"sample stale/nonfinite: {key}")
+        _fresh_matrix(
+            transport,
+            query,
+            key=key,
+            max_age=metric["max_age"],
+            now=now,
+        )
+    if config["worker_alerts_enabled"]:
+        _preflight_workers(transport, now=now)
     # HTTP zero traffic is valid. Divide only when positive; an absent result is failure.
     for key, query in expressions(config).items():
         values = _vector(transport.request("GET", "/api/v1/query?" + urlencode({"query": query})))
@@ -241,8 +395,8 @@ def preflight(config: dict[str, Any], transport: Any, *, now: float | None = Non
             raise ControlError(f"expression calculation failed: {key}")
     import yaml
 
-    rules = yaml.safe_load(render(config)["rules.yml"])["groups"][0]["rules"]
-    for rule in rules:
+    groups = yaml.safe_load(render(config)["rules.yml"])["groups"]
+    for rule in (rule for group in groups for rule in group["rules"]):
         values = _vector(
             transport.request("GET", "/api/v1/query?" + urlencode({"query": rule["expr"]}))
         )
@@ -251,16 +405,32 @@ def preflight(config: dict[str, Any], transport: Any, *, now: float | None = Non
 
 
 def verify_snapshots(
-    snapshot: dict[str, Any], *, now: float | None = None, earliest: float = 0
+    snapshot: dict[str, Any],
+    expected: dict[str, list[str]],
+    *,
+    now: float | None = None,
+    earliest: float = 0,
 ) -> None:
     now = time.time() if now is None else now
-    entries = [item for group in snapshot.get("snapshotByGroup", {}).values() for item in group]
-    if len(entries) != 11 or any(
-        item.get("state") != "OK"
-        or item.get("error")
-        or not earliest <= item.get("evaluatedAtTimeEpochMs", 0) / 1000 <= now + 5
-        or now - item.get("evaluatedAtTimeEpochMs", 0) / 1000 > 180
-        for item in entries
+    groups = snapshot.get("snapshotByGroup")
+    if not isinstance(groups, dict) or set(groups) != set(expected):
+        raise ControlError("rule evaluation snapshot missing, stale or failed")
+    entries = [item for group in groups.values() for item in group]
+    actual = {
+        group: [item.get("record") for item in items]
+        for group, items in groups.items()
+        if isinstance(items, list)
+    }
+    if (
+        any(set(actual.get(group, [])) != set(names) for group, names in expected.items())
+        or any(len(names) != len(set(names)) for names in actual.values())
+        or any(
+            item.get("state") != "OK"
+            or item.get("error")
+            or not earliest <= item.get("evaluatedAtTimeEpochMs", 0) / 1000 <= now + 5
+            or now - item.get("evaluatedAtTimeEpochMs", 0) / 1000 > 180
+            for item in entries
+        )
     ):
         raise ControlError("rule evaluation snapshot missing, stale or failed")
 
@@ -272,8 +442,11 @@ def check(config: dict[str, Any], transport: Any, *, now: float | None = None) -
     dashboard_request(current, json.loads(package["dashboard.json"]), config)
     rules = transport.request("GET", "/extensions/v1/rules/" + OWNED_RULES)
     if rules.get("content"):
+        expected = rule_identities(package["rules.yml"])
         verify_snapshots(
-            transport.request("GET", "/extensions/v1/rules/" + OWNED_RULES + "/snapshots"), now=now
+            transport.request("GET", "/extensions/v1/rules/" + OWNED_RULES + "/snapshots"),
+            expected,
+            now=now,
         )
     return {
         "dashboard_matches": all(
@@ -382,7 +555,11 @@ def apply(
     read_rules = transport.request("GET", "/extensions/v1/rules/" + OWNED_RULES)
     if read_rules.get("content") != rules_body["content"]:
         raise ControlError("rules read-back mismatch")
-    transport.wait_rules_evaluation(OWNED_RULES, earliest=applied_at)
+    transport.wait_rules_evaluation(
+        OWNED_RULES,
+        expected=rule_identities(package["rules.yml"]),
+        earliest=applied_at,
+    )
     transport.dashboard_update(request)
     readback = transport.dashboard_get(config["dashboard_id"])
     if readback.get("folderId") != config["folder_id"] or any(
@@ -427,12 +604,14 @@ class CloudTransport:
         except Exception:
             raise ControlError(f"Monitoring {method} failed") from None
 
-    def wait_rules_evaluation(self, name: str, *, earliest: float) -> None:
+    def wait_rules_evaluation(
+        self, name: str, *, expected: dict[str, list[str]], earliest: float
+    ) -> None:
         deadline = time.monotonic() + 120
         while True:
             snapshot = self.request("GET", "/extensions/v1/rules/" + name + "/snapshots")
             try:
-                verify_snapshots(snapshot, earliest=earliest)
+                verify_snapshots(snapshot, expected, earliest=earliest)
                 return
             except ControlError:
                 entries = [
@@ -497,11 +676,7 @@ def identity(mode: str, oidc_path: Path | None = None) -> str:
         ) from None
 
 
-def validate_package(config: dict[str, Any], output: Path, promtool: str) -> None:
-    from google.protobuf.json_format import ParseDict
-    from yandex.cloud.monitoring.v3.dashboard_service_pb2 import UpdateDashboardRequest
-
-    package = render(config)
+def _validate_dashboard(package: dict[str, str], config: dict[str, Any]) -> None:
     dashboard = json.loads(package["dashboard.json"])
     for widget in dashboard["widgets"]:
         chart = widget["multiSourceChart"]
@@ -536,23 +711,48 @@ def validate_package(config: dict[str, Any], output: Path, promtool: str) -> Non
                 or (kind == "prometheus" and not target.get("workspaceId"))
             ):
                 raise ControlError("dashboard target reference/workspace/query invalid")
+
+
+def validate_prometheus_profiles(config: dict[str, Any], output: Path, promtool: str) -> None:
+    version = subprocess.run([promtool, "--version"], check=True, capture_output=True, text=True)
+    if f"version {PROMETHEUS_VERSION}" not in version.stdout + version.stderr:
+        raise ControlError(f"promtool must be {PROMETHEUS_VERSION}")
+    import yaml
+
+    for enabled in (False, True):
+        profile = copy.deepcopy(config)
+        profile["worker_alerts_enabled"] = enabled
+        profile_output = (
+            output
+            if enabled == config["worker_alerts_enabled"]
+            else output / ("worker-alerts-enabled" if enabled else "worker-alerts-disabled")
+        )
+        package = render(profile)
+        profile_output.mkdir(parents=True, exist_ok=True)
+        for name, content in package.items():
+            (profile_output / name).write_text(content)
+        rules_path = profile_output / "rules.yml"
+        subprocess.run([promtool, "check", "rules", str(rules_path)], check=True)
+        tests = load_config(HERE / "rule-tests.json")
+        if enabled:
+            tests["tests"].extend(load_config(HERE / "worker-rule-tests.json")["tests"])
+        tests["rule_files"] = [str(rules_path.resolve())]
+        tests_path = profile_output / "rule-tests.yml"
+        tests_path.write_text(yaml.safe_dump(tests, sort_keys=False))
+        subprocess.run([promtool, "test", "rules", str(tests_path)], check=True)
+
+
+def validate_package(config: dict[str, Any], output: Path, promtool: str) -> None:
+    from google.protobuf.json_format import ParseDict
+    from yandex.cloud.monitoring.v3.dashboard_service_pb2 import UpdateDashboardRequest
+
+    package = render(config)
+    _validate_dashboard(package, config)
     ParseDict(
         {"dashboardId": config["dashboard_id"], **json.loads(package["dashboard.json"])},
         UpdateDashboardRequest(),
     )
-    output.mkdir(parents=True, exist_ok=True)
-    for name, content in package.items():
-        (output / name).write_text(content)
-    version = subprocess.run([promtool, "--version"], check=True, capture_output=True, text=True)
-    if f"version {PROMETHEUS_VERSION}" not in version.stdout + version.stderr:
-        raise ControlError(f"promtool must be {PROMETHEUS_VERSION}")
-    subprocess.run([promtool, "check", "rules", str(output / "rules.yml")], check=True)
-    tests = load_config(HERE / "rule-tests.json")
-    tests["rule_files"] = [str((output / "rules.yml").resolve())]
-    import yaml
-
-    (output / "rule-tests.yml").write_text(yaml.safe_dump(tests, sort_keys=False))
-    subprocess.run([promtool, "test", "rules", str(output / "rule-tests.yml")], check=True)
+    validate_prometheus_profiles(config, output, promtool)
 
 
 def main() -> int:

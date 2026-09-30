@@ -6,7 +6,7 @@
 - Supersedes: [ADR 0018](0018-use-managed-yandex-monitoring.md) only for isolated
   photo-worker host/container observation and the evaluator/application mechanism of
   their new diagnostic alerts
-- Superseded by: none
+- Superseded by: [ADR 0047](0047-reuse-managed-prometheus-for-worker-alerts.md) only for workspace/channel and routing read-back prerequisites
 
 ## Context
 

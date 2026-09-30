@@ -29,9 +29,20 @@ The approved ceiling remains bulk `0..1`, selfie `1..1`, with initial warm `1+1`
 
 ## Alert and activation boundary
 
-Before any customer cutover at ceiling one, supply a Git-reviewed at-ceiling rule for each actual pool/zone that recognizes **one actual running VM**, fresh capacity, and sustained growth of oldest claimable age. The current prepared `R - 1.5` rule requires two VMs and is insufficient. Missing/stale capacity or queue observations remain unknown, never zero or healthy. Prove native `Alarm`, both `No data` paths, recovery, and delivery to the approved operator channel; a historical positive window after publisher loss is not current saturation evidence. No alert raises capacity or grants processing authority.
+Before any customer cutover at ceiling one, enable the Git-reviewed Managed Prometheus worker
+profile under [ADR 0047](../../adr/0047-reuse-managed-prometheus-for-worker-alerts.md). It recognizes
+one actual running VM, fresh queue/cloud/publisher source values, and sustained growth of oldest
+claimable age. Missing/stale evidence remains unknown, never zero or healthy. Prove sustained
+firing, absent and retained-stale observations, recovery and delivery on the approved operator
+channel. No alert raises capacity or grants processing authority.
 
-No alert is configured by clicking in the UI. The native cap-one rule needs a documented Git-owned apply/read-back/rollback route before activation; a Markdown manifest alone is not live alert delivery. Diagnostic Managed Prometheus rules retain ADR 0043's Git-to-documented-API ownership and its separate workspace/channel prerequisites; do not silently claim that native Monitoring metrics appear in that workspace or replace existing public/Commerce alerts. If the required native alert lifecycle has no supported safe API/provider route, cutover remains blocked pending a separately approved monitoring design.
+This clarification follows the maintainer's 2026-09-30 direction to reuse the delivered Prometheus
+stack. It replaces this specification's former separate native cap-one alert prerequisite, not
+native autoscaling. Reuse the existing workspace, receiver and Git-to-API reconciliation:
+owned rule read-back, fresh evaluator verification and known-Git-revision routing rollback, with
+server-side routing drift explicitly unverified. No UI setup, new workspace or native alert API
+investigation is required. Prometheus receives its own private read-only observations; native
+series are not assumed to appear automatically. Existing public/Commerce controls are unchanged.
 
 ## Acceptance and authority
 

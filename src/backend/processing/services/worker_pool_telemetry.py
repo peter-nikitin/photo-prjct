@@ -15,6 +15,7 @@ from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Histo
 
 from processing.models import WorkerPool, WorkerPoolMember, WorkerPoolTelemetry
 from processing.services import worker_pool_lifecycle as lifecycle
+from processing.services.worker_pool_metrics import observe_pool_state
 
 FIELDS = lifecycle.ENVELOPE_FIELDS | {
     "zone_id",
@@ -295,6 +296,60 @@ def generate_diagnostic_metrics() -> bytes:
         family = families.setdefault(name, GaugeMetricFamily(name, name, labels=LABELS))
         family.add_metric(labels, value)
 
+    def pool_gauge(name: str, value: float, pool: str) -> None:
+        family = families.setdefault(name, GaugeMetricFamily(name, name, labels=["pool"]))
+        family.add_metric([pool], value)
+
+    try:
+        pool_observation = observe_pool_state()
+    except ValueError:
+        pool_observation = None
+    for pool_name in ("bulk", "selfie"):
+        pool_gauge(
+            "worker_pool_queue_observation_available",
+            int(pool_observation is not None),
+            pool_name,
+        )
+        if pool_observation is None:
+            continue
+        observed = pool_observation["pools"][pool_name]
+        values = observed["metrics"]
+        pool_gauge(
+            "worker_pool_queue_observation_timestamp_seconds",
+            timezone.datetime.fromisoformat(pool_observation["observed_at"]).timestamp(),
+            pool_name,
+        )
+        for metric in (
+            "worker_pool_claimable",
+            "worker_pool_oldest_claimable_age_seconds",
+            "worker_pool_workload",
+        ):
+            pool_gauge(metric, values[metric], pool_name)
+        if observed["cloud_observed_at"] is not None:
+            pool_gauge(
+                "worker_pool_cloud_observation_timestamp_seconds",
+                observed["cloud_observed_at"].timestamp(),
+                pool_name,
+            )
+        if observed["native_publisher_succeeded_at"] is not None:
+            pool_gauge(
+                "worker_pool_native_publisher_success_timestamp_seconds",
+                observed["native_publisher_succeeded_at"].timestamp(),
+                pool_name,
+            )
+        if "worker_pool_running_instances" in values:
+            pool_gauge(
+                "worker_pool_running_instances",
+                values["worker_pool_running_instances"],
+                pool_name,
+            )
+        if observed["expected_instances"] is not None:
+            pool_gauge(
+                "worker_pool_expected_instances",
+                observed["expected_instances"],
+                pool_name,
+            )
+
     for pool in WorkerPool.objects.prefetch_related("telemetry", "members"):
         cloud_fresh = lifecycle._cloud_fresh(pool, now)
         rows = {row.instance_id: row for row in pool.telemetry.all()}
@@ -310,6 +365,12 @@ def generate_diagnostic_metrics() -> bytes:
             row = rows.get(instance)
             member = members.get(instance)
             labels = [pool.name, instance, row.envelope["zone_id"] if row else "unknown"]
+            if pool.observation_completed_at is not None:
+                gauge(
+                    "worker_node_cloud_observation_timestamp_seconds",
+                    pool.observation_completed_at.timestamp(),
+                    labels,
+                )
             valid = bool(
                 row
                 and cloud_fresh

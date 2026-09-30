@@ -215,8 +215,9 @@ The [approved monitoring-as-code design](../superpowers/specs/2026-09-28-monitor
 [activation evidence](2026-09-28-monitoring-activation.md) establish the delivered
 foundation in canonical folder `b1g2qttgfhb4gdunvlge`:
 
-- Workspace `mon0c97qv2s5uju1ark8`, email channel `fbefs2ubu6sq0k0jvlch`
-  (`findme-photo-operator-email`) and protected GitHub `monitoring` environment exist.
+- Workspace `mon0c97qv2s5uju1ark8`, operator channel `findme-photo-operator-email` and
+  protected GitHub `monitoring` environment exist. Main `4b8df85` (PR #234) records its
+  Monium ID as `cloud__b1gmcsmr51o5kvp86l55_findme-photo-operator-email`.
 - `deploy/monitoring/prometheus/rules.yml` owns eleven public/TLS/Linux/HTTP/Commerce
   rules. `control.py` renders, validates, checks, applies and restores the owned rules
   through the documented API. Live application is explicit and bound to a Git revision.
@@ -226,6 +227,9 @@ foundation in canonical folder `b1g2qttgfhb4gdunvlge`:
 - The operator confirmed receipt of the recovery email in the `обсервабилити` chat on
   2026-09-30. The older activation document still says that receipt is pending. This is
   operator evidence for the existing notification drill, not a worker alert drill.
+- Main `91867c0` (PR #233) adds the existing Telegram channel to the same project receiver.
+  Worker integration preserves both email and Telegram routing; live Telegram/worker delivery
+  is not inferred from that merge.
 
 The initial version of this package incorrectly treated the older API feasibility audit
 as proof that this foundation was still missing. No support request is needed merely to
@@ -239,21 +243,20 @@ that does not itself export native queue/capacity metrics or install worker aler
 `worker_pool_metrics.py` still publishes the authoritative autoscaling series through
 the native Monitoring writer. Keep that writer and its scale/retirement semantics.
 
-The next worker-monitoring package should:
+The [worker integration plan](../plans/2026-09-30-worker-prometheus-alerts.md) closes that repository
+gap under [ADR 0047](../adr/0047-reuse-managed-prometheus-for-worker-alerts.md):
 
-1. Reconcile the worker specification's native-alert requirement and ADR 0043's old
-   routing prerequisites with the delivered Prometheus contract before changing behavior.
-   Preserve immutable accepted ADR text; record any required superseding decision.
-2. Reuse the existing workspace, apply/restore tooling and operator receiver. Define an
-   additive observation path for queue age, fresh actual running membership, source
-   timestamps and worker diagnostics through the canonical boundary. Do not infer that
-   native series already exist in Prometheus or replace the autoscaling writer.
-3. Add bulk/selfie cap-one, overdue-work and missing-observation rules to the owned Git
-   package. Cover bulk-zero, warm selfie, stale capacity, total publisher loss and
-   recovery with promtool fixtures; missing data must not become healthy zero.
-4. Verify actual source timestamps and rule evaluation on the provisioned fleet, then
-   controlled firing, missing-data and recovery delivery before customer cutover.
-   Generic email-drill evidence does not substitute for those worker scenarios.
+1. Add read-only queue/capacity/source observations to the existing private diagnostic scrape.
+   Preserve native publication and its successful-write-only queue freshness.
+2. Extend the existing Git-owned rule package and receiver with an explicit default-off cap-one
+   worker profile. Cover overdue work, queue/cloud/publisher loss and missing expected nodes.
+   Offline validation covers both profiles; existing eleven rules remain unchanged.
+3. Before activation, prove actual source timestamps and fresh evaluator state on the provisioned
+   fleet, then controlled firing, missing-data and recovery delivery. Generic email-drill evidence
+   and repository tests do not substitute for these worker scenarios.
+
+This reuses the existing routing contract: known-Git-revision restore, with server-side routing
+drift explicitly unverified. No separate native alert API or new monitoring resources are needed.
 
 The observability chat also reported missing public-probe samples in Prometheus on
 2026-09-30. That is a separate ingestion finding, not absence of the alert platform;
@@ -264,8 +267,8 @@ does not claim to have rerun cloud metric queries or fixed that source.
 The agent prepares the worker integration and commands, using actual creation receipts.
 The maintainer approves the exact access/paid batches and supplies credentials through
 the private channel. Native worker control, application state and current alert rules
-are unchanged by this documentation correction.
+are unchanged while the worker profile remains disabled.
 
-Architecture reconciliation: infrastructure remains within ADR 0046. The next worker
-monitoring design must explicitly reconcile evaluator/routing requirements with the
-existing observability design; this package does not silently supersede an ADR.
+Architecture reconciliation: infrastructure remains within ADR 0046. ADR 0047 narrowly reconciles
+worker alert evaluation and routing prerequisites with the existing observability design;
+ADR 0043's host boundary and ADR 0042's native autoscaling remain authoritative.

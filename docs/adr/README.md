@@ -66,6 +66,7 @@ place, and add the new record to this index.
 | 0044 | [Deliver public event covers through the image CDN](0044-deliver-public-event-covers-through-image-cdn.md) | Accepted |
 | 0045 | [Deliver commerce thumbnails through the gallery CDN](0045-deliver-commerce-thumbnails-through-gallery-cdn.md) | Accepted |
 | 0046 | [Isolate worker-pool management in a separate folder](0046-isolate-worker-pool-management-in-a-separate-folder.md) | Accepted |
+| 0047 | [Reuse Managed Prometheus for worker alerts](0047-reuse-managed-prometheus-for-worker-alerts.md) | Accepted |
 
 ## Public selfie-search outcome
 

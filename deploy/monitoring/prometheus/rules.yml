@@ -81,3 +81,69 @@ groups:
       severity: critical
     annotations:
       summary: Commerce ready work is older than three hundred seconds.
+- name: findme-workers
+  interval: 1m
+  rules:
+  - alert: WorkerReadyWorkOverdue
+    expr: ({{worker_queue_fresh}}) and on(pool) (worker_pool_oldest_claimable_age_seconds
+      > 300)
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: Worker-ready work is older than three hundred seconds.
+  - alert: WorkerPoolSaturated
+    expr: ({{worker_queue_fresh}}) and on(pool) (min_over_time(worker_pool_queue_observation_available[90s])
+      == 1) and on(pool) ({{worker_cloud_fresh}}) and on(pool) ({{worker_publisher_fresh}})
+      and on(pool) (worker_pool_running_instances >= 1) and on(pool) (worker_pool_oldest_claimable_age_seconds
+      > 300) and on(pool) (idelta(worker_pool_oldest_claimable_age_seconds[90s])
+      > 0) and on(pool) (resets(worker_pool_oldest_claimable_age_seconds[90s]) ==
+      0)
+    for: 5m
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: A cap-one worker pool has sustained growing ready-work age.
+  - alert: WorkerQueueObservationMissing
+    expr: ({{worker_pool_universe}}) unless on(pool) ({{worker_queue_fresh}})
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Worker queue observations are missing, unavailable or stale.
+  - alert: WorkerCloudObservationMissing
+    expr: ({{worker_pool_universe}}) unless on(pool) ({{worker_cloud_fresh}})
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Worker cloud membership observations are missing or stale.
+  - alert: WorkerNativePublisherMissing
+    expr: ({{worker_pool_universe}}) unless on(pool) ({{worker_publisher_fresh}})
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Native worker metric publication is missing or stale.
+  - alert: WorkerHostDiagnosticsMissing
+    expr: ((worker_pool_expected_instances > 0) and on(pool) ({{worker_cloud_fresh}}))
+      unless on(pool) (({{worker_current_nodes}}) and on(pool, instance_id, zone_id)
+      (worker_host_observation_missing == 0) and on(pool, instance_id, zone_id)
+      (worker_host_observation_fresh == 1) and on(pool, instance_id, zone_id) (worker_host_collection_available
+      == 1))
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Expected worker host diagnostics are missing or unavailable.
+  - alert: WorkerRuntimeDiagnosticsMissing
+    expr: ((worker_pool_expected_instances > 0) and on(pool) ({{worker_cloud_fresh}}))
+      unless on(pool) (({{worker_current_nodes}}) and on(pool, instance_id, zone_id)
+      (worker_runtime_scrape_available == 1) and on(pool, instance_id, zone_id)
+      (worker_runtime_observation_fresh == 1))
+    labels:
+      project: findme-photo
+      severity: critical
+    annotations:
+      summary: Expected worker runtime diagnostics are missing or unavailable.

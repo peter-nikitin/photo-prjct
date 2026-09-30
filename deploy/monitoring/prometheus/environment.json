@@ -6,6 +6,7 @@
   "channel_name": "findme-photo-operator-email",
   "telegram_channel_name": "findme-photo-operator-telegram",
   "cpu_semantics": "cumulative_counter",
+  "worker_alerts_enabled": false,
   "metrics": {
     "public_success": {
       "name": "findme_probe_success",

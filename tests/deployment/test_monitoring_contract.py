@@ -1,7 +1,20 @@
+import importlib.util
 import json
+import sys
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_prometheus_control():
+    path = ROOT / "deploy/monitoring/prometheus/control.py"
+    spec = importlib.util.spec_from_file_location("deployment_monitoring_control", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_dashboard_is_importable_and_covers_only_configured_monitoring_streams() -> None:
@@ -105,7 +118,7 @@ def test_commerce_worker_monitoring_records_only_safe_liveness_and_ready_work_si
         assert forbidden not in rendered.lower()
 
 
-def test_alert_manifest_has_the_baseline_and_disabled_commerce_alert_contracts() -> None:
+def test_alert_manifest_has_the_baseline_and_delegated_profiles() -> None:
     manifest = (ROOT / "deploy/monitoring/alerts.md").read_text(encoding="utf-8")
 
     expected_alerts = {
@@ -129,7 +142,7 @@ def test_alert_manifest_has_the_baseline_and_disabled_commerce_alert_contracts()
             "5 minutes",
         ),
     }
-    assert manifest.count("## ") == 12
+    assert manifest.count("## ") == 10
     for name, required in expected_alerts.items():
         section = manifest.split(f"## {name}\n", 1)[1].split("\n## ", 1)[0]
         for value in required:
@@ -161,7 +174,7 @@ def test_alert_selectors_use_folder_as_request_context_not_metric_label() -> Non
 
     assert "__YANDEX_CLOUD_FOLDER_ID__" in manifest.split("## ", 1)[0]
     selectors = [line for line in manifest.splitlines() if line.startswith("- Selector:")]
-    assert len(selectors) == 10
+    assert len(selectors) == 7
     console_selectors = [
         line for line in manifest.splitlines() if line.startswith("- Console selector:")
     ]
@@ -171,29 +184,41 @@ def test_alert_selectors_use_folder_as_request_context_not_metric_label() -> Non
     assert all("folderId=" not in selector for selector in selectors)
 
 
-def test_worker_pool_saturation_and_diagnostics_preserve_limits_and_unknown_capacity() -> None:
+def test_worker_pool_alerts_are_default_off_cap_one_prometheus_rules() -> None:
     manifest = (ROOT / "deploy/monitoring/alerts.md").read_text()
-    dashboard = (ROOT / "deploy/monitoring/dashboard.json").read_text()
     runbook = (ROOT / "docs/runbooks/worker-pools.md").read_text()
-    section = manifest.split("## Worker pool at-ceiling saturation\n", 1)[1]
+    section = manifest.split("## Worker pool alerts\n", 1)[1]
+    control = load_prometheus_control()
+    config = control.load_config()
+
+    assert config["worker_alerts_enabled"] is False
+    disabled = yaml.safe_load(control.render(config)["rules.yml"])
+    assert [group["name"] for group in disabled["groups"]] == ["findme-photo"]
+
+    config["worker_alerts_enabled"] = True
+    enabled = yaml.safe_load(control.render(config)["rules.yml"])
+    worker = next(group for group in enabled["groups"] if group["name"] == "findme-workers")
+    saturation = next(rule for rule in worker["rules"] if rule["alert"] == "WorkerPoolSaturated")
+    expression = saturation["expr"]
     for required in (
+        "worker_pool_queue_observation_timestamp_seconds",
+        "worker_pool_cloud_observation_timestamp_seconds",
+        "worker_pool_native_publisher_success_timestamp_seconds",
         "worker_pool_running_instances",
-        "worker_pool_capacity_fresh",
         "worker_pool_oldest_claimable_age_seconds",
-        "five-minute",
-        "300 seconds",
-        "No data",
-        "90 seconds",
-        "hard maximum two",
-        "selfie claim cap one",
+        ">= 1",
+        "> 300",
+        "idelta(worker_pool_oldest_claimable_age_seconds[90s]) > 0",
+        "resets(worker_pool_oldest_claimable_age_seconds[90s]) == 0",
     ):
-        assert required in section
-    assert "worker_pool_running_instances" in dashboard
-    assert "worker_pool_capacity_fresh" in dashboard
-    assert "historical saturation is UNCONFIRMED" in section
-    assert "historical saturation is UNCONFIRMED" in runbook
+        assert required in expression
+    assert saturation["for"] == "5m"
+    assert "disabled in Git" in section
+    assert "cap-one saturation" in section
+    assert "Missing/stale observations" in section
+    assert "Bulk with fresh actual zero members" in section
+    assert "hard maximum two" not in section
     for required in (
-        "at-ceiling",
         '"operation":"status"',
         "report_worker_pool_state --json",
         "warm",
@@ -204,7 +229,6 @@ def test_worker_pool_saturation_and_diagnostics_preserve_limits_and_unknown_capa
         "journalctl",
         "failed",
         "stale",
-        "hard maximum two",
         "selfie claim cap one",
     ):
         assert required in runbook

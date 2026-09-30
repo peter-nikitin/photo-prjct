@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -52,6 +53,59 @@ def test_offline_render_has_missing_observations_separate(control):
     assert len(json.loads(package["dashboard.json"])["widgets"]) == 19
 
 
+def test_worker_profile_is_boolean_default_off_and_renders_only_when_enabled(control):
+    cfg = control.load_config()
+    assert cfg["worker_alerts_enabled"] is False
+    disabled = yaml.safe_load(control.render(cfg)["rules.yml"])
+    assert [group["name"] for group in disabled["groups"]] == ["findme-photo"]
+
+    cfg["worker_alerts_enabled"] = True
+    enabled = yaml.safe_load(control.render(cfg)["rules.yml"])
+    assert [group["name"] for group in enabled["groups"]] == [
+        "findme-photo",
+        "findme-workers",
+    ]
+    assert [rule["alert"] for rule in enabled["groups"][1]["rules"]] == [
+        "WorkerReadyWorkOverdue",
+        "WorkerPoolSaturated",
+        "WorkerQueueObservationMissing",
+        "WorkerCloudObservationMissing",
+        "WorkerNativePublisherMissing",
+        "WorkerHostDiagnosticsMissing",
+        "WorkerRuntimeDiagnosticsMissing",
+    ]
+
+    cfg["worker_alerts_enabled"] = 1
+    with pytest.raises(control.ControlError, match="worker_alerts_enabled"):
+        control.validate_config(cfg)
+
+
+def test_validate_package_checks_disabled_and_enabled_worker_profiles(
+    control, tmp_path, monkeypatch
+):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="promtool, version 3.5.0", stderr="")
+
+    monkeypatch.setattr(control.subprocess, "run", run)
+    control.validate_prometheus_profiles(control.load_config(), tmp_path, "promtool")
+
+    checked = [Path(command[-1]) for command in calls if command[1:3] == ["check", "rules"]]
+    assert len(checked) == 2
+    rendered = [yaml.safe_load(path.read_text()) for path in checked]
+    assert {tuple(group["name"] for group in item["groups"]) for item in rendered} == {
+        ("findme-photo",),
+        ("findme-photo", "findme-workers"),
+    }
+    tested = [Path(command[-1]) for command in calls if command[1:3] == ["test", "rules"]]
+    assert len(tested) == 2
+    enabled_tests = next(path for path in tested if "worker-alerts-enabled" in path.parts)
+    names = [item["name"] for item in yaml.safe_load(enabled_tests.read_text())["tests"]]
+    assert "worker cap saturation is sustained" in names
+
+
 def test_rendered_project_receiver_delivers_email_and_telegram_recovery(control):
     routing = yaml.safe_load(control.render(config(control))["alertmanager.yml"])
     receiver = next(item for item in routing["receivers"] if item["name"] == "findme-operator")
@@ -92,8 +146,8 @@ class FakeTransport:
         self.events.append(("get-dashboard", dashboard_id))
         return self.dashboard
 
-    def wait_rules_evaluation(self, name, *, earliest):
-        self.events.append(("evaluated-rules", name))
+    def wait_rules_evaluation(self, name, *, expected, earliest):
+        self.events.append(("evaluated-rules", name, expected))
 
     def dashboard_update(self, request):
         self.events.append(("update-dashboard", request))
@@ -191,6 +245,111 @@ def test_stale_or_nan_samples_block_activation(control):
         control.preflight(cfg, transport, now=1000)
 
 
+def worker_preflight_transport(control, cfg, *, source_override=None, omit=None):
+    transport = FakeTransport(control, cfg)
+    original = transport.request
+    source_override = source_override or {}
+
+    def request(method, path, body=None):
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        if query.startswith("worker_") and query.endswith("[90s]"):
+            transport.events.append((method, path, body))
+            metric = query.split("{", 1)[0]
+            pool = "selfie" if 'pool="selfie"' in query else "bulk"
+            if (metric, pool) == omit:
+                return {"status": "success", "data": {"resultType": "matrix", "result": []}}
+            timestamps = {
+                "worker_pool_queue_observation_timestamp_seconds",
+                "worker_pool_cloud_observation_timestamp_seconds",
+                "worker_pool_native_publisher_success_timestamp_seconds",
+                "worker_node_cloud_observation_timestamp_seconds",
+            }
+            value = source_override.get((metric, pool), 1000 if metric in timestamps else 0)
+            if metric == "worker_pool_queue_observation_available":
+                value = 1
+            if metric in {"worker_pool_running_instances", "worker_pool_expected_instances"}:
+                value = int(pool == "selfie")
+            labels = {"pool": pool}
+            if not metric.startswith("worker_pool_"):
+                labels |= {"instance_id": "node-1", "zone_id": "ru-central1-a"}
+            return {
+                "status": "success",
+                "data": {
+                    "resultType": "matrix",
+                    "result": [{"metric": labels, "values": [[1000, str(value)]]}],
+                },
+            }
+        return original(method, path, body)
+
+    transport.request = request
+    return transport
+
+
+def test_enabled_worker_preflight_requires_sources_and_skips_idle_bulk_nodes(control):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(control, cfg)
+
+    control.preflight(cfg, transport, now=1000)
+
+    queries = [
+        parse_qs(urlsplit(path).query).get("query", [""])[0]
+        for method, path, _ in transport.events
+        if method == "GET" and "/api/v1/query?" in path
+    ]
+    assert not any(query.startswith("worker_host_") and 'pool="bulk"' in query for query in queries)
+    assert any(query.startswith("worker_host_") and 'pool="selfie"' in query for query in queries)
+
+
+@pytest.mark.parametrize(
+    "metric,value",
+    [
+        ("worker_pool_queue_observation_timestamp_seconds", 909),
+        ("worker_pool_cloud_observation_timestamp_seconds", 1001),
+        ("worker_pool_native_publisher_success_timestamp_seconds", float("nan")),
+    ],
+)
+def test_enabled_worker_preflight_rejects_stale_future_or_nonfinite_sources(control, metric, value):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(
+        control,
+        cfg,
+        source_override={(metric, "selfie"): value},
+    )
+
+    with pytest.raises(control.ControlError, match="worker|sample"):
+        control.preflight(cfg, transport, now=1000)
+
+
+def test_enabled_worker_preflight_rejects_total_sender_outage(control):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(
+        control,
+        cfg,
+        omit=("worker_pool_queue_observation_available", "bulk"),
+    )
+
+    with pytest.raises(control.ControlError, match="expected sample missing"):
+        control.preflight(cfg, transport, now=1000)
+
+
+def test_enabled_worker_preflight_rejects_retained_node_from_previous_membership(control):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(
+        control,
+        cfg,
+        source_override={
+            ("worker_node_cloud_observation_timestamp_seconds", "selfie"): 999,
+        },
+    )
+
+    with pytest.raises(control.ControlError, match="membership stale"):
+        control.preflight(cfg, transport, now=1000)
+
+
 def test_counter_cpu_contract_rejected_until_verified(control):
     cfg = config(control)
     cfg["metrics"]["cpu_useful"]["type"] = "gauge"
@@ -204,17 +363,81 @@ def test_snapshot_error_blocks_success(control):
             {
                 "snapshotByGroup": {
                     "findme-photo": [
-                        {"state": "TIMEOUT", "error": "failure", "evaluatedAtTimeEpochMs": 1000000}
+                        {
+                            "record": "PublicServiceUnavailable",
+                            "state": "TIMEOUT",
+                            "error": "failure",
+                            "evaluatedAtTimeEpochMs": 1000000,
+                        }
                     ]
                 }
             },
+            {"findme-photo": ["PublicServiceUnavailable"]},
             now=1000,
         )
 
 
 def test_snapshot_missing_is_unverified(control):
     with pytest.raises(control.ControlError, match="evaluation"):
-        control.verify_snapshots({"snapshotByGroup": {}}, now=1000)
+        control.verify_snapshots(
+            {"snapshotByGroup": {}},
+            {"findme-photo": ["PublicServiceUnavailable"]},
+            now=1000,
+        )
+
+
+@pytest.mark.parametrize(
+    "actual",
+    [
+        {"findme-photo": ["PublicServiceUnavailable"]},
+        {
+            "findme-photo": [
+                "PublicServiceUnavailable",
+                "PublicServiceUnavailable",
+                "Unexpected",
+            ]
+        },
+    ],
+)
+def test_snapshot_verification_rejects_missing_extra_and_duplicate_rule_identities(control, actual):
+    expected = {"findme-photo": ["PublicServiceUnavailable", "PublicObservationsMissing"]}
+    snapshot = {
+        "snapshotByGroup": {
+            group: [
+                {
+                    "record": alert,
+                    "state": "OK",
+                    "error": "",
+                    "evaluatedAtTimeEpochMs": 1000000,
+                }
+                for alert in alerts
+            ]
+            for group, alerts in actual.items()
+        }
+    }
+    with pytest.raises(control.ControlError, match="evaluation"):
+        control.verify_snapshots(snapshot, expected, now=1000)
+
+
+def test_snapshot_verification_matches_all_rendered_group_and_alert_identities(control):
+    cfg = control.load_config()
+    cfg["worker_alerts_enabled"] = True
+    expected = control.rule_identities(control.render(cfg)["rules.yml"])
+    snapshot = {
+        "snapshotByGroup": {
+            group: [
+                {
+                    "record": alert,
+                    "state": "OK",
+                    "error": "",
+                    "evaluatedAtTimeEpochMs": 1000000,
+                }
+                for alert in alerts
+            ]
+            for group, alerts in expected.items()
+        }
+    }
+    control.verify_snapshots(snapshot, expected, now=1000)
 
 
 def test_check_reports_routing_unverified(control):

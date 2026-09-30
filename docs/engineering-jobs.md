@@ -671,7 +671,7 @@ work does not consume the public web/database host's resources and idle bulk cap
   isolated previous-snapshot additive migration rehearsals cover repository behavior only.
   Missing/stale observations remain unknown, not healthy zeros. No worker VM telemetry, cloud
   ingestion, diagnostic alert or notification acceptance is claimed.
-  [ADR 0045](adr/0045-isolate-worker-pool-management-in-a-separate-folder.md) and the
+  [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) and the
   [approved folder specification](superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
   add repository support for distinct worker/canonical folder ownership, scoped direct IAM
   prerequisite checks, canonical native-metric publication, and two-folder immutable release

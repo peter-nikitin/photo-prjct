@@ -5,8 +5,8 @@
 - Owner: project maintainer
 - Related specification: [approved separate-folder design](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
 - Related architecture: [accepted constraints](../architecture.md#accepted-constraints)
-- Related ADRs: [0045](../adr/0045-isolate-worker-pool-management-in-a-separate-folder.md), [0042](../adr/0042-isolate-autoscaled-photo-worker-pools.md), [0043](../adr/0043-observe-isolated-workers-with-git-managed-alerts.md)
-- ADR impact: Conforms to accepted ADR 0045; preserves ADRs 0042/0043
+- Related ADRs: [0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md), [0042](../adr/0042-isolate-autoscaled-photo-worker-pools.md), [0043](../adr/0043-observe-isolated-workers-with-git-managed-alerts.md)
+- ADR impact: Conforms to accepted ADR 0046; preserves ADRs 0042/0043
 
 ## Goal
 

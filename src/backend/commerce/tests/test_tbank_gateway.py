@@ -166,6 +166,15 @@ class TBankSigningTests(SimpleTestCase):
 
 
 class TBankProtocolTests(SimpleTestCase):
+    def test_init_accepts_bank_hosted_payment_form_url(self):
+        module = gateway_module()
+        payment_url = "https://securepayments.tinkoff.ru/pay/abc"
+        with patch.object(
+            module, "urlopen", return_value=Response(response(PaymentURL=payment_url))
+        ):
+            created = module.TBankGateway(config()).create_payment(request())
+        self.assertEqual(created.confirmation_url, payment_url)
+
     def test_init_sends_exact_receipt_and_signed_one_stage_request(self):
         module = gateway_module()
         with patch.object(module, "urlopen", return_value=Response(response())) as network:
@@ -401,6 +410,31 @@ def test_get_state_binds_signed_request_to_persisted_attempt(attempt):
     }
     attempt.refresh_from_db()
     assert attempt.status == "pending"
+
+
+def test_get_state_accepts_zero_amount_for_canceled_bound_payment(attempt):
+    module = gateway_module()
+    with patch.object(
+        module, "urlopen", return_value=Response(response(Status="CANCELED", Amount=0))
+    ):
+        result = module.TBankGateway(config()).fetch_payment("12345")
+    assert result.status == "canceled"
+    assert result.amount_kopecks == attempt.amount_kopecks
+
+
+@pytest.mark.parametrize("attempt", [""], indirect=True)
+def test_get_state_rejects_zero_amount_without_bound_payment_id(attempt):
+    module = gateway_module()
+    with pytest.raises(PaymentGatewayError):
+        module.TBankGateway(config())._observation(response(Status="CANCELED", Amount=0), attempt)
+
+
+@pytest.mark.parametrize("status", ["NEW", "CONFIRMED"])
+def test_get_state_rejects_zero_amount_for_non_canceled_payment(attempt, status):
+    module = gateway_module()
+    with patch.object(module, "urlopen", return_value=Response(response(Status=status, Amount=0))):
+        with pytest.raises(PaymentGatewayError):
+            module.TBankGateway(config()).fetch_payment("12345")
 
 
 def test_callback_resolves_persisted_attempt_without_mutating_it(attempt):

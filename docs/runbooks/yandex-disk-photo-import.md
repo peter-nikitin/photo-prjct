@@ -60,14 +60,15 @@ The owner can inspect current status after disconnect and retry only failed item
 product gate off pauses authoritative work without exhausting file retry budgets. Existing browser
 uploads and the photo/Commerce workers retain their own startup and processing contracts.
 
-Before replacing web, Deploy removes the import worker and, if import was enabled, waits the
-maximum accepted API lease window (300 seconds). Candidate failure repeats that stop before
-restoring the previous environment and images. Failure to stop blocks image recovery rather than
-running new import code against old web. If the previous release supported import and enabled it,
-restoration verifies its web/readiness before restarting its worker. Deploy does not change the
-operator-selected `off`, `staff`, or `on` gate state, including during rollback. Imports submitted
-while the worker is stopped remain queued until it restarts. Database tables and immutable objects
-are retained in every ordinary rollback.
+Before replacing web, Deploy removes the import worker and queries PostgreSQL for live import
+attempt leases. If none remain, it continues immediately; otherwise it checks again until they
+expire, with a 300-second limit. A failed or invalid database probe blocks replacement. Candidate
+failure repeats that stop before restoring the previous environment and images. Failure to stop
+blocks image recovery rather than running new import code against old web. If the previous release
+supported import and enabled it, restoration verifies its web/readiness before restarting its
+worker. Deploy does not change the operator-selected `off`, `staff`, or `on` gate state, including
+during rollback. Imports submitted while the worker is stopped remain queued until it restarts.
+Database tables and immutable objects are retained in every ordinary rollback.
 
 Do not reverse import migrations or restore a snapshot as routine rollback. Actual `899e9cc` code
 has been exercised against retained new tables locally. A subsequent upgrade resumes durable work

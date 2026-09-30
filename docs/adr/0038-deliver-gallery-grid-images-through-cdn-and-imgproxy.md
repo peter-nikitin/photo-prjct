@@ -6,6 +6,7 @@
 - Supersedes: [ADR 0036](0036-issue-direct-gallery-small-preview-capabilities.md) only for
   normal-gallery small presentation derivatives
 - Superseded by: [ADR 0044](0044-deliver-public-event-covers-through-image-cdn.md) only for the exclusion of public event covers from the image origin
+- Superseded by: [ADR 0045](0045-deliver-commerce-thumbnails-through-gallery-cdn.md) only for the exclusion of commerce small-preview presentation
 
 ## Context
 

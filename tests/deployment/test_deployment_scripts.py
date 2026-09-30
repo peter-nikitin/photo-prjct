@@ -70,6 +70,7 @@ recover_previous_deployment
             "previous_worker_replicas": "1",
             "requested_import_enabled": "False",
             "previous_import_enabled": "False",
+            "candidate_import_worker_start_attempted": "0",
             "fleet_prepared": "1",
             "previous_env_exists": "1",
             "previous_env_tmp": str(previous_env),
@@ -653,6 +654,21 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
     _write_executable(
         fake_bin / "docker",
         """
+case " $* " in
+  *"ingestion_importattempt"*)
+    printf 'import-lease-probe\n' >> "$COMMAND_LOG"
+    if [ -n "${IMPORT_LEASE_PROBE_FILE:-}" ]; then
+      probe_result=$(sed -n '1p' "$IMPORT_LEASE_PROBE_FILE")
+      sed '1d' "$IMPORT_LEASE_PROBE_FILE" > "$IMPORT_LEASE_PROBE_FILE.next"
+      mv "$IMPORT_LEASE_PROBE_FILE.next" "$IMPORT_LEASE_PROBE_FILE"
+    else
+      probe_result=0
+    fi
+    [ "$probe_result" != error ] || exit 1
+    printf '%s\n' "$probe_result"
+    exit 0
+    ;;
+esac
 if [ "${1-}" = volume ] && [ "${2-}" = inspect ]; then
   volume_name="${3-}"
   [ "$volume_name" = "${COMPOSE_PROJECT_NAME}_pgdata" ]

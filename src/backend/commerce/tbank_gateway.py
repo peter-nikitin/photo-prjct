@@ -35,7 +35,12 @@ from commerce.payment_gateway import (
 TBANK_ADAPTER_KEY = "tbank-eacq-v1"
 MAX_BODY_BYTES = 65536
 _API_ORIGINS = {"https://securepay.tinkoff.ru", "https://rest-api-test.tinkoff.ru"}
-_PAYMENT_HOSTS = {"pay.tbank.ru", "securepay.tinkoff.ru", "rest-api-test.tinkoff.ru"}
+_PAYMENT_HOSTS = {
+    "pay.tbank.ru",
+    "securepay.tinkoff.ru",
+    "securepayments.tinkoff.ru",
+    "rest-api-test.tinkoff.ru",
+}
 _OBJECTS_105 = frozenset(
     (
         "commodity excise job service gambling_bet gambling_prize lottery lottery_prize "
@@ -342,16 +347,24 @@ class TBankGateway:
 
     def _observation(self, data: dict[str, object], attempt: PaymentAttempt) -> PaymentObservation:
         payment_id = _payment_id(data.get("PaymentId"))
+        status = normalize_status(data.get("Status"))
+        amount = data.get("Amount")
         if (
             data.get("TerminalKey") != self.config.terminal_key
             or data.get("OrderId") != bank_order_id(attempt.idempotency_key)
             or (attempt.provider_payment_id and payment_id != attempt.provider_payment_id)
-            or type(data.get("Amount")) is not int
-            or data["Amount"] != attempt.amount_kopecks
+            or type(amount) is not int
+            or (
+                amount != attempt.amount_kopecks
+                and not (
+                    status == NormalizedPaymentStatus.CANCELED
+                    and amount == 0
+                    and attempt.provider_payment_id == payment_id
+                )
+            )
             or attempt.currency != "RUB"
         ):
             raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
-        status = normalize_status(data.get("Status"))
         if type(data.get("Success")) is not bool or (
             status == NormalizedPaymentStatus.SUCCEEDED
             and (data["Success"] is not True or data.get("ErrorCode") != "0")

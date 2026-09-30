@@ -2,7 +2,7 @@
 
 Дата: 2026-09-28. Статус: **предложение для согласования, не готовый apply-пакет**.
 Дополнение 2026-09-30: прежнее предположение о размещении групп в том же folder,
-что и canonical VM, заменено [ADR 0045](../adr/0045-isolate-worker-pool-management-in-a-separate-folder.md)
+что и canonical VM, заменено [ADR 0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md)
 и [новым операционным handoff](2026-09-30-worker-folder-operational-handoff.md).
 Ниже сохранены датированные цены, квоты и инвентаризация; команды со старыми
 same-folder предпосылками не являются актуальным apply-пакетом.

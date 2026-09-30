@@ -1,4 +1,4 @@
-# 0045: Isolate worker-pool management in a separate folder
+# 0046: Isolate worker-pool management in a separate folder
 
 - Status: Accepted
 - Date: 2026-09-30

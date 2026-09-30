@@ -4,7 +4,7 @@
 - **Date:** 2026-09-30.
 - **Related architecture:** [current worker boundary](../../architecture.md#current-architecture--implemented), [accepted constraints](../../architecture.md#accepted-constraints), and [operations](../../architecture.md#target-mvp-architecture--proposed).
 - **Related ADRs:** [0042](../../adr/0042-isolate-autoscaled-photo-worker-pools.md), [0043](../../adr/0043-observe-isolated-workers-with-git-managed-alerts.md), [0028](../../adr/0028-operate-one-canonical-deployment.md).
-- **ADR impact:** Conforms to [ADR 0045](../../adr/0045-isolate-worker-pool-management-in-a-separate-folder.md), recording the explicitly selected folder/IAM isolation boundary, and ADRs 0042/0043 for queue, private API, release, and diagnostic-alert behavior.
+- **ADR impact:** Conforms to [ADR 0046](../../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md), recording the explicitly selected folder/IAM isolation boundary, and ADRs 0042/0043 for queue, private API, release, and diagnostic-alert behavior.
 - **Related specifications:** [autoscaled pools](2026-09-23-autoscaled-photo-worker-pools-design.md) and [ceiling-one activation](2026-09-29-capped-worker-pool-activation-design.md). Their workload, capacity, image, processing, data, and rollback contracts remain authoritative except for the explicit folder separation here.
 
 ## Intent and evidence

@@ -70,6 +70,12 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   rebuild and symmetric-difference commands repair and verify existing rows. Customer-facing
   gallery-media and signing SQL no longer reads the three processing-history relations; unrelated
   face-crop lookup retains its independent processing boundary.
+- Under [ADR 0045](adr/0045-deliver-commerce-thumbnails-through-gallery-cdn.md), the same
+  `gallery-cdn-images` gate extends six-hour `gallery-v1` capabilities to cart and order small
+  previews. Page authorization and exact order membership precede signing of the accepted
+  watermarked projection. Already authorized order items remain presentable after photo hiding or
+  event unpublication. Large/lightbox and download delivery retain their existing routes. With the
+  gate off, commerce small previews retain application media routes.
 - For request-time public media routes, `PublicMediaResolver` retains legacy and clean-preview
   behavior, selects `preview-watermarked-v1` for both presentation roles of the new paid policy,
   and rejects that policy's original download before storage signing. It never falls back to an
@@ -102,7 +108,7 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   replacement with policy restoration and provider disk-absence fences. This does not establish
   provisioned groups, physical provider replacement bounds or production acceptance; smaller
   worker disks remain [unverified sizing candidates](operations/2026-09-29-worker-disk-sizing.md).
-  [ADR 0045](adr/0045-isolate-worker-pool-management-in-a-separate-folder.md) now has
+  [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) now has
   repository support for distinct worker and canonical folder inputs: worker-owned group,
   instance and disk inventory, immutable release/receipt binding and canonical-native
   WORKLOAD metric selection and publication. Local fixtures verify this contract; they do not
@@ -307,7 +313,7 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 
 ## Accepted constraints
 
-- [ADR 0045](adr/0045-isolate-worker-pool-management-in-a-separate-folder.md) requires worker
+- [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) requires worker
   Instance Groups and their manager's Compute authority to reside in a dedicated folder in the
   existing cloud. The new worker subnet extends the existing VPC; canonical resources stay in
   their current folder. The [folder-support plan](plans/2026-09-30-isolated-worker-folder-support.md)

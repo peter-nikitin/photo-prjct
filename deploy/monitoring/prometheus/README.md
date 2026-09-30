@@ -19,7 +19,8 @@ duplicates remain separate gates. Existing native alerts, routes and timers rema
   `aje3t70qka1dtc09k5ic` (`findme-monitoring-ci`).
 
 The operator supplied channel names are `findme-photo-operator-email` (ID
-`fbefs2ubu6sq0k0jvlch`) and `findme-photo-operator-telegram` (ID
+`cloud__b1gmcsmr51o5kvp86l55_findme-photo-operator-email`) and
+`findme-photo-operator-telegram` (ID
 `cloud__b1gmcsmr51o5kvp86l55_findme-photo-operator-telegram`). Workspace ID is
 `mon0c97qv2s5uju1ark8`, supplied by the operator.
 The workflow never retargets configuration from CI variables. The approved foundation was created

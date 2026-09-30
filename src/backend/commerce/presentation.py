@@ -5,6 +5,7 @@ from django.core.paginator import Page
 from picflow.gallery import GalleryPhoto, GalleryPhotoFactory, MediaUrlBuilder
 
 from commerce.models import Order, OrderItem
+from commerce.order_payment import payment_continuation_state
 from commerce.pricing import format_rub
 from commerce.services import CartSnapshot
 
@@ -62,6 +63,11 @@ def order_presentation(
         Order.Status.PAID: "Заказ оплачен",
         Order.Status.CANCELED: "Оплата не завершена",
     }[order.status]
+    continuation = payment_continuation_state(order)
+    if continuation == "retry" and order.payment_attempts.exists():
+        status_display = "Оплата не завершена"
+    elif continuation == "hosted":
+        status_display = "Ожидает оплаты"
     return OrderPresentation(
         public_number=order.public_number,
         created_at_display=order.created_at.strftime("%d.%m.%Y"),

@@ -41,7 +41,7 @@ from commerce.payments import (
     mark_order_paid_manually,
     reconcile_payment_attempt,
 )
-from commerce.services import clear_cart, set_photo_selected
+from commerce.services import clear_cart, set_photo_selected, start_new_cart
 
 
 class _ObservationGateway:
@@ -205,7 +205,25 @@ class PaymentTransitionTests(TransactionTestCase):
             now=self.now,
         )
 
-    def test_exact_authenticated_success_pays_once_and_cleans_only_originating_purchased_positions(
+    def test_late_verified_success_leaves_new_cart_with_same_photo_untouched(self):
+        new_cart = Cart.objects.create(
+            event=self.event,
+            browser_token_sha256=browser_token_sha256(
+                "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+            ),
+            expires_at=self.now + timedelta(days=3),
+        )
+        position = CartItem.objects.create(cart=new_cart, photo=self.photo)
+        expiry = new_cart.expires_at
+        self.apply(self.observation())
+        self.order.refresh_from_db()
+        new_cart.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertTrue(CartItem.objects.filter(pk=position.pk).exists())
+        self.assertEqual(new_cart.expires_at, expiry)
+        self.assertEqual(EmailDelivery.objects.filter(order=self.order).count(), 1)
+
+    def test_exact_authenticated_success_pays_once_without_changing_cart_positions(
         self,
     ) -> None:
         """A broad cart clear or second email job would corrupt callback-retry fulfillment."""
@@ -221,7 +239,7 @@ class PaymentTransitionTests(TransactionTestCase):
         self.assertEqual(self.attempt.status, PaymentAttempt.Status.SUCCEEDED)
         self.assertEqual(self.attempt.terminal_at, self.now)
         self.assertEqual(EmailDelivery.objects.filter(order=self.order).count(), 1)
-        self.assertFalse(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
+        self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
         self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.added_photo).exists())
         self.assertTrue(
             CartItem.objects.filter(cart=self.other_cart, photo=self.other_photo).exists()
@@ -373,7 +391,7 @@ class PaymentTransitionTests(TransactionTestCase):
         self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertEqual(self.attempt.status, PaymentAttempt.Status.SUCCEEDED)
         self.assertEqual(EmailDelivery.objects.filter(order=self.order).count(), 1)
-        self.assertFalse(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
+        self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
         self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.added_photo).exists())
 
     def test_late_success_for_a_canceled_order_stays_closed_and_opens_attention(self) -> None:
@@ -406,7 +424,7 @@ class PaymentTransitionTests(TransactionTestCase):
         self.assertEqual(audit.user_id, self.operator.pk)
         self.assertEqual(audit.action_flag, CHANGE)
         self.assertIsNotNone(audit.action_time)
-        self.assertFalse(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
+        self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
         self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.added_photo).exists())
 
     def test_manual_paid_rejects_a_nonstaff_actor(self) -> None:
@@ -518,7 +536,7 @@ class PaymentTransitionTests(TransactionTestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertEqual(EmailDelivery.objects.filter(order=self.order).count(), 1)
-        self.assertFalse(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
+        self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
         self.assertIn("paid", outcomes)
 
     def _run_manual_paid(self) -> str:
@@ -554,7 +572,7 @@ class PaymentTransitionTests(TransactionTestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertEqual(EmailDelivery.objects.filter(order=self.order).count(), 1)
-        self.assertFalse(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
+        self.assertTrue(CartItem.objects.filter(cart=self.cart, photo=self.photo).exists())
 
     def test_equivalent_concurrent_notification_and_fetch_share_one_transition(self) -> None:
         """Callback and worker fetch races must not duplicate one paid fulfillment transition."""
@@ -574,11 +592,14 @@ class PaymentTransitionTests(TransactionTestCase):
             {PaymentEvidence.Source.NOTIFICATION, PaymentEvidence.Source.STATUS_FETCH},
         )
 
-    def test_terminal_unsuccessful_observation_unlocks_real_cart_set_and_clear_mutations(
+    def test_terminal_unsuccessful_observation_allows_explicit_reset_without_superseding_order(
         self,
     ) -> None:
-        """A canceled attempt must release the exact cart for normal later mutation and clearing."""
+        """Reset must preserve the unpaid Order after an unsuccessful attempt."""
         self.apply(self.observation(status=NormalizedPaymentStatus.CANCELED))
+        reset = start_new_cart(event=self.event, browser_token=self.cart_token)
+        assert reset.issued_browser_token is not None
+        self.cart_token = reset.issued_browser_token
 
         with self._cart_purchasable(self.photo, self.added_photo):
             selected = set_photo_selected(
@@ -587,13 +608,14 @@ class PaymentTransitionTests(TransactionTestCase):
                 selected=True,
                 browser_token=self.cart_token,
                 watermarked_previews_enabled=True,
+                now=self.now,
             )
             cleared = clear_cart(event=self.event, browser_token=self.cart_token)
 
         self.order.refresh_from_db()
         self.assertTrue(selected.changed)
         self.assertTrue(cleared.changed)
-        self.assertEqual(self.order.status, Order.Status.SUPERSEDED)
+        self.assertEqual(self.order.status, Order.Status.PENDING)
         self.assertFalse(Cart.objects.filter(pk=self.cart.pk).exists())
 
     def test_automatic_paid_and_real_cart_mutation_complete_without_lock_cycle(self) -> None:
@@ -702,6 +724,7 @@ class PaymentTransitionTests(TransactionTestCase):
                 selected=True,
                 browser_token=self.cart_token,
                 watermarked_previews_enabled=True,
+                now=self.now,
             )
         finally:
             close_old_connections()

@@ -85,6 +85,7 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
                 "config.context_processors.analytics",
                 "ingestion.context_processors.photographer_navigation",
+                "commerce.context_processors.purchase_navigation",
             ],
         },
     },

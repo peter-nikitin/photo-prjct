@@ -16,7 +16,6 @@ from commerce.capabilities import (
     PurchaseBrowserCapability,
     create_order_access_grant,
     issue_purchase_browser_capability,
-    purchase_browser_authorizes_order,
 )
 from commerce.identity import browser_token_sha256
 from commerce.models import Cart, CartItem, Order, OrderItem, PaymentAttempt
@@ -28,6 +27,7 @@ from commerce.payment_gateway import (
     PaymentRequest,
 )
 from commerce.payments import PaymentTransitionRejected, reconcile_payment_attempt
+from commerce.services import _lock_digest, consume_cart
 from commerce.tbank_gateway import TBANK_ADAPTER_KEY
 
 
@@ -53,7 +53,11 @@ class CheckoutPaymentUnavailable(CheckoutError):
         *,
         purchase_browser_capability: PurchaseBrowserCapability | None = None,
         set_purchase_browser_cookie: bool = False,
+        cart_browser_token: str | None = None,
+        order_public_number: str | None = None,
     ) -> None:
+        self.cart_browser_token = cart_browser_token
+        self.order_public_number = order_public_number
         self.purchase_browser_capability = purchase_browser_capability
         self.set_purchase_browser_cookie = set_purchase_browser_cookie
         super().__init__("Не удалось перейти к оплате. Попробуйте ещё раз.")
@@ -67,6 +71,7 @@ class CheckoutResult:
     return_url: str
     purchase_browser_capability: PurchaseBrowserCapability | None
     set_purchase_browser_cookie: bool
+    cart_browser_token: str
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,7 @@ class _PreparedCheckout:
     request: PaymentRequest
     purchase_browser_capability: PurchaseBrowserCapability | None
     set_purchase_browser_cookie: bool
+    cart_browser_token: str
 
 
 @sensitive_variables(
@@ -99,7 +105,7 @@ def create_checkout(
     return_url_for_order: Callable[[str], str],
     now: datetime | None = None,
 ) -> CheckoutResult:
-    """Create or reuse one immutable checkout, then call the gateway after commit."""
+    """Consume one selection into an immutable Order, then call the gateway after commit."""
     current_time = now or timezone.now()
     if (
         not isinstance(adapter_key, str)
@@ -119,14 +125,32 @@ def create_checkout(
         return_url_for_order=return_url_for_order,
         now=current_time,
     )
-    persisted_attempt = PaymentAttempt.objects.get(pk=prepared.attempt_id)
-    if persisted_attempt.provider_payment_id and persisted_attempt.confirmation_url:
-        return _checkout_result(prepared=prepared, attempt=persisted_attempt)
+    try:
+        attempt = initiate_payment(
+            attempt_id=prepared.attempt_id,
+            request=prepared.request,
+            gateway=gateway,
+            now=current_time,
+        )
+    except CheckoutPaymentUnavailable:
+        raise _payment_unavailable(prepared) from None
+    return _checkout_result(prepared=prepared, attempt=attempt)
 
+
+def initiate_payment(
+    *,
+    attempt_id: int,
+    request: PaymentRequest,
+    gateway: PaymentGateway,
+    now: datetime,
+) -> PaymentAttempt:
+    """Initiate a committed attempt without holding its Order database lock."""
+    adapter_key = gateway.adapter_key
+    current_time = now
     if adapter_key == TBANK_ADAPTER_KEY:
         # Commit the claim before network I/O. A crash at any later point requires CheckOrder.
         claimed = PaymentAttempt.objects.filter(
-            pk=prepared.attempt_id,
+            pk=attempt_id,
             status=PaymentAttempt.Status.PENDING,
             initiation_started_at__isnull=True,
         ).update(
@@ -135,17 +159,17 @@ def create_checkout(
         )
         if not claimed:
             try:
-                reconcile_payment_attempt(attempt_id=prepared.attempt_id, gateway=gateway)
+                reconcile_payment_attempt(attempt_id=attempt_id, gateway=gateway)
             except PaymentTransitionRejected:
                 pass
-            raise _payment_unavailable(prepared)
+            raise CheckoutPaymentUnavailable()
     try:
-        created = gateway.create_payment(prepared.request)
+        created = gateway.create_payment(request)
     except ValueError:
         if adapter_key == TBANK_ADAPTER_KEY:
             # The bank adapter uses ValueError only for validation before any network request.
             PaymentAttempt.objects.filter(
-                pk=prepared.attempt_id,
+                pk=attempt_id,
                 status=PaymentAttempt.Status.PENDING,
             ).update(
                 status=PaymentAttempt.Status.FAILED,
@@ -155,26 +179,26 @@ def create_checkout(
                 reconciliation_lease_expires_at=None,
                 reconciliation_next_attempt_at=None,
             )
-        raise _payment_unavailable(prepared) from None
+        raise CheckoutPaymentUnavailable() from None
     except PaymentGatewayError:
-        raise _payment_unavailable(prepared) from None
+        raise CheckoutPaymentUnavailable() from None
     if not isinstance(created, CreatedPayment):
-        raise _payment_unavailable(prepared)
+        raise CheckoutPaymentUnavailable()
     if (
-        created.amount_kopecks != prepared.request.amount_kopecks
-        or created.currency != prepared.request.currency
+        created.amount_kopecks != request.amount_kopecks
+        or created.currency != request.currency
         or not _is_safe_hosted_confirmation_url(created.confirmation_url)
     ):
-        raise _payment_unavailable(prepared)
+        raise CheckoutPaymentUnavailable()
 
     try:
         attempt = _reconcile_created_payment(
-            attempt_id=prepared.attempt_id,
+            attempt_id=attempt_id,
             created=created,
         )
     except CheckoutPaymentUnavailable:
-        raise _payment_unavailable(prepared) from None
-    return _checkout_result(prepared=prepared, attempt=attempt)
+        raise CheckoutPaymentUnavailable() from None
+    return attempt
 
 
 def _normalize_checkout_email(value: str) -> str:
@@ -209,6 +233,7 @@ def _prepare_checkout(
     with transaction.atomic():
         if not purchase_enabled:
             raise CheckoutUnavailable()
+        _lock_digest(cart_digest)
         prepared = _prepare_locked_checkout(
             event=event,
             cart_digest=cart_digest,
@@ -246,114 +271,46 @@ def _prepare_locked_checkout(
     )
     if cart is None:
         return None
-    pending_order = (
-        Order.objects.select_for_update()
-        .filter(
-            event=authoritative_event,
-            originating_cart_token_sha256=cart_digest,
-            status=Order.Status.PENDING,
-        )
-        .first()
+    # An old token cannot resume payment or create another Order.
+    if Order.objects.filter(
+        event=authoritative_event,
+        originating_cart_token_sha256=cart_digest,
+        status=Order.Status.PENDING,
+    ).exists():
+        raise CheckoutEmptyCart()
+    if cart.expires_at <= now:
+        cart.delete()
+        return None
+    locked_items = list(
+        CartItem.objects.select_for_update(of=("self",))
+        .filter(cart=cart)
+        .select_related("photo")
+        .order_by("added_at", "photo_id")
     )
-    active_attempt = None
-    if pending_order is not None:
-        if not purchase_browser_authorizes_order(
-            order=pending_order,
-            token=purchase_browser_token,
-            now=now,
-        ):
-            raise CheckoutPaymentUnavailable()
-        locked_attempts = list(
-            PaymentAttempt.objects.select_for_update()
-            .filter(order=pending_order)
-            .order_by("-created_at", "-pk")
-        )
-        active_attempt = next(
-            (
-                attempt
-                for attempt in locked_attempts
-                if attempt.status == PaymentAttempt.Status.PENDING
-            ),
-            None,
-        )
-        if active_attempt is not None and active_attempt.adapter_key != adapter_key:
-            raise CheckoutPaymentUnavailable()
-
-    current_items: list[CartItem] = []
-    if active_attempt is None:
-        if cart.expires_at <= now:
-            _supersede_for_checkout_cart_mutation(pending_order)
-            cart.delete()
-            return None
-
-        locked_items = list(
-            CartItem.objects.select_for_update(of=("self",))
-            .filter(cart=cart)
-            .select_related("photo")
-            .order_by("added_at", "photo_id")
-        )
-        eligible_ids = set(
-            purchasable_paid_photo_queryset(
-                event=authoritative_event,
-                watermarked_previews_enabled=watermarked_previews_enabled,
-            )
-            .filter(pk__in=[item.photo_id for item in locked_items])
-            .values_list("pk", flat=True)
-        )
-        ineligible_item_ids = [
-            item.pk for item in locked_items if item.photo_id not in eligible_ids
-        ]
-        if ineligible_item_ids:
-            _supersede_for_checkout_cart_mutation(pending_order)
-            pending_order = None
-            CartItem.objects.filter(pk__in=ineligible_item_ids).delete()
-        current_items = [item for item in locked_items if item.photo_id in eligible_ids]
-        if not current_items:
-            _supersede_for_checkout_cart_mutation(pending_order)
-            cart.delete()
-            return None
-
-    normalized_email = _normalize_checkout_email(checkout_email)
-
-    capability = None
-    set_cookie = False
-    if pending_order is not None and active_attempt is not None:
-        order = pending_order
-        attempt = active_attempt
-    elif pending_order is not None:
-        if _order_matches_checkout(
-            order=pending_order,
-            items=current_items,
-            email=normalized_email,
-            unit_price_kopecks=authoritative_event.price_per_photo_kopecks,
-        ):
-            order = pending_order
-            attempt = _create_attempt(order=order, adapter_key=adapter_key)
-        else:
-            pending_order.status = Order.Status.SUPERSEDED
-            pending_order.save(update_fields=["status"])
-            order, attempt, capability = _create_order_and_attempt(
-                event=authoritative_event,
-                cart_digest=cart_digest,
-                items=current_items,
-                email=normalized_email,
-                purchase_browser_token=purchase_browser_token,
-                adapter_key=adapter_key,
-                now=now,
-            )
-            set_cookie = True
-    else:
-        order, attempt, capability = _create_order_and_attempt(
+    eligible_ids = set(
+        purchasable_paid_photo_queryset(
             event=authoritative_event,
-            cart_digest=cart_digest,
-            items=current_items,
-            email=normalized_email,
-            purchase_browser_token=purchase_browser_token,
-            adapter_key=adapter_key,
-            now=now,
+            watermarked_previews_enabled=watermarked_previews_enabled,
         )
-        set_cookie = True
-
+        .filter(pk__in=[item.photo_id for item in locked_items])
+        .values_list("pk", flat=True)
+    )
+    CartItem.objects.filter(cart=cart).exclude(photo_id__in=eligible_ids).delete()
+    current_items = [item for item in locked_items if item.photo_id in eligible_ids]
+    if not current_items:
+        cart.delete()
+        return None
+    normalized_email = _normalize_checkout_email(checkout_email)
+    order, attempt, capability = _create_order_and_attempt(
+        event=authoritative_event,
+        cart_digest=cart_digest,
+        items=current_items,
+        email=normalized_email,
+        purchase_browser_token=purchase_browser_token,
+        adapter_key=adapter_key,
+        now=now,
+    )
+    cart_browser_token = consume_cart(cart=cart, digest=cart_digest)
     request = _payment_request(
         order=order,
         attempt=attempt,
@@ -364,35 +321,8 @@ def _prepare_locked_checkout(
         attempt_id=attempt.pk,
         request=request,
         purchase_browser_capability=capability,
-        set_purchase_browser_cookie=set_cookie,
-    )
-
-
-def _supersede_for_checkout_cart_mutation(order: Order | None) -> None:
-    if order is None:
-        return
-    order.status = Order.Status.SUPERSEDED
-    order.save(update_fields=["status"])
-
-
-def _order_matches_checkout(
-    *,
-    order: Order,
-    items: list[CartItem],
-    email: str,
-    unit_price_kopecks: int,
-) -> bool:
-    photo_ids = tuple(item.photo_id for item in items)
-    saved_photo_ids = tuple(order.items.order_by("photo_id").values_list("photo_id", flat=True))
-    return (
-        order.checkout_email == email
-        and order.total_kopecks == unit_price_kopecks * len(photo_ids)
-        and saved_photo_ids == tuple(sorted(photo_ids))
-        and all(
-            item.unit_price_kopecks == unit_price_kopecks
-            and item.line_total_kopecks == unit_price_kopecks
-            for item in order.items.all()
-        )
+        set_purchase_browser_cookie=True,
+        cart_browser_token=cart_browser_token,
     )
 
 
@@ -552,6 +482,7 @@ def _checkout_result(*, prepared: _PreparedCheckout, attempt: PaymentAttempt) ->
         return_url=prepared.request.return_url,
         purchase_browser_capability=prepared.purchase_browser_capability,
         set_purchase_browser_cookie=prepared.set_purchase_browser_cookie,
+        cart_browser_token=prepared.cart_browser_token,
     )
 
 
@@ -579,6 +510,8 @@ def _is_safe_hosted_confirmation_url(value: object) -> bool:
 
 def _payment_unavailable(prepared: _PreparedCheckout) -> CheckoutPaymentUnavailable:
     return CheckoutPaymentUnavailable(
+        order_public_number=prepared.request.order_public_number,
         purchase_browser_capability=prepared.purchase_browser_capability,
         set_purchase_browser_cookie=prepared.set_purchase_browser_cookie,
+        cart_browser_token=prepared.cart_browser_token,
     )

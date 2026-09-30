@@ -458,6 +458,20 @@
   max-width: none;
 }
 
+#order-list-title,
+.event-detail-header #order-list-title + p {
+  grid-column: 1 / -1;
+}
+
+.event-detail-header #order-list-title + p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.order > .order-summary-panel {
+  margin-block: 14px;
+}
+
 .order-header {
   margin-bottom: 24px;
 }

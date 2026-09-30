@@ -54,7 +54,11 @@
             </div>
             <div class="event-cart-summary-actions">
               {% if purchase_enabled and cart_presentation.mutation_locked and cart_presentation.pending_order_public_number %}
-                <a class="button" href="{% url 'commerce:order' public_number=cart_presentation.pending_order_public_number %}">Продолжить оплату</a>
+                <a class="button" href="{% url 'commerce:order' public_number=cart_presentation.pending_order_public_number %}">Открыть заказ</a>
+                <form method="post" action="{% url 'commerce:reset' event_slug=event.slug %}">
+                  {% csrf_token %}
+                  <button class="button" type="submit">Начать новую корзину</button>
+                </form>
               {% elif purchase_enabled %}
                 <form class="checkout-form event-cart-checkout-form" method="post" action="{% url 'commerce:checkout' event_slug=event.slug %}">
                   {% csrf_token %}

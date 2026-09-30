@@ -3,7 +3,6 @@ from datetime import date
 from urllib.parse import urlencode
 
 from commerce.views import (
-    apply_read_cookie_decision,
     cart_state_for_photos,
     private_cart_response,
 )
@@ -262,10 +261,6 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     )
     if cart_state is not None:
         private_cart_response(response)
-        apply_read_cookie_decision(
-            response,
-            delete_browser_token=cart_state.delete_browser_token,
-        )
     return response
 
 

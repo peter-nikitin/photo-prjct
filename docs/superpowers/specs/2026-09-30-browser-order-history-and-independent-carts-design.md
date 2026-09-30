@@ -2,7 +2,7 @@
 
 ## Status and references
 
-The maintainer approved this written specification in chat on 2026-09-30. Implementation awaits acceptance of the superseding ADR and an implementation plan.
+The maintainer approved this written specification in chat on 2026-09-30. ADR 0047 and the implementation plan were accepted; the repository implementation is under verification.
 
 - Related architecture: [Architecture](../../architecture.md), especially Purchase and download and Security, privacy, and legal boundaries.
 - Related product jobs: [PJ-010 Purchase selected photos](../../product-jobs.md#pj-010--customer--purchase-selected-photos) and [PJ-016 Select paid event photos](../../product-jobs.md#pj-016--customer--select-paid-event-photos).
@@ -19,6 +19,7 @@ A customer can find the orders created in the current browser, return to an unpa
 - The main navigation contains **Мои заказы**. It opens a private, uncached list of Orders associated with the current valid purchase-browser cookie, newest first. Each row shows the public Order number, event, creation date, total, and customer-safe status, and opens that Order. With no valid cookie or matching Orders, the page shows an empty state without revealing whether other Orders exist.
 - The purchase cookie keeps the existing 30-day lifetime from the most recent Order creation. The list is unavailable after cookie expiry, deletion, or on another device. No account or email-based history recovery is introduced; existing individual Order access grants and support recovery remain separate.
 - The cart remains a mutable selection until checkout creates an immutable Order. In the same committed transaction, checkout removes that event's selected cart and gives subsequent selection a new cart identity. Carts for other events in the same browser retain their items and expiry. The purchase cookie remains independent and continues to authorize earlier Orders.
+- The cart bearer cookie lasts 30 days from its initial issuance or a checkout/reset rotation. Ordinary cart reads and mutations do not refresh or delete that cookie. A cart's server expiry may extend after a mutation, but the browser can no longer reach it when the cookie expires; the customer may need to start a new selection then.
 - This transition happens even if the subsequent bank `Init` call fails, times out, or returns no usable payment URL. The checkout response retains access to the new Order and exposes a path to its page; it does not display the old selection as an editable cart.
 - A customer may select the same photo again and place another Order. Each Order has its own immutable price and items, and payment of one Order authorizes only that Order's items. A late successful payment of an earlier Order never changes the new cart or another Order.
 - For Orders made before this behavior is deployed, an existing locked cart offers an explicit **Начать новую корзину** action. It clears that selection and changes only the cart identity, without canceling or changing the existing Order or its payment attempt.

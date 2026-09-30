@@ -1,7 +1,7 @@
 # Browser Order History and Independent Carts Implementation Plan
 
 - Date: 2026-09-30
-- Status: Draft for maintainer review
+- Status: Approved by the maintainer on 2026-09-30
 - Owner: project maintainer
 - Related specification: [Browser Order History and Independent Carts](../superpowers/specs/2026-09-30-browser-order-history-and-independent-carts-design.md)
 - Related architecture: [Purchase and download](../architecture.md#purchase-and-download), [Security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)

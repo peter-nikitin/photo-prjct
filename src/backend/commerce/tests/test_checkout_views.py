@@ -27,6 +27,7 @@ from feature_flags.states import (
 from feature_flags.testing import override_feature_flags
 from picflow.models import Event, Photo
 
+from commerce.checkout import CheckoutEmptyCart
 from commerce.identity import browser_token_sha256
 from commerce.models import Cart, CartItem, Order, OrderItem, PaymentAttempt
 from commerce.payment_gateway import PaymentGatewayError, PaymentGatewayErrorCategory
@@ -201,6 +202,106 @@ class CheckoutRouteGateTests(CheckoutViewTestCase):
 
 
 class CheckoutSubmissionTests(CheckoutViewTestCase):
+    def test_pending_checkout_stale_same_and_cross_event_add_responses_do_not_set_cookie(self):
+        self.enable(purchase=FEATURE_FLAG_ON)
+        other_event = Event.objects.create(
+            name="Other paid event",
+            slug="other-stale-cart-event",
+            start_date=self.event.start_date,
+            end_date=self.event.end_date,
+            city="Москва",
+            publication_status=Event.PublicationStatus.PUBLISHED,
+            access_type=Event.AccessType.PAID,
+            price_per_photo_kopecks=30000,
+        )
+        other_photo = Photo.objects.create(
+            id="other-stale-cart-photo", event=other_event, src="photos/other-stale.jpg"
+        )
+        other_cart = Cart.objects.create(
+            event=other_event,
+            browser_token_sha256=browser_token_sha256(self.cart_token),
+            expires_at=timezone.now() + timedelta(hours=2),
+        )
+        position = CartItem.objects.create(cart=other_cart, photo=other_photo)
+        expiry = other_cart.expires_at
+        with (
+            self.purchasable(),
+            patch("commerce.views._payment_gateway", return_value=self.gateway()),
+        ):
+            checkout_response = self.client.post(
+                self.checkout_url(), {"email": "buyer@example.test"}
+            )
+        final_token = checkout_response.cookies["findme_cart"].value
+        stale_client = Client()
+        stale_client.cookies["findme_cart"] = self.cart_token
+        for event, photo in ((self.event, self.photo), (other_event, other_photo)):
+            with (
+                self.subTest(event=event.slug),
+                patch(
+                    "commerce.views.purchasable_paid_photo_queryset",
+                    return_value=Photo.objects.all(),
+                ),
+                patch(
+                    "commerce.services.purchasable_paid_photo_queryset",
+                    side_effect=lambda *, event, watermarked_previews_enabled: Photo.objects.filter(
+                        event=event
+                    ),
+                ),
+            ):
+                stale_response = stale_client.post(
+                    reverse("commerce:set_photo_state", kwargs={"event_slug": event.slug}),
+                    {"photo_id": photo.pk, "selected": "1"},
+                )
+            self.assertEqual(stale_response.status_code, 302)
+            self.assertNotIn("findme_cart", stale_response.cookies)
+            self.assertNotIn("findme_purchase", stale_response.cookies)
+            other_cart.refresh_from_db()
+            self.assertEqual(other_cart.browser_token_sha256, browser_token_sha256(final_token))
+            self.assertEqual(other_cart.expires_at, expiry)
+            self.assertTrue(CartItem.objects.filter(pk=position.pk).exists())
+            self.assertEqual(self.client.cookies["findme_cart"].value, final_token)
+        self.assertEqual(Cart.objects.count(), 1)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(PaymentAttempt.objects.count(), 1)
+
+    def test_paid_legacy_cookie_add_returns_fresh_cookie_and_preserves_order(self):
+        self.enable(purchase=FEATURE_FLAG_ON)
+        with (
+            self.purchasable(),
+            patch("commerce.views._payment_gateway", return_value=self.gateway()),
+        ):
+            self.client.post(self.checkout_url(), {"email": "buyer@example.test"})
+        order = Order.objects.get()
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid_at=timezone.now())
+        self.client.cookies["findme_cart"] = self.cart_token
+        with self.purchasable():
+            response = self.client.post(
+                reverse("commerce:set_photo_state", kwargs={"event_slug": self.event.slug}),
+                {"photo_id": self.photo.pk, "selected": "1"},
+            )
+        self.assertEqual(response.status_code, 302)
+        token = response.cookies["findme_cart"].value
+        self.assertNotEqual(token, self.cart_token)
+        self.assertEqual(Cart.objects.get().browser_token_sha256, browser_token_sha256(token))
+        self.assertEqual(Order.objects.count(), 1)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PAID)
+
+    def test_stale_checkout_does_not_render_previously_read_selection_after_consumption(self):
+        self.enable(purchase=FEATURE_FLAG_ON)
+        with (
+            self.purchasable(),
+            patch("commerce.views._payment_gateway", return_value=self.gateway()),
+            patch("commerce.views.create_checkout", side_effect=CheckoutEmptyCart),
+        ):
+            response = self.client.post(self.checkout_url(), {"email": "buyer@example.test"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"], reverse("commerce:detail", kwargs={"event_slug": self.event.slug})
+        )
+        self.assertNotIn("findme_cart", response.cookies)
+        self.assertNotIn("findme_purchase", response.cookies)
+
     def test_checkout_post_requires_csrf_and_creates_one_normalized_order_with_exact_cookie(
         self,
     ) -> None:
@@ -225,6 +326,9 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
         order = Order.objects.get()
         self.assertEqual(order.checkout_email, "buyer@example.test")
         self.assertEqual(order.delivery_email, "buyer@example.test")
+        self.assertIn("findme_cart", response.cookies)
+        self.assertNotEqual(response.cookies["findme_cart"].value, self.cart_token)
+        self.assertFalse(Cart.objects.filter(pk=self.cart.pk).exists())
         cookie = response.cookies["findme_purchase"]
         self.assertEqual(int(cookie["max-age"]), 30 * 24 * 60 * 60)
         self.assertEqual(cookie["path"], "/")
@@ -232,7 +336,7 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
         self.assertTrue(cookie["httponly"])
         self.assertEqual(cookie["samesite"], "Lax")
 
-    def test_first_timeout_preserves_the_new_capability_for_one_idempotent_retry(self) -> None:
+    def test_first_timeout_preserves_order_capability_and_rejects_cart_retry(self) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
         gateway = TimeoutOnceGateway()
 
@@ -246,15 +350,20 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
                 {"email": "buyer@example.test"},
             )
 
-        self.assertEqual(failed.status_code, 200)
-        self.assertContains(failed, "Не удалось перейти к оплате. Попробуйте ещё раз.")
+        self.assertEqual(failed.status_code, 302)
+        self.assertEqual(
+            failed["Location"],
+            reverse("commerce:order", kwargs={"public_number": Order.objects.get().public_number}),
+        )
+        self.assertIn("findme_cart", failed.cookies)
+        self.assertNotEqual(failed.cookies["findme_cart"].value, self.cart_token)
+        self.assertFalse(Cart.objects.filter(pk=self.cart.pk).exists())
         self.assertIn("findme_purchase", failed.cookies)
         self.assertEqual(Order.objects.count(), 1)
         self.assertEqual(PaymentAttempt.objects.count(), 1)
-        self.assertEqual(retried.status_code, 302)
-        self.assertTrue(retried["Location"].startswith("https://payment.test.invalid/"))
+        self.assertEqual(retried.status_code, 404)
 
-    def test_malformed_provider_confirmation_keeps_capability_and_retries_same_attempt(
+    def test_malformed_provider_confirmation_keeps_order_access_without_repeating_cart_checkout(
         self,
     ) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
@@ -278,11 +387,10 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
                 {"email": "buyer@example.test"},
             )
 
-        self.assertEqual(failed.status_code, 200)
+        self.assertEqual(failed.status_code, 302)
         self.assertIn("findme_purchase", failed.cookies)
         self.assertEqual(attempt.confirmation_url, "")
-        self.assertEqual(retried.status_code, 302)
-        self.assertTrue(retried["Location"].startswith("https://payment.test.invalid/"))
+        self.assertEqual(retried.status_code, 404)
         self.assertEqual(Order.objects.get().pk, order.pk)
         self.assertEqual(PaymentAttempt.objects.get().pk, attempt.pk)
 
@@ -301,16 +409,62 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
                 {"email": "buyer@example.test"},
             )
             order = Order.objects.get()
+            legacy = Cart.objects.create(
+                event=self.event,
+                browser_token_sha256=browser_token_sha256(self.cart_token),
+                expires_at=timezone.now() + timedelta(days=1),
+            )
+            CartItem.objects.create(cart=legacy, photo=self.photo)
+            self.client.cookies["findme_cart"] = self.cart_token
             cart = self.client.get(cart_url)
 
         self.assertEqual(checkout.status_code, 302)
         self.assertEqual(cart.status_code, 200)
-        self.assertContains(cart, "Продолжить оплату")
+        self.assertContains(cart, "Открыть заказ")
         self.assertContains(
             cart,
             reverse("commerce:order", kwargs={"public_number": order.public_number}),
         )
         self.assertNotContains(cart, "Перейти к оплате")
+
+    def test_legacy_cart_reset_requires_csrf_and_preserves_active_attempt(self):
+        self.enable(purchase=FEATURE_FLAG_ON)
+        with (
+            self.purchasable(),
+            patch("commerce.views._payment_gateway", return_value=self.gateway()),
+        ):
+            self.client.post(self.checkout_url(), {"email": "buyer@example.test"})
+        order = Order.objects.get()
+        attempt = PaymentAttempt.objects.get()
+        legacy = Cart.objects.create(
+            event=self.event,
+            browser_token_sha256=browser_token_sha256(self.cart_token),
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        CartItem.objects.create(cart=legacy, photo=self.photo)
+        self.client.cookies["findme_cart"] = self.cart_token
+        reset_url = reverse("commerce:reset", kwargs={"event_slug": self.event.slug})
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.cookies["findme_cart"] = self.cart_token
+        rejected = csrf_client.post(reset_url)
+        self.assertEqual(rejected.status_code, 403)
+        self.assertTrue(Cart.objects.filter(pk=legacy.pk).exists())
+        self.assertEqual(self.client.get(reset_url).status_code, 405)
+        response = self.client.post(reset_url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"], reverse("commerce:detail", kwargs={"event_slug": self.event.slug})
+        )
+        self.assertNotEqual(response.cookies["findme_cart"].value, self.cart_token)
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertFalse(Cart.objects.filter(pk=legacy.pk).exists())
+        order.refresh_from_db()
+        attempt.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PENDING)
+        self.assertEqual(attempt.status, PaymentAttempt.Status.PENDING)
+        self.assertTrue(attempt.confirmation_url)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(PaymentAttempt.objects.count(), 1)
 
     def test_locked_cart_hides_pending_continuation_when_purchase_gate_closes(self) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
@@ -324,6 +478,13 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
                 self.checkout_url(),
                 {"email": "buyer@example.test"},
             )
+            legacy = Cart.objects.create(
+                event=self.event,
+                browser_token_sha256=browser_token_sha256(self.cart_token),
+                expires_at=timezone.now() + timedelta(days=1),
+            )
+            CartItem.objects.create(cart=legacy, photo=self.photo)
+            self.client.cookies["findme_cart"] = self.cart_token
             self.feature_flag_states[PAID_PHOTO_PURCHASE] = FEATURE_FLAG_OFF
             closed = self.client.get(cart_url)
             self.feature_flag_states[PAID_PHOTO_PURCHASE] = FEATURE_FLAG_STAFF
@@ -334,9 +495,9 @@ class CheckoutSubmissionTests(CheckoutViewTestCase):
             self.client.force_login(staff)
             allowed_staff = self.client.get(cart_url)
 
-        self.assertNotContains(closed, "Продолжить оплату")
-        self.assertNotContains(anonymous_staff, "Продолжить оплату")
-        self.assertContains(allowed_staff, "Продолжить оплату")
+        self.assertNotContains(closed, "Открыть заказ")
+        self.assertNotContains(anonymous_staff, "Открыть заказ")
+        self.assertContains(allowed_staff, "Открыть заказ")
 
 
 class PaymentNotificationViewTests(CheckoutViewTestCase):

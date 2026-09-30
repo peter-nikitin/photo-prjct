@@ -18,7 +18,6 @@ from django.template.base import Variable
 from django.test import (
     Client,
     RequestFactory,
-    SimpleTestCase,
     TestCase,
     TransactionTestCase,
     modify_settings,
@@ -150,7 +149,7 @@ def cdn_source_uri(url: str) -> str:
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
 )
 @modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})
-class PublicShellTests(SimpleTestCase):
+class PublicShellTests(TestCase):
     def test_public_shell_includes_one_metrika_counter_and_cookie_notice(self) -> None:
         response = self.client.get(reverse("legal"))
 

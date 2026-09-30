@@ -34,6 +34,8 @@ Offer a private browser Order list under the existing 30-day purchase capability
 
 The cart no longer controls payment retry or paid fulfillment. A late verified payment fulfills only the immutable OrderItems and never deletes positions from a newer cart. A customer may place another Order for the same photo. Existing locked carts may be explicitly reset to a new cart identity without changing their Orders or payment evidence.
 
+The cart bearer cookie has a 30-day browser lifetime from issuance or rotation. Ordinary reads and mutations neither refresh nor delete it. Server Cart expiry can extend with mutation, but a customer loses browser access to that Cart when its bearer cookie expires. Checkout and explicit legacy reset rotate the bearer and issue a new 30-day cookie.
+
 ADR 0031's immutable Order and PaymentAttempt evidence, one-active-attempt invariant, separate purchase capability, trusted payment confirmation, paid-OrderItem entitlement, email delivery, and protected original access remain accepted. ADR 0030's cart bearer remains selection-only.
 
 ## Consequences

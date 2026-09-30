@@ -8,10 +8,9 @@ from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
 
-from commerce import services as commerce_services
 from commerce.identity import browser_token_sha256
 from commerce.models import Cart, CartItem
-from commerce.services import clear_cart, read_cart, set_photo_selected
+from commerce.services import clear_cart, read_cart, set_photo_selected, start_new_cart
 
 
 class CartServiceTests(TestCase):
@@ -48,6 +47,34 @@ class CartServiceTests(TestCase):
             ),
         )
 
+    def test_start_new_cart_preserves_other_event_positions_and_exact_expiry(self):
+        now = timezone.now()
+        digest = browser_token_sha256(self.token)
+        current = Cart.objects.create(
+            event=self.event, browser_token_sha256=digest, expires_at=now + timedelta(days=1)
+        )
+        CartItem.objects.create(cart=current, photo=self.photo)
+        other = Cart.objects.create(
+            event=self.other_event, browser_token_sha256=digest, expires_at=now + timedelta(hours=1)
+        )
+        other_photo = Photo.objects.create(
+            id="other-event-cart", event=self.other_event, src="photos/other-event-cart.jpg"
+        )
+        item = CartItem.objects.create(cart=other, photo=other_photo)
+        expiry = other.expires_at
+        result = start_new_cart(event=self.event, browser_token=self.token)
+        assert result.issued_browser_token is not None
+        other.refresh_from_db()
+        self.assertTrue(result.changed)
+        self.assertFalse(Cart.objects.filter(pk=current.pk).exists())
+        self.assertEqual(
+            other.browser_token_sha256, browser_token_sha256(result.issued_browser_token)
+        )
+        self.assertEqual(other.expires_at, expiry)
+        self.assertTrue(CartItem.objects.filter(pk=item.pk).exists())
+        replay = start_new_cart(event=self.event, browser_token=self.token)
+        self.assertFalse(replay.changed)
+
     def test_read_with_no_or_malformed_token_creates_no_state(self) -> None:
         with self.purchasable(self.photo):
             absent = read_cart(
@@ -82,8 +109,6 @@ class CartServiceTests(TestCase):
         self.assertTrue(result.changed)
         self.assertTrue(result.selected)
         self.assertIsNotNone(result.issued_browser_token)
-        self.assertTrue(result.refresh_browser_token)
-        self.assertFalse(result.delete_browser_token)
         self.assertEqual(result.snapshot.photo_ids, (self.photo.pk,))
         self.assertEqual(result.snapshot.unit_price_kopecks, 30000)
         self.assertEqual(result.snapshot.total_kopecks, 30000)
@@ -176,9 +201,7 @@ class CartServiceTests(TestCase):
         self.assertFalse(duplicate.changed)
         self.assertEqual(expiry_after_no_op, first_now + timedelta(days=30))
         self.assertTrue(removed.changed)
-        self.assertTrue(removed.delete_browser_token)
         self.assertFalse(absent.changed)
-        self.assertFalse(absent.refresh_browser_token)
         self.assertEqual(Cart.objects.count(), 0)
 
     def test_read_prunes_ineligible_positions_in_addition_order_without_extending_expiry(
@@ -232,7 +255,6 @@ class CartServiceTests(TestCase):
             )
 
         self.assertTrue(result.pruned)
-        self.assertTrue(result.delete_browser_token)
         self.assertEqual(Cart.objects.count(), 0)
 
     def test_removing_final_item_keeps_cookie_when_another_unexpired_event_cart_exists(
@@ -265,10 +287,9 @@ class CartServiceTests(TestCase):
             )
 
         self.assertTrue(result.changed)
-        self.assertFalse(result.delete_browser_token)
         self.assertEqual(Cart.objects.count(), 1)
 
-    def test_clear_deletes_only_the_current_event_cart_and_refreshes_retained_cookie(self) -> None:
+    def test_clear_deletes_only_the_current_event_cart_without_issuing_a_cookie(self) -> None:
         other_event_photo = Photo.objects.create(
             id="other-clear-photo", event=self.other_event, src="photos/other-clear.jpg"
         )
@@ -290,8 +311,6 @@ class CartServiceTests(TestCase):
             result = clear_cart(event=self.event, browser_token=self.token)
 
         self.assertTrue(result.changed)
-        self.assertTrue(result.refresh_browser_token)
-        self.assertFalse(result.delete_browser_token)
         self.assertEqual(result.snapshot.photo_ids, ())
         self.assertEqual(Cart.objects.filter(event=self.other_event).count(), 1)
 
@@ -445,7 +464,7 @@ class CartServiceConcurrencyTests(TransactionTestCase):
             result.snapshot.unit_price_kopecks * result.snapshot.item_count,
         )
 
-    def test_concurrent_final_removals_report_one_digest_wide_cookie_deletion(self) -> None:
+    def test_concurrent_final_removals_never_issue_a_cookie(self) -> None:
         with self.purchasable():
             self.mutate(selected=True)
             self.mutate(selected=True, event=self.other_event, photo=self.other_photo)
@@ -458,45 +477,7 @@ class CartServiceConcurrencyTests(TransactionTestCase):
                 )
 
         self.assertEqual(Cart.objects.count(), 0)
-        self.assertEqual(sum(result.delete_browser_token for result in results), 1)
-
-    def test_final_removal_serializes_with_first_add_in_another_event_for_the_same_token(
-        self,
-    ) -> None:
-        decision_ready = ThreadEvent()
-        release_decision = ThreadEvent()
-        original_should_delete = commerce_services._should_delete_browser_token
-
-        def delayed_decision(*, digest: str, now):
-            result = original_should_delete(digest=digest, now=now)
-            decision_ready.set()
-            self.assertTrue(release_decision.wait(timeout=2))
-            return result
-
-        with self.purchasable():
-            self.mutate(selected=True)
-            with (
-                patch(
-                    "commerce.services._should_delete_browser_token", side_effect=delayed_decision
-                ),
-                ThreadPoolExecutor(max_workers=2) as executor,
-            ):
-                removal = executor.submit(self.mutate, selected=False)
-                self.assertTrue(decision_ready.wait(timeout=2))
-                addition = executor.submit(
-                    self.mutate,
-                    selected=True,
-                    event=self.other_event,
-                    photo=self.other_photo,
-                )
-                self.assertFalse(addition.done())
-                release_decision.set()
-                removed = removal.result()
-                added = addition.result()
-
-        self.assertTrue(removed.delete_browser_token)
-        self.assertTrue(added.changed)
-        self.assertEqual(Cart.objects.filter(event=self.other_event).count(), 1)
+        self.assertTrue(all(result.issued_browser_token is None for result in results))
 
     def test_photo_policy_change_waits_for_an_add_and_is_pruned_afterwards(self) -> None:
         item_create_ready = ThreadEvent()

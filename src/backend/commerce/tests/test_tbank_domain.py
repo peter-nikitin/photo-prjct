@@ -5,14 +5,18 @@ from django.db import connection
 from django.test import Client, TransactionTestCase
 from django.urls import reverse
 
-from commerce.checkout import CheckoutPaymentUnavailable
+from commerce.checkout import CheckoutEmptyCart, CheckoutPaymentUnavailable
 from commerce.models import CommerceAttention, EmailDelivery, Order, PaymentAttempt
 from commerce.payment_gateway import (
     IncomingPaymentNotification,
     NormalizedPaymentStatus,
     PaymentObservation,
 )
-from commerce.payments import apply_authenticated_notification, reconcile_payment_attempt
+from commerce.payments import (
+    PaymentReconciliationUnavailable,
+    apply_authenticated_notification,
+    reconcile_payment_attempt,
+)
 from commerce.tbank_gateway import TBANK_ADAPTER_KEY
 from commerce.test_payment_gateway import TestPaymentOutcome
 from commerce.tests import test_checkout as checkout_tests
@@ -50,7 +54,7 @@ class BankCheckoutTests(TransactionTestCase):
             with self.assertRaises(CheckoutPaymentUnavailable) as failure:
                 self.checkout(gateway=gateway, adapter_key=TBANK_ADAPTER_KEY)
             token = failure.exception.purchase_browser_capability.token
-            with self.assertRaises(CheckoutPaymentUnavailable):
+            with self.assertRaises(CheckoutEmptyCart):
                 self.checkout(gateway=gateway, adapter_key=TBANK_ADAPTER_KEY, purchase_token=token)
         attempt = PaymentAttempt.objects.get()
         self.assertEqual(len(gateway.requests), 1)
@@ -58,7 +62,12 @@ class BankCheckoutTests(TransactionTestCase):
         self.assertLessEqual(
             attempt.reconciliation_next_attempt_at, self.now + timedelta(minutes=15)
         )
-        self.assertTrue(gateway.recoveries)
+        self.assertEqual(gateway.recoveries, [])
+        with self.assertRaises(PaymentReconciliationUnavailable):
+            reconcile_payment_attempt(attempt_id=attempt.pk, gateway=gateway, now=self.now)
+        attempt.refresh_from_db()
+        self.assertEqual(gateway.recoveries, [attempt.idempotency_key])
+        self.assertEqual(len(gateway.requests), 1)
         self.assertEqual(attempt.status, PaymentAttempt.Status.PENDING)
 
     def test_local_receipt_rejection_can_be_corrected_without_unknown_bank_obligation(self):
@@ -86,7 +95,7 @@ class BankCheckoutTests(TransactionTestCase):
         token = checkout_tests.CheckoutServiceTests.existing_purchase_token
 
         def during_init(request):
-            with self.assertRaises(CheckoutPaymentUnavailable):
+            with self.assertRaises(CheckoutEmptyCart):
                 self.checkout(gateway=gateway, adapter_key=TBANK_ADAPTER_KEY, purchase_token=token)
             return original(request)
 

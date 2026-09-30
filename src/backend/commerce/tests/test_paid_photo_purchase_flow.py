@@ -46,7 +46,12 @@ from commerce.models import (
     PaymentAttempt,
 )
 from commerce.original_delivery import PurchasedOriginalUnavailable, sign_purchased_original
-from commerce.payment_gateway import NormalizedPaymentStatus, PaymentObservation
+from commerce.payment_gateway import (
+    NormalizedPaymentStatus,
+    PaymentGatewayError,
+    PaymentGatewayErrorCategory,
+    PaymentObservation,
+)
 from commerce.payments import (
     apply_payment_observation,
     cancel_order,
@@ -74,6 +79,20 @@ class _ObservationGateway:
 
     def authenticate_notification(self, notification):  # pragma: no cover - not a callback adapter.
         raise AssertionError("Reconciliation must not authenticate a callback.")
+
+
+class _FailFirstInitiationGateway(DeterministicPaymentGateway):
+    def __init__(self, *, notification_secret: bytes) -> None:
+        super().__init__(
+            outcome=TestPaymentOutcome.PENDING, notification_secret=notification_secret
+        )
+        self.failed = False
+
+    def create_payment(self, request):
+        if not self.failed:
+            self.failed = True
+            raise PaymentGatewayError(PaymentGatewayErrorCategory.UNAVAILABLE)
+        return super().create_payment(request)
 
 
 @override_settings(
@@ -355,6 +374,104 @@ class PaidPhotoPurchaseFlowTests(TestCase):
                 self.notification_secret, body, hashlib.sha256
             ).hexdigest(),
         )
+
+    def test_failed_checkout_history_retry_and_second_cart_survive_late_success(self) -> None:
+        gateway = _FailFirstInitiationGateway(notification_secret=self.notification_secret)
+        queryset = Photo.objects.filter(pk=self.photo.pk)
+        with (
+            patch("commerce.services.purchasable_paid_photo_queryset", return_value=queryset),
+            patch("commerce.views.purchasable_paid_photo_queryset", return_value=queryset),
+            patch("commerce.checkout.purchasable_paid_photo_queryset", return_value=queryset),
+            patch("commerce.views._payment_gateway", return_value=gateway),
+        ):
+            failed = self.client.post(self.checkout_url(), {"email": "buyer@example.test"})
+            first_order = Order.objects.get()
+            first_attempt = first_order.payment_attempts.get()
+            rotated_token = self.client.cookies["findme_cart"].value
+            history = self.client.get(reverse("commerce:order_list"))
+            retry_page = self.client.get(
+                reverse("commerce:order", kwargs={"public_number": first_order.public_number})
+            )
+            waiting = self.client.post(
+                reverse(
+                    "commerce:order_retry_payment",
+                    kwargs={"public_number": first_order.public_number},
+                )
+            )
+
+            self.assertEqual(failed.status_code, 302)
+            self.assertNotEqual(rotated_token, self.cart_token)
+            self.assertFalse(Cart.objects.filter(event=self.event).exists())
+            self.assertContains(history, first_order.public_number)
+            self.assertContains(retry_page, "Повторить оплату")
+            self.assertContains(waiting, "Проверяем связь с банком")
+            self.assertEqual(first_order.payment_attempts.count(), 1)
+            self.assertEqual(first_attempt.status, PaymentAttempt.Status.PENDING)
+
+            first_attempt.status = PaymentAttempt.Status.FAILED
+            first_attempt.terminal_at = timezone.now()
+            first_attempt.save(update_fields=["status", "terminal_at"])
+            retried = self.client.post(
+                reverse(
+                    "commerce:order_retry_payment",
+                    kwargs={"public_number": first_order.public_number},
+                )
+            )
+            self.assertEqual(retried.status_code, 302)
+            self.assertEqual(first_order.payment_attempts.count(), 2)
+
+            add = self.client.post(
+                reverse("commerce:set_photo_state", kwargs={"event_slug": self.event.slug}),
+                {"photo_id": self.photo.pk, "selected": "1"},
+            )
+            self.assertIn(add.status_code, (200, 302))
+            second_cart = Cart.objects.get(event=self.event)
+            self.assertEqual(second_cart.browser_token_sha256, browser_token_sha256(rotated_token))
+            self.assertEqual(
+                list(second_cart.items.values_list("photo_id", flat=True)), [self.photo.pk]
+            )
+            second_checkout = self.client.post(self.checkout_url(), {"email": "buyer@example.test"})
+            second_order = Order.objects.exclude(pk=first_order.pk).get()
+            self.assertEqual(second_checkout.status_code, 302)
+            self.assertNotEqual(second_order.pk, first_order.pk)
+            self.assertEqual(second_order.status, Order.Status.PENDING)
+            self.assertEqual(second_order.items.get().photo_id, self.photo.pk)
+            self.assertContains(
+                self.client.get(reverse("commerce:order_list")), second_order.public_number
+            )
+
+            newest_token = self.client.cookies["findme_cart"].value
+            self.client.post(
+                reverse("commerce:set_photo_state", kwargs={"event_slug": self.event.slug}),
+                {"photo_id": self.photo.pk, "selected": "1"},
+            )
+            newest_cart = Cart.objects.get(event=self.event)
+            self.assertEqual(newest_cart.browser_token_sha256, browser_token_sha256(newest_token))
+            original_url = reverse(
+                "commerce:order_download",
+                kwargs={"public_number": first_order.public_number, "photo_id": self.photo.pk},
+            )
+            self.assertEqual(self.client.get(original_url).status_code, 404)
+            retry_attempt = first_order.payment_attempts.exclude(pk=first_attempt.pk).get()
+            apply_payment_observation(
+                attempt_id=retry_attempt.pk,
+                adapter_key=retry_attempt.adapter_key,
+                source="status_fetch",
+                observation=self.succeeded_observation(retry_attempt),
+            )
+            storage = Mock()
+            storage.sign_final.return_value = "https://storage.test.invalid/late-success-original"
+            with patch("commerce.views._purchased_original_storage", return_value=storage):
+                self.assertEqual(self.client.get(original_url).status_code, 302)
+            self.assertEqual(
+                list(newest_cart.items.values_list("photo_id", flat=True)), [self.photo.pk]
+            )
+            self.assertEqual(
+                Cart.objects.get(pk=newest_cart.pk).browser_token_sha256,
+                browser_token_sha256(newest_token),
+            )
+            second_order.refresh_from_db()
+            self.assertEqual(second_order.status, Order.Status.PENDING)
 
     def test_checkout_to_authenticated_payment_to_email_grant_and_exact_original(self) -> None:
         """Removing any checkout, callback, grant, or item check could expose an unpaid original."""

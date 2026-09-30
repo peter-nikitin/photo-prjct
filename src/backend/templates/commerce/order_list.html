@@ -1,0 +1,28 @@
+{% extends "ui/base.html" %}
+{% load static %}
+{% block title %}Мои заказы — FindMe Photo{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'ui/catalog.css' %}">{% endblock %}
+{% block content %}
+<section class="order" aria-labelledby="order-list-title">
+  <header class="event-detail-header"><h1 id="order-list-title">Мои заказы</h1>
+    <p>Заказы, созданные в этом браузере. Они доступны в течение 30 дней после последнего заказа.</p>
+  </header>
+  {% for row in order_rows %}
+    <article class="order-summary-panel">
+      <h2><a href="{% url 'commerce:order' public_number=row.public_number %}">Заказ {{ row.public_number }}</a></h2>
+      <p>{{ row.event_name }} · {{ row.created_at|date:"d.m.Y" }}</p>
+      <p>{{ row.total_display }} · {{ row.status_display }}</p>
+    </article>
+  {% empty %}
+    <p>В этом браузере пока нет заказов.</p>
+    <a class="button" href="{% url 'event_catalog' %}">Посмотреть события</a>
+  {% endfor %}
+  {% if orders_page.has_other_pages %}
+    <nav class="pagination" aria-label="Страницы заказов">
+      {% if orders_page.has_previous %}<a href="?page={{ orders_page.previous_page_number }}">Предыдущая</a>{% endif %}
+      <span>{{ orders_page.number }} из {{ orders_page.paginator.num_pages }}</span>
+      {% if orders_page.has_next %}<a href="?page={{ orders_page.next_page_number }}">Следующая</a>{% endif %}
+    </nav>
+  {% endif %}
+</section>
+{% endblock %}

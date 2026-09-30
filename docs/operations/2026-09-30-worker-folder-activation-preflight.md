@@ -2,7 +2,7 @@
 
 - Date: 2026-09-30 (Europe/Moscow).
 - Status: preparation for review, **not** an apply package or paid approval.
-- Design: [separate-folder draft](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md); approved pool ceiling remains [bulk 0..1, selfie 1..1](../superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md).
+- Design: [approved separate-folder specification](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [ADR 0045](../adr/0045-isolate-worker-pool-management-in-a-separate-folder.md) and [repository plan](../plans/2026-09-30-isolated-worker-folder-support.md); approved pool ceiling remains [bulk 0..1, selfie 1..1](../superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md).
 - Scope: no cloud, IAM, secret, network, alert, deployment, or application mutation was submitted during this inventory.
 
 ## Exact observed baseline
@@ -35,4 +35,4 @@ The public catalogue is [Yandex Compute pricing](https://yandex.cloud/ru/docs/co
 
 ## Still required before exact commands or cutover
 
-The new worker folder, subnet, route table/NAT, SGs, service accounts, bootstrap secret/version, clean OS image, and group IDs do not exist, so no guessed ID or mutation command is reviewable yet. The separate-folder design needs repository support for disjoint ownership/observation/writer folders, a new ADR decision, and a reviewed exact IAM/network rollback snapshot. The cap-one saturation rule needs Git-owned supported application, native Alarm/NoData/recovery and delivery proof before customer cutover. Diagnostic rules retain their independent ADR 0043 API/workspace blockers. The activation window, real builder/image cost, exact GHCR read-only credential, effective IAM matrix, billed egress/diagnostic samples, physical provider disk lifecycle and current queue/attempt inventory remain unproven. Fresh approval must name each paid/access/availability-changing command immediately before it runs; this report grants none.
+The new worker folder, subnet, route table/NAT, SGs, service accounts, bootstrap secret/version, clean OS image, and group IDs did not exist at this snapshot, so no guessed ID is an executable target. ADR 0045 records the maintainer's separate-folder decision; repository support for disjoint ownership/observation/writer folders and a reviewed exact IAM/network rollback snapshot are still needed. The cap-one saturation rule needs Git-owned supported application, native Alarm/NoData/recovery and delivery proof before customer cutover. Diagnostic rules retain their independent ADR 0043 API/workspace blockers. The activation window, real builder/image cost, exact GHCR read-only credential, effective IAM matrix, billed egress/diagnostic samples, physical provider disk lifecycle and current queue/attempt inventory remain unproven. Fresh approval must name each paid/access/availability-changing command immediately before it runs; this report grants none.

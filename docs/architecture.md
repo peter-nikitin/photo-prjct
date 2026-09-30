@@ -302,6 +302,13 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 
 ## Accepted constraints
 
+- [ADR 0045](adr/0045-isolate-worker-pool-management-in-a-separate-folder.md) requires worker
+  Instance Groups and their manager's Compute authority to reside in a dedicated folder in the
+  existing cloud. The new worker subnet extends the existing VPC; canonical resources stay in
+  their current folder. Explicit ownership and native metric namespaces require repository
+  changes under the [folder-support plan](plans/2026-09-30-isolated-worker-folder-support.md).
+  This is an accepted boundary, not a provisioned topology or approval for cloud mutations.
+
 - [ADR 0043](adr/0043-observe-isolated-workers-with-git-managed-alerts.md) accepts bounded
   host-owned worker observation relayed through the canonical backend and Git-managed diagnostic
   alerts applied through Managed Prometheus APIs. Phase-one repository code provides an opt-in

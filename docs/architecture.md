@@ -70,6 +70,12 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   rebuild and symmetric-difference commands repair and verify existing rows. Customer-facing
   gallery-media and signing SQL no longer reads the three processing-history relations; unrelated
   face-crop lookup retains its independent processing boundary.
+- Under [ADR 0045](adr/0045-deliver-commerce-thumbnails-through-gallery-cdn.md), the same
+  `gallery-cdn-images` gate extends six-hour `gallery-v1` capabilities to cart and order small
+  previews. Page authorization and exact order membership precede signing of the accepted
+  watermarked projection. Already authorized order items remain presentable after photo hiding or
+  event unpublication. Large/lightbox and download delivery retain their existing routes. With the
+  gate off, commerce small previews retain application media routes.
 - For request-time public media routes, `PublicMediaResolver` retains legacy and clean-preview
   behavior, selects `preview-watermarked-v1` for both presentation roles of the new paid policy,
   and rejects that policy's original download before storage signing. It never falls back to an

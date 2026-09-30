@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-from django.core.paginator import InvalidPage
+from django.core.paginator import InvalidPage, Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.urls import Resolver404, resolve, reverse
@@ -48,6 +48,7 @@ from picflow.models import Event, Photo
 
 from commerce.capabilities import (
     purchase_browser_authorizes_order,
+    purchase_browser_orders,
     record_order_customer_access,
     verify_order_access_grant,
 )
@@ -62,6 +63,11 @@ from commerce.forms import CheckoutForm
 from commerce.identity import parse_browser_token
 from commerce.models import Order, OrderAccessGrant, OrderItem, PaymentAttempt
 from commerce.order_items import order_item_page
+from commerce.order_payment import (
+    OrderPaymentRejected,
+    continue_order_payment,
+    payment_continuation_state,
+)
 from commerce.original_delivery import (
     PurchasedOriginalDenied,
     PurchasedOriginalUnavailable,
@@ -94,6 +100,7 @@ from commerce.services import (
     clear_cart,
     read_cart,
     set_photo_selected,
+    start_new_cart,
 )
 from commerce.tbank_gateway import TBANK_ADAPTER_KEY
 
@@ -197,7 +204,6 @@ class CartExceptionReporterFilter(SafeExceptionReporterFilter):
 @dataclass(frozen=True)
 class RequestCartState:
     presentation: CartPresentation
-    delete_browser_token: bool
 
 
 def paid_cart_enabled(request: HttpRequest) -> bool:
@@ -282,21 +288,12 @@ def cart_state_for_photos(
             photos=photos,
             eligible_photo_ids=eligible_photo_ids,
         ),
-        delete_browser_token=snapshot.delete_browser_token,
     )
 
 
 def private_cart_response(response: HttpResponse) -> HttpResponse:
     response["Cache-Control"] = "private, no-store"
     patch_vary_headers(response, ("Cookie",))
-    return response
-
-
-def apply_read_cookie_decision(
-    response: HttpResponse, *, delete_browser_token: bool
-) -> HttpResponse:
-    if delete_browser_token:
-        _expire_browser_token(response)
     return response
 
 
@@ -349,10 +346,7 @@ def detail(request: HttpRequest, event_slug: str) -> HttpResponse:
         },
     )
     private_cart_response(response)
-    return apply_read_cookie_decision(
-        response,
-        delete_browser_token=snapshot.delete_browser_token,
-    )
+    return response
 
 
 @sensitive_post_parameters("email")
@@ -421,11 +415,25 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
             )
         except CheckoutPaymentUnavailable as failure:
             checkout_failure = failure
+            if failure.order_public_number is not None:
+                response = redirect("commerce:order", public_number=failure.order_public_number)
+                private_purchase_response(response)
+                _apply_cart_token(response, token=failure.cart_browser_token)
+                return _apply_purchase_cookie(
+                    response,
+                    token=failure.purchase_browser_capability.token
+                    if failure.purchase_browser_capability
+                    else None,
+                    should_set=failure.set_purchase_browser_cookie,
+                )
             checkout_form.add_error(None, "Не удалось перейти к оплате. Попробуйте ещё раз.")
-        except (CheckoutEmptyCart, CheckoutUnavailable):
+        except CheckoutEmptyCart:
+            return private_purchase_response(redirect("commerce:detail", event_slug=event.slug))
+        except CheckoutUnavailable:
             checkout_form.add_error(None, "Не удалось перейти к оплате. Попробуйте ещё раз.")
         else:
             response = redirect(checkout_result.confirmation_url)
+            _apply_cart_token(response, token=checkout_result.cart_browser_token)
             private_purchase_response(response)
             return _apply_purchase_cookie(
                 response,
@@ -448,9 +456,6 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
         },
     )
     private_purchase_response(response)
-    response = apply_read_cookie_decision(
-        response, delete_browser_token=snapshot.delete_browser_token
-    )
     if checkout_failure is not None:
         return _apply_purchase_cookie(
             response,
@@ -462,6 +467,20 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
             should_set=checkout_failure.set_purchase_browser_cookie,
         )
     return response
+
+
+@sensitive_variables("token")
+def _apply_cart_token(response: HttpResponse, *, token: str | None) -> None:
+    if token is not None:
+        response.set_cookie(
+            CART_COOKIE_NAME,
+            token,
+            max_age=CART_COOKIE_MAX_AGE,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="Lax",
+        )
 
 
 def _payment_gateway(request: HttpRequest) -> PaymentGateway:
@@ -557,6 +576,28 @@ def order_return(request: HttpRequest, public_number: str) -> HttpResponse:
             )
         except (PaymentTransitionRejected, ValueError, ImportError):
             pass
+    return _render_order(request, public_number=public_number)
+
+
+@require_POST
+def order_retry_payment(request: HttpRequest, public_number: str) -> HttpResponse:
+    if not paid_purchase_enabled(request):
+        return _purchase_not_found()
+    try:
+        confirmation_url = continue_order_payment(
+            public_number=public_number,
+            purchase_browser_token=_purchase_browser_token(request),
+            gateway_factory=lambda: _payment_gateway(request),
+            return_url_for_order=lambda number: request.build_absolute_uri(
+                reverse("commerce:order_return", kwargs={"public_number": number})
+            ),
+        )
+    except OrderPaymentRejected:
+        return _purchase_not_found()
+    except CheckoutPaymentUnavailable:
+        confirmation_url = None
+    if confirmation_url:
+        return private_purchase_response(redirect(confirmation_url))
     return _render_order(request, public_number=public_number)
 
 
@@ -782,6 +823,11 @@ def _render_order(
                 items_page=items_page,
                 media_url_builder=media_url_builder,
             ),
+            "payment_continuation": payment_continuation_state(order_instance)
+            if purchase_browser_authorizes_order(
+                order=order_instance, token=_purchase_browser_token(request)
+            )
+            else None,
             "order_items_page": items_page,
             "order_url": _order_page_url(
                 order=order_instance,
@@ -1093,6 +1139,48 @@ def _resend_order(
     return private_purchase_response(redirect(destination))
 
 
+@sensitive_variables()
+def order_list(request: HttpRequest) -> HttpResponse:
+    if not paid_purchase_enabled(request):
+        return _purchase_not_found()
+    if request.method not in {"GET", "HEAD"}:
+        from django.http import HttpResponseNotAllowed
+
+        return private_purchase_response(HttpResponseNotAllowed(["GET", "HEAD"]))
+    orders = (
+        purchase_browser_orders(token=_purchase_browser_token(request))
+        .select_related("event")
+        .order_by("-created_at", "-pk")
+    )
+    page = Paginator(orders, 50).get_page(request.GET.get("page"))
+    rows = [
+        {
+            "public_number": item.public_number,
+            "event_name": item.event.name,
+            "created_at": item.created_at,
+            "total_display": format_rub(item.total_kopecks),
+            "status_display": {
+                Order.Status.PENDING: "Ожидает оплаты",
+                Order.Status.PAID: "Заказ оплачен",
+                Order.Status.CANCELED: "Оплата не завершена",
+                Order.Status.SUPERSEDED: "Оплата не завершена",
+            }[item.status],
+        }
+        for item in page
+    ]
+    return private_purchase_response(
+        render(
+            request,
+            "commerce/order_list.html",
+            {
+                "orders_page": page,
+                "order_rows": rows,
+                "yandex_metrika_counter_id": None,
+            },
+        )
+    )
+
+
 def _authorized_order(
     request: HttpRequest,
     *,
@@ -1233,7 +1321,7 @@ def set_photo_state(request: HttpRequest, event_slug: str) -> HttpResponse:
         photo_id=photo_id,
         browser_token=browser_token,
     )
-    return _apply_mutation_cookie(response, result=result, browser_token=browser_token)
+    return _apply_mutation_cookie(response, result=result)
 
 
 @sensitive_variables()
@@ -1251,7 +1339,18 @@ def clear(request: HttpRequest, event_slug: str) -> HttpResponse:
         photo_id=None,
         browser_token=browser_token,
     )
-    return _apply_mutation_cookie(response, result=result, browser_token=browser_token)
+    return _apply_mutation_cookie(response, result=result)
+
+
+@sensitive_variables()
+@require_POST
+def reset(request: HttpRequest, event_slug: str) -> HttpResponse:
+    event, _enabled = _authorized_event(request, event_slug=event_slug)
+    if event is None:
+        return _not_found()
+    result = start_new_cart(event=event, browser_token=_browser_token(request))
+    response = private_cart_response(redirect("commerce:detail", event_slug=event.slug))
+    return _apply_mutation_cookie(response, result=result)
 
 
 def _authorized_event(request: HttpRequest, *, event_slug: str) -> tuple[Event | None, bool]:
@@ -1366,36 +1465,9 @@ def _apply_mutation_cookie(
     response: HttpResponse,
     *,
     result: CartMutationResult,
-    browser_token: str | None,
 ) -> HttpResponse:
-    if result.delete_browser_token:
-        _expire_browser_token(response)
-    elif result.refresh_browser_token:
-        token = result.issued_browser_token or browser_token
-        if token is not None:
-            response.set_cookie(
-                CART_COOKIE_NAME,
-                token,
-                max_age=CART_COOKIE_MAX_AGE,
-                path="/",
-                secure=True,
-                httponly=True,
-                samesite="Lax",
-            )
+    _apply_cart_token(response, token=result.issued_browser_token)
     return response
-
-
-def _expire_browser_token(response: HttpResponse) -> None:
-    response.set_cookie(
-        CART_COOKIE_NAME,
-        "",
-        max_age=0,
-        expires="Thu, 01 Jan 1970 00:00:00 GMT",
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="Lax",
-    )
 
 
 def _not_found() -> HttpResponse:

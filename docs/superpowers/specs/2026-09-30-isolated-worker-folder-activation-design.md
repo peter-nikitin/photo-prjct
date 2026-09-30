@@ -30,7 +30,7 @@ The approved ceiling remains bulk `0..1`, selfie `1..1`, with initial warm `1+1`
 ## Alert and activation boundary
 
 Before any customer cutover at ceiling one, enable the Git-reviewed Managed Prometheus worker
-profile under [ADR 0047](../../adr/0047-reuse-managed-prometheus-for-worker-alerts.md). It recognizes
+profile under [ADR 0048](../../adr/0048-reuse-managed-prometheus-for-worker-alerts.md). It recognizes
 one actual running VM, fresh queue/cloud/publisher source values, and sustained growth of oldest
 claimable age. Missing/stale evidence remains unknown, never zero or healthy. Prove sustained
 firing, absent and retained-stale observations, recovery and delivery on the approved operator

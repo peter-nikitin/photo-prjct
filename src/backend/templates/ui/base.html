@@ -45,6 +45,12 @@
             <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#calendar"></use></svg>
             <span>События</span>
           </a>
+          {% if purchase_navigation %}
+            <a href="{% url 'commerce:order_list' %}" aria-label="Мои заказы">
+              <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#cart-check"></use></svg>
+              <span>Мои заказы</span>
+            </a>
+          {% endif %}
           {% if photographer_upload_navigation %}
             <a href="{% url 'upload_page' %}" aria-label="Загрузить фотографии">
               <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#upload-cloud"></use></svg>

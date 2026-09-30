@@ -244,7 +244,7 @@ that does not itself export native queue/capacity metrics or install worker aler
 the native Monitoring writer. Keep that writer and its scale/retirement semantics.
 
 The [worker integration plan](../plans/2026-09-30-worker-prometheus-alerts.md) closes that repository
-gap under [ADR 0047](../adr/0047-reuse-managed-prometheus-for-worker-alerts.md):
+gap under [ADR 0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md):
 
 1. Add read-only queue/capacity/source observations to the existing private diagnostic scrape.
    Preserve native publication and its successful-write-only queue freshness.
@@ -269,6 +269,6 @@ The maintainer approves the exact access/paid batches and supplies credentials t
 the private channel. Native worker control, application state and current alert rules
 are unchanged while the worker profile remains disabled.
 
-Architecture reconciliation: infrastructure remains within ADR 0046. ADR 0047 narrowly reconciles
+Architecture reconciliation: infrastructure remains within ADR 0046. ADR 0048 narrowly reconciles
 worker alert evaluation and routing prerequisites with the existing observability design;
 ADR 0043's host boundary and ADR 0042's native autoscaling remain authoritative.

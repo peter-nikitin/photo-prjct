@@ -128,7 +128,7 @@ No alert performs automated remediation. The alert resource names below are the 
 ## Worker pool alerts
 
 Worker rules are owned by the existing [Prometheus package](prometheus/README.md), following
-[ADR 0047](../../docs/adr/0047-reuse-managed-prometheus-for-worker-alerts.md). Do not create a
+[ADR 0048](../../docs/adr/0048-reuse-managed-prometheus-for-worker-alerts.md). Do not create a
 second native worker-alert lifecycle or use the retired ceiling-two predicate.
 
 The worker profile is disabled in Git until separately approved fleet activation. It covers

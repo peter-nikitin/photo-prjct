@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, QuerySet
 from django.utils import timezone
 
 from commerce.identity import browser_token_sha256, generate_browser_token, parse_browser_token
@@ -59,22 +59,23 @@ def purchase_browser_authorizes_order(
     now: datetime | None = None,
 ) -> bool:
     """Return one sanitized authorization result without mutating cookie or Order state."""
+    if order.pk is None:
+        return False
+    return purchase_browser_orders(token=token, now=now).filter(pk=order.pk).exists()
+
+
+def purchase_browser_orders(*, token: object, now: datetime | None = None) -> QuerySet[Order]:
+    """Resolve the exact browser's Orders only during its creation-time lifetime."""
     valid_token = _valid_purchase_browser_token(token)
-    if valid_token is None or order.pk is None:
-        return False
-    stored_digest = order.purchase_browser_token_sha256
-    if not isinstance(stored_digest, str) or len(stored_digest) != 64:
-        return False
-    if not hmac.compare_digest(browser_token_sha256(valid_token), stored_digest):
-        return False
-    matching_orders = Order.objects.filter(purchase_browser_token_sha256=stored_digest)
-    if not matching_orders.filter(pk=order.pk).exists():
-        return False
-    latest_order_created_at = matching_orders.aggregate(latest=Max("created_at"))["latest"]
-    if latest_order_created_at is None:
-        return False
-    checked_at = now or timezone.now()
-    return checked_at < latest_order_created_at + _PURCHASE_BROWSER_LIFETIME
+    if valid_token is None:
+        return Order.objects.none()
+    matching_orders = Order.objects.filter(
+        purchase_browser_token_sha256=browser_token_sha256(valid_token)
+    )
+    latest = matching_orders.aggregate(latest=Max("created_at"))["latest"]
+    if latest is None or (now or timezone.now()) >= latest + _PURCHASE_BROWSER_LIFETIME:
+        return Order.objects.none()
+    return matching_orders
 
 
 def create_order_access_grant(

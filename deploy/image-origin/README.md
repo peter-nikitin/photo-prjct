@@ -86,7 +86,20 @@ The deploy hook grants the Nginx group 101 read/traverse access to issued certif
 unreadable by other users. After successful renewal, the external renewal job runs
 `docker compose exec nginx nginx -c /tmp/nginx.conf -s reload`.
 
-Unified Agent pulls the two private aggregate endpoints at port 18081. The bundled njs module
+Unified Agent pulls the two private aggregate endpoints at port 18081 and the existing public
+Prometheus exporter at port 19091. The image-origin deploy owns the complete agent config: its
+template preserves native origin routes and the `findme-public` Remote Write route. The workspace
+ID comes from `deploy/monitoring/prometheus/environment.json`; the deploy validates the rendered
+config before installation and restores the previous config if the agent restart fails.
+
+To repair only the agent routes after an image-origin deploy, dispatch the exact reviewed main SHA
+with `monitoring_only=true`. This skips `apply.sh` and leaves the image containers running. The
+workflow verifies that the public exporter is active and serves the probe metric. Confirm fresh
+`findme_probe_success` and `up{job="findme-public"}` points in Monitoring after the next scrape;
+the workflow's green status alone is not proof of cloud delivery. The previous agent config is
+saved at `/etc/yandex/unified_agent/config.yml.pre-image-origin` for manual rollback.
+
+The bundled njs module
 stores eight fixed counters in 32 KiB; exceptions are ignored without changing image responses.
 Nginx logs only generated request ID, status, byte count and timings. Error logs and imgproxy logs
 are discarded because upstream error messages contain request/source URLs. libvips recreates

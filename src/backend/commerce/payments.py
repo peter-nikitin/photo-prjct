@@ -12,7 +12,6 @@ from picflow.models import Event
 from commerce.attention import open_attention, resolve_open_attention_automatically
 from commerce.models import (
     Cart,
-    CartItem,
     EmailDelivery,
     Order,
     OrderAccessGrant,
@@ -159,7 +158,7 @@ def apply_payment_observation(
 
     event_id, cart_digest, order_id = _payment_identity_for_attempt(attempt_id=attempt_id)
     with transaction.atomic():
-        cart, order, attempt = _lock_payment_transition(
+        _cart, order, attempt = _lock_payment_transition(
             event_id=event_id,
             cart_digest=cart_digest,
             order_id=order_id,
@@ -241,7 +240,7 @@ def apply_payment_observation(
                 status="succeeded",
                 terminal_at=current_time,
             )
-            _fulfill_paid_order(order=order, cart=cart, paid_at=current_time)
+            _fulfill_paid_order(order=order, paid_at=current_time)
             resolve_open_attention_automatically(
                 kind="payment_mismatch",
                 subject=f"payment-attempt:{attempt.pk}",
@@ -289,7 +288,7 @@ def mark_order_paid_manually(
     event_id, cart_digest, immutable_order_id = _payment_identity_for_order(order_id=order_id)
     current_time = _current_time(now)
     with transaction.atomic():
-        cart, order, _attempt = _lock_payment_transition(
+        _cart, order, _attempt = _lock_payment_transition(
             event_id=event_id,
             cart_digest=cart_digest,
             order_id=immutable_order_id,
@@ -300,7 +299,7 @@ def mark_order_paid_manually(
             raise PaymentTransitionRejected(
                 "Only pending or superseded Orders may be paid manually."
             )
-        _fulfill_paid_order(order=order, cart=cart, paid_at=current_time)
+        _fulfill_paid_order(order=order, paid_at=current_time)
         _write_manual_order_audit(
             actor=locked_actor,
             order=order,
@@ -533,14 +532,13 @@ def _set_attempt_terminal(
     )
 
 
-def _fulfill_paid_order(*, order: Order, cart: Cart | None, paid_at: datetime) -> None:
+def _fulfill_paid_order(*, order: Order, paid_at: datetime) -> None:
     if order.status == Order.Status.PAID:
         return
     order.status = Order.Status.PAID
     order.paid_at = paid_at
     order.save(update_fields=["status", "paid_at"])
     _create_initial_delivery(order=order, now=paid_at)
-    _remove_only_originating_purchased_positions(order=order, cart=cart)
 
 
 def _create_initial_delivery(*, order: Order, now: datetime) -> None:
@@ -564,17 +562,6 @@ def _create_initial_delivery(*, order: Order, now: datetime) -> None:
         access_grant=grant,
         next_attempt_at=now,
     )
-
-
-def _remove_only_originating_purchased_positions(*, order: Order, cart: Cart | None) -> None:
-    if cart is None:
-        return
-    CartItem.objects.filter(
-        cart=cart,
-        photo_id__in=order.items.values_list("photo_id", flat=True),
-    ).delete()
-    if not CartItem.objects.filter(cart=cart).exists():
-        cart.delete()
 
 
 def _expire_after_current_fetch(

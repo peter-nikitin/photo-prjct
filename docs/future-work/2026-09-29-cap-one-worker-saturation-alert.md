@@ -2,7 +2,7 @@
 
 ## Observed gap
 
-[ADR 0047](../adr/0047-reuse-managed-prometheus-for-worker-alerts.md) selects the existing
+[ADR 0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md) selects the existing
 Managed Prometheus stack. The [integration plan](../plans/2026-09-30-worker-prometheus-alerts.md)
 provides a disabled-by-default cap-one rule profile, read-only pool observations and executable
 fixtures. It replaces the obsolete ceiling-two native predicate. Repository delivery does not

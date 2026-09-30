@@ -6,7 +6,7 @@
 - Authority: maintainer confirmed that alerts use the existing Prometheus stack and requested completion.
 - Related specification: [Monitoring as code](../superpowers/specs/2026-09-28-monitoring-as-code-design.md), [worker diagnostics](../adr/0043-observe-isolated-workers-with-git-managed-alerts.md)
 - Related architecture: [Architecture](../architecture.md)
-- ADR impact: [ADR 0047](../adr/0047-reuse-managed-prometheus-for-worker-alerts.md) narrowly reconciles worker alert evaluation and routing prerequisites with the existing monitoring platform; preserve ADR 0042 native autoscaling, ADR 0043 bounded diagnostics and ADR 0046 folder isolation. No new provider, identity, routing destination or compute topology.
+- ADR impact: [ADR 0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md) narrowly reconciles worker alert evaluation and routing prerequisites with the existing monitoring platform; preserve ADR 0042 native autoscaling, ADR 0043 bounded diagnostics and ADR 0046 folder isolation. No new provider, identity, routing destination or compute topology.
 
 ## Goal and scope
 

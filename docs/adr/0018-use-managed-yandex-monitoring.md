@@ -4,7 +4,7 @@
 - Date: 2026-07-30
 - Deciders: project maintainer
 - Supersedes: none
-- Superseded by: ADR 0039 for public-probe placement only; [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md) for observation-only metrics used by photo-worker autoscalers only; [ADR 0043](0043-observe-isolated-workers-with-git-managed-alerts.md) for isolated-worker host/container observations and their new diagnostic alert mechanism only; [ADR 0047](0047-reuse-managed-prometheus-for-worker-alerts.md) for worker demand/capacity alert evaluation only
+- Superseded by: ADR 0039 for public-probe placement only; [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md) for observation-only metrics used by photo-worker autoscalers only; [ADR 0043](0043-observe-isolated-workers-with-git-managed-alerts.md) for isolated-worker host/container observations and their new diagnostic alert mechanism only; [ADR 0048](0048-reuse-managed-prometheus-for-worker-alerts.md) for worker demand/capacity alert evaluation only
 
 ## Context
 

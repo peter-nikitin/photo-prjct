@@ -24,7 +24,14 @@ visual_patterns = [
     ),
     path("event/cart/", views.cart_populated, name="visual_cart_populated"),
     path("event/cart/empty/", views.cart_empty, name="visual_cart_empty"),
+    path("event/cart/legacy-locked/", views.cart_legacy_locked, name="visual_cart_legacy_locked"),
     path("order/pending/", views.order_pending, name="visual_order_pending"),
+    path("order/pending/hosted/", views.order_pending_hosted, name="visual_order_pending_hosted"),
+    path(
+        "order/pending/waiting/", views.order_pending_waiting, name="visual_order_pending_waiting"
+    ),
+    path("order/pending/retry/", views.order_pending_retry, name="visual_order_pending_retry"),
+    path("orders/", views.order_list, name="visual_order_list"),
     path(
         "order/pending/status/",
         views.order_pending_status,

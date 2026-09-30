@@ -36,6 +36,8 @@ repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 : "${MEDIA_S3_PUBLIC_BUCKET:?}"
 : "${IMAGE_ORIGIN_PROBE_PATH:?}"
 : "${YANDEX_CLOUD_FOLDER_ID:?}"
+monitoring_only=${IMAGE_ORIGIN_MONITORING_ONLY:-false}
+case "$monitoring_only" in true|false) ;; *) fail invalid_monitoring_only ;; esac
 [ -f "$FINDME_ENV_FILE" ] && [ "$(file_mode "$FINDME_ENV_FILE")" = 600 ] || \
     fail invalid_environment_file
 case "$VM_HOST" in ''|*[!A-Za-z0-9.:-]*) fail invalid_bastion_host ;; esac
@@ -43,6 +45,18 @@ case "$VM_USER" in ''|*[!A-Za-z0-9_-]*) fail invalid_bastion_user ;; esac
 case "$IMAGE_ORIGIN_VM_HOST" in ''|*[!A-Za-z0-9.:-]*) fail invalid_host ;; esac
 case "$IMAGE_ORIGIN_VM_USER" in ''|*[!A-Za-z0-9_-]*) fail invalid_user ;; esac
 case "$YANDEX_CLOUD_FOLDER_ID" in ''|*[!A-Za-z0-9-]*) fail invalid_folder ;; esac
+workspace_id=$(python3 - "$repository_root/deploy/monitoring/prometheus/environment.json" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+workspace_id = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["workspace_id"]
+if not re.fullmatch(r"[A-Za-z0-9_-]+", workspace_id):
+    raise SystemExit("invalid monitoring workspace ID")
+print(workspace_id)
+PY
+) || fail invalid_workspace_id
 
 scratch=$(mktemp -d)
 archive="$scratch/findme-image-origin-$release.tar"
@@ -184,15 +198,17 @@ scp -F "$ssh_config" "$remote_environment" "$target:/tmp/findme-image-origin-$re
 
 # The remote program receives only the non-secret SHA and folder ID as arguments. Runtime secrets
 # stay in the mode-0600 environment file and are removed after apply.sh persists its own projection.
-ssh -F "$ssh_config" "$target" sudo sh -s -- "$release" "$YANDEX_CLOUD_FOLDER_ID" >"$output" 2>&1 <<'REMOTE'
+ssh -F "$ssh_config" "$target" sudo sh -s -- "$release" "$YANDEX_CLOUD_FOLDER_ID" "$workspace_id" "$monitoring_only" >"$output" 2>&1 <<'REMOTE'
 set -eu
 release=$1
 folder=$2
+workspace=$3
+monitoring_only=$4
 archive="/tmp/findme-image-origin-$release.tar"
 environment="/tmp/findme-image-origin-$release.env"
 stage=$(mktemp -d /tmp/findme-image-origin-stage.XXXXXX)
 cleanup() {
-    status=$?
+    status=${1:-$?}
     trap - EXIT HUP INT TERM
     rm -rf "$stage"
     rm -f "$archive" "$environment"
@@ -209,11 +225,13 @@ set -a
 set +a
 IMAGE_ORIGIN_RELEASE=$release
 export IMAGE_ORIGIN_RELEASE
-sh "$package/apply.sh"
-sh /opt/photo-prjct-image-origin/current/check.sh \
-    /opt/photo-prjct-image-origin/current/.env
+if [ "$monitoring_only" = false ]; then
+    sh "$package/apply.sh"
+    sh /opt/photo-prjct-image-origin/current/check.sh \
+        /opt/photo-prjct-image-origin/current/.env
+fi
 
-template=/opt/photo-prjct-image-origin/current/monitoring/unified-agent.yml.template
+template=$package/monitoring/unified-agent.yml.template
 [ -f "$template" ] || exit 23
 agent=$(command -v unified_agent || true)
 [ -n "$agent" ] || exit 24
@@ -229,19 +247,41 @@ else
     exit 25
 fi
 candidate=$(mktemp)
-trap 'rm -f "$candidate"; cleanup' EXIT HUP INT TERM
-sed "s|__YANDEX_CLOUD_FOLDER_ID__|$folder|g" "$template" >"$candidate"
+staged=
+trap 'status=$?; rm -f "$candidate"; [ -z "$staged" ] || rm -f "$staged"; cleanup "$status"' EXIT HUP INT TERM
+sed -e "s|__YANDEX_CLOUD_FOLDER_ID__|$folder|g" \
+    -e "s|__PROMETHEUS_WORKSPACE_ID__|$workspace|g" "$template" >"$candidate"
 "$agent" --config "$candidate" check-config
 install -d -m 0755 "$config_dir"
-install -m 0644 "$candidate" "$config_path"
+if ! cmp -s "$candidate" "$config_path"; then
+    [ -f "$config_path" ] || exit 26
+    backup_path=$config_path.pre-image-origin
+    cp -p "$config_path" "$backup_path"
+    staged=$(mktemp "$config_dir/config.yml.findme.XXXXXX")
+    install -m 0644 "$candidate" "$staged"
+    mv -f "$staged" "$config_path"
+    if ! systemctl enable "$service" || ! systemctl restart "$service" || \
+        ! systemctl is-active --quiet "$service"; then
+        cp -p "$backup_path" "$config_path"
+        systemctl restart "$service" || true
+        exit 27
+    fi
+else
+    systemctl is-active --quiet "$service"
+fi
+if [ "$monitoring_only" = true ]; then
+    systemctl is-active --quiet findme-prometheus-public.service
+    metrics=$(curl --fail --silent --show-error --max-time 20 \
+        http://127.0.0.1:19091/metrics)
+    printf '%s\n' "$metrics" | grep -q 'findme_probe_success{check="canonical-health"}'
+fi
 rm -f "$candidate"
 trap cleanup EXIT HUP INT TERM
-systemctl enable "$service"
-systemctl restart "$service"
-systemctl is-active --quiet "$service"
 
-printf 'IMAGE_ORIGIN_DEPLOYED_SHA=%s\n' "$release"
-printf 'IMAGE_ORIGIN_HEALTH=green\n'
+if [ "$monitoring_only" = false ]; then
+    printf 'IMAGE_ORIGIN_DEPLOYED_SHA=%s\n' "$release"
+    printf 'IMAGE_ORIGIN_HEALTH=green\n'
+fi
 printf 'IMAGE_ORIGIN_MONITORING=green\n'
 REMOTE
 

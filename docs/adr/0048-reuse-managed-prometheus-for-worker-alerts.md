@@ -1,4 +1,4 @@
-# 0047: Reuse Managed Prometheus for worker alerts
+# 0048: Reuse Managed Prometheus for worker alerts
 
 - Status: Accepted
 - Date: 2026-09-30

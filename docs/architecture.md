@@ -331,7 +331,7 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   loopback runtime exporter, independent bounded host probe, private fleet-authenticated ingestion,
   fenced latest diagnostic state, canonical exposition and a disabled-by-default scrape in the
   existing Managed Prometheus agent renderer. Local TLS/container and additive-upgrade rehearsals
-  are separate from cloud delivery. [ADR 0047](adr/0047-reuse-managed-prometheus-for-worker-alerts.md)
+  are separate from cloud delivery. [ADR 0048](adr/0048-reuse-managed-prometheus-for-worker-alerts.md)
   reuses the delivered Prometheus workspace, operator channel and Git reconciliation for
   worker queue/capacity and diagnostic alerts. The worker profile is disabled until live
   activation; source timestamps distinguish retained stale data from fresh observations.
@@ -770,6 +770,16 @@ paid Order page. It stores no archive, streams one private original at a time th
 is hidden and denied by the reconciled default-off `bulk-photo-download` gate. Deployment, gate
 activation, representative maximum-page capacity acceptance, and live customer evidence remain
 explicitly incomplete.
+
+ADR 0047 replaces ADR 0031's cart-retention and cart-based retry rules: an Order consumes its
+event cart, the browser starts a new cart identity, and payment retry is scoped to that Order.
+The existing purchase-browser capability also authorizes a private, temporary browser Order list.
+The repository implementation preserves earlier Orders and attempts and lets a customer explicitly
+release a legacy locked cart. The Cart bearer cookie lasts 30 days from issuance or rotation;
+ordinary Cart reads and mutations neither refresh nor delete it. A server Cart expiry may extend
+on mutation, but browser access ends when that cookie expires. The separate purchase cookie lasts
+30 days from the latest Order creation. These paths remain behind the existing paid runtime gates;
+local tests and visual fixtures do not establish public activation or live bank acceptance.
 
 ## Security, privacy, and legal boundaries
 

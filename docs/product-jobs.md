@@ -248,10 +248,12 @@ entitlement.
 - Evidence: [Purchase and download](architecture.md#purchase-and-download). Checkout, immutable
   Orders, trusted manual payment, durable email work, protected original delivery, Postbox email,
   and a T-Bank eacq gateway with signed callback and reconciliation are implemented locally behind
-  the existing gates. The deployed staff simulator remains selected by default. Bank sandbox
+  the existing gates. The local integrated flow covers failed initiation, browser Order history,
+  exact-Order retry, an independent second Cart and Order, and original denial until trusted paid
+  evidence. The deployed staff simulator remains selected by default. Bank sandbox
   acceptance, approved fiscal values, live configuration, legal approval, public activation, and
   customer evidence are not claimed.
-- Last updated: 2026-09-23
+- Last updated: 2026-09-30
 
 ### PJ-011 — Customer — Download purchased photos
 
@@ -274,10 +276,13 @@ anonymous event-specific cart, so I can preserve a selection before checkout is 
 - Evidence: Merged repository tests cover staff-gated selection from the paid gallery and saved
   selfie result, browser/event isolation, reload persistence, current-price totals, pruning,
   request-time expiry, and original/download denial. Checkout and purchase now consume this
-  selection boundary but remain implemented locally, disabled by default. Real paid assets, public
+  selection boundary but remain implemented locally, disabled by default. The local checkout flow
+  consumes its event Cart and rotates the selection bearer, while other event Carts retain their
+  contents. The Cart cookie lasts 30 days from issuance or rotation; ordinary reads and mutations
+  do not refresh it, even when server Cart expiry extends. Real paid assets, public
   activation, legal-cookie review, customer outcome, real payment/email adapters, and worker
   operation remain unverified.
-- Last updated: 2026-08-22
+- Last updated: 2026-09-30
 
 ### PJ-012 — Visitor — Jump to a known gallery page
 

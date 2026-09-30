@@ -66,7 +66,8 @@ place, and add the new record to this index.
 | 0044 | [Deliver public event covers through the image CDN](0044-deliver-public-event-covers-through-image-cdn.md) | Accepted |
 | 0045 | [Deliver commerce thumbnails through the gallery CDN](0045-deliver-commerce-thumbnails-through-gallery-cdn.md) | Accepted |
 | 0046 | [Isolate worker-pool management in a separate folder](0046-isolate-worker-pool-management-in-a-separate-folder.md) | Accepted |
-| 0047 | [Reuse Managed Prometheus for worker alerts](0047-reuse-managed-prometheus-for-worker-alerts.md) | Accepted |
+| 0047 | [Separate Order payment from new cart selection](0047-separate-order-payment-from-new-cart-selection.md) | Accepted |
+| 0048 | [Reuse Managed Prometheus for worker alerts](0048-reuse-managed-prometheus-for-worker-alerts.md) | Accepted |
 
 ## Public selfie-search outcome
 
@@ -110,6 +111,12 @@ single-event RUB Orders, normalized PaymentAttempts behind a narrow gateway adap
 payment confirmation, paid-OrderItem original entitlement, permanent revocable anonymous Order
 links, asynchronous email delivery, and durable Commerce attention. The concrete bank/email
 protocols, fiscal and legal contracts, public activation, and refunds remain later work.
+
+[ADR 0047](0047-separate-order-payment-from-new-cart-selection.md) supersedes ADR 0031 only for
+retaining and locking the originating cart until payment, retrying payment from that cart, and
+removing cart positions at paid fulfillment. It accepts a new cart identity when an Order is
+created, browser-local Order history under the existing purchase capability, and exact-Order
+payment retry. Implementation remains pending.
 
 [ADR 0034](0034-stream-page-scoped-photo-archives-through-django.md) accepts and the repository
 implements a narrow exception to ADR 0020 for an authorized page-scoped aggregate ZIP body: Django

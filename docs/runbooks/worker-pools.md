@@ -253,7 +253,7 @@ it never invents fresh cloud evidence. Existing trusted per-pool snapshots remai
 until stale. Failed Monitoring publication still cannot advance successful queue freshness.
 
 Worker alerting uses the existing Managed Prometheus package under
-[ADR 0047](../adr/0047-reuse-managed-prometheus-for-worker-alerts.md), not a separate native
+[ADR 0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md), not a separate native
 alert lifecycle. Native publication remains the autoscaler's input. The additional private
 diagnostics scrape exposes read-only pool observations and numeric source timestamps.
 

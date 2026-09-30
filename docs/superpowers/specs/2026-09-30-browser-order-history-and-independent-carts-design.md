@@ -2,7 +2,7 @@
 
 ## Status and references
 
-The maintainer approved the direction in chat on 2026-09-30. This written specification awaits review. Implementation and any superseding ADR remain unapproved.
+The maintainer approved this written specification in chat on 2026-09-30. Implementation awaits acceptance of the superseding ADR and an implementation plan.
 
 - Related architecture: [Architecture](../../architecture.md), especially Purchase and download and Security, privacy, and legal boundaries.
 - Related product jobs: [PJ-010 Purchase selected photos](../../product-jobs.md#pj-010--customer--purchase-selected-photos) and [PJ-016 Select paid event photos](../../product-jobs.md#pj-016--customer--select-paid-event-photos).

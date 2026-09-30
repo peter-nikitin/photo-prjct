@@ -8,15 +8,16 @@ route:
   group_interval: 5m
   repeat_interval: 4h
   routes:
-  - receiver: findme-email
+  - receiver: findme-operator
     matchers:
     - project="findme-photo"
 receivers:
 - name: unmatched
   yandex_monitoring_configs:
   - channel_names: []
-- name: findme-email
+- name: findme-operator
   yandex_monitoring_configs:
   - channel_names:
     - '{{channel_name}}'
+    - '{{telegram_channel_name}}'
     send_resolved: true

@@ -504,6 +504,55 @@ Unknown, duplicate, missing, wrong-version or malformed payload entries reject b
 account must not read the application's Lockbox secret, DB/Django/S3 credentials or Compute
 management. Group-manager and canonical observer/writer identities are separate prerequisites.
 
+### Clean worker OS image recipe
+
+The Git-owned [image recipe](../../deploy/worker-pools/image.py) prepares only an explicitly
+identified, disposable Ubuntu 24.04 amd64 builder. It follows the isolation in
+[ADR 0042](../adr/0042-isolate-autoscaled-photo-worker-pools.md), the optional telemetry
+boundary in [ADR 0043](../adr/0043-observe-isolated-workers-with-git-managed-alerts.md),
+and the separate worker folder in
+[ADR 0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md).
+The observed official Ubuntu source image `fd84a0ma316h9ddtvdoi` is an example base,
+not a reviewed worker `boot_image_id`. The recipe does not create a VM/image, install worker
+services, fetch Lockbox, pull an application image, change network rules, or activate a pool.
+
+After separately approving a paid disposable builder and its outbound access, copy
+`image.py` and the adjacent `telemetry-requirements.txt` onto that builder. Review its actual
+instance ID from Yandex metadata independently and supply that exact ID on every invocation.
+The default command prints a JSON plan without mutation. Only run these commands as root on
+that builder after reviewing its filesystem and Docker inventory:
+
+```sh
+python3 image.py --expected-instance-id <DISPOSABLE_BUILDER_INSTANCE_ID>
+python3 image.py prepare --expected-instance-id <DISPOSABLE_BUILDER_INSTANCE_ID>
+python3 image.py verify --expected-instance-id <DISPOSABLE_BUILDER_INSTANCE_ID>
+python3 image.py seal --expected-instance-id <DISPOSABLE_BUILDER_INSTANCE_ID> --confirm-seal <DISPOSABLE_BUILDER_INSTANCE_ID>
+```
+
+Each non-plan step checks root, exact metadata identity, OS/architecture, known production
+IDs, worker/application credentials and runtime paths, and empty Docker objects before changing
+anything. `prepare` checks all four official Docker package SHA256 digests before apt runs,
+installs Docker 29.6.0, Compose 5.1.4 and containerd 2.2.5, holds those packages, and installs
+the existing pinned telemetry requirements in `/opt/findme-worker-telemetry`. Ubuntu dependency
+resolution uses its signed system apt repositories and is not a bit-reproducible repository
+snapshot. Package and pip download access still needs separately approved builder egress; the
+existing runtime security group is not builder network approval.
+
+`verify` checks the actual Docker server, Compose, package versions, active services and
+telemetry imports. `seal` requires the repeated instance ID, verifies again, stops Docker and
+containerd, removes only builder SSH authorization and host keys, and runs `cloud-init clean
+--logs --machine-id --seed`. It leaves cloud-init and worker runtime boot services available for
+first boot. A success receipt at `/var/lib/findme-worker-image/receipt.json` records the builder
+ID, recipe and requirement hashes, and exact package hashes/versions. Failure does not write a
+sealed receipt. Refused Docker objects or credentials require inspecting or rebuilding the
+disposable builder; the recipe never prunes them.
+
+Stop the sealed builder before image capture. Capturing a paid image, configuring the worker
+folder and network/IAM, booting a disposable validation VM, checking first-boot metadata/SSH
+identity and bootstrap/runtime readiness, and deleting approved temporary resources are a
+separate operator-approved workflow. Local recipe tests do not establish a reusable or live
+accepted image.
+
 Bootstrap retrieves the pinned payload at boot with metadata IAM, materializes root-private
 600 runtime/Docker credential files and a nonsecret 644 container-readable instance-ID file,
 checks installed Docker/Compose versions, pulls the digest

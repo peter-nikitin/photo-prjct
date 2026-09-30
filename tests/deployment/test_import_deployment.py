@@ -69,7 +69,7 @@ def test_failed_candidate_stops_import_before_restoring_web(tmp_path, fake_bin):
     assert commands.rindex("label=com.docker.compose.service=import-worker") < commands.rindex(
         "up -d --remove-orphans"
     )
-    assert "sleep 300" in (ROOT / "deploy/apply-deployment.sh").read_text()
+    assert commands.rindex("import-lease-probe") < commands.rindex("up -d --remove-orphans")
 
 
 def test_import_token_projection_is_optional_and_edge_denies_internal_api():
@@ -102,10 +102,14 @@ def test_protocol_readiness_failure_restores_previous_images_without_starting_im
             "set -eu", 'set -eu\ncase "$*" in *--check-ready*) exit 1 ;; esac', 1
         )
     )
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text("error\n")
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode != 0
     assert "Import API protocol readiness failed" in result.stderr
     assert "up -d --no-deps import-worker" not in "\n".join(_apply_log(tmp_path))
+    assert "import-lease-probe" not in "\n".join(_apply_log(tmp_path))
     assert (tmp_path / ".env").read_bytes() == (tmp_path / "previous-env.expected").read_bytes()
 
 
@@ -143,7 +147,7 @@ def test_disabled_import_without_image_uses_valid_compose_configuration(tmp_path
     assert result.returncode == 0, result.stderr
 
 
-def test_previous_enabled_import_container_is_removed_and_drained_before_web_change(
+def test_previous_enabled_import_container_with_no_live_lease_proceeds_without_sleep(
     tmp_path, fake_bin
 ):
     from tests.deployment.test_deployment_scripts import _write_executable
@@ -167,10 +171,77 @@ def test_previous_enabled_import_container_is_removed_and_drained_before_web_cha
     commands = "\n".join(_apply_log(tmp_path))
     assert (
         commands.index("rm -f import-fixture-id")
-        < commands.index("sleep 300")
+        < commands.index("import-lease-probe")
         < commands.index("up -d --remove-orphans")
     )
+    assert (
+        "sleep "
+        not in commands[
+            commands.index("rm -f import-fixture-id") : commands.index("up -d --remove-orphans")
+        ]
+    )
     assert "yandex-disk-import" not in commands
+
+
+def test_previous_enabled_import_waits_only_while_a_lease_is_live(tmp_path, fake_bin):
+    from tests.deployment.test_deployment_scripts import _write_executable
+
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    with (tmp_path / ".env").open("a") as stream:
+        stream.write("PHOTO_IMPORT_ENABLED=True\nIMPORT_WORKER_IMAGE=import:old-release\n")
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text("6\n0\n")
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
+    _write_executable(fake_bin / "sleep", 'printf "sleep %s\\n" "$*" >> "$COMMAND_LOG"')
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert commands.index("import-lease-probe") < commands.index("sleep 5")
+    assert commands.index("sleep 5") < commands.index(
+        "import-lease-probe", commands.index("sleep 5")
+    )
+    assert commands.index("import-lease-probe", commands.index("sleep 5")) < commands.index(
+        "up -d --remove-orphans"
+    )
+
+
+def test_import_lease_probe_failure_blocks_web_replacement(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    with (tmp_path / ".env").open("a") as stream:
+        stream.write("PHOTO_IMPORT_ENABLED=True\nIMPORT_WORKER_IMAGE=import:old-release\n")
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text("error\nerror\n")
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Import worker stop failed" in result.stderr
+    assert "up -d --remove-orphans" not in "\n".join(_apply_log(tmp_path))
+
+
+def test_failed_candidate_before_import_start_needs_no_lease_probe(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="vector-capability-failure")
+    env.update(
+        PHOTO_IMPORT_ENABLED="True",
+        IMPORT_WORKER_IMAGE="import:new-image",
+        PHOTO_IMPORT_BUILD="release",
+        PHOTO_IMPORT_WORKER_TOKEN="import-secret",
+    )
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text("error\n")
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Vector database capability preflight failed" in result.stderr
+    assert "import-lease-probe" not in "\n".join(_apply_log(tmp_path))
+    assert (tmp_path / ".env").read_bytes() == (tmp_path / "previous-env.expected").read_bytes()
 
 
 def test_failed_import_deploy_does_not_override_operator_gate(tmp_path, fake_bin):

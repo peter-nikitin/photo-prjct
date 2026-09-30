@@ -706,6 +706,7 @@ mutation_started=0
 deployment_committed=0
 recovery_in_progress=0
 observability_installed=0
+candidate_import_worker_start_attempted=0
 
 cleanup() {
     rm -f \
@@ -901,6 +902,19 @@ restore_previous_deployment_package() {
     unset PREVIOUS_DEPLOYMENT_PACKAGE_ROOT
 }
 
+import_lease_remaining_seconds() {
+    compose exec -T db sh -ec '
+        psql -XAt -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "
+            SELECT COALESCE(
+                CEIL(EXTRACT(EPOCH FROM MAX(lease_expires_at) - clock_timestamp()))::int,
+                0
+            )
+            FROM ingestion_importattempt
+            WHERE status = '\''active'\'' AND lease_expires_at > clock_timestamp()
+        "
+    '
+}
+
 stop_import_before_web_change() {
     import_enabled="$1"
     # Container identity remains available even when disabled configuration has no image.
@@ -912,8 +926,28 @@ stop_import_before_web_change() {
         docker rm -f "$import_container" || return 1
     done
     if [ "$import_enabled" = True ]; then
-        # API v1 accepts leases up to 300 seconds. Preserve DB and immutable objects.
-        sleep 300
+        # The stopped worker cannot renew leases; API v1 bounds each lease to 300 seconds.
+        import_lease_deadline=$(($(date +%s) + 300))
+        while :; do
+            import_lease_remaining="$(import_lease_remaining_seconds)" || return 1
+            case "$import_lease_remaining" in
+                ''|*[!0-9]*) echo "Invalid import lease probe result" >&2; return 1 ;;
+                0) return 0 ;;
+            esac
+            import_lease_now=$(date +%s)
+            if [ "$import_lease_now" -ge "$import_lease_deadline" ]; then
+                echo "Import leases did not expire within 300 seconds" >&2
+                return 1
+            fi
+            import_lease_sleep=5
+            if [ "$import_lease_remaining" -lt "$import_lease_sleep" ]; then
+                import_lease_sleep="$import_lease_remaining"
+            fi
+            if [ "$((import_lease_deadline - import_lease_now))" -lt "$import_lease_sleep" ]; then
+                import_lease_sleep="$((import_lease_deadline - import_lease_now))"
+            fi
+            sleep "$import_lease_sleep"
+        done
     fi
 }
 
@@ -948,6 +982,7 @@ start_import_after_web_ready() {
     import_env_file="$1"
     compose_with_env_file "$import_env_file" --profile import run --rm --no-deps -T \
         import-worker python -m import_worker --check-ready || return 1
+    candidate_import_worker_start_attempted=1
     compose_with_env_file "$import_env_file" --profile import up -d --no-deps import-worker
 }
 
@@ -956,7 +991,12 @@ recover_previous_deployment() {
         # Failure keeps compatible candidate web in place until remote ownership is safe.
         fleet_phase rollback || return 1
     fi
-    stop_import_before_web_change "$requested_import_enabled" || return 1
+    if [ "$previous_import_enabled" = True ] || \
+        [ "$candidate_import_worker_start_attempted" -eq 1 ]; then
+        stop_import_before_web_change True || return 1
+    else
+        stop_import_before_web_change False || return 1
+    fi
 
     if [ "$previous_env_exists" -eq 0 ]; then
         recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.recovery.XXXXXX")" || return 1

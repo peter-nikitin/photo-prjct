@@ -166,14 +166,19 @@ class TBankSigningTests(SimpleTestCase):
 
 
 class TBankProtocolTests(SimpleTestCase):
-    def test_init_accepts_bank_hosted_payment_form_url(self):
+    def test_init_accepts_payment_form_url_from_bank(self):
         module = gateway_module()
-        payment_url = "https://securepayments.tinkoff.ru/pay/abc"
-        with patch.object(
-            module, "urlopen", return_value=Response(response(PaymentURL=payment_url))
+        for payment_url in (
+            "https://securepayments.tinkoff.ru/pay/abc",
+            "https://pay.tbank-online.com/pay/abc",
+            "https://new-bank-payment.example/pay/abc",
         ):
-            created = module.TBankGateway(config()).create_payment(request())
-        self.assertEqual(created.confirmation_url, payment_url)
+            with self.subTest(payment_url=payment_url):
+                with patch.object(
+                    module, "urlopen", return_value=Response(response(PaymentURL=payment_url))
+                ):
+                    created = module.TBankGateway(config()).create_payment(request())
+                self.assertEqual(created.confirmation_url, payment_url)
 
     def test_init_sends_exact_receipt_and_signed_one_stage_request(self):
         module = gateway_module()
@@ -273,9 +278,8 @@ class TBankProtocolTests(SimpleTestCase):
         dict(Success="true"),
         dict(ErrorCode="1"),
         dict(Status="CONFIRMED"),
-        dict(PaymentURL="http://pay.tbank.ru/a"),
-        dict(PaymentURL="https://evil.example/a"),
-        dict(PaymentURL="https://pay.tbank.ru.evil.example/a"),
+        dict(PaymentURL=""),
+        dict(PaymentURL=123),
     ],
 )
 def test_init_rejects_malformed_or_conflicting_response(changes):

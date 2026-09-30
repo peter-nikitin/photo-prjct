@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,10 @@ def _copy_script_for_host_test(
     os_release.write_text("ID=ubuntu\nVERSION_ID=20.04\n", encoding="utf-8")
     (monitoring_dir / "unified-agent.yml.template").write_text(
         (ROOT / "deploy/monitoring/unified-agent.yml.template").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (monitoring_dir / "merge_native_agent.py").write_text(
+        (ROOT / "deploy/monitoring/merge_native_agent.py").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     (deploy_dir / "run-commerce-worker-health.sh").write_text(
@@ -64,6 +69,7 @@ def _host_test_env(tmp_path: Path, config_dir: Path, command_log: Path) -> dict[
     fake_bin.mkdir()
     _write_executable(fake_bin / "id", 'printf "%s\\n" 0')
     _write_executable(fake_bin / "uname", 'printf "%s\\n" x86_64')
+    _write_executable(fake_bin / "python3", 'exec "$TEST_PYTHON" "$@"')
     _write_executable(
         fake_bin / "curl",
         """
@@ -156,11 +162,36 @@ esac
         "DEB_UNIT_PRESENT": "1",
         "AGENT_COMMAND_LOG": str(tmp_path / "agent-commands.log"),
         "RESTART_COUNT_FILE": str(tmp_path / "restart-count"),
+        "TEST_PYTHON": sys.executable,
     }
 
 
 def _plugin_count(config: dict[object, object], plugin: str) -> int:
     return sum(1 for route in config["routes"] if route["input"]["plugin"] == plugin)
+
+
+def _valid_existing_agent_config() -> str:
+    return yaml.safe_dump(
+        {
+            "status": {"port": 16241},
+            "storages": [
+                {"name": "metrics_buffer", "plugin": "fs", "config": {"directory": "/old"}}
+            ],
+            "channels": [
+                {
+                    "name": "cloud_monitoring",
+                    "channel": {"output": {"plugin": "yc_metrics", "config": {}}},
+                }
+            ],
+            "routes": [
+                {
+                    "input": {"plugin": "agent_metrics", "config": {}},
+                    "channel": {"channel_ref": {"name": "cloud_monitoring"}},
+                }
+            ],
+        },
+        sort_keys=False,
+    )
 
 
 def test_unified_agent_template_collects_only_host_agent_and_private_app_metrics() -> None:
@@ -319,7 +350,8 @@ esac
     )
     config_dir.mkdir(parents=True)
     config_path = config_dir / "config.yml"
-    config_path.write_text("previous-config\\n", encoding="utf-8")
+    previous = _valid_existing_agent_config()
+    config_path.write_text(previous, encoding="utf-8")
     env.update({"INITIAL_ENABLED": "1", "INITIAL_ACTIVE": "1", "FAIL_FIRST_RESTART": "1"})
 
     Path(env["DEB_PACKAGE_MARKER_FILE"]).touch()
@@ -333,7 +365,7 @@ esac
     )
 
     assert result.returncode != 0
-    assert config_path.read_text(encoding="utf-8") == "previous-config\\n"
+    assert config_path.read_text(encoding="utf-8") == previous
     commands = command_log.read_text(encoding="utf-8")
     assert "dpkg " not in commands
     assert commands.count("systemctl enable unified-agent") == 2
@@ -356,7 +388,8 @@ esac
     )
     config_dir.mkdir(parents=True)
     config_path = config_dir / "config.yml"
-    config_path.write_text("managed-previous-config\\n", encoding="utf-8")
+    previous = _valid_existing_agent_config()
+    config_path.write_text(previous, encoding="utf-8")
     env.update(
         {
             "INITIAL_ENABLED": "1",
@@ -375,7 +408,7 @@ esac
     )
 
     assert result.returncode != 0
-    assert config_path.read_text(encoding="utf-8") == "managed-previous-config\\n"
+    assert config_path.read_text(encoding="utf-8") == previous
     commands = command_log.read_text(encoding="utf-8")
     assert "dpkg " not in commands
     assert commands.count("systemctl enable unified_agent") == 2
@@ -399,7 +432,8 @@ esac
 """,
     )
     config_dir.mkdir(parents=True)
-    (config_dir / "config.yml").write_text("managed-previous-config\\n", encoding="utf-8")
+    previous = _valid_existing_agent_config()
+    (config_dir / "config.yml").write_text(previous, encoding="utf-8")
     env.update(
         {
             "INITIAL_ENABLED": "1",
@@ -419,7 +453,148 @@ esac
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert "Unified Agent version: managed-agent-26.07.11" in result.stdout
-    assert (config_dir / "config.yml").read_text(encoding="utf-8") != "managed-previous-config\\n"
+    assert (config_dir / "config.yml").read_text(encoding="utf-8") != previous
     agent_commands = Path(env["AGENT_COMMAND_LOG"]).read_text(encoding="utf-8").splitlines()
     assert agent_commands[0].endswith(" check-config")
     assert agent_commands[-1] == "agent -V"
+
+
+def test_native_reconfigure_twice_preserves_prometheus_and_worker_routes_once(
+    tmp_path: Path,
+) -> None:
+    script, config_dir, _, command_log = _copy_script_for_host_test(tmp_path)
+    env = _host_test_env(tmp_path, config_dir, command_log)
+    _write_executable(
+        tmp_path / "bin" / "unified_agent",
+        """
+case "$*" in
+  *check-config*) exit 0 ;;
+  *--version*) printf '%s\n' existing-agent ;;
+esac
+""",
+    )
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "status": {"port": 1},
+                "storages": [
+                    {"name": "metrics_buffer", "plugin": "fs", "config": {"x": "old"}},
+                    {"name": "findme_prometheus_buffer", "plugin": "fs"},
+                ],
+                "channels": [
+                    {"name": "cloud_monitoring", "channel": {"output": {"plugin": "old"}}},
+                    {"name": "findme_prometheus_remote_write", "channel": {}},
+                ],
+                "routes": [
+                    {
+                        "input": {"plugin": "linux_metrics", "config": {"poll_period": "5s"}},
+                        "channel": {"channel_ref": {"name": "cloud_monitoring"}},
+                    },
+                    {
+                        "input": {
+                            "plugin": "metrics_pull",
+                            "config": {"url": "http://127.0.0.1:19091/metrics"},
+                        },
+                        "channel": {"channel_ref": {"name": "findme_prometheus_remote_write"}},
+                    },
+                    {
+                        "input": {
+                            "plugin": "metrics_pull",
+                            "config": {"url": "http://127.0.0.1:8080/worker-diagnostics/metrics/"},
+                        },
+                        "channel": {
+                            "pipe": [{"filter": {"plugin": "transform_metric_labels"}}],
+                            "channel_ref": {"name": "findme_prometheus_remote_write"},
+                        },
+                    },
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    Path(env["DEB_PACKAGE_MARKER_FILE"]).touch()
+    env.update({"INITIAL_ENABLED": "1", "INITIAL_ACTIVE": "1"})
+
+    for _ in range(2):
+        result = subprocess.run(
+            ["sh", script, "--folder-id", "current-folder"],
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["status"] == {"port": 16241}
+    assert [item["name"] for item in config["storages"]] == [
+        "findme_prometheus_buffer",
+        "metrics_buffer",
+    ]
+    assert [item["name"] for item in config["channels"]] == [
+        "findme_prometheus_remote_write",
+        "cloud_monitoring",
+    ]
+    urls = [
+        route["input"].get("config", {}).get("url")
+        for route in config["routes"]
+        if route["input"]["plugin"] == "metrics_pull"
+    ]
+    assert urls.count("http://127.0.0.1:19091/metrics") == 1
+    assert urls.count("http://127.0.0.1:8080/worker-diagnostics/metrics/") == 1
+    native = [
+        route
+        for route in config["routes"]
+        if route["channel"].get("channel_ref", {}).get("name") == "cloud_monitoring"
+    ]
+    assert len(native) == 3
+    linux = next(route for route in native if route["input"]["plugin"] == "linux_metrics")
+    assert linux["input"]["config"]["poll_period"] == "60s"
+    cloud = next(item for item in config["channels"] if item["name"] == "cloud_monitoring")
+    assert cloud["channel"]["output"]["config"]["folder_id"] == "current-folder"
+
+
+def test_existing_agent_invalid_merged_candidate_keeps_working_config(tmp_path: Path) -> None:
+    script, config_dir, _, command_log = _copy_script_for_host_test(tmp_path)
+    env = _host_test_env(tmp_path, config_dir, command_log)
+    _write_executable(
+        tmp_path / "bin" / "unified_agent",
+        """
+printf 'agent %s\n' "$*" >> "$AGENT_COMMAND_LOG"
+case "$*" in
+  *check-config*) exit 1 ;;
+  *--version*) printf '%s\n' existing-agent ;;
+esac
+""",
+    )
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yml"
+    original_config = yaml.safe_load(_valid_existing_agent_config())
+    original_config["storages"].append({"name": "findme_prometheus_buffer", "plugin": "fs"})
+    original_config["channels"].append({"name": "findme_prometheus_remote_write", "channel": {}})
+    original_config["routes"].append(
+        {
+            "input": {"plugin": "metrics_pull", "config": {"url": "loopback"}},
+            "channel": {"channel_ref": {"name": "findme_prometheus_remote_write"}},
+        }
+    )
+    original = yaml.safe_dump(original_config, sort_keys=False)
+    config_path.write_text(original, encoding="utf-8")
+    Path(env["DEB_PACKAGE_MARKER_FILE"]).touch()
+    env.update({"INITIAL_ENABLED": "1", "INITIAL_ACTIVE": "1"})
+
+    result = subprocess.run(
+        ["sh", script, "--folder-id", "current-folder"],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert config_path.read_text(encoding="utf-8") == original
+    assert "check-config" in Path(env["AGENT_COMMAND_LOG"]).read_text(encoding="utf-8")
+    assert not Path(env["RESTART_COUNT_FILE"]).exists()

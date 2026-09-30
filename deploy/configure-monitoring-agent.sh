@@ -14,11 +14,13 @@ AGENT_BINARY=''
 VERSION_FLAG=''
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 TEMPLATE_PATH="$SCRIPT_DIR/monitoring/unified-agent.yml.template"
+MERGE_HELPER="$SCRIPT_DIR/monitoring/merge_native_agent.py"
 COMMERCE_PROBE_SOURCE="$SCRIPT_DIR/run-commerce-worker-health.sh"
 COMMERCE_PROBE_PATH=/usr/local/lib/findme-commerce-worker-health/run-commerce-worker-health.sh
 FOLDER_ID=''
 temporary_dir=''
 candidate_config=''
+native_config=''
 previous_config=''
 had_previous=0
 config_promoted=0
@@ -204,10 +206,12 @@ esac
 
 require_supported_host
 [ -f "$TEMPLATE_PATH" ] || fail "Unified Agent template is missing"
+[ -f "$MERGE_HELPER" ] || fail "Unified Agent native merge helper is missing"
 [ -f "$COMMERCE_PROBE_SOURCE" ] || fail "Commerce worker health probe is missing"
 
 temporary_dir=$(mktemp -d) || fail "Could not create a temporary directory"
 candidate_config="$temporary_dir/config.yml"
+native_config="$temporary_dir/native.yml"
 previous_config="$temporary_dir/config.yml.previous"
 trap cleanup 0 HUP INT TERM
 
@@ -220,7 +224,18 @@ AGENT_BINARY=$(command -v unified_agent || true)
 
 mkdir -p "$CONFIG_DIR"
 
-sed "s|__YANDEX_CLOUD_FOLDER_ID__|$FOLDER_ID|g" "$TEMPLATE_PATH" > "$candidate_config"
+sed "s|__YANDEX_CLOUD_FOLDER_ID__|$FOLDER_ID|g" "$TEMPLATE_PATH" > "$native_config"
+if [ "$had_previous" -eq 1 ]; then
+    PYTHON_BINARY=$(command -v python3 || true)
+    [ -n "$PYTHON_BINARY" ] || fail "Python 3 is required to preserve Unified Agent routes"
+    "$PYTHON_BINARY" -c 'import yaml' >/dev/null 2>&1 || \
+        fail "PyYAML is required to preserve Unified Agent routes"
+    "$PYTHON_BINARY" "$MERGE_HELPER" \
+        --current "$previous_config" --native "$native_config" --output "$candidate_config" || \
+        fail "Could not preserve existing Unified Agent routes"
+else
+    mv "$native_config" "$candidate_config"
+fi
 "$AGENT_BINARY" --config "$candidate_config" check-config
 
 package_commerce_probe

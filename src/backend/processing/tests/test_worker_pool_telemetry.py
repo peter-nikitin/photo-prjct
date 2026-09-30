@@ -105,6 +105,105 @@ class TelemetryTests(TestCase):
             for sample in family.samples
         }
 
+    def all_samples(self):
+        response = self.client.get("/worker-diagnostics/metrics/")
+        self.assertEqual(response.status_code, 200)
+        return [
+            sample
+            for family in text_string_to_metric_families(response.content.decode())
+            for sample in family.samples
+        ]
+
+    def test_private_scrape_exposes_pool_sources_without_node_identifiers(self):
+        published_at = self.now - timedelta(seconds=20)
+        self.pool.queue_observed_at = published_at
+        self.pool.save(update_fields=["queue_observed_at"])
+
+        with patch("django.utils.timezone.now", return_value=self.now):
+            samples = self.all_samples()
+
+        pool_samples = [sample for sample in samples if sample.name.startswith("worker_pool_")]
+        self.assertTrue(pool_samples)
+        self.assertTrue(all(set(sample.labels) == {"pool"} for sample in pool_samples))
+        by_name_and_pool = {(sample.name, sample.labels["pool"]): sample for sample in pool_samples}
+        self.assertEqual(
+            by_name_and_pool[("worker_pool_queue_observation_available", "bulk")].value,
+            1,
+        )
+        self.assertEqual(
+            by_name_and_pool[("worker_pool_queue_observation_timestamp_seconds", "selfie")].value,
+            self.now.timestamp(),
+        )
+        self.assertEqual(
+            by_name_and_pool[("worker_pool_cloud_observation_timestamp_seconds", "selfie")].value,
+            self.now.timestamp(),
+        )
+        self.assertEqual(
+            by_name_and_pool[
+                ("worker_pool_native_publisher_success_timestamp_seconds", "selfie")
+            ].value,
+            published_at.timestamp(),
+        )
+        self.assertEqual(
+            by_name_and_pool[("worker_pool_running_instances", "selfie")].value,
+            1,
+        )
+        self.assertEqual(
+            by_name_and_pool[("worker_pool_expected_instances", "selfie")].value,
+            1,
+        )
+
+    def test_queue_observation_failure_keeps_node_diagnostics_and_reports_unavailable(self):
+        self.assertEqual(self.submit().status_code, 200)
+
+        with patch(
+            "processing.services.worker_pool_telemetry.observe_pool_state",
+            side_effect=ValueError("private queue detail"),
+        ):
+            samples = self.all_samples()
+
+        self.assertTrue(any(sample.name == "worker_host_observation_fresh" for sample in samples))
+        availability = {
+            sample.labels["pool"]: sample.value
+            for sample in samples
+            if sample.name == "worker_pool_queue_observation_available"
+        }
+        self.assertEqual(availability, {"bulk": 0, "selfie": 0})
+
+    def test_pending_slot_without_instance_identity_is_not_an_expected_node(self):
+        lifecycle.record_cloud_snapshot(
+            "selfie",
+            group_id="group",
+            sequence=2,
+            started_at=self.now,
+            completed_at=self.now,
+            target_size=1,
+            members=[
+                {
+                    "instance_id": "",
+                    "status": "STARTING_INSTANCE",
+                    "worker_build": "",
+                }
+            ],
+            complete=True,
+        )
+
+        with patch("django.utils.timezone.now", return_value=self.now):
+            samples = self.all_samples()
+
+        selfie = {
+            sample.name: sample.value for sample in samples if sample.labels == {"pool": "selfie"}
+        }
+        self.assertEqual(selfie["worker_pool_running_instances"], 0)
+        self.assertEqual(selfie["worker_pool_expected_instances"], 0)
+        self.assertFalse(
+            any(
+                sample.name == "worker_host_observation_missing"
+                and sample.labels["pool"] == "selfie"
+                for sample in samples
+            )
+        )
+
     def test_receipt_is_separate_and_never_changes_admission_or_native_metrics(self):
         from config.metrics import generate_metrics
 
@@ -267,7 +366,7 @@ class TelemetryTests(TestCase):
         self.pool.observation_completed_at = timezone.now()
         self.pool.observed_members = []
         self.pool.save()
-        self.assertEqual(self.samples(), {})
+        self.assertFalse(any("instance_id" in sample.labels for sample in self.all_samples()))
 
     def test_removed_instance_stays_absent_when_complete_cloud_observation_expires(self):
         self.assertEqual(self.submit().status_code, 200)
@@ -283,10 +382,11 @@ class TelemetryTests(TestCase):
         )
         for now in (self.now, self.now + timedelta(seconds=91)):
             with patch("django.utils.timezone.now", return_value=now):
-                samples = self.samples()
-            self.assertTrue(samples)
+                samples = self.all_samples()
+            node_samples = [sample for sample in samples if "instance_id" in sample.labels]
+            self.assertTrue(node_samples)
             self.assertTrue(
-                all(sample.labels["instance_id"] == "node-2" for sample in samples.values())
+                all(sample.labels["instance_id"] == "node-2" for sample in node_samples)
             )
 
     def test_idle_empty_membership_stays_empty_when_cloud_observation_expires(self):
@@ -303,7 +403,9 @@ class TelemetryTests(TestCase):
         )
         for now in (self.now, self.now + timedelta(seconds=91)):
             with patch("django.utils.timezone.now", return_value=now):
-                self.assertEqual(self.samples(), {})
+                self.assertFalse(
+                    any("instance_id" in sample.labels for sample in self.all_samples())
+                )
 
     def test_reboot_and_process_reset_have_explicit_boundaries_and_reject_old_sources(self):
         self.assertEqual(self.submit().status_code, 200)

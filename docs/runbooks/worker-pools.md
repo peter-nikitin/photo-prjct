@@ -252,26 +252,62 @@ demand publication even if its cloud read fails, then exits nonzero for the inco
 it never invents fresh cloud evidence. Existing trusted per-pool snapshots remain authoritative
 until stale. Failed Monitoring publication still cannot advance successful queue freshness.
 
-The prepared at-ceiling rule targets the separately approved ceiling-two policy: it requires
-two running VMs with fresh evidence and claimable age
-above 300 seconds increasing at every observed interval throughout five minutes. A new successful
-publication with capacity_fresh=0 excludes its new saturation points and fires the observation
-diagnostic separately. During a **total publisher outage**, positive historical S points may
-remain inside the five-minute window: exact native gap suppression is not proven. An observation
-Alarm/NoData takes precedence; historical saturation is UNCONFIRMED until current capacity,
-queue and coordinator status evidence is refreshed. It is never authority to raise resources.
-Missing queue telemetry is unconfirmed demand, not healthy/empty service. No interpolation/fake
-zero may hide gaps. Native evaluation and email delivery are proved only during separately
-approved activation.
+Worker alerting uses the existing Managed Prometheus package under
+[ADR 0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md), not a separate native
+alert lifecycle. Native publication remains the autoscaler's input. The additional private
+diagnostics scrape exposes read-only pool observations and numeric source timestamps.
 
-That rule does not diagnose saturation at the approved ceiling one. Use fresh queue/capacity
-and serving/progress evidence for that bound; do not infer spare capacity from a silent
-ceiling-two rule. The [cap-one alert prerequisite](../future-work/2026-09-29-cap-one-worker-saturation-alert.md)
-must be accepted **before any ceiling-one customer cutover**: a reviewed cap-one-specific
-predicate, native Alarm/NoData/recovery and delivered notifications for the actual pool/zone,
-preserving fresh/unknown observation handling. Manual inspection does not clear this gate;
-it cannot wait for optional diagnostics activation. Any alert-policy change requires its own
-reviewed activation evidence.
+The default-off worker profile targets ceiling one: fresh actual running capacity >=1,
+claimable age above 300 seconds, and positive recent age growth sustained for five minutes.
+Queue progress/reset or missing/stale sources breaks saturation. Separate queue, cloud and
+native-publisher diagnostics identify unknown demand/capacity; retained positive history is not
+current evidence. Fresh actual zero members in idle bulk is valid and requires no node metrics.
+No alert changes limits, claims, jobs, releases or placement.
+
+Before **any ceiling-one customer cutover**, complete the
+[live acceptance gate](../future-work/2026-09-29-cap-one-worker-saturation-alert.md):
+fresh raw source values, evaluator read-back, controlled sustained firing, missing-series and
+retained-stale-source behavior, recovery and delivered notifications for both pools. Generic
+email drills, local fixtures and a successful deployment do not clear this gate. Use the
+[existing package runbook](../../deploy/monitoring/prometheus/README.md) for exact-SHA apply and
+known-Git-revision rollback. Do not infer spare capacity from a quiet rule with unknown sources.
+
+Worker VMs do not own a Unified Agent configuration: their telemetry timer sends host diagnostics
+to the private canonical backend. The optional canonical scrape is owned by
+`deploy/monitoring/prometheus/render_agent.py` (`--worker-telemetry`); omitting that option removes
+the worker route. Repeated configuration and subsequent deployments must preserve all required
+native and Prometheus routes in `/etc/yc/unified_agent/config.yml`. Validate `check-config`, active
+`unified_agent.service`, and fresh cloud-ingested native autoscaler and Prometheus worker samples,
+including source timestamps and expected-node identity. Repeat the cloud proof after deployment;
+a running service or successful scrape alone does not prove delivery.
+
+Only deploy the route-preserving `deploy/configure-monitoring-agent.sh` revision before activating
+the worker scrape; older revisions replace the configuration and can remove Prometheus routes.
+Offline repeated-refresh tests do not replace live configuration read-back and fresh cloud samples.
+Coordinate deployment with observability; this package does not modify `deploy/image-origin/**`.
+
+### Queue and processing-speed dashboard
+
+The Git-owned Prometheus dashboard separates queue size, oldest waiting age, workload and actual
+running capacity from worker execution throughput and duration. Runtime operations/minute and
+duration distributions/p50/p95 are split by operation kind and outcome, with fresh current-node
+evidence. A successful callback delivery is not a count of accepted photos; retries and separate
+stages must not be summed into photo throughput. Runtime duration includes delivery and cleanup,
+not queue waiting. Quantiles are estimates from the existing histogram boundaries.
+
+"Фото с принятым превью/мин" measures clean `preview-small-v1` publications accepted by the backend
+after transaction commit, averaged over five minutes. It uses the private application metrics
+counter, not worker callbacks or historical database scans. Rollback, duplicate callbacks, failed
+attempts and watermarked derivatives do not increment it. This is operational telemetry since
+instrumentation was deployed, not historical accounting or completion of every assigned stage.
+Clean preview acceptance alone also does not imply public availability under watermark policy.
+
+Prepare and validate the dashboard before provisioning worker VMs. Deploy compatible backend
+metrics and route-preserving configuration, then separately approve scrape/dashboard activation.
+Fresh accepted-preview and queue data can be verified before remote workers exist. Missing
+cloud/runtime data stays "no data", not zero. After approved provisioning, verify current-node
+runtime graphs and controlled alert firing/recovery/delivery before customer cutover. Idle bulk
+zero is valid only when fresh cloud observation confirms zero members.
 
 On the canonical VM, use the actual Compose project, its reviewed overlays and existing .env;
 the following read-only commands emit bounded queue/status data, not credential files:

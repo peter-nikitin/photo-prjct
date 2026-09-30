@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -49,7 +50,103 @@ def test_offline_render_has_missing_observations_separate(control):
     assert "[10m]) < 0.5" in package["rules.yml"]
     assert "absent_over_time" in package["rules.yml"]
     assert "increase(findme_http_requests_total" in package["rules.yml"]
-    assert len(json.loads(package["dashboard.json"])["widgets"]) == 19
+    assert len(json.loads(package["dashboard.json"])["widgets"]) == 27
+
+
+def test_worker_profile_is_boolean_default_off_and_renders_only_when_enabled(control):
+    cfg = control.load_config()
+    assert cfg["worker_alerts_enabled"] is False
+    disabled = yaml.safe_load(control.render(cfg)["rules.yml"])
+    assert [group["name"] for group in disabled["groups"]] == ["findme-photo"]
+
+    cfg["worker_alerts_enabled"] = True
+    enabled = yaml.safe_load(control.render(cfg)["rules.yml"])
+    assert [group["name"] for group in enabled["groups"]] == [
+        "findme-photo",
+        "findme-workers",
+    ]
+    assert [rule["alert"] for rule in enabled["groups"][1]["rules"]] == [
+        "WorkerReadyWorkOverdue",
+        "WorkerPoolSaturated",
+        "WorkerQueueObservationMissing",
+        "WorkerCloudObservationMissing",
+        "WorkerNativePublisherMissing",
+        "WorkerHostDiagnosticsMissing",
+        "WorkerRuntimeDiagnosticsMissing",
+    ]
+
+    cfg["worker_alerts_enabled"] = 1
+    with pytest.raises(control.ControlError, match="worker_alerts_enabled"):
+        control.validate_config(cfg)
+
+
+def test_validate_package_checks_disabled_and_enabled_worker_profiles(
+    control, tmp_path, monkeypatch
+):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="promtool, version 3.5.0", stderr="")
+
+    monkeypatch.setattr(control.subprocess, "run", run)
+    control.validate_prometheus_profiles(control.load_config(), tmp_path, "promtool")
+
+    checked = [Path(command[-1]) for command in calls if command[1:3] == ["check", "rules"]]
+    assert len(checked) == 3
+    rendered = [
+        yaml.safe_load(path.read_text())
+        for path in checked
+        if path.name != "dashboard-query-rules.yml"
+    ]
+    assert {tuple(group["name"] for group in item["groups"]) for item in rendered} == {
+        ("findme-photo",),
+        ("findme-photo", "findme-workers"),
+    }
+    tested = [Path(command[-1]) for command in calls if command[1:3] == ["test", "rules"]]
+    assert len(tested) == 3
+    enabled_tests = next(path for path in tested if "worker-alerts-enabled" in path.parts)
+    names = [item["name"] for item in yaml.safe_load(enabled_tests.read_text())["tests"]]
+    assert "worker cap saturation is sustained" in names
+
+
+def test_validate_package_checks_actual_dashboard_queries_and_behavior_fixtures(
+    control, tmp_path, monkeypatch
+):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="promtool, version 3.5.0", stderr="")
+
+    monkeypatch.setattr(control.subprocess, "run", run)
+    control.validate_prometheus_profiles(control.load_config(), tmp_path, "promtool")
+
+    dashboard_rules = tmp_path / "dashboard-query-rules.yml"
+    dashboard_tests = tmp_path / "dashboard-query-tests.yml"
+    assert ["promtool", "check", "rules", str(dashboard_rules)] in calls
+    assert ["promtool", "test", "rules", str(dashboard_tests)] in calls
+    rules = yaml.safe_load(dashboard_rules.read_text())
+    expressions = {rule["expr"] for group in rules["groups"] for rule in group["rules"]}
+    dashboard = json.loads(control.render(control.load_config())["dashboard.json"])
+    rendered = {
+        target["prometheusTarget"]["query"]
+        for widget in dashboard["widgets"]
+        for target in widget["multiSourceChart"]["targets"]
+        if "prometheusTarget" in target
+    }
+    assert expressions == rendered
+    tests = yaml.safe_load(dashboard_tests.read_text())
+    assert {item["name"] for item in tests["tests"]} == {
+        "fresh queue remains visible without cloud or publisher",
+        "idle capacity is zero while missing capacity is no data",
+        "runtime source age includes time since the last sender sample",
+        "runtime intervals are disjoint and sum to total throughput",
+        "accepted preview zero is observed but missing source is no data",
+    }
+    assert all(
+        "{{" not in item["expr"] for case in tests["tests"] for item in case["promql_expr_test"]
+    )
 
 
 def test_rendered_project_receiver_delivers_email_and_telegram_recovery(control):
@@ -92,8 +189,8 @@ class FakeTransport:
         self.events.append(("get-dashboard", dashboard_id))
         return self.dashboard
 
-    def wait_rules_evaluation(self, name, *, earliest):
-        self.events.append(("evaluated-rules", name))
+    def wait_rules_evaluation(self, name, *, expected, earliest):
+        self.events.append(("evaluated-rules", name, expected))
 
     def dashboard_update(self, request):
         self.events.append(("update-dashboard", request))
@@ -191,6 +288,111 @@ def test_stale_or_nan_samples_block_activation(control):
         control.preflight(cfg, transport, now=1000)
 
 
+def worker_preflight_transport(control, cfg, *, source_override=None, omit=None):
+    transport = FakeTransport(control, cfg)
+    original = transport.request
+    source_override = source_override or {}
+
+    def request(method, path, body=None):
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        if query.startswith("worker_") and query.endswith("[90s]"):
+            transport.events.append((method, path, body))
+            metric = query.split("{", 1)[0]
+            pool = "selfie" if 'pool="selfie"' in query else "bulk"
+            if (metric, pool) == omit:
+                return {"status": "success", "data": {"resultType": "matrix", "result": []}}
+            timestamps = {
+                "worker_pool_queue_observation_timestamp_seconds",
+                "worker_pool_cloud_observation_timestamp_seconds",
+                "worker_pool_native_publisher_success_timestamp_seconds",
+                "worker_node_cloud_observation_timestamp_seconds",
+            }
+            value = source_override.get((metric, pool), 1000 if metric in timestamps else 0)
+            if metric == "worker_pool_queue_observation_available":
+                value = 1
+            if metric in {"worker_pool_running_instances", "worker_pool_expected_instances"}:
+                value = int(pool == "selfie")
+            labels = {"pool": pool}
+            if not metric.startswith("worker_pool_"):
+                labels |= {"instance_id": "node-1", "zone_id": "ru-central1-a"}
+            return {
+                "status": "success",
+                "data": {
+                    "resultType": "matrix",
+                    "result": [{"metric": labels, "values": [[1000, str(value)]]}],
+                },
+            }
+        return original(method, path, body)
+
+    transport.request = request
+    return transport
+
+
+def test_enabled_worker_preflight_requires_sources_and_skips_idle_bulk_nodes(control):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(control, cfg)
+
+    control.preflight(cfg, transport, now=1000)
+
+    queries = [
+        parse_qs(urlsplit(path).query).get("query", [""])[0]
+        for method, path, _ in transport.events
+        if method == "GET" and "/api/v1/query?" in path
+    ]
+    assert not any(query.startswith("worker_host_") and 'pool="bulk"' in query for query in queries)
+    assert any(query.startswith("worker_host_") and 'pool="selfie"' in query for query in queries)
+
+
+@pytest.mark.parametrize(
+    "metric,value",
+    [
+        ("worker_pool_queue_observation_timestamp_seconds", 909),
+        ("worker_pool_cloud_observation_timestamp_seconds", 1001),
+        ("worker_pool_native_publisher_success_timestamp_seconds", float("nan")),
+    ],
+)
+def test_enabled_worker_preflight_rejects_stale_future_or_nonfinite_sources(control, metric, value):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(
+        control,
+        cfg,
+        source_override={(metric, "selfie"): value},
+    )
+
+    with pytest.raises(control.ControlError, match="worker|sample"):
+        control.preflight(cfg, transport, now=1000)
+
+
+def test_enabled_worker_preflight_rejects_total_sender_outage(control):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(
+        control,
+        cfg,
+        omit=("worker_pool_queue_observation_available", "bulk"),
+    )
+
+    with pytest.raises(control.ControlError, match="expected sample missing"):
+        control.preflight(cfg, transport, now=1000)
+
+
+def test_enabled_worker_preflight_rejects_retained_node_from_previous_membership(control):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(
+        control,
+        cfg,
+        source_override={
+            ("worker_node_cloud_observation_timestamp_seconds", "selfie"): 999,
+        },
+    )
+
+    with pytest.raises(control.ControlError, match="membership stale"):
+        control.preflight(cfg, transport, now=1000)
+
+
 def test_counter_cpu_contract_rejected_until_verified(control):
     cfg = config(control)
     cfg["metrics"]["cpu_useful"]["type"] = "gauge"
@@ -204,17 +406,81 @@ def test_snapshot_error_blocks_success(control):
             {
                 "snapshotByGroup": {
                     "findme-photo": [
-                        {"state": "TIMEOUT", "error": "failure", "evaluatedAtTimeEpochMs": 1000000}
+                        {
+                            "record": "PublicServiceUnavailable",
+                            "state": "TIMEOUT",
+                            "error": "failure",
+                            "evaluatedAtTimeEpochMs": 1000000,
+                        }
                     ]
                 }
             },
+            {"findme-photo": ["PublicServiceUnavailable"]},
             now=1000,
         )
 
 
 def test_snapshot_missing_is_unverified(control):
     with pytest.raises(control.ControlError, match="evaluation"):
-        control.verify_snapshots({"snapshotByGroup": {}}, now=1000)
+        control.verify_snapshots(
+            {"snapshotByGroup": {}},
+            {"findme-photo": ["PublicServiceUnavailable"]},
+            now=1000,
+        )
+
+
+@pytest.mark.parametrize(
+    "actual",
+    [
+        {"findme-photo": ["PublicServiceUnavailable"]},
+        {
+            "findme-photo": [
+                "PublicServiceUnavailable",
+                "PublicServiceUnavailable",
+                "Unexpected",
+            ]
+        },
+    ],
+)
+def test_snapshot_verification_rejects_missing_extra_and_duplicate_rule_identities(control, actual):
+    expected = {"findme-photo": ["PublicServiceUnavailable", "PublicObservationsMissing"]}
+    snapshot = {
+        "snapshotByGroup": {
+            group: [
+                {
+                    "record": alert,
+                    "state": "OK",
+                    "error": "",
+                    "evaluatedAtTimeEpochMs": 1000000,
+                }
+                for alert in alerts
+            ]
+            for group, alerts in actual.items()
+        }
+    }
+    with pytest.raises(control.ControlError, match="evaluation"):
+        control.verify_snapshots(snapshot, expected, now=1000)
+
+
+def test_snapshot_verification_matches_all_rendered_group_and_alert_identities(control):
+    cfg = control.load_config()
+    cfg["worker_alerts_enabled"] = True
+    expected = control.rule_identities(control.render(cfg)["rules.yml"])
+    snapshot = {
+        "snapshotByGroup": {
+            group: [
+                {
+                    "record": alert,
+                    "state": "OK",
+                    "error": "",
+                    "evaluatedAtTimeEpochMs": 1000000,
+                }
+                for alert in alerts
+            ]
+            for group, alerts in expected.items()
+        }
+    }
+    control.verify_snapshots(snapshot, expected, now=1000)
 
 
 def test_check_reports_routing_unverified(control):
@@ -524,11 +790,11 @@ def test_diagnostic_charts_use_verified_gauges_and_scoped_counter_rates(control)
     ):
         assert expressions[key] == f"rate({selectors[metric]}[5m])"
     widgets = json.loads(control.render(cfg)["dashboard.json"])["widgets"]
-    charts = [widget["multiSourceChart"] for widget in widgets[14:]]
+    charts = [widget["multiSourceChart"] for widget in widgets[14:19]]
     assert [len(chart["targets"]) for chart in charts] == [2, 1, 2, 2, 1]
     for chart in (charts[0], charts[2], charts[3]):
         assert chart["displayLegend"] is True
-    assert [widget["position"] for widget in widgets[14:]] == [
+    assert [widget["position"] for widget in widgets[14:19]] == [
         {"y": "56", "w": "12", "h": "8"},
         {"x": "12", "y": "56", "w": "12", "h": "8"},
         {"y": "64", "w": "12", "h": "8"},
@@ -603,3 +869,96 @@ def test_render_resolves_histogram_quantile_placeholders_with_numeric_names(cont
         "(rate(findme_http_request_duration_seconds_bucket[5m])))"
         for quantile in ("0.50", "0.95")
     ]
+
+
+def test_worker_dashboard_keeps_baseline_and_gates_fresh_pool_and_runtime_sources(control):
+    dashboard = json.loads(control.render(config(control))["dashboard.json"])
+    assert len(dashboard["widgets"]) == 27
+    worker = {
+        widget["multiSourceChart"]["title"]: widget["multiSourceChart"]
+        for widget in dashboard["widgets"][19:]
+    }
+    assert list(worker) == [
+        "Worker — доступные задачи",
+        "Worker — возраст старейшей доступной задачи, с",
+        "Worker — нагрузка очереди",
+        "Worker — работающие VM",
+        "Worker — завершённые операции/мин",
+        "Worker — длительность операций p50/p95, с",
+        "Worker — распределение длительности операций/мин",
+        "Фото с принятым превью/мин",
+    ]
+    for title in list(worker)[:3]:
+        chart = worker[title]
+        assert chart["displayLegend"] is True
+        query = chart["targets"][0]["prometheusTarget"]["query"]
+        assert "worker_pool_queue_observation_timestamp_seconds" in query
+        assert "worker_pool_cloud_observation_timestamp_seconds" not in query
+        assert "worker_pool_native_publisher_success_timestamp_seconds" not in query
+        assert "time()" in query
+        assert "vector(0)" not in query
+    capacity = worker["Worker — работающие VM"]
+    capacity_query = capacity["targets"][0]["prometheusTarget"]["query"]
+    assert capacity["displayLegend"] is True
+    assert "worker_pool_cloud_observation_timestamp_seconds" in capacity_query
+    assert "worker_pool_queue_observation_timestamp_seconds" not in capacity_query
+    assert "worker_pool_native_publisher_success_timestamp_seconds" not in capacity_query
+
+    throughput = worker["Worker — завершённые операции/мин"]
+    assert throughput["displayLegend"] is True
+    assert throughput["description"] == (
+        "Терминальные выполнения runtime по kind/outcome; callback_delivered не означает "
+        "принятую фотографию."
+    )
+    throughput_query = throughput["targets"][0]["prometheusTarget"]["query"]
+    assert "sum by (pool, kind, outcome)" in throughput_query
+    assert "rate(worker_runtime_executions_total[5m])" in throughput_query
+    assert "worker_node_cloud_observation_timestamp_seconds" in throughput_query
+    assert "worker_runtime_observation_age_seconds" in throughput_query
+    assert "timestamp(worker_runtime_observation_age_seconds)" in throughput_query
+    assert (
+        "worker_runtime_observation_age_seconds + time() - "
+        "timestamp(worker_runtime_observation_age_seconds)"
+    ) in throughput_query
+    assert "vector(0)" not in throughput_query
+
+    duration = worker["Worker — длительность операций p50/p95, с"]
+    duration_queries = [target["prometheusTarget"]["query"] for target in duration["targets"]]
+    assert [target["prometheusTarget"]["name"] for target in duration["targets"]] == [
+        "P50",
+        "P95",
+    ]
+    assert duration_queries == [
+        query.replace("histogram_quantile(0.50", f"histogram_quantile({quantile}", 1)
+        for quantile, query in (("0.50", duration_queries[0]), ("0.95", duration_queries[0]))
+    ]
+    assert all("sum by (pool, kind, outcome, le)" in query for query in duration_queries)
+
+    buckets = worker["Worker — распределение длительности операций/мин"]
+    bucket_queries = [target["prometheusTarget"]["query"] for target in buckets["targets"]]
+    assert [target["prometheusTarget"]["name"] for target in buckets["targets"]] == [
+        "Le1",
+        "From1To5",
+        "From5To15",
+        "From15To60",
+        "From60To300",
+        "From300To900",
+        "From900To1800",
+        "Gt1800",
+    ]
+    assert all(
+        "worker_runtime_execution_duration_seconds_bucket" in query for query in bucket_queries
+    )
+    assert all("clamp_min" in query for query in bucket_queries[1:])
+    assert buckets["visualizationSettings"]["type"] == "VISUALIZATION_TYPE_COLUMN"
+    assert buckets["description"].startswith("Непересекающиеся фактические интервалы: ≤1")
+
+    accepted = worker["Фото с принятым превью/мин"]
+    accepted_query = accepted["targets"][0]["prometheusTarget"]["query"]
+    assert "rate(findme_accepted_previews_total[5m]) * 60" in accepted_query
+    assert "timestamp(findme_accepted_previews_total)" in accepted_query
+    assert "vector(0)" not in accepted_query
+    assert accepted["description"] == (
+        "Принятые clean preview-small-v1 с момента текущего deployment; не все стадии "
+        "обработки и не гарантия публичной доступности."
+    )

@@ -831,6 +831,72 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         self.assertEqual(derivative.sha256, object.sha256)
         self.assertEqual(storage.promote_final_keys, [derivative.final_key])
 
+    def test_only_committed_clean_preview_acceptance_increments_product_counter(self) -> None:
+        _, claimed = self._claim("preview-product-counter")
+        object = self._stored_object()
+        storage = FakePreviewStorage(object)
+        result = self._result(object)
+
+        with patch("processing.services.previews.observe_accepted_preview") as observe:
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_preview_attempt(claimed.attempt.id, result=result, storage=storage)
+            with self.captureOnCommitCallbacks(execute=True):
+                repeated = complete_preview_attempt(
+                    claimed.attempt.id,
+                    result=result,
+                    storage=storage,
+                )
+
+        self.assertTrue(repeated.idempotent)
+        observe.assert_called_once_with()
+
+    def test_failed_clean_publication_does_not_increment_product_counter(self) -> None:
+        _, claimed = self._claim("preview-product-counter-rollback")
+        object = self._stored_object()
+
+        with (
+            patch("processing.services.previews.observe_accepted_preview") as observe,
+            patch(
+                "processing.services.previews.publish_gallery_media",
+                side_effect=RuntimeError("projection failed"),
+            ),
+            self.assertRaises(RuntimeError),
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_preview_attempt(
+                    claimed.attempt.id,
+                    result=self._result(object),
+                    storage=FakePreviewStorage(object),
+                )
+
+        observe.assert_not_called()
+        self.assertFalse(
+            PhotoDerivative.objects.filter(photo_id="preview-product-counter-rollback")
+        )
+
+    def test_watermarked_preview_acceptance_does_not_increment_clean_preview_counter(self) -> None:
+        _, _, claimed = self._claim_watermark("preview-counter-watermark")
+        content = b"counter-watermark"
+        object = PreviewObject(
+            etag_wire='"counter-watermark"',
+            etag_value="counter-watermark",
+            byte_size=len(content),
+            content_type="image/jpeg",
+            sha256=hashlib.sha256(content).hexdigest(),
+            width=1600,
+            height=1000,
+        )
+
+        with patch("processing.services.previews.observe_accepted_preview") as observe:
+            with self.captureOnCommitCallbacks(execute=True):
+                complete_preview_attempt(
+                    claimed.attempt.id,
+                    result=self._watermark_result(object),
+                    storage=FakePreviewStorage(object),
+                )
+
+        observe.assert_not_called()
+
     def test_content_addressed_final_keys_separate_conflicting_declared_checksums(self) -> None:
         _, claimed = self._claim("preview-content-addressed")
         first_checksum = "a" * 64

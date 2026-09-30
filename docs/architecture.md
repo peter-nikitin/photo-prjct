@@ -331,9 +331,17 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   loopback runtime exporter, independent bounded host probe, private fleet-authenticated ingestion,
   fenced latest diagnostic state, canonical exposition and a disabled-by-default scrape in the
   existing Managed Prometheus agent renderer. Local TLS/container and additive-upgrade rehearsals
-  are separate from cloud delivery. Supported automated resource lifecycle/configuration
-  verification, diagnostic alert application and live activation remain pending. Existing native
-  alerts and ADR 0042's authoritative autoscaling remain unchanged. See the
+  are separate from cloud delivery. [ADR 0048](adr/0048-reuse-managed-prometheus-for-worker-alerts.md)
+  reuses the delivered Prometheus workspace, operator channel and Git reconciliation for
+  worker queue/capacity and diagnostic alerts. The worker profile is disabled until live
+  activation; source timestamps distinguish retained stale data from fresh observations.
+  The Git-owned dashboard separates queue/capacity, runtime operation throughput and duration
+  distributions from backend-accepted clean-preview throughput. The latter is a label-free,
+  commit-only application counter, not a count of all completed processing stages or an accounting
+  ledger. Missing source evidence is not rendered as zero; runtime charts require current members.
+  Rule read-back and known-Git-revision routing rollback follow the existing monitoring contract;
+  routing drift remains explicitly unverified. Existing active alerts and ADR 0042's
+  authoritative native autoscaling remain unchanged. See the
   [worker runbook](runbooks/worker-pools.md); diagnostic failures never grant processing capacity
   or prevent lease renewal, callbacks or drain.
 

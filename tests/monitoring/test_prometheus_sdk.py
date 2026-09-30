@@ -65,7 +65,18 @@ class DashboardTransportTests(unittest.TestCase):
             ) as run,
         ):
             self.control.validate_package(self.control.load_config(), Path(directory), "promtool")
-            self.assertEqual(run.call_count, 3)
+            self.assertEqual(
+                [call.args[0][1:3] for call in run.call_args_list],
+                [
+                    ["--version"],
+                    ["check", "rules"],
+                    ["test", "rules"],
+                    ["check", "rules"],
+                    ["test", "rules"],
+                    ["check", "rules"],
+                    ["test", "rules"],
+                ],
+            )
 
     def test_invalid_source_and_target_variants_fail_before_promtool(self):
         import json

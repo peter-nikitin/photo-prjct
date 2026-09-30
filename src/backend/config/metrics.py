@@ -21,6 +21,14 @@ HTTP_REQUEST_DURATION = Histogram(
     "HTTP request duration by route, method, and response status class.",
     _LABEL_NAMES,
 )
+ACCEPTED_PREVIEWS = Counter(
+    "findme_accepted_previews",
+    "Accepted clean preview publications observed since the current deployment.",
+)
+
+
+def observe_accepted_preview() -> None:
+    ACCEPTED_PREVIEWS.inc()
 
 
 def generate_metrics() -> bytes:

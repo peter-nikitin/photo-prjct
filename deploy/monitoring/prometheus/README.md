@@ -12,9 +12,11 @@ duplicates remain separate gates. Existing native alerts, routes and timers rema
 - `rules.yml`: one owned `findme-photo.yml` file; alert thresholds/windows are editable here.
 - `alertmanager.yml`: full routing configuration for a **dedicated FindMe workspace**. The CLI
   rejects any foreign rule file before replacing routing. It never deletes foreign rules.
-- `dashboard.json`: title and all 19 graph widgets, including duration, TLS, uptime, load, HTTP
-  rates/latency, Commerce, swap, root filesystem inodes, disk/network I/O and native Unified Agent
-  backlog. Other dashboard fields come from a fresh Get and are preserved.
+- `dashboard.json`: title and all 27 graph widgets. The original 19 cover duration, TLS, uptime,
+  load, HTTP rates/latency, Commerce, swap, root filesystem inodes, disk/network I/O and native
+  Unified Agent backlog. Eight additional widgets cover worker queue/capacity, terminal operation
+  throughput, p50/p95, non-overlapping duration intervals and accepted clean-preview throughput.
+  Other dashboard fields come from a fresh Get and are preserved.
 - `oidc.json`: protected `monitoring` environment identity; service account
   `aje3t70qka1dtc09k5ic` (`findme-monitoring-ci`).
 
@@ -61,7 +63,12 @@ make test TESTS='tests/monitoring/test_prometheus_control.py tests/monitoring/te
 
 Validation uses the official generated SDK schema for Prometheus and native Monitoring sources,
 positive Prometheus grid steps, matching source/target kinds and references, resolved queries,
-promtool syntax and behavior scenarios. No credential or network call to Yandex is
+promtool syntax and behavior scenarios. It wraps the actual rendered Prometheus dashboard queries
+as temporary recording rules, then runs five dashboard fixtures for independent queue/cloud
+freshness, idle zero versus no data, combined runtime source age, disjoint histogram intervals and
+accepted-preview zero versus a missing source. It validates both the committed default-off worker profile
+and the enabled profile against the same base rules plus worker saturation, reset, missing-source,
+sender-outage and idle-zero fixtures. No credential or network call to Yandex is
 needed; Docker may pull the pinned tool image. Yandex's receiver extension is checked structurally
 by the renderer and accepted by the service on explicit PUT; upstream Alertmanager does not
 understand `yandex_monitoring_configs`. Email delivery needs a separate live drill.
@@ -123,6 +130,14 @@ Missing totals never become zero. Raw Linux names/labels and histogram `_count` 
 this workspace. A missing mapping, NaN, stale sample, query error or unsupported CPU contract
 blocks apply; `/metadata` is not supported and is never called.
 
+`findme_accepted_previews_total` is a label-free application counter initialized at zero in every
+deployment and aggregated through the existing Gunicorn multiprocess `/metrics/` route. It advances
+after commit only when a unique accepted `preview-small-v1` derivative is published. It does not
+reconstruct history and does not count callback delivery, watermarked previews, all assigned stages
+or unconditional public availability. The dashboard uses the fresh counter's five-minute rate;
+counter reset handling is Prometheus-native, observed idle is zero, and a stale or missing source is
+no data.
+
 Public/Commerce availability preserve maximum-over-window semantics (10m/5m), with separate
 `absent_over_time` rules. Disk and memory use maximum free capacity over 10m/15m; CPU uses minimum
 utilization over 15m. TLS uses minimum remaining days over 10m, preserving observations between 300s polls plus
@@ -131,6 +146,14 @@ Missing resource series do not fire pressure rules. Native worker-pool control o
 outside this migration and stay untouched.
 
 ## Additive host preparation and installation
+
+The canonical `deploy/configure-monitoring-agent.sh` refreshes only native-owned `status`,
+`metrics_buffer`, `cloud_monitoring` and routes referencing `cloud_monitoring`. It parses the current
+configuration with PyYAML, preserves unrelated storages, channels and routes (including the optional
+worker Prometheus scrape), validates the merged candidate with `check-config`, and only then promotes
+it. Missing Python/PyYAML or an invalid candidate fails before replacing the working configuration;
+existing service-state rollback remains in force. The canonical host prerequisite was checked
+read-only (`python3` 3.12.3, PyYAML 6.0.1); this task installs no host package.
 
 After separate approval of cloud cost, IAM and service restarts, snapshot the **actual** agent
 config from each host. Do not substitute the repository's old native template for the live file.
@@ -204,7 +227,17 @@ Only the diagnostic route uses `channel.pipe.filter`, plugin `transform_metric_l
 The [Prometheus agent contract](https://yandex.cloud/en/docs/monitoring/operations/prometheus/ingestion/prometheus-agent)
 describes generated job/instance labels and metadata IAM. The backend already constrains source
 labels to pool/instance_id/zone_id and runtime kind/outcome/le. Shared-channel and native/Linux,
-HTTP, Commerce and public routes keep their existing labels. No worker alert or routing is applied.
+HTTP, Commerce and public routes keep their existing labels. The committed default profile applies
+no worker alert.
+
+`environment.json` keeps `worker_alerts_enabled` false. The enabled profile adds the reviewed
+`findme-workers` group to the same owned rule file and existing email+Telegram receiver; it does
+not add a workspace, channel or route. `check` and `apply` then require fresh 90-second queue,
+complete cloud-membership and successful native-publication source clocks for both pools, finite
+cap-one running/expected capacity, and current-member node diagnostic samples when an identified
+member exists. An idle bulk pool with zero expected members needs no node sample. Source values,
+not Prometheus ingestion timestamps, fence retained series; the current cloud-observation clock
+also prevents a replaced node's retained samples from satisfying the new member.
 
 The worker [runbook](../../../docs/runbooks/worker-pools.md#optional-worker-diagnostics)
 documents status, local TLS rehearsal, reset/freshness guards and cost inputs. Before live

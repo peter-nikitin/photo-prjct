@@ -67,6 +67,7 @@ place, and add the new record to this index.
 | 0045 | [Deliver commerce thumbnails through the gallery CDN](0045-deliver-commerce-thumbnails-through-gallery-cdn.md) | Accepted |
 | 0046 | [Isolate worker-pool management in a separate folder](0046-isolate-worker-pool-management-in-a-separate-folder.md) | Accepted |
 | 0047 | [Separate Order payment from new cart selection](0047-separate-order-payment-from-new-cart-selection.md) | Accepted |
+| 0048 | [Reuse Managed Prometheus for worker alerts](0048-reuse-managed-prometheus-for-worker-alerts.md) | Accepted |
 
 ## Public selfie-search outcome
 

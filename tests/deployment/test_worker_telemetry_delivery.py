@@ -79,7 +79,7 @@ def test_status_is_bounded_read_only_and_missing_sources_are_unknown():
         "missing": 1,
         "host_fresh": 0,
         "runtime_fresh": 0,
-        "scalar_samples": 11,
+        "scalar_samples": 13,
     }
     assert report["pools"]["bulk"]["expected"] == 0
     assert report["remote_write"] == "unverified"
@@ -431,5 +431,5 @@ def test_maximum_snapshot_and_emitted_scalar_cost_inputs(pool, pairs):
         for family in text_string_to_metric_families(generate_diagnostic_metrics().decode())
         for sample in family.samples
     ]
-    assert len(samples) == 35 + pairs * 11
+    assert len(samples) == 38 + pairs * 11
     print(f"cost-input pool={pool} bytes={len(raw)} scalar_samples={len(samples)}")

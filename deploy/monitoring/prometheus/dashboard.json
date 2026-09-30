@@ -1023,111 +1023,1271 @@
       }
     },
     {
-      "position": {"y": "80", "w": "12", "h": "8"},
+      "position": {
+        "y": "80",
+        "w": "12",
+        "h": "8"
+      },
       "multiSourceChart": {
         "id": "b282b923-496f-48bc-93fa-6885f3c89d9b",
-        "targets": [{"prometheusTarget": {"dataSourceId": "7267a8d3-a147-4adc-8e91-81b51037a50d", "workspaceId": "{{workspace_id}}", "query": "{{worker_claimable_chart}}", "textMode": true, "name": "Claimable"}}],
-        "dataSources": [{"prometheusDataSource": {"id": "7267a8d3-a147-4adc-8e91-81b51037a50d", "step": "30000"}}],
-        "visualizationSettings": {"colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {"left": {"type": "YAXIS_TYPE_LINEAR", "min": "0"}, "right": {"type": "YAXIS_TYPE_LINEAR"}}},
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "7267a8d3-a147-4adc-8e91-81b51037a50d",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_claimable_chart}}",
+              "textMode": true,
+              "name": "Claimable"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "7267a8d3-a147-4adc-8e91-81b51037a50d",
+              "step": "30000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
         "title": "Worker — доступные задачи",
         "description": "Раздельно bulk/selfie. Нет свежего чтения очереди — нет данных; пустая очередь — 0.",
         "displayLegend": true
       }
     },
     {
-      "position": {"x": "12", "y": "80", "w": "12", "h": "8"},
+      "position": {
+        "x": "12",
+        "y": "80",
+        "w": "12",
+        "h": "8"
+      },
       "multiSourceChart": {
         "id": "2c3c6394-8f51-4c70-aef7-a3f3c8394167",
-        "targets": [{"prometheusTarget": {"dataSourceId": "82c5d512-9b35-434e-b6dc-ef14562205e4", "workspaceId": "{{workspace_id}}", "query": "{{worker_oldest_age_chart}}", "textMode": true, "name": "Oldest"}}],
-        "dataSources": [{"prometheusDataSource": {"id": "82c5d512-9b35-434e-b6dc-ef14562205e4", "step": "30000"}}],
-        "visualizationSettings": {"colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {"left": {"type": "YAXIS_TYPE_LINEAR", "min": "0"}, "right": {"type": "YAXIS_TYPE_LINEAR"}}},
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "82c5d512-9b35-434e-b6dc-ef14562205e4",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_oldest_age_chart}}",
+              "textMode": true,
+              "name": "Oldest"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "82c5d512-9b35-434e-b6dc-ef14562205e4",
+              "step": "30000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
         "title": "Worker — возраст старейшей доступной задачи, с",
         "description": "Раздельно bulk/selfie. Нет свежего чтения очереди — нет данных; пустая очередь — 0.",
         "displayLegend": true
       }
     },
     {
-      "position": {"y": "88", "w": "12", "h": "8"},
+      "position": {
+        "y": "88",
+        "w": "12",
+        "h": "8"
+      },
       "multiSourceChart": {
         "id": "6fe78bb7-e96d-45bf-bd5c-a10f35872276",
-        "targets": [{"prometheusTarget": {"dataSourceId": "1f271e1a-21e5-4cbf-8ea7-ad726b1696d7", "workspaceId": "{{workspace_id}}", "query": "{{worker_workload_chart}}", "textMode": true, "name": "Workload"}}],
-        "dataSources": [{"prometheusDataSource": {"id": "1f271e1a-21e5-4cbf-8ea7-ad726b1696d7", "step": "30000"}}],
-        "visualizationSettings": {"colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {"left": {"type": "YAXIS_TYPE_LINEAR", "min": "0"}, "right": {"type": "YAXIS_TYPE_LINEAR"}}},
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "1f271e1a-21e5-4cbf-8ea7-ad726b1696d7",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_workload_chart}}",
+              "textMode": true,
+              "name": "Workload"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "1f271e1a-21e5-4cbf-8ea7-ad726b1696d7",
+              "step": "30000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
         "title": "Worker — нагрузка очереди",
         "description": "Claimable плюс активные и восстанавливаемые просроченные попытки, раздельно bulk/selfie. Нет свежего чтения — нет данных.",
         "displayLegend": true
       }
     },
     {
-      "position": {"x": "12", "y": "88", "w": "12", "h": "8"},
+      "position": {
+        "x": "12",
+        "y": "88",
+        "w": "12",
+        "h": "8"
+      },
       "multiSourceChart": {
         "id": "e82f34c8-2a8c-4afb-a4cf-22ae08eb1857",
-        "targets": [{"prometheusTarget": {"dataSourceId": "c3fe472c-f887-40ed-8174-6c4635c3d940", "workspaceId": "{{workspace_id}}", "query": "{{worker_running_chart}}", "textMode": true, "name": "Running"}}],
-        "dataSources": [{"prometheusDataSource": {"id": "c3fe472c-f887-40ed-8174-6c4635c3d940", "step": "30000"}}],
-        "visualizationSettings": {"colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {"left": {"type": "YAXIS_TYPE_LINEAR", "min": "0"}, "right": {"type": "YAXIS_TYPE_LINEAR"}}},
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "c3fe472c-f887-40ed-8174-6c4635c3d940",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_running_chart}}",
+              "textMode": true,
+              "name": "Running"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "c3fe472c-f887-40ed-8174-6c4635c3d940",
+              "step": "30000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
         "title": "Worker — работающие VM",
         "description": "Текущая RUNNING capacity по bulk/selfie. Для валидного idle bulk значение 0 осмысленно; устаревшее cloud-наблюдение скрывается.",
         "displayLegend": true
       }
     },
     {
-      "position": {"y": "96", "w": "12", "h": "8"},
+      "position": {
+        "y": "96",
+        "w": "12",
+        "h": "8"
+      },
       "multiSourceChart": {
         "id": "a75c7e26-41dd-44aa-ad0c-2d18f4070dab",
-        "targets": [{"prometheusTarget": {"dataSourceId": "74a6a55a-e441-4775-a229-3340176fd449", "workspaceId": "{{workspace_id}}", "query": "{{worker_operation_rate}}", "textMode": true, "name": "Operations"}}],
-        "dataSources": [{"prometheusDataSource": {"id": "74a6a55a-e441-4775-a229-3340176fd449", "step": "30000"}}],
-        "visualizationSettings": {"colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {"left": {"type": "YAXIS_TYPE_LINEAR", "min": "0"}, "right": {"type": "YAXIS_TYPE_LINEAR"}}},
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "74a6a55a-e441-4775-a229-3340176fd449",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_operation_rate}}",
+              "textMode": true,
+              "name": "Operations"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "74a6a55a-e441-4775-a229-3340176fd449",
+              "step": "30000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
         "title": "Worker — завершённые операции/мин",
         "description": "Терминальные выполнения runtime по kind/outcome; callback_delivered не означает принятую фотографию.",
         "displayLegend": true
       }
     },
     {
-      "position": {"x": "12", "y": "96", "w": "12", "h": "8"},
+      "position": {
+        "x": "12",
+        "y": "96",
+        "w": "12",
+        "h": "8"
+      },
       "multiSourceChart": {
         "id": "84432683-79ad-478b-9708-a7ebaa87f90b",
         "targets": [
-          {"prometheusTarget": {"dataSourceId": "592f9611-d492-46a6-81b1-0df62193a225", "workspaceId": "{{workspace_id}}", "query": "{{worker_duration_p50}}", "textMode": true, "name": "P50"}},
-          {"prometheusTarget": {"dataSourceId": "592f9611-d492-46a6-81b1-0df62193a225", "workspaceId": "{{workspace_id}}", "query": "{{worker_duration_p95}}", "textMode": true, "name": "P95"}}
+          {
+            "prometheusTarget": {
+              "dataSourceId": "592f9611-d492-46a6-81b1-0df62193a225",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_duration_p50}}",
+              "textMode": true,
+              "name": "P50"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "592f9611-d492-46a6-81b1-0df62193a225",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_duration_p95}}",
+              "textMode": true,
+              "name": "P95"
+            }
+          }
         ],
-        "dataSources": [{"prometheusDataSource": {"id": "592f9611-d492-46a6-81b1-0df62193a225", "step": "30000"}}],
-        "visualizationSettings": {"colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {"left": {"type": "YAXIS_TYPE_LINEAR", "min": "0"}, "right": {"type": "YAXIS_TYPE_LINEAR"}}},
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "592f9611-d492-46a6-81b1-0df62193a225",
+              "step": "30000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
         "title": "Worker — длительность операций p50/p95, с",
         "description": "По kind/outcome и pool; histogram_quantile агрегирует buckets текущих свежих nodes, а не усредняет node percentiles. Длительность включает delivery/cleanup.",
         "displayLegend": true
       }
     },
     {
-      "position": {"y": "104", "w": "12", "h": "8"},
+      "position": {
+        "y": "104",
+        "w": "12",
+        "h": "8"
+      },
       "multiSourceChart": {
         "id": "10fb4030-1670-4835-91b2-8f866c73fd1e",
         "targets": [
-          {"prometheusTarget": {"dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0", "workspaceId": "{{workspace_id}}", "query": "{{worker_bucket_le_1}}", "textMode": true, "name": "Le1"}},
-          {"prometheusTarget": {"dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0", "workspaceId": "{{workspace_id}}", "query": "{{worker_bucket_1_5}}", "textMode": true, "name": "From1To5"}},
-          {"prometheusTarget": {"dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0", "workspaceId": "{{workspace_id}}", "query": "{{worker_bucket_5_15}}", "textMode": true, "name": "From5To15"}},
-          {"prometheusTarget": {"dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0", "workspaceId": "{{workspace_id}}", "query": "{{worker_bucket_15_60}}", "textMode": true, "name": "From15To60"}},
-          {"prometheusTarget": {"dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0", "workspaceId": "{{workspace_id}}", "query": "{{worker_bucket_60_300}}", "textMode": true, "name": "From60To300"}},
-          {"prometheusTarget": {"dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0", "workspaceId": "{{workspace_id}}", "query": "{{worker_bucket_300_900}}", "textMode": true, "name": "From300To900"}},
-          {"prometheusTarget": {"dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0", "workspaceId": "{{workspace_id}}", "query": "{{worker_bucket_900_1800}}", "textMode": true, "name": "From900To1800"}},
-          {"prometheusTarget": {"dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0", "workspaceId": "{{workspace_id}}", "query": "{{worker_bucket_gt_1800}}", "textMode": true, "name": "Gt1800"}}
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_bucket_le_1}}",
+              "textMode": true,
+              "name": "Le1"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_bucket_1_5}}",
+              "textMode": true,
+              "name": "From1To5"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_bucket_5_15}}",
+              "textMode": true,
+              "name": "From5To15"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_bucket_15_60}}",
+              "textMode": true,
+              "name": "From15To60"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_bucket_60_300}}",
+              "textMode": true,
+              "name": "From60To300"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_bucket_300_900}}",
+              "textMode": true,
+              "name": "From300To900"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_bucket_900_1800}}",
+              "textMode": true,
+              "name": "From900To1800"
+            }
+          },
+          {
+            "prometheusTarget": {
+              "dataSourceId": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{worker_bucket_gt_1800}}",
+              "textMode": true,
+              "name": "Gt1800"
+            }
+          }
         ],
-        "dataSources": [{"prometheusDataSource": {"id": "f2771eed-24d5-4a17-aef0-112b13efbda0", "step": "30000"}}],
-        "visualizationSettings": {"type": "VISUALIZATION_TYPE_COLUMN", "colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {"left": {"type": "YAXIS_TYPE_LINEAR", "min": "0"}, "right": {"type": "YAXIS_TYPE_LINEAR"}}},
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "f2771eed-24d5-4a17-aef0-112b13efbda0",
+              "step": "30000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "type": "VISUALIZATION_TYPE_COLUMN",
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
         "title": "Worker — распределение длительности операций/мин",
         "description": "Непересекающиеся фактические интервалы: ≤1, 1–5, 5–15, 15–60, 60–300, 300–900, 900–1800, >1800 секунд. Длительность включает delivery/cleanup.",
         "displayLegend": true
       }
     },
     {
-      "position": {"x": "12", "y": "104", "w": "12", "h": "8"},
+      "position": {
+        "x": "12",
+        "y": "104",
+        "w": "12",
+        "h": "8"
+      },
       "multiSourceChart": {
         "id": "5819b70d-b8f3-42f1-82da-30fda9097634",
-        "targets": [{"prometheusTarget": {"dataSourceId": "bd156cc6-abbb-4606-9fca-45ac26bd14be", "workspaceId": "{{workspace_id}}", "query": "{{accepted_preview_rate}}", "textMode": true, "name": "Accepted"}}],
-        "dataSources": [{"prometheusDataSource": {"id": "bd156cc6-abbb-4606-9fca-45ac26bd14be", "step": "30000"}}],
-        "visualizationSettings": {"colorSchemeSettings": {"automatic": {}}, "yaxisSettings": {"left": {"type": "YAXIS_TYPE_LINEAR", "min": "0"}, "right": {"type": "YAXIS_TYPE_LINEAR"}}},
+        "targets": [
+          {
+            "prometheusTarget": {
+              "dataSourceId": "bd156cc6-abbb-4606-9fca-45ac26bd14be",
+              "workspaceId": "{{workspace_id}}",
+              "query": "{{accepted_preview_rate}}",
+              "textMode": true,
+              "name": "Accepted"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "prometheusDataSource": {
+              "id": "bd156cc6-abbb-4606-9fca-45ac26bd14be",
+              "step": "30000"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
         "title": "Фото с принятым превью/мин",
         "description": "Принятые clean preview-small-v1 с момента текущего deployment; не все стадии обработки и не гарантия публичной доступности.",
         "displayLegend": true
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "112",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "6f80fb93-370b-5a9c-a20a-d4eab3b2cf34",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "46cf7341-d66e-5d72-8723-5342994acdb0",
+              "query": "100 * \"sys.system.UsefulTime\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"} / (\"sys.system.UsefulTime\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"} + \"sys.system.IdleTime\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"})",
+              "textMode": true,
+              "name": "CPU"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "46cf7341-d66e-5d72-8723-5342994acdb0"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Image VM — CPU, %",
+        "description": "Доля полезного времени CPU на VM image-origin.",
+        "displayLegend": false,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "112",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "c22f6049-01f6-56ea-bf60-bc2e5264f8a4",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "06aaccc3-d36a-5401-a05c-777c1501d045",
+              "query": "100 * \"sys.memory.MemAvailable\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"} / \"sys.memory.MemTotal\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"}",
+              "textMode": true,
+              "name": "Free"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "06aaccc3-d36a-5401-a05c-777c1501d045"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Image VM — доступная память, %",
+        "description": "",
+        "displayLegend": false,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "120",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "4a80b2cd-995f-5ee7-92bf-d4daaef9d2d2",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "99f25ef3-c6f6-5aa8-b365-be1581f0656f",
+              "query": "\"sys.filesystem.FreeB\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\",mountpoint=\"/\"} / 1073741824",
+              "textMode": true,
+              "name": "Free"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "99f25ef3-c6f6-5aa8-b365-be1581f0656f"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Image VM — свободный диск /, ГиБ",
+        "description": "",
+        "displayLegend": false,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "120",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "39ecdd1f-791c-5b9d-a7ea-89141128d5b0",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "da936901-860d-567b-a14e-4088a83c3432",
+              "query": "\"sys.proc.LoadAverage1min\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"}",
+              "textMode": true,
+              "name": "Load"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "da936901-860d-567b-a14e-4088a83c3432"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Image VM — load average 1 мин",
+        "description": "",
+        "displayLegend": false,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "128",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "79b175b5-2ad6-553d-82e0-16873c69d54c",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "dcc292bf-8cca-53d5-9868-5be86dabf82f",
+              "query": "\"ua.backlog\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\",scope=\"health\"}",
+              "textMode": true,
+              "name": "Backlog"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "dcc292bf-8cca-53d5-9868-5be86dabf82f"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Image VM — Unified Agent backlog",
+        "description": "Пропажа точек не означает нулевую очередь.",
+        "displayLegend": false,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "128",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "fb18b4c7-a143-5de0-8332-bd11b362f664",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "3f266842-3a4b-5399-b95c-ccd922653c9e",
+              "query": "non_negative_derivative(\"origin.image_origin_responses_total\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\",status_class=\"2xx\"})",
+              "textMode": true,
+              "name": "Ok"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "3f266842-3a4b-5399-b95c-ccd922653c9e",
+              "query": "non_negative_derivative(\"origin.image_origin_responses_total\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\",status_class=\"3xx\"})",
+              "textMode": true,
+              "name": "Redirect"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "3f266842-3a4b-5399-b95c-ccd922653c9e",
+              "query": "non_negative_derivative(\"origin.image_origin_responses_total\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\",status_class=\"4xx\"})",
+              "textMode": true,
+              "name": "Client"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "3f266842-3a4b-5399-b95c-ccd922653c9e",
+              "query": "non_negative_derivative(\"origin.image_origin_responses_total\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\",status_class=\"5xx\"})",
+              "textMode": true,
+              "name": "Server"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "3f266842-3a4b-5399-b95c-ccd922653c9e"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "Image origin — ответы/с",
+        "description": "Фактические ответы Nginx по классам; счетчики переводятся в частоту.",
+        "displayLegend": true,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "136",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "06c25def-0b59-545c-a85d-f958869ade49",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "267d3f0b-e21c-5bd6-ae24-e8f1eab04ae5",
+              "query": "\"edge.requests\"{folderId=\"{{folder_id}}\",service=\"yccdn\",resource=\"{{image_cdn_resource}}\"}",
+              "textMode": true,
+              "name": "Edge"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "267d3f0b-e21c-5bd6-ae24-e8f1eab04ae5",
+              "query": "\"origin.requests\"{folderId=\"{{folder_id}}\",service=\"yccdn\",resource=\"{{image_cdn_resource}}\"}",
+              "textMode": true,
+              "name": "Origin"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "267d3f0b-e21c-5bd6-ae24-e8f1eab04ae5"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "CDN — запросы/с",
+        "description": "Запросы к CDN и обращения CDN к image-origin.",
+        "displayLegend": true,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "136",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "d1eac951-8a2a-537f-ad08-cd1350abd8fa",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "e736e738-7da4-53a2-8ca1-f95c6a7ec504",
+              "query": "\"edge.requests_status\"{folderId=\"{{folder_id}}\",service=\"yccdn\",resource=\"{{image_cdn_resource}}\",status=\"5XX\"}",
+              "textMode": true,
+              "name": "Server"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "e736e738-7da4-53a2-8ca1-f95c6a7ec504"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "CDN — ошибки 5xx/с",
+        "description": "",
+        "displayLegend": false,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "144",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "e59d4383-7ede-5314-a6a6-bfac878a6f3a",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "e02a810e-c7eb-5e00-8204-cf9622d02b60",
+              "query": "\"edge.requests_cache_status\"{folderId=\"{{folder_id}}\",service=\"yccdn\",resource=\"{{image_cdn_resource}}\",cache_status=\"HIT\"}",
+              "textMode": true,
+              "name": "Hit"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "e02a810e-c7eb-5e00-8204-cf9622d02b60",
+              "query": "\"edge.requests_cache_status\"{folderId=\"{{folder_id}}\",service=\"yccdn\",resource=\"{{image_cdn_resource}}\",cache_status=\"MISS\"}",
+              "textMode": true,
+              "name": "Miss"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "e02a810e-c7eb-5e00-8204-cf9622d02b60"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "CDN — HIT и MISS/с",
+        "description": "",
+        "displayLegend": true,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "144",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "8a832224-fc4d-56eb-be51-ee8e24b40a2a",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "596070d5-8654-5c79-9911-c1d1bde602ea",
+              "query": "\"imgproxy.requests_total\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"}",
+              "textMode": true,
+              "name": "Requests"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "596070d5-8654-5c79-9911-c1d1bde602ea"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "imgproxy — запросы/с",
+        "description": "Нативный Monitoring сохраняет Prometheus counter как частоту.",
+        "displayLegend": false,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "152",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "9f23c9de-1955-5a33-9904-6c592a1e9a61",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "44a0f92e-ffb9-54db-aadc-01a1a578d6f1",
+              "query": "histogram_percentile(50, \"bin\", moving_sum(non_negative_derivative(\"imgproxy.request_duration_seconds\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"}), 5m))",
+              "textMode": true,
+              "name": "P50"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "44a0f92e-ffb9-54db-aadc-01a1a578d6f1",
+              "query": "histogram_percentile(95, \"bin\", moving_sum(non_negative_derivative(\"imgproxy.request_duration_seconds\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"}), 5m))",
+              "textMode": true,
+              "name": "P95"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "44a0f92e-ffb9-54db-aadc-01a1a578d6f1"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "imgproxy — длительность p50/p95, с",
+        "description": "Распределение запросов за скользящие 5 минут; при отсутствии запросов нет новой оценки.",
+        "displayLegend": true,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "152",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "6e0aca9c-fb1f-5fda-b16d-01f3d6c370d5",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "05823ff4-767f-5fb3-9e2f-c093078aae26",
+              "query": "moving_avg(non_negative_derivative(histogram_count(0, 0.1, \"bin\", \"imgproxy.request_duration_seconds\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"})), 5m) * 60",
+              "textMode": true,
+              "name": "Le100ms"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "05823ff4-767f-5fb3-9e2f-c093078aae26",
+              "query": "moving_avg(non_negative_derivative(histogram_count(0.1, 0.5, \"bin\", \"imgproxy.request_duration_seconds\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"})), 5m) * 60",
+              "textMode": true,
+              "name": "From100To500ms"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "05823ff4-767f-5fb3-9e2f-c093078aae26",
+              "query": "moving_avg(non_negative_derivative(histogram_count(0.5, 1, \"bin\", \"imgproxy.request_duration_seconds\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"})), 5m) * 60",
+              "textMode": true,
+              "name": "From500msTo1s"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "05823ff4-767f-5fb3-9e2f-c093078aae26",
+              "query": "moving_avg(non_negative_derivative(histogram_count(1, \"bin\", \"imgproxy.request_duration_seconds\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"})), 5m) * 60",
+              "textMode": true,
+              "name": "Gt1s"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "05823ff4-767f-5fb3-9e2f-c093078aae26"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          },
+          "type": "VISUALIZATION_TYPE_COLUMN"
+        },
+        "title": "imgproxy — распределение длительности, запросов/мин",
+        "description": "Непересекающиеся интервалы времени обработки за скользящие 5 минут.",
+        "displayLegend": true,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "0",
+        "y": "160",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "81d157cc-280f-5de2-b900-133b40d1bbb2",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "c5668d9b-7e62-5b9f-bb65-a3a3860d09a8",
+              "query": "100 * \"imgproxy.workers_utilization\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"}",
+              "textMode": true,
+              "name": "Busy"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "c5668d9b-7e62-5b9f-bb65-a3a3860d09a8"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "imgproxy — занятость воркеров, %",
+        "description": "",
+        "displayLegend": false,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
+      }
+    },
+    {
+      "position": {
+        "x": "12",
+        "y": "160",
+        "w": "12",
+        "h": "8"
+      },
+      "multiSourceChart": {
+        "id": "1c853a0e-add2-5887-949d-3bd4c915a227",
+        "targets": [
+          {
+            "monitoringTarget": {
+              "dataSourceId": "e9ec925e-6dd4-57b5-bb29-19708636dba0",
+              "query": "\"imgproxy.requests_in_progress\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"}",
+              "textMode": true,
+              "name": "Active"
+            }
+          },
+          {
+            "monitoringTarget": {
+              "dataSourceId": "e9ec925e-6dd4-57b5-bb29-19708636dba0",
+              "query": "\"imgproxy.images_in_progress\"{folderId=\"{{folder_id}}\",service=\"custom\",host=\"{{image_origin_host}}\"}",
+              "textMode": true,
+              "name": "Images"
+            }
+          }
+        ],
+        "dataSources": [
+          {
+            "monitoringDataSource": {
+              "id": "e9ec925e-6dd4-57b5-bb29-19708636dba0"
+            }
+          }
+        ],
+        "visualizationSettings": {
+          "colorSchemeSettings": {
+            "automatic": {}
+          },
+          "yaxisSettings": {
+            "left": {
+              "type": "YAXIS_TYPE_LINEAR",
+              "min": "0"
+            },
+            "right": {
+              "type": "YAXIS_TYPE_LINEAR"
+            }
+          }
+        },
+        "title": "imgproxy — запросы в работе",
+        "description": "",
+        "displayLegend": true,
+        "thresholds": {
+          "items": [
+            {
+              "color": "#92db00"
+            }
+          ],
+          "showMode": "SHOW_MODE_CONSTANT_LINE"
+        }
       }
     }
   ]

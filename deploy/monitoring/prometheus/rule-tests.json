@@ -489,6 +489,153 @@
           ]
         }
       ]
+    },
+    {
+      "name": "image-origin telemetry loss is unknown, not healthy",
+      "interval": "1m",
+      "input_series": [],
+      "alert_rule_test": [
+        {
+          "eval_time": "6m",
+          "alertname": "ImageOriginTelemetryMissing",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Image-origin host, Nginx or imgproxy observations are missing."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "image-origin five-percent 5xx fires only with sufficient traffic",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "origin_image_origin_responses_total{job=\"findme-image-origin\",status_class=\"2xx\"}",
+          "values": "0+9x12"
+        },
+        {
+          "series": "origin_image_origin_responses_total{job=\"findme-image-origin\",status_class=\"5xx\"}",
+          "values": "0+1x12"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "3m",
+          "alertname": "ImageOrigin5xxDegradation",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "8m",
+          "alertname": "ImageOrigin5xxDegradation",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Image-origin 5xx exceeds 2 percent with at least 20 requests in five minutes."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "image-origin ratio ignores isolated low-volume errors",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "origin_image_origin_responses_total{job=\"findme-image-origin\",status_class=\"2xx\"}",
+          "values": "0+1x10"
+        },
+        {
+          "series": "origin_image_origin_responses_total{job=\"findme-image-origin\",status_class=\"5xx\"}",
+          "values": "0+1x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "9m",
+          "alertname": "ImageOrigin5xxDegradation",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "imgproxy latency fires on sustained slow high-volume requests",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "imgproxy_request_duration_seconds_bucket{job=\"findme-imgproxy\",le=\"0.5\"}",
+          "values": "0+0x15"
+        },
+        {
+          "series": "imgproxy_request_duration_seconds_bucket{job=\"findme-imgproxy\",le=\"1\"}",
+          "values": "0+0x15"
+        },
+        {
+          "series": "imgproxy_request_duration_seconds_bucket{job=\"findme-imgproxy\",le=\"2.5\"}",
+          "values": "0+10x15"
+        },
+        {
+          "series": "imgproxy_request_duration_seconds_bucket{job=\"findme-imgproxy\",le=\"+Inf\"}",
+          "values": "0+10x15"
+        },
+        {
+          "series": "imgproxy_requests_total{job=\"findme-imgproxy\"}",
+          "values": "0+10x15"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "11m",
+          "alertname": "ImgproxyLatencyHigh",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "imgproxy five-minute p95 has exceeded 1.5 seconds with enough requests."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "image-origin telemetry is healthy when all three sources are fresh",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "origin_image_origin_responses_total{job=\"findme-image-origin\",status_class=\"2xx\"}",
+          "values": "0+0x10"
+        },
+        {
+          "series": "imgproxy_requests_total{job=\"findme-imgproxy\"}",
+          "values": "0+0x10"
+        },
+        {
+          "series": "sys_memory_MemAvailable{job=\"findme-image-linux\"}",
+          "values": "3000000000+0x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "6m",
+          "alertname": "ImageOriginTelemetryMissing",
+          "exp_alerts": []
+        }
+      ]
     }
   ]
 }

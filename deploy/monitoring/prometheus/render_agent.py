@@ -93,6 +93,39 @@ def merge_agent(
                 },
             },
         ]
+    else:
+        inputs += [
+            {
+                "plugin": "linux_metrics",
+                "config": {
+                    "poll_period": "60s",
+                    "namespace": "sys",
+                    "prometheus_config": {"job_name": "findme-image-linux"},
+                },
+            },
+            {
+                "plugin": "metrics_pull",
+                "config": {
+                    "url": "http://127.0.0.1:18081/metrics",
+                    "format": {"prometheus": {}},
+                    "poll_period": "60s",
+                    "timeout": "10s",
+                    "namespace": "origin",
+                    "prometheus_config": {"job_name": "findme-image-origin"},
+                },
+            },
+            {
+                "plugin": "metrics_pull",
+                "config": {
+                    "url": "http://127.0.0.1:18081/imgproxy-metrics",
+                    "format": {"prometheus": {}},
+                    "poll_period": "60s",
+                    "timeout": "10s",
+                    "namespace": "imgproxy",
+                    "prometheus_config": {"job_name": "findme-imgproxy"},
+                },
+            },
+        ]
     for item in inputs:
         result.setdefault("routes", []).append(
             {"input": item, "channel": {"channel_ref": {"name": CHANNEL}}}

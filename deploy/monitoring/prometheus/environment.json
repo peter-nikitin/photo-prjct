@@ -3,10 +3,13 @@
   "dashboard_id": "fbeketud0mdaupj43of6",
   "channel_id": "cloud__b1gmcsmr51o5kvp86l55_findme-photo-operator-email",
   "workspace_id": "mon0c97qv2s5uju1ark8",
+  "image_origin_host": "epdf6696opq3ock91pih",
+  "image_cdn_resource": "img.findme-photo.ru",
   "channel_name": "findme-photo-operator-email",
   "telegram_channel_name": "findme-photo-operator-telegram",
   "cpu_semantics": "cumulative_counter",
   "worker_alerts_enabled": false,
+  "image_origin_alerts_enabled": true,
   "metrics": {
     "public_success": {
       "name": "findme_probe_success",

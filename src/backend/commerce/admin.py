@@ -1,7 +1,14 @@
 from django.conf import settings
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, HttpResponseRedirect
+from django.http import (
+    HttpRequest,
+    HttpResponse,
+    HttpResponseBadRequest,
+    HttpResponseNotAllowed,
+    HttpResponseRedirect,
+)
+from django.shortcuts import get_object_or_404
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from feature_flags import services as feature_flag_services
@@ -35,11 +42,14 @@ from commerce.payment_gateway import PaymentGatewayError
 from commerce.payments import (
     PaymentReconciliationUnavailable,
     PaymentTransitionRejected,
+    can_cancel_unusable_bank_attempt,
     cancel_order,
+    cancel_unusable_bank_attempt,
     mark_order_paid_manually,
     reconcile_payment_attempt,
 )
 from commerce.pricing import format_rub
+from commerce.tbank_gateway import TBANK_ADAPTER_KEY, TBankGateway
 
 
 def _rub(amount_kopecks: int) -> str:
@@ -183,6 +193,7 @@ class CommerceAttentionInline(ReadOnlyInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
+    change_form_template = "admin/commerce/order/change_form.html"
     list_display = ("public_number", "event", "status", "total_display", "currency", "created_at")
     list_filter = ("status", "currency", "event")
     search_fields = ("public_number", "checkout_email", "delivery_email")
@@ -227,6 +238,101 @@ class OrderAdmin(admin.ModelAdmin):
         "resend_order_access",
         "create_order_access_grant",
     )
+
+    def get_urls(self):
+        return [
+            path(
+                "<int:order_id>/cancel-bank-attempt/<int:attempt_id>/",
+                self.admin_site.admin_view(self.cancel_bank_attempt_view),
+                name="commerce_order_cancel_bank_attempt",
+            ),
+            *super().get_urls(),
+        ]
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        order = self.get_object(request, object_id)
+        links = []
+        if (
+            order is not None
+            and self.has_change_permission(request, order)
+            and _new_commerce_side_effects_enabled(request)
+        ):
+            for attempt in order.payment_attempts.filter(
+                adapter_key=TBANK_ADAPTER_KEY, status=PaymentAttempt.Status.PENDING
+            ):
+                if can_cancel_unusable_bank_attempt(order=order, attempt=attempt):
+                    links.append(
+                        {
+                            "attempt": attempt,
+                            "url": reverse(
+                                "admin:commerce_order_cancel_bank_attempt",
+                                args=(order.pk, attempt.pk),
+                            ),
+                        }
+                    )
+        return super().change_view(
+            request,
+            object_id,
+            form_url,
+            {
+                **(extra_context or {}),
+                "bank_cancel_links": links,
+            },
+        )
+
+    def cancel_bank_attempt_view(
+        self, request: HttpRequest, order_id: int, attempt_id: int
+    ) -> HttpResponse:
+        if request.method not in {"GET", "POST"}:
+            return HttpResponseNotAllowed(["GET", "POST"])
+        order = get_object_or_404(Order, pk=order_id)
+        if not self.has_change_permission(request, order) or not _new_commerce_side_effects_enabled(
+            request
+        ):
+            raise PermissionDenied
+        attempt = get_object_or_404(PaymentAttempt, pk=attempt_id, order=order)
+        detail_url = reverse("admin:commerce_order_change", args=(order.pk,))
+        if not can_cancel_unusable_bank_attempt(order=order, attempt=attempt):
+            self.message_user(
+                request,
+                "Эта попытка уже недоступна для отмены в банке. Обновите статус платежа.",
+                messages.ERROR,
+            )
+            return HttpResponseRedirect(detail_url)
+        if request.method == "GET":
+            return TemplateResponse(
+                request,
+                "admin/commerce/order/bank_cancel_confirmation.html",
+                {
+                    **self.admin_site.each_context(request),
+                    "title": "Отменить попытку в банке",
+                    "order": order,
+                    "attempt": attempt,
+                    "detail_url": detail_url,
+                    "opts": self.model._meta,
+                },
+            )
+        if request.POST.get("confirm_cancel") != "yes":
+            return HttpResponseBadRequest("Подтвердите отмену выбранной попытки.")
+        try:
+            gateway = _payment_gateway_for_adapter(request, attempt.adapter_key)
+            if not isinstance(gateway, TBankGateway):
+                raise PaymentTransitionRejected("T-Bank cancellation is unavailable.")
+            cancel_unusable_bank_attempt(
+                order_id=order.pk, attempt_id=attempt.pk, actor=request.user, gateway=gateway
+            )
+        except (PaymentTransitionRejected, PaymentGatewayError, CheckoutPaymentUnavailable):
+            self.message_user(
+                request,
+                "Банк не подтвердил отмену. Обновите статус платежа перед новой попыткой.",
+                messages.ERROR,
+            )
+        else:
+            self.message_user(
+                request,
+                "Банк подтвердил отмену попытки. Покупатель может повторить оплату этого заказа.",
+            )
+        return HttpResponseRedirect(detail_url)
 
     def has_add_permission(self, request) -> bool:  # noqa: ARG002
         return False

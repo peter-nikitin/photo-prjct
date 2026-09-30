@@ -774,6 +774,11 @@ explicitly incomplete.
 ADR 0047 replaces ADR 0031's cart-retention and cart-based retry rules: an Order consumes its
 event cart, the browser starts a new cart identity, and payment retry is scoped to that Order.
 The existing purchase-browser capability also authorizes a private, temporary browser Order list.
+For a pending T-Bank attempt with a PaymentId but no hosted URL, an authorized operator can use
+the Order admin detail to cancel that exact attempt only after the bank reports `NEW`. A fresh
+bank `CANCELED` result enters the normal payment-evidence transition, leaving the Order pending
+and making its customer retry action available; this path does not edit Order status or refund a
+completed payment.
 The repository implementation preserves earlier Orders and attempts and lets a customer explicitly
 release a legacy locked cart. The Cart bearer cookie lasts 30 days from issuance or rotation;
 ordinary Cart reads and mutations neither refresh nor delete it. A server Cart expiry may extend

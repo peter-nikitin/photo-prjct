@@ -333,6 +333,100 @@ def cancel_order(*, order_id: int, actor: object, now: datetime | None = None) -
     return order
 
 
+def can_cancel_unusable_bank_attempt(*, order: Order, attempt: PaymentAttempt) -> bool:
+    return bool(
+        order.status == Order.Status.PENDING
+        and attempt.order_id == order.pk
+        and attempt.status == PaymentAttempt.Status.PENDING
+        and attempt.adapter_key == TBANK_ADAPTER_KEY
+        and attempt.provider_payment_id
+        and not attempt.confirmation_url
+    )
+
+
+def cancel_unusable_bank_attempt(
+    *,
+    order_id: int,
+    attempt_id: int,
+    actor: object,
+    gateway: TBankGateway,
+    now: datetime | None = None,
+) -> Order:
+    """Serialize this operator request with the existing payment and cart commands.
+
+    The locks span three bounded bank calls (10 seconds each), so repeated POSTs
+    cannot cancel the same attempt or race a local Order transition.
+    """
+    actor_id = _manual_actor_id(actor)
+    if not isinstance(gateway, TBankGateway):
+        raise PaymentTransitionRejected("Bank cancellation requires the T-Bank adapter.")
+    event_id, cart_digest, immutable_order_id = _payment_identity_for_order(order_id=order_id)
+    bank_error: PaymentGatewayError | PaymentTransitionRejected | None = None
+    with transaction.atomic():
+        _cart, order, attempt = _lock_payment_transition(
+            event_id=event_id,
+            cart_digest=cart_digest,
+            order_id=immutable_order_id,
+            attempt_id=attempt_id,
+        )
+        locked_actor = _lock_active_staff_actor(actor_id=actor_id)
+        if not locked_actor.has_perm("commerce.change_order"):
+            raise PaymentTransitionRejected("Bank cancellation requires Order change permission.")
+        if attempt is None or not can_cancel_unusable_bank_attempt(order=order, attempt=attempt):
+            raise PaymentTransitionRejected(
+                "This payment attempt is not eligible for cancellation."
+            )
+        if (
+            order.currency != "RUB"
+            or attempt.currency != "RUB"
+            or order.total_kopecks != attempt.amount_kopecks
+        ):
+            raise PaymentTransitionRejected("Payment amount does not match its Order.")
+        _write_manual_order_audit(
+            actor=locked_actor,
+            order=order,
+            change_message=(
+                f"Запрошена отмена попытки в Т-Банке: PaymentAttempt {attempt.pk}; "
+                f"PaymentId {attempt.provider_payment_id}."
+            ),
+        )
+        try:
+            observation = gateway.cancel_new_payment(attempt)
+            _require_matching_provider_evidence(
+                attempt=attempt, adapter_key=TBANK_ADAPTER_KEY, observation=observation
+            )
+            if observation.status != NormalizedPaymentStatus.CANCELED or _payment_facts_mismatch(
+                attempt=attempt,
+                order=order,
+                observation=observation,
+            ):
+                raise PaymentTransitionRejected(
+                    "Bank cancellation was not confirmed for this payment."
+                )
+        except (PaymentGatewayError, PaymentTransitionRejected) as error:
+            # Commit the operator request audit before reporting an uncertain bank result.
+            bank_error = error
+        else:
+            order = apply_payment_observation(
+                attempt_id=attempt.pk,
+                adapter_key=TBANK_ADAPTER_KEY,
+                source="status_fetch",
+                observation=observation,
+                now=now,
+            )
+            _write_manual_order_audit(
+                actor=locked_actor,
+                order=order,
+                change_message=(
+                    f"Отменена попытка в Т-Банке: PaymentAttempt {attempt.pk}; "
+                    f"PaymentId {attempt.provider_payment_id}."
+                ),
+            )
+    if bank_error is not None:
+        raise bank_error
+    return order
+
+
 def _matching_attempt_for_gateway(
     *,
     gateway: PaymentGateway,

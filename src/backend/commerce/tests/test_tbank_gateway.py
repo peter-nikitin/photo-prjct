@@ -640,3 +640,228 @@ def test_untrusted_callback_does_not_carry_attempt_context(attempt, changes):
     with pytest.raises(PaymentGatewayError) as caught:
         gateway_module().TBankGateway(config()).authenticate_notification(notification)
     assert not hasattr(caught.value, "attempt_id")
+
+
+def test_cancel_new_payment_requires_bank_confirmed_terminal_evidence(attempt):
+    module = gateway_module()
+    with patch.object(
+        module,
+        "urlopen",
+        side_effect=[
+            Response(response()),
+            Response(response(Status="CANCELED")),
+            Response(response(Status="CANCELED", Amount=0)),
+        ],
+    ) as network:
+        observation = module.TBankGateway(config()).cancel_new_payment(attempt)
+    assert observation.status == "canceled"
+    assert observation.amount_kopecks == attempt.amount_kopecks
+    assert [call.args[0].full_url.rsplit("/", 1)[1] for call in network.call_args_list] == [
+        "GetState",
+        "Cancel",
+        "GetState",
+    ]
+    sent = json.loads(network.call_args_list[1].args[0].data)
+    assert sent == {
+        "TerminalKey": "terminal",
+        "PaymentId": "12345",
+        "Token": module.sign_payload({"TerminalKey": "terminal", "PaymentId": "12345"}, "secret"),
+    }
+    attempt.refresh_from_db()
+    assert attempt.status == "pending"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"Status": "FORM_SHOWED"},
+        {"Status": "CONFIRMED"},
+        {"Status": "AUTHORIZED"},
+        {"PaymentId": "other"},
+        {"OrderId": "fm-other"},
+        {"Amount": 1501},
+    ],
+)
+def test_cancel_rejects_changed_bank_state_or_mismatched_identity(attempt, changes):
+    module = gateway_module()
+    with patch.object(module, "urlopen", return_value=Response(response(**changes))) as network:
+        with pytest.raises(PaymentGatewayError):
+            module.TBankGateway(config()).cancel_new_payment(attempt)
+    assert network.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "last_response",
+    [
+        response(Status="NEW"),
+        response(Status="CANCELED", PaymentId="other"),
+        response(Status="CANCELED", Amount=1),
+    ],
+)
+def test_cancel_refuses_unconfirmed_or_wrong_terminal_evidence(attempt, last_response):
+    module = gateway_module()
+    with patch.object(
+        module,
+        "urlopen",
+        side_effect=[
+            Response(response()),
+            Response(response(Status="CANCELED")),
+            Response(last_response),
+        ],
+    ):
+        with pytest.raises(PaymentGatewayError):
+            module.TBankGateway(config()).cancel_new_payment(attempt)
+    attempt.refresh_from_db()
+    assert attempt.status == "pending"
+
+
+@pytest.mark.parametrize("failure_index", [1, 2])
+def test_cancel_transport_uncertainty_does_not_create_local_evidence(attempt, failure_index):
+    module = gateway_module()
+    replies: list[Response | TimeoutError] = [
+        Response(response()),
+        Response(response(Status="CANCELED")),
+        Response(response(Status="CANCELED", Amount=0)),
+    ]
+    replies[failure_index] = TimeoutError()
+    with patch.object(module, "urlopen", side_effect=replies):
+        with pytest.raises(PaymentGatewayError):
+            module.TBankGateway(config()).cancel_new_payment(attempt)
+    attempt.refresh_from_db()
+    assert attempt.status == "pending"
+
+
+@pytest.mark.parametrize("ineligible", ["url", "order", "attempt"])
+def test_operator_cancellation_rejects_ineligible_local_state_before_network(attempt, ineligible):
+    from django.contrib.auth import get_user_model
+
+    from commerce import payments
+
+    actor = get_user_model().objects.create_superuser(username="operator", password="test")
+    if ineligible == "url":
+        attempt.confirmation_url = "https://pay.tbank.ru/form"
+        attempt.save(update_fields=["confirmation_url", "updated_at"])
+    elif ineligible == "order":
+        order = attempt.order
+        order.status = "canceled"
+        order.save(update_fields=["status"])
+    elif ineligible == "attempt":
+        from django.utils import timezone
+
+        attempt.status = "canceled"
+        attempt.terminal_at = timezone.now()
+        attempt.save(update_fields=["status", "terminal_at", "updated_at"])
+    module = gateway_module()
+    with patch.object(module, "urlopen") as network:
+        with pytest.raises(payments.PaymentTransitionRejected):
+            payments.cancel_unusable_bank_attempt(
+                order_id=attempt.order_id,
+                attempt_id=attempt.pk,
+                actor=actor,
+                gateway=module.TBankGateway(config()),
+            )
+    network.assert_not_called()
+
+
+def test_operator_cancellation_records_authenticated_evidence_and_audit(attempt):
+    from django.contrib.admin.models import LogEntry
+    from django.contrib.auth import get_user_model
+
+    from commerce import payments
+
+    actor = get_user_model().objects.create_superuser(username="operator", password="test")
+    module = gateway_module()
+    with patch.object(
+        module,
+        "urlopen",
+        side_effect=[
+            Response(response()),
+            Response(response(Status="CANCELED")),
+            Response(response(Status="CANCELED", Amount=0)),
+        ],
+    ):
+        order = payments.cancel_unusable_bank_attempt(
+            order_id=attempt.order_id,
+            attempt_id=attempt.pk,
+            actor=actor,
+            gateway=module.TBankGateway(config()),
+        )
+    attempt.refresh_from_db()
+    assert attempt.status == "canceled"
+    assert order.status == "pending"
+    assert attempt.evidence.get().normalized_status == "canceled"
+    assert LogEntry.objects.filter(
+        user=actor, object_id=str(order.pk), change_message__contains=f"PaymentAttempt {attempt.pk}"
+    ).exists()
+
+
+@pytest.mark.parametrize("attempt", [""], indirect=True)
+def test_operator_cancellation_rejects_unbound_attempt_without_network(attempt):
+    from django.contrib.auth import get_user_model
+
+    from commerce import payments
+
+    actor = get_user_model().objects.create_superuser(username="operator", password="test")
+    module = gateway_module()
+    with patch.object(module, "urlopen") as network:
+        with pytest.raises(payments.PaymentTransitionRejected):
+            payments.cancel_unusable_bank_attempt(
+                order_id=attempt.order_id,
+                attempt_id=attempt.pk,
+                actor=actor,
+                gateway=module.TBankGateway(config()),
+            )
+    network.assert_not_called()
+
+
+def test_operator_cancellation_rechecks_staff_order_permission(attempt):
+    from django.contrib.auth import get_user_model
+
+    from commerce import payments
+
+    actor = get_user_model().objects.create_user(username="operator", is_staff=True)
+    module = gateway_module()
+    with patch.object(module, "urlopen") as network:
+        with pytest.raises(payments.PaymentTransitionRejected):
+            payments.cancel_unusable_bank_attempt(
+                order_id=attempt.order_id,
+                attempt_id=attempt.pk,
+                actor=actor,
+                gateway=module.TBankGateway(config()),
+            )
+    network.assert_not_called()
+
+
+def test_operator_cancellation_post_cancel_timeout_preserves_request_audit(attempt):
+    from django.contrib.admin.models import LogEntry
+    from django.contrib.auth import get_user_model
+
+    from commerce import payments
+
+    actor = get_user_model().objects.create_superuser(username="operator", password="test")
+    module = gateway_module()
+    with patch.object(
+        module,
+        "urlopen",
+        side_effect=[
+            Response(response()),
+            Response(response(Status="CANCELED")),
+            TimeoutError(),
+        ],
+    ):
+        with pytest.raises(PaymentGatewayError):
+            payments.cancel_unusable_bank_attempt(
+                order_id=attempt.order_id,
+                attempt_id=attempt.pk,
+                actor=actor,
+                gateway=module.TBankGateway(config()),
+            )
+    attempt.refresh_from_db()
+    attempt.order.refresh_from_db()
+    assert attempt.status == "pending"
+    assert attempt.order.status == "pending"
+    assert not attempt.evidence.exists()
+    request_audit = LogEntry.objects.get(user=actor, object_id=str(attempt.order_id))
+    assert "Запрошена отмена" in request_audit.change_message
+    assert f"PaymentAttempt {attempt.pk}" in request_audit.change_message
+    assert f"PaymentId {attempt.provider_payment_id}" in request_audit.change_message

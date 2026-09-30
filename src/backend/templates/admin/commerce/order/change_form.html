@@ -1,0 +1,15 @@
+{% extends "admin/change_form.html" %}
+
+{% block object-tools-items %}
+  {{ block.super }}
+  {% for link in bank_cancel_links %}
+    <li><a href="{{ link.url }}">Отменить попытку в банке №{{ link.attempt.pk }}</a></li>
+  {% endfor %}
+{% endblock %}
+
+{% block after_field_sets %}
+  {{ block.super }}
+  {% if bank_cancel_links %}
+    <p>Отмена попытки в банке оставит заказ ожидающим оплаты. Отмена заказа — отдельное действие в списке заказов.</p>
+  {% endif %}
+{% endblock %}

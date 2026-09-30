@@ -35,12 +35,6 @@ from commerce.payment_gateway import (
 TBANK_ADAPTER_KEY = "tbank-eacq-v1"
 MAX_BODY_BYTES = 65536
 _API_ORIGINS = {"https://securepay.tinkoff.ru", "https://rest-api-test.tinkoff.ru"}
-_PAYMENT_HOSTS = {
-    "pay.tbank.ru",
-    "securepay.tinkoff.ru",
-    "securepayments.tinkoff.ru",
-    "rest-api-test.tinkoff.ru",
-}
 _OBJECTS_105 = frozenset(
     (
         "commodity excise job service gambling_bet gambling_prize lottery lottery_prize "
@@ -329,12 +323,7 @@ class TBankGateway:
         ):
             raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
         url = data.get("PaymentURL")
-        if (
-            not isinstance(url, str)
-            or len(url) > 2000
-            or not _https_url(url)
-            or urlsplit(url).hostname not in _PAYMENT_HOSTS
-        ):
+        if not isinstance(url, str) or not url or len(url) > 2000:
             raise PaymentGatewayError(PaymentGatewayErrorCategory.INVALID_RESPONSE)
         return CreatedPayment(
             provider_payment_id=_payment_id(data.get("PaymentId")),

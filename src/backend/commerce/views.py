@@ -1,9 +1,11 @@
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import timedelta
 from urllib.parse import urlsplit
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.core.paginator import InvalidPage
 from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
@@ -17,12 +19,13 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from feature_flags import services as feature_flag_services
 from feature_flags.registry import (
     BULK_PHOTO_DOWNLOAD,
+    GALLERY_CDN_IMAGES,
     PAID_PHOTO_CART,
     PAID_PHOTO_PAYMENT_SIMULATOR,
     PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
 )
-from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageUnavailable
+from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError, StorageUnavailable
 from picflow.archive import (
     ArchiveObservation,
     ArchiveSourceMissing,
@@ -34,9 +37,13 @@ from picflow.gallery import (
     GALLERY_VARIANTS,
     GalleryPhoto,
     GalleryPhotoFactory,
+    GalleryVariant,
+    MediaUrlBuilder,
     PublicMediaResolver,
     purchasable_paid_photo_queryset,
 )
+from picflow.gallery_image_delivery import GalleryImageDeliverySettings, GalleryImageUrlSigner
+from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, Photo
 
 from commerce.capabilities import (
@@ -205,6 +212,40 @@ def bulk_photo_download_enabled(request: HttpRequest) -> bool:
     return feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user)
 
 
+def _commerce_media_url_builder(
+    *,
+    request: HttpRequest,
+    photos: Collection[Photo],
+    event_slug: str,
+    fallback: MediaUrlBuilder | None = None,
+) -> MediaUrlBuilder | None:
+    if not feature_flag_services.is_enabled(GALLERY_CDN_IMAGES, request.user):
+        return fallback
+    if not photos:
+        return fallback
+    if any(
+        photo.gallery_media_policy != Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+        for photo in photos
+    ):
+        raise ValueError("commerce CDN requires watermarked preview policy")
+    preview_urls = issue_gallery_preview_urls(
+        photos=photos,
+        signer=GalleryImageUrlSigner(GalleryImageDeliverySettings.from_django_settings()),
+    )
+
+    def media_url(photo: Photo, variant: GalleryVariant) -> str:
+        if variant == "preview-small" and photo.pk in preview_urls:
+            return preview_urls[photo.pk]
+        if fallback is not None:
+            return fallback(photo, variant)
+        return reverse(
+            "photo_media",
+            kwargs={"slug": event_slug, "photo_id": photo.pk, "variant": variant},
+        )
+
+    return media_url
+
+
 @sensitive_variables()
 def cart_state_for_photos(
     *,
@@ -276,10 +317,20 @@ def detail(request: HttpRequest, event_slug: str) -> HttpResponse:
         watermarked_previews_enabled=watermarked_previews_enabled,
     ).filter(pk__in=snapshot.photo_ids)
     photos_by_id = {photo.pk: photo for photo in queryset}
+    authorized_photos = tuple(
+        photos_by_id[photo_id] for photo_id in snapshot.photo_ids if photo_id in photos_by_id
+    )
+    try:
+        media_url_builder = _commerce_media_url_builder(
+            request=request, photos=authorized_photos, event_slug=event.slug
+        )
+    except (ImproperlyConfigured, StorageError, ValueError):
+        return private_cart_response(HttpResponse(status=503))
     photos = tuple(
-        GalleryPhotoFactory.from_photo(photo=photos_by_id[photo_id], event_slug=event.slug)
-        for photo_id in snapshot.photo_ids
-        if photo_id in photos_by_id
+        GalleryPhotoFactory.from_photo(
+            photo=photo, event_slug=event.slug, media_url_builder=media_url_builder
+        )
+        for photo in authorized_photos
     )
     presentation = cart_presentation_for_photos(
         snapshot=snapshot,
@@ -328,10 +379,20 @@ def checkout(request: HttpRequest, event_slug: str) -> HttpResponse:
             watermarked_previews_enabled=watermarked_previews_enabled,
         ).filter(pk__in=snapshot.photo_ids)
     }
+    authorized_photos = tuple(
+        photos_by_id[photo_id] for photo_id in snapshot.photo_ids if photo_id in photos_by_id
+    )
+    try:
+        media_url_builder = _commerce_media_url_builder(
+            request=request, photos=authorized_photos, event_slug=event.slug
+        )
+    except (ImproperlyConfigured, StorageError, ValueError):
+        return private_purchase_response(HttpResponse(status=503))
     photos = tuple(
-        GalleryPhotoFactory.from_photo(photo=photos_by_id[photo_id], event_slug=event.slug)
-        for photo_id in snapshot.photo_ids
-        if photo_id in photos_by_id
+        GalleryPhotoFactory.from_photo(
+            photo=photo, event_slug=event.slug, media_url_builder=media_url_builder
+        )
+        for photo in authorized_photos
     )
     presentation = cart_presentation_for_photos(
         snapshot=snapshot,
@@ -698,6 +759,19 @@ def _render_order(
     support_contact = _configured_support_contact()
     if support_contact is None:
         return _purchase_not_found()
+    try:
+        media_url_builder = _commerce_media_url_builder(
+            request=request,
+            photos=tuple(item.photo for item in items_page.object_list),
+            event_slug=order_instance.event.slug,
+            fallback=_order_media_url_builder(
+                order=order_instance,
+                access_grant=access_grant,
+                grant_signature=grant_signature,
+            ),
+        )
+    except (ImproperlyConfigured, StorageError, ValueError):
+        return private_purchase_response(HttpResponse(status=503))
     response = render(
         request,
         "commerce/order.html",
@@ -706,11 +780,7 @@ def _render_order(
             "order_presentation": order_presentation(
                 order=order_instance,
                 items_page=items_page,
-                media_url_builder=_order_media_url_builder(
-                    order=order_instance,
-                    access_grant=access_grant,
-                    grant_signature=grant_signature,
-                ),
+                media_url_builder=media_url_builder,
             ),
             "order_items_page": items_page,
             "order_url": _order_page_url(

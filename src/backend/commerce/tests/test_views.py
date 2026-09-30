@@ -1,5 +1,7 @@
+import base64
 from datetime import date, timedelta
 from unittest.mock import patch
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -9,8 +11,10 @@ from django.utils import timezone
 from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import (
+    GALLERY_CDN_IMAGES,
     PAID_EVENTS,
     PAID_PHOTO_CART,
+    PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
     FeatureDefinition,
 )
@@ -22,7 +26,7 @@ from feature_flags.states import (
 )
 from feature_flags.testing import override_feature_flags
 from picflow.gallery_media_projection import publish_gallery_media
-from picflow.models import Event, Photo
+from picflow.models import Event, GalleryMediaProjection, Photo
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
@@ -32,12 +36,26 @@ from processing.models import (
     ProcessingJob,
 )
 
+from commerce.capabilities import create_order_access_grant, sign_order_access_grant
 from commerce.identity import browser_token_sha256
-from commerce.models import Cart, CartItem
+from commerce.models import Cart, CartItem, Order, OrderItem
 
 FLAG_OFF = FEATURE_FLAG_OFF
 FLAG_STAFF = FEATURE_FLAG_STAFF
 FLAG_ON = FEATURE_FLAG_ON
+
+CDN_SETTINGS = {
+    "GALLERY_CDN_ORIGIN": "https://img.example.test",
+    "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
+    "GALLERY_IMGPROXY_KEY": "736563726574",
+    "GALLERY_IMGPROXY_SALT": "68656c6c6f",
+    "PRIVATE_MEDIA_S3_BUCKET": "gallery-media",
+}
+
+
+def cdn_source(url: str) -> str:
+    encoded = urlsplit(url).path.rsplit("/", 1)[-1].removesuffix(".jpg")
+    return base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
 
 
 @override_settings(
@@ -134,7 +152,10 @@ class CartViewTests(TestCase):
         derivative = PhotoDerivative.objects.create(
             photo=photo,
             variant="preview-watermarked-v1",
-            final_key=f"private/watermarked/{photo_id}.jpg",
+            final_key=(
+                f"derivatives/previews/{photo_id}/preview-watermarked-v1/"
+                f"00000000-0000-4000-8000-000000000001-{'a' * 64}.jpg"
+            ),
             byte_size=10,
             content_type="image/jpeg",
             width=10,
@@ -163,6 +184,40 @@ class CartViewTests(TestCase):
 
     def detail_url(self, event: Event | None = None) -> str:
         return reverse("commerce:detail", kwargs={"event_slug": (event or self.event).slug})
+
+    def put_in_cart(self, photo: Photo) -> None:
+        cart, _ = Cart.objects.get_or_create(
+            browser_token_sha256=browser_token_sha256(self.token),
+            event=self.event,
+            defaults={"expires_at": timezone.now() + timedelta(days=30)},
+        )
+        CartItem.objects.create(cart=cart, photo=photo)
+        self.client.cookies["findme_cart"] = self.token
+
+    def make_paid_order(
+        self, *, photo: Photo, public_number: str, total_kopecks: int = 30000
+    ) -> Order:
+        order = Order.objects.create(
+            public_number=public_number,
+            event=self.event,
+            originating_cart_token_sha256=browser_token_sha256(self.token),
+            purchase_browser_token_sha256=browser_token_sha256(self.token),
+            checkout_email="buyer@example.test",
+            delivery_email="buyer@example.test",
+            total_kopecks=total_kopecks,
+            currency="RUB",
+            status=Order.Status.PAID,
+            paid_at=timezone.now(),
+        )
+        OrderItem.objects.create(
+            order=order,
+            photo=photo,
+            photo_public_id=photo.pk,
+            unit_price_kopecks=30000,
+            quantity=1,
+            line_total_kopecks=30000,
+        )
+        return order
 
     def set_url(self, event: Event | None = None) -> str:
         return reverse(
@@ -684,3 +739,188 @@ class CartViewTests(TestCase):
         )
         self.assertFalse(Cart.objects.filter(pk=cart.pk).exists())
         self.assertEqual(pruned.cookies["findme_cart"]["max-age"], 0)
+
+    @override_settings(**CDN_SETTINGS)
+    def test_cart_cdn_signs_only_selected_watermarked_preview_and_keeps_large_route(self) -> None:
+        self.enable()
+        self.put_in_cart(self.photo)
+        other = self.make_watermarked_photo(self.event, photo_id="other-photo")
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_ON
+
+        response = self.client.get(self.detail_url())
+
+        self.assertEqual(response.status_code, 200)
+        (shown,) = response.context["cart_presentation"].photos
+        small_url = shown.photo.preview_media_small.url
+        self.assertContains(response, "https://img.example.test/")
+        self.assertEqual(
+            cdn_source(small_url),
+            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key}",
+        )
+        self.assertNotIn(other.pk, response.content.decode())
+        self.assertEqual(
+            shown.photo.preview_media_large.url,
+            reverse(
+                "photo_media",
+                kwargs={
+                    "slug": self.event.slug,
+                    "photo_id": self.photo.pk,
+                    "variant": "preview-large",
+                },
+            ),
+        )
+
+    @override_settings(**CDN_SETTINGS)
+    def test_cart_cdn_off_and_staff_policy_preserve_direct_route_for_other_viewers(self) -> None:
+        self.enable()
+        self.put_in_cart(self.photo)
+        direct_url = reverse(
+            "photo_media",
+            kwargs={"slug": self.event.slug, "photo_id": self.photo.pk, "variant": "preview-small"},
+        )
+        staff = get_user_model().objects.create_user(username="cart-cdn-staff", is_staff=True)
+
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_OFF
+        off = self.client.get(self.detail_url())
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_STAFF
+        anonymous = self.client.get(self.detail_url())
+        self.client.force_login(staff)
+        staff_response = self.client.get(self.detail_url())
+
+        self.assertEqual(
+            off.context["cart_presentation"].photos[0].photo.preview_media_small.url, direct_url
+        )
+        self.assertEqual(
+            anonymous.context["cart_presentation"].photos[0].photo.preview_media_small.url,
+            direct_url,
+        )
+        self.assertEqual(
+            cdn_source(
+                staff_response.context["cart_presentation"].photos[0].photo.preview_media_small.url
+            ),
+            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key}",
+        )
+
+    @override_settings(**CDN_SETTINGS)
+    def test_checkout_cart_html_uses_cdn_small_preview_after_form_error(self) -> None:
+        self.enable()
+        self.feature_flag_states[PAID_PHOTO_PURCHASE] = FLAG_ON
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_ON
+        self.put_in_cart(self.photo)
+
+        response = self.client.post(
+            reverse("commerce:checkout", kwargs={"event_slug": self.event.slug}),
+            {"email": "invalid"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "https://img.example.test/")
+        self.assertEqual(
+            cdn_source(
+                response.context["cart_presentation"].photos[0].photo.preview_media_small.url
+            ),
+            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key}",
+        )
+
+    @override_settings(
+        **CDN_SETTINGS,
+        COMMERCE_SUPPORT_CONTACT="support@example.test",
+        COMMERCE_ORDER_ACCESS_SIGNING_SECRET="commerce-cdn-test-secret",
+    )
+    def test_browser_and_grant_order_cdn_keep_paid_hidden_unpublished_entitlement(self) -> None:
+        self.enable()
+        self.feature_flag_states[PAID_PHOTO_PURCHASE] = FLAG_ON
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_ON
+        order = self.make_paid_order(photo=self.photo, public_number="FM-ABCDEFGH")
+        other = self.make_watermarked_photo(self.event, photo_id="other-order-photo")
+        self.make_paid_order(photo=other, public_number="FM-BCDEFGHJ")
+        self.client.cookies["findme_purchase"] = self.token
+        self.event.publication_status = Event.PublicationStatus.UNAVAILABLE
+        self.event.save(update_fields=["publication_status"])
+        self.photo.is_hidden = True
+        self.photo.save(update_fields=["is_hidden"])
+
+        browser = self.client.get(
+            reverse("commerce:order", kwargs={"public_number": order.public_number})
+        )
+        grant = create_order_access_grant(order=order, source="checkout")
+        signature = sign_order_access_grant(grant=grant, signing_secret="commerce-cdn-test-secret")
+        self.client.cookies.pop("findme_purchase", None)
+        grant_response = self.client.get(
+            reverse(
+                "commerce:grant_order",
+                kwargs={
+                    "public_number": order.public_number,
+                    "grant_identifier": grant.pk,
+                    "signature": signature,
+                },
+            )
+        )
+
+        for response in (browser, grant_response):
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "https://img.example.test/")
+            (shown,) = response.context["order_presentation"].photos
+            self.assertEqual(
+                cdn_source(shown.photo.preview_media_small.url),
+                f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key}",
+            )
+            self.assertNotIn(other.pk, response.content.decode())
+            self.assertContains(response, "Скачать оригинал")
+
+    @override_settings(**CDN_SETTINGS, COMMERCE_SUPPORT_CONTACT="support@example.test")
+    def test_order_cdn_missing_watermarked_projection_returns_no_partial_html(self) -> None:
+        self.enable()
+        self.feature_flag_states[PAID_PHOTO_PURCHASE] = FLAG_ON
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_ON
+        order = self.make_paid_order(
+            photo=self.photo, public_number="FM-ABCDEFGH", total_kopecks=60000
+        )
+        missing = self.make_watermarked_photo(self.event, photo_id="second-photo")
+        OrderItem.objects.create(
+            order=order,
+            photo=missing,
+            photo_public_id=missing.pk,
+            unit_price_kopecks=30000,
+            quantity=1,
+            line_total_kopecks=30000,
+        )
+        self.client.cookies["findme_purchase"] = self.token
+        GalleryMediaProjection.objects.filter(photo=missing).update(
+            watermarked_preview_final_key=None,
+            watermarked_preview_source_attempt=None,
+        )
+
+        response = self.client.get(
+            reverse("commerce:order", kwargs={"public_number": order.public_number})
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.content, b"")
+
+    @override_settings(**CDN_SETTINGS, COMMERCE_SUPPORT_CONTACT="support@example.test")
+    def test_order_cdn_rejects_non_watermarked_policy_without_signing_clean_media(self) -> None:
+        self.enable()
+        self.feature_flag_states[PAID_PHOTO_PURCHASE] = FLAG_ON
+        order = self.make_paid_order(photo=self.photo, public_number="FM-ABCDEFGH")
+        self.client.cookies["findme_purchase"] = self.token
+        self.photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
+        self.photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
+        self.photo.save(update_fields=["gallery_media_policy", "processing_generation"])
+        GalleryMediaProjection.objects.filter(photo=self.photo).update(
+            clean_preview_final_key=(
+                "derivatives/previews/photo-one/preview-small-v1/"
+                f"00000000-0000-4000-8000-000000000002-{'b' * 64}.jpg"
+            ),
+            clean_preview_source_attempt=self.photo.gallery_media_projection.watermarked_preview_source_attempt,
+        )
+        order_url = reverse("commerce:order", kwargs={"public_number": order.public_number})
+
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_OFF
+        direct = self.client.get(order_url)
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_ON
+        enabled = self.client.get(order_url)
+
+        self.assertEqual(direct.status_code, 200)
+        self.assertEqual(enabled.status_code, 503)
+        self.assertEqual(enabled.content, b"")

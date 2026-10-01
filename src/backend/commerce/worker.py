@@ -12,10 +12,11 @@ from commerce.attention import open_attention
 from commerce.delivery import claim_due_email_deliveries, send_claimed_email_delivery
 from commerce.email_sender import EmailMessage, EmailSender, EmailSendResult
 from commerce.models import CommerceAttention, EmailDelivery, OrderAccessGrant, PaymentAttempt
-from commerce.payment_gateway import PaymentGateway
+from commerce.payment_gateway import PaymentGateway, PaymentGatewayError
 from commerce.payments import (
     PaymentReconciliationUnavailable,
     PaymentTransitionRejected,
+    apply_payment_observation,
     reconcile_payment_attempt,
 )
 from commerce.tbank_gateway import TBANK_ADAPTER_KEY
@@ -198,7 +199,11 @@ class CommerceWorker:
         processed = 0
         claim_time = now or timezone.now()
         for claim in _claim_due_attention_reminders(now=claim_time, limit=self._claim_limit):
-            attention = CommerceAttention.objects.select_related("order").get(pk=claim.attention_id)
+            attention = CommerceAttention.objects.select_related("order", "payment_attempt").get(
+                pk=claim.attention_id
+            )
+            if self._resolve_payment_attention_before_reminder(attention=attention, now=claim_time):
+                continue
             message = _attention_message(
                 attention=attention,
                 admin_url_for_attention=self._admin_url_for_attention,
@@ -236,6 +241,37 @@ class CommerceWorker:
                 },
             )
         return processed
+
+    def _resolve_payment_attention_before_reminder(
+        self, *, attention: CommerceAttention, now: datetime
+    ) -> bool:
+        attempt = attention.payment_attempt
+        if (
+            attention.kind
+            not in (
+                CommerceAttention.Kind.PAYMENT_MISMATCH,
+                CommerceAttention.Kind.MANUAL_PAYMENT_CONFLICT,
+            )
+            or attempt is None
+            or not attempt.provider_payment_id
+            or attempt.status != PaymentAttempt.Status.SUCCEEDED
+            or attempt.adapter_key != self._payment_gateway.adapter_key
+        ):
+            return False
+        try:
+            observation = self._payment_gateway.fetch_payment(attempt.provider_payment_id)
+            apply_payment_observation(
+                attempt_id=attempt.pk,
+                adapter_key=self._payment_gateway.adapter_key,
+                source="status_fetch",
+                observation=observation,
+                now=now,
+            )
+        except (PaymentGatewayError, PaymentTransitionRejected):
+            return False
+        return not CommerceAttention.objects.filter(
+            pk=attention.pk, resolved_at__isnull=True
+        ).exists()
 
 
 def commerce_worker_health(

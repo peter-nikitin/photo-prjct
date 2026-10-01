@@ -55,18 +55,17 @@ def test_offline_render_has_missing_observations_separate(control):
     assert len(json.loads(package["dashboard.json"])["widgets"]) == 41
 
 
-def test_worker_profile_is_boolean_git_enabled_and_renders_only_when_enabled(control):
+def test_worker_profile_is_boolean_git_disabled_and_renders_only_when_enabled(control):
     cfg = control.load_config()
-    assert cfg["worker_alerts_enabled"] is True
-    cfg["worker_alerts_enabled"] = False
+    assert cfg["worker_alerts_enabled"] is False
     disabled = yaml.safe_load(control.render(cfg)["rules.yml"])
     assert [group["name"] for group in disabled["groups"]] == [
         "findme-photo",
         "findme-image-origin",
     ]
 
-    cfg["worker_alerts_enabled"] = True
-    enabled = yaml.safe_load(control.render(cfg)["rules.yml"])
+    enabled_cfg = {**cfg, "worker_alerts_enabled": True}
+    enabled = yaml.safe_load(control.render(enabled_cfg)["rules.yml"])
     assert [group["name"] for group in enabled["groups"]] == [
         "findme-photo",
         "findme-workers",
@@ -82,9 +81,9 @@ def test_worker_profile_is_boolean_git_enabled_and_renders_only_when_enabled(con
         "WorkerRuntimeDiagnosticsMissing",
     ]
 
-    cfg["worker_alerts_enabled"] = 1
+    enabled_cfg["worker_alerts_enabled"] = 1
     with pytest.raises(control.ControlError, match="worker_alerts_enabled"):
-        control.validate_config(cfg)
+        control.validate_config(enabled_cfg)
 
 
 def test_image_origin_rules_and_charts_are_scoped_and_can_be_withheld(control):

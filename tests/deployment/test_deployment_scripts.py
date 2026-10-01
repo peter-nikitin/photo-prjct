@@ -673,6 +673,11 @@ printf 'verify-public-edge\n' >> "$COMMAND_LOG"
     _write_executable(
         fake_bin / "docker",
         """
+if [ "${1-}" = image ] && [ "${2-}" = prune ]; then
+  printf 'docker %s\n' "$*" >> "$COMMAND_LOG"
+  [ "$APPLY_SCENARIO" != image-prune-failure ]
+  exit
+fi
 case " $* " in
   *"ingestion_importattempt"*)
     printf 'import-lease-probe\n' >> "$COMMAND_LOG"
@@ -1094,6 +1099,36 @@ def _apply_log(tmp_path: Path) -> list[str]:
     return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expect_prune"),
+    [("success", True), ("image-prune-failure", True), ("public-failure", False)],
+)
+def test_unused_images_are_pruned_only_after_successful_commit(
+    tmp_path: Path, fake_bin: Path, scenario: str, expect_prune: bool
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    result = _run("deploy/apply-deployment.sh", env=env)
+    log = _apply_log(tmp_path)
+    prune = "docker image prune -a -f"
+
+    assert (prune in log) is expect_prune
+    if scenario == "public-failure":
+        assert result.returncode != 0
+        assert "DEPLOY_RESULT=failure" in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "DEPLOY_RESULT=success" in result.stdout
+        expected_result = "failure" if scenario == "image-prune-failure" else "success"
+        assert f"DEPLOY_IMAGE_PRUNE_RESULT={expected_result}" in result.stdout
+        assert log.index(prune) > next(
+            index
+            for index, line in enumerate(log)
+            if line.startswith("mv ") and line.endswith("/deployed-image")
+        )
+        if scenario == "image-prune-failure":
+            assert "Unused Docker image cleanup failed" in result.stderr
+
+
 def test_remote_placement_requires_reviewed_release_before_mutation(
     tmp_path: Path, fake_bin: Path
 ) -> None:
@@ -1270,8 +1305,9 @@ def test_apply_markers_include_elapsed_seconds(tmp_path: Path, fake_bin: Path) -
     markers = [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_")]
     assert markers
     assert all(
-        re.fullmatch(r"DEPLOY_PHASE=[a-z-]+ elapsed_seconds=\d+", line) for line in markers[:-1]
+        re.fullmatch(r"DEPLOY_PHASE=[a-z-]+ elapsed_seconds=\d+", line) for line in markers[:-2]
     )
+    assert markers[-2] == "DEPLOY_IMAGE_PRUNE_RESULT=success"
     assert re.fullmatch(
         r"DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=\d+",
         markers[-1],
@@ -1304,6 +1340,8 @@ printf '%s\\n' \\
   '{secret}' \\
   'DEPLOY_PHASE=validate elapsed_seconds=1' \\
   'DEPLOY_PHASE=commit elapsed_seconds=2 unexpected=value' \\
+  'DEPLOY_IMAGE_PRUNE_RESULT=failure injected=value' \\
+  'DEPLOY_IMAGE_PRUNE_RESULT=failure' \\
   'DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=3'
 """,
     )
@@ -1327,6 +1365,7 @@ printf '%s\\n' \\
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [
         "DEPLOY_PHASE=validate elapsed_seconds=1",
+        "DEPLOY_IMAGE_PRUNE_RESULT=failure",
         "DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=3",
         "[remote] stage=deploy status=ok",
     ]
@@ -2334,6 +2373,7 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     assert "Removed upload cleanup schedule.\n" in result.stdout
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
+        "DEPLOY_IMAGE_PRUNE_RESULT=success",
         "DEPLOY_RESULT=success phase=commit rollback=not-needed",
     ]
     assert result.stderr == "docker compose up exit status: 0\n"
@@ -2357,6 +2397,7 @@ def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
     assert result.returncode == 0, result.stderr
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
+        "DEPLOY_IMAGE_PRUNE_RESULT=success",
         "DEPLOY_RESULT=success phase=commit rollback=not-needed",
     ]
     commands = _apply_log(tmp_path)

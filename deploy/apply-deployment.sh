@@ -1439,3 +1439,9 @@ sudo -n "$observability_helper" commit
 fleet_phase commit || fail "Fleet release verification failed"
 deployment_committed=1
 clear_fleet_recovery_snapshot || fail "Committed recovery gate cleanup failed"
+if ! docker image prune -a -f >/dev/null; then
+    echo "Unused Docker image cleanup failed after deployment commit" >&2
+    printf 'DEPLOY_IMAGE_PRUNE_RESULT=failure\n'
+else
+    printf 'DEPLOY_IMAGE_PRUNE_RESULT=success\n'
+fi

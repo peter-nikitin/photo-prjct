@@ -17,6 +17,13 @@ the purpose of the dispatch.
 Review the **Deploy** workflow result and run the acceptance checks below. Do not SSH to invoke
 `deploy/apply-deployment.sh` directly or use a mutable checkout as a deployment source.
 
+After a release commits, the apply script removes Docker images unused by any container
+from the canonical VM. It skips this cleanup on failed deployments. The workflow prints
+`DEPLOY_IMAGE_PRUNE_RESULT=success` or `failure`.
+A cleanup failure does not change the committed release result;
+the next deployment retries cleanup. An earlier immutable release image can be pulled again from
+GHCR for an operator-requested rollback.
+
 ## Commerce worker and Postbox email
 
 The Commerce worker is activated only by the canonical **Deploy** workflow. Keep the paid feature

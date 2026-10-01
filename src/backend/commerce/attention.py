@@ -11,6 +11,11 @@ from commerce.models import CommerceAttention, Order, PaymentAttempt
 logger = logging.getLogger(__name__)
 
 _SAFE_SUBJECT_RE = re.compile(r"^[a-z][a-z0-9_-]*:[a-z0-9_-]+$")
+_PAYMENT_ATTENTION_KINDS = {
+    CommerceAttention.Kind.PAYMENT_MISMATCH,
+    CommerceAttention.Kind.MANUAL_PAYMENT_CONFLICT,
+    CommerceAttention.Kind.PAYMENT_RECONCILIATION_OVERDUE,
+}
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,18 @@ def open_attention(
     observed_at = _current_time(now)
 
     with transaction.atomic():
+        if kind in _PAYMENT_ATTENTION_KINDS and subject.startswith("payment-attempt:"):
+            acknowledged = (
+                CommerceAttention.objects.filter(
+                    subject=subject,
+                    kind__in=_PAYMENT_ATTENTION_KINDS,
+                    resolution_source=CommerceAttention.ResolutionSource.ADMIN,
+                )
+                .order_by("-pk")
+                .first()
+            )
+            if acknowledged is not None:
+                return acknowledged
         attention = (
             CommerceAttention.objects.select_for_update()
             .filter(kind=kind, subject=subject, resolved_at__isnull=True)

@@ -236,3 +236,44 @@ class CommerceAttentionServiceTests(TransactionTestCase):
         )
         self.assertEqual(automatic.resolution_source, CommerceAttention.ResolutionSource.AUTOMATIC)
         self.assertFalse(already_resolved.performed)
+
+    def test_manual_payment_resolution_mutes_that_attempt_across_payment_kinds(self) -> None:
+        subject = f"payment-attempt:{self.attempt.pk}"
+        attention = open_attention(
+            kind="manual_payment_conflict",
+            subject=subject,
+            order=self.order,
+            payment_attempt=self.attempt,
+            now=self.now,
+        )
+        resolve_attention_manually(attention_id=attention.pk, comment="Reviewed by operator.")
+
+        repeated = open_attention(
+            kind="payment_reconciliation_overdue",
+            subject=subject,
+            order=self.order,
+            payment_attempt=self.attempt,
+            now=self.now + timedelta(minutes=1),
+        )
+
+        self.assertEqual(repeated.pk, attention.pk)
+        self.assertFalse(CommerceAttention.objects.filter(resolved_at__isnull=True).exists())
+        other_attempt = open_attention(
+            kind="payment_reconciliation_overdue",
+            subject="payment-attempt:999",
+            order=self.order,
+            now=self.now,
+        )
+        self.assertIsNone(other_attempt.resolved_at)
+
+    def test_automatic_resolution_allows_a_new_observation_to_open(self) -> None:
+        subject = f"payment-attempt:{self.attempt.pk}"
+        attention = open_attention(kind="payment_mismatch", subject=subject, now=self.now)
+        resolve_attention_automatically(attention_id=attention.pk, now=self.now)
+
+        repeated = open_attention(
+            kind="payment_mismatch", subject=subject, now=self.now + timedelta(minutes=1)
+        )
+
+        self.assertNotEqual(repeated.pk, attention.pk)
+        self.assertIsNone(repeated.resolved_at)

@@ -266,6 +266,20 @@ def apply_payment_observation(
                 subject=f"payment-attempt:{attempt.pk}",
                 now=current_time,
             )
+            for old_attempt_id in PaymentAttempt.objects.filter(
+                order=order,
+                status__in=(
+                    PaymentAttempt.Status.FAILED,
+                    PaymentAttempt.Status.CANCELED,
+                    PaymentAttempt.Status.EXPIRED,
+                ),
+            ).values_list("pk", flat=True):
+                for kind in ("payment_mismatch", "manual_payment_conflict"):
+                    resolve_open_attention_automatically(
+                        kind=kind,
+                        subject=f"payment-attempt:{old_attempt_id}",
+                        now=current_time,
+                    )
             return order
 
         if observation.status == NormalizedPaymentStatus.PENDING:
@@ -276,12 +290,21 @@ def apply_payment_observation(
             NormalizedPaymentStatus.EXPIRED: "expired",
             NormalizedPaymentStatus.FAILED: "failed",
         }[observation.status]
+        was_succeeded = attempt.status == PaymentAttempt.Status.SUCCEEDED
         _set_attempt_terminal(
             attempt=attempt,
             status=terminal_status,
             terminal_at=current_time,
         )
-        if order.status == Order.Status.PAID:
+        if order.status == Order.Status.PAID and (
+            was_succeeded
+            or not PaymentAttempt.objects.filter(
+                order=order,
+                status=PaymentAttempt.Status.SUCCEEDED,
+            )
+            .exclude(pk=attempt.pk)
+            .exists()
+        ):
             open_attention(
                 kind="manual_payment_conflict",
                 subject=f"payment-attempt:{attempt.pk}",

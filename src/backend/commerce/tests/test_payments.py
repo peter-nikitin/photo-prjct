@@ -11,6 +11,7 @@ from picflow.models import Event, Photo
 
 from commerce import payments as payment_services
 from commerce import services as cart_services
+from commerce.attention import open_attention
 from commerce.identity import browser_token_sha256
 from commerce.models import (
     Cart,
@@ -522,6 +523,80 @@ class PaymentTransitionTests(TransactionTestCase):
         self.assertEqual(
             attention.resolution_source,
             CommerceAttention.ResolutionSource.AUTOMATIC,
+        )
+
+    def test_successful_retry_resolves_old_failed_attempt_alerts(self) -> None:
+        self.apply(self.observation(status=NormalizedPaymentStatus.FAILED))
+        old_subject = f"payment-attempt:{self.attempt.pk}"
+        for kind in ("payment_mismatch", "manual_payment_conflict"):
+            open_attention(
+                kind=kind,
+                subject=old_subject,
+                order=self.order,
+                payment_attempt=self.attempt,
+                now=self.now,
+            )
+        retry = PaymentAttempt.objects.create(
+            order=self.order,
+            amount_kopecks=30000,
+            currency="RUB",
+            adapter_key="deterministic-test",
+            idempotency_key="payment-attempt-retry",
+            provider_payment_id="provider-payment-retry",
+        )
+
+        apply_payment_observation(
+            attempt_id=retry.pk,
+            adapter_key="deterministic-test",
+            source="notification",
+            observation=PaymentObservation(
+                provider_payment_id=retry.provider_payment_id,
+                status=NormalizedPaymentStatus.SUCCEEDED,
+                amount_kopecks=30000,
+                currency="RUB",
+                idempotency_key=retry.idempotency_key,
+                provider_event_id="retry-success",
+            ),
+            now=self.now + timedelta(minutes=1),
+        )
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertFalse(
+            CommerceAttention.objects.filter(subject=old_subject, resolved_at__isnull=True).exists()
+        )
+
+    def test_failed_old_attempt_does_not_alert_after_another_attempt_paid(self) -> None:
+        self.apply(self.observation(status=NormalizedPaymentStatus.FAILED))
+        retry = PaymentAttempt.objects.create(
+            order=self.order,
+            amount_kopecks=30000,
+            currency="RUB",
+            adapter_key="deterministic-test",
+            idempotency_key="payment-attempt-retry",
+            provider_payment_id="provider-payment-retry",
+        )
+        apply_payment_observation(
+            attempt_id=retry.pk,
+            adapter_key="deterministic-test",
+            source="notification",
+            observation=PaymentObservation(
+                provider_payment_id=retry.provider_payment_id,
+                status=NormalizedPaymentStatus.SUCCEEDED,
+                amount_kopecks=30000,
+                currency="RUB",
+                idempotency_key=retry.idempotency_key,
+                provider_event_id="retry-success",
+            ),
+            now=self.now,
+        )
+
+        self.apply(self.observation(status=NormalizedPaymentStatus.FAILED))
+
+        self.assertFalse(
+            CommerceAttention.objects.filter(
+                subject=f"payment-attempt:{self.attempt.pk}", resolved_at__isnull=True
+            ).exists()
         )
 
     def test_manual_and_automatic_paid_race_create_one_fulfillment(self) -> None:

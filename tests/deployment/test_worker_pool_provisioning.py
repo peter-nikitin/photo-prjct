@@ -2,7 +2,10 @@ import base64
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
+import sys
+import tarfile
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import Mock
@@ -1076,7 +1079,8 @@ def test_operator_create_queries_pinned_canonical_receiver_over_bounded_ssh():
     assert "BatchMode=yes" in command and "StrictHostKeyChecking=yes" in command
     assert command[-2] == "operator@111.88.151.64"
     assert (
-        "sudo -n python3 /opt/photo-prjct/deploy/worker-pools/release.py eligibility" in command[-1]
+        "sudo -n env PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical "
+        "python3 /opt/photo-prjct/deploy/worker-pools/release.py eligibility" in command[-1]
     )
     assert checksum in command[-1]
     assert kwargs["timeout"] <= 45 and kwargs["stdin"] is subprocess.DEVNULL
@@ -1090,6 +1094,57 @@ def test_operator_create_queries_pinned_canonical_receiver_over_bounded_ssh():
             manifest=Path("/opt/photo-prjct/creation.json"),
             run=run,
         )
+
+
+def test_canonical_eligibility_command_reaches_validation_from_package_only_layout(tmp_path):
+    archive = tmp_path / "package.tar"
+    packaged = subprocess.run(
+        ["sh", str(ROOT / "deploy/package-deployment.sh"), str(archive)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert packaged.returncode == 0, packaged.stderr
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    with tarfile.open(archive) as package:
+        package.extractall(installed, filter="data")
+    assert not (installed / "src/backend/processing").exists()
+    manifest = installed / "creation.json"
+    manifest.write_text("{}")
+
+    provision = module("provision")
+    commands = []
+
+    def capture(command, **_kwargs):
+        commands.append(command)
+        return Mock(
+            stdout=json.dumps({"eligible": True, "checksum": "reviewed", "predecessors": None})
+        )
+
+    provision.ssh_eligibility(
+        config(1),
+        "reviewed",
+        target="operator@canonical.example",
+        root=installed,
+        manifest=manifest,
+        run=capture,
+    )
+    remote = shlex.split(commands[0][-1])
+    assert remote[:2] == ["sudo", "-n"]
+    remote[remote.index("python3")] = sys.executable
+    clean_env = {"PATH": os.environ["PATH"]}
+    result = subprocess.run(
+        remote[2:],
+        cwd=tmp_path,
+        env=clean_env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert result.stderr.strip() == (
+        "canonical worker release failed; inspect durable receipt and retain compatible web"
+    )
 
 
 def test_second_create_waits_for_receipt_owned_first_group_inventory_to_settle(
